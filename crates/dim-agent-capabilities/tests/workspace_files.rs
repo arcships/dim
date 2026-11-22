@@ -367,7 +367,7 @@ async fn a_new_file_takes_the_process_umask() {
         return;
     }
     let binary = std::env::current_exe().unwrap();
-    for umask in ["022", "002", "700"] {
+    for umask in ["022", "002", "300"] {
         let child = std::process::Command::new("sh")
             .args([
                 "-c",
@@ -394,6 +394,68 @@ async fn a_new_file_takes_the_process_umask() {
             "umask {umask}: {stdout}"
         );
     }
+}
+
+/// The umask a child run of
+/// [`a_new_file_under_a_umask_that_masks_owner_read_fails`] uses, in octal.
+#[cfg(unix)]
+const CHILD_NO_OWNER_READ_UMASK: &str = "DIM_TEST_NO_OWNER_READ_UMASK";
+
+/// A umask that takes the owner's read bit leaves the private staging directory
+/// without owner access: a new file is refused before anything is written, the
+/// target does not exist and no staging entry is left behind. A direct creation
+/// would succeed under this umask, so the private staging directory is the
+/// reason the call is refused; the process umask is never read or changed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_new_file_under_a_umask_that_masks_owner_read_fails() {
+    if std::env::var_os(CHILD_NO_OWNER_READ_UMASK).is_none() {
+        let binary = std::env::current_exe().unwrap();
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"umask 700 && exec "$0" a_new_file_under_a_umask_that_masks_owner_read_fails --nocapture"#,
+            ])
+            .arg(&binary)
+            .env(CHILD_NO_OWNER_READ_UMASK, "700")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success(),
+            "umask 700: {stdout}{}",
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "umask 700 ran the child test: {stdout}"
+        );
+        return;
+    }
+    let workspace = private_workspace();
+    let reads = branch();
+    let result = workspace
+        .call(&reads, "write", json!({"path": "new", "content": "text\n"}))
+        .await;
+    assert_eq!(code(&result), "permission_denied");
+    assert!(
+        !workspace.path("new").exists(),
+        "a refused write creates no target"
+    );
+    let leftovers: Vec<_> = fs::read_dir(&workspace.root)
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".dim-write-")
+        })
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a refused write leaves no staging entry: {leftovers:?}"
+    );
 }
 
 #[test]

@@ -116,25 +116,44 @@ Generation cancellation rejects new calls and stops accepted calls; cleanup
 waits for tracked calls, including handoff. File mutations stage complete bytes
 and retain coordinator admission through I/O/publication. A new target is staged
 as `staged` with mode `0o666` inside a private directory created for it in the
-target's parent (mode `0o700`, set again after creation without following a
-symlink so a umask that masks owner bits cannot make it unusable, named for the
-staged entry), so the process umask decides the installed file's mode while
-nobody else can read or change the staged bytes. On macOS an inheritable parent
+target's parent (mode `0o700`, named for the staged entry), so the process umask
+decides the installed file's mode while nobody else can read or change the
+staged bytes. On macOS an inheritable parent
 ACL is stored beside the mode bits: an ACL the opened directory carries is
 cleared and read back before the staged file exists, whether or not the earlier
 parent probe saw one, the opened staged file is confirmed to carry no entry, the
 ACL a file created in the parent would inherit is read through an empty template
-in the parent, and that ACL is applied to the staged file immediately before
-installation, so the installed file matches a file created directly at the
-target. The directory is opened without following a symlink and checked to be a
-directory the effective user owns with no group or other permission, and the
-staged file is created, verified, linked and removed relative to that handle, so
-a directory name swapped after creation cannot receive the bytes or redirect the
-installation; installation links the file at the target without replacing an
-entry, and the private directory is removed on every failure, cancellation and
-installation path whose name still resolves to the directory this call opened;
-a name swapped after the open is left in place rather than removing another
-entry. A replaced target stages its sibling `0o600` directly in the
+created in the parent, and that ACL is applied to the staged file immediately
+before installation, so the installed file matches a file created directly at
+the target. The template carries no bytes and is moved into the checked private
+directory and removed there, so its removal never acts on a name in the target's
+parent; an entry that took the template's name before the move is moved in as
+well and linked back at its name while that name is free, and left inside the
+private directory otherwise, never removed. When the parent's inheritable ACL
+denies deleting the template, the move fails and the write is refused before
+anything is written, leaving the empty template in the parent. The directory is
+opened without following a symlink and checked to be the directory this call
+created, by device and inode, owned by the effective user, with no group or
+other permission; when the process umask took owner access away from the mode
+`mkdirat` asked for, it is restored on that checked handle, keeping the
+set-group-ID and sticky bits creation inherited, so no other directory's mode
+can be changed and a file created inside keeps the group the parent gives. A
+umask that masks the owner's read bit leaves the created directory without the
+owner access a handle able to carry that repair needs (no open mode succeeds on
+macOS; on Linux only `O_PATH` opens, and that open mode does not carry a
+permission change), so a new file is refused before anything is written,
+although a direct creation would have succeeded: that is the cost of keeping the
+staged bytes private, and it is the one case in which this path is narrower than
+a direct creation. The staged file is created, verified, linked and removed
+relative to the same handle, so a directory name swapped after creation cannot
+receive the bytes or redirect the installation; installation links the file at
+the target without replacing an entry, and the private directory is removed on
+every failure, cancellation and installation path whose name still resolves to
+the directory this call created, by device and inode, checked immediately before
+the removal. POSIX removes a directory by name, never by handle: a replacement
+in the instant between that check and the removal can still name another empty
+directory, and a replaced name is otherwise left in place rather than removing
+another entry. A replaced target stages its sibling `0o600` directly in the
 parent, takes the original's owner, group and mode before installation, and is
 renamed over it; on macOS that sibling also inherits the parent's ACL, as it did
 before. Windows installs a directory entry that inherits the parent's
@@ -473,8 +492,11 @@ asserts the declaration the model reads.
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also covers the mode of the file a mutation installs:
 `a_new_file_takes_the_process_umask` runs itself again in a child process under
-umask `022` and `002`, checks the new file's `0644` and `0664`, and that a
-successful write leaves no staging entry;
+umask `022`, `002` and `300`, checks the new file's `0644`, `0664` and `0066`,
+and that a successful write leaves no staging entry;
+`a_new_file_under_a_umask_that_masks_owner_read_fails` runs itself again under
+umask `700`, checks the `permission_denied` refusal, that the target does not
+exist and that no staging entry is left;
 `replacement_preserves_permissions_and_open_original` replaces a `0600` and a
 `0644` file and keeps each mode and the open original's bytes.
 [mutation_tests](../../../../crates/dim-agent-capabilities/src/workspace_tools/files.rs)
@@ -494,7 +516,10 @@ parent for entries inherited by files and directories, by files only and by
 directories only;
 `a_cancelled_or_failed_new_file_leaves_no_staging_entry_on_macos` checks that
 cancellation and a failed publication leave no staging entry, including the ACL
-template.
+template; `a_swapped_acl_template_is_put_back` replaces the template's name
+before it is moved into the private directory, and checks that the entry that
+took the name is put back with its bytes while the directory is removed and no
+staging entry is left.
 
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also drives `read` over images: a PNG and its line, an image recognized ahead of

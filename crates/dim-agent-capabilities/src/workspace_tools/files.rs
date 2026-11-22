@@ -630,6 +630,11 @@ fn open_relative(
 #[cfg(unix)]
 const STAGED_FILE: &str = "staged";
 
+/// The name the inherited ACL template takes inside the private directory once
+/// it was read in the target's parent.
+#[cfg(target_os = "macos")]
+const ACL_TEMPLATE_FILE: &str = "template";
+
 /// The extended ACL of an open file, read and applied through its descriptor.
 /// macOS keeps inheritable access control entries separately from the mode
 /// bits, so a file created inside the private staging directory would
@@ -754,105 +759,167 @@ struct StagingDirectory {
     acl: Option<acl::Acl>,
 }
 
-/// Creates the private staging directory `name` below `parent` with mode 0700,
-/// then sets that mode again without following a symlink, so a umask that
-/// masks owner bits cannot take away the access the checked open needs.
+/// The device and inode of the directory entry a call created, taken from
+/// `fstatat` right after `mkdirat` so the checked open can tell that entry from
+/// a name that was swapped for another directory.
+#[cfg(unix)]
+type StagingIdentity = (u64, u64);
+
+/// How often a call restored owner access to a private staging directory the
+/// process umask had taken away. Only tests read it, and only in a child
+/// process that runs one test.
+#[cfg(all(test, unix))]
+static STAGING_MODE_REPAIRS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Creates the private staging directory `name` below `parent` with mode 0700
+/// and returns the identity of the entry it made. The process umask can take
+/// owner access away from that mode; [`open_staging_directory`] restores it on
+/// the opened handle.
 #[cfg(unix)]
 fn create_staging_directory(
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
-) -> Result<(), TargetError> {
+) -> Result<StagingIdentity, TargetError> {
     use std::os::fd::AsRawFd;
-    let name = c_name(name)?;
-    // SAFETY: `parent` is an open directory handle and `name` a live
+    let entry = c_name(name)?;
+    // SAFETY: `parent` is an open directory handle and `entry` a live
     // NUL-terminated string for the call.
-    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), entry.as_ptr(), 0o700) } != 0 {
         return Err(classify(std::io::Error::last_os_error()));
     }
-    // SAFETY: `parent` is an open directory handle and `name` a live
-    // NUL-terminated string for the call; `AT_SYMLINK_NOFOLLOW` keeps a name
-    // swapped after creation from redirecting the mode change.
-    if unsafe {
-        libc::fchmodat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            0o700,
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    } != 0
-    {
-        return Err(classify(std::io::Error::last_os_error()));
+    let stat = entry_stat(parent, name).map_err(classify)?;
+    if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
+        return Err(TargetError::Refused);
     }
-    Ok(())
+    Ok(device_inode(&stat))
 }
 
 /// Opens the staging directory `name` below `parent` without following a
-/// symlink and checks that it is a directory the effective user owns whose
-/// group and other permission bits are all clear. A name swapped between the
-/// creation and this open is refused here unless it names such a directory.
+/// symlink and checks that it is the directory `created` names: a directory the
+/// effective user owns, whose group and other permission bits are clear. A name
+/// swapped after creation is refused before anything else happens to it.
+///
+/// When the process umask took owner access away from the `0o700` creation
+/// asked for, the mode is repaired on this checked handle, keeping the
+/// set-group-ID and sticky bits the directory inherited, so the repair cannot
+/// reach another directory and cannot change the group a file created in the
+/// directory belongs to.
 #[cfg(unix)]
 fn open_staging_directory(
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
+    created: StagingIdentity,
 ) -> Result<std::fs::File, TargetError> {
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
     let directory =
         open_relative(parent, name, libc::O_RDONLY | libc::O_DIRECTORY, 0).map_err(classify)?;
     let metadata = directory.metadata().map_err(TargetError::Io)?;
     // SAFETY: `geteuid` takes no arguments and cannot fail.
     let owner = unsafe { libc::geteuid() };
-    if metadata.is_dir() && metadata.uid() == owner && metadata.mode() & 0o077 == 0 {
-        Ok(directory)
-    } else {
-        Err(TargetError::Io(std::io::Error::new(
+    let mode = metadata.mode() & 0o7777;
+    if !metadata.is_dir()
+        || metadata.uid() != owner
+        || mode & 0o077 != 0
+        || (metadata.dev(), metadata.ino()) != created
+    {
+        return Err(TargetError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "the private staging directory is not the one this call created",
-        )))
+        )));
     }
+    if mode & 0o700 != 0o700 {
+        #[cfg(test)]
+        STAGING_MODE_REPAIRS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        #[allow(
+            clippy::unnecessary_cast,
+            reason = "`mode_t` is 16-bit on macOS and 32-bit on Linux, so this cast is needed on one target and lints on the other"
+        )]
+        let repaired = (mode | 0o700) as libc::mode_t;
+        // SAFETY: `directory` is open for the call.
+        if unsafe { libc::fchmod(directory.as_raw_fd(), repaired) } != 0 {
+            return Err(classify(std::io::Error::last_os_error()));
+        }
+    }
+    Ok(directory)
+}
+
+/// A point in [`create_staged_file`] a test can act at.
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stage {
+    /// The parent's ACL was read; the private directory does not exist yet.
+    Probed,
+    /// The private directory exists under its name and was not opened yet.
+    Created,
+    /// The ACL template exists under its name in the parent and was not moved
+    /// into the private directory yet.
+    #[cfg(target_os = "macos")]
+    Templated,
 }
 
 /// Creates the staged file inside the private directory `name` below `parent`,
 /// which is checked before the file exists. On macOS, an ACL the opened
 /// directory carries is cleared and read back before the file exists, the ACL
-/// the target inherits is read from an empty template, and the opened file is
-/// confirmed to carry no entry. A failure after the directory was opened
-/// removes the directory; a directory that cannot be opened is left in place,
-/// because the name cannot be shown to be the one this call created.
+/// the target inherits is read from an empty template in the parent that is
+/// then moved into the private directory and removed there, and the opened file
+/// is confirmed to carry no entry. A failure after the directory was created
+/// removes the directory entry this call made; a directory whose name no longer
+/// resolves to that entry, or that holds an entry this call did not create, is
+/// left in place.
 #[cfg(unix)]
 fn create_staged_file(
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
 ) -> Result<(std::fs::File, StagingDirectory), TargetError> {
-    create_staged_file_observed(parent, name, || {})
+    create_staged_file_observed(parent, name, |_| {})
 }
 
-/// [`create_staged_file`] with `observed` run after the parent's ACL was read
-/// and before the private directory is created, so a test can change the
-/// parent between those two observations.
+/// [`create_staged_file`] with `observed` run at each [`Stage`], so a test can
+/// change the parent ACL, or replace the private directory's name or the ACL
+/// template's name, between the steps that observe it.
 #[cfg(unix)]
 fn create_staged_file_observed(
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
-    observed: impl FnOnce(),
+    mut observed: impl FnMut(Stage),
 ) -> Result<(std::fs::File, StagingDirectory), TargetError> {
     let parent = parent.try_clone().map_err(classify)?;
     #[cfg(target_os = "macos")]
-    let inherited = inherited_file_acl(&parent, name)?;
-    observed();
-    create_staging_directory(&parent, name)?;
-    let directory = open_staging_directory(&parent, name)?;
+    let inherits = inherits_file_acl(&parent)?;
+    observed(Stage::Probed);
+    let created = create_staging_directory(&parent, name)?;
+    observed(Stage::Created);
+    let directory = match open_staging_directory(&parent, name, created) {
+        Ok(directory) => directory,
+        Err(error) => {
+            remove_staging_directory(&parent, name, created);
+            return Err(error);
+        }
+    };
     #[cfg(target_os = "macos")]
-    if let Err(error) = acl::Acl::clear_if_present(&directory) {
-        remove_staging_directory(&parent, name, &directory);
-        return Err(classify(error));
-    }
-    let created = open_relative(
+    let inherited = match acl::Acl::clear_if_present(&directory) {
+        Ok(()) if inherits => match inherited_file_acl(&parent, name, &directory, &mut observed) {
+            Ok(inherited) => inherited,
+            Err(error) => {
+                remove_staging_directory(&parent, name, created);
+                return Err(error);
+            }
+        },
+        Ok(()) => None,
+        Err(error) => {
+            remove_staging_directory(&parent, name, created);
+            return Err(classify(error));
+        }
+    };
+    let staged = open_relative(
         &directory,
         std::ffi::OsStr::new(STAGED_FILE),
         libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         0o666,
     );
-    match created {
+    match staged {
         Ok(file) => {
             let staging = StagingDirectory {
                 parent,
@@ -863,34 +930,40 @@ fn create_staged_file_observed(
             #[cfg(target_os = "macos")]
             if let Err(error) = require_no_acl(&file) {
                 let _ = remove_file_entry(&staging.dir, std::ffi::OsStr::new(STAGED_FILE));
-                remove_staging_directory(&staging.parent, name, &staging.dir);
+                remove_staging_directory(&staging.parent, name, created);
                 return Err(classify(error));
             }
             Ok((file, staging))
         }
         Err(error) => {
-            remove_staging_directory(&parent, name, &directory);
+            remove_staging_directory(&parent, name, created);
             Err(classify(error))
         }
     }
 }
 
-/// Reads the extended ACL a file created directly in `parent` would inherit,
-/// from an empty template created there and removed at once. A parent without
+/// Whether `parent` carries extended ACL entries, so a file created there
+/// inherits something and the inherited ACL has to be read. A parent without
 /// entries takes the existing path and does no ACL work.
+#[cfg(target_os = "macos")]
+fn inherits_file_acl(parent: &std::fs::File) -> Result<bool, TargetError> {
+    match acl::Acl::of(parent).map_err(TargetError::Io)? {
+        Some(acl) => acl.entries().map_err(TargetError::Io),
+        None => Ok(false),
+    }
+}
+
+/// Reads the extended ACL a file created directly in `parent` would inherit,
+/// from an empty template created there. The template is then moved into the
+/// checked private directory and removed there, so its removal never acts on a
+/// name in the shared parent.
 #[cfg(target_os = "macos")]
 fn inherited_file_acl(
     parent: &std::fs::File,
     staging: &std::ffi::OsStr,
+    directory: &std::fs::File,
+    observed: &mut impl FnMut(Stage),
 ) -> Result<Option<acl::Acl>, TargetError> {
-    match acl::Acl::of(parent).map_err(TargetError::Io)? {
-        Some(acl) => {
-            if !acl.entries().map_err(TargetError::Io)? {
-                return Ok(None);
-            }
-        }
-        None => return Ok(None),
-    }
     let mut name = staging.to_owned();
     name.push(".acl");
     let template = open_relative(
@@ -900,11 +973,68 @@ fn inherited_file_acl(
         0o666,
     )
     .map_err(classify)?;
-    let file = acl::Acl::of(&template).map_err(TargetError::Io);
-    let removed = remove_file_entry(parent, &name).map_err(TargetError::Io);
-    let file = file?;
+    let inherited = acl::Acl::of(&template).map_err(TargetError::Io);
+    observed(Stage::Templated);
+    let removed = remove_template(parent, &name, directory, &template);
+    let inherited = inherited?;
     removed?;
-    Ok(file)
+    Ok(inherited)
+}
+
+/// Moves the ACL template `name` below `parent` into `directory` and removes it
+/// there, where only this user can reach it. An entry that took the name before
+/// the move is moved in as well; it is linked back at its name when that name is
+/// still free and left inside `directory` otherwise, so no entry that this call
+/// did not create is ever removed.
+#[cfg(target_os = "macos")]
+fn remove_template(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    directory: &std::fs::File,
+    template: &std::fs::File,
+) -> Result<(), TargetError> {
+    use std::os::fd::AsRawFd;
+    let entry = c_name(name)?;
+    let moved = c_name(std::ffi::OsStr::new(ACL_TEMPLATE_FILE))?;
+    // SAFETY: both handles are open directory handles and both names are live
+    // NUL-terminated strings for the call.
+    if unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            entry.as_ptr(),
+            directory.as_raw_fd(),
+            moved.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(classify(std::io::Error::last_os_error()));
+    }
+    let moved_name = std::ffi::OsStr::new(ACL_TEMPLATE_FILE);
+    if staged_owned_in(directory, moved_name, template) {
+        return remove_file_entry(directory, moved_name).map_err(classify);
+    }
+    // SAFETY: both handles are open directory handles and both names are live
+    // NUL-terminated strings for the call; a link never replaces an entry.
+    let restored = unsafe {
+        libc::linkat(
+            directory.as_raw_fd(),
+            moved.as_ptr(),
+            parent.as_raw_fd(),
+            entry.as_ptr(),
+            0,
+        )
+    };
+    if restored != 0 {
+        return Err(TargetError::Io(std::io::Error::other(
+            "the ACL template's name was replaced and the entry that took it cannot be put back",
+        )));
+    }
+    // SAFETY: `directory` is an open directory handle and `moved` a live
+    // NUL-terminated string for the call.
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), moved.as_ptr(), 0) } != 0 {
+        return Err(classify(std::io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 /// Confirms `file` carries no extended ACL entry.
@@ -921,9 +1051,9 @@ fn require_no_acl(file: &std::fs::File) -> std::io::Result<()> {
 /// The directory entry `name` below `dir`, statted without following a
 /// symlink.
 #[cfg(unix)]
-fn entry_stat(dir: &std::fs::File, name: &std::ffi::OsStr) -> Option<libc::stat> {
+fn entry_stat(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<libc::stat> {
     use std::os::fd::AsRawFd;
-    let name = c_name(name).ok()?;
+    let name = c_name(name)?;
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: `dir` and the NUL-terminated name are live for the call, and
     // `stat` is a valid uninitialized `libc::stat` buffer.
@@ -936,11 +1066,11 @@ fn entry_stat(dir: &std::fs::File, name: &std::ffi::OsStr) -> Option<libc::stat>
         )
     };
     if result < 0 {
-        return None;
+        return Err(std::io::Error::last_os_error());
     }
     // SAFETY: `fstatat` returned 0 (checked above), so it initialized the
     // struct.
-    Some(unsafe { stat.assume_init() })
+    Ok(unsafe { stat.assume_init() })
 }
 
 /// The device and inode `stat` names.
@@ -954,33 +1084,46 @@ fn device_inode(stat: &libc::stat) -> (u64, u64) {
     identity
 }
 
-/// Whether the entry `name` below `parent` is still the directory `dir`, by
-/// device and inode, checked without following a symlink.
+/// The device and inode `file` names.
+#[cfg(unix)]
+fn file_identity(file: &std::fs::File) -> Option<StagingIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata()
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+/// Whether the entry `name` below `parent` is still the directory `identity`
+/// names, checked without following a symlink.
 #[cfg(unix)]
 fn staging_directory_owned_in(
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
-    dir: &std::fs::File,
+    identity: StagingIdentity,
 ) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    let (Ok(metadata), Some(stat)) = (dir.metadata(), entry_stat(parent, name)) else {
+    let Ok(stat) = entry_stat(parent, name) else {
         return false;
     };
-    stat.st_mode & libc::S_IFMT == libc::S_IFDIR
-        && device_inode(&stat) == (metadata.dev(), metadata.ino())
+    stat.st_mode & libc::S_IFMT == libc::S_IFDIR && device_inode(&stat) == identity
 }
 
 /// Removes the empty staging directory entry `name` below `parent` when it is
-/// still the directory `dir` this call opened. A name swapped after the
-/// directory was opened is left in place rather than removing another entry;
-/// nothing below the entry is removed, and a failure is not reported, because
-/// the call may already have installed the target. The entry can be replaced
-/// again between the ownership check and the unlink, which can remove another
-/// empty directory; a non-empty or non-directory entry fails instead.
+/// still the directory `identity` names. A name swapped after the directory was
+/// created is left in place rather than removing another entry; nothing below
+/// the entry is removed, and a failure is not reported, because the call may
+/// already have installed the target. POSIX removes a directory by name, never
+/// by handle, so a replacement in the instant between the check and the removal
+/// can still name another empty directory to remove; a file, a symlink or a
+/// non-empty directory fails instead, so no staged bytes or entries can be
+/// removed through a replaced name.
 #[cfg(unix)]
-fn remove_staging_directory(parent: &std::fs::File, name: &std::ffi::OsStr, dir: &std::fs::File) {
+fn remove_staging_directory(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    identity: StagingIdentity,
+) {
     use std::os::fd::AsRawFd;
-    if !staging_directory_owned_in(parent, name, dir) {
+    if !staging_directory_owned_in(parent, name, identity) {
         return;
     }
     if let Ok(name) = c_name(name) {
@@ -1010,7 +1153,7 @@ fn remove_file_entry(parent: &std::fs::File, name: &std::ffi::OsStr) -> std::io:
 #[cfg(unix)]
 fn staged_owned_in(dir: &std::fs::File, name: &std::ffi::OsStr, file: &std::fs::File) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let (Ok(metadata), Some(stat)) = (file.metadata(), entry_stat(dir, name)) else {
+    let (Ok(metadata), Ok(stat)) = (file.metadata(), entry_stat(dir, name)) else {
         return false;
     };
     stat.st_mode & libc::S_IFMT == libc::S_IFREG
@@ -1468,7 +1611,10 @@ impl Target {
         #[cfg(unix)]
         if let Some(staging) = &staged.staging {
             let _ = remove_file_entry(&staging.dir, std::ffi::OsStr::new(STAGED_FILE));
-            return remove_staging_directory(&staging.parent, &staged.name, &staging.dir);
+            if let Some(identity) = file_identity(&staging.dir) {
+                remove_staging_directory(&staging.parent, &staged.name, identity);
+            }
+            return;
         }
         match self {
             Self::Path(path) => {
@@ -1868,18 +2014,23 @@ mod mutation_tests {
     }
 
     /// The private staging directory is opened through its parent and checked:
-    /// a symlink and a directory group or others can enter are refused, and a
-    /// directory only its owner can enter is accepted.
+    /// a symlink, a directory group or others can enter, and a directory other
+    /// than the entry the call created are refused, and a directory only its
+    /// owner can enter is accepted.
     #[cfg(unix)]
     #[test]
     fn the_private_staging_directory_is_opened_and_checked() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let root = std::env::temp_dir().join(format!("dim-staging-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let parent = std::fs::File::open(&root).unwrap();
+        let identity = |name: &str| {
+            let metadata = std::fs::metadata(root.join(name)).unwrap();
+            (metadata.dev(), metadata.ino())
+        };
         std::os::unix::fs::symlink(&root, root.join("link")).unwrap();
         assert!(
-            open_staging_directory(&parent, std::ffi::OsStr::new("link")).is_err(),
+            open_staging_directory(&parent, std::ffi::OsStr::new("link"), (0, 0)).is_err(),
             "a symlink is not a staging directory"
         );
         for (name, mode) in [("wide", 0o755), ("private", 0o700)] {
@@ -1887,11 +2038,54 @@ mod mutation_tests {
             std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(mode))
                 .unwrap();
             assert_eq!(
-                open_staging_directory(&parent, std::ffi::OsStr::new(name)).is_ok(),
+                open_staging_directory(&parent, std::ffi::OsStr::new(name), identity(name)).is_ok(),
                 mode == 0o700,
                 "a {mode:o} directory"
             );
         }
+        std::fs::create_dir(root.join("second")).unwrap();
+        std::fs::set_permissions(root.join("second"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        assert!(
+            open_staging_directory(&parent, std::ffi::OsStr::new("second"), identity("private"))
+                .is_err(),
+            "a directory other than the entry the call created is refused"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The mode repair runs on the opened directory and only when the process
+    /// umask took owner access away: a directory that takes the name between
+    /// creation and the open is refused before the repair, so its mode stays as
+    /// it was.
+    #[cfg(unix)]
+    #[test]
+    fn a_swapped_staging_directory_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("dim-swap-mode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let parent = std::fs::File::open(&root).unwrap();
+        let name = std::ffi::OsStr::new(".dim-write-probe");
+        let moved = root.join("moved");
+        let result = create_staged_file_observed(&parent, name, |stage| {
+            if stage == Stage::Created {
+                std::fs::rename(root.join(name), &moved).unwrap();
+                std::fs::create_dir(root.join(name)).unwrap();
+                std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        });
+        assert!(result.is_err(), "a swapped directory cannot stage the file");
+        assert_eq!(
+            std::fs::metadata(root.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755,
+            "the directory that took the name keeps its mode"
+        );
+        assert!(moved.is_dir(), "the directory this call created is left");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2140,6 +2334,105 @@ mod mutation_tests {
         );
         assert_eq!(first_result.is_error, None);
     }
+
+    /// The umask a child run of [`a_new_file_repairs_the_staging_mode`] uses,
+    /// in octal. The test runner's own umask is unknown, so the repair path is
+    /// fixed by running the test again in a child process under a known one.
+    const CHILD_STAGING_UMASK: &str = "DIM_TEST_STAGING_UMASK";
+
+    /// A temporary directory its owner can use under any process umask,
+    /// created and then made private one level at a time.
+    fn private_root(prefix: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        root
+    }
+
+    /// A new file's private directory only has its owner bits restored when the
+    /// process umask took them at creation: under 022 and 002 the created 0700
+    /// is complete and no mode repair runs, and under 300 the repair restores
+    /// the owner write and search the staged file needs.
+    #[test]
+    fn a_new_file_repairs_the_staging_mode() {
+        use std::sync::atomic::Ordering;
+        let Some(umask) = std::env::var_os(CHILD_STAGING_UMASK) else {
+            let binary = std::env::current_exe().unwrap();
+            for umask in ["022", "002", "300"] {
+                let child = std::process::Command::new("sh")
+                    .args([
+                        "-c",
+                        r#"umask "$1" && exec "$0" a_new_file_repairs_the_staging_mode --nocapture"#,
+                    ])
+                    .arg(&binary)
+                    .arg(umask)
+                    .env(CHILD_STAGING_UMASK, umask)
+                    .output()
+                    .unwrap();
+                let stdout = String::from_utf8_lossy(&child.stdout);
+                assert!(
+                    child.status.success(),
+                    "umask {umask}: {stdout}{}",
+                    String::from_utf8_lossy(&child.stderr)
+                );
+                assert!(
+                    stdout.contains("test result: ok. 1 passed"),
+                    "umask {umask} ran the child test: {stdout}"
+                );
+            }
+            return;
+        };
+        let umask = u32::from_str_radix(umask.to_str().unwrap(), 8).unwrap();
+        let root = private_root("dim-staging-umask");
+        let parent = std::fs::File::open(&root).unwrap();
+        let before = STAGING_MODE_REPAIRS.load(Ordering::SeqCst);
+        let (file, staging) =
+            create_staged_file(&parent, std::ffi::OsStr::new(".dim-write-probe")).unwrap();
+        let repairs = STAGING_MODE_REPAIRS.load(Ordering::SeqCst) - before;
+        assert_eq!(
+            repairs,
+            usize::from(umask & 0o700 != 0),
+            "mode repairs under umask {umask:03o}"
+        );
+        drop(file);
+        drop(staging);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A shared directory with the set-group-ID bit hands its group to what is
+    /// created inside it; the staging directory inherits the bit, and keeping
+    /// it is what leaves a new file's group the one a direct creation gets.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_file_takes_the_group_a_setgid_parent_gives() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = private_root("dim-setgid");
+        let shared = root.join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        // SAFETY: `getegid` takes no arguments and cannot fail.
+        let group = unsafe { libc::getegid() };
+        std::os::unix::fs::chown(&shared, None, Some(group)).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o2700)).unwrap();
+        let parent = std::fs::File::open(&shared).unwrap();
+        let (file, staging) =
+            create_staged_file(&parent, std::ffi::OsStr::new(".dim-write-probe")).unwrap();
+        assert_ne!(
+            staging.dir.metadata().unwrap().mode() & 0o2000,
+            0,
+            "the staging directory keeps the inherited set-group-ID bit"
+        );
+        let control = shared.join("control");
+        std::fs::File::create(&control).unwrap();
+        assert_eq!(
+            file.metadata().unwrap().gid(),
+            std::fs::metadata(&control).unwrap().gid(),
+            "the staged file's group matches a direct creation"
+        );
+        drop(file);
+        drop(staging);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 /// macOS keeps inheritable access control entries beside the mode bits. A new
@@ -2363,11 +2656,13 @@ mod acl_tests {
         let root = root.canonicalize().unwrap();
         let parent = std::fs::File::open(&root).unwrap();
         let name = std::ffi::OsStr::new(".dim-write-probe");
-        let (file, staging) = create_staged_file_observed(&parent, name, || {
-            inheritable(
-                &root,
-                "allow list,search,add_file,delete_child,file_inherit,directory_inherit",
-            );
+        let (file, staging) = create_staged_file_observed(&parent, name, |stage| {
+            if stage == Stage::Probed {
+                inheritable(
+                    &root,
+                    "allow list,search,add_file,delete_child,file_inherit,directory_inherit",
+                );
+            }
         })
         .unwrap();
         assert!(no_acl(&staging.dir), "the private directory carries no ACL");
@@ -2431,6 +2726,55 @@ mod acl_tests {
             );
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    /// The ACL template is removed inside the private directory, never through
+    /// its name in the parent: an entry that takes the template's name before
+    /// the move is moved into the private directory and linked back at its name,
+    /// with its bytes, while the template this call created is left where the
+    /// swap put it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_swapped_acl_template_is_put_back() {
+        let root = std::env::temp_dir().join(format!("dim-acl-swap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        inheritable(
+            &root,
+            "allow list,search,add_file,delete_child,file_inherit,directory_inherit",
+        );
+        let parent = std::fs::File::open(&root).unwrap();
+        let name = std::ffi::OsStr::new(".dim-write-probe");
+        let template = root.join(".dim-write-probe.acl");
+        let moved = root.join("moved-template");
+        let (file, staging) = create_staged_file_observed(&parent, name, |stage| {
+            if stage == Stage::Templated {
+                std::fs::rename(&template, &moved).unwrap();
+                std::fs::write(&template, b"foreign").unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&template).unwrap(),
+            b"foreign",
+            "the entry that took the template's name is put back"
+        );
+        assert!(
+            moved.is_file(),
+            "the template this call created is left where the swap put it"
+        );
+        let inner: Vec<_> = std::fs::read_dir(root.join(".dim-write-probe"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            inner,
+            vec![std::ffi::OsString::from(STAGED_FILE)],
+            "the template is removed inside the private directory"
+        );
+        drop(file);
+        drop(staging);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
