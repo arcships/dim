@@ -1,3 +1,4 @@
+mod face;
 mod pending;
 mod recovery;
 
@@ -450,7 +451,8 @@ impl DynPlugin for InputQueuePlugin {
 pub const INPUT_METHODS: &str = "session.input";
 
 /// The operator-input entry that asks the submit checks (Hooks A.6.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SubmitEntry {
     /// Rpc `session.submit`.
     Submit,
@@ -471,7 +473,8 @@ impl SubmitEntry {
 }
 
 /// The input an entry is about to write, as its checks see it (Hooks A.6.2).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitCheckRequest {
     pub entry: SubmitEntry,
     pub branch_id: String,
@@ -481,7 +484,8 @@ pub struct SubmitCheckRequest {
 }
 
 /// What one check decided for the input (Hooks A.6.2).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SubmitCheckReply {
     /// The input may be written; these contexts go after the operator's own
     /// content, in name order. `warnings` are for the caller to show, never
@@ -497,7 +501,8 @@ pub enum SubmitCheckReply {
 /// What the table decided for the input (Hooks A.6.2): every check that ran,
 /// combined in name order. A block ends the table's work and carries neither
 /// blocks nor warnings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SubmitDecision {
     /// The input may be written.
     Proceed {
@@ -527,7 +532,7 @@ pub struct CheckInterrupted;
 /// the operator-input entries call them before writing anything. No check is
 /// registered unless a part registers one, and then the entries write
 /// unchecked.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SubmitChecks {
     checks: Arc<Registrations<Arc<dyn CheckSubmission>>>,
 }
@@ -645,6 +650,7 @@ struct WithdrawParams {
 /// Serves `session.input.withdraw` for every branch of its Session through
 /// the branch's InputQueue, so Rpc names no owning service.
 pub struct InputMethodsPlugin {
+    session: rutis::host::InstanceId,
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
     checks: Key<SubmitChecks>,
@@ -652,6 +658,7 @@ pub struct InputMethodsPlugin {
 impl InputMethodsPlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
         Ok(Self {
+            session: names.instance(dim_agent_runtime::SESSION_GROUP)?,
             tree: names.key()?,
             methods: names.key()?,
             checks: names.key()?,
@@ -671,6 +678,10 @@ impl DynPlugin for InputMethodsPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let checks = Arc::new(SubmitChecks::default());
             ctx.provide_at(self.checks.clone(), checks.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key_in("submitChecks", self.session),
+                checks.clone(),
+            )?;
             methods.register(
                 ctx,
                 INPUT_METHODS,

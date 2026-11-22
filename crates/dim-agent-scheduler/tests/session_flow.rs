@@ -2,7 +2,7 @@
 //! A.1, A.6): one input per window on the target branch, the delivery
 //! vocabulary, bounded lookup settling, overlap skips, legacy mapping and
 //! retention.
-mod support;
+use crate::support;
 use dim_agent_scheduler::testing::retention;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -2051,7 +2051,7 @@ async fn a_failed_target_gone_disable_is_retried() {
         .typed::<Value>(
             "schedule.save",
             json!({"job": {"name": "gone", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Work.", "target": {"kind": "session", "session_id": gone}}}),
+                "prompt": "Work.", "target": {"kind": "session", "session_id": gone, "branch_id": "main"}}}),
         )
         .await
         .unwrap()["job"]["id"]
@@ -2062,7 +2062,7 @@ async fn a_failed_target_gone_disable_is_retried() {
         .typed::<Value>(
             "schedule.save",
             json!({"job": {"name": "gone too", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Work.", "target": {"kind": "session", "session_id": gone}}}),
+                "prompt": "Work.", "target": {"kind": "session", "session_id": gone, "branch_id": "main"}}}),
         )
         .await
         .unwrap()["job"]["id"]
@@ -2738,4 +2738,352 @@ async fn a_later_save_of_a_retargeted_job_releases_nothing_again() {
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
+}
+
+/// A management save that omits a session target's branch records the line the
+/// Session's conversation is on at save time and keeps it after a later move;
+/// a stored row written without it keeps meaning the root (timeline branches
+/// §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_scheduled_job_records_the_default_branch_and_keeps_it_after_a_move() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session =
+        create_session_with(&mut client, home.path(), &["schedule", "branch"], true).await;
+    let agent = server.agent().expect("the default Agent");
+    let at = agent
+        .get_session(&session)
+        .unwrap()
+        .sequence("main")
+        .unwrap();
+    let branch = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": session, "parentBranchId": "main", "at": at,
+                "prompt": "Child work."}),
+        )
+        .await
+        .unwrap()["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    client
+        .rpc(
+            "session.branch_set_default",
+            json!({"sessionId": session, "branchId": branch}),
+        )
+        .await
+        .unwrap();
+
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "follow", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Follow the conversation.",
+                "target": {"kind": "session", "session_id": session}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        saved["job"]["target"],
+        json!({"kind": "session", "session_id": session, "branch_id": branch,
+            "input_mode": "queue"}),
+        "the save records the default branch: {saved}"
+    );
+
+    // A later move does not rewrite the recorded target.
+    client
+        .rpc(
+            "session.branch_set_default",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    let run = settled(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["branch_id"], json!(branch), "{run}");
+    let events = branch_events_on(&mut client, &session, &branch).await;
+    assert!(
+        events.iter().any(|event| {
+            event["type"] == "input" && event["data"]["submission_id"] == run["submission_id"]
+        }),
+        "the recorded branch takes the delivery: {events:?}"
+    );
+    let main = scheduled_inputs(&mut client, &session).await;
+    assert!(main.is_empty(), "the root takes nothing: {main:?}");
+
+    // A stored row without `branch_id` was written before any move, so it
+    // still delivers to the root.
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    let database = home.path().join("dimcode.sqlite");
+    let document: String = rusqlite::Connection::open(&database)
+        .unwrap()
+        .query_row(
+            "SELECT document FROM settings_documents WHERE source = 'user/schedule'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut document: Value = serde_json::from_str(&document).unwrap();
+    document["jobs"].as_array_mut().unwrap().push(json!({
+        "id": "stored-without-branch",
+        "name": "stored",
+        "schedule": {"at": "2030-01-01T00:00:00Z"},
+        "prompt": "Work on the stored row.",
+        "target": {"kind": "session", "session_id": session},
+        "enabled": true,
+        "enabled_at": "2026-01-01T00:00:00.000Z",
+        "revision": 1,
+        "created_by": "user",
+    }));
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute(
+            "UPDATE settings_documents SET document = ?1 WHERE source = 'user/schedule'",
+            [document.to_string()],
+        )
+        .unwrap();
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let accepted: Value = client
+        .typed(
+            "schedule.run_now",
+            json!({"job_id": "stored-without-branch"}),
+        )
+        .await
+        .unwrap();
+    let run = settled(
+        &mut client,
+        "stored-without-branch",
+        accepted["run_id"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["branch_id"], "main", "{run}");
+    let main = scheduled_inputs(&mut client, &session).await;
+    assert!(
+        main.iter()
+            .any(|input| input["data"]["submission_id"] == run["submission_id"]),
+        "a stored row without a branch delivers to the root: {main:?}"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The job's row in `schedule.list`.
+async fn job_row(client: &mut dim_client::Client, job_id: &str) -> Value {
+    let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
+    listed["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == json!(job_id))
+        .unwrap_or_else(|| panic!("job {job_id} is listed: {listed}"))
+        .clone()
+}
+
+/// One timestamp field of a job row.
+fn stamp_of(row: &Value, field: &str) -> jiff::Timestamp {
+    row[field]
+        .as_str()
+        .unwrap_or_else(|| panic!("{field} is set: {row}"))
+        .parse()
+        .unwrap()
+}
+
+/// An instant as a delivery window spells it.
+fn window(at: jiff::Timestamp) -> String {
+    at.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+/// The job's delivered windows, oldest first, once `count` of them settled.
+async fn delivered_windows(
+    client: &mut dim_client::Client,
+    job_id: &str,
+    count: usize,
+) -> Vec<String> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let history: Value = client
+                .typed("schedule.history", json!({"job_id": job_id, "limit": 50}))
+                .await
+                .unwrap();
+            let mut windows: Vec<String> = history["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|run| run["state"] == json!("delivered"))
+                .filter_map(|run| run["window"].as_str().map(str::to_owned))
+                .collect();
+            windows.sort();
+            if windows.len() >= count {
+                return windows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the job's deliveries settle")
+}
+
+/// A new `every_minutes` job's first window is one interval after the save:
+/// nothing at the save, the first delivery at save + 30 min, the second at
+/// save + 60, and `run_now` still delivers at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_every_job_delivers_one_interval_after_it_is_saved() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session = create_session(&mut client, home.path(), true).await;
+
+    let job = save_session_job(
+        &mut client,
+        "inbox",
+        &session,
+        None,
+        json!({"every_minutes": 30}),
+    )
+    .await;
+    let row = job_row(&mut client, &job).await;
+    let anchor = stamp_of(&row, "enabled_at");
+    let first = stamp_of(&row, "next_window");
+    let interval = jiff::SignedDuration::from_secs(30 * 60);
+    assert_eq!(
+        first.duration_since(anchor),
+        interval,
+        "the first window is one interval after the anchor: {row}"
+    );
+
+    let manual = clock(home.path());
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "a saved job delivers nothing at its save"
+    );
+    manual.advance_to(first - jiff::SignedDuration::from_secs(2));
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "nothing is delivered before the first window"
+    );
+
+    manual.advance_to(first);
+    let windows = delivered_windows(&mut client, &job, 1).await;
+    assert_eq!(
+        windows,
+        vec![window(first)],
+        "the first window delivers at its instant"
+    );
+
+    let second = first + interval;
+    manual.advance_to(second);
+    let windows = delivered_windows(&mut client, &job, 2).await;
+    assert_eq!(
+        windows,
+        vec![window(first), window(second)],
+        "the second window is one interval after the first"
+    );
+
+    // `run_now` is still the immediate run.
+    let run: Value = client
+        .typed("schedule.run_now", json!({"job_id": job}))
+        .await
+        .unwrap();
+    assert_eq!(run["window"], "manual");
+    let run = settled(&mut client, &job, run["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(
+        scheduled_inputs(&mut client, &session).await.len(),
+        3,
+        "the manual run wrote its own input"
+    );
+
+    // A re-enabled job's first window is one interval after its new anchor.
+    client
+        .typed::<Value>(
+            "schedule.set_enabled",
+            json!({"job_id": job, "enabled": false}),
+        )
+        .await
+        .unwrap();
+    manual.advance(jiff::SignedDuration::from_secs(5));
+    client
+        .typed::<Value>(
+            "schedule.set_enabled",
+            json!({"job_id": job, "enabled": true}),
+        )
+        .await
+        .unwrap();
+    let row = job_row(&mut client, &job).await;
+    let anchor = stamp_of(&row, "enabled_at");
+    let re_enabled = stamp_of(&row, "next_window");
+    assert_eq!(
+        re_enabled.duration_since(anchor),
+        interval,
+        "a re-enabled job waits one interval from its new anchor: {row}"
+    );
+}
+
+/// A new `every_minutes` job keeps its first window across a restart: the
+/// restart delivers nothing, and the window still fires at its anchor + one
+/// interval.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_every_job_keeps_its_first_window_across_a_restart() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session = create_session(&mut client, home.path(), true).await;
+
+    let job = save_session_job(
+        &mut client,
+        "inbox",
+        &session,
+        None,
+        json!({"every_minutes": 30}),
+    )
+    .await;
+    let row = job_row(&mut client, &job).await;
+    let anchor = stamp_of(&row, "enabled_at");
+    let first = stamp_of(&row, "next_window");
+    assert_eq!(
+        first.duration_since(anchor),
+        jiff::SignedDuration::from_secs(30 * 60),
+        "the first window is one interval after the anchor: {row}"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let manual = clock(home.path());
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "a restart before the first window writes nothing"
+    );
+    manual.advance_to(first - jiff::SignedDuration::from_secs(2));
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "the restart does not fire the first window early"
+    );
+
+    manual.advance_to(first);
+    let windows = delivered_windows(&mut client, &job, 1).await;
+    assert_eq!(
+        windows,
+        vec![window(first)],
+        "the restored job delivers its first window at the anchor + one interval"
+    );
 }

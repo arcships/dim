@@ -54,7 +54,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
 | `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |
 | `sessionStore` | process | SessionStore | internal(owner-api) | — |
-| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `stop` async, `withdraw` async |
+| `sessions` | process | AgentDirectory | data | `defaultBranchId` async, `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `stop` async, `withdraw` async |
 | `settings` | process | Settings | data | `declaredBy` sync, `projects` sync, `read` async, `register` async, `update` async |
 | `settingsService` | process | Settings | internal(owner-api) | — |
 | `skillsCatalog` | process | SkillsCatalog | data | `issues` async, `plugins` async, `register` async, `withdraw` async |
@@ -74,7 +74,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `commandRules` | session | CommandRules | data | `read` async |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | internal(hot-path) | — |
 | `contextModelHost` | session | SessionScope | internal(hot-path) | — |
-| `faultReporter` | session | SessionScope | internal(hot-path) | — |
 | `guideEntries` | session | PromptGuide | data | `register` async |
 | `historyRenderer` | session | SessionScope | internal(hot-path) | — |
 | `initialPromptConfiguration` | session | PromptRegistry | data | `get` async |
@@ -86,11 +85,11 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `sessionConfig` | session | SessionScope | data | `get` async |
 | `sessionIdentity` | session | SessionScope | data | `get` async |
 | `sessionLanguage` | session | PromptSources | data | `get` async |
-| `sessionLifecycle` | session | SessionScope | data | `activated` async, `closing` async, `hold` async, `release` async |
-| `sessionLoader` | session | SessionScope | internal(control) | — |
+| `sessionLifecycle` | session | SessionScope | data | `activated` async, `closing` async, `failure` async, `hold` async, `observeFault` async, `release` async, `reportFault` async |
+| `sessionLoader` | session | SessionScope | data | `create` async, `remove` async |
 | `sessionMethods` | session | SessionMethods | data | `register` async |
 | `skillsConfig` | session | SessionScope | data | `get` async |
-| `submitChecks` | session | InputMethods | internal(hot-path) | — |
+| `submitChecks` | session | InputMethods | data | `check` async, `register` async |
 | `timelineFactory` | session | SessionScope | internal(control) | — |
 | `timelineStore` | session | SessionScope | data | `append` sync, `batchEnd` async, `batchEndAt` async, `branches` async, `closeCommits` async, `commits` async, `createSession` async, `head` async, `latestSnapshot` async, `query` async, `readPage` async, `readSegments` async, `releaseSession` async, `rollbackSession` async, `saveSnapshot` async, `sessionConfig` async, `trace` async |
 | `timelineTree` | session | TimelineTree | internal(owner-api) | — |
@@ -103,9 +102,8 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `agentLoop` | branch | Loop | internal(hot-path) | — |
 | `approval` | branch | Approval | data | `decide` async, `pending` async |
 | `backgroundExec` | branch | BackgroundExec | data | `output` async, `outputPage` async, `stop` async, `wait` async |
-| `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
+| `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async, `registerOpening` async |
 | `branchLine` | branch | BranchLine | data | `cursor` async, `ending` async, `resolved` async |
-| `branchOpening` | branch | BranchScope | internal(hot-path) | — |
 | `configurationPublisher` | branch | ContextPreparation | internal(hot-path) | — |
 | `configureControl` | branch | Prompt | internal(hot-path) | — |
 | `contextPreparation` | branch | ContextPreparation | internal(hot-path) | — |

@@ -1,4 +1,4 @@
-mod local_support;
+use crate::local_support;
 
 use dim_agent_capabilities::{
     input_queue::{SubmitCheckRequest, SubmitChecks, SubmitDecision, SubmitEntry},

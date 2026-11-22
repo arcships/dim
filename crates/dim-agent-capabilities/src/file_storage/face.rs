@@ -4,7 +4,7 @@ use rutis::Ctx;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     path::{Component, Path},
     sync::Arc,
 };
@@ -18,39 +18,6 @@ pub struct OpenRead {
     pub size: u64,
 }
 
-pub(super) fn serialize_name<S: serde::Serializer>(
-    name: &OsStr,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    match name.to_str() {
-        Some(text) => serializer.serialize_str(text),
-        #[cfg(any(unix, windows))]
-        None => name.serialize(serializer),
-        #[cfg(not(any(unix, windows)))]
-        None => Err(serde::ser::Error::custom(
-            "unsupported filesystem name encoding",
-        )),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum EntryName {
-    Text(String),
-    #[cfg(any(unix, windows))]
-    Native(OsString),
-}
-
-fn deserialize_name<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<OsString, D::Error> {
-    Ok(match EntryName::deserialize(deserializer)? {
-        EntryName::Text(text) => text.into(),
-        #[cfg(any(unix, windows))]
-        EntryName::Native(name) => name,
-    })
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum FsRemove {
@@ -59,7 +26,7 @@ pub enum FsRemove {
     },
     Entry {
         parent: String,
-        #[serde(deserialize_with = "deserialize_name")]
+        #[serde(deserialize_with = "crate::os_string::deserialize")]
         name: OsString,
     },
 }
@@ -474,13 +441,13 @@ impl HostDispatch for FsHost {
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
         let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         if !request.is_object() {
-            return Err(Error::Value("fsHost request must be an object".into()));
+            return Err(Error::value("fsHost request must be an object"));
         }
         let request: Request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
-                .map_err(|error| Error::Value(error.to_string()))?;
+                .map_err(|error| Error::value(error.to_string()))?;
         let caller = rutis_bridge::session::caller_row().map(|row| row.ctx().clone());
         let owner = self.clone();
         Ok(Value::cancellable_future(async move {
@@ -494,8 +461,8 @@ impl HostDispatch for FsHost {
                         .map_err(failure)?
                 ),
                 Request::Lock(request) => {
-                    let caller = caller
-                        .ok_or_else(|| Error::Value("fsHost.lock requires a calling row".into()))?;
+                    let caller =
+                        caller.ok_or_else(|| Error::value("fsHost.lock requires a calling row"))?;
                     let id = owner
                         .lock(&caller, &request.path, &cancel)
                         .await
@@ -562,14 +529,13 @@ impl HostDispatch for FsHost {
                     serde_json::json!({})
                 }
                 Request::OpenRead(request) => {
-                    let caller = caller.ok_or_else(|| {
-                        Error::Value("fsHost.openRead requires a calling row".into())
-                    })?;
+                    let caller = caller
+                        .ok_or_else(|| Error::value("fsHost.openRead requires a calling row"))?;
                     let result = owner
                         .open_read(&caller, request.path, &cancel)
                         .await
                         .map_err(failure)?;
-                    serde_json::to_value(result).map_err(|error| Error::Value(error.to_string()))?
+                    serde_json::to_value(result).map_err(|error| Error::value(error.to_string()))?
                 }
                 Request::ReadAt(request) => {
                     let bytes = owner

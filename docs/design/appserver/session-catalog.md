@@ -18,7 +18,7 @@ complete `context/compaction`, so a listing decodes the whole catalog's history,
 of it before it can draw a row.
 
 The catalog read becomes bounded work. SessionStore keeps a projection of what a listing needs — per Session its last
-activity time (the time of the newest `main` event that is the Session's own activity, §3.2), its first user input as
+activity time (the time of the newest event on the Session's default branch that is its own activity, §3.2), its first user input as
 the preview, and its workspace — written by the creating transaction and then by the transaction that commits each
 `main` batch that carries activity. A new built-in, `session.catalog`, pages that projection: 50 rows
 by default, an opaque keyset cursor, and `query`, `cwd` and `withPreview` applied in the query before the page
@@ -97,14 +97,22 @@ continued only by the same `query`, `cwd`, `withPreview`, `withInternal`, `withA
 of workspaces pages across its Sessions in that one order; its cursor continues under the same set in any order, and
 under no other set or single workspace. A single workspace's cursor continues under that workspace written as a one-element list.
 
-**The activity time is the Session's own activity on `main`.** It is the `create_at` of the newest `main` event that
-is the Session's own activity: a user `input/message`, a `turn/end`, a `branch/create` (it records the branch prompt
+**The activity time is the Session's own activity on its default branch.** It is the `create_at` of the newest event
+on the line the Session's conversation is on that is the Session's own activity: a user `input/message`, a
+`turn/end`, a `branch/create` (it records the branch prompt
 on the parent) or a `session/forked`. Everything else is housekeeping — a host-injected `input/message` (no user
 part), `branch/resume`, `branch/start`, `branch/ended`, `branch/end`, `branch/create-failed`, every
 `context`/`prompt`/`model`/`step`/`tool`/`approval`/`stop`/`exec`/`permission`/`collaboration` event, and extension
 events — and does not move the row. A Session with no activity event sits at its creation time. The judgement lives
 once, beside the projection code, and every writer of the projection uses it; a daemon without a store applies the
-same selection in `session.summaries` (§3.3), so the two listings cannot disagree.
+same selection in `session.summaries` (§3.3), so the two listings cannot disagree. A persisted `branch/default`
+refreshes the row in its own transaction from the new default's newest such event; a line other than the root with no
+activity yet is dated by its own opening event, because a tool line switched to while its first turn runs is work in
+progress and its opening input carries no user, and the Session's creation time answers only for the root or a line
+with no event at all. The switch itself is not activity, so an idle move between lines reports the line it moved to and
+never the one it left. The row's `sequence`
+stays the root's in both projections, the stored query and the loaded overlay, so loading or unloading a Session
+never changes it; `running` and the activity time alone follow the default branch (timeline branches §14).
 
 ### 3.3 `session.summaries`
 
@@ -114,8 +122,14 @@ it answers from the same projection instead of reading history, and its contents
 applies the preview rule below unchanged, its row exists from the Session's creation (§5), and the read applies
 neither classification filter, so a Session of any origin is listed, with the two fields every v3 item now carries. A
 daemon without a store has no projection and answers from the loaded Sessions as today; it does not list
-`session.catalog` either (§3.1). So the method is how a client that does not find `session.catalog` lists, and how
-clients on a daemon older than this change list; both stay working because the method's shape does not change.
+`session.catalog` either (§3.1). A row reads its Session's default branch and that line's facts; when a concurrent
+move ends the line before the row completes, the row is read again from the Session's new default, so another client
+moving the conversation cannot fail the listing. That re-read happens once: a line that ends again while the second
+attempt completes answers its error instead of trying a third line. Each attempt decides the line's lifecycle in one
+tree lookup, so a move and end that race the attempt classify the line as ended, and take the bounded re-read, rather
+than as a branch the Session does not have. So the method is how a client that does not find
+`session.catalog` lists, and how clients on a daemon older than this change list; both stay working because the
+method's shape does not change.
 
 **Open Sessions and `includeClosed`.** A Session this daemon closed, through `session.close` or ACP's
 `session/close`, keeps its stored rows but stays out of a default catalog read: the admission slot's closed flag
@@ -196,7 +210,7 @@ Timeline: the catalog is display data for a picker, which
 
 | Dependency | What this part requires |
 | --- | --- |
-| SessionStore catalog projection | One row per Session with the last activity time, the preview and the workspace, written by the creation transaction with the creation time and no preview, kept by the transaction of every later `main` batch that carries activity (§3.2), and absent for a Session that does not exist: the row is 1:1 with `agent_sessions` from creation, so a new Session lists as `session.summaries` lists it today |
+| SessionStore catalog projection | One row per Session with the last activity time, the preview and the workspace, written by the creation transaction with the creation time and no preview, kept by the transaction of every later batch on the default branch that carries activity, and by the transaction that records a `branch/default` (§3.2), and absent for a Session that does not exist: the row is 1:1 with `agent_sessions` from creation, so a new Session lists as `session.summaries` lists it today |
 | Stored Session record (`agent_sessions`) | The creation origin and the leader link of every listed Session, read from the row the query joins, and the filter of §3.5 ([Session classification](session-classification.md#31-the-origin)) |
 | [Title metadata](session-title-metadata.md) | The stored title of a Session, joined for display and for `query`, never read from a Session |
 | `hello.features` (App Server) | The method list a client discovers the catalog through: the catalog is listed under the conditions that list `session.summaries`, plus the native-store condition `session.fork` also requires |
@@ -248,7 +262,7 @@ page boundary. The CLI's `/resume` owns its scopes and the key that cycles them
 | --- | --- | --- | --- |
 | C1 | The cursor is opaque and pages by keyset on `(updatedAt, sessionId)` | Offset paging with `offset` or `skip` | An insert shifts every later row, so an offset page repeats or skips Sessions the client already showed |
 | C2 | A new built-in, `session.catalog` | Adding `limit` and `cursor` to `session.summaries` in place | Its reply is an array; changing it breaks every protocol v3 client of that method, and an array has no page boundary to keep |
-| C3 | The preview and the activity time are read from the projection, the activity time as the newest `main` event of the Session's own activity (§3.2) | Computing them per request from history | That is the cost this design removes: it reads every Session's history, and an imported Session's last event is a complete compaction replacement |
+| C3 | The preview and the activity time are read from the projection, the activity time as the newest event on the default branch that is the Session's own activity (§3.2) | Computing them per request from history | That is the cost this design removes: it reads every Session's history, and an imported Session's last event is a complete compaction replacement |
 | C4 | `query` and `cwd` are applied in the catalog query | Filtering the rows the client already loaded | It hides matches on pages the client has not fetched |
 | C5 | `session.summaries` keeps its contract and reads the same projection | Leaving it on the history read; removing it | It is how a client lists without the new method, and once the projection answers both, keeping its contract costs nothing |
 | C6 | Neither method takes a Session lease | One lease per listed Session | A lease restores and pins every listed Session; the projection, and the process's live state for `running` and `attachedClients`, answer without one |

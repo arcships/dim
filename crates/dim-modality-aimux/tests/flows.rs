@@ -1,6 +1,5 @@
 //! The built-in adapter behind `modality.task.*`: the real product install,
 //! an HTTP stub in place of the provider, and the record each flow leaves.
-#![cfg(unix)]
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};

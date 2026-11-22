@@ -1,11 +1,13 @@
 //! Immutable content services owned by real Session loader instances.
 use super::{CatalogView, SkillDefinition, SkillStatus, SkillView, SkillsError};
-use dim_agent_runtime::SessionLoader;
-use rutis::host::{CtxHost, FiberView, InstanceId, Key, TypeKey};
+use dim_agent_runtime::{
+    Names, SESSION_GROUP, SessionInstance, SessionInstanceDefinition, SessionLoader,
+};
+use rutis::host::{CtxHost, InstanceId, Key};
 use rutis::{Ctx, Plugin};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -19,66 +21,53 @@ pub(super) enum ContentError {
     Lifecycle(String),
 }
 
-/// One content instance's configuration: its definition, the key it provides
-/// it at, and the collection of the Skills generation that created it.
-#[derive(Clone)]
-pub(super) struct ContentConfig {
+struct Contribution(Arc<SkillDefinition>);
+
+pub(super) struct ContentPlugin {
     definition: Arc<SkillDefinition>,
     key: Key<Contribution>,
-    contributions: Arc<SkillContributions>,
 }
-struct Contribution(Arc<SkillDefinition>);
-/// The ready content of one Skills generation. Skills holds it and hands it
-/// to each content instance it creates, which adds itself while it runs; it
-/// is no service, so an instance does not wait for Skills, which waits for
-/// its instances.
-#[derive(Default)]
-pub(super) struct SkillContributions(Mutex<HashMap<TypeKey, Arc<Contribution>>>);
-pub(super) struct ContentPlugin(pub(super) ContentConfig);
+impl ContentPlugin {
+    pub(super) fn new(names: &Names<'_>, value: &SessionInstanceDefinition) -> rutis::Result<Self> {
+        Ok(Self {
+            definition: Arc::new(serde_json::from_value(value.instance_data.clone())?),
+            key: Key::dynamic(value.definition_id.clone()).instance(names.instance(SESSION_GROUP)?),
+        })
+    }
+}
 impl Plugin for ContentPlugin {
     type Deps = ();
     fn name(&self) -> &str {
         "SkillContent"
     }
     async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
-        let contributions = self.0.contributions.clone();
-        let service = Arc::new(Contribution(self.0.definition.clone()));
-        ctx.provide_at(self.0.key.clone(), service.clone())?;
-        let key = self.0.key.erase();
-        let cleanup = contributions.clone();
-        ctx.effect(move || async move {
-            cleanup.0.lock().unwrap().remove(&key);
-            Ok(())
-        })?;
-        contributions
-            .0
-            .lock()
-            .unwrap()
-            .insert(self.0.key.erase(), service);
+        ctx.provide_at(
+            self.key.clone(),
+            Arc::new(Contribution(self.definition.clone())),
+        )?;
         Ok(())
     }
 }
 
 pub(super) struct Contents {
-    /// The Session instance the content services are keyed in.
+    ctx: Ctx,
     session: InstanceId,
-    contributions: Arc<SkillContributions>,
-    instances: BTreeMap<String, (FiberView, TypeKey)>,
+    loader: Arc<SessionLoader>,
+    instances: BTreeMap<String, (SessionInstance, Key<Contribution>)>,
 }
 impl Contents {
-    pub(super) fn new(session: InstanceId) -> Self {
+    pub(super) fn new(ctx: Ctx, session: InstanceId, loader: Arc<SessionLoader>) -> Self {
         Self {
+            ctx,
             session,
-            contributions: Arc::default(),
+            loader,
             instances: BTreeMap::new(),
         }
     }
     pub(super) async fn close(&mut self) -> Result<(), ContentError> {
         let mut error = None;
         for (_, (instance, _)) in std::mem::take(&mut self.instances) {
-            if let Err(failure) = instance.shutdown().await {
-                error = Some(ContentError::Lifecycle(failure.to_string()));
-            } else if let Some(failure) = instance.state().error {
+            if let Err(failure) = self.loader.remove(instance).await {
                 error = Some(ContentError::Lifecycle(failure.to_string()));
             }
         }
@@ -87,10 +76,9 @@ impl Contents {
     pub(super) async fn update(
         &mut self,
         view: Result<CatalogView, SkillsError>,
-        loader: &SessionLoader,
         cancel: &CancellationToken,
     ) -> Result<Arc<SkillView>, SkillsError> {
-        let mut result = self.reconcile(view, loader, cancel).await;
+        let mut result = self.reconcile(view, cancel).await;
         if result.is_err()
             && let Err(error) = self.close().await
         {
@@ -107,7 +95,6 @@ impl Contents {
     async fn reconcile(
         &mut self,
         view: Result<CatalogView, SkillsError>,
-        loader: &SessionLoader,
         cancel: &CancellationToken,
     ) -> Result<Arc<SkillView>, ContentError> {
         let view = view?;
@@ -124,13 +111,12 @@ impl Contents {
             .map(|entry| entry.definition.name.clone())
             .collect();
         let obsolete: Vec<_> = {
-            let ready = self.contributions.0.lock().unwrap();
             self.instances
                 .iter()
                 .filter(|(id, (_, key))| {
                     selected.get(*id).is_none_or(|definition| {
-                        ready
-                            .get(key)
+                        self.ctx
+                            .get_at(key)
                             .is_none_or(|service| **definition != *service.0)
                     })
                 })
@@ -139,13 +125,10 @@ impl Contents {
         };
         for id in obsolete {
             let (instance, _) = self.instances.remove(&id).unwrap();
-            instance
-                .shutdown()
+            self.loader
+                .remove(instance)
                 .await
                 .map_err(|error| ContentError::Lifecycle(error.to_string()))?;
-            if let Some(error) = instance.state().error {
-                return Err(ContentError::Lifecycle(error.to_string()));
-            }
         }
         for (id, definition) in selected {
             if cancel.is_cancelled() {
@@ -155,39 +138,32 @@ impl Contents {
                 continue;
             }
             let provided = Key::<Contribution>::dynamic(id.clone()).instance(self.session);
-            let key = provided.erase();
-            let instance = loader
-                .create_instance(GROUP)
-                .with(ContentConfig {
-                    definition,
-                    key: provided,
-                    contributions: self.contributions.clone(),
+            let instance = self
+                .loader
+                .create(SessionInstanceDefinition {
+                    group: GROUP.to_owned(),
+                    definition_id: id.clone(),
+                    instance_data: serde_json::json!(definition),
                 })
                 .await
                 .map_err(|error| ContentError::Lifecycle(error.to_string()))?;
-            let ready = self.contributions.0.lock().unwrap().contains_key(&key);
-            if cancel.is_cancelled() || !ready {
-                instance
-                    .view
-                    .shutdown()
+            if cancel.is_cancelled() || self.ctx.get_at(&provided).is_none() {
+                self.loader
+                    .remove(instance)
                     .await
                     .map_err(|error| ContentError::Lifecycle(error.to_string()))?;
-                if let Some(error) = instance.view.state().error {
-                    return Err(ContentError::Lifecycle(error.to_string()));
-                }
                 return Err(if cancel.is_cancelled() {
                     SkillsError::Closed.into()
                 } else {
                     ContentError::Lifecycle("content instance did not become ready".into())
                 });
             }
-            self.instances.insert(id, (instance.view, key));
+            self.instances.insert(id, (instance, provided));
         }
-        let ready = self.contributions.0.lock().unwrap();
         Ok(Arc::new(SkillView::from_contributions(
             self.instances
                 .values()
-                .filter_map(|(_, key)| ready.get(key))
+                .filter_map(|(_, key)| self.ctx.get_at(key))
                 .map(|service| (service.0.name.clone(), service.0.clone()))
                 .collect(),
             disabled,

@@ -4652,6 +4652,215 @@ async fn stored_attachment_and_tool_images_share_a_reference_without_changing_fi
 }
 
 #[tokio::test]
+async fn store_result_replaces_an_oversized_tool_image_with_its_size_and_limit() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let files = Arc::new(StoredImages::default());
+    let oversized = STANDARD.encode(vec![0u8; 17 * 1024 * 1024]);
+    let mut result = ToolResult {
+        content: ToolContent::Blocks(vec![
+            ContentBlock::Text {
+                text: "screenshot".into(),
+            },
+            image("image/png", Some(&oversized), None),
+        ]),
+        ..Default::default()
+    };
+    dim_agent_capabilities::session_files::store_result(
+        &SessionFiles(files.clone()),
+        "session",
+        &mut result,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let ToolContent::Blocks(blocks) = &result.content else {
+        panic!("a blocks result stays blocks")
+    };
+    assert_eq!(
+        blocks.as_slice(),
+        [
+            ContentBlock::Text {
+                text: "screenshot".into(),
+            },
+            ContentBlock::Text {
+                text: "[Image omitted: the tool image is 17825792 bytes, above the 16 MiB limit.]"
+                    .into(),
+            },
+        ]
+    );
+    assert_eq!(result.is_error, None);
+}
+
+const IMAGE_LIMIT: usize = 16 * 1024 * 1024;
+
+fn encoded_zeroes(bytes: usize) -> String {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    STANDARD.encode(vec![0u8; bytes])
+}
+
+fn image_block(encoded: String) -> ContentBlock {
+    ContentBlock::Image {
+        source: ImageSource {
+            file_id: None,
+            source_type: ImageSourceType::Base64,
+            media_type: "image/png".into(),
+            data: Some(encoded),
+            url: None,
+        },
+    }
+}
+
+async fn stored_blocks(blocks: Vec<ContentBlock>) -> (ToolResult, Arc<StoredImages>) {
+    let files = Arc::new(StoredImages::default());
+    let mut result = ToolResult {
+        content: ToolContent::Blocks(blocks),
+        ..Default::default()
+    };
+    dim_agent_capabilities::session_files::store_result(
+        &SessionFiles(files.clone()),
+        "session",
+        &mut result,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    (result, files)
+}
+
+fn block_list(result: &ToolResult) -> &[ContentBlock] {
+    let ToolContent::Blocks(blocks) = &result.content else {
+        panic!("a blocks result stays blocks")
+    };
+    blocks
+}
+
+async fn omitted_for_its_size(bytes: usize) {
+    let (result, files) = stored_blocks(vec![image_block(encoded_zeroes(bytes))]).await;
+    assert_eq!(
+        block_list(&result),
+        [ContentBlock::Text {
+            text: format!(
+                "[Image omitted: the tool image is {bytes} bytes, above the 16 MiB limit.]"
+            ),
+        }],
+        "an image of {bytes} bytes is above the 16 MiB limit"
+    );
+    assert_eq!(result.is_error, None);
+    assert!(
+        files.0.lock().unwrap().is_empty(),
+        "an oversized image is not stored"
+    );
+}
+
+#[tokio::test]
+async fn store_result_keeps_an_image_at_the_limit_out_of_the_size_placeholder() {
+    let (result, _) = stored_blocks(vec![image_block(encoded_zeroes(IMAGE_LIMIT))]).await;
+    assert_eq!(
+        block_list(&result),
+        [ContentBlock::Text {
+            text: "[Image omitted: the image cannot be sent to this model.]".into(),
+        }],
+        "an image at the limit is decoded and scaled, not replaced for its size"
+    );
+}
+
+#[tokio::test]
+async fn store_result_replaces_an_image_one_byte_above_the_limit() {
+    omitted_for_its_size(IMAGE_LIMIT + 1).await;
+}
+
+#[tokio::test]
+async fn store_result_replaces_an_image_two_bytes_above_the_limit() {
+    omitted_for_its_size(IMAGE_LIMIT + 2).await;
+}
+
+#[tokio::test]
+async fn store_result_rejects_malformed_base64_at_the_encoded_limit() {
+    let mut encoded = encoded_zeroes(IMAGE_LIMIT + 3);
+    assert!(
+        encoded.len() as u64 > dim_agent_capabilities::images::base64_len(IMAGE_LIMIT as u64),
+        "the encoding is above the limit's length, so only validation decides the outcome"
+    );
+    encoded.replace_range(8..9, "!");
+    let files = Arc::new(StoredImages::default());
+    let mut result = ToolResult {
+        content: ToolContent::Blocks(vec![image_block(encoded)]),
+        ..Default::default()
+    };
+    let error = dim_agent_capabilities::session_files::store_result(
+        &SessionFiles(files.clone()),
+        "session",
+        &mut result,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            HostError::Failed {
+                kind: HostErrorKind::InvalidRequest,
+                ..
+            }
+        ),
+        "malformed base64 is an invalid request, not an omission: {error:?}"
+    );
+    assert!(files.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn store_result_replaces_only_the_oversized_image_between_its_neighbors() {
+    let oversized = encoded_zeroes(IMAGE_LIMIT + 2);
+    let (result, files) = stored_blocks(vec![
+        ContentBlock::Text {
+            text: "before".into(),
+        },
+        image_block(oversized),
+        ContentBlock::Text {
+            text: "between".into(),
+        },
+        image("image/png", Some(TOOL_IMAGE), None),
+        ContentBlock::Text {
+            text: "after".into(),
+        },
+    ])
+    .await;
+    assert_eq!(
+        block_list(&result),
+        [
+            ContentBlock::Text {
+                text: "before".into(),
+            },
+            ContentBlock::Text {
+                text: "[Image omitted: the tool image is 16777218 bytes, above the 16 MiB limit.]"
+                    .into(),
+            },
+            ContentBlock::Text {
+                text: "between".into(),
+            },
+            ContentBlock::Image {
+                source: ImageSource {
+                    source_type: ImageSourceType::File,
+                    media_type: "image/png".into(),
+                    file_id: Some("image".into()),
+                    data: None,
+                    url: None,
+                },
+            },
+            ContentBlock::Text {
+                text: "after".into(),
+            },
+        ]
+    );
+    assert_eq!(
+        files.0.lock().unwrap().len(),
+        1,
+        "only the image within the limit is stored"
+    );
+}
+
+#[tokio::test]
 async fn replacing_a_tool_image_preserves_other_messages_and_the_stored_result() {
     for vision in [false, true] {
         let requests = Arc::new(Mutex::new(Vec::new()));

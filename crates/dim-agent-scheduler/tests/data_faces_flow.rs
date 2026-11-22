@@ -289,7 +289,11 @@ async fn scheduler_faces_match_the_native_operations_over_a_bridge() {
         json!({})
     );
     let listed = rig
-        .call("wakeups", "list", json!({"sessionId":"saved-session"}))
+        .call(
+            "wakeups",
+            "list",
+            json!({"sessionId":"saved-session","branchId":"main"}),
+        )
         .await;
     assert_eq!(listed["wakeups"][0]["state"], "cancelled");
     rig.close().await;
@@ -354,7 +358,10 @@ async fn malformed_bridge_calls_return_the_documented_data_errors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bridge_cancellation_accepts_signals_and_promises_and_keeps_committed_writes() {
     let rig = Rig::start().await;
-    let args = Value::List(vec![json!({"sessionId":"s"}).into(), Value::Signal]);
+    let args = Value::List(vec![
+        json!({"sessionId":"s","branchId":"main"}).into(),
+        Value::Signal,
+    ]);
     let reply = rig
         .client
         .invoke_settled("wakeups", "list", args)
@@ -371,7 +378,10 @@ async fn bridge_cancellation_accepts_signals_and_promises_and_keeps_committed_wr
         signal.cancelled().await;
         Ok(json!(null).into())
     });
-    let args = Value::List(vec![json!({"sessionId":"s"}).into(), cancelled]);
+    let args = Value::List(vec![
+        json!({"sessionId":"s","branchId":"main"}).into(),
+        cancelled,
+    ]);
     let call = rig.client.invoke_settled("wakeups", "list", args).unwrap();
     let mut call = Box::pin(call);
     assert!(
@@ -414,7 +424,13 @@ async fn bridge_cancellation_accepts_signals_and_promises_and_keeps_committed_wr
     held.await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let listed = rig.call("wakeups", "list", json!({"sessionId":"s"})).await;
+            let listed = rig
+                .call(
+                    "wakeups",
+                    "list",
+                    json!({"sessionId":"s","branchId":"main"}),
+                )
+                .await;
             if !listed["wakeups"].as_array().unwrap().is_empty() {
                 assert_eq!(listed["wakeups"][0]["prompt"], "keep committed");
                 break;
@@ -605,7 +621,10 @@ async fn malformed_loop_face_calls_return_the_documented_data_errors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn loop_face_cancellation_stops_reads_and_keeps_committed_starts() {
     let rig = Rig::start().await;
-    let args = Value::List(vec![json!({"sessionId":"s"}).into(), Value::Signal]);
+    let args = Value::List(vec![
+        json!({"sessionId":"s","branchId":"main"}).into(),
+        Value::Signal,
+    ]);
     let reply = rig
         .client
         .invoke_settled("loops", "list", args)
@@ -623,7 +642,10 @@ async fn loop_face_cancellation_stops_reads_and_keeps_committed_starts() {
         signal.cancelled().await;
         Ok(json!(null).into())
     });
-    let args = Value::List(vec![json!({"sessionId":"s"}).into(), cancelled]);
+    let args = Value::List(vec![
+        json!({"sessionId":"s","branchId":"main"}).into(),
+        cancelled,
+    ]);
     let mut call = Box::pin(rig.client.invoke_settled("loops", "list", args).unwrap());
     assert!(
         tokio::time::timeout(Duration::from_millis(50), &mut call)
@@ -665,7 +687,9 @@ async fn loop_face_cancellation_stops_reads_and_keeps_committed_starts() {
     held.await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let listed = rig.call("loops", "list", json!({"sessionId":"s"})).await;
+            let listed = rig
+                .call("loops", "list", json!({"sessionId":"s","branchId":"main"}))
+                .await;
             if !listed["loops"].as_array().unwrap().is_empty() {
                 assert_eq!(listed["loops"][0]["round"], json!(1));
                 break;

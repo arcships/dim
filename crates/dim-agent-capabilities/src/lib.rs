@@ -24,6 +24,7 @@ pub mod images;
 pub mod input_queue;
 pub mod methods;
 pub mod model_provider;
+mod os_string;
 mod output;
 pub mod permission;
 mod port_faces;

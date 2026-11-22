@@ -2,7 +2,7 @@
 //! `delivered` once its input is written and is not tracked afterwards, a
 //! past `at` job records `missed`, DST gaps skip and repeated times fire
 //! once, and a launch Session runs until its stop time.
-mod support;
+use crate::support;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use support::*;

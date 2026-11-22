@@ -554,3 +554,164 @@ async fn node_branch_typescript_writes_and_follows_extension_events() {
     server.join().await.unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_branch_opening_completion_can_refuse_session_creation() {
+    let receipt = std::env::temp_dir().join(format!("dim-opening-{}", uuid::Uuid::new_v4()));
+    let mut parts = branch_part();
+    parts.rows = vec![json!({
+        "id": "opening-receipt",
+        "name": parts.anchor.parent().unwrap().join("fixtures/branch-opening.ts"),
+        "provides": {}, "config":{"receipt":receipt},
+    })];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("OpeningReceiptFixture");
+        },
+    )
+    .await;
+    let error = agent
+        .create_session(Default::default())
+        .await
+        .err()
+        .expect("opening must fail");
+    assert!(
+        error.to_string().contains("opening completion refused"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&receipt).unwrap(), "settled");
+    std::fs::remove_file(receipt).unwrap();
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_session_fault_is_observed_and_closes_the_native_session() {
+    let receipt = std::env::temp_dir().join(format!("dim-fault-{}", uuid::Uuid::new_v4()));
+    let mut parts = branch_part();
+    parts.rows = vec![json!({
+        "id": "session-fault",
+        "name": parts.anchor.parent().unwrap().join("fixtures/session-fault.ts"),
+        "provides": {}, "config": {"receipt": receipt},
+    })];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("SessionFaultFixture");
+        },
+    )
+    .await;
+    let error = match agent.create_session(Default::default()).await {
+        Ok(session) => session.close().await.unwrap_err(),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("fixture storage"), "{error}");
+    let stored: Value = serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+    assert_eq!(stored, json!({"storage": "fixture storage"}));
+    std::fs::remove_file(receipt).unwrap();
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+struct FixtureInstance;
+impl rutis::Plugin for FixtureInstance {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "FixtureInstance"
+    }
+    async fn apply(&self, _: &rutis::Ctx, (): ()) -> rutis::Result {
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_session_loader_creates_and_removes_only_its_own_instance() {
+    let mut parts = branch_part();
+    parts.rows = vec![json!({
+        "id": "session-loader",
+        "name": parts.anchor.parent().unwrap().join("fixtures/session-loader.ts"),
+        "provides": {},
+    })];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.session_extension_part::<dim_agent_runtime::SessionInstanceDefinition>(
+                "FixtureInstances",
+                "FixtureInstance",
+                |_, definition| {
+                    if definition.definition_id != "fixture-content"
+                        || definition.instance_data != json!({"body":"content"})
+                    {
+                        return Err(rutis::Error::msg("unexpected instance definition"));
+                    }
+                    Ok(Box::new(FixtureInstance))
+                },
+            );
+            builder.require_part("SessionLoaderFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let first = super::session_typescript::new_session(&mut client, json!([])).await;
+    let second = super::session_typescript::new_session(&mut client, json!([])).await;
+    let leaves = || {
+        agent
+            .diagnostics()
+            .unwrap()
+            .plugins
+            .into_iter()
+            .filter(|plugin| {
+                plugin.name == "FixtureInstance" && plugin.state == rutis::host::FiberState::Active
+            })
+            .count()
+    };
+    let before = leaves();
+    let refused = client
+        .rpc(
+            "session.loaderfixture.create",
+            json!({"sessionId": first, "group":"session"}),
+        )
+        .await;
+    assert!(
+        refused["error"]
+            .to_string()
+            .contains("outside the loader scope"),
+        "{refused}"
+    );
+    assert_eq!(leaves(), before);
+    let reply = client
+        .rpc("session.loaderfixture.create", json!({"sessionId": first}))
+        .await;
+    assert_ok(&reply);
+    let id = reply["result"]["instanceId"].as_u64().unwrap();
+    assert_eq!(leaves(), before + 1);
+    for (session, expected) in [(second, before + 1), (first, before)] {
+        assert_ok(
+            &client
+                .rpc(
+                    "session.loaderfixture.remove",
+                    json!({"sessionId":session,"instanceId":id}),
+                )
+                .await,
+        );
+        assert_eq!(leaves(), expected);
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+}

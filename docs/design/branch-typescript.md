@@ -50,7 +50,7 @@ every instance of that group; a row gets the nearest enclosing instance. Its met
 | --- | --- | --- | --- |
 | `treeCommands` | `session` | `TreeCommands` | `list()`, `info(id)`, `input(id, input)`, `create(parent, at, options, cancelled)`, `end(id, source)`, `page(id, after, limit)` |
 | `dispatcher` | `branch` | `Dispatcher` | `consume(name, keys, rebuild, handler)`, `listen(name, keys, handler)`, `committed()`, `notify()`, `sequence()`, `changed()` |
-| `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()` |
+| `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()`. `registerOpening` registers work that branch opening waits for. |
 | `timeline` | `branch` | `Timeline` | `append({type, name, data, tags?})` → the committed event; `query(query)` (the one bounded read, `include_publishing` for the branch's not-yet-published facts), `ancestors()`, `sequence()`, `committed()`, `hasPending()` |
 | `timelineIdentity` | `branch` | `TimelineIdentity` | `get()` → `{sessionId, branchId}` |
 
@@ -88,7 +88,7 @@ closures stay as they are for Rust callers:
   part write, so the branch `Timeline` is exported as is.
 
 Native serde forms stay authoritative (`InputMessageData`, `BranchOptions`, `TimelineInfo`,
-`AgentEvent`). `AgentEvent`'s TypeScript is declared in [`xtask types`](../../xtask/src/types.rs) with the `npm/plugin.d.ts` shape,
+`AgentEvent`). `AgentEvent`'s TypeScript is declared in [`xtask types`](../../xtask/check/src/types.rs) with the `npm/plugin.d.ts` shape,
 because its sequence fields use custom serde. Sequences cross as `number | bigint`; do not coerce
 them through `Number`.
 
@@ -203,5 +203,5 @@ Existing C4 tools, methods, observation and Settings flows keep their own `node_
 - [Dispatcher](../../crates/dim-agent-runtime/src/core/dispatcher.rs), [Timeline](../../crates/dim-agent-runtime/src/core/timeline.rs), [TimelineIdentity and BranchLifecycle](../../crates/dim-agent-runtime/src/config.rs)
 - [TimelineTree / TreeCommands](../../crates/dim-agent-capabilities/src/timeline_tree.rs)
 - [InputQueue rebuild](../../crates/dim-agent-capabilities/src/input_queue.rs)
-- [Declaration generator](../../xtask/src/types.rs) and [row placement](../../crates/dim-app-server/src/session_typescript.rs)
+- [Declaration generator](../../xtask/check/src/types.rs) and [row placement](../../crates/dim-app-server/src/session_typescript.rs)
 - [Goal consumer contracts](plugins/Goal.md)

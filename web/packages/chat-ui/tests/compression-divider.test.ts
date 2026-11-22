@@ -70,7 +70,10 @@ async function mountDivider(options: {
 
 describe('TimelineCompressionDivider', () => {
   it('expands and loads the summary from the shared state machine', async () => {
-    const loadSummary = vi.fn(async () => ({ status: 'available' as const, summary: 'summary text' }))
+    let resolveSummary!: (result: { status: 'available'; summary: string }) => void
+    const loadSummary = vi.fn(() => new Promise<{ status: 'available'; summary: string }>(resolve => {
+      resolveSummary = resolve
+    }))
     const host = await mountDivider({ info: info(), loadSummary })
 
     const toggle = host.querySelector<HTMLElement>('[data-testid="compression-summary-toggle"]')
@@ -83,11 +86,20 @@ describe('TimelineCompressionDivider', () => {
     expect(toggle?.getAttribute('aria-expanded')).toBe('true')
     expect(loadSummary).toHaveBeenCalledWith({ sessionId: 'session-1', segmentId: 'segment-1' })
     expect(host.querySelector('[data-testid="compression-summary-panel"]')).not.toBeNull()
+    expect(host.textContent).toContain('Loading summary')
 
+    resolveSummary({ status: 'available', summary: 'summary text' })
     await vi.waitFor(() => {
       expect(host.querySelector('[data-testid="compression-summary-plaintext"]')?.textContent)
         .toBe('summary text')
     })
+
+    toggle!.click()
+    await nextTick()
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
+    toggle!.click()
+    await nextTick()
+    expect(loadSummary).toHaveBeenCalledTimes(1)
   })
 
   it('renders failure details without requesting a summary', async () => {

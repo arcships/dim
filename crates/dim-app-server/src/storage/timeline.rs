@@ -2244,6 +2244,13 @@ fn write_batch(
             };
             insert_branch(connection, &batch.key.session_id, &info)?;
         }
+        if let EventKind::BranchDefault(data) = &record.event.kind {
+            // A move is not activity: the catalog takes the new line's own
+            // latest activity in this transaction, so an idle move never
+            // leaves the catalog recent by the line it left (design §14,
+            // §15). One indexed read of that line; no scan of the history.
+            super::catalog::refresh_activity(connection, &batch.key.session_id, &data.branch)?;
+        }
     }
     connection
         .prepare_cached(

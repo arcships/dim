@@ -2,7 +2,7 @@
 //! Timeline, TimelineTree, SessionMethods, ToolRegistry, PromptGuide,
 //! storage and Settings, with the facts the Loop would write supplied by the
 //! test. Every expectation is a literal text or a written input.
-mod support;
+use crate::support;
 
 use dim_agent_types::{EventKind, InputMode, ToolContent, ToolResult};
 use serde_json::json;

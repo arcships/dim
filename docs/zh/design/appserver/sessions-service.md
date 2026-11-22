@@ -8,7 +8,7 @@ Agents 的稳定目录还提供生成的只读服务 `sessionPermissions`：`per
 
 ## 1. 概要
 
-Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`pending`、`stop`、`idle` 和 `delete`，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务，`delete` 转交给 S5c 的 `AgentIndex::delete`。
+Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`pending`、`stop`、`idle`、`defaultBranchId` 和 `delete`，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务，`delete` 转交给 S5c 的 `AgentIndex::delete`。
 
 - **形态。** 一个具名进程服务 `sessions`，没有实例 key。它是 `host_key("sessions")` 上的 `dyn HostDispatch`，像 `pluginFiles` 一样经服务目录跨语言共享。由 Agents 中从不重载的目录部分提供，每次调用时查找 Agents 索引，因此使用方从不随索引重载（#35）。
 - **启动。** `launch` 创建非交互 Session。它的权限策略是请求的策略，以启动方分支的当前策略为上限；当前策略即由 `permission/changed` 事实折叠出的 `PermissionState`。没有启动方时，上限是宿主的 Session 默认值。Agents 在创建前经 `SessionConfig.permission_policy` 施加上限。
@@ -330,6 +330,12 @@ Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQu
 
 分支不持有的 `inputId` 回答 `false`；这既覆盖已被消费或删除的 id，也覆盖重启丢失的 id。固定节奏的 loop 在投递下一个窗口之前读取它，因此仍排在运行中 turn 之后的一轮会推迟该窗口，而不是再排一轮。
 
+### 6.11 defaultBranchId
+
+`{sessionId}` → `{defaultBranchId}`；错误 `rejected`、`session_closed`、`reloading`、`failed`。
+
+该读取回答该 Session 的对话所在的那条线：取得 Session 之后从其所有者读取 tree 当前的默认分支（`TreeCommands::default_branch`），因此与 §6.10 一样，为这次回答会恢复空闲卸载的 Session。它不读取历史页、不写事件。它服务于不命名任何线的请求侧默认值：管理端 `schedule.save` 为新任务记录默认分支（[Scheduler §2.1](plugins/Scheduler.md#21-两个目标)），以及 `loops`、`wakeups` 与 EventHub 数据面中省略分支的请求（[timeline branches §20](../timeline-branches.md#20-验收)）。调用方每个请求只解析一次。
+
 ## 7. 时序
 
 一次运行：写入一条输入，第二条输入在被持有时撤回，然后等待：
@@ -630,6 +636,7 @@ bridge 或 rutis 合同；Scheduler 与 Workflow 继续使用现有 S2 接口。
 
 ```rust
 pub struct SessionRef { pub session_id: String, pub branch_id: String }
+pub struct SessionRequest { pub session_id: String }
 pub struct LaunchRequest {
     pub agent: Option<String>,
     pub cwd: String,
@@ -660,6 +667,7 @@ pub struct WithdrawRequest {
 }
 pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
 pub struct PendingReply { pub pending: bool }
+pub struct DefaultBranchReply { pub default_branch_id: String }
 pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
 pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() 由错误码决定
 
@@ -671,6 +679,8 @@ impl AgentIndex {
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal 来自 S1
     /// 输入是否仍在该分支上待处理（§6.10）。
     pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
+    /// 该 Session 的对话所在的那条线（§6.11）。
+    pub async fn default_branch_id(&self, request: SessionRequest) -> Result<DefaultBranchReply, SessionsError>;
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
     pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
     /// S5c 的删除，作为 `sessions.delete {sessionId}` 提供（§6.8）。

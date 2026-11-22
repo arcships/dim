@@ -21,7 +21,6 @@ declaration splits into protocol and policy is ToolRegistry's
 | `B:Timeline` | Reconcile committed configuration/request pins. |
 | `B:BranchLifecycle` | Gate background refresh on activation/closing. |
 | `B:Dispatcher` | Handle branch opening. |
-| `B:BranchOpening` | Register initial tool-adoption completion receipt. |
 
 ### Events and lifetime
 
@@ -37,7 +36,7 @@ initial model configuration, fixing the tools registered then before the first
 input. Every registry read, request preparation, `bind_current` and the adoption task's included,
 takes in what is registered at that moment, so a tool registered later is
 adopted for the next request. With a model configuration, opening reconciles its tools through Prompt before
-the existing BranchOpening receipt completes. Failed adoption retains pins and the prefix;
+the existing BranchLifecycle receipt completes. Failed adoption retains pins and the prefix;
 a later change retries. Pins are runtime handles, not persistent executable
 identities; missing tools cannot be recovered by replaying their old definitions.
 
@@ -93,7 +92,7 @@ task, mutex, lifecycle phase or protocol field is needed.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:Dispatcher`、`B:Prompt`、`B:Timeline`、`S:ToolRegistry` |
+| 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Prompt`、`B:Timeline`、`S:ToolRegistry` |
 | 提供 | `B:ToolBinding` |
 | 被注入于 | `Loop`、`ToolExecutor` |
 <!-- /generated -->

@@ -1,5 +1,4 @@
 //! HostPlatform acceptance on Unix (`docs/architecture/rust-agent/plugins/HostPlatform.md`).
-#![cfg(unix)]
 use dim_agent_capabilities::execution_settings::{ExecutionSettings, ExecutionSettingsHost};
 use dim_agent_capabilities::host_platform::*;
 use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost};
@@ -188,7 +187,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "unchanged_shell_preferences_reuse_detection_and_edits_recover",
+                "host_platform_flow::unchanged_shell_preferences_reuse_detection_and_edits_recover",
                 "--nocapture",
             ])
             .env(CHILD_HOME, &home)
@@ -198,11 +197,12 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             .await
             .unwrap();
         std::fs::remove_dir_all(home).unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
         assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            stdout.contains("1 passed;"),
+            "child shell-cache probe ran no test:\n{stdout}\n{stderr}"
         );
         return;
     };
@@ -918,10 +918,6 @@ async fn a_confined_helper_returns_when_its_root_exits_with_a_descendant_on_its_
     std::fs::remove_dir_all(&base).unwrap();
 }
 
-/// A descendant that left the process group keeps the pipes open past the
-/// drain bound. The call still returns with the root's status and the bytes
-/// read so far, and the escaped process is the caller's to kill: that is the
-/// limit the confinement documents for macOS and unconfined Linux.
 #[tokio::test]
 async fn a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes() {
     let Some(perl) = perl() else {
@@ -933,7 +929,8 @@ async fn a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes() 
     std::fs::create_dir_all(&write).unwrap();
     let pid_file = write.join("escapee.pid");
     let escape = format!(
-        "setpgrp(0, 0); open my $f, q(>), q({}) or die; print $f $$; close $f; sleep 100;",
+        "use Fcntl qw(:flock); setpgrp(0, 0); open my $f, q(>), q({}) or die; \
+         flock($f, LOCK_EX) or die; syswrite($f, $$) or die; sleep 100;",
         pid_file.display()
     );
     let script = format!(
@@ -959,6 +956,15 @@ async fn a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes() 
         elapsed < Duration::from_secs(5),
         "the call took {elapsed:?} with the drain bound at one second"
     );
+    #[cfg(target_os = "linux")]
+    if output.confined {
+        std::fs::File::open(&pid_file)
+            .unwrap()
+            .try_lock()
+            .expect("the descendant must release its file lock when the PID namespace ends");
+        std::fs::remove_dir_all(&base).unwrap();
+        return;
+    }
     let pid: i32 = std::fs::read_to_string(&pid_file)
         .expect("the escapee records its pid")
         .trim()

@@ -819,6 +819,7 @@ async fn run_connection(
                                             "session.methods",
                                             "session.branch_create",
                                             "session.branch_end",
+                                            "session.branch_set_default",
                                             "session.create.origin",
                                             "session.language",
                                             "session.attach.expectedCwd",

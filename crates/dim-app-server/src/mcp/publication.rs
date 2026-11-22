@@ -11,17 +11,16 @@ use super::{
 use crate::settings::{SettingsScope, SettingsService};
 use dim_agent_capabilities::host::CredentialVariablesHost;
 use dim_agent_runtime::{
-    Modules, Names, SessionLifecycle, SessionLoader, SessionPhase, StateCell,
-    names::ServiceCatalog, register_part,
+    Modules, Names, SessionInstance, SessionInstanceDefinition, SessionInstanceError,
+    SessionLifecycle, SessionLoader, SessionPhase, StateCell, names::ServiceCatalog, register_part,
 };
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Plugin};
 use rutis_loader::Loader;
-use rutis_loader::edit::InstanceResult;
 use serde::Serialize;
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -45,7 +44,12 @@ pub struct McpOwner {
 }
 impl McpOwner {
     pub fn new(ctx: Ctx, loader: Loader) -> Self {
-        let loader = Arc::new(SessionLoader::new(loader, ctx.clone()));
+        let loader = Arc::new(SessionLoader::new(
+            loader,
+            ctx.clone(),
+            None,
+            [GROUP.to_owned()].into(),
+        ));
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             closed: ctx.cancellation_token(),
@@ -83,28 +87,40 @@ impl McpOwner {
     }
 }
 
-/// Private immutable instance value. Never encoded in loader options.
-#[derive(Clone)]
-pub(super) struct ConnectionConfig {
-    id: String,
-    configuration: McpServerSettings,
-    key: Key<McpServer>,
+pub(super) struct ConnectionPlugin {
+    definition: (rutis::host::InstanceId, String),
 }
-pub(super) struct ConnectionPlugin(ConnectionConfig);
 impl ConnectionPlugin {
-    pub(super) fn new(value: &ConnectionConfig) -> Self {
-        Self(value.clone())
+    pub(super) fn new(value: &SessionInstanceDefinition, scope: rutis::host::InstanceId) -> Self {
+        Self {
+            definition: (scope, value.definition_id.clone()),
+        }
+    }
+
+    fn standalone(build: &rutis_loader::resolve::Build) -> rutis::Result<Self> {
+        let definition = build
+            .value::<SessionInstanceDefinition>()
+            .ok_or_else(|| rutis::Error::msg("missing MCP instance definition"))?;
+        let scope = build
+            .value::<rutis::host::InstanceId>()
+            .ok_or_else(|| rutis::Error::msg("missing MCP instance scope"))?;
+        Ok(Self::new(&definition, *scope))
     }
 }
 impl Plugin for ConnectionPlugin {
-    type Deps = <McpServerPlugin as Plugin>::Deps;
+    type Deps = (Arc<Publication>, Arc<McpAuth>);
     fn name(&self) -> &str {
         "McpServer"
     }
-    async fn apply(&self, ctx: &Ctx, auth: Arc<McpAuth>) -> rutis::Result {
-        let plugin =
-            McpServerPlugin::new(&self.0.id, self.0.configuration.clone(), self.0.key.clone())?;
-        Plugin::apply(&plugin, ctx, auth).await
+    async fn apply(&self, ctx: &Ctx, (owner, auth): Self::Deps) -> rutis::Result {
+        let plugin = owner
+            .definitions
+            .lock()
+            .unwrap()
+            .get(&self.definition)
+            .cloned()
+            .ok_or_else(|| rutis::Error::msg("unknown MCP connection definition"))?;
+        Plugin::apply(plugin.as_ref(), ctx, auth).await
     }
 }
 
@@ -136,6 +152,7 @@ enum Command {
     Settle { reply: oneshot::Sender<Result<()>> },
 }
 pub struct Publication {
+    definitions: std::sync::Mutex<HashMap<(rutis::host::InstanceId, String), Arc<McpServerPlugin>>>,
     commands: mpsc::Sender<Command>,
     released: watch::Sender<()>,
     applications: StateCell<BTreeMap<McpSource, McpApplication>>,
@@ -245,15 +262,11 @@ impl McpPublication {
     /// Explicit standalone hosts register and install this top-level template.
     /// Agents instead register the template nested in their Session assembly.
     pub fn standalone_template(builtins: &mut Modules) -> serde_json::Value {
-        builtins.builtins.register_with::<serde_json::Value, _, _>(
-            "StandaloneMcpServer",
-            |build, _| {
-                let value = build.value::<ConnectionConfig>().ok_or_else(|| {
-                    rutis::Error::from(ErrorKind::PluginFailed("missing MCP instance value".into()))
-                })?;
-                Ok(ConnectionPlugin::new(&value))
-            },
-        );
+        builtins
+            .builtins
+            .register_with::<serde_json::Value, _, _>("StandaloneMcpServer", |build, _| {
+                ConnectionPlugin::standalone(build)
+            });
         json!({"id":GROUP,"group":true,"instanced":true,"config":[{"id":"StandaloneMcpServer","name":"StandaloneMcpServer"}]})
     }
 }
@@ -352,6 +365,7 @@ impl DynPlugin for McpPublication {
             let (commands, receiver) = mpsc::channel(64);
             let (released, releases) = watch::channel(());
             let port = Arc::new(Publication {
+                definitions: Default::default(),
                 commands,
                 released,
                 applications: StateCell::new(BTreeMap::new()),
@@ -393,7 +407,7 @@ struct Generation {
     id: String,
     configuration: McpServerSettings,
     owner: McpOwner,
-    instance: rutis_loader::edit::Instance,
+    instance: SessionInstance,
     service: Arc<McpServer>,
     lease: Weak<McpConnection>,
     /// Set before a withdrawal retires it, so its holders report the entry
@@ -653,12 +667,22 @@ impl Projection {
     async fn retire(&mut self, references: Vec<String>) -> bool {
         let mut failed = false;
         for reference in references {
-            if let Some(generation) = self.generations.remove(&reference)
-                && (generation.instance.view.shutdown().await.is_err()
-                    || generation.instance.view.state().error.is_some())
-            {
-                self.cleanup_failed.insert(generation.source);
-                failed = true;
+            if let Some(generation) = self.generations.remove(&reference) {
+                if generation
+                    .owner
+                    .loader
+                    .remove(generation.instance)
+                    .await
+                    .is_err()
+                {
+                    self.cleanup_failed.insert(generation.source);
+                    failed = true;
+                }
+                self.port
+                    .definitions
+                    .lock()
+                    .unwrap()
+                    .remove(&(generation.owner.scope, reference));
             }
         }
         failed
@@ -718,19 +742,38 @@ impl Projection {
         }
         let reference = format!("mcp:{}", uuid::Uuid::new_v4());
         let key = Key::<McpServer>::dynamic(reference.clone()).instance(owner.scope);
-        McpServerPlugin::new(&id, configuration.clone(), key.clone())?;
+        let plugin = McpServerPlugin::new(&id, configuration.clone(), key.clone())?;
+        let definition = (owner.scope, reference.clone());
+        self.port
+            .definitions
+            .lock()
+            .unwrap()
+            .insert(definition.clone(), Arc::new(plugin));
         let created = owner
             .loader
-            .create_instance(GROUP)
-            .with(ConnectionConfig {
-                id: id.clone(),
-                configuration: configuration.clone(),
-                key: key.clone(),
+            .create(SessionInstanceDefinition {
+                group: GROUP.to_owned(),
+                definition_id: reference.clone(),
+                instance_data: serde_json::Value::Null,
             })
             .await;
         let instance = match created {
             Ok(instance) => instance,
-            Err(_) => {
+            Err(error) => {
+                self.port.definitions.lock().unwrap().remove(&definition);
+                if matches!(error, SessionInstanceError::Cleanup(_)) {
+                    self.cleanup_failed.insert(source);
+                }
+                if !matches!(error, SessionInstanceError::Create(_))
+                    && (!owner.admits() || cancel.is_cancelled())
+                {
+                    self.publish();
+                    return Err(if owner.admits() {
+                        McpError::Unavailable
+                    } else {
+                        McpError::Closed
+                    });
+                }
                 self.application_failed.insert(
                     (owner.id.clone(), source, id.clone()),
                     (self.sources[&source].revision.clone(), owner.closed.clone()),
@@ -740,17 +783,11 @@ impl Projection {
             }
         };
         let service = owner.ctx.get_at(&key);
-        if !owner.admits()
-            || cancel.is_cancelled()
-            || service.is_none()
-            || instance
-                .report
-                .iter()
-                .any(|(_, result)| !matches!(result, InstanceResult::Active))
-        {
-            if instance.view.shutdown().await.is_err() || instance.view.state().error.is_some() {
+        if !owner.admits() || cancel.is_cancelled() || service.is_none() {
+            if owner.loader.remove(instance).await.is_err() {
                 self.cleanup_failed.insert(source);
             }
+            self.port.definitions.lock().unwrap().remove(&definition);
             if owner.admits() && !cancel.is_cancelled() {
                 self.application_failed.insert(
                     (owner.id.clone(), source, id.clone()),
@@ -941,10 +978,7 @@ mod tests {
             let fault = faults.clone();
             builtins.builtins.register_with::<serde_json::Value, _, _>(
                 "StandaloneMcpServer",
-                move |build, _| {
-                    let config = build.value::<ConnectionConfig>().unwrap();
-                    Ok(Probe(ConnectionPlugin::new(&config), fault.clone()))
-                },
+                move |build, _| Ok(Probe(ConnectionPlugin::standalone(build)?, fault.clone())),
             );
             let plugin = rutis_loader::LoaderPlugin::new(builtins, Default::default());
             let loader = plugin.handle();
@@ -1017,6 +1051,24 @@ mod tests {
             std::fs::remove_dir_all(self.home).unwrap();
         }
     }
+    #[tokio::test]
+    async fn publication_admits_a_bearer_that_expands_to_empty() {
+        let fixture = Fixture::with_entry(
+            None,
+            json!({
+                "type":"http","url":"https://example.test/mcp",
+                "auth":{"type":"bearer","token":"${DIM_EMPTY_MCP_PUBLICATION_TEST:-}"}
+            }),
+        )
+        .await;
+        let connection = fixture.acquire().await;
+        assert!(matches!(
+            connection.service.state(),
+            McpServerState::Disconnected
+        ));
+        fixture.close().await;
+    }
+
     #[tokio::test]
     async fn publication_reload_and_stop_retire_retained_connections() {
         let mut fixture = Fixture::new().await;

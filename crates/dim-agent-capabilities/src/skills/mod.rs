@@ -108,10 +108,10 @@ pub fn install_with_config(builder: &mut AgentBuilder, config: SkillsConfig) {
         dim_agent_runtime::SESSION_GROUP,
     );
     builder.session_value(Arc::new(config));
-    builder.session_extension_part::<content::ContentConfig>(
+    builder.session_extension_part::<dim_agent_runtime::SessionInstanceDefinition>(
         content::GROUP,
         "SkillContent",
-        |_, config| Ok(Box::new(content::ContentPlugin(config.clone()))),
+        |names, value| Ok(Box::new(content::ContentPlugin::new(names, value)?)),
     );
     for part in PARTS {
         builder.require_part(part);
@@ -131,7 +131,8 @@ pub fn register_parts(ctx: &Ctx, parts: &std::sync::Arc<PartRegistry>) -> Result
 
 /// A parsed `SKILL.md`; the body is read at scan time with path variables
 /// already replaced.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillDefinition {
     /// TS `getSkillId`: `user:<rel>` or `workspace:<skills dir>:<rel>`; a
     /// plugin's Skill is `plugin:<plugin id>:<rel>`.
@@ -148,6 +149,7 @@ pub struct SkillDefinition {
     /// palettes leave it out and a token naming it loads nothing. The `skill`
     /// tool still loads it.
     pub user_invocable: bool,
+    #[serde(with = "crate::os_string")]
     pub file_path: PathBuf,
     pub body: String,
 }

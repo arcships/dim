@@ -11,7 +11,7 @@ part apply: tools.register(ctx, ToolContribution)
             (other languages: toolRegistry.register(declaration, execute))
 Session services Active
     -> ToolBinding reads ToolRegistry (first snapshot takes in what is registered)
-    -> existing Prompt adoption and BranchOpening finish
+    -> existing Prompt adoption and BranchLifecycle finish
     -> Session publication and first input
 a part registers, or unloads and its registration is withdrawn
     -> registry task rereads -> sources_state() changes
@@ -174,7 +174,7 @@ New bindings automatically adopt the replacement through the existing flow below
 | 组件 | 作用域 | 注入 | 提供 | 被谁注入 |
 | --- | --- | --- | --- | --- |
 | `ToolRegistryPlugin` | Session | `S:ToolHost`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle` | `S:ToolRegistry`、`S:ToolSourcesView` | ToolBinding；注册工具或来源的部件（BranchTool、Questions、Skills、Wait、CollaborationSession、McpSession） |
-| `ToolBindingPlugin` | 分支 | `S:ToolRegistry`、`B:Prompt`（采用入口）、`B:Timeline`、`B:BranchLifecycle`、`B:Dispatcher`、`B:BranchOpening` | `B:ToolBinding` | Loop、ToolExecutor |
+| `ToolBindingPlugin` | 分支 | `S:ToolRegistry`、`B:Prompt`（采用入口）、`B:Timeline`、`B:BranchLifecycle`、`B:Dispatcher` | `B:ToolBinding` | Loop、ToolExecutor |
 
 - 来源方注入 ToolRegistry 以注册来源（沿用第 3 节），不注入 ToolBinding。
 - 审批由 ToolExecutor 注入 `B:Approval` 调用，Tools 不涉及。
@@ -302,7 +302,7 @@ apply:
   完成后才提供 B:ToolBinding（已有模型时，Loop 因此在采用落入 Timeline 后才开始请求）
 
 branch/start、branch/resume 分发时（Prompt 已在同一事件写入模型配置，ToolBinding 依赖 Prompt，分发在其后）:
-  登记为 BranchOpening 工作：等 Prompt 初始采用完成，按 apply 的同一规则比较 ──> 一致则 pin，否则 adopt_tools ──> pin
+  登记为 BranchLifecycle 工作：等 Prompt 初始采用完成，按 apply 的同一规则比较 ──> 一致则 pin，否则 adopt_tools ──> pin
   开启工作完成后分支才接受输入，首个请求已有对齐的工具部分
 
 ToolRegistry.changed()（分支 activated() 之后才处理；之前的变化保留在 watch 中）:

@@ -31,7 +31,7 @@ use tokio::sync::watch;
 
 /// The Session and branch services marked `#[rutis::service]`: provided in
 /// their instance, each is served by name there.
-fn crossing_instance_names() -> [(String, &'static str); 16] {
+fn crossing_instance_names() -> [(String, &'static str); 17] {
     [
         (
             name_of::<crate::ui_extensions::UiResources>(),
@@ -50,6 +50,7 @@ fn crossing_instance_names() -> [(String, &'static str); 16] {
             name_of::<dim_agent_runtime::SessionLifecycle>(),
             SESSION_GROUP,
         ),
+        (name_of::<dim_agent_runtime::SessionLoader>(), SESSION_GROUP),
         (name_of::<dim_agent_runtime::SessionConfig>(), SESSION_GROUP),
         (name_of::<dim_agent_runtime::Dispatcher>(), BRANCH_GROUP),
         (
@@ -99,6 +100,7 @@ pub fn share_names(catalog: &mut ServiceCatalog) {
         catalog.register_shared_instance(name, group);
     }
     catalog
+        .register_shared_instance("submitChecks", SESSION_GROUP)
         .register_shared_instance(name_of::<ToolRegistry>(), SESSION_GROUP)
         .register_shared_instance(name_of::<SessionMethods>(), SESSION_GROUP)
         .register_shared_instance(name_of::<GuideEntries>(), SESSION_GROUP)
