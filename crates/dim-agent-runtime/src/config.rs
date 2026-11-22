@@ -381,7 +381,7 @@ impl BranchLifecycle {
         let mut pending: FuturesUnordered<_> = receipts.into_iter().collect();
         while let Some(result) = pending.next().await {
             result?;
-            ctx.emit(crate::assembly::OpeningAdvanced(scope))?;
+            ctx.emit(crate::assembly::OpeningAdvanced::Plugin(scope))?;
         }
         Ok(())
     }

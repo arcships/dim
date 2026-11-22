@@ -26,8 +26,12 @@ pub const SESSION_GROUP: &str = "session";
 /// Instanced loader group of one branch, nested in [`SESSION_GROUP`].
 pub const BRANCH_GROUP: &str = "branch";
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct OpeningAdvanced(pub PluginId);
+#[derive(Clone, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum OpeningAdvanced {
+    Plugin(PluginId),
+    Instance(String),
+}
 impl rutis::Event for OpeningAdvanced {
     const NAME: &'static str = "dim/opening-advanced";
     type Value = ();
@@ -41,15 +45,8 @@ impl rutis::Event for OpeningAdvanced {
 /// work runs on a blocking thread reports from there. A context whose plugin
 /// has no live fiber reports nothing: the report would be dropped anyway.
 pub fn opening_advanced(ctx: &Ctx) {
-    let instance = ctx.instance();
-    let id = ctx
-        .diagnostics()
-        .plugins
-        .into_iter()
-        .find(|plugin| plugin.instance == instance)
-        .map(|plugin| plugin.id);
-    if let Some(id) = id {
-        let _ = ctx.emit(OpeningAdvanced(id));
+    if !ctx.cancellation_token().is_cancelled() {
+        let _ = ctx.emit(OpeningAdvanced::Instance(ctx.instance().to_string()));
     }
 }
 
@@ -68,7 +65,7 @@ pub struct StartupProgress {
     ctx: Ctx,
     started: tokio::time::Instant,
     timeout: Duration,
-    active: Arc<Mutex<HashMap<PluginId, tokio::time::Instant>>>,
+    active: Arc<Mutex<HashMap<OpeningAdvanced, tokio::time::Instant>>>,
     report: Arc<Mutex<Option<ProgressReport>>>,
     listeners: Vec<rutis::Disposer>,
 }
@@ -84,7 +81,7 @@ impl StartupProgress {
             if event.to == FiberState::Active {
                 let inserted = {
                     let mut changes = changes.lock().unwrap();
-                    match changes.entry(event.plugin_id) {
+                    match changes.entry(OpeningAdvanced::Plugin(event.plugin_id)) {
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             entry.insert(tokio::time::Instant::now());
                             true
@@ -114,7 +111,7 @@ impl StartupProgress {
                 changes
                     .lock()
                     .unwrap()
-                    .insert(event.0, tokio::time::Instant::now());
+                    .insert((*event).clone(), tokio::time::Instant::now());
                 notify_progress(&reports);
                 Ok(None)
             })?);
@@ -150,15 +147,24 @@ impl StartupProgress {
                 .into_iter()
                 .flat_map(|id| subtree(&snapshot, id))
                 .collect();
-            let last = self
-                .active
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(id, _)| members.contains(id))
-                .map(|(_, time)| *time)
-                .max()
-                .unwrap_or(self.started);
+            let last = {
+                let active = self.active.lock().unwrap();
+                let by_plugin = members
+                    .iter()
+                    .filter_map(|&id| active.get(&OpeningAdvanced::Plugin(id)));
+                let by_instance = snapshot
+                    .plugins
+                    .iter()
+                    .filter(|plugin| members.contains(&plugin.id))
+                    .filter_map(|plugin| {
+                        active.get(&OpeningAdvanced::Instance(plugin.instance.to_string()))
+                    });
+                by_plugin
+                    .chain(by_instance)
+                    .copied()
+                    .max()
+                    .unwrap_or(self.started)
+            };
             deadline = last + self.timeout;
             if deadline <= tokio::time::Instant::now() {
                 return None;

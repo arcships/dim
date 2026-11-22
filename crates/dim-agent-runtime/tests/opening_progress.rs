@@ -36,6 +36,13 @@ async fn opened(reports: bool) -> dim_agent_runtime::Result<()> {
         gap: Duration::from_millis(60),
         reports,
     });
+    if !reports {
+        root.plugin(Progressing {
+            steps: 6,
+            gap: Duration::from_millis(60),
+            reports: true,
+        });
+    }
     let result = wait_active(
         &root,
         std::slice::from_ref(&view),
@@ -56,9 +63,8 @@ async fn an_opening_that_reports_progress_outlives_its_interval() {
         .expect("reported progress renews the interval");
 }
 
-/// The same opening without reports ends at the interval.
 #[tokio::test]
-async fn an_opening_that_reports_nothing_times_out() {
+async fn progress_in_a_sibling_does_not_renew_an_opening() {
     let error = opened(false)
         .await
         .expect_err("an inactive opening must time out");

@@ -187,7 +187,7 @@ impl TimelineContext {
                 if dispatched > sequence {
                     sequence = dispatched;
                     if inner.lifecycle.phase() == BranchPhase::Loading
-                        && let Err(error) = inner.ctx.emit(OpeningAdvanced(inner.view.id))
+                        && let Err(error) = inner.ctx.emit(OpeningAdvanced::Plugin(inner.view.id))
                     {
                         inner.dispatcher.fail(error.into());
                     }
