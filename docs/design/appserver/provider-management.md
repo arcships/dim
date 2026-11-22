@@ -1031,8 +1031,9 @@ in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
 included, is the whole answer. An entry with no list is recognized as an image
 model, because relay and account catalogs list such models without media
 metadata: its id is `arcship-image`, a known ID in the `gpt-image-2` or
-`grok-imagine-image` family, or names `seedream`, or its `type` is `image`/`image-generation` with image or no stated output, or
-`imageGeneration` is true, or its only output is `image`. Such a model declares
+`grok-imagine-image` family, or names `seedream`, or its `type` is
+`image`/`image-generation` with image or no stated output, or `imageGeneration`
+is true, or its only output is `image`. Such a model declares
 `image.generate`, and `image.edit` too when it also reads images or is a known
 model; a `type` of `image-edit` declares `image.edit` alone, and
 `imageGeneration: false` recognizes nothing. The connection rule below reads

@@ -657,17 +657,6 @@ impl Evaluation {
             })
         })
     }
-    fn serves(&self, model: &ModelId, category: &str, operation: &str) -> bool {
-        let Some(adapter) = self.adapter(&model.provider_id) else {
-            return false;
-        };
-        adapter.0.available()
-            && adapter
-                .0
-                .operations(model)
-                .iter()
-                .any(|served| served.category == category && served.operation == operation)
-    }
     fn selectable(&self, provider_id: &str, model_id: &str) -> Option<&ModelCapabilitySnapshot> {
         self.selectable.iter().find(|model| {
             model.target.provider_id == provider_id && model.target.model_id == model_id
@@ -686,24 +675,32 @@ impl Evaluation {
                 .declared_for(&model.provider_id, &model.model_id)
                 .is_some()
     }
-    /// The adapter's declaration of one operation for `model`: its parameter
-    /// schema, read per submission (A.2, decision 3). `None` when no
-    /// available adapter serves the operation for that model.
+    /// The parameter schema of the available adapter for this model and
+    /// operation, or the reason the operation cannot run (Modality A.2).
     pub(crate) fn operation_spec(
         &self,
         model: &ModelId,
         category: &str,
         operation: &str,
-    ) -> Option<AdapterOperation> {
-        let adapter = self.adapter(&model.provider_id)?;
-        if !adapter.0.available() {
-            return None;
+    ) -> Result<AdapterOperation, Reason> {
+        if let Some(adapter) = self.adapter(&model.provider_id)
+            && let Some(spec) = adapter
+                .0
+                .operations(model)
+                .into_iter()
+                .find(|spec| spec.category == category && spec.operation == operation)
+        {
+            return if adapter.0.available() {
+                Ok(spec)
+            } else {
+                Err(reason("runtime", "The adapter is unavailable"))
+            };
         }
-        adapter
-            .0
-            .operations(model)
-            .into_iter()
-            .find(|spec| spec.category == category && spec.operation == operation)
+        if category != "image" && !self.adapter_serves(category) {
+            Err(reason("build", "Not in this build"))
+        } else {
+            Err(reason("adapter", "No available adapter serves the model"))
+        }
     }
     fn option(model: &ModelId) -> OptionSnapshot {
         OptionSnapshot {
@@ -762,31 +759,19 @@ impl Evaluation {
                 .iter()
                 .filter(|model| declares(&model.operations, category, row.operation))
                 .map(|model| {
-                    if is_realtime(category) || self.serves(&model.target, category, row.operation)
-                    {
-                        Self::option(&model.target)
-                    } else {
-                        OptionSnapshot {
-                            available: false,
-                            reason: Some(self.unserved_reason(&model.target, category)),
-                            ..Self::option(&model.target)
-                        }
+                    if is_realtime(category) {
+                        return Self::option(&model.target);
+                    }
+                    let reason = self
+                        .operation_spec(&model.target, category, row.operation)
+                        .err();
+                    OptionSnapshot {
+                        available: reason.is_none(),
+                        reason,
+                        ..Self::option(&model.target)
                     }
                 })
                 .collect()
-        }
-    }
-    /// Why no adapter runs a declared model's operation, in the operation's
-    /// own vocabulary.
-    fn unserved_reason(&self, model: &ModelId, category: &str) -> Reason {
-        match self.adapter(&model.provider_id) {
-            Some(adapter) if !adapter.0.available() => {
-                reason("runtime", "The adapter is unavailable")
-            }
-            _ if category != "image" && !self.adapter_serves(category) => {
-                reason("build", "Not in this build")
-            }
-            _ => reason("adapter", "No available adapter serves the model"),
         }
     }
     /// Whether `configure` may persist `model` for one operation: an option
@@ -839,12 +824,6 @@ impl Evaluation {
         }
         if !self.known(model) {
             return reason("provider", "Model is no longer selectable");
-        }
-        if self
-            .declared_for(&model.provider_id, &model.model_id)
-            .is_some_and(|declared| declares(&declared.operations, category, operation))
-        {
-            return self.unserved_reason(model, category);
         }
         reason(
             "configuration",

@@ -993,26 +993,15 @@ impl ModalityTasks {
             // adapter schema (decision 4).
             ocr_params(&params.params)?;
         } else {
-            let spec = evaluation.operation_spec(&model, category.name, row.operation);
-            let Some(spec) = spec else {
-                // The evaluation names why this model is no option, when it
-                // carries a reason for it; otherwise the message stands alone.
-                let message = format!(
-                    "No available adapter serves {} for this model",
-                    row.id(category.name)
-                );
-                let reason = snapshot
-                    .options
-                    .iter()
-                    .find(|option| {
-                        option.model() == (model.provider_id.as_str(), model.model_id.as_str())
-                    })
-                    .and_then(|option| option.reason.as_ref());
-                return Err(unavailable(match reason {
-                    Some(reason) => format!("{message}\n{}", reason_line(reason)),
-                    None => message,
-                }));
-            };
+            let spec = evaluation
+                .operation_spec(&model, category.name, row.operation)
+                .map_err(|reason| {
+                    unavailable(format!(
+                        "No available adapter serves {} for this model\n{}",
+                        row.id(category.name),
+                        reason_line(&reason)
+                    ))
+                })?;
             check_spec_params(&spec, &params.params, &row.id(category.name))?;
         }
         // Boundary: names, media types and sizes (decision 1, decision 2).

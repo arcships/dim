@@ -1501,6 +1501,12 @@ async fn capabilities_and_configure_resolve_defaults_through_the_fixture_adapter
         "the default agrees with the operation: {generate}"
     );
     assert!(generate["effective"].is_null());
+    let edit = operation(&offline, "edit");
+    assert_eq!(edit["reasons"][0]["dimension"], "adapter");
+    assert_eq!(
+        edit["reasons"][0]["dimension"],
+        edit["default"]["reason"]["dimension"]
+    );
     let refused = client
         .rpc(
             "modality.configure",
