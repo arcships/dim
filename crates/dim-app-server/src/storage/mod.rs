@@ -18,7 +18,7 @@ mod timeline;
 
 pub use backup::{backup_store, restore_store};
 pub use catalog::initialize_session_catalog;
-pub(crate) use catalog::{ACTIVITY_KINDS, truncate_preview};
+pub(crate) use catalog::{ACTIVITY_KINDS, activity_time, truncate_preview};
 #[cfg(feature = "testing")]
 pub use codec::NodeLoads;
 pub use dim_agent_capabilities::file_access::WorktreeDirectory;

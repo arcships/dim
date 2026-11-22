@@ -427,10 +427,15 @@ pub async fn create_wait_session(client: &mut Client, home: &Path) -> String {
 }
 
 pub async fn history(client: &mut Client, session_id: &str) -> Vec<Value> {
+    history_on(client, session_id, "main").await
+}
+
+/// Every event of one named branch, in order.
+pub async fn history_on(client: &mut Client, session_id: &str, branch_id: &str) -> Vec<Value> {
     let page: Value = client
         .rpc(
             "session.history",
-            json!({"sessionId": session_id, "branchId": "main", "after": 0, "limit": 500}),
+            json!({"sessionId": session_id, "branchId": branch_id, "after": 0, "limit": 500}),
         )
         .await
         .unwrap();

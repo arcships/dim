@@ -17,7 +17,7 @@
 | Caller → owner | New API |
 | --- | --- |
 | Branch directory readers → `timelineTree` | `timelineTree.directory({}) → [{info, head, state, endEvent?}]`, including ending and ended branches. |
-| Skills content and MCP publication → Session loader | `sessionLoader.create({group, definitionId, instanceData}) → {instanceId}`; `remove({instanceId}) → void`. The Session anchors each instance. Skills supplies its content definition; MCP supplies its connection definition and resolves driver and credentials locally. |
+| Skills content and MCP publication → Session loader | `sessionLoader.create({group, definitionId, instanceData}) → {instanceId}`; `remove({instanceId}) → void`. The Session loader admits groups whose configured parent is the Session group. Registered Session extension definitions must activate their instance rows. Host-added optional groups retain their optional rows. Skills supplies its content definition; MCP supplies its connection definition ID and retains the resolved transport configuration. |
 | Goal → timelineTree | `inputs(id, inputs) → committed events`. One validated atomic batch for the Goal record and trigger. |
 | Branch-detail RPC → timelineTree | `display(id) → {entry,purpose?,cutMessages?,end?}`. |
 | History RPC and line-read tools → timelineTree | `batchEnd(id, sequence) → void`, `pageEnd(id, after, limit, through) → sequence`, and `page` at the same cutoff. Preserve complete batches and the fixed head of ended lines. |
@@ -26,7 +26,7 @@
 | InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch. |
 | PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report also uses `timelineTree.query` at the selected head for evidence. |
 | Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |
-| Fault producers and Session observers → `sessionLifecycle` | `reportFault(error) → void`, `failure({}) → AgentError or null`, `observeFault(listener) → subscription`. First fault wins with existing storage-fault precedence. |
+| Fault producers and Session observers → `sessionLifecycle` | `reportFault(error) → void`, `failure({}) → SessionFault or null`, `observeFault(listener) → id`, `release(id) → boolean`. The listener receives the current failure (initially null) and subsequent reports. Caller unload releases the observation. The first fault wins until a storage failure supersedes it; the first storage failure wins. |
 | Check providers and input admission → SubmitChecks | `register(name, check) → void`; `check({entry, branchId, user?, mode}, cancelled) → proceed{blocks, warnings} or block{message}`. Run in name order through the first block. Interrupted checks write nothing. |
 | Compaction, stop and activity callers → `agentLoop` | `agentLoop.compact({}) → sequence`, `stopTurn({turnId, reason}) → sequence or null`; `agentLoop.state({}) → {phase, turnId?}`, `observe(listener)` delivers that snapshot. |
 

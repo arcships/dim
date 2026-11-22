@@ -4,7 +4,8 @@
 use crate::{
     document::MAX_PROMPT_BYTES,
     loops::{self, Loops, StartRequest, wire_loop},
-    methods::{Caller, ScheduleJobs, ToolRequest},
+    methods::{Caller, ScheduleJobs, Shared, ToolRequest},
+    runs::SchedulerError,
     wakeups::{WakeupRequest, Wakeups},
 };
 use dim_agent_capabilities::{
@@ -14,7 +15,7 @@ use dim_agent_capabilities::{
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionIdentity};
-use dim_agent_types::{DEFAULT_BRANCH_ID, ToolCall, ToolDefinition, ToolResult, ToolSource};
+use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use jiff::Timestamp;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -300,9 +301,12 @@ pub(crate) struct CancelParams {
 }
 
 /// The non-empty-string check the neighbouring Session methods use.
-pub(crate) fn nonempty(text: &str, field: &str) -> Result<(), RpcError> {
+pub(crate) fn nonempty(text: &str, field: &str) -> Result<(), SchedulerError> {
     if text.is_empty() {
-        return Err(RpcError::invalid(format!("{field} must not be empty")));
+        return Err(SchedulerError::new(
+            "invalid_params",
+            format!("{field} must not be empty"),
+        ));
     }
     Ok(())
 }
@@ -362,12 +366,13 @@ fn loop_handler(loops: Arc<Loops>) -> dim_agent_capabilities::methods::Handler {
             match method.as_str() {
                 "session.loop.start" => {
                     let p: LoopStartParams = params(value)?;
-                    let created = loops.start(loop_start_request(p)?).await?;
+                    let request = loop_start_request(&loops.shared, p).await?;
+                    let created = loops.start(request).await?;
                     reply(json!({ "loop": wire_loop(&created) }))
                 }
                 "session.loop.list" => {
                     let p: LoopListParams = params(value)?;
-                    let (session_id, branch) = loop_list_scope(p)?;
+                    let (session_id, branch) = loop_list_scope(&loops.shared, p).await?;
                     let own = loops.list(&session_id, &branch).await?;
                     reply(json!({
                         "loops": own.iter().map(wire_loop).collect::<Vec<_>>()
@@ -440,16 +445,24 @@ pub(crate) struct LoopStopParams {
 }
 
 /// The one parse of a loop start, shared by the `session.loop.start` handler
-/// and the `loops` data face's `start`, so both answer the same errors.
-pub(crate) fn loop_start_request(params: LoopStartParams) -> Result<StartRequest, RpcError> {
+/// and the `loops` data face's `start`, so both answer the same errors and
+/// both read an omitted branch's default once (timeline branches §20.22).
+pub(crate) async fn loop_start_request(
+    shared: &Shared,
+    params: LoopStartParams,
+) -> Result<StartRequest, SchedulerError> {
     nonempty(&params.session_id, "sessionId")?;
-    let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-    nonempty(branch, "branchId")?;
+    let branch = match params.branch_id {
+        Some(branch) => branch,
+        None => shared.default_branch(&params.session_id).await?,
+    };
+    nonempty(&branch, "branchId")?;
     nonempty(&params.prompt, "prompt")?;
-    prompt_size(&params.prompt).map_err(RpcError::invalid)?;
+    prompt_size(&params.prompt)
+        .map_err(|message| SchedulerError::new("invalid_params", message))?;
     Ok(StartRequest {
         session_id: params.session_id,
-        branch_id: branch.to_owned(),
+        branch_id: branch,
         prompt: params.prompt,
         every_seconds: params.every_seconds,
         first_delay_seconds: None,
@@ -457,11 +470,17 @@ pub(crate) fn loop_start_request(params: LoopStartParams) -> Result<StartRequest
 }
 
 /// The one parse of a loop list scope, shared by the handler and the face.
-pub(crate) fn loop_list_scope(params: LoopListParams) -> Result<(String, String), RpcError> {
+pub(crate) async fn loop_list_scope(
+    shared: &Shared,
+    params: LoopListParams,
+) -> Result<(String, String), SchedulerError> {
     nonempty(&params.session_id, "sessionId")?;
-    let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-    nonempty(branch, "branchId")?;
-    Ok((params.session_id, branch.to_owned()))
+    let branch = match params.branch_id {
+        Some(branch) => branch,
+        None => shared.default_branch(&params.session_id).await?,
+    };
+    nonempty(&branch, "branchId")?;
+    Ok((params.session_id, branch))
 }
 
 /// The one parse of a loop stop target, shared by the handler and the face.
@@ -512,6 +531,22 @@ pub(crate) fn wakeup_request(
     })
 }
 
+/// The one parse of a wakeup list scope, shared by the handler and the face:
+/// an omitted branch is the Session's default, read once
+/// (timeline branches §20.22).
+pub(crate) async fn wakeup_list_scope(
+    shared: &Shared,
+    params: ListParams,
+) -> Result<(String, String), SchedulerError> {
+    nonempty(&params.session_id, "sessionId")?;
+    let branch = match params.branch_id {
+        Some(branch) => branch,
+        None => shared.default_branch(&params.session_id).await?,
+    };
+    nonempty(&branch, "branchId")?;
+    Ok((params.session_id, branch))
+}
+
 /// The created record as the wire spells it (design §10).
 pub(crate) fn wire_scheduled(wakeup: &crate::wakeups::Wakeup) -> Value {
     json!({
@@ -542,10 +577,8 @@ fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Han
                 }
                 "session.wakeup.list" => {
                     let p: ListParams = params(value)?;
-                    nonempty(&p.session_id, "sessionId")?;
-                    let branch_id = p.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-                    nonempty(branch_id, "branchId")?;
-                    let own = wakeups.list(&p.session_id, branch_id).await?;
+                    let (session_id, branch_id) = wakeup_list_scope(&wakeups.shared, p).await?;
+                    let own = wakeups.list(&session_id, &branch_id).await?;
                     reply(json!({
                         "wakeups": own.iter().map(wire_scheduled).collect::<Vec<_>>()
                     }))

@@ -7,10 +7,11 @@ Offers the message the user would plausibly send next, as a Session notice. Desi
 ## PromptSuggestion
 
 A Session part. It observes its own Session's broadcast on `session/{sessionId}`,
-folds each `main` turn's last `model/call` and `model/content`, and serves
+folds the turns of the line the Session's conversation is on (the default
+branch, kept in step by `branch/default`), and serves
 `session.suggestion.request` and `session.suggestion.respond` through the
 `session.suggestion` namespace of `sessionMethods`. A request checks its gates,
-including the one that reads `main`'s `ContextPreparation::usage` and refuses a
+including the one that reads the request's line's `ContextPreparation::usage` and refuses a
 head that would compact first, clones the turn's last request with
 [`suggestion_request`](../../../../crates/dim-agent-capabilities/src/prompt_suggestion.rs),
 resolves the connection, calls `ModelHost`, reads one line and validates it. The
@@ -26,7 +27,7 @@ storage, no replay, no `model/usage` event.
 | `S:SessionConfig` | `interactive` and `collaboration_role`: only a root interactive Session offers. |
 | `S:SessionLifecycle` | `closing()` clears the offer before the channel ends. |
 | `S:SessionMethods` | Registers `session.suggestion` from `apply`, until this generation unloads. |
-| `S:TreeCommands` | Resolves `main` for the context gate, which reads that branch's `ContextPreparation::usage`. |
+| `S:TreeCommands` | The line the conversation is on: read once for the admission, the context gate and the completion's publication recheck, whose `ContextPreparation::usage` decides `compaction_due`. |
 | `P:ModelHost` | Invokes the suggestion request. |
 
 `PromptSuggestionSettingsHost`, the `prompt-suggestion` source read at each
@@ -42,8 +43,9 @@ sends `ModelConnection::Local` as `ModelProviderPlugin::new` does.
 No Timeline write and no Dispatcher subscription. The part listens to the
 Session channel with `ctx.listen::<SessionBroadcast>()`, records `turn/start`,
 `turn/end`, `model/call`, `model/content`, `input/message` and `input/applied`
-on `main`, and listens to `settings/prompt-suggestion` for a setting that turns
-off. One request may be in flight per Session, on the part's own `TaskTracker`;
+on the default branch, clears its cached turn, offer and generation on
+`branch/default`, and listens to `settings/prompt-suggestion` for a setting that
+turns off. One request may be in flight per Session, on the part's own `TaskTracker`;
 `closing()` and the part's unload cancel it. The offer and the counters are
 generation memory, never rebuilt.
 

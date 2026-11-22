@@ -98,7 +98,7 @@ pub struct FilePath {
 /// stores it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DirectoryEntry {
-    #[serde(serialize_with = "face::serialize_name")]
+    #[serde(serialize_with = "crate::os_string::serialize")]
     pub name: OsString,
     pub kind: EntryKind,
 }

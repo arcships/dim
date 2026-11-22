@@ -9,10 +9,13 @@ use crate::{
     engine::{GRACE_SECONDS, lookup_input, sessions, target_gone},
     methods::{Shared, face_arguments, face_call, face_failure},
     runs::SchedulerError,
-    session::{CancelParams, CreateParams, ListParams, nonempty, wakeup_request, wire_scheduled},
+    session::{
+        CancelParams, CreateParams, ListParams, nonempty, wakeup_list_scope, wakeup_request,
+        wire_scheduled,
+    },
 };
 use dim_agent_capabilities::session_broadcast::{SessionNotice, notify};
-use dim_agent_types::{DEFAULT_BRANCH_ID, markup::escaped};
+use dim_agent_types::markup::escaped;
 use jiff::{SignedDuration, Timestamp};
 use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value as BridgeValue};
 use serde::{Deserialize, Serialize};
@@ -559,16 +562,10 @@ impl HostDispatch for WakeupsFace {
                         Ok(args) => args,
                         Err(error) => return face_failure(error),
                     };
-                let branch = request
-                    .branch_id
-                    .unwrap_or_else(|| DEFAULT_BRANCH_ID.into());
-                if let Err(error) = nonempty(&request.session_id, "sessionId")
-                    .and_then(|()| nonempty(&branch, "branchId"))
-                {
-                    return face_failure(SchedulerError::new("invalid_params", error.message));
-                }
+                let resolving = shared.clone();
                 face_call(&shared, cancelled, true, async move {
-                    let records = wakeups.list(&request.session_id, &branch).await?;
+                    let (session_id, branch) = wakeup_list_scope(&resolving, request).await?;
+                    let records = wakeups.list(&session_id, &branch).await?;
                     Ok(json!({ "wakeups": records.iter().map(wire_scheduled).collect::<Vec<_>>() }))
                 })
             }
@@ -581,7 +578,7 @@ impl HostDispatch for WakeupsFace {
                 if let Err(error) = nonempty(&request.session_id, "sessionId")
                     .and_then(|()| nonempty(&request.wakeup_id, "wakeupId"))
                 {
-                    return face_failure(SchedulerError::new("invalid_params", error.message));
+                    return face_failure(error);
                 }
                 face_call(&shared, cancelled, false, async move {
                     let (record, changed) = wakeups

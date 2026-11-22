@@ -27,7 +27,8 @@ for the old writer.
 ## 1. Summary
 
 Agents exposes the process service `sessions`, so a process plugin in any language can start and drive Sessions as
-Collaboration does. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `stop`, `idle` and `delete`.
+Collaboration does. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `pending`, `stop`,
+`idle`, `defaultBranchId` and `delete`.
 Each one maps onto Agents' existing Session creation and admission (`AgentIndex`) and the public Session facade.
 `withdraw` forwards to the InputQueue withdrawal service that S1 added, and `delete` to S5c's `AgentIndex::delete`.
 
@@ -493,6 +494,12 @@ The read answers whether the input is still pending on that branch under the rul
 
 An `inputId` the branch does not hold answers `false`; that covers both an id that was consumed or deleted and one a restart lost. A fixed loop reads this before it delivers its next window, so a round still held behind a running turn defers that window instead of queueing a second one.
 
+### 6.11 defaultBranchId
+
+`{sessionId}` → `{defaultBranchId}`; errors `rejected`, `session_closed`, `reloading`, `failed`.
+
+The read answers the line the Session's conversation is on: the tree's current default, read from its owner (`TreeCommands::default_branch`) after the Session is acquired, so an idle-unloaded Session is restored for the answer as for §6.10. It reads no history page and writes no event. It exists for the request-side defaults that name no line: a management `schedule.save` that records the default branch for a new job ([Scheduler §2.1](plugins/Scheduler.md#21-the-two-targets)), and the `loops`, `wakeups` and EventHub faces when a request omits a branch ([timeline branches §20.22](../timeline-branches.md#20-acceptance)). A caller resolves it once per request.
+
 ## 7. Sequence
 
 A run with one input, a second input withdrawn while it is held, and the wait:
@@ -923,6 +930,7 @@ plugin in another crate uses the named service. The following is a binding excer
 
 ```rust
 pub struct SessionRef { pub session_id: String, pub branch_id: String }
+pub struct SessionRequest { pub session_id: String }
 pub struct LaunchRequest {
     pub agent: Option<String>,
     pub cwd: String,
@@ -953,6 +961,7 @@ pub struct WithdrawRequest {
 }
 pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
 pub struct PendingReply { pub pending: bool }
+pub struct DefaultBranchReply { pub default_branch_id: String }
 pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
 pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() follows the code
 
@@ -964,6 +973,8 @@ impl AgentIndex {
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal from S1
     /// Whether the input is still pending on the branch (§6.10).
     pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
+    /// The line the Session's conversation is on (§6.11).
+    pub async fn default_branch_id(&self, request: SessionRequest) -> Result<DefaultBranchReply, SessionsError>;
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
     pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
     /// S5c's delete, served as `sessions.delete {sessionId}` (§6.8).

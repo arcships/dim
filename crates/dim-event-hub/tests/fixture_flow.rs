@@ -2,12 +2,14 @@
 //! concurrency, a failed subscription-file write, a refused partial creation,
 //! the publish's one `lastFailure` transaction, the subscription limits, a
 //! source's row lifetime, an EventHub reload, a producer that applied first,
-//! the subscribe/unsubscribe race, and a host without `sessionFiles` (design
-//! Appendix D items 3–5, 7–8, 12).
+//! the subscribe/unsubscribe race, the lock order of an omitted branch, and a
+//! host without `sessionFiles` (design Appendix D items 3–5, 7–8, 12).
 use crate::support;
 
 use dim_agent_types::InputMode;
-use dim_event_hub::{DeclareRequest, PublishRequest, ToTarget, TypeDeclaration};
+use dim_event_hub::{
+    DeclareRequest, EventSubscriptions, PublishRequest, SubscriptionCall, ToTarget, TypeDeclaration,
+};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
 use support::fixture::{Fixture, directory};
@@ -519,6 +521,106 @@ async fn a_concurrent_unsubscribe_does_not_retire_a_guide_being_written() {
     assert_eq!(stored[0]["id"], json!(created));
 }
 
+/// A subscribe that omits its branch resolves it before it takes the
+/// Session's lock. A delivery whose guide is stale holds a delivery permit
+/// while it waits for that lock (design §2.5, §3.3), so a subscribe that held
+/// the lock first and then waited for a permit would deadlock the two and keep
+/// all eight permits, stalling every publish of the install.
+#[tokio::test]
+async fn an_omitted_branch_is_resolved_before_the_session_lock() {
+    let (_directory, fixture) = mounted().await;
+    // A stored subscription with a stale guide record: every delivery to the
+    // branch refreshes the guide first, and so waits for the Session lock
+    // while it holds a permit.
+    fixture.subscribe("session", &["im.*"], None).await.unwrap();
+    let mut redeclared = im_declaration();
+    redeclared.guide = "The IM guide, second.".into();
+    fixture.producer.declare(redeclared).await.unwrap();
+    let fixture = Arc::new(fixture);
+
+    // One subscribe holds the Session lock across its guide write.
+    let gate = fixture.sessions.gate_live();
+    let holding = {
+        let fixture = fixture.clone();
+        tokio::spawn(async move { fixture.subscribe("session", &["im.*"], None).await })
+    };
+    let mut in_flight = gate.max_watch();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *in_flight.borrow() < 1 {
+            in_flight.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the first subscribe holds the Session lock across its guide write");
+
+    // A subscribe that omits its branch queues behind it. The handshake is
+    // sent before the call, so the test resumes only once the call has run up
+    // to the Session lock.
+    let service = fixture.root.get::<EventSubscriptions>().unwrap();
+    let (called, queued) = tokio::sync::oneshot::channel();
+    let subscribing = tokio::spawn(async move {
+        let _ = called.send(());
+        service
+            .subscribe(SubscriptionCall {
+                session_id: "session".into(),
+                types: vec!["im.*".into()],
+                matches: None,
+                mode: None,
+                branch_id: None,
+            })
+            .await
+    });
+    queued.await.unwrap();
+
+    // Eight deliveries of the install's eight permits wait for the same lock.
+    let mut publishing = Vec::new();
+    for index in 0..8 {
+        let producer = fixture.producer.clone();
+        let id = format!("held-{index}");
+        publishing.push(tokio::spawn(
+            async move { producer.publish(event(&id)).await },
+        ));
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture.sessions.lookups() < 8 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("every delivery looked its branch up, then waits for the lock under a permit");
+
+    gate.release();
+    let subscribed = tokio::time::timeout(Duration::from_secs(10), subscribing)
+        .await
+        .expect("the subscribe returns: it never waits for a permit under the Session lock")
+        .unwrap()
+        .unwrap();
+    holding.await.unwrap().unwrap();
+    for publish in publishing {
+        let receipt = tokio::time::timeout(Duration::from_secs(10), publish)
+            .await
+            .expect("every delivery returns")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt["deliveries"][0]["status"],
+            json!("delivered"),
+            "{receipt}"
+        );
+    }
+
+    let stored = fixture.subscriptions(Some("session")).await;
+    let created = stored
+        .iter()
+        .find(|subscription| subscription["id"] == subscribed["subscriptionId"])
+        .expect("the subscribe stored its subscription");
+    assert_eq!(
+        created["target"]["branchId"],
+        json!("main"),
+        "the omitted branch is the Session's line: {created}"
+    );
+}
+
 /// A creation refused after it wrote one of its guides retires that guide by
 /// the `storage` rule, stores nothing, and answers the refusal (design §3.3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -704,5 +806,184 @@ async fn the_subscription_service_answers_the_same_through_the_binding_and_the_f
             .as_array()
             .map(Vec::len),
         Some(0)
+    );
+}
+
+/// A publish refused before it is admitted resolves no target branch: the
+/// source's row and the type answer first, so a cold target is never restored
+/// and its `defaultBranchId` is never read (timeline branches §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_publish_reads_no_target_default() {
+    let (_directory, fixture) = mounted().await;
+    let mut unknown_source = event_to("refused-source", &["cold-a"]);
+    unknown_source.source = "ci".into();
+    unknown_source.r#type = "ci.build".into();
+    let error = fixture
+        .producer
+        .publish(unknown_source)
+        .await
+        .expect_err("the source is refused");
+    assert_eq!(error.code, "unknown_source", "{error:?}");
+    assert_eq!(
+        fixture.sessions.default_reads(),
+        0,
+        "no target branch was resolved"
+    );
+
+    let mut unknown_type = event_to("refused-type", &["cold-b"]);
+    unknown_type.r#type = "im.other".into();
+    let error = fixture
+        .producer
+        .publish(unknown_type)
+        .await
+        .expect_err("the type is refused");
+    assert_eq!(error.code, "unknown_type", "{error:?}");
+    assert_eq!(
+        fixture.sessions.default_reads(),
+        0,
+        "no target branch was resolved"
+    );
+
+    // An admitted publish resolves one omitted branch per Session, once.
+    let receipt = fixture
+        .producer
+        .publish(event_to("admitted", &["cold-c", "cold-c"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt["deliveries"].as_array().unwrap().len(),
+        1,
+        "{receipt}"
+    );
+    assert_eq!(
+        fixture.sessions.default_reads(),
+        1,
+        "one read for a Session named twice: {receipt}"
+    );
+}
+
+/// The delivery a receipt names for `session`.
+fn delivery_for<'a>(receipt: &'a Value, session: &str) -> &'a Value {
+    receipt["deliveries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|delivery| delivery["sessionId"] == json!(session))
+        .unwrap_or_else(|| panic!("a delivery for {session}: {receipt}"))
+}
+
+/// One target whose omitted branch cannot be resolved answers in its own
+/// receipt entry: every other target and every matching subscription is
+/// planned and delivered as usual (design §2.3, §3.1, §3.2; timeline
+/// branches §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_unresolvable_target_keeps_the_rest_of_the_publish() {
+    let (_directory, fixture) = mounted().await;
+    fixture
+        .subscribe("subscriber", &["im.*"], None)
+        .await
+        .unwrap();
+    fixture.sessions.deleted("gone");
+    fixture.sessions.fail_default("reloading", "reloading");
+    let mut request = event("partial");
+    request.to = vec![
+        ToTarget {
+            session_id: "valid".into(),
+            branch_id: Some("main".into()),
+            mode: None,
+        },
+        ToTarget {
+            session_id: "gone".into(),
+            branch_id: None,
+            mode: None,
+        },
+        ToTarget {
+            session_id: "reloading".into(),
+            branch_id: None,
+            mode: None,
+        },
+    ];
+    let receipt = fixture.producer.publish(request).await.unwrap();
+    assert_eq!(
+        delivery_for(&receipt, "valid")["status"],
+        json!("delivered"),
+        "{receipt}"
+    );
+    let gone = delivery_for(&receipt, "gone");
+    assert_eq!(gone["status"], json!("failed"), "{receipt}");
+    assert_eq!(gone["code"], json!("session_closed"), "{receipt}");
+    assert!(
+        gone.get("branchId").is_none(),
+        "a target with no resolved branch names none: {receipt}"
+    );
+    let reloading = delivery_for(&receipt, "reloading");
+    assert_eq!(reloading["status"], json!("failed"), "{receipt}");
+    assert_eq!(
+        reloading["code"],
+        json!("reloading"),
+        "the link's own code is the target's receipt entry: {receipt}"
+    );
+    assert!(
+        reloading.get("branchId").is_none(),
+        "a target with no resolved branch names none: {receipt}"
+    );
+    assert_eq!(
+        delivery_for(&receipt, "subscriber")["status"],
+        json!("delivered"),
+        "{receipt}"
+    );
+}
+
+/// A Session named by two omitted targets is read once even when the first
+/// read fails: the failure is that Session's receipt entry, and a second
+/// read cannot turn the duplicate into a delivery (timeline branches §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_omitted_targets_read_the_default_once_after_a_failure() {
+    let (_directory, fixture) = mounted().await;
+    fixture.sessions.fail_default_once("flaky", "reloading");
+    let receipt = fixture
+        .producer
+        .publish(event_to("flaky-targets", &["flaky", "flaky"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.sessions.default_reads(),
+        1,
+        "one read for a Session named twice: {receipt}"
+    );
+    let deliveries = receipt["deliveries"].as_array().unwrap();
+    assert_eq!(deliveries.len(), 1, "{receipt}");
+    let failed = &deliveries[0];
+    assert_eq!(failed["status"], json!("failed"), "{receipt}");
+    assert_eq!(failed["code"], json!("reloading"), "{receipt}");
+    assert!(
+        failed.get("branchId").is_none(),
+        "a target with no resolved branch names none: {receipt}"
+    );
+    assert!(
+        fixture.sessions.calls().is_empty(),
+        "the omitted targets deliver nothing: {receipt}"
+    );
+}
+
+/// The declared types answer before an omitted branch is resolved, so a
+/// refused subscribe never reads the target's default and never restores a
+/// cold Session for it (design §3.3; timeline branches §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subscribe_checks_the_type_before_it_resolves_the_branch() {
+    let (_directory, fixture) = mounted().await;
+    let before = fixture.sessions.default_reads();
+    let error = fixture
+        .call(
+            "eventhub.subscribe",
+            json!({"types": ["im.unknown"], "target": {"sessionId": "cold"}}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(app_code(&error), "unknown_type");
+    assert_eq!(
+        fixture.sessions.default_reads(),
+        before,
+        "no target branch was resolved"
     );
 }

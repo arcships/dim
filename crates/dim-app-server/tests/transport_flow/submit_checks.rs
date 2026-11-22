@@ -806,3 +806,51 @@ async fn concurrent_duplicates_report_warnings_once_for_the_committed_write() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_submit_check_registers_on_the_native_admission_table() {
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id": "submit-check",
+        "name": parts.anchor.parent().unwrap().join("fixtures/submit-check.ts"),
+        "provides": {},
+    })];
+    let (server, agent) = super::launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("SubmitCheckFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap();
+    let probe = client
+        .rpc("session.checkfixture.probe", json!({"sessionId":id}))
+        .await;
+    assert_ok(&probe);
+    assert_eq!(
+        probe["result"],
+        json!({"kind":"proceed","blocks":[],"warnings":[{"check":"fixture","message":"foreign check ran"}]})
+    );
+    let refused = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId":id,"branchId":"main","text":"refuse this input"}),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "input_blocked",
+        "{refused}"
+    );
+    assert_eq!(refused["error"]["message"], "foreign check refused");
+    assert!(inputs(&agent.get_session(id).unwrap()).await.is_empty());
+    server.shutdown();
+    server.join().await.unwrap();
+}

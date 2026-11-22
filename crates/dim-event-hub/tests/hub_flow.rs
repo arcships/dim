@@ -553,10 +553,11 @@ async fn deleting_a_subscribed_session_removes_its_subscriptions() {
 
 /// EventHub §9.1 with a delete and a subscribe in flight. A write held on
 /// the store keeps the delete inside `delete_session` with the Session's
-/// admission gate in hand; the subscribe then waits for that gate in
-/// `acquire`, holding the EventHub Session lock across `sessions.input`.
-/// The delete must release the gate before it announces: its listener takes
-/// that lock, so announcing under the gate would deadlock the two.
+/// admission gate in hand; the subscribe names its branch, takes the EventHub
+/// Session lock and then waits for that gate in `acquire`, across
+/// `sessions.input`. The delete must release the gate before it announces: its
+/// listener takes that lock, so announcing under the gate would deadlock the
+/// two.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_announces_after_its_gate_is_released() {
     let home = home();
@@ -596,7 +597,7 @@ async fn a_delete_announces_after_its_gate_is_released() {
         subscriber
             .rpc(
                 "eventhub.subscribe",
-                json!({"types": ["im.*"], "target": {"sessionId": target}}),
+                json!({"types": ["im.*"], "target": {"sessionId": target, "branchId": "main"}}),
             )
             .await
     });
@@ -1266,6 +1267,78 @@ async fn node_a_typescript_row_declares_and_publishes_through_the_service() {
     assert_eq!(markers.len(), 1, "{events:?}");
     let marker = text_of(&markers[0]);
     assert!(marker.contains("hello from TypeScript"), "{marker}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A publish `to` entry and a subscription that name a Session but no branch
+/// reach the line the Session's conversation is on (timeline branches §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_without_a_branch_reaches_the_default_branch() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let (server, producer) = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path()).await;
+    let branch = open_branch(&server, &mut client, &session).await;
+    client
+        .rpc(
+            "session.branch_set_default",
+            json!({"sessionId": session, "branchId": branch}),
+        )
+        .await
+        .unwrap();
+    producer
+        .declare(im_declaration("The IM guide."))
+        .await
+        .unwrap();
+
+    let receipt = producer
+        .publish(event_to("to-default", &session, None))
+        .await
+        .unwrap();
+    let delivery = delivery_for(&receipt, &session);
+    assert_eq!(delivery["status"], json!("delivered"), "{receipt}");
+    assert_eq!(delivery["branchId"], json!(branch), "{receipt}");
+    let events = history_on(&mut client, &session, &branch).await;
+    assert_eq!(inputs(&events, "id=\"to-default\"").len(), 1, "{events:?}");
+    assert!(
+        inputs(&history(&mut client, &session).await, "id=\"to-default\"").is_empty(),
+        "the root takes nothing"
+    );
+
+    let reply: Value = client
+        .rpc(
+            "eventhub.subscribe",
+            json!({"types": ["im.*"], "target": {"sessionId": session}}),
+        )
+        .await
+        .unwrap();
+    let subscription = reply["subscriptionId"].as_str().unwrap();
+    let listed = listed(&mut client, &session).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(
+        listed[0]["target"]["branchId"],
+        json!(branch),
+        "the subscription records the default branch: {listed:?}"
+    );
+    assert_eq!(listed[0]["id"], json!(subscription));
+
+    let receipt = producer
+        .publish(im_event("default-subscription"))
+        .await
+        .unwrap();
+    let delivery = delivery_for(&receipt, &session);
+    assert_eq!(delivery["status"], json!("delivered"), "{receipt}");
+    assert_eq!(delivery["branchId"], json!(branch), "{receipt}");
+    let events = history_on(&mut client, &session, &branch).await;
+    assert_eq!(
+        inputs(&events, "id=\"default-subscription\"").len(),
+        1,
+        "{events:?}"
+    );
 
     drop(client);
     server.shutdown();

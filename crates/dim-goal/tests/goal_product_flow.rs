@@ -2165,3 +2165,68 @@ async fn goal_each_change_answers_with_one_newest_state_record() {
     );
     fixture.close().await;
 }
+
+/// §20.22: `session.goal.*` with no `branchId` follows the line the Session's
+/// conversation is on, and a goal on the root is untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_change_without_a_branch_reaches_the_default_branch() {
+    let mut fixture = Fixture::start().await;
+    let id = fixture
+        .new_session(&["goal_update", "wait", "branch"])
+        .await;
+    let session = fixture.agent.get_session(&id).unwrap();
+    let before: std::collections::BTreeSet<String> = session
+        .branches()
+        .iter()
+        .map(|info| info.id.clone())
+        .collect();
+    fixture
+        .submit_on(
+            &id,
+            "main",
+            r#"tool:branch {"action":"create","prompt":"the line"}"#,
+        )
+        .await;
+    let line = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(id) = session
+                .branches()
+                .into_iter()
+                .map(|info| info.id)
+                .find(|id| !before.contains(id))
+            {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("main opens the line");
+    fixture.idle_on(&id, "main").await;
+    fixture.idle_on(&id, &line).await;
+    session
+        .set_default_branch(
+            &line,
+            BranchSource::User {
+                operation_id: "switch".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(session.default_branch().unwrap(), line);
+
+    fixture
+        .goal_on(&id, "set", json!({"objective":"on the line"}))
+        .await
+        .unwrap();
+    wait_goal(&session, &line, "<dim-goal ").await;
+    assert!(
+        !fixture
+            .writes("main")
+            .await
+            .iter()
+            .any(|block| block.text.contains("<dim-goal ")),
+        "the root holds no goal of the move"
+    );
+    fixture.close().await;
+}

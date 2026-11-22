@@ -9460,7 +9460,10 @@ async fn a_fork_copies_the_root_and_its_default_branch_is_the_root() {
 
 /// The catalog's recent activity follows the default branch: a batch that
 /// carries activity on the line the Session is now on moves the catalog's
-/// time, and one on the root after a move does not (design §5, §15).
+/// time; the move itself reports the new line's own latest activity, or that
+/// line's own opening when it has none (the Session's creation time answers
+/// only for the root or a line with no event); and a root batch after a move
+/// does not move it (design §5, §14, §15).
 #[tokio::test]
 async fn the_writer_thread_keeps_recent_activity_on_the_default_branch() {
     let database = Database::new();
@@ -9471,6 +9474,15 @@ async fn the_writer_thread_keeps_recent_activity_on_the_default_branch() {
         ..SessionConfig::default()
     };
     store.create_session("s", &config).await.unwrap();
+    let created: i64 = Connection::open(&database.0)
+        .unwrap()
+        .query_row(
+            "SELECT created_at_ms FROM agent_sessions WHERE session_id='s'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let opening_at = (created + 1_000) as u64;
     let activity_at = |connection: &Connection| -> i64 {
         connection
             .query_row(
@@ -9503,6 +9515,16 @@ async fn the_writer_thread_keeps_recent_activity_on_the_default_branch() {
         Arc::make_mut(&mut entry.event).create_at = at;
         entry
     };
+    // A line's opening input carries no user, so the activity predicate reads
+    // the line as having no activity of its own.
+    let opening = |sequence: u64, at: u64| {
+        let mut entry = record(
+            sequence,
+            EventKind::InputMessage(InputMessageData::default()),
+        );
+        Arc::make_mut(&mut entry.event).create_at = at;
+        entry
+    };
     append(&store, key("s", "main"), vec![write(2, 5_000)])
         .await
         .unwrap();
@@ -9518,23 +9540,6 @@ async fn the_writer_thread_keeps_recent_activity_on_the_default_branch() {
         key("s", "main"),
         vec![record(
             3,
-            EventKind::BranchDefault(BranchDefaultData {
-                branch: "line".into(),
-                from: None,
-                source: BranchSource::User {
-                    operation_id: "switch".into(),
-                },
-            }),
-        )],
-    )
-    .await
-    .unwrap();
-    assert_eq!(store.default_of("s"), "line", "the cache follows the fact");
-    append(
-        &store,
-        key("s", "main"),
-        vec![record(
-            4,
             EventKind::BranchCreate(BranchCreateData {
                 at: BranchCreateAt::Create {},
                 source: BranchSource::Tool {
@@ -9549,17 +9554,48 @@ async fn the_writer_thread_keeps_recent_activity_on_the_default_branch() {
     )
     .await
     .unwrap();
+    append(&store, key("s", "line"), vec![opening(1, opening_at)])
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("s", "main"),
+        vec![record(
+            4,
+            EventKind::BranchDefault(BranchDefaultData {
+                branch: "line".into(),
+                from: None,
+                source: BranchSource::User {
+                    operation_id: "switch".into(),
+                },
+            }),
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(store.default_of("s"), "line", "the cache follows the fact");
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(
+        activity_at(&connection),
+        opening_at as i64,
+        "a line with no activity is dated by its own opening"
+    );
+    assert!(
+        opening_at as i64 > created,
+        "the opening follows the Session's creation"
+    );
+    drop(connection);
     append(&store, key("s", "main"), vec![write(5, 9_000)])
         .await
         .unwrap();
     let connection = Connection::open(&database.0).unwrap();
     assert_eq!(
         activity_at(&connection),
-        5_000,
-        "the root's later activity is no longer the Session's"
+        opening_at as i64,
+        "the root's later activity no longer moves the row"
     );
     drop(connection);
-    append(&store, key("s", "line"), vec![write(1, 7_000)])
+    append(&store, key("s", "line"), vec![write(2, 7_000)])
         .await
         .unwrap();
     let connection = Connection::open(&database.0).unwrap();

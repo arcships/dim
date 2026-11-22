@@ -19,7 +19,9 @@ pub(crate) const MAX_DELIVERIES_IN_FLIGHT: usize = 8;
 
 /// The catalog, the subscription view, the Session locks, the event locks
 /// and the delivery budget, shared by every generation of the process part
-/// (design §2.1).
+/// (design §2.1). Every path takes the locks and the permit in one order: an
+/// event lock, a delivery permit, the target Session's lock, then the change
+/// lock, so no holder waits for one that already waits for it (design §2.5).
 pub struct InstanceState {
     catalog: Arc<Catalog>,
     /// The subscriptions and guide records every generation reads and

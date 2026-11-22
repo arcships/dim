@@ -12,7 +12,8 @@ use rutis::host::{BoxFuture as RutisFuture, CtxHost, DynPlugin, Effect, ErrorKin
 use rutis::{Ctx, Error};
 use rutis_loader::Loader;
 use serde_json::{Value, json};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// One root, its loader and one Agent built in it.
@@ -137,6 +138,93 @@ impl Drop for MinimalHost {
             let _ = close.await;
             let _ = root.shutdown().await;
         });
+    }
+}
+
+/// One Session's lifecycle lookup, stopped before it classifies the line, so a
+/// test can end that line in the window the lookup would observe.
+struct LifecycleHold {
+    session: String,
+    branch: String,
+    arrived: mpsc::UnboundedSender<String>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+static LIFECYCLES: Mutex<Vec<LifecycleHold>> = Mutex::new(Vec::new());
+
+/// The next lifecycle lookup of `branch` in `session_id`, held before it
+/// classifies the line until [`HeldLifecycle::release`]. The tests of one
+/// process run in parallel, so the key is the Session and the line.
+pub struct HeldLifecycle {
+    session: String,
+    branch: String,
+    arrived: mpsc::UnboundedReceiver<String>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+impl HeldLifecycle {
+    /// Resolves with the line whose lookup the hook stopped.
+    pub async fn arrived(&mut self) -> String {
+        self.arrived.recv().await.unwrap_or_default()
+    }
+    /// Lets a stopped lookup continue.
+    pub fn release(&self) {
+        let (released, wake) = &*self.release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+    }
+}
+impl Drop for HeldLifecycle {
+    fn drop(&mut self) {
+        self.release();
+        let (session, branch) = (
+            std::mem::take(&mut self.session),
+            std::mem::take(&mut self.branch),
+        );
+        LIFECYCLES
+            .lock()
+            .unwrap()
+            .retain(|hold| hold.session != session || hold.branch != branch);
+    }
+}
+
+/// Holds the next lifecycle lookup of `branch` in `session_id` before it
+/// classifies the line.
+pub fn hold_lifecycle(session_id: &str, branch: &str) -> HeldLifecycle {
+    let (arrived, wait) = mpsc::unbounded_channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    LIFECYCLES.lock().unwrap().push(LifecycleHold {
+        session: session_id.to_owned(),
+        branch: branch.to_owned(),
+        arrived,
+        release: release.clone(),
+    });
+    HeldLifecycle {
+        session: session_id.to_owned(),
+        branch: branch.to_owned(),
+        arrived: wait,
+        release,
+    }
+}
+
+/// The hook [`hold_lifecycle`] installs: no hold, no wait. It takes no lock
+/// while it waits, so the caller holds none either. A hold stops one lookup:
+/// once one reaches it, later callers pass.
+pub(crate) fn lifecycle(session_id: &str, branch: &str) {
+    let (arrived, release) = {
+        let mut holds = LIFECYCLES.lock().unwrap();
+        let Some(index) = holds
+            .iter()
+            .position(|hold| hold.session == session_id && hold.branch == branch)
+        else {
+            return;
+        };
+        let hold = holds.remove(index);
+        (hold.arrived, hold.release)
+    };
+    let _ = arrived.send(branch.to_owned());
+    let (released, wake) = &*release;
+    let mut released = released.lock().unwrap();
+    while !*released {
+        released = wake.wait(released).unwrap();
     }
 }
 

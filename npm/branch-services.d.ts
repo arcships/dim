@@ -835,6 +835,12 @@ export interface SessionIdentity {
  */
 export interface BranchLifecycle {
   /**
+   * Registers a completion for the current branch opening. Once opening seals,
+   * registration fails. A failed completion fails the opening.
+   * @throws {AgentErrorThrown}
+   */
+  registerOpening(completion: () => void | Promise<void>): Promise<void>
+  /**
    * Waits until the branch leaves `Loading`: true when it became Active,
    * false when it closes without ever starting.
    */
@@ -844,6 +850,42 @@ export interface BranchLifecycle {
    * without waiting for its capability to unload.
    */
   closing(): Promise<void>
+}
+
+/**
+ * Why the tree refused an operation on a line, named the way the protocol
+ * names it: the codes `session.branch_set_default` answers as its `appError`
+ * and the codes the branch tool answers as its own result
+ * ([timeline branches §11](../../../docs/design/timeline-branches.md#11-the-branch-tool),
+ * [§14](../../../docs/design/timeline-branches.md#14-clients)).
+ */
+export type BranchRefusal =
+  | /** The target is already the Session's default branch. */ "already_default"
+  | /** The target cannot be the default branch: a plugin line, or a line a client opened before `FORMAT` 53. */ "not_selectable"
+  | /** The target or an ancestor of it is ending or ended, so an end already on its way to it wins. */ "protected"
+  | /** The target cannot end: the current default branch, or an ancestor of the default branch. The root's own refusal is the operation's input error, which its callers already answer. */ "cannot_end"
+  | /** The caller may not open a line: only the root, and the current default branch, open one. */ "not_opener"
+  | /** The Session holds its limit of open tool lines, counting the admitted reservations. */ "limit_reached"
+
+/** A failure reported to a Session. Framework failures carry their diagnostic text. */
+export type SessionFault =
+  | { invalidInput: string }
+  | { closed: string }
+  | { unknownBranch: string }
+  | { branchEnded: string }
+  | { branchRefused: { refusal: BranchRefusal; message: string } }
+  | { storage: string }
+  | { publicationUnknown: string }
+  | { build: string }
+  | { cancelled: string }
+  | { reloading: string }
+  | { ambiguousSubmission: string }
+  | { partialSubmission: string }
+  | { fault: { component: string; message: string } }
+  | { framework: string }
+  | { multiple: SessionFault[] }
+
+export type FaultQuery = {
 }
 
 /**
@@ -864,6 +906,8 @@ export interface BranchLifecycle {
  * parts in other languages use [`Self::hold`].
  */
 export interface SessionLifecycle {
+  reportFault(error: SessionFault): Promise<void>
+  failure(request: FaultQuery): Promise<SessionFault | null>
   /**
    * Waits until the Session is published or starts closing: true only when
    * it was published and is not closing.
@@ -884,9 +928,12 @@ export interface SessionLifecycle {
    */
   hold(): Promise<number | bigint | null>
   /**
-   * Releases the hold `id` took and ends its cleanup in the row that
-   * took it: true when it was held, false when it was released already
-   * or by its row's unload.
+   * Observes the current failure and subsequent reports until release or caller unload.
+   * @throws {ErrorThrown}
+   */
+  observeFault(listener: (arg0: SessionFault | null) => void | Promise<void>): Promise<number | bigint>
+  /**
+   * Releases a hold or fault observation. The caller's unload also releases it.
    * @throws {AgentErrorThrown}
    */
   release(id: number | bigint): Promise<boolean>
@@ -975,6 +1022,24 @@ export interface PartRegistry {
    * unloads, rutis ends every copy first; the registration then goes.
    */
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
+}
+
+export type SessionInstanceDefinition = {
+  group: string
+  definitionId: string
+  instanceData: import('./plugin.js').BridgeJsonValue
+}
+
+export type SessionInstance = {
+  instanceId: number | bigint
+}
+
+/** The loader anchored in this Session's subtree. */
+export interface SessionLoader {
+  /** @throws {SessionInstanceErrorThrown} */
+  create(definition: SessionInstanceDefinition): Promise<SessionInstance>
+  /** @throws {SessionInstanceErrorThrown} */
+  remove(instance: SessionInstance): Promise<void>
 }
 
 /** A branch of a Session. */
@@ -1301,6 +1366,9 @@ export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed"
 /** What a method returning `Err(ApprovalRespondError)` throws. */
 export type ApprovalRespondErrorThrown = RustError<"ApprovalRespondError", "Unknown" | "Cancelled" | "Closed", undefined>
 
+/** What a method returning `Err(Error)` throws. */
+export type ErrorThrown = RustError<"Error", string, undefined>
+
 /** What a method returning `Err(HostError)` throws. */
 export type HostErrorThrown = RustError<"HostError", "Failed" | "Cancelled", undefined>
 
@@ -1321,6 +1389,9 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
+
+/** What a method returning `Err(SessionInstanceError)` throws. */
+export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
 
 /** What a method returning `Err(SessionsError)` throws. */
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
@@ -1366,6 +1437,7 @@ export interface Services {
   dispatcher: Dispatcher
   timeline: Timeline
   partRegistry: PartRegistry
+  sessionLoader: SessionLoader
   sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig
   collaborationDirectory: CollaborationDirectory

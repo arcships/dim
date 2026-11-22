@@ -25,7 +25,7 @@ use dim_agent_runtime::{
     AgentBuilder, Names, SessionConfig, SessionHold, SessionIdentity, SessionLifecycle,
     SessionPhase,
 };
-use dim_agent_types::{DEFAULT_BRANCH_ID, InputMessageData, InputMode};
+use dim_agent_types::{InputMessageData, InputMode};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Serialize};
@@ -75,14 +75,11 @@ struct RunParams {
     /// Read by Rpc to route the call; the provider already serves this Session.
     #[serde(rename = "sessionId")]
     _session_id: String,
-    #[serde(default = "default_branch")]
-    branch_id: String,
+    #[serde(default)]
+    branch_id: Option<String>,
     run_id: String,
     command: String,
     mode: Mode,
-}
-fn default_branch() -> String {
-    DEFAULT_BRANCH_ID.into()
 }
 
 #[derive(Deserialize)]
@@ -224,7 +221,14 @@ impl ShellInput {
         }
         check_run_id(&p.run_id)?;
         self.admit(&self.registry.lock().unwrap(), &p.run_id, &cancel)?;
-        self.tree.get(&p.branch_id)?;
+        // A run that names no line belongs to the line the Session's
+        // conversation is on, resolved once for the whole run (design §9,
+        // §15).
+        let branch_id = match p.branch_id {
+            Some(branch_id) => branch_id,
+            None => self.tree.default_branch().map_err(RpcError::from)?,
+        };
+        self.tree.get(&branch_id)?;
         let built = async {
             #[cfg(feature = "testing")]
             testing::pause(&self.cwd).await;
@@ -262,7 +266,7 @@ impl ShellInput {
             })?;
             let info = RunInfo {
                 run_id: p.run_id,
-                branch_id: p.branch_id,
+                branch_id,
                 mode: p.mode,
                 command: p.command,
                 started_at: SystemTime::now()

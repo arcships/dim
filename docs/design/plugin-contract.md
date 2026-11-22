@@ -116,12 +116,12 @@ R4). This table says what each name Dim defines is for.
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
 | `treeCommands` | `session` | TimelineTree | yes | `input` by branch id, `create`, `list`, `info` |
 | `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
-| `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload |
+| `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload. `reportFault` reports a fault, `failure` reads it and `observeFault` subscribes. The calling row releases its subscription with `release(id)` or on unload. |
 | `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |
 | `agentConfig` | `session` | SessionScope | yes | `get()`: the Agent's identity and default model |
 | `timeline` | `branch` | BranchScope | yes, except `before` | `append`, the published sequence and the event query (§5.4); the query reaches other languages with its declaration |
 | `dispatcher` | `branch` | BranchScope | yes, `consume`, `listen` and reads; their Rust forms are the same `consume` and `subscribe`, which is Rust-only | Ordered consumption (§5.2) |
-| `branchLifecycle` | `branch` | BranchScope | yes | `activated`, `closing` |
+| `branchLifecycle` | `branch` | BranchScope | yes | `activated`, `closing`. `registerOpening` registers work that branch opening waits for. |
 | `timelineIdentity` | `branch` | BranchScope | yes | `{sessionId, branchId}` |
 
 The Rust host ports and registries (ToolRegistry, PromptRegistry, ToolHost, ModelHost,

@@ -26,16 +26,10 @@ pub(crate) async fn subscribe(
     origin: Origin,
     request: SubscribeRequest,
 ) -> Result<Value, EventHubError> {
-    let crate::model::CheckedSubscribe {
-        types,
-        matches,
-        target,
-    } = validate_subscribe(&request)?;
-    // One lock per target Session, from the first check to the last guide
-    // write or retire (design §3.3): an unsubscribe or a delete of the same
-    // Session cannot retire a guide this subscribe wrote before its record
-    // was stored.
-    let _session = shared.state.session_lock(&target.session_id).await;
+    let crate::model::CheckedSubscribe { types, matches } = validate_subscribe(&request)?;
+    // The declared types answer first: a subscribe refused for its types never
+    // resolves an omitted branch, so it cannot restore a cold Session or have
+    // its refusal masked by that read (design §3.3, timeline branches §20.22).
     for pattern in &types {
         match source_of(pattern) {
             Some(source) if pattern.ends_with(".*") => {
@@ -59,6 +53,29 @@ pub(crate) async fn subscribe(
             }
         }
     }
+    let session_id = request.target.session_id.clone();
+    // An omitted branch is the line the Session is on, resolved once under the
+    // permit a publish's cold read takes, and only after the checks above
+    // (timeline branches §20.22). The resolution is a read: it touches no
+    // guide and no record, so it runs before the Session lock, the way every
+    // other permit is taken before that lock (design §2.5).
+    let target = Target {
+        session_id: session_id.clone(),
+        branch_id: match &request.target.branch_id {
+            Some(branch_id) => branch_id.clone(),
+            None => {
+                let permit = shared.state.delivery_permit().await;
+                let branch = shared.default_branch(&session_id).await;
+                drop(permit);
+                branch?
+            }
+        },
+    };
+    // One lock per target Session, from the limits check to the last guide
+    // write or retire (design §3.3): an unsubscribe or a delete of the same
+    // Session cannot retire a guide this subscribe wrote before its record
+    // was stored.
+    let _session = shared.state.session_lock(&session_id).await;
     check_limits(shared, &target)?;
     let subscription = Subscription {
         id: format!("sub_{}", uuid::Uuid::new_v4()),

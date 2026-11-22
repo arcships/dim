@@ -8,12 +8,12 @@ use crate::{
 use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
     AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, InUse, Modules, Names,
-    NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Session, SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope,
+    NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QueryRow, QuerySelect,
+    QuerySpec, QueryValue, Session, SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope,
     TimelineReadScope, TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
-use dim_agent_types::{DEFAULT_BRANCH_ID, ROOT_BRANCH_ID, TimelinePosition};
+use dim_agent_types::{ROOT_BRANCH_ID, TimelinePosition};
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, Key, TypeKey,
 };
@@ -178,6 +178,15 @@ struct SessionSlot {
     /// close of it must outlive the slot.
     deleted: AtomicBool,
 }
+/// The cutoffs one Session summary reads at: its preview stays on the root,
+/// where the Session's first words were written, while its activity follows
+/// the line the conversation is on (design §5, §15).
+pub(crate) struct SummaryCutoff {
+    pub(crate) preview_through: u64,
+    pub(crate) activity_through: u64,
+    pub(crate) default: String,
+}
+
 /// An accepted request or subscription pins one loaded instance.
 pub(crate) struct SessionUse {
     pub host: Arc<AgentHost>,
@@ -1058,14 +1067,15 @@ impl AgentIndex {
         for summary in &mut page.sessions {
             summary.closed = closed.contains(&summary.session.session_id);
             if let Some((_, session)) = self.session(&summary.session.session_id) {
+                // The row's `sequence` stays the root's, as the persisted row
+                // stores it, so loading or unloading never changes it; the
+                // running state follows the line the conversation is on
+                // (design §14, §15).
                 match session
-                    .state(DEFAULT_BRANCH_ID)
-                    .and_then(|state| Ok((state.running, session.sequence(DEFAULT_BRANCH_ID)?)))
+                    .default_branch()
+                    .and_then(|default| session.state(&default))
                 {
-                    Ok((running, sequence)) => {
-                        summary.session.running = running;
-                        summary.session.sequence = sequence;
-                    }
+                    Ok(state) => summary.session.running = state.running,
                     Err(_) if session.is_unloading() => {}
                     Err(error) => {
                         tracing::warn!(session_id=%summary.session.session_id, %error, "Session state was not read for the catalog");
@@ -1085,12 +1095,17 @@ impl AgentIndex {
     /// title that cannot be read now leaves the title fields absent, and a
     /// branch whose Loop is being replaced reports not running; both reach an
     /// attached client as notices.
+    ///
+    /// The record's own `sequence` is the root's, the cutoff a client built
+    /// before the default branch moved reads its root transcript from; the
+    /// line the conversation is on travels beside it as the branch-qualified
+    /// cursor (design §14, §15).
     pub(crate) async fn session_record(
         &self,
         host: &AgentHost,
         session: &Session,
         version: u32,
-    ) -> dim_agent_runtime::Result<crate::protocol::SessionInfo> {
+    ) -> dim_agent_runtime::Result<crate::protocol::SessionRecord> {
         let title = match (&self.session_metadata, version >= 3) {
             (_, false) => None,
             (Some(store), true) => Some(match store.read(session.id()).await {
@@ -1106,36 +1121,48 @@ impl AgentIndex {
             },
             _ => (None, None),
         };
-        Ok(crate::protocol::SessionInfo {
-            session_id: session.id().to_owned(),
-            cwd: session.config().cwd.clone(),
-            model: dim_agent_types::ModelId {
-                provider_id: session.config().model.provider_id.clone(),
-                model_id: session.config().model.model_id.clone(),
+        // The running state and the cursor report the line the Session's
+        // conversation is on, read once; the record's own sequence stays the
+        // root's (design §14, §15).
+        let default = session.default_branch()?;
+        Ok(crate::protocol::SessionRecord {
+            info: crate::protocol::SessionInfo {
+                session_id: session.id().to_owned(),
+                cwd: session.config().cwd.clone(),
+                model: dim_agent_types::ModelId {
+                    provider_id: session.config().model.provider_id.clone(),
+                    model_id: session.config().model.model_id.clone(),
+                },
+                created_at: session.created_at(),
+                running: session.state(&default).is_ok_and(|state| state.running),
+                sequence: session.sequence(ROOT_BRANCH_ID)?,
+                attached_clients: 0,
+                agent_id: (version >= 3).then(|| host.agent_id.clone()),
+                origin,
+                parent_session_id,
+                title,
             },
-            created_at: session.created_at(),
-            running: session
-                .state(DEFAULT_BRANCH_ID)
-                .is_ok_and(|state| state.running),
-            sequence: session.sequence(DEFAULT_BRANCH_ID)?,
-            attached_clients: 0,
-            agent_id: (version >= 3).then(|| host.agent_id.clone()),
-            origin,
-            parent_session_id,
-            title,
+            default_branch: crate::protocol::BranchCursor {
+                sequence: session.sequence(&default)?,
+                branch_id: default,
+            },
         })
     }
 
+    /// One Session's preview from its root and its activity from the line its
+    /// conversation is on (design §5, §15): the preview is the Session's first
+    /// words, which stay where they were written, and a Session reads as recent
+    /// by its default branch.
     pub(crate) async fn session_summary(
         &self,
         id: &str,
-        through: u64,
+        cutoff: SummaryCutoff,
         created_at: u64,
     ) -> dim_agent_runtime::Result<(Option<String>, u64)> {
         let query = TimelineQuery {
             scope: TimelineQueryScope::Branch,
             from: None,
-            through: Some(through),
+            through: Some(cutoff.preview_through),
             include_publishing: false,
             query: QuerySpec {
                 filter: Some(QueryFilter::In {
@@ -1159,41 +1186,9 @@ impl AgentIndex {
                 after: None,
             }),
         };
-        let loaded = match self.session(id) {
-            Some((_, session)) => match session.query(DEFAULT_BRANCH_ID, query.clone()).await {
-                Ok(reply) => Some(reply.result),
-                Err(_) if session.is_unloading() => None,
-                Err(error) => return Err(error),
-            },
-            None => None,
-        };
-        let result = match loaded {
-            Some(result) => result,
-            None => {
-                let store = self
-                    .session_store
-                    .as_ref()
-                    .ok_or_else(|| AgentError::Closed(id.into()))?;
-                let scope = TimelineReadScope {
-                    key: TimelineKey {
-                        session_id: id.into(),
-                        branch_id: DEFAULT_BRANCH_ID.into(),
-                    },
-                    through,
-                    segments: vec![TimelineReadSegment {
-                        branch_id: DEFAULT_BRANCH_ID.into(),
-                        from: 1,
-                        through,
-                        stored_through: through,
-                        tail: vec![],
-                    }],
-                };
-                store
-                    .query(&scope, &query.query, query.page.as_ref())
-                    .await?
-                    .result
-            }
-        };
+        let result = self
+            .branch_query(id, ROOT_BRANCH_ID, cutoff.preview_through, query)
+            .await?;
         let QueryOutput::Rows { rows } = result else {
             unreachable!("field selection returns rows")
         };
@@ -1227,18 +1222,27 @@ impl AgentIndex {
                 (!text.is_empty())
                     .then(|| crate::storage::truncate_preview(&text, Self::SUMMARY_PREVIEW_CHARS))
             });
-        let updated_at = self
-            .latest_activity(id, through)
-            .await?
-            .unwrap_or(created_at);
+        let latest = self
+            .latest_activity(id, &cutoff.default, cutoff.activity_through)
+            .await?;
+        let opening = if latest.is_none() && cutoff.default != ROOT_BRANCH_ID {
+            self.opening_time(id, &cutoff.default, cutoff.activity_through)
+                .await?
+        } else {
+            None
+        };
+        let updated_at =
+            crate::storage::activity_time(latest, opening, &cutoff.default, || Ok(created_at))?;
         Ok((preview, updated_at))
     }
 
-    /// The newest Session activity timestamp on main through the fixed cutoff.
-    /// Idle unload falls back to persisted facts, which include all published facts.
+    /// The newest Session activity timestamp on `default`, the line the
+    /// Session's conversation is on, through the fixed cutoff. Idle unload
+    /// falls back to persisted facts, which include all published facts.
     async fn latest_activity(
         &self,
         id: &str,
+        default: &str,
         through: u64,
     ) -> dim_agent_runtime::Result<Option<u64>> {
         let query = TimelineQuery {
@@ -1289,52 +1293,99 @@ impl AgentIndex {
                 after: None,
             }),
         };
+        let result = self.branch_query(id, default, through, query).await?;
+        let QueryOutput::Rows { rows } = result else {
+            unreachable!("field selection returns rows")
+        };
+        Ok(rows.first().map(Self::event_timestamp))
+    }
+
+    /// The first event's timestamp on `branch` through the fixed cutoff: the
+    /// opening that dates a line other than the root while it has no activity
+    /// of its own (session catalog §3.2).
+    async fn opening_time(
+        &self,
+        id: &str,
+        branch: &str,
+        through: u64,
+    ) -> dim_agent_runtime::Result<Option<u64>> {
+        let query = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: Some(through),
+            include_publishing: false,
+            query: QuerySpec {
+                filter: None,
+                select: QuerySelect::Fields {
+                    fields: vec!["create_at".into()],
+                },
+                group_by: vec![],
+                pick: Some(QueryPick::First),
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: NonZeroU64::MIN,
+                after: None,
+            }),
+        };
+        let result = self.branch_query(id, branch, through, query).await?;
+        let QueryOutput::Rows { rows } = result else {
+            unreachable!("field selection returns rows")
+        };
+        Ok(rows.first().map(Self::event_timestamp))
+    }
+
+    /// Reads `query` on `branch` through `through` from the loaded Session, or
+    /// from its stored rows once it is unloading.
+    async fn branch_query(
+        &self,
+        id: &str,
+        branch: &str,
+        through: u64,
+        query: TimelineQuery,
+    ) -> dim_agent_runtime::Result<QueryOutput> {
         let loaded = match self.session(id) {
-            Some((_, session)) => match session.query(ROOT_BRANCH_ID, query.clone()).await {
+            Some((_, session)) => match session.query(branch, query.clone()).await {
                 Ok(reply) => Some(reply.result),
                 Err(_) if session.is_unloading() => None,
                 Err(error) => return Err(error),
             },
             None => None,
         };
-        let result = match loaded {
-            Some(result) => result,
-            None => {
-                let store = self
-                    .session_store
-                    .as_ref()
-                    .ok_or_else(|| AgentError::Closed(id.into()))?;
-                let scope = TimelineReadScope {
-                    key: TimelineKey {
-                        session_id: id.into(),
-                        branch_id: ROOT_BRANCH_ID.into(),
-                    },
-                    through,
-                    segments: vec![TimelineReadSegment {
-                        branch_id: ROOT_BRANCH_ID.into(),
-                        from: 1,
-                        through,
-                        stored_through: through,
-                        tail: vec![],
-                    }],
-                };
-                store
-                    .query(&scope, &query.query, query.page.as_ref())
-                    .await?
-                    .result
-            }
+        if let Some(result) = loaded {
+            return Ok(result);
+        }
+        let store = self
+            .session_store
+            .as_ref()
+            .ok_or_else(|| AgentError::Closed(id.into()))?;
+        let scope = TimelineReadScope {
+            key: TimelineKey {
+                session_id: id.into(),
+                branch_id: branch.into(),
+            },
+            through,
+            segments: vec![TimelineReadSegment {
+                branch_id: branch.into(),
+                from: 1,
+                through,
+                stored_through: through,
+                tail: vec![],
+            }],
         };
-        let QueryOutput::Rows { rows } = result else {
-            unreachable!("field selection returns rows")
+        Ok(store
+            .query(&scope, &query.query, query.page.as_ref())
+            .await?
+            .result)
+    }
+
+    fn event_timestamp(row: &QueryRow) -> u64 {
+        let [QueryValue::Value { value: timestamp }] = row.values.as_slice() else {
+            unreachable!("event has a creation timestamp")
         };
-        Ok(rows.first().map(|row| {
-            let [QueryValue::Value { value: timestamp }] = row.values.as_slice() else {
-                unreachable!("event has a creation timestamp")
-            };
-            timestamp
-                .as_u64()
-                .expect("event creation timestamp is unsigned")
-        }))
+        timestamp
+            .as_u64()
+            .expect("event creation timestamp is unsigned")
     }
 
     pub(crate) async fn prepare_session(

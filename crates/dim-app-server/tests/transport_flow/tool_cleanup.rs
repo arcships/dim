@@ -9,8 +9,8 @@ struct SessionCleanup {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     fail: bool,
-    faults: Arc<std::sync::Mutex<Option<Arc<dim_agent_runtime::FaultReporter>>>>,
-    reporter: rutis::host::Key<dim_agent_runtime::FaultReporter>,
+    faults: Arc<std::sync::Mutex<Option<Arc<dim_agent_runtime::SessionLifecycle>>>>,
+    reporter: rutis::host::Key<dim_agent_runtime::SessionLifecycle>,
 }
 impl SessionCleanup {
     fn new(
@@ -18,7 +18,7 @@ impl SessionCleanup {
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         fail: bool,
-        faults: Arc<std::sync::Mutex<Option<Arc<dim_agent_runtime::FaultReporter>>>>,
+        faults: Arc<std::sync::Mutex<Option<Arc<dim_agent_runtime::SessionLifecycle>>>>,
     ) -> rutis::Result<Self> {
         Ok(Self {
             entered,
@@ -114,7 +114,7 @@ async fn closed_notification_waits_for_session_resources_and_registry_removal() 
                 .unwrap()
                 .as_ref()
                 .unwrap()
-                .report(dim_agent_runtime::AgentError::fault(
+                .report_native_fault(dim_agent_runtime::AgentError::fault(
                     "test host",
                     "private runtime detail",
                 ));

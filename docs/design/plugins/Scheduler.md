@@ -182,10 +182,10 @@ A job's `target` is one of two shapes, and the shape decides what a window does.
 
 | Target | Fields | A due window |
 | --- | --- | --- |
-| `session` | `session_id`, `branch_id` (`"main"` when omitted), `input_mode?` (`queue` \| `steer` \| `append`; default `queue`) | Writes one input to that branch. No Session is created, configured or deleted. |
+| `session` | `session_id`, `branch_id` (`"main"` when a stored row omits it), `input_mode?` (`queue` \| `steer` \| `append`; default `queue`) | Writes one input to that branch. No Session is created, configured or deleted. |
 | `launch` | `cwd`, `agent_id?` (the Agent profile the new Session runs as; absent, the default profile), `policy?` (optional preset), `max_run_minutes?` (default 60) | Launches a non-interactive Session, writes one input to its `main` branch, and stops it at the stop time (§3.2). |
 
-The `session` target is what the `schedule` tool saves, and it is the only shape the tool can save: the calling Session and branch are its target. The `launch` target exists for work that must run with no live Session; only `schedule.save` sets it (A.2, A.3), and a management create names its target because it has no Session to default to. A job stores exactly one target, and a save replaces it whole.
+The `session` target is what the `schedule` tool saves, and it is the only shape the tool can save: the calling Session and branch are its target. A management save that omits `branch_id` records the Session's current default branch at save time (timeline branches §20.22); an existing stored row that omits it was written before that rule and keeps meaning `main` (§2.3). The `launch` target exists for work that must run with no live Session; only `schedule.save` sets it (A.2, A.3), and a management create names its target because it has no Session to default to. A job stores exactly one target, and a save replaces it whole.
 
 A delivery never changes the target's name, branch or identity. The target of a job is fixed until a save replaces it; a save never rewrites a delivery already recorded.
 
@@ -488,7 +488,7 @@ A missing file holds no records. A file that is not valid v1 — malformed JSON,
 | Method | Parameters | Reply |
 | --- | --- | --- |
 | `session.wakeup.create` | `{sessionId, branchId, at, prompt}` | `{wakeupId}` |
-| `session.wakeup.list` | `{sessionId, branchId?}` | `{wakeups: [{wakeupId, at, prompt, state}]}`, newest first; `branchId` defaults to `main` |
+| `session.wakeup.list` | `{sessionId, branchId?}` | `{wakeups: [{wakeupId, at, prompt, state}]}`, newest first; `branchId` defaults to the Session's default branch |
 | `session.wakeup.cancel` | `{sessionId, wakeupId}` | `{}` when the call settles a `scheduled` record; `{state}` when the record had already reached a terminal state |
 
 `at` is an absolute RFC 3339 instant. Fields are camelCase and `deny_unknown_fields`, and an empty string is `invalid_params` like the neighbouring Session methods. Errors: `invalid_params` for a malformed `at`, an empty field, an unknown field or a prompt over 32 KiB; `wakeup_not_found` for a cancel naming no record of the calling Session (another Session's id answers like an unknown one); Rpc's own `session_closed` for a Session id that names no Session; and the method table's `unknown_method`, `service_reloading` or `service_unavailable` while the Scheduler row is absent, reloading or failed. The size bound is checked at the wire boundary, so a caller's oversized prompt is never the stored data's `invalid_data`; the record's own validation stays as the storage-side guard.
@@ -622,7 +622,7 @@ A fixed cadence needs no such rule: its window is in the record, and a busy bran
 | Session notice | `{source: "Scheduler", kind: "loop", data: {branchId, loopId, state, round, nextAt?}}` | The record changed; `session.loop.list` is its truth |
 | `loops` | Process-group data face, registered shared and provided at `host_key("loops")` | `start`, `next`, `list` and `stop`, the owner operations the Session part calls; the pass, recovery and `settle_delivering` stay internal |
 
-The tool and the methods refuse a non-interactive Session and a Collaboration member, as `schedule` and `wakeup` do. A round's tools are admitted under the target branch's own Permission state; a loop carries no policy and pre-approves nothing. The record is Scheduler's own business store, and the tool and the methods both reach it through the same typed service: the Session part declares `loops` with `names.key()` and calls the native `Loops` binding directly, while other languages reach the same owner operations through the `loops` data face. The delivery pass, recovery and `settle_delivering` are not on that face.
+The tool and the methods refuse a non-interactive Session and a Collaboration member, as `schedule` and `wakeup` do. `session.loop.start` and `session.loop.list` act on the branch named; one that omits `branchId` reaches the Session's default branch, as does a `loops` or `wakeups` face request that names a Session but no branch (timeline branches §20.22), each read once per request. A round's tools are admitted under the target branch's own Permission state; a loop carries no policy and pre-approves nothing. The record is Scheduler's own business store, and the tool and the methods both reach it through the same typed service: the Session part declares `loops` with `names.key()` and calls the native `Loops` binding directly, while other languages reach the same owner operations through the `loops` data face. The delivery pass, recovery and `settle_delivering` are not on that face.
 
 `/loop` reads: `/loop` prints usage and the branch's loops, `/loop <prompt>` starts a self-paced loop, `/loop <interval> <prompt>` starts a fixed one, and `/loop stop [id]` stops one. The interval counts only as the first token and only when it parses; otherwise the whole line is the prompt.
 
@@ -647,7 +647,7 @@ None.
 | Record | Fields |
 | --- | --- |
 | Job | `id`, `name`, `schedule` (A.4), `prompt` (text ≤ 32 KiB), `target` (`session` \| `launch`, A.2/§2.1), `enabled`, `enabled_at?` (required exactly when enabled), `revision`, `created_by` (`user` \| `tool{session_id,branch_id}`; the creating origin), `disabled_reason?` (`{code, at}`; `code` is `session_closed`, `branch_missing` or `branch_ended`) |
-| Job target, `session` | `session_id`, `branch_id` (`"main"` when omitted), `input_mode?` (`queue` \| `steer` \| `append`; default `queue`) |
+| Job target, `session` | `session_id`, `branch_id` (`"main"` when a stored row omits it; a new save that omits it records the Session's default branch), `input_mode?` (`queue` \| `steer` \| `append`; default `queue`) |
 | Job target, `launch` | `cwd`, `agent_id?` (an Agent profile; absent, the default profile), `policy?` (an optional preset), `max_run_minutes?` (default 60, A7) |
 | Delivery | `run_id`, `job_id`, `window` (instant or `manual`), `state` (§2.2), `session_id?`, `branch_id?`, `input_event_id?`, `submission_id`, `deadline_at?`, `created_at`, `ended_at?`, `detail`, `attempts?`, `released?`, `job_revision?`. Timestamps use UTC `YYYY-MM-DDTHH:mm:ss.sssZ`, always three fractional digits, so chronological and lexical order agree. |
 
@@ -704,7 +704,7 @@ Namespace `schedule`, registered with `managementMethods`: its declarations list
 | `schedule.history` | `{job_id, limit?}` | Deliveries, newest first |
 | `schedule.watch` | `{}` | `{}`. Registers the calling connection's watch and stays open while it watches (§11.2); a second watch on the same connection answers the earlier call `{}` and takes over |
 
-`schedule.save` is the only entry that may set a `launch` target, and it is the only one that may set `agent_id` and `policy`. A `launch` target's `cwd` is required; a `session` target's `session_id` is required and `branch_id` defaults to `main`. A `policy` preset is stored as given; `sessions.launch` caps it against the live host bound at launch and the delivery records what the Session received.
+`schedule.save` is the only entry that may set a `launch` target, and it is the only one that may set `agent_id` and `policy`. A `launch` target's `cwd` is required; a `session` target's `session_id` is required, and a save that omits `branch_id` records the Session's current default branch. A `policy` preset is stored as given; `sessions.launch` caps it against the live host bound at launch and the delivery records what the Session received.
 
 A delivery that settles `failed` with `session_closed`, `branch_missing` or `branch_ended` also disables the job: the same Settings CAS sets `enabled = false`, clears `enabled_at` and stores `disabled_reason = {code, at}`. `schedule.list` reports it; a save or `set_enabled(true)` clears it. A `failed` delivery for any other reason leaves the job enabled. The disable is required state, not a best-effort note: a CAS that loses to a concurrent write is retried against the current document while the job still names that delivery's Session, a save that replaced the target ends the claim, and a read or write failure leaves it to the timer pass, which reads the claim back from the job's newest terminal delivery. The claim belongs to the job revision the delivery was due under: every delivery records that revision, and the disable write decides on the document it is about to change, on every attempt including a CAS retry, disabling only while the job exists, is enabled, still names the delivery's effective target, and carries that revision. Otherwise the claim is superseded: nothing is disabled, and the terminal record stays in `schedule.history` as it is. A record without the revision — one written before this change — cannot prove its claim is current and never disables the job. While a required disable keeps failing, that read-back keeps the job out of the window path and the job records no new window: the job is disabled in intent, and delivering to a gone target would add only failures.
 
@@ -820,6 +820,7 @@ Run a retention pass after startup recovery, each settled delivery and `schedule
 | Invalid raw cron | List includes the job's `schedule_error`; the timer skips that job and continues with the others |
 | A tool create over the 16-job bound | `schedule_invalid`, and nothing is written |
 | A save that names no target on a new job | `schedule_invalid` |
+| A save or face request that omits a branch, whose Session's default branch cannot be read | `session_closed` for a gone Session, `service_reloading` while the index reloads, else `service_unavailable`; nothing is written |
 | Settings read before a window fails | That window settles `failed: settings_read_failed`; other jobs continue |
 | Delivery write fails `reloading`, or its reply is lost | The record stays `delivering`; lookup settles it (A.6) |
 | Delivery write fails `session_closed`, `branch_missing` or `branch_ended` | `failed: <code>`, and the job is disabled with that reason |
@@ -831,7 +832,7 @@ Run a retention pass after startup recovery, each settled delivery and `schedule
 | Storage unreadable or unknown format version | Scheduler fails to apply (no silent reset) |
 | Process exit | Timers stop; `delivering` records settle at the next start |
 
-Error codes: `schedule_invalid`, `schedule_conflict`, `schedule_not_found`, `service_reloading`, `service_unavailable`, `invalid_data`.
+Error codes: `schedule_invalid`, `schedule_conflict`, `schedule_not_found`, `service_reloading`, `service_unavailable`, `invalid_data`, `session_closed`.
 
 ## Appendix D. Acceptance
 

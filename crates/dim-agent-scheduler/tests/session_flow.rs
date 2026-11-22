@@ -2051,7 +2051,7 @@ async fn a_failed_target_gone_disable_is_retried() {
         .typed::<Value>(
             "schedule.save",
             json!({"job": {"name": "gone", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Work.", "target": {"kind": "session", "session_id": gone}}}),
+                "prompt": "Work.", "target": {"kind": "session", "session_id": gone, "branch_id": "main"}}}),
         )
         .await
         .unwrap()["job"]["id"]
@@ -2062,7 +2062,7 @@ async fn a_failed_target_gone_disable_is_retried() {
         .typed::<Value>(
             "schedule.save",
             json!({"job": {"name": "gone too", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Work.", "target": {"kind": "session", "session_id": gone}}}),
+                "prompt": "Work.", "target": {"kind": "session", "session_id": gone, "branch_id": "main"}}}),
         )
         .await
         .unwrap()["job"]["id"]
@@ -2734,6 +2734,146 @@ async fn a_later_save_of_a_retargeted_job_releases_nothing_again() {
     assert!(
         holds.release_failure_armed(),
         "the later save attempts no release"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A management save that omits a session target's branch records the line the
+/// Session's conversation is on at save time and keeps it after a later move;
+/// a stored row written without it keeps meaning the root (timeline branches
+/// §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_scheduled_job_records_the_default_branch_and_keeps_it_after_a_move() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session =
+        create_session_with(&mut client, home.path(), &["schedule", "branch"], true).await;
+    let agent = server.agent().expect("the default Agent");
+    let at = agent
+        .get_session(&session)
+        .unwrap()
+        .sequence("main")
+        .unwrap();
+    let branch = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": session, "parentBranchId": "main", "at": at,
+                "prompt": "Child work."}),
+        )
+        .await
+        .unwrap()["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    client
+        .rpc(
+            "session.branch_set_default",
+            json!({"sessionId": session, "branchId": branch}),
+        )
+        .await
+        .unwrap();
+
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "follow", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Follow the conversation.",
+                "target": {"kind": "session", "session_id": session}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        saved["job"]["target"],
+        json!({"kind": "session", "session_id": session, "branch_id": branch,
+            "input_mode": "queue"}),
+        "the save records the default branch: {saved}"
+    );
+
+    // A later move does not rewrite the recorded target.
+    client
+        .rpc(
+            "session.branch_set_default",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    let run = settled(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["branch_id"], json!(branch), "{run}");
+    let events = branch_events_on(&mut client, &session, &branch).await;
+    assert!(
+        events.iter().any(|event| {
+            event["type"] == "input" && event["data"]["submission_id"] == run["submission_id"]
+        }),
+        "the recorded branch takes the delivery: {events:?}"
+    );
+    let main = scheduled_inputs(&mut client, &session).await;
+    assert!(main.is_empty(), "the root takes nothing: {main:?}");
+
+    // A stored row without `branch_id` was written before any move, so it
+    // still delivers to the root.
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    let database = home.path().join("dimcode.sqlite");
+    let document: String = rusqlite::Connection::open(&database)
+        .unwrap()
+        .query_row(
+            "SELECT document FROM settings_documents WHERE source = 'user/schedule'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut document: Value = serde_json::from_str(&document).unwrap();
+    document["jobs"].as_array_mut().unwrap().push(json!({
+        "id": "stored-without-branch",
+        "name": "stored",
+        "schedule": {"at": "2030-01-01T00:00:00Z"},
+        "prompt": "Work on the stored row.",
+        "target": {"kind": "session", "session_id": session},
+        "enabled": true,
+        "enabled_at": "2026-01-01T00:00:00.000Z",
+        "revision": 1,
+        "created_by": "user",
+    }));
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute(
+            "UPDATE settings_documents SET document = ?1 WHERE source = 'user/schedule'",
+            [document.to_string()],
+        )
+        .unwrap();
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let accepted: Value = client
+        .typed(
+            "schedule.run_now",
+            json!({"job_id": "stored-without-branch"}),
+        )
+        .await
+        .unwrap();
+    let run = settled(
+        &mut client,
+        "stored-without-branch",
+        accepted["run_id"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["branch_id"], "main", "{run}");
+    let main = scheduled_inputs(&mut client, &session).await;
+    assert!(
+        main.iter()
+            .any(|input| input["data"]["submission_id"] == run["submission_id"]),
+        "a stored row without a branch delivers to the root: {main:?}"
     );
     drop(client);
     server.shutdown();

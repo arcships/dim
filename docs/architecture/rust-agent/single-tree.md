@@ -105,7 +105,7 @@ profile 未要求的已登记部件由可选挂载器挂载，宿主通过现有
 
 必需部件在 `apply` 中登记的子插件仍由该部件等待，等待指子插件 `Active` 而不是 settle：`(&view).await` 在子插件的依赖尚未就绪时也会返回，此时子插件仍是 `Pending`。部件用 `mount_active` 挂载子插件，等待本身没有期限：创建期间整次打开的无进展期限覆盖它，到期时报告子插件的名字和它缺的依赖，创建随之失败；创建之后，该部件与任何缺依赖的行一样保持 `Loading` 直到子插件 `Active`（rutis D22），其代被取消时结束等待；返回因此意味着其服务和订阅已就绪。创建只等待自己的必需行和已挂载的必需部件，不再做全进程检查；`Agent::check_assembly()` 在测试创建 Session 与分支之后跑一次，检查必需行和作用域交出的必需视图及其子树的 Active 状态，发现未等待的子插件就报告；仅可选行及其子树不参加此 Active 校验。两者仍参加必需读取和实例键审计。release 与 debug 创建因此相同，每次创建都不做全进程诊断扫描。
 
-这修正装配自身的等待范围（[#132](https://github.com/arcships/dim/issues/132)，[ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)、[Session access §9.4](../../design/contracts/session-access.md#94-optional-parts-per-enabled-plugin)、[规则 §4.8](principles.md#4-通过时间线扩展行为)）。输入仍经原有分支初始化、ToolBinding 取样和 BranchOpening；不增加发布阶段或工具专用接线。顺序、批次、Timeline 及重载语义均不变。
+这修正装配自身的等待范围（[#132](https://github.com/arcships/dim/issues/132)，[ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)、[Session access §9.4](../../design/contracts/session-access.md#94-optional-parts-per-enabled-plugin)、[规则 §4.8](principles.md#4-通过时间线扩展行为)）。输入仍经原有分支初始化、ToolBinding 取样和 BranchLifecycle；不增加发布阶段或工具专用接线。顺序、批次、Timeline 及重载语义均不变。
 
 loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返回的行可能占用该等待。此限制保留在 #132 中，不因此增加后台创建管理器；部件仍应遵守 apply 只登记服务/订阅、发布后再开始业务工作的规则。
 
