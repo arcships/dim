@@ -143,8 +143,9 @@ owner access a handle able to carry that repair needs (no open mode succeeds on
 macOS; on Linux only `O_PATH` opens, and that open mode does not carry a
 permission change), so a new file is refused before anything is written,
 although a direct creation would have succeeded: that is the cost of keeping the
-staged bytes private, and it is the one case in which this path is narrower than
-a direct creation. The staged file is created, verified, linked and removed
+staged bytes private. This and a parent ACL that denies deleting the template
+are the two cases in which this path is narrower than a direct creation. The
+staged file is created, verified, linked and removed
 relative to the same handle, so a directory name swapped after creation cannot
 receive the bytes or redirect the installation; installation links the file at
 the target without replacing an entry, and the private directory is removed on
@@ -492,7 +493,7 @@ asserts the declaration the model reads.
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also covers the mode of the file a mutation installs:
 `a_new_file_takes_the_process_umask` runs itself again in a child process under
-umask `022`, `002` and `300`, checks the new file's `0644`, `0664` and `0066`,
+umask `022`, `002` and `300`, checks the new file's `0644`, `0664` and `0466`,
 and that a successful write leaves no staging entry;
 `a_new_file_under_a_umask_that_masks_owner_read_fails` runs itself again under
 umask `700`, checks the `permission_denied` refusal, that the target does not
@@ -518,8 +519,14 @@ directories only;
 cancellation and a failed publication leave no staging entry, including the ACL
 template; `a_swapped_acl_template_is_put_back` replaces the template's name
 before it is moved into the private directory, and checks that the entry that
-took the name is put back with its bytes while the directory is removed and no
-staging entry is left.
+took the name is put back with its bytes, that the template this call created
+is left where the swap put it, and that the private directory holds only the
+staged file. After success, cancellation, refusal and failed publication, no
+staging entry is left; that is checked by
+`a_new_file_takes_the_process_umask`,
+`a_new_file_under_a_umask_that_masks_owner_read_fails`,
+`preparation_stays_private_until_installation` and
+`a_cancelled_or_failed_new_file_leaves_no_staging_entry_on_macos`.
 
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also drives `read` over images: a PNG and its line, an image recognized ahead of
