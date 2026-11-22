@@ -225,7 +225,7 @@ pub fn canonical_instant(text: &str) -> Option<Timestamp> {
     .then_some(instant)
 }
 
-fn default_max_run_minutes() -> u32 {
+pub(crate) fn default_max_run_minutes() -> u32 {
     DEFAULT_MAX_RUN_MINUTES
 }
 

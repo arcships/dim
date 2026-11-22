@@ -233,10 +233,15 @@ async fn create_session(
 }
 
 async fn history(client: &mut Client, session_id: &str) -> Vec<Value> {
+    history_on(client, session_id, "main").await
+}
+
+/// Every event of one named branch, in order.
+async fn history_on(client: &mut Client, session_id: &str, branch_id: &str) -> Vec<Value> {
     let page: Value = client
         .rpc(
             "session.history",
-            json!({"sessionId": session_id, "branchId": "main", "after": 0, "limit": 256}),
+            json!({"sessionId": session_id, "branchId": branch_id, "after": 0, "limit": 256}),
         )
         .await
         .unwrap();
@@ -1057,6 +1062,70 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
     assert!(
         rounds.iter().any(|event| marker_of(event) == marker),
         "the next pass delivered the new loop's round 1: {rounds:?}"
+    );
+}
+
+/// A loop started without `branchId` reaches the line the Session's
+/// conversation is on, and its rounds are delivered there, not on the root
+/// (timeline branches §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_loop_started_without_a_branch_follows_the_default_branch() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["branch"], true).await;
+    let agent = server.agent().expect("the default Agent");
+    let at = agent
+        .get_session(&session)
+        .unwrap()
+        .sequence("main")
+        .unwrap();
+    let branch = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": session, "parentBranchId": "main", "at": at,
+                "prompt": "Child work."}),
+        )
+        .await
+        .unwrap()["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    client
+        .rpc(
+            "session.branch_set_default",
+            json!({"sessionId": session, "branchId": branch}),
+        )
+        .await
+        .unwrap();
+
+    let created: Value = client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "prompt": "check the deploy"}),
+        )
+        .await
+        .unwrap();
+    let loop_id = created["loop"]["loopId"].as_str().unwrap().to_owned();
+    assert_eq!(created["loop"]["state"], "running");
+    assert_eq!(created["loop"]["branchId"], json!(branch), "{created}");
+
+    wait_for("round 1 to settle", || {
+        stored_loops(home.path())
+            .first()
+            .is_some_and(|record| record["round"] == json!(2))
+    })
+    .await;
+    let rounds = loop_rounds(&history_on(&mut client, &session, &branch).await);
+    assert_eq!(rounds.len(), 1, "the default branch takes the round");
+    let marker = marker_of(&rounds[0]);
+    assert!(
+        marker.contains(&format!("loop=\"{loop_id}\"")) && marker.contains("round=\"1\""),
+        "the marker names the loop and its round: {marker}"
+    );
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "the root takes nothing"
     );
 }
 

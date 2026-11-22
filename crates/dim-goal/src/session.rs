@@ -14,7 +14,7 @@ use dim_agent_capabilities::{
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{Names, SessionIdentity, TimelineKey};
-use dim_agent_types::{DEFAULT_BRANCH_ID, ToolCall, ToolDefinition, ToolResult, ToolSource};
+use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
@@ -114,7 +114,7 @@ impl DynPlugin for GoalSession {
                     let owner = owner.clone();
                     Box::pin(async move {
                         if method == "session.goal.get" {
-                            let id = branch_of(&params)?;
+                            let id = owner.branch_of(&params)?;
                             return tokio::select! {
                                 result = async {
                                     match owner.tree.get(&id) {
@@ -150,11 +150,20 @@ struct Owner {
 }
 
 impl Owner {
+    /// The line a call names: its own `branchId`, else the line the Session's
+    /// conversation is on (design §9, §15).
+    fn branch_of(&self, params: &Value) -> Result<String, RpcError> {
+        match named_branch(params)? {
+            Some(branch) => Ok(branch),
+            None => Ok(self.tree.default_branch()?),
+        }
+    }
+
     /// A change method asks the branch part for the batch (record, trigger)
     /// and replies with the trigger's sequence; it validates only its own
     /// parameters and never reads the fold.
     async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        let branch = branch_of(&params)?;
+        let branch = self.branch_of(&params)?;
         let op = method
             .strip_prefix("session.goal.")
             .ok_or_else(|| RpcError::invalid(format!("unknown method {method}")))?;
@@ -212,13 +221,13 @@ impl Owner {
     }
 }
 
-/// The branch a change names: the default branch when the call omits
-/// `branchId`, else a non-empty string. A present `null` is not an omitted
-/// member.
-fn branch_of(params: &Value) -> Result<String, RpcError> {
+/// The branch a change names: what the call's `branchId` holds, or none when
+/// the member is absent, in which case the caller names the line the Session's
+/// conversation is on. A present `null` is not an omitted member.
+fn named_branch(params: &Value) -> Result<Option<String>, RpcError> {
     match params.get("branchId") {
-        None => Ok(DEFAULT_BRANCH_ID.to_owned()),
-        Some(Value::String(branch)) if !branch.is_empty() => Ok(branch.clone()),
+        None => Ok(None),
+        Some(Value::String(branch)) if !branch.is_empty() => Ok(Some(branch.clone())),
         Some(_) => Err(RpcError::invalid("branchId must be a non-empty string")),
     }
 }
@@ -277,20 +286,23 @@ impl ToolHandler for GoalUpdate {
 
 #[cfg(test)]
 mod tests {
-    use super::branch_of;
+    use super::named_branch;
     use serde_json::json;
 
     #[test]
-    fn a_change_names_main_only_when_branch_id_is_absent() {
-        assert_eq!(branch_of(&json!({})).unwrap(), "main");
-        assert_eq!(branch_of(&json!({"branchId": "line"})).unwrap(), "line");
+    fn a_named_branch_id_must_be_a_non_empty_string() {
+        assert_eq!(named_branch(&json!({})).unwrap(), None);
+        assert_eq!(
+            named_branch(&json!({"branchId": "line"})).unwrap(),
+            Some("line".to_owned())
+        );
         for params in [
             json!({"branchId": null}),
             json!({"branchId": ""}),
             json!({"branchId": 7}),
             json!({"branchId": ["main"]}),
         ] {
-            let error = branch_of(&params).expect_err("a non-string branchId is refused");
+            let error = named_branch(&params).expect_err("a non-string branchId is refused");
             assert_eq!(
                 error.data.as_ref().map(|data| data.app_error.as_str()),
                 Some("invalid_params"),

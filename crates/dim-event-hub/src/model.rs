@@ -1,7 +1,7 @@
 //! The wire shapes of the `eventHub` service and the `eventhub` namespace,
 //! and the field bounds Appendix A.1–A.3 states.
 use crate::{error::EventHubError, text::one_line};
-use dim_agent_types::{DEFAULT_BRANCH_ID, InputMode};
+use dim_agent_types::InputMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -117,15 +117,6 @@ pub enum Origin {
 pub struct Target {
     pub session_id: String,
     pub branch_id: String,
-}
-
-impl Target {
-    pub fn new(session_id: impl Into<String>, branch_id: Option<&str>) -> Self {
-        Self {
-            session_id: session_id.into(),
-            branch_id: branch_id.map_or_else(|| DEFAULT_BRANCH_ID.into(), str::to_owned),
-        }
-    }
 }
 
 /// A source name: `[a-z][a-z0-9-]{0,31}` (design §2.1).
@@ -304,11 +295,11 @@ pub fn validate_publish(request: &PublishRequest) -> Result<(), EventHubError> {
     Ok(())
 }
 
-/// A checked `subscribe` request's record fields (design A.3).
+/// A checked `subscribe` request's record fields (design A.3). The target is
+/// resolved after it, because an omitted branch reads the Session's default.
 pub struct CheckedSubscribe {
     pub types: Vec<String>,
     pub matches: Option<BTreeMap<String, String>>,
-    pub target: Target,
 }
 
 /// Checks a subscribe request and returns the record fields it names
@@ -351,13 +342,8 @@ pub fn validate_subscribe(request: &SubscribeRequest) -> Result<CheckedSubscribe
     if request.target.branch_id.as_deref() == Some("") {
         return Err(EventHubError::invalid_params("target branchId is empty"));
     }
-    let target = Target::new(
-        request.target.session_id.clone(),
-        request.target.branch_id.as_deref(),
-    );
     Ok(CheckedSubscribe {
         types: request.types.clone(),
         matches,
-        target,
     })
 }

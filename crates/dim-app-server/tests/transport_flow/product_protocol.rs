@@ -2100,8 +2100,9 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
                 "session.agent.update",
                 json!({"sessionId":sid,"branchId":"other","agentId":profile_id})
             )
-            .await["error"]["code"],
-        -32602
+            .await["error"]["data"]["appError"],
+        "session_invalid_input",
+        "an unknown line answers the Session's own error, as every other call does"
     );
     assert_eq!(adopted(), before);
 

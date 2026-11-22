@@ -769,7 +769,7 @@ A Session part learns about its Session from three Session services, read by nam
 | --- | --- |
 | `sessionIdentity` | `get()` returns `{sessionId, restored}`; `restored` is true when the Session was loaded from storage rather than created. |
 | `sessionConfig` | `get()` returns the creation-time configuration, the same snapshot a `ToolCall` carries as `config`. |
-| `sessionLifecycle` | `activated()` resolves when the Session is published (`false` if it never is); `closing()` resolves when its close starts. `hold()` keeps an idle unload from ending accepted work: it returns the id of a hold the calling part owns, or `null` once the Session is closing or its release is decided. `release(id)` ends that hold and returns whether it was still held; the part's unload ends the holds it still has. |
+| `sessionLifecycle` | `activated()` resolves when the Session is published (`false` if it never is); `closing()` resolves when its close starts. `hold()` keeps an idle unload from ending accepted work: it returns the id of a hold the calling part owns, or `null` once the Session is closing or its release is decided. `release(id)` ends that hold and returns whether it was still held; the part's unload ends the holds it still has. `reportFault` reports a fault, `failure` reads it and `observeFault` subscribes. The calling row releases its subscription with `release(id)` or on unload. |
 
 A part needs no tool or client method to observe. This one listens to its Session's channel from
 `apply` and stops when the Session starts closing:
@@ -847,7 +847,7 @@ parts.
 | --- | --- |
 | `dispatcher` | `consume(name, keys, rebuild, handler)` registers an ordered consumer on the calling part's context. It subscribes first and holds the matching facts, calls `rebuild` once — the part reads the facts it folds through `timeline.query` including its publishing facts and returns the cutoff that read took — then delivers the held facts above the cutoff and each later matching fact, in sequence order, and none twice. `listen(name, keys, handler)` registers a live consumer only, for a part that does not rebuild. A handler's throw/rejection follows the native branch failure path. `committed()` returns the committed cutoff; read facts and properties through `timeline.query`. `notify/sequence/changed` expose native dispatch progress and wakeups, not an ordered event subscription. |
 | `treeCommands` | Session directory `list/info`, validated `input` by branch id and `create`. These are the Rust data methods, not the process `sessions` request envelopes. |
-| `branchLifecycle` | Background work waits for `activated()` and releases its resources when `closing()` resolves. Never wait for activation inside a Dispatcher callback. |
+| `branchLifecycle` | Background work waits for `activated()` and releases its resources when `closing()` resolves. Never wait for activation inside a Dispatcher callback. `registerOpening` registers work that branch opening waits for. |
 | `timelineIdentity` | `get()` returns the original Session and branch ids. |
 
 This part reconstructs its own input count, then follows live input. The native subscription

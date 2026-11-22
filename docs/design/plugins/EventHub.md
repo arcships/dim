@@ -86,7 +86,7 @@ Subscription {
   id: "sub_<uuid>",
   types: ["im.message" | "im.*"],    // 1..16; an exact type or "<source>.*"
   match?: { "<attr>": "<value>" },   // at most 16 pairs; every pair must equal the event's attribute
-  target: { sessionId, branchId },   // branchId defaults to "main"
+  target: { sessionId, branchId },   // branchId is the default branch when the request omits it
   mode?: "queue" | "steer" | "append",
   origin: "tool" | "client",
   createdAt: "2026-11-08T09:15:04.120Z",
@@ -118,9 +118,10 @@ GuideRecord {
 | --- | --- | --- |
 | `delivered` | `{sessionId, branchId, subscriptionIds, inputId, sequence, truncated?, repeated?}` | stays |
 | `gone` | `{sessionId, branchId, subscriptionIds, code}` with `branch_missing` or `branch_ended` | each listed subscription is removed, because the target branch will not accept input again; the list is empty for a branch reached only through `to` |
-| `failed` | `{sessionId, branchId, subscriptionIds, code, message}` with any other `sessions` error or `transport`: `session_closed`, `reloading`, `rejected`, `ambiguous`, `publication_unknown`, `transport`, `failed` | each listed subscription stays, and `lastFailure` records the code |
+| `failed` | `{sessionId, branchId?, subscriptionIds, code, message}` with any other `sessions` error or `transport`: `session_closed`, `reloading`, `rejected`, `ambiguous`, `publication_unknown`, `transport`, `failed` | each listed subscription stays, and `lastFailure` records the code |
 
 - `subscriptionIds` lists every matching subscription that directed this branch, and is empty for a branch reached only through `to`. The effect in the table applies to each listed subscription.
+- A target whose omitted `branchId` could not be resolved carries no `branchId` in its `failed` entry: the target names no line, and the code is what that read answered (`session_closed`, `reloading`, `transport`, or another `sessions` code).
 - `repeated: true` says the branch already held this event's input, from a publish in this process; `inputId` and `sequence` name that input, and `truncated` is absent (2.4, 3.2).
 - A `failed` outcome is not a refusal: the input was not written, except in two cases where the write itself is in doubt: `publication_unknown`, where it was committed and its publication is in doubt, and `transport`, where the `sessions` call failed or its reply could not be read. A producer that retries with the same `id` gets the same receipt (2.4).
 - A subscription's `lastFailure` is written only when it changes: set to a new code, or cleared after a stored failure. All of one publish's `lastFailure` changes go in one transaction, after its deliveries settle. `eventhub.subscriptions` shows it, so a subscription that stopped working is visible without reading a receipt a producer no longer sends.
@@ -141,7 +142,7 @@ The guarantee, per branch: one input per event id; a retry never writes a file f
 
 No queue, no undelivered event, no retry, no timer and no heartbeat. `publish` replies only after every target has an outcome, so a producer that needs order awaits each call; concurrent publishes have no order. A delivery that could not be made is the producer's to decide about, from the receipt. Publish holds one delivery budget for the whole install, eight calls at a time across every publish. The budget bounds the `sessions.lookup` and `sessions.input` calls together, so twenty concurrent publishes still run at most eight of them, a publish to many cold Sessions restores them a few at a time rather than all at once, and one publish cannot crowd out another. A restore takes seconds (about four seconds for a 100,000-event Session with ten open branches, measured for #1113). `publish` has no timeout of its own: a producer that must not wait does not await it, and gives up ordering when it does that.
 
-The instance state (2.1) is where the locks and the budget live: the event locks (2.4), the Session locks (3.3) and the delivery budget. Every one of them is process memory, so a restart starts them empty, and each map drops an entry when its last holder releases it.
+The instance state (2.1) is where the locks and the budget live: the event locks (2.4), the Session locks (3.3) and the delivery budget. Every one of them is process memory, so a restart starts them empty, and each map drops an entry when its last holder releases it. They are taken in one order — an event lock, a delivery permit, the target Session's lock, then the subscription file's change lock — so no path holds one while it waits for another that already waits for it. A delivery holds its permit while its guide refresh waits for the Session lock (3.3); a `subscribe` that omits its branch resolves it under a permit before it takes that lock, so the two never wait for each other and no subscribe leaves the install's permits waiting behind it.
 
 ### 2.6 Rejected alternatives
 
@@ -175,7 +176,7 @@ sequenceDiagram
   H-->>P: {eventId, deliveries}
 ```
 
-A branch is delivered once however many targets reach it. Its mode is the `to` entry's `mode` when a `to` entry names one; otherwise it is the strongest effective mode among the matching subscriptions, `steer` over `queue` over `append`, where a subscription's effective mode is its own `mode` or else the type's declared `mode`. A subscriber that asked to be woken is not overridden by one that did not. `branchId` defaults to `main` everywhere it is optional. Zero targets is not an error: `deliveries: []`.
+A branch is delivered once however many targets reach it. Its mode is the `to` entry's `mode` when a `to` entry names one; otherwise it is the strongest effective mode among the matching subscriptions, `steer` over `queue` over `append`, where a subscription's effective mode is its own `mode` or else the type's declared `mode`. A subscriber that asked to be woken is not overridden by one that did not. Wherever a request may omit `branchId`, it names the Session's current default branch: `subscribe` records that branch in the subscription, and `publish` resolves each omitted target Session against the `sessions` data face once per request — a second entry naming the same Session reuses the first answer, a failure included — under the hub's delivery budget for the cold read. `subscribe` checks its declared types before it resolves an omitted target branch, so a refused type never restores a cold Session, and then reads that Session under the same delivery budget. A publish answers process admission, source ownership and the type before it resolves anything, so a refused publish never restores a cold target Session and answers its own error rather than the target's. A target whose omitted branch cannot be resolved, whatever the read answered (`session_closed` for a deleted Session, `reloading`, or `transport`), is answered in its own `failed` receipt entry carrying that code and no `branchId` — one entry per Session, however many entries named it — while every other target and every matching subscription is planned and delivered as usual. A stored subscription's target never changes. Zero targets is not an error: `deliveries: []`.
 
 A delivery to a subscribed branch first checks the guide it recorded for that branch and source against the current declaration (3.3). When they differ it writes the current guide as one keyed `append`, under the Session's lock, and then the event; a branch reached only through `to` has no record and gets no guide write.
 
@@ -204,7 +205,7 @@ A subscription is created through `eventhub.subscribe` or the `events` tool. Cre
 2. Writes one `append` input to the target branch for every source the subscription names, submission id `eventhub-guide:<subscriptionId>:<source>`, whose single raw block is `<dim-event-guide source="im">guide</dim-event-guide>` with the key `eventhub:guide:<source>` and `use: live`. The write validates the target: a missing or ended branch, a closed Session or any other `sessions` error refuses the creation and stores nothing; `publication_unknown` is the exception, because it says the input was committed, so the subscription is stored (A.3).
 3. Stores the subscription with its `origin`, and for every source it wrote, the guide's digest in the branch's `GuideRecord`: `tool` when the `events` tool asked, `client` when a management method did (2.2).
 
-Every `subscribe` and `unsubscribe` holds one lock per target Session, from its first check to its last guide write or retire; the `agent/session-deleted` handler and the reconciliation of 3.4 take the same lock. Without it, two changes of one source on one branch can interleave: a subscribe writes its guide, an unsubscribe of the older record removes that record while the new one is not stored yet, retires the key, and then the subscribe stores the new record — a live guide already retired. A lock per Session keeps that order without stalling every subscription change on the host: the hold is bounded by that Session's own `sessions.input` calls, so a cold restore stalls only changes to that Session. A `gone` removal does not take the lock: a subscribe on that branch fails its guide write with the same code. The total and per-Session limits stay enforced in the store's change, under the file lock.
+Every `subscribe` and `unsubscribe` takes one lock per target Session and keeps it from its first check under it to its last guide write or retire; a `subscribe` that omits its branch resolves it before it takes that lock, under a delivery permit (2.5, timeline branches §20.22). The `agent/session-deleted` handler and the reconciliation of 3.4 take the same lock. Without it, two changes of one source on one branch can interleave: a subscribe writes its guide, an unsubscribe of the older record removes that record while the new one is not stored yet, retires the key, and then the subscribe stores the new record — a live guide already retired. A lock per Session keeps that order without stalling every subscription change on the host: the hold is bounded by that Session's own `sessions.input` calls, so a cold restore stalls only changes to that Session. A `gone` removal does not take the lock: a subscribe on that branch fails its guide write with the same code. The total and per-Session limits stay enforced in the store's change, under the file lock.
 
 The keyed block is replayed after a compaction, so the source's manual stays in context while the branch is subscribed, even across a restart and while the producer is off. A later subscription for a source already live on the branch writes the same key again with the same text, which supersedes the block without changing what the model reads. `append` never starts a turn (`crates/dim-agent-capabilities/src/agent_loop.rs:149-157`, `crates/dim-agent-capabilities/src/input_queue.rs:167-180`).
 
@@ -363,7 +364,7 @@ publish { source: "im",
           title?: "Build failed",
           body: "…",
           attributes?: { "channel": "general", "user": "u1" },
-          to?: [ { sessionId: "…", branchId?: "main", mode?: "steer" } ] }
+          to?: [ { sessionId: "…", branchId?: "<branch>", mode?: "steer" } ] }
      -> { eventId: "7f3a", deliveries: [ Delivery ] }
 ```
 
@@ -374,7 +375,7 @@ publish { source: "im",
 | `title` | One line, at most 256 bytes |
 | `body` | Text, at most 1 MiB (`too_large`) |
 | `attributes` | At most 16 entries; keys `[a-z][a-z0-9_-]{0,31}`; values one line, at most 256 bytes each. `source`, `type`, `id`, `file`, `bytes` and `truncated` are reserved (`invalid_event`) |
-| `to` | 0 to 16 targets, each `{sessionId, branchId?, mode?}` |
+| `to` | 0 to 16 targets, each `{sessionId, branchId?, mode?}`; an omitted `branchId` is the Session's current default branch |
 
 `Delivery` is one of the three rows of 2.3: a `delivered` entry carries `repeated: true` and no `truncated` when the branch already held the input, and `truncated: true` only from the publish that wrote the input (2.4, 3.2). A malformed field other than an oversized body is `invalid_event`. Zero targets replies `deliveries: []`.
 

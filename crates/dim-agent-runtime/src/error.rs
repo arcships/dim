@@ -49,12 +49,92 @@ pub enum AgentError {
     Multiple(Vec<AgentError>),
 }
 
+/// A failure reported to a Session. Framework failures carry their diagnostic text.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionFault {
+    InvalidInput(String),
+    Closed(String),
+    UnknownBranch(String),
+    BranchEnded(String),
+    BranchRefused {
+        refusal: BranchRefusal,
+        message: String,
+    },
+    Storage(String),
+    PublicationUnknown(String),
+    Build(String),
+    Cancelled(String),
+    Reloading(String),
+    AmbiguousSubmission(String),
+    PartialSubmission(String),
+    Fault {
+        component: String,
+        message: String,
+    },
+    Framework(String),
+    Multiple(Vec<SessionFault>),
+}
+impl From<AgentError> for SessionFault {
+    fn from(error: AgentError) -> Self {
+        match error {
+            AgentError::InvalidInput(value) => Self::InvalidInput(value),
+            AgentError::Closed(value) => Self::Closed(value),
+            AgentError::UnknownBranch(value) => Self::UnknownBranch(value),
+            AgentError::BranchEnded(value) => Self::BranchEnded(value),
+            AgentError::BranchRefused { refusal, message } => {
+                Self::BranchRefused { refusal, message }
+            }
+            AgentError::Storage(value) => Self::Storage(value),
+            AgentError::PublicationUnknown(value) => Self::PublicationUnknown(value),
+            AgentError::Build(value) => Self::Build(value),
+            AgentError::Cancelled(value) => Self::Cancelled(value),
+            AgentError::Reloading(value) => Self::Reloading(value),
+            AgentError::AmbiguousSubmission(value) => Self::AmbiguousSubmission(value),
+            AgentError::PartialSubmission(value) => Self::PartialSubmission(value),
+            AgentError::Fault { component, message } => Self::Fault { component, message },
+            AgentError::Framework(value) => Self::Framework(value.to_string()),
+            AgentError::Multiple(value) => {
+                Self::Multiple(value.into_iter().map(Into::into).collect())
+            }
+        }
+    }
+}
+impl From<SessionFault> for AgentError {
+    fn from(error: SessionFault) -> Self {
+        match error {
+            SessionFault::InvalidInput(value) => Self::InvalidInput(value),
+            SessionFault::Closed(value) => Self::Closed(value),
+            SessionFault::UnknownBranch(value) => Self::UnknownBranch(value),
+            SessionFault::BranchEnded(value) => Self::BranchEnded(value),
+            SessionFault::BranchRefused { refusal, message } => {
+                Self::BranchRefused { refusal, message }
+            }
+            SessionFault::Storage(value) => Self::Storage(value),
+            SessionFault::PublicationUnknown(value) => Self::PublicationUnknown(value),
+            SessionFault::Build(value) => Self::Build(value),
+            SessionFault::Cancelled(value) => Self::Cancelled(value),
+            SessionFault::Reloading(value) => Self::Reloading(value),
+            SessionFault::AmbiguousSubmission(value) => Self::AmbiguousSubmission(value),
+            SessionFault::PartialSubmission(value) => Self::PartialSubmission(value),
+            SessionFault::Fault { component, message } => Self::Fault { component, message },
+            SessionFault::Framework(value) => {
+                Self::Framework(Arc::new(rutis::host::ErrorKind::PluginFailed(value.into())))
+            }
+            SessionFault::Multiple(value) => {
+                Self::Multiple(value.into_iter().map(Into::into).collect())
+            }
+        }
+    }
+}
+
 /// Why the tree refused an operation on a line, named the way the protocol
 /// names it: the codes `session.branch_set_default` answers as its `appError`
 /// and the codes the branch tool answers as its own result
 /// ([timeline branches §11](../../../docs/design/timeline-branches.md#11-the-branch-tool),
 /// [§14](../../../docs/design/timeline-branches.md#14-clients)).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BranchRefusal {
     /// The target is already the Session's default branch.
     AlreadyDefault,

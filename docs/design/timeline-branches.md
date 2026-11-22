@@ -643,6 +643,25 @@ The move and an end take the same tree lock and admit in one order (§10): a tar
 refused, and a line whose descendant is the default branch is refused as an end target. So of two operations that
 conflict, exactly one is admitted, and each reads the state the other would have written.
 
+**The default branch on older connections.** The move is reachable through RPC now, but the clients that follow it
+come later, so every field and behaviour an existing client relies on keeps its old meaning and the new meaning
+arrives through new fields. A v1 connection's event projection carries the root alone (`connection/subscription.rs`
+`project` and the v1 branch watch), so on that connection an omitted `branchId` keeps naming the root for every call
+this section routes a default for: `session.submit`, `session.stop` and `session.idle` (the three a v1 client may send
+unnamed; every other routed call is admitted from v3 on, whose projection carries every branch). A v1 client therefore
+still sees the turn its input runs after a newer connection has moved the default. v2 and later connections carry every
+branch, must name a line where v1 could not, and a v3 connection's unnamed calls follow the default branch. Nothing
+else an older client reads changes meaning: `SessionInfo.sequence` on the `session.attach` reply stays the root's
+sequence — the cutoff the CLI keeps as the `main` window's `through` and as the root model-update watermark — and the
+line the conversation is on arrives beside it as `defaultBranch {branchId, sequence}`. The cursor belongs to that reply
+alone: a `session.summaries` item is a directory row, so it carries no `defaultBranch`, and a client reads the line
+after it attaches rather than from a list. A client that predates the field ignores it; one that follows the move
+resumes that line from it. The same rule holds the catalog row's
+`sequence`: it is the root's in both projections, the loaded overlay and the stored query, so loading or unloading a
+Session never changes it, while `running` and `updatedAt` follow the default branch. A persisted move refreshes
+`updatedAt` in its own transaction from the new default's latest activity, and the switch itself counts as none, so an
+idle move never leaves the row recent by the line the Session left.
+
 The directory read performs no history I/O. Its display fields are null or absent.
 `session.branch.get {sessionId, branchId}` (v3, separately listed in
 `hello.features`) reads one line's directory record and display fields:
@@ -681,7 +700,7 @@ refusal is shown where the action was raised. The commands the composer offers a
 | TreeTimeline | Consumes `branch/end`, plus the line's next turn end for an end issued by a tool call, and routes them to TimelineTree. It reports every `turn/end` to TimelineTree, which publishes it for the line's children | It routes `branch/create` the same way |
 | BranchTool | The action-based tool, plus the new BranchLine branch part. `read` and `message` reach the line the caller was cut from and the tool lines it opened, with one cursor rule. `create` admits the root and the current default branch and refuses every other line with `branch_not_opener`, then checks the Session's cap and refuses with `branch_limit_reached` | The tool's actions and one line's view of its lines |
 | Session facade | `Session::end_branch(id, source)`, `Session::default_branch(id)` and `Session::set_default_branch(id, source)`. An ended line's head is `Session::sequence`; its history is read at that fixed head through `TreeCommands.page` | §17 |
-| App Server | `session.branch_end` (v3, a user source with a minted `operation_id`, listed in `hello.features` with the other Session methods when `session_execution` is on and the connection's entry is not bare or the daemon profile is not protected). `session.branch_set_default` (v3, the same admission). `session.history` on an ended line returns immediately, at its stored head. `session.branches` reads the tree's directory and carries `defaultBranchId` (§14). Every Session-level default target that today names `main` reads the default branch instead: `session.submit`, `session.stop`, `session.idle`, `session.goal.*` and `shell.run`, and a newly created scheduled job. `session.model.update`, `session.agent.update` and `session.prompt.refresh` act on the default branch rather than refusing every line but the root. `approval.respond` keeps the `branchId` its notice carried, so a pending request stays on the line that asked for it. `ProductEvent::new` carries the new kind in v3 and leaves it out of v1 and v2 | An entry and three reads, no business logic |
+| App Server | `session.branch_end` (v3, a user source with a minted `operation_id`, listed in `hello.features` with the other Session methods when `session_execution` is on and the connection's entry is not bare or the daemon profile is not protected). `session.branch_set_default` (v3, the same admission). `session.history` on an ended line returns immediately, at its stored head. `session.branches` reads the tree's directory and carries `defaultBranchId` (§14). Every Session-level default target that today names `main` reads the default branch instead: `session.submit`, `session.stop`, `session.idle`, `session.goal.*` and `shell.run`, and a newly created scheduled job. `session.model.update`, `session.agent.update` and `session.prompt.refresh` act on the default branch rather than refusing every line but the root. `approval.respond` keeps the `branchId` its notice carried, so a pending request stays on the line that asked for it. On a connection whose projection carries the root alone (v1) an omitted `branchId` keeps reaching the root; v2 and later may name a line, and a v3 connection's unnamed calls follow the default branch. `session.attach` keeps `sequence` as the root's and adds `defaultBranch {branchId, sequence}`; a catalog row's `sequence` stays the root's in both projections while `running` and the activity follow the default branch, and a persisted move refreshes that activity in its own transaction. `session.branches` reads the default and the directory under one tree snapshot. Collaboration stores the member branch a request's input was delivered on and reads it for the idle wait, settlement and every stop; a read page reports its branch, and a continuation carries it or is refused. PromptSuggestion binds its cached turn, offer and generation to a line and withdraws them on a move. EventHub answers admission, source ownership and the type before it resolves an omitted target branch. `ProductEvent::new` carries the new kind in v3 and leaves it out of v1 and v2 | An entry and three reads, no business logic |
 | dim-agent-types | `branch/end` and `branch/ended` in `EventKind` and the v1 exclusion list, then `branch/default`, registered in the contract tests. `BranchSource` gains a kind for a line the user opened, distinct from a plugin's. The frozen fixtures are unchanged | Core facts (§16) |
 | Storage | `FORMAT` 52 → 53 as a marker-only upgrade `(52, &[])`: no table scan and no data migration, so an older daemon refuses the store instead of failing on its first decode. `SqliteTimelineStore`'s writer thread caches each Session's default branch for the catalog's recent activity, initialised by the same indexed point query that restore uses | A new event kind and a new `BranchSource` variant are rows a 52 daemon cannot decode |
 | Goal (Pursuit amendment) | Recognizes its evaluator from the line's source and ends it ([Pursuit §13](plugins/Pursuit.md#13-ending-the-evaluator-with-427)) | Goal owns its evaluator's protocol |
@@ -695,6 +714,9 @@ New public content:
 - one RPC method, `session.branch_set_default`;
 - one TreeCommands read and one write, `default_branch()` and `set_default_branch(id, source)`;
 - `defaultBranchId` on the directory reply;
+- `defaultBranch {branchId, sequence}` on the `session.attach` reply, beside the root's `sequence`, and on no `session.summaries` item;
+- the `branchId` a collaboration read page reports and accepts for its continuation;
+- the `branch_changed` reason a PromptSuggestion clearing notice and refusal carry;
 - a `BranchSource` kind for a line the user opened;
 - the roster's key, `branch:roster`, announced to the model through the `<dim-branch-lines>` guide entry;
 - two refusal codes, `branch_not_opener` and `branch_limit_reached`.

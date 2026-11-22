@@ -58,6 +58,30 @@ impl Shared {
         json!({ "subscriptions": subscriptions })
     }
 
+    /// The line the Session's conversation is on, read through the `sessions`
+    /// data face (timeline branches §20.22).
+    pub(crate) async fn default_branch(&self, session_id: &str) -> Result<String, EventHubError> {
+        match crate::publish::sessions(
+            self.sessions.as_ref(),
+            "defaultBranchId",
+            json!({ "sessionId": session_id }),
+        )
+        .await
+        {
+            Ok(Ok(value)) => value["defaultBranchId"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    EventHubError::transport("the sessions service answered no default branch")
+                }),
+            Ok(Err(failure)) => Err(EventHubError::new(
+                crate::error::sessions_code(&failure.code),
+                failure.message,
+            )),
+            Err(message) => Err(EventHubError::transport(message)),
+        }
+    }
+
     /// Removes every subscription whose target is `session_id` in one
     /// transaction, under that Session's lock (design §3.3, §3.4): a
     /// `subscribe` that wrote its guide before the delete stores its record

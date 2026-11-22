@@ -2183,6 +2183,27 @@ async fn ending_a_line_ends_its_children_first_and_records_one_result_each() {
     soon(agent.close()).await.unwrap();
 }
 
+/// A branch identity this Session never had stays unknown: the lifecycle
+/// lookup decides open, ended and unknown in one tree read, so an unknown
+/// line is never reported as an ended one (session catalog §3.3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_branch_this_session_never_had_is_unknown() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        session.state("never"),
+        Err(AgentError::UnknownBranch(line)) if line == "never"
+    ));
+    assert!(matches!(
+        session.sequence("never"),
+        Err(AgentError::UnknownBranch(line)) if line == "never"
+    ));
+    soon(agent.close()).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ancestors_end_closes_a_descendants_pending_tool_end() {
     let probe = Arc::new(Probe::default());
