@@ -1,0 +1,182 @@
+# InputMethods
+
+Scope: session. Issue: #2026.
+
+InputMethods owns the Session's submit-check table and the `session.input` method contributions: the checks parts register before operator input is written, and the two methods that withdraw or read a line's pending input. The current implementation is in `crates/dim-agent-capabilities/src/input_queue.rs` and is described in the [InputQueue plugin page](../../architecture/rust-agent/plugins/InputQueue.md). The line's input queue is InputQueue's (#2027); this document states what the methods call.
+
+## Use and scope: responsibility split
+
+InputMethods owns:
+
+- **Check registrations.** One check per registering row, with its callback and its lifetime; a registration ends when its row unloads.
+- **The checked input.** Running every check in name order, combining their blocks and warnings, and placing the blocks after the operator's own content.
+- **The two `session.input` methods.** Their declarations and handler; the input state stays with the line's InputQueue.
+
+Callers keep:
+
+- What a check means: Hooks and Skills decide; a check that fails is no opinion.
+- When input is written: the operator-entry paths call `prepare` and write the result; the line's queue decides order, idempotency and withdrawal.
+- The line an input belongs to: the caller names the line id.
+
+| Requirement (caller) | Compose from the operations below without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| A part checks operator input for its row's lifetime | No: the duplicate check and the row's lifetime are the owner's | `register` |
+| An entry turns a candidate input into the input it writes | No: the check order, the block placement and the drop rule are the owner's; a caller composing them forgets the placement | `prepare` |
+| An entry reads or withdraws a line's pending input | No: the input state is InputQueue's and is reached by line id | `session.input.withdraw`, `session.input.pending` (the methods below) |
+| A check refuses the input with its own code | Yes: `prepare` answers `blocked` with the check's message | Business |
+| A check contributes context | Yes: `prepare` appends the check's marker blocks after the operator's content | Business |
+
+An operation or parameter exists only where the row says No.
+
+## Caller example
+
+Hooks registers its `UserPromptSubmit` check from its `apply`:
+
+```rust
+checks.register(RegisterCheck { name: "hooks".into(), check: Arc::new(run_hooks) }).await?;
+```
+
+An operator entry prepares the input before writing it:
+
+```rust
+let prepared = checks.prepare(PrepareInput {
+    entry: SubmitEntry::Submit,
+    branch_id: line.clone(),
+    user: data.user.clone(),
+    mode: data.effective_mode(),
+}).await?;
+match prepared {
+    Prepared::Ready { user } => session.input.commit(user, &line).await?,
+    Prepared::Blocked { message } => return Err(RpcError::app(-32000, "input_blocked", message)),
+}
+```
+
+`session.input.withdraw` composes a command and the line's queue:
+
+```rust
+let receipt = line_owner::<InputQueue>(line.clone())?
+    .withdraw(WithdrawInput { input_id, reason, steer }, cancelled.clone())
+    .await?;
+```
+
+## Own contract
+
+### Dependencies
+
+None beyond the line's input owner, reached by line id.
+
+### Operations
+
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `register` | Publish a check for the calling row's lifetime | `{name, check}` | `{}` | None | `duplicate`, `invalid`, `closed` |
+| `prepare` | Turn a candidate input into the input an entry writes | `{entry, branchId, user, mode}` | `{prepared: {user}}` or `{blocked: {message}}` | The caller's token stops the checks; a check already running stops with the token | `cancelled`, `closed` |
+| `session.input.withdraw` | Withdraw a pending input on a line | `{sessionId, branchId, inputId, reason?, steer?}` | the queue's receipt | The caller's token; a committed withdrawal is not undone | `invalid`, `input_blocked`, `interrupted`, `closed` |
+| `session.input.pending` | Read a line's pending input | `{sessionId, branchId}` | the queue's pending value | None | `invalid`, `closed` |
+
+`check` is a callback by reference; it never runs inside the Timeline's commit lock. `prepare` returns the input the entry writes, with the checks' marker blocks already placed after the operator's content; a non-marker block is dropped with a diagnostic, as today.
+
+### Errors
+
+| Kind | What the caller does next |
+| --- | --- |
+| `duplicate` | The check name is registered already; the row must not register twice |
+| `invalid` | The check name is empty, the entry/mode pair is unknown, or the request is malformed |
+| `cancelled` | The entry's call was interrupted while a check ran; write nothing |
+| `input_blocked` | A check refused the input; the message is the caller's error |
+| `interrupted` | The withdrawal was admitted and its publication not confirmed; read the line's state before retrying |
+| `closed` | This Session or the line is closing; write nothing |
+
+### Flows
+
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| `register` | Check the name and record the callback under the row | — | The registration is withdrawn | New registrations are refused | The registering row |
+| `prepare` | Take the registered checks in name order, run each with the token, combine, place the blocks, answer | A running check stops with the token; the entry writes nothing | The checks' callbacks are revoked; the entry writes nothing | Pending preparations end `closed` | InputMethods for the combination; each check for its own work |
+| `session.input.withdraw` | Validate the input, run the checks, write the command to the line's queue, wait for publication, answer the receipt | A committed withdrawal is not undone; the wait ends `interrupted` | The command settles with the line | The line's queue answers by its own state | The line's InputQueue |
+| `session.input.pending` | Read the line's queue value | — | Nothing | Answers the state it observed | The line's InputQueue |
+
+## Exceptions with reasons
+
+- A check that fails counts as proceed: an input check is an opinion, and a failing check must not block the operator's input.
+- The first block in name order is the answer; later checks still run for their warnings: the caller reads one refusal and every warning, as the operator-entry flow already does.
+- `prepare` applies the marker rule itself: a check's context must be a runtime marker element, and an entry that forgot the rule would let a check's text read as the operator's words.
+
+## Verification
+
+- A registration lives until its row unloads; a duplicate name is refused; a check's failure is no opinion.
+- `prepare` runs checks in name order, the first block answers, and every warning is returned; a non-marker block is dropped; an input without operator content takes no blocks.
+- A cancelled preparation runs no further check and writes nothing; a running check stops with the token.
+- `session.input.withdraw` with a steer runs the checks before writing the command; a block answers `input_blocked` and writes nothing; the committed command's receipt carries the warnings.
+- The two methods answer `invalid` for a malformed request and `closed` after the line ends.
+
+## Rule check
+
+| Rule | Application |
+| --- | --- |
+| §1 parts and Capabilities | One Session part; it writes no Timeline fact itself (the line's queue writes the withdrawal). |
+| §2 scopes | Session: the check table serves the Session's entries; the input state is the line's. |
+| §3 orthogonality | No other owner's state is read; the line's queue is reached by id. |
+| §4 rules 1–5, 9 | No command event of its own, no handoff, no before callback, no batch, no Timeline fact. |
+| §4 rule 6 | A check's blocks enter context only through the input the entry writes; this owner adds no path. |
+| §4 rule 7 | Callers use these operations; no caller reads the check table. |
+| §4 rule 8 | No infrastructure change. |
+| §7 values, ids and callbacks | The candidate input and the receipt are data; the check is a callback; the line is an id; no object crosses. |
+| §7 no proxy | The check table answers its own checks; the line's queue answers the input. |
+| §7 one interface | One name, `submitChecks`, on the owner type; `append_blocks` leaves the public surface. |
+| §7 cross-language | Every operation is data or a callback; no method exists only for Rust. |
+| §7 one change | The implementation task deletes `append_blocks` and the separate check call, adds `prepare`, and migrates both entries in one change. |
+| ADR 002 D1 | Session scope for the checks; the input state is the line's. |
+| ADR 002 D2 | No wiring plugin. |
+| ADR 002 D3 | A check follows its row's lifetime. |
+| ADR 002 D4 | No setting. |
+| ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
+
+## Requirements raised to mechanism owners
+
+1. [#2027](https://github.com/arcships/dim/issues/2027): the line's InputQueue needs `withdraw`/`pending` operations reached by line id, including the publication wait. The line mechanism is [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)'s `(session, line)` access; until it exists the two methods cannot be migrated off `TreeCommands`.
+
+## Binding appendix
+
+The service is marked on `SubmitChecks` under `submitChecks`. `append_blocks` stops being public. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is not a request field.
+
+```rust
+use crate::host::CancelledFn;
+use dim_agent_types::{InputMode, UserInput};
+use rutis::host::BoxFuture;
+use rutis::Ctx;
+use std::sync::Arc;
+
+pub type CheckFn = Arc<dyn Fn(SubmitCheckRequest, CancelledFn) -> BoxFuture<'static, Result<SubmitCheckReply, String>> + Send + Sync>;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterCheck { pub name: String, pub check: CheckFn }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareInput {
+    pub entry: SubmitEntry,
+    pub branch_id: String,
+    pub user: Option<UserInput>,
+    pub mode: InputMode,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Prepared {
+    Ready { user: Option<UserInput> },
+    Blocked { message: String },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputError {
+    Duplicate { message: String },
+    Invalid { message: String },
+    Cancelled,
+    Blocked { message: String },
+    Interrupted,
+    Closed,
+}
+```

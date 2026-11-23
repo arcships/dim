@@ -1,6 +1,159 @@
 # Questions
 
-Status: Implemented ([#262](https://github.com/arcships/dim/issues/262): #269, #336, #351; redesign [#144](https://github.com/arcships/dim/issues/144)); the maintainer's confirmations are recorded in [§12](#12-ready-confirmation). Overall design: [overview §4](../overview.md#4-plugin-catalog). Milestone: M2. Language: Rust. Scope: Session ([ADR 002](../../adr/002-plugin-scope.md)).
+Scope: session. Issue: #2026.
+
+Questions owns the `ask_user` tool and the Session part that holds the model's pending questions: the table keyed by `(line, request, call)` and the claim that makes a question visible before its call is published. The current implementation is in `crates/dim-agent-questions/src/lib.rs`; the plugin page is [Questions](../../architecture/rust-agent/plugins/Questions.md). The claim's tool-side contract is in [ToolRegistry](ToolRegistry.md#own-contract).
+
+## Use and scope: responsibility split
+
+Questions owns:
+
+- **The waiter table.** One entry per waiting question, keyed by line, request and call; whoever removes the entry under the lock decides the call's output.
+- **The answer's validation.** Answers must name every question once, choose offered labels and respect `multiSelect` and `allowCustom`.
+- **The claim.** A question exists before its `step/tool-call` fact and is removed when the answer, the call's cancel or the part's unload ends it.
+
+Callers keep:
+
+- When to ask: the model decides; the tool's input shape is this owner's declaration.
+- Whether a question may run: Permission and the Session's `interactive` flag decide.
+- The client's answer: it arrives as the `session.question.respond` method, not as a fact.
+
+| Requirement (caller) | Compose from the operations below without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| The model asks and waits for one answer | No: the table, the claim and the single-answer rule are the owner's | the `ask_user` tool |
+| A client answers or declines the waiting call | No: the entry and the answer validation are the owner's | `session.question.respond` |
+| A client lists the waiting questions on a line | No: the table is the owner's | `session.question.pending` |
+| The question is visible before the fact that publishes it | No: the claim must exist before the append and be released on every path that never dispatches | the claim callback |
+
+An operation or parameter exists only where the row says No.
+
+## Caller example
+
+The tool registers with its declaration and claim callback; the claim inserts the waiter and returns nothing:
+
+```rust
+tools.register(RegisterTool {
+    declaration: ask_user_definition(),
+    execute: Arc::new(|call, context, cancelled| Box::pin(run_ask_user(call, context, cancelled))),
+    claim: Some(Arc::new(|call, context| claim_question(call, context))),
+}).await?;
+```
+
+A client answers; the method resolves the waiter and the call's result follows:
+
+```rust
+methods.respond(RespondQuestion { line, request_id, call_id, answers })?; // {} once the waiting call takes it
+```
+
+## Own contract
+
+### Dependencies
+
+| Service | Purpose |
+| --- | --- |
+| `S:sessionConfig` | `interactive`, read per call; a non-interactive Session gets an error result. |
+| `S:toolRegistry` | Register `ask_user` until this part unloads. |
+| `S:sessionMethods` | Register `session.question` until this part unloads. |
+
+### Contributions
+
+No service of its own. The table is reached only through the tool call's wait and the two methods.
+
+| Contribution | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- |
+| `session.question.respond` | `{sessionId, branchId, requestId, callId, answers? \| declined: true}` | `{}` | The call's own admission | `invalid`, `not_pending` |
+| `session.question.pending` | `{sessionId, branchId}` | `{requests}` | None | `invalid` |
+
+The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, invalid input, cancelled, and the part's reload settlement.
+
+### Errors
+
+| Kind | What the caller does next |
+| --- | --- |
+| `invalid` | The answer names no question, repeats one, chooses an unoffered label, or the call's input is malformed |
+| `not_pending` | No waiting call matches the three ids; re-read `pending` |
+
+### Flows
+
+| Path | Normal | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| Claim | Insert the entry before the append, keyed by `(line, request, call)` | The claim is released before dispatch | The entry is removed with the row | The part's unload removes every entry | Questions; the release is `release_claims` |
+| Wait | The tool waits on the entry's sender | The call's token removes the entry; the result is `cancelled` | The claim's release removes the entry | The part's unload drops the senders; ToolExecutor settles the call | Questions |
+| Answer | `respond` validates, removes the entry, sends the answer | The answer is delivered and then dropped with the claim; the call's result is its refusal | Nothing to release | The part's unload removes pending entries | Questions |
+
+## Exceptions with reasons
+
+- An answer accepted between the claim and a refused append is delivered and then dropped with the claim: the call's result is the refusal, and the question does not stay open.
+- A wait left by a reload or restart is settled by ToolExecutor, not rebuilt: the waiter is a human I/O, and the line's facts do not hold it.
+- `pending` reads the table directly: a waiting question is the owner's own state, not a Timeline fact.
+
+## Verification
+
+- Input rules: 1 to 4 questions, unique ids, 2 to 6 options, headers, custom text; a malformed input answers `invalid` before any entry is created.
+- A claim inserts before the append; a refused append, an interrupt before dispatch, a refused admission, a cancelled task, a Loop error and a reload leave no entry.
+- `respond` removes the entry and the waiting call answers; a second `respond` answers `not_pending`; an answer for another line's entry is `not_pending`.
+- The part's unload removes every pending entry and the calls settle as reloading.
+
+## Rule check
+
+| Rule | Application |
+| --- | --- |
+| §1 parts and Capabilities | One Session part; it writes no Timeline fact. |
+| §2 scopes | Session: the table serves the Session's lines; a branch part registers a Session namespace only through this part's placement. |
+| §3 orthogonality | No other owner's state is read; the `interactive` flag is the creation record. |
+| §4 rules 1–5, 9 | No command event, handoff, before callback, batch or Timeline fact; the claim is the tool mechanism's, not a fact. |
+| §4 rule 6 | The answer reaches the model as the tool result. |
+| §4 rule 7 | Clients use the two methods; no caller reads the table. |
+| §4 rule 8 | No infrastructure change; the claim is the tool mechanism's contract. |
+| §7 values, ids and callbacks | Ids and answers are data; the claim is a callback; no waiter object or sender crosses. |
+| §7 no proxy | The table answers its own lines' questions. |
+| §7 one interface | No service name; the tool and the two methods are the surface. |
+| §7 cross-language | The methods are data; the tool's execute is a callback. |
+| §7 one change | The implementation task migrates the claim to the tool contract's operations in one change. |
+| ADR 002 D1 | Session scope. |
+| ADR 002 D2 | No wiring plugin. |
+| ADR 002 D3 | The tool depends on the registry and the method table. |
+| ADR 002 D4 | No setting. |
+| ADR 002 D5 | The contract is data; the binding is below. |
+
+## Requirements raised to mechanism owners
+
+None beyond the claim contract recorded in [ToolRegistry](ToolRegistry.md#requirements-raised-to-mechanism-owners).
+
+## Binding appendix
+
+The claim callback is the tool contract's `ClaimFn`; the method handler is the table's `call` callback. The waiter table and its entries stay private.
+
+```rust
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondQuestion {
+    pub session_id: String,
+    pub branch_id: String,
+    pub request_id: String,
+    pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Vec<Answer>>,
+    #[serde(default)]
+    pub declined: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Answer { pub question_id: String, pub selected: Vec<String>, #[serde(default)] pub custom: Option<String> }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReply { pub requests: Vec<PendingQuestion> }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionError {
+    Invalid { message: String },
+    NotPending,
+}
+```
+
 
 The model asks the user one or more questions through the `ask_user` tool and waits for the answer: single choice, multiple choice, several questions in one call, custom answer, or a decline. **The question is the pending tool call, and the answer is its tool result.** A client sees the question as the committed `step/tool-call` of `ask_user` that has no `step/tool-result` yet, answers it with the Session method `session.question.respond`, and the waiting handler returns the answer as its `ToolResult`; ToolExecutor publishes it in the batch's `step/tool-result` like any other tool output. The model learns the user's choice only from `ToolResult.content`.
 
