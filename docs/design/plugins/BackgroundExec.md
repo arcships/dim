@@ -70,8 +70,8 @@ let ended = background.wait(WaitRequest { task_id, timeout_ms: 5_000 }, cancelle
 
 | Service | Purpose |
 | --- | --- |
-| `P:HostPlatform` (process, #2032) | The started process by task id: wait for it, kill it, and answer its terminal status. |
-| `S:SessionScope` (Session, #2093) | Hold the Session while a task runs; observe activation and closing. |
+| `P:HostPlatform` (process, [#2032](https://github.com/arcships/dim/issues/2032)) | The started process by task id: wait for it, kill it, and answer its terminal status. |
+| `S:SessionScope` (Session, [#2093](https://github.com/arcships/dim/pull/2093)) | Hold the Session while a task runs; observe activation and closing. |
 | `S:GuideEntries` (Session) | Register the exec notification's entry for this line until the part unloads. |
 | `B:Timeline`, `B:Dispatcher` | Write and recover `exec/started`/`exec/ended`; consume terminals and interrupts; write the wake input. |
 
@@ -154,8 +154,8 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **HostPlatform (#2032).** The process owner must expose a started process by task id: `wait({taskId}, cancelled) → {status, exit}`, `kill({taskId}) → {}`, and the task id in its start reply. BackgroundExec adopts that id and never receives a process object. Until the host's id operations land, this board's `adopt` and `stop` cannot be implemented; the other owners' contracts are independent.
-- **SessionScope (#2093).** `hold` returns the lease id, `release` ends it early, and `activated`/`closing` gate the watcher.
+- **HostPlatform ([#2032](https://github.com/arcships/dim/issues/2032)).** The process owner must expose a started process by task id: `wait({taskId}, cancelled) → {status, exit}`, `kill({taskId}) → {}`, and the task id in its start reply. BackgroundExec adopts that id and never receives a process object. Until the host's id operations land, this board's `adopt` and `stop` cannot be implemented; the other owners' contracts are independent.
+- **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093)).** `hold` returns the lease id, `release` ends it early, and `activated`/`closing` gate the watcher.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix

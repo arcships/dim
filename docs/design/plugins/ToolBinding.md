@@ -96,8 +96,8 @@ let outcome = registry.execute(ExecuteRequest {
 
 | Service | Purpose |
 | --- | --- |
-| `B:Prompt` (branch, #2027) | Adopt the tool part of the branch's model configuration when the registry's set changes. |
-| `S:ToolRegistry` (Session, #2026) | Retain an adopted version set for a request, register a call's claim, and release a request's retention and claims. |
+| `B:Prompt` (branch, [#2027](https://github.com/arcships/dim/issues/2027)) | Adopt the tool part of the branch's model configuration when the registry's set changes. |
+| `S:ToolRegistry` (Session, [#2026](https://github.com/arcships/dim/issues/2026)) | Retain an adopted version set for a request, register a call's claim, and release a request's retention and claims. |
 | `B:Timeline`, `B:Dispatcher` | Reconcile the prefix's last configuration at branch opening and after a reload. |
 | `B:BranchLifecycle` | Gate the registry-change watcher on activation and closing. |
 
@@ -184,8 +184,8 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **ToolRegistry (#2026).** The owner needs, on the registry's contract: `adopt({requestId, declared, sources}) → {adopted}` that resolves the declarations, retains the version set for the request and answers the adopted value; `release_request({requestId})` that drops the request's retention and its claims; `claim({requestId, calls, context})` that registers a guard per call and keeps it until the call is dispatched or the request is released; `declarations() → {tools, sources}` that answers the current host and contributed declarations in one read; and `execute({adopted, call, context}, cancelled) → {result}` that resolves the handler for the adopted version, takes the call's claim, executes and settles it. These match the target shape in #2026's scan report; the registry's contract must state the claim's lifecycle and the retention rule ToolBinding relies on.
-- **Prompt (#2027).** The owner needs Prompt's branch operation that adopts the tool part of the configuration (`{tools, sources} → {adopted|unchanged|superseded}`), because ToolBinding writes no configuration fact.
+- **ToolRegistry ([#2026](https://github.com/arcships/dim/issues/2026)).** The owner needs, on the registry's contract: `adopt({requestId, declared, sources}) → {adopted}` that resolves the declarations, retains the version set for the request and answers the adopted value; `release_request({requestId})` that drops the request's retention and its claims; `claim({requestId, calls, context})` that registers a guard per call and keeps it until the call is dispatched or the request is released; `declarations() → {tools, sources}` that answers the current host and contributed declarations in one read; and `execute({adopted, call, context}, cancelled) → {result}` that resolves the handler for the adopted version, takes the call's claim, executes and settles it. These match the target shape in #2026's scan report; the registry's contract must state the claim's lifecycle and the retention rule ToolBinding relies on.
+- **Prompt ([#2027](https://github.com/arcships/dim/issues/2027)).** The owner needs Prompt's branch operation that adopts the tool part of the configuration (`{tools, sources} → {adopted|unchanged|superseded}`), because ToolBinding writes no configuration fact.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix

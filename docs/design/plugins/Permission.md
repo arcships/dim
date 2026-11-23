@@ -73,9 +73,9 @@ let next = permission.update(UpdateRequest {
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionScope` (Session, #2093) | The creation record's permission preset and working directory, and the Session id for facts queries. |
+| `S:SessionScope` (Session, [#2093](https://github.com/arcships/dim/pull/2093)) | The creation record's permission preset and working directory, and the Session id for facts queries. |
 | `S:CommandRules` (Session port) | The user's command rules, read at decision time. |
-| `S:FileAccessFacts` (Session owner, #2025) | Resolve the call's target and answer the workspace, system, owned and grant facts. |
+| `S:FileAccessFacts` (Session owner, [#2025](https://github.com/arcships/dim/issues/2025)) | Resolve the call's target and answer the workspace, system, owned and grant facts. |
 | `B:Timeline`, `B:Dispatcher` | Fold `permission/changed`; commit an update. |
 
 The file-access facts operation that resolves the target is not defined yet; it is stated in Requirements.
@@ -156,8 +156,8 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **File access facts (#2025).** The Session owner must publish one data operation, `check({sessionId, access, mode, path}, cancelled) → {target, workspace, system, owned, grant, discoveryError?}`, that resolves the call's path (`~`, cwd, `..`, links) and answers the facts under the effective access. Permission currently reads the owner's Rust object and a host `home` value; both disappear with this operation.
-- **SessionScope (#2093).** `config` and `identity` are the target's operations; Permission's creation-record reads use them.
+- **File access facts ([#2025](https://github.com/arcships/dim/issues/2025)).** The Session owner must publish one data operation, `check({sessionId, access, mode, path}, cancelled) → {target, workspace, system, owned, grant, discoveryError?}`, that resolves the call's path (`~`, cwd, `..`, links) and answers the facts under the effective access. Permission currently reads the owner's Rust object and a host `home` value; both disappear with this operation.
+- **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093)).** `config` and `identity` are the target's operations; Permission's creation-record reads use them.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix

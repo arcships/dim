@@ -65,7 +65,7 @@ The owner closes the gate when the parent call settles; a program that returns e
 
 | Service | Purpose |
 | --- | --- |
-| `S:ToolRegistry` (Session, #2026) | Resolve a call's write target and ordering class, and execute an admitted call for the request's adopted value. |
+| `S:ToolRegistry` (Session, [#2026](https://github.com/arcships/dim/issues/2026)) | Resolve a call's write target and ordering class, and execute an admitted call for the request's adopted value. |
 | `B:Approval` | Admit each call, including the user's answer and the policy recheck. |
 | `B:Timeline`, `B:Dispatcher` | Commit progress and results; consume batches, interrupts and turn boundaries; report faults. |
 | `B:TimelineIdentity` | The calling line's identity in the execution context and the span. |
@@ -142,7 +142,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **ToolRegistry (#2026).** The owner needs `prepare({adopted, call}, cancelled) → {call, risk}` (resolve the write target and answer the ordering class and risk without side effects) and `execute({adopted, call, context}, cancelled) → {result}` (take the call's claim, run the handler and settle it). These are the registry's operations for the branch executor; the registry's contract states them.
+- **ToolRegistry ([#2026](https://github.com/arcships/dim/issues/2026)).** The owner needs `prepare({adopted, call}, cancelled) → {call, risk}` (resolve the write target and answer the ordering class and risk without side effects) and `execute({adopted, call, context}, cancelled) → {result}` (take the call's claim, run the handler and settle it). These are the registry's operations for the branch executor; the registry's contract states them.
 - **Approval (#2028).** `admit` is this board's own operation (see [Approval](Approval.md)).
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 

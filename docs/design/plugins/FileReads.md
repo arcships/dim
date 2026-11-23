@@ -70,7 +70,7 @@ let Some(binding) = binding.binding else {
 | --- | --- |
 | `B:Timeline` | The line's committed file-tool results, from which bindings are rebuilt, and the completed `context/compaction` facts that decide the context rule. |
 
-FileReads injects no other service. The Session's file tools reach this owner through the Session access mechanism by line id ([TimelineTree's route](TimelineTree.md#session-parts-reaching-a-lines-owners)); FileReads returns values and stores records, and no file handle crosses.
+FileReads injects no other service. The Session's file tools reach this owner through the Session access mechanism by line id ([TimelineTree's route (#2092)](https://github.com/arcships/dim/pull/2092)); FileReads returns values and stores records, and no file handle crosses.
 
 ### Operations
 
@@ -141,7 +141,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **Session access (#2025).** A Session part resolves a line's owner by line id: the mechanism named in [TimelineTree's route](TimelineTree.md#session-parts-reaching-a-lines-owners). The file tools use it to reach `binding` and `record`; FileReads adds no forwarding operation.
+- **Session access ([#2025](https://github.com/arcships/dim/issues/2025)).** A Session part resolves a line's owner by line id: the mechanism named in [TimelineTree's route (#2092)](https://github.com/arcships/dim/pull/2092). The file tools use it to reach `binding` and `record`; FileReads adds no forwarding operation.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix
