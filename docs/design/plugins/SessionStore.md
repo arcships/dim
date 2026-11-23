@@ -42,7 +42,7 @@ Callers keep:
 | Add or remove one grant | No: the upsert rule that keeps a write grant is the owner's invariant | `addGrant`, `removeGrant` |
 | Write the reply language into the stored configuration | No: the caller must not rewrite the stored record | `setLanguage` |
 | Read the title and its revision | No: the caller has no row access | `title` |
-| Write a title and announce the commit | No: title writes are serialized inside the owner and the committed notice is published after the commit; a caller cannot order writers or publish that notice | `setTitle` |
+| Write a title and announce the commit | No: the write is serialized inside the owner, the decision reads the current title and revision under that serialization, and the committed notice is published after the commit | `setTitle` with a change callback |
 | Record a verified worktree directory and the Session's subtree | No: the directory record, the association and the last-use time are one commit | `associateWorktree` |
 | List recorded worktree directories or their Session associations, or learn which stored Sessions have a workspace under a root | No: the caller has no row access | `worktrees`, `worktreeUsages`, `sessionsUnder` |
 | Remove one recorded worktree together with its directory | No: the association and workspace checks, the caller's own removal step and the record deletion must not interleave with a Session creation that would point into the removed root | `removeWorktree` with a removal callback |
@@ -68,12 +68,14 @@ store.fork(Fork { source, id: fork, at, config_text: source_text.config_text }, 
 let removed = store.delete(Delete { id }, cancelled).await?;
 ```
 
-SessionTitle reads the current title, decides the text and writes it; the owner serializes the write and announces the committed revision.
+SessionTitle decides the next title from the current one; the owner serializes the decision and announces the committed revision.
 
 ```rust
-let current = store.title(TitleRead { id }, cancelled.clone()).await?;
-// The text is the caller's business; the owner serializes the write and answers the committed revision.
-let next = store.setTitle(SetTitle { id, title: Some(title_for(&current)) }, cancelled).await?;
+let change: ChangeFn = Arc::new(move |current: TitleState| {
+    let next = decide(current.revision, current.title.as_ref(), &text); // business rules
+    Box::pin(async move { Ok(next) })
+});
+let next = store.setTitle(SetTitle { id }, change, cancelled).await?;
 ```
 
 ManagedWorktrees removes a directory: the owner holds the exclusion while the caller's Git step removes the root, and deletes or keeps the record by that step's result.
@@ -113,8 +115,8 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `addGrant` | Add one grant, never downgrading a write grant | `{id, path, kind, mode}` | `{}` | None | `not_found`, `invalid`, `storage` |
 | `removeGrant` | Remove one grant; an absent grant counts as removed | `{id, path}` | `{}` | None | `storage` |
 | `setLanguage` | Write the reply language into the stored configuration | `{id, language?}` | `{}` | None | `not_found`, `invalid`, `storage` |
-| `title` | The title and its committed revision | `{id}` | `{revision, title?}` | None | `not_found`, `storage` |
-| `setTitle` | Commit a title and announce it; the owner serializes writes | `{id, title?}` | `{revision}` | The reply may be dropped; the admitted write is not cancelled | `not_found`, `storage` |
+| `title` | The title, its source and its committed revision | `{id}` | `{revision, title?: {text, source}}` | None | `not_found`, `storage` |
+| `setTitle` | Commit the title the caller's change returns and announce it; the owner serializes writes | `{id}` + `change` | `{revision}` | The reply may be dropped; the admitted write is not cancelled | `not_found`, `rejected`, `storage` |
 | `associateWorktree` | Record a verified directory and the Session's subtree in one commit | `{id, repository, root, subtree}` | `{}` | None | `not_found`, `invalid`, `storage` |
 | `worktrees` | Recorded directories, with their last use when known | `{}` | `{directories}` | None | `storage` |
 | `worktreeUsages` | The Session associations of one recorded directory | `{repository, root}` | `{usages}` | None | `invalid`, `storage` |
@@ -131,7 +133,7 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `workspace_missing` | The creation's `cwd` no longer is a directory; the caller reports the failed creation and discards the worktree |
 | `not_found` | No stored Session has the id; the caller decides whether that is a business error or an answer |
 | `in_use` | A Session association or a stored workspace still names the directory; delete that Session or refuse the removal |
-| `rejected` | The removal step refused or failed with its own `code` and `message`; the record stays and the caller acts on that code |
+| `rejected` | The caller's change or removal step refused with its own `code` and `message`; the title or the record is unchanged and the caller acts on that code |
 | `cancelled` | The caller stopped the read; nothing changed |
 | `closed` | This generation is unloading; call the replacement generation |
 | `storage` | The store failed; the caller reports the failure and keeps the Session or worktree for a retry |
@@ -146,14 +148,14 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `sessionConfigText`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
 | `catalog`, `query` | One consistent read under the caller's token | The read stops; no partial page | Nothing to release | Pending reads end `cancelled` | SessionStore |
 | `addGrant`, `removeGrant`, `setLanguage`, `associateWorktree` | One write transaction | None after it starts | The write completes; the reply may be lost | Admitted writes end before close | SessionStore |
-| `setTitle` | Admit the write behind earlier admitted writes, run it as the owner's task, commit, announce, answer the revision | Dropping the reply never cancels the admitted write | The admitted write completes and announces | Close stops admission, waits for every admitted write | SessionStore |
+| `setTitle` | Admit the write behind earlier admitted writes, read the current title, call `change` under the serialization, write the returned title as revision + 1, commit, announce, answer the revision | Dropping the reply never cancels the admitted write; a change that refuses leaves the title unchanged | The change callback is revoked before it returns; the admitted write fails and the title stays | Close stops admission, waits for every admitted write | SessionStore; the change computes only |
 | `removeWorktree` | Validate the paths, take the exclusion, check associations and stored workspaces, call `remove`, delete the record on success, release | The removal step ends `cancelled`; the record stays | The callback ends; the record stays; the exclusion releases | New calls are refused `closed`; an in-flight removal ends, and the record stays unless the step succeeded | Directory by the caller; record by SessionStore |
 
 ## Exceptions with reasons
 
 - `create` and `fork` take the caller's already-validated configuration and the fork text: validating the protocol, the collaboration role and the cut belongs to the Session lifecycle owner, and re-serializing the text would change bytes.
 - `delete` does not close the Session, remove its Agent admission slot or remove the worktree: closing is Agents', and a managed worktree is removed by ManagedWorktrees under `removeWorktree`.
-- `setTitle` hands the write over at admission: the reply may be lost, so the caller re-reads rather than assumes failure.
+- `setTitle` runs the caller's change under the owner's serialization: the change only computes the next title from the current title and revision, and returns its own refusal; the reply may be lost, so the caller re-reads rather than assumes failure.
 - `removeWorktree` runs ManagedWorktrees' removal step under the Session exclusion: the directory is that owner's resource, and the checks and the record deletion cannot interleave with a Session creation that would point into the removed root. The caller must not call SessionStore operations from the step; a failed or cancelled step keeps the record, and a row unload or owner close keeps it too.
 - `owner` answers the Agent id for a delete notice; the Agent directory's own records are not returned here.
 
@@ -165,7 +167,7 @@ Flow tests on the owner:
 - `delete` removes output first, then the rows; a failure before the first commit leaves every row; a concurrent creation waits for an in-flight removal and then either sees the surviving directory or fails on the missing workspace.
 - `fork` copies the supplied text unchanged and never parses it.
 - `addGrant` on a missing Session answers `not_found`; `removeGrant` on an absent grant answers success; a read grant never downgrades a write grant.
-- Two concurrent `setTitle` calls commit in admission order and each announces its revision; a dropped reply still commits and announces; close waits for the admitted write.
+- The change receives the current title, its source and revision; a change that returns `Rejected` leaves the title and revision unchanged; concurrent changes commit in admission order and each announces its revision; a dropped reply still commits and announces; close waits for the admitted write.
 - `removeWorktree` answers `in_use` while an association or a stored workspace remains; a failed or cancelled removal keeps the record; a successful removal deletes it; a concurrent creation waits for the removal and then either associates with the surviving directory or fails on the missing workspace.
 - A call in flight when the generation closes ends `closed`; a dropped callback keeps the record.
 
@@ -187,7 +189,7 @@ Material uncertainty: a process death during the caller's removal step leaves th
 | §4 rule 7 | Callers use these operations; no caller reads a row, a writer generation or a lock. |
 | §4 rule 8 | No infrastructure change; requirements are listed below. |
 | §4 rule 9 | The store publishes no Timeline fact of its own; the attached worktree stays a process fact. |
-| §7.2 ids and values | Requests and replies are data; the worktree value crosses, and the removal step crosses as a callback by reference. No object crosses. |
+| §7.2 ids and values | Requests and replies are data; the title change and the worktree removal step cross as callbacks by reference. No object crosses. |
 | §7.2 one public face | The service is marked on the SessionStore type under the existing `store` name; `Store`, `SessionMetadata` and `WorktreeAssociations` do not exist beside it. |
 | §7.2 caller mechanisms | The exclusion, the title admission and the record settlement stay inside the owner; callers handle business errors only. |
 | ADR 002 D1 | Process scope: the Session row set and its records outlive a Session. |
@@ -218,6 +220,34 @@ pub struct Worktree {
     pub root: String,
     pub subtree: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Title {
+    pub text: String,
+    pub source: TitleSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleSource {
+    Auto,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleState {
+    pub revision: u64,
+    pub title: Option<Title>,
+}
+
+/// The caller's decision: the current title and revision in, the next title (none clears) or its own refusal out.
+pub type ChangeFn = Arc<
+    dyn Fn(TitleState) -> rutis::host::BoxFuture<'static, Result<Option<Title>, Rejected>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -308,6 +338,16 @@ impl SessionStore {
         request: Fork,
         cancelled: CancelledFn,
     ) -> Result<(), StoreError> {
+        // ...
+    }
+
+    pub async fn set_title(
+        &self,
+        caller: &Ctx,
+        request: SetTitle,
+        change: ChangeFn,
+        cancelled: CancelledFn,
+    ) -> Result<TitleReply, StoreError> {
         // ...
     }
 
