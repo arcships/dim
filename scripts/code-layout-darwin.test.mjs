@@ -60,6 +60,7 @@ test('macOS layout orders Mach-O functions and samples __text residency', {
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import subprocess
@@ -177,25 +178,35 @@ fn main() { assert_eq!(layout_first(layout_second(layout_dependency::value())), 
 
     signal_sample = root/'signal.pages'
     sleeper = root/'sleeper'
-    (root / 'sleeper.c').write_text('#include <unistd.h>\nint main(void) { sleep(5); return 0; }\n')
+    (root / 'sleeper.c').write_text('''#include <unistd.h>
+int main(void) {
+    if (write(STDOUT_FILENO, "R", 1) != 1)
+        return 1;
+    pause();
+    return 0;
+}
+''')
     subprocess.run(['cc','-O0','-o',str(sleeper),str(root/'sleeper.c')],check=True)
     sleeper_error = root/'sleeper.stderr'
-    process = subprocess.Popen([str(sleeper)], env=dict(os.environ,
-        DYLD_INSERT_LIBRARIES=str(probe), DIM_LAYOUT_SAMPLE=str(signal_sample)),
-        stderr=sleeper_error.open('wb'))
-    try:
-        time.sleep(.5)
-        process.send_signal(signal.SIGUSR1)
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            if signal_sample.exists() and signal_sample.stat().st_size:
-                break
-            time.sleep(.02)
-        assert signal_sample.exists() and signal_sample.stat().st_size, (
-            process.poll(), sleeper_error.read_text())
-    finally:
-        process.kill()
-        process.wait()
+    with sleeper_error.open('wb') as stderr, subprocess.Popen(
+        [str(sleeper)], env=dict(os.environ, DYLD_INSERT_LIBRARIES=str(probe),
+                                DIM_LAYOUT_SAMPLE=str(signal_sample)),
+        stdout=subprocess.PIPE, stderr=stderr,
+    ) as process:
+        try:
+            readable, _, _ = select.select([process.stdout], [], [], 20)
+            assert readable and os.read(process.stdout.fileno(), 1) == b'R', (
+                'sleeper did not reach main', process.poll(), sleeper_error.read_text())
+            process.send_signal(signal.SIGUSR1)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if signal_sample.exists() and signal_sample.stat().st_size:
+                    break
+                time.sleep(.02)
+            assert signal_sample.exists() and signal_sample.stat().st_size, (
+                process.poll(), sleeper_error.read_text())
+        finally:
+            process.kill()
 `});
   assert.equal(result.error,undefined);
   assert.equal(result.status,0,result.stdout+result.stderr);
