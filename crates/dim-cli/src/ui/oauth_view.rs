@@ -1361,15 +1361,18 @@ mod tests {
             codex.handle_key(key(KeyCode::Enter)),
             Effect::ChatGptProfiles
         ));
-        assert!(matches!(
+        let Effect::OauthStart(start) =
             codex.set_chatgpt_profiles(Ok(vec![crate::login::ChatGptProfile {
                 id: "connected-profile".into(),
                 label: "Connected profile".into(),
                 signed_in: true,
                 active: true,
-            }])),
-            Effect::OauthStart(s) if s.migrate_legacy && s.namespace == crate::login::CHATGPT_NAMESPACE
-        ));
+            }]))
+        else {
+            panic!("expected a switch using the connected profile");
+        };
+        assert!(start.migrate_legacy);
+        assert_eq!(start.namespace, crate::login::CHATGPT_NAMESPACE);
     }
 
     #[test]

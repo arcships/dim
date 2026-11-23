@@ -132,7 +132,8 @@ pub(crate) fn convert(
                             &reason.to_string(),
                         )
                     })?;
-                    let mut function = FunctionTool::new(name, schema).with_description(&tool.description);
+                    let function = FunctionTool::new(name, schema);
+                    let mut function = function.with_description(&tool.description);
                     if chatgpt {
                         function.provider_options = Some(provider_namespace("openai", json!({
                             "namespace": {"name": CHATGPT_TOOL_NAMESPACE, "description": "Tools available in the Dim workspace"}

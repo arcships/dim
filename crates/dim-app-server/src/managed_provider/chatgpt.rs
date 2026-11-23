@@ -475,17 +475,17 @@ impl ChatGpt {
             )
         };
         let result = self.exchange(pending, &code, issued, &cancel).await;
-        if let Some(attempt) = self.attempts.lock().unwrap().get_mut(&id) {
-            if !matches!(attempt.state, LoginState::Cancelled) {
-                attempt.state = match &result {
-                    Ok(account) => LoginState::Completed {
-                        account: account.clone(),
-                    },
-                    Err(error) => LoginState::Failed {
-                        error: super::ManagedProviderError::from(*error).message.into(),
-                    },
-                };
-            }
+        if let Some(attempt) = self.attempts.lock().unwrap().get_mut(&id)
+            && !matches!(attempt.state, LoginState::Cancelled)
+        {
+            attempt.state = match &result {
+                Ok(account) => LoginState::Completed {
+                    account: account.clone(),
+                },
+                Err(error) => LoginState::Failed {
+                    error: super::ManagedProviderError::from(*error).message.into(),
+                },
+            };
         }
         result
     }

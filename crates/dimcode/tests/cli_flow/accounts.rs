@@ -275,7 +275,7 @@ fn login_without_a_provider_lists_the_described_accounts() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("openai-codex (OpenAI Codex): browser"),
+        stdout.contains("openai-codex (OpenAI Codex) [Legacy]: browser"),
         "{stdout}"
     );
     assert!(
@@ -524,8 +524,8 @@ fn the_provider_panel_signs_in_through_each_described_namespace() {
                 &listed,
                 management(json!([
                     described(
-                        "openai-codex",
-                        "OpenAI Codex",
+                        "fixture-browser",
+                        "Fixture Browser",
                         "account.codex",
                         &["browser"],
                         false
@@ -556,7 +556,7 @@ fn the_provider_panel_signs_in_through_each_described_namespace() {
         let mut terminal = Terminal::resume_tui(command);
         terminal.until("test / model");
         terminal.write(b"/connect\r");
-        terminal.until("OpenAI Codex");
+        terminal.until("Fixture Browser");
         terminal.write(b"\r");
         terminal.until("Browser login");
         terminal.until("urn:fixture:codex");
@@ -601,8 +601,8 @@ fn a_panel_without_the_sign_in_method_shows_the_unsupported_daemon_error() {
         wire.reply(
             &listed,
             management(json!([described(
-                "openai-codex",
-                "OpenAI Codex",
+                "fixture-browser",
+                "Fixture Browser",
                 "account.codex",
                 &["browser"],
                 false
@@ -616,7 +616,7 @@ fn a_panel_without_the_sign_in_method_shows_the_unsupported_daemon_error() {
     let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"/connect\r");
-    terminal.until("OpenAI Codex");
+    terminal.until("Fixture Browser");
     terminal.write(b"\r");
     terminal.until("This daemon does not offer account.codex.login.browser.begin");
     home.kill(&terminal);
@@ -624,14 +624,39 @@ fn a_panel_without_the_sign_in_method_shows_the_unsupported_daemon_error() {
     daemon.join().unwrap();
 }
 
-/// The production App Server describes the Codex account itself, and its
-/// browser sign-in builds the authorization URL without network.
 #[test]
 #[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
 fn login_reaches_the_codex_account_of_the_production_daemon() {
     let binary = std::env::var("DIM_TEST_APP_SERVER").expect("DIM_TEST_APP_SERVER");
     let home = Home::new();
     let _daemon = OwnedDaemon(home.0.join("rust/daemon.sock"));
+    let fresh = home
+        .command()
+        .args(["--server", &binary, "login", "openai-codex"])
+        .output()
+        .unwrap();
+    assert_eq!(fresh.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&fresh.stderr).contains("dimcode login openai-chatgpt"),
+        "{fresh:?}"
+    );
+    let configured = home
+        .command()
+        .args([
+            "--server",
+            &binary,
+            "models",
+            "openai-codex",
+            "--set-limits",
+            "gpt-6.2-sol",
+            "--context-window",
+            "128000",
+            "--max-output-tokens",
+            "16384",
+        ])
+        .output()
+        .unwrap();
+    assert!(configured.status.success(), "{configured:?}");
     let mut command = home.command();
     command
         .env("DIMCODE_OAUTH_MANUAL", "1")

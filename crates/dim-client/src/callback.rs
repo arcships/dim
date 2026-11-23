@@ -51,9 +51,13 @@ impl Capture {
 
     pub async fn receive(self) -> Result<(String, TcpStream)> {
         loop {
-            let (mut stream, _) = tokio::select! {
-                value = self.ipv4.accept() => value?,
-                value = async { self.ipv6.as_ref().unwrap().accept().await }, if self.ipv6.is_some() => value?,
+            let (mut stream, _) = if let Some(ipv6) = &self.ipv6 {
+                tokio::select! {
+                    value = self.ipv4.accept() => value?,
+                    value = ipv6.accept() => value?,
+                }
+            } else {
+                self.ipv4.accept().await?
             };
             let request = tokio::time::timeout(Duration::from_secs(2), async {
                 let mut request = Vec::new();

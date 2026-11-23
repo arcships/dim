@@ -209,19 +209,21 @@ pub async fn login(
         println!("Run dimcode login PROVIDER.");
         return Ok(0);
     };
-    if provider_id == LEGACY_CODEX_ID {
-        if !described(client)
+    let provider = if provider_id == LEGACY_CODEX_ID {
+        let Some(provider) = described(client)
             .await?
-            .iter()
-            .any(|provider| provider.provider_id == provider_id)
-        {
+            .into_iter()
+            .find(|provider| provider.provider_id == provider_id)
+        else {
             return Err("Run dimcode login openai-chatgpt to sign in with ChatGPT.".into());
-        }
+        };
         eprintln!(
             "OpenAI Codex sign-in will be removed in a future version. Use Switch to ChatGPT in /connect."
         );
-    }
-    let provider = described_account(client, provider_id).await?;
+        provider
+    } else {
+        described_account(client, provider_id).await?
+    };
     let method = if options.device {
         "device"
     } else if provider
@@ -350,9 +352,10 @@ async fn chatgpt_login(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as u64;
+    let remaining = Duration::from_millis(browser.expires_at.saturating_sub(now));
     let outcome = tokio::select! {
         _ = tokio::signal::ctrl_c() => None,
-        callback = tokio::time::timeout(Duration::from_millis(browser.expires_at.saturating_sub(now)), capture.receive()) => Some(callback),
+        callback = tokio::time::timeout(remaining, capture.receive()) => Some(callback),
     };
     let Some(Ok(Ok((callback, stream)))) = outcome else {
         cancel(client, provider, &browser.attempt_id).await?;
