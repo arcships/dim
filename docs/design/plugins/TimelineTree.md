@@ -96,28 +96,34 @@ A caller that needs the line's own owners — the input queue it writes into, th
 
 ## Session parts reaching a line's owners
 
-A Session part acts on one line by line id, never through a `Branch` object. Two operations exist, and neither is TimelineTree's:
+A Session part acts on one line by line id, never through a `Branch` object. Two families of operation exist, and neither is TimelineTree's:
 
 - **Change the line's state: write an input.** The target line's input owner (`inputQueue.submit` in that line's scope) accepts it in order and decides the outcome. TimelineTree is not in this path.
 - **Read the line's published state: read the value the owner publishes.** Each owner publishes its own read-only value; a part reads that value at the line id. TimelineTree answers which line is the conversation line and what state a line is in; it never answers for another owner.
 
-The provider of the id-to-instance step is the mechanism that mounts branch instances, exposed to Session parts by the Session access surface (#2025). TimelineTree supplies the line id and the line's existence and state, not the address. This is the same gap #2033 reports for Goal and Code Mode; one mechanism serves both.
+The provider is the Session access surface (#2025), one operation named `lineOwner`: `lineOwner.call(session, {line, operation, request}, cancelled)` resolves the line to the instance the runtime built for it (`SessionScope.openBranch`) and runs `operation` there. The owner of that operation executes it and answers with its own reply and its own errors; `operation` is a branch-scope operation's name from the catalog, so the mechanism carries any of them without curating a list (`inputQueue.submit`, `inputQueue.withdraw`, `contextUsage.read`, `prompt.adoptedConfiguration`, `approval.pending`, …). The runtime indexes a line when it constructs the context and drops the entry when that context closes: a line that is not live answers `ended` or `unknown`, and a closing Session answers `closed`. The request and reply types belong to #2025.
 
-Caller code after the change: a tool that needs its own line's wait slot, and a Session method that steers a member line.
+TimelineTree is not in this path: the tree answers its own directory and the facts, and it writes no live line's timeline. The same operation serves Goal and Code Mode (#2033).
+
+Caller code after the change: a Session method steering a member line, and a method reading a line owner's published value.
 
 ```rust
-// The tool runs on the calling line; the line id is the one the tool execution carries.
-let line = execution.branch_id; // a value, not a handle
-let slot = line_owner::<Wait>(line)?;           // the mechanism resolves (session, line)
-slot.arrival(task_id, timeout, cancelled).await?;
+// Write the line's state: the target line's input owner decides order and outcome.
+line_owner(session, LineOwnerCall {
+    line: member.clone(),
+    operation: "inputQueue.submit",
+    request: json!({ "input": steer_input }),
+}, cancelled).await?;
 
-// A Session part steering a member line writes an input; the member's queue decides.
-line_owner::<InputQueue>(member)?
-    .submit(InputMessageData::steer(text))
-    .await?;
+// Read a line's published value: the owner answers, not its timeline.
+let usage = line_owner(session, LineOwnerCall {
+    line: line.clone(),
+    operation: "contextUsage.read",
+    request: json!({ "through": null }),
+}, cancelled).await?;
 ```
 
-A Session part that cannot reach the mechanism keeps its business blocked; it does not fall back to holding a `Branch`, and TimelineTree adds no forwarding operation for it.
+A Session part that cannot reach `lineOwner` keeps its business blocked; it does not fall back to holding a `Branch`, and TimelineTree adds no forwarding operation for it.
 
 ## Own contract
 
@@ -125,8 +131,7 @@ A Session part that cannot reach the mechanism keeps its business blocked; it do
 
 | Service | Purpose |
 | --- | --- |
-| `S:TimelineFactory` | Build one line's branch scope. |
-| `S:SessionIdentity` | Name the persisted Session. |
+| `S:SessionScope` | `identity` for the Session id the store is keyed by, and `openBranch` to construct a line's context; the tree holds and settles what `openBranch` returns. |
 | `S:dyn TimelineStore` | The line directory and a line's facts in storage, at a fixed head. |
 | `S:GuideEntries` | The `<dim-branch-line>` and `<dim-branch-parent>` entries, until this part unloads. |
 
@@ -209,7 +214,7 @@ Flow tests on the owner:
 | §4 rule 9 | Facts are published after their atomic batch commits; the end and its message are one fact. |
 | §7 callbacks and ids | `create` takes the caller's cancellation as an argument; every argument and reply is data, a line is an id, and no object or handle crosses. |
 | §7 one change | The implementation task deletes the old surface, adds these operations and migrates every caller in one change. |
-| §7 no proxy reads | The tree answers its own directory and the facts, never another owner's record; the input path is not here. |
+| §7 no proxy reads | The tree answers its own directory and the facts, never another owner's record; a line's owners are reached through the mechanism's `lineOwner`, not through this owner. |
 | ADR 002 D1 | Session scope: the directory outlives every line and every branch scope is created and settled here. |
 | ADR 002 D2 | No wiring plugin: the service is on `TimelineTree`; no wrapper type and no trait object remain beside it. |
 | ADR 002 D3 | Dependencies point from extensions to the core; TimelineTree depends on the store, the factory and the identity only. |
@@ -218,7 +223,8 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-1. **Address a line's owners by (session, line) id.** A Session part writes an input to a line's input owner and reads a line owner's published value with only the line id; resolving the id to the live instance is the mechanism's, exposed on the Session access surface (#2025). [The scan report](https://github.com/arcships/dim/issues/2024#issuecomment-7082796601) and #2033 report the same gap from Goal and Code Mode. Until the mechanism exists, those callers stay blocked; no business owner may take the routing instead.
+1. **A line-addressed call on the Session access surface.** Provide `lineOwner.call({line, operation, request}, cancelled)`: resolve the line to the instance the runtime built for it (`openBranch`) and run the named branch-scope operation there, answering that owner's reply and errors unchanged; `ended` or `unknown` when the line is not live, `closed` when the Session is closing. A Session part uses it only for the two families decision 2 allows: writing input to the line's input owner, and reading the value a line owner publishes. The runtime indexes a line when it constructs the context and drops the entry when that context closes; TimelineTree stays out of the path and adds no forwarding operation. Goal and Code Mode (#2033) need the same operation. [#2025 comment](https://github.com/arcships/dim/issues/2025#issuecomment-7093420098).
+
 2. **The Session access surface stops carrying line operations.** `Session::end_branch`, `set_default_branch`, `branch`, `branches`, `directory`, `default_and_directory`, `ended_head`, `sequence`, `batch_end`, `query` forward here today; after this contract the tree is the only face and the Session surface must not restate it. #2025 owns that surface.
 
 ## Binding appendix
