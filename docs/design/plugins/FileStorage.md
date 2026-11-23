@@ -81,12 +81,9 @@ storage.update(
     Arc::new(move |current: Option<Bytes>| {
         Box::pin(async move {
             let current = decode(current.as_ref().map(|bytes| bytes.0.as_slice()))?; // business format
-            // `expected_revision` is the Settings document's own revision, not a FileStorage parameter;
-            // FileStorage's update takes no version or digest.
-            if current.revision != expected_revision {
-                return Err(Rejected::new("conflict", "the document changed since it was read"));
-            }
-            let next = check_and_update(current, document)?; // business rules
+            // The document's own revision is checked inside the helper; FileStorage's update
+            // has no version or digest parameter, and a refusal here is a business error.
+            let next = check_and_update(current, document)?; // business rules, including the document's own revision
             Ok(Bytes(encode(next)?))
         })
     }),
