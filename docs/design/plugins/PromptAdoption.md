@@ -93,7 +93,7 @@ let AdoptedEntries { entries } = prompt
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `configure` | Adopt source values, a model and a tool set as one configuration | `{sources?, model?, tools?}` | `{outcome}`: `unchanged`, `adopted{sequence}` or `superseded` | The caller cancels before the batch commits; a committed adoption is not revoked and answers `superseded` to a later one | `invalid_scope` (an entry outside the line's ancestry, or a System entry not branch-scoped), `invalid_model` (a model without the snapshot the tools need), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
+| `configure` | Adopt source values, a model and a tool set as one configuration | `{sources?, model?, tools?}` | `{outcome}`: `unchanged`, `adopted{sequence}` or `superseded` | The caller cancels before the batch commits; a committed adoption is not revoked, and a pending one that a newer adoption overtakes answers `superseded` | `invalid_scope` (an entry outside the line's ancestry, or a System entry not branch-scoped), `invalid_model` (a model without the snapshot the tools need), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
 | `adoptedConfiguration` | The adopted settings and their revision | `{}` | `{settings?}` | None | `closed` |
 | `adoptedEntries` | The effective entries for the named targets | `{targets?}` | `{entries}` | None | `closed` |
 
