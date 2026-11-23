@@ -119,7 +119,7 @@ All operations are marked on the owner type and provided under the owner's face 
 
 ## Exceptions with reasons
 
-- `Lease` carries the bearer into the callback: the model owner or the media executor performs the exchange, the account owner holds the grant, and the value lives only for one attempt; the contract forbids storing, logging or returning the bearer to a client.
+- `Lease` carries the bearer into the callback: the model owner or the media executor performs the exchange, the account owner holds the grant, and the value lives only for one attempt; the contract forbids storing, logging or returning the bearer to a client. The account owner cannot perform the exchange itself: the model protocol, transport, streaming, adaptation and the per-profile driver belong to the executor, and duplicating them in every account owner would make each account own a transport. A secret value in a reply is forbidden by AGENTS.md and an object or handle by §7. The boundary is raised for maintainer confirmation in [#2096](https://github.com/arcships/dim/pull/2096).
 - The external account plugin's face name is configured by its row because the plugin is built outside this repository; the host records the name in the Provider record's authority.
 
 ## Rule check
