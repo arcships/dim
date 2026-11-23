@@ -51,7 +51,7 @@ Home's error-only flow uses the same three calls in the process namespace with `
 
 In both TUI modes, `/report` opens a report for the current Session, including while a turn is running. It needs no captured error. Users can report an unsatisfactory answer or a repeating turn without waiting for a failure or stopping the turn. The dialog keeps the Session selected when it opened, including when preparing again after expiry. Returning to the composer and running `/report` again selects the Session shown at that time.
 
-Both modes show `Run /report to create a report.` below reportable errors. When a Session is shown, the hint points to the Session report and its recent activity excerpt (§3). On Home, the command can report a conversation-open failure from that view through the process entry. Leaving a Session clears its eligibility as an error source for Home. With neither a Session nor a conversation-open failure to report, the command shows `No session to report.` Desktop and Web error actions remain bound to the selected error. A failure of the report flow stays inside the dialog.
+Both modes show `Run /report to create a report.` below reportable errors. When a Session is shown, the hint points to the Session report and its recent activity excerpt (see [Evidence and redaction](#evidence-and-redaction)). On Home, the command can report a conversation-open failure from that view through the process entry. Leaving a Session clears its eligibility as an error source for Home. With neither a Session nor a conversation-open failure to report, the command shows `No session to report.` Desktop and Web error actions remain bound to the selected error. A failure of the report flow stays inside the dialog.
 
 ```text
 > /report
@@ -79,9 +79,9 @@ Both modes show `Run /report to create a report.` below reportable errors. When 
 +--------------------------------------------------------------+
 ```
 
-The error-only overlay uses `Report this error`. The Session overlay shows when the Timeline could not be read or the bounded excerpt has no reportable activity. Either state permits generation. Local generation is available on its own. Clients can expose a model picker once the one-shot operation in §7 is available. Its initial model is the adopted model of the referenced branch, or of the Session's main branch when there is no branch reference. It also offers models from the client's admitted catalog and **Generate locally**. Redaction starts checked on every new report: Generate then Save ZIP produces diagnostics only. Before generation, the Session dialog explains that turning redaction off may include sensitive text from recent user and assistant messages. An error-only report has no conversation to attach. Generating and saving never send a report to a feedback destination. Options accepts a short instruction about what to omit or keep. There are no required fields. With a model selected, the dialog exposes the exact model material and limits before Generate can send it. Local mode displays zero model requests. After a stale plan or a failed generation, the client offers to refresh the plan. When the draft expires, the client offers to prepare a report for the original target and reapplies the chosen options.
+The error-only overlay uses `Report this error`. The Session overlay shows when the Timeline could not be read or the bounded excerpt has no reportable activity. Either state permits generation. Local generation is available on its own. Clients can expose a model picker once the Provider's one-shot operation is available (see [Requirements raised to mechanism owners](#requirements-raised-to-mechanism-owners)). Its initial model is the adopted model of the referenced branch, or of the Session's main branch when there is no branch reference. It also offers models from the client's admitted catalog and **Generate locally**. Redaction starts checked on every new report: Generate then Save ZIP produces diagnostics only. Before generation, the Session dialog explains that turning redaction off may include sensitive text from recent user and assistant messages. An error-only report has no conversation to attach. Generating and saving never send a report to a feedback destination. Options accepts a short instruction about what to omit or keep. There are no required fields. With a model selected, the dialog exposes the exact model material and limits before Generate can send it. Local mode displays zero model requests. After a stale plan or a failed generation, the client offers to refresh the plan. When the draft expires, the client offers to prepare a report for the original target and reapplies the chosen options.
 
-The overlay follows the TUI's focus and list conventions. Up and Down move between controls, and Tab and Shift+Tab cycle focus. Enter activates the focused control. Esc closes a picker first, cancels generation while busy, or closes the report. Focus starts on Model. The TUI shortens the error and report title to fit the overlay and keeps the focused action visible. The result lists the archive contents and shows the saved path so users can inspect the files with their own tools. Place `/report` immediately before `/exit` in both curated menus with the description `report the current session`, following the existing exact-name, Enter and Tab behavior. The CLI command owner owns the menu (§7). [TUI design](Tui.md), [command menu contract](../cli-commands.md#command-menu).
+The overlay follows the TUI's focus and list conventions. Up and Down move between controls, and Tab and Shift+Tab cycle focus. Enter activates the focused control. Esc closes a picker first, cancels generation while busy, or closes the report. Focus starts on Model. The TUI shortens the error and report title to fit the overlay and keeps the focused action visible. The result lists the archive contents and shows the saved path so users can inspect the files with their own tools. Place `/report` immediately before `/exit` in both curated menus with the description `report the current session`, following the existing exact-name, Enter and Tab behavior. The CLI command owner owns the menu. [TUI design](Tui.md), [command menu contract](../cli-commands.md#command-menu).
 
 ## Evidence and redaction
 
@@ -112,26 +112,26 @@ TimelineTree's bounded branch read and branch summary ([#2024](https://github.co
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `prepare` | Capture a bounded snapshot and open a draft | `{error?}`; the process namespace requires `error` in the observed variant | `{reportId, defaultModel?, plan}` | Before the snapshot is captured; nothing is drafted | `caller_required`, `invalid`, `unavailable` |
-| `plan` | Bind the exact material, generation and directives | `{reportId, generation, redact, instructions?}` | `{planId, generation, evidence, instructionsStatus}` | None; the plan is a value | `not_found`, `invalid`, `busy`, `model_unavailable` |
-| `generate` | Consume the plan and produce the archive | `{reportId, planId}` | `{title, body, files, archive, sharing}` | The named plan stops; the evidence stays for a new plan | `not_found`, `stale`, `busy`, `generation_failed`, `cancelled` |
-| `cancel` | Stop a generation or drop a draft | `{reportId, target: "generation", planId}` or `{reportId, target: "report"}` | `{cancelled}` | — | `not_found` |
+| `prepare` | Capture a bounded snapshot and open a draft | `{error?}`; the process namespace requires `error` in the observed variant | `{reportId, defaultModel?, plan}` | Before the snapshot is captured; nothing is drafted | `caller_required`, `invalid_params`, `unavailable`, `report_cancelled` |
+| `plan` | Bind the exact material, generation and directives | `{reportId, generation, redact, instructions?}` | `{planId, generation, evidence, instructionsStatus, material, maxOutputTokens, estimatedCost}` | None; the plan is a value | `report_not_found`, `invalid_params`, `report_busy`, `report_model_unavailable` |
+| `generate` | Consume the plan and produce the archive | `{reportId, planId}` | `{title, body, files, archive, sharing}` | The named plan stops; the evidence stays for a new plan | `report_not_found`, `report_plan_stale`, `report_busy`, `report_generation_failed`, `report_cancelled` |
+| `cancel` | Stop a generation or drop a draft | `{reportId, target: "generation", planId}` or `{reportId, target: "report"}` | `{cancelled}` | — | `report_not_found` |
 
-The draft is keyed by the calling connection and the part instance; a missing, expired or foreign draft is `not_found`. A new `prepare` replaces an idle draft for that connection. At most 16 drafts per part instance; a seventeenth is `busy`. The observed input and instructions are bounded to 1 KiB each; the prepared model material to 8 KiB; the encoded ZIP to 64 KiB before the reply.
+The draft is keyed by the calling connection and the part instance; a missing, expired or foreign draft is `report_not_found`. A new `prepare` replaces an idle draft for that connection. At most 16 drafts per part instance; a seventeenth is `report_busy`. The observed input and instructions are bounded to 1 KiB each; the prepared model material to 8 KiB; the encoded ZIP to 64 KiB before the reply.
 
 ### Errors
 
 | Kind | What the caller does next |
 | --- | --- |
-| `caller_required` | The method needs a client connection; an in-process caller cannot prepare a report |
+| `caller_required` | The method needs a client connection; an in-process caller cannot prepare a report. Never reaches a client |
 | `invalid` | Fix the request: a missing or malformed error reference, a model id outside the admitted catalog, an out-of-range field |
 | `unavailable` | No draft can be prepared now: the Session is closing or its evidence cannot be read; use the local template or retry later |
-| `not_found` | The draft expired or belongs to another connection; prepare again |
-| `stale` | The plan was replaced or consumed; review the new plan before generating |
-| `busy` | A generation is running for this draft; cancel it or wait for it to settle |
-| `model_unavailable` | The selected model cannot serve this request; choose another or generate locally |
-| `generation_failed` | The generation failed; the draft keeps its evidence and the caller retries with a new plan or generates locally |
-| `cancelled` | The generation stopped; the draft keeps its evidence |
+| `report_not_found` | The draft expired or belongs to another connection; prepare again |
+| `report_plan_stale` | The plan was replaced or consumed; review the new plan before generating |
+| `report_busy` | A generation is running for this draft; cancel it or wait for it to settle |
+| `report_model_unavailable` | The selected model cannot serve this request; choose another or generate locally |
+| `report_generation_failed` | The generation failed; the draft keeps its evidence and the caller retries with a new plan or generates locally |
+| `report_cancelled` | The generation stopped; the draft keeps its evidence |
 
 ### Flows
 
@@ -153,7 +153,7 @@ The draft is keyed by the calling connection and the part instance; a missing, e
 
 Local generation renders a template from the approved snapshot and uses zero model calls. The optional short-lived report Agent performs one isolated drafting operation using only the reviewed material. Its input is the fixed system instruction, filtered snapshot and resolved redaction directives. It has no inherited Session, tools, workspace, credentials or publishing access. The Provider owner resolves and authenticates the request. The report plan shows the exact prompt material, the chosen provider/model, output limit and an estimate when the necessary price and token count are available. A plan cannot silently fall back to a different connection, model or request payload.
 
-The Agent's operation uses the one-shot auxiliary model boundary, with the single-attempt policy requested in §7. It does not create a general-purpose chat Session. The model proposes the title template, body section order and evidence selections and omissions using a bounded schema of known fields. Report validates the selection and renders the actual text from approved values. Invalid output fails generation and offers the local template. Neither path includes reproduction steps unless approved evidence establishes them.
+The Agent's operation uses the one-shot auxiliary model boundary, with the single-attempt policy requested from the Provider (see [Requirements raised to mechanism owners](#requirements-raised-to-mechanism-owners)). It does not create a general-purpose chat Session. The model proposes the title template, body section order and evidence selections and omissions using a bounded schema of known fields. Report validates the selection and renders the actual text from approved values. Invalid output fails generation and offers the local template. Neither path includes reproduction steps unless approved evidence establishes them.
 
 ## Preview and sharing
 
@@ -179,7 +179,14 @@ The client keeps the completed preview and bytes when a share action fails. The 
 | Provider ([#2019](https://github.com/arcships/dim/issues/2019)) | A one-shot completion with a caller-selected no-retry policy and the exact prepared material | Model-assisted generation is outside this contract until the owner offers that operation; the local template stays the default |
 | Web entry (App Server, this block) | Admit the process `report.*` namespace on the authenticated local Web entry | The error-only entry is served to the web client; the admission list is the entry's |
 
+## Supersedes
+
+None. This document replaces its own previous ownership and methods sections in place; the client interaction, evidence and generation sections stay.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
+
 
 | Rule | Application |
 | --- | --- |
@@ -231,6 +238,24 @@ pub struct PrepareReply {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlanReply {
+    pub plan_id: String,
+    pub generation: Generation,
+    pub evidence: Reviewed,
+    pub instructions_status: String,
+    /// The exact prompt material the user reviews before Generate; bounded to 8 KiB.
+    pub material: String,
+    pub max_output_tokens: u32,
+    /// `{amount, currency}` when the owner knows a price, else none.
+    pub estimated_cost: Option<Cost>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cost { pub amount: String, pub currency: String }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanRequest {
     pub report_id: String,
     pub generation: Generation,
@@ -255,21 +280,21 @@ pub enum ReportError {
     #[error("Report methods require a client connection")]
     CallerRequired,
     #[error("{message}")]
-    Invalid { message: String },
+    InvalidParams { message: String },
     #[error("The report cannot be prepared now")]
     Unavailable,
     #[error("The report draft is missing or expired")]
-    NotFound,
+    ReportNotFound,
     #[error("The plan was replaced or consumed")]
-    Stale,
+    ReportPlanStale,
     #[error("A generation is running for this report")]
-    Busy,
+    ReportBusy,
     #[error("The selected model is unavailable")]
-    ModelUnavailable,
+    ReportModelUnavailable,
     #[error("The generation failed")]
-    GenerationFailed,
+    ReportGenerationFailed,
     #[error("The generation was cancelled")]
-    Cancelled,
+    ReportCancelled,
 }
 ```
 

@@ -631,7 +631,7 @@ commits {sessionId}                              (async)
 notification {subscriptionId, batchId, branchId, through, result: "committed" | {code, message}}
 ```
 
-- `append` is a **sync** operation, like `localId.get`: it validates, assigns the batch its place
+- `append` is a **sync** operation, like `toolchainSourceHost.list`: it validates, assigns the batch its place
   in the Session's single writer queue, and answers `{accepted}` without waiting for I/O. It is the
   one face operation a caller may issue inside its own commit lock, because it performs no I/O and
   returns nothing the caller must await. The Timeline's existing admission — one

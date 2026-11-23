@@ -78,7 +78,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | 名字 | 处理 |
 | --- | --- |
 | `managementMethods` | 数据面，shared 名字与 dispatcher 一同注册。 |
-| `localId` | 数据面，由 root 提供 `get`。 |
+| `localId` | 已撤销：peer id 由 rutis-bridge 的 `LocalId` 值提供，不再有数据面（[ProcessRoot 契约](plugins/ProcessRoot.md)）。 |
 | `rutis/loader` | 插件管理数据面；`LoaderService` 是提供方的私有 Rust 类型，不是另一个服务名。 |
 | `PluginMounter` 类型键 | rutis-loader 与 rutis-bridge 内部挂载插件定义的装配键，不是公共服务目录项。 |
 
@@ -188,16 +188,12 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 ### 3.6 入口、凭据与宿主资源
 
-按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。`skillsCatalog` 的插件内容操作见 [Skills owner 契约](../architecture/rust-agent/plugins/Skills.md#plugin-content-data-face)。
+按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。连接、入口与 UI 板块的操作面见 [Connection](plugins/Connection.md)、[ServerControl](plugins/ServerControl.md)、[UiHost](plugins/UiHost.md)、[UiExtensions](plugins/UiExtensions.md)。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。`skillsCatalog` 的插件内容操作见 [Skills owner 契约](../architecture/rust-agent/plugins/Skills.md#plugin-content-data-face)。
 
 | 名字 | scope | provider | reason |
 | --- | --- | --- | --- |
-| `serverControl` | process | ServerControl | control |
-| `connectionHub` | process | Connection | control |
 | `grokOAuthService` | process | GrokOAuth | secret |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | secret |
-| `uiHost` | process | UiHost | control |
-| `uiExtensions` | process | UiExtensions | control |
 | `mentionIndex` | process | WorkspaceToolsOwner | host-resource |
 | `mcpService` | process | Mcp | host-resource |
 | `hooksService` | process | HooksSettings | host-resource |
@@ -328,7 +324,7 @@ store.associateWorktree {sessionId, repository, root, subtree} -> {}
 ```text
 credentialVariablesHost.variables() -> {variables: [string]}
   -- 只给变量名，永不给凭据值
-sessionClientsHost.presences {sessionId} -> {presences: [{channel, label?}]}
+connection.presences {sessionId} -> {presences: [{channel, label?}]}
   -- channel 是 tui/cli/web/acp/remote/desktop/unknown；label 是 hello.clientName，不是身份
 listenAddresses.read() -> {unixPath?, pipeName?, websocketAddress?}
   -> error {code: invalid_path, message}

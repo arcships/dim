@@ -44,15 +44,15 @@ Connection's `accept`, called once per accepted stream; ServerControl's `activat
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `read` | The addresses this process bound | `{}` | `{unixPath?, pipeName?, websocketAddress?}` | None | `invalid` |
+| `read` | The addresses this process bound | `{}` | `{unixPath?, pipeName?, websocketAddress?}` | None | `invalid_path` |
 
-`read` converts the bound addresses to UTF-8 text; a Unix path that is not UTF-8 is `invalid`, and the rest of the reply is not sent.
+`read` converts the bound addresses to UTF-8 text; a Unix path that is not UTF-8 is `invalid_path`, and the rest of the reply is not sent.
 
 ### Errors
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | The bound Unix path is not UTF-8; use another endpoint or start the daemon with a UTF-8 path |
+| `invalid_path` | The bound Unix path is not UTF-8; use another endpoint or start the daemon with a UTF-8 path |
 
 ### Flows
 
@@ -65,7 +65,14 @@ Connection's `accept`, called once per accepted stream; ServerControl's `activat
 
 - The accept loop is internal: a listener event is not data. Transport calls `Connection::accept` crate-internally; the stream's lifecycle is fixed in the [Connection contract](Connection.md).
 
+## Supersedes
+
+- [Service faces](../service-faces.md) §4.9's `listenAddresses.read` line: the operation is the one in this contract.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
+
 
 | Rule | Application |
 | --- | --- |
@@ -101,7 +108,7 @@ pub struct BoundAddresses {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ListenError {
     #[error("{message}")]
-    Invalid { message: String },
+    InvalidPath { message: String },
 }
 
 #[rutis::service(name = "listenAddresses")]

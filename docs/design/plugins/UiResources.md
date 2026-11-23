@@ -54,9 +54,9 @@ FileStorage (`open_read`, `read_at`, `close_read`) for the file; SessionLifecycl
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `publish` | Publish a finalized regular file for interfaces | `{path, media_type}` | `{session_id, id}` | While the file is opened; nothing is registered | `invalid`, `unavailable`, `closed` |
-| `withdraw` | Withdraw a reference this row published | `{reference}` | `{}` | None; the owner waits for admitted reads | `gone`, `invalid`, `closed` |
-| `read` | One bounded page of a published file | `{reference, offset?, limit?}` | `{offset, bytes, total, media_type, data}` | The caller's token; the page stops, the reference stays | `gone`, `invalid` |
+| `publish` | Publish a finalized regular file for interfaces | `{path, media_type}` | `{session_id, id}` | While the file is opened; nothing is registered | `invalid_params`, `resource_unavailable`, `session_closed` |
+| `withdraw` | Withdraw a reference this row published | `{reference}` | `{}` | None; the owner waits for admitted reads | `resource_gone`, `invalid_params`, `session_closed` |
+| `read` | One bounded page of a published file | `{reference, offset?, limit?}` | `{offset, bytes, total, media_type, data}` | The caller's token; the page stops, the reference stays | `resource_gone`, `invalid_params` |
 
 `publish` takes the calling row's context as the binding's caller parameter, not as a request field: the reference belongs to the row that calls, and the owner registers the cleanup on that row. The Rust binding and the wire call the same method; rutis supplies the calling row's context on the wire.
 
@@ -66,10 +66,10 @@ The media type decides inline display: a listed image, audio, video, text or PDF
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | The path is relative or outside every authorized root, the reference names another Session, or a page offset is beyond the file |
-| `unavailable` | The file is gone or unreadable; publish again or show the caller that the resource is unavailable |
-| `gone` | The reference was withdrawn or the Session is closing; stop reading |
-| `closed` | The Session is closing; the reference is settled |
+| `invalid_params` | The path is relative or outside every authorized root, the reference names another Session, or a page offset is beyond the file |
+| `resource_unavailable` | The file is gone or unreadable; publish again or show the caller that the resource is unavailable |
+| `resource_gone` | The reference was withdrawn; stop reading |
+| `session_closed` | The Session is closing; the reference is settled |
 
 ### Flows
 
@@ -79,12 +79,22 @@ The media type decides inline display: a listed image, audio, video, text or PDF
 | `withdraw` | Check the owner row, cancel and wait for admitted reads, remove the reference | — | Already removed | Already removed | UiResources |
 | `read` | Resolve the reference, take a read token, read one page, release the token | The page stops; the token is released | The read ends with the row | Admitted reads are cancelled before the reference goes | UiResources |
 
+The `session.ui.resources.read` client method is the same `read`, served to RPC clients; the web entry's HTTP route is its transport. Both stay.
+
 ## Exceptions with reasons
 
 - `publish` takes `caller: &Ctx`: ownership and cleanup must bind the calling row, and only rutis knows which row is calling; a caller-supplied id would let one row publish a reference owned by another. The parameter is not a request field and no caller sends a row.
 - WebEntry's media route calls `read` directly: the browser needs an HTTP response with range handling, and the route is a transport over the same read, not a second business path.
 
+## Supersedes
+
+- [Client UI extensions](../client-ui-extensions.md) service table row `uiResources`: the operations are those in this contract.
+- [Service faces](../service-faces.md) §3.6's `uiResources` note.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
+
 
 | Rule | Application |
 | --- | --- |
@@ -127,7 +137,7 @@ pub struct ReadRequest {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Page {
+pub struct ResourcePage {
     pub offset: u64,
     pub bytes: usize,
     pub total: u64,
@@ -138,21 +148,21 @@ pub struct Page {
 #[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ResourceError {
-    #[error("UI resource is unavailable")]
-    Gone,
+    #[error("UI resource is gone")]
+    ResourceGone,
     #[error("{message}")]
-    Invalid { message: String },
+    InvalidParams { message: String },
     #[error("{message}")]
-    Unavailable { message: String },
+    ResourceUnavailable { message: String },
     #[error("The Session is closing")]
-    Closed,
+    SessionClosed,
 }
 
 #[rutis::service(name = "uiResources")]
 impl UiResources {
     pub async fn publish(&self, caller: &rutis::Ctx, request: PublishRequest) -> Result<ResourceRef, ResourceError> { /* ... */ }
     pub async fn withdraw(&self, caller: &rutis::Ctx, request: ResourceRef) -> Result<(), ResourceError> { /* ... */ }
-    pub async fn read(&self, request: ReadRequest) -> Result<Page, ResourceError> { /* ... */ }
+    pub async fn read(&self, request: ReadRequest) -> Result<ResourcePage, ResourceError> { /* ... */ }
 }
 ```
 

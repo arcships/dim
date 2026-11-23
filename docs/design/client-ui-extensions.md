@@ -430,8 +430,8 @@ type PreviewMethods = {
 
 | 名称 | 范围 | 输入与结果 |
 | --- | --- | --- |
-| `uiExtensions` | process，后端命名服务 | 接受 PluginManager 的已验证内容注册/撤下；提供目录快照及变化观察，不供页面发布内容 |
-| `uiResources` | Session，后端命名服务 | `publishFile({path, mediaType}) -> ResourceRef`；`withdraw(ref)` 等到读取结束；注册自动归调用者生命周期，调用者不能撤下其他注册 |
+| `uiExtensions` | process，后端命名服务 | 操作见 [UiExtensions 契约](plugins/UiExtensions.md)：按插件 id 注册/撤下内容、目录快照与变化事实，不供页面发布内容 |
+| `uiResources` | Session，后端命名服务 | 操作见 [UiResources 契约](plugins/UiResources.md)：`publish`/`withdraw`/`read`，引用归发布者行，调用者不能撤下其他注册 |
 | `ui.extensions.list` | 已授权客户端的精确只读方法 | `{}` → `{revision, extensions, errors}`；extension 包含插件名、generation 和面板声明，不含 URL；errors 仅含 UiExtensions 自己产生的内容错误且不含绝对路径 |
 | `ui.extensions.read` | 已授权客户端的精确只读方法（local） | `{generation, path, offset?, limit?}` → `{offset, bytes, total, mediaType, data}`；`data` 为标准 base64；默认 1 MiB、上限 4 MiB；不在 `WEB_MANAGEMENT_METHODS` |
 | `session.ui.resources.read` | UiResources part 注册的 Session 方法 | `{sessionId, id, offset?, limit?}` → `{offset, bytes, total, mediaType, data}`；同一页边界；经 `session.methods` 发现；id 只在发布它的 Session 实例内有效 |

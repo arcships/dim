@@ -2,7 +2,7 @@
 
 Status: Draft. Parent: [agent environment awareness](../agent-environment.md). Issue: [#1019](https://github.com/arcships/dim/issues/1019). Rules: [design rules](../../architecture/rust-agent/principles.md) §1, §4 and §5, [ADR 002](../../adr/002-plugin-scope.md), [model-facing prompts](../model-prompts.md). Language: Rust.
 
-EnvironmentClients tells the model which client connections are attached to its Session. It is a read projection of the App Server's connection and UI registries; it owns no connection state. The snapshot is appended directly to the branch input. It is not a Prompt source and has no version, keyed state or compaction replay.
+EnvironmentClients tells the model which client connections are attached to its Session. It reads the App Server's `connection.presences` value and own the snapshot text; the branch does not read the connection or UI registries. The snapshot is appended directly to the branch input. It is not a Prompt source and has no version, keyed state or compaction replay.
 
 ## Use and scope: responsibility split
 
@@ -10,7 +10,7 @@ EnvironmentClientsBranch is a pure consumer with no public face. It owns the mod
 
 - **Responsibilities.** Build one snapshot at branch open and one per observed change; compare it with the last appended body; append an `input/message` with one Append-mode Raw block. No Prompt source, no version, no replay.
 - **Left with callers.** Which clients exist and what they are: `connection.presences` is a value; the branch decides how to render it.
-- **Not owned.** No connection, no registration, no presence state. The branch does not poll and does not read either registry.
+- **Not owned.** No connection, no registration, no presence state. The branch does not poll and reads neither registry; it only calls `connection.presences` and listens for `ClientsChanged`.
 
 | Requirement (callers) | Can callers compose it from existing operations without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ A change that arrives during a turn is appended when it arrives. The input-order
 
 ## Plugin structure
 
-- `ConnectionPlugin` provides `SessionClientsHost`.
+- `Connection` provides the `connection` face; `presences` answers the value.
 - `ConnectionPlugin` emits `ClientsChanged` on attach, detach, UI attach/close/replace and connection finish.
 - `ConnectionPlugin` registers one branch part: `EnvironmentClientsBranch`.
 - There is no Session part for this projection.
@@ -163,7 +163,7 @@ The in-memory presence read is infallible; it returns an empty list for an unkno
 
 | Dependency | Purpose |
 | --- | --- |
-| `SessionClientsHost` | Read the current connections |
+| `connection.presences` | Read the current connections |
 | The branch's input path | Append the snapshot |
 | `BranchLifecycle` | Wait for publication before appending; stop when the branch closes |
 | Process bus (`ClientsChanged`) | Wake on a connection change |
@@ -178,16 +178,19 @@ None to the runtime or rutis.
 
 ## Rule check
 
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
+
+
 | Rule | How this design complies |
 | --- | --- |
-| §1 Parts bounded; Capability | The connection registries stay with the App Server; `EnvironmentClientsBranch` is a Capability because it writes snapshot input facts through its branch Timeline. No new process part is added. |
+| §1 Parts bounded; Capability | The connection and UI registries stay with their owners; `EnvironmentClientsBranch` is a Capability because it writes snapshot input facts through its branch Timeline. No new process part is added. |
 | §4 rule 1 Command events | Presence changes no state. |
 | §4 rule 2 Handover | No handover. |
 | §4 rule 3 Before callbacks | The branch part appends in its own task; the event handler only wakes it. |
 | §4 rule 4 Core carries no business meaning | The body is the App Server projection; no core branch. |
 | §4 rule 5 Batch | A snapshot is one branch input. |
 | §4 rule 6 Context from consumed events | The snapshot is an input; no second context path. |
-| §4 rule 7 Public services | `SessionClientsHost` is the public read port. |
+| §4 rule 7 Public services | `connection.presences` is the public read operation; this part publishes none. |
 | §4 rule 8 Infrastructure unchanged | No Timeline, Dispatcher, envelope, assembly or facade change. |
 | §4 rule 9 Timeline holds decision facts | The delivered snapshot is an input fact; live presence remains in the App Server registries. |
 | ADR 002 D1 | Connections stay with the App Server; the branch part only projects them. |

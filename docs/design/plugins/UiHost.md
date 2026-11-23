@@ -12,6 +12,7 @@ UiHost owns:
 - **Leaves.** The rutis session mounted for an interactive leaf, its one-time token, its twenty-second start window, and its disposal when the session or the interface ends.
 - **Replacement.** Claiming the interface a replacement replaces, and closing it once the replacement attaches.
 - **Notices.** The advisory close notice on the interface's connection.
+- **Attribution.** The fact `uiHost/attribution {connection_id, session_id, kind}` when a registration binds a connection, and `uiHost/attribution-ended {connection_id}` when it clears. Connection folds the fact into the presence value; UiHost's registry is never read by another owner.
 
 Callers keep:
 
@@ -62,15 +63,15 @@ let attached = ui_host.attach(AttachRequest {
 
 ### Dependencies
 
-Connection's `attached` and `write`; the process root for mounting a leaf session.
+Connection's `attached` and `write`; rutis' `Ctx::plugin` on the owner's own process context, which mounts the leaf session inside this owner's subtree. No other owner provides a mount operation.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `open` | Reserve an interface and mount a leaf's session | `{connection_id, session_id, kind, peer, address, replace?, expected_generation?}` | `{ui_id, generation, token}` | While the leaf session is mounted; a failed start leaves nothing registered | `not_attached`, `invalid`, `ui_unknown`, `ui_generation`, `ui_leaf_failed` |
-| `attach` | Register a connection as an interface of a Session | `{connection_id, session_id, kind, ui_id?, token?}` | `{ui_id, generation}` | None | `not_attached`, `invalid`, `ui_token`, `ui_in_use`, `ui_unknown` |
-| `replace` | Replace an interface with a new registration | `{connection_id, session_id, kind, ui_id, expected_generation?}` | `{ui_id, generation}` | None | `not_attached`, `invalid`, `ui_unknown`, `ui_generation` |
+| `open` | Reserve an interface and mount a leaf's session | `{connection_id, session_id, kind, peer, address, replace?, expected_generation?}` | `{ui_id, generation, token}` | While the leaf session is mounted; a failed start leaves nothing registered | `session_not_attached`, `invalid_params`, `ui_unknown`, `ui_generation`, `ui_leaf_failed` |
+| `attach` | Register a connection as an interface of a Session | `{connection_id, session_id, kind, ui_id?, token?}` | `{ui_id, generation}` | None | `session_not_attached`, `invalid_params`, `ui_token`, `ui_in_use`, `ui_unknown` |
+| `replace` | Replace an interface with a new registration | `{connection_id, session_id, kind, ui_id, expected_generation?}` | `{ui_id, generation}` | None | `session_not_attached`, `invalid_params`, `ui_unknown`, `ui_generation` |
 | `status` | The live interfaces and the count of web connections | `{}` | `{instances, web_connections}` | None | none |
 | `close` | Remove an interface; a leaf's session ends | `{ui_id, reason?}` | `{}` | None; the owner settles the notice and the leaf | `ui_unknown` |
 | `shutdown` | Advise an interface to leave, without closing it | `{ui_id, reason?}` | `{}` | None | `ui_unknown`, `ui_detached` |
@@ -79,19 +80,24 @@ Connection's `attached` and `write`; the process root for mounting a leaf sessio
 
 `open` and `attach` require that `connection_id` views `session_id`; the owner asks Connection rather than reading its attachments.
 
+The owner emits two process events: `uiHost/attribution {connection_id, session_id, kind}` when a registration binds a connection and `uiHost/attribution-ended {connection_id}` when it clears. Connection folds them into its presence value; no other owner reads the registry.
+
+The `ui.extensions.changed {revision}` notification is Connection's delivery of UiExtensions' event to clients; UiHost plays no part in it.
+
 `expected_generation` is the generation the client read from `status` when it asked the user to confirm a replacement. It is a business version, not an owner-internal revision: the owner cannot decide it, because a client that saw interface A may have confirmed replacing A, and replacing whatever is current instead would close an interface the user never saw. The claim is atomic in `open`/`replace`; the attach token authorizes the leaf's attach and is a different value.
 
 ### Errors
 
 | Kind | What the caller does next |
 | --- | --- |
-| `not_attached` | Attach to the Session before registering an interface |
-| `invalid` | Fix the request: an unsupported kind, a missing address, a malformed peer, a token without an id |
+| `session_not_attached` | Attach to the Session before registering an interface |
+| `invalid_params` | Fix the request: an unsupported kind, a missing address, a malformed peer, a token without an id |
 | `ui_token` | The one-time token is wrong; the leaf cannot attach |
 | `ui_in_use` | Another connection already is this leaf; close it first or replace it |
 | `ui_unknown` | The interface is gone; list the live interfaces |
 | `ui_generation` | The interface changed since the caller looked; re-read `status` |
 | `ui_leaf_failed` | The leaf did not start; nothing is registered |
+| `ui_detached` | The interface is between a detach and its reattach; it can reattach and receive a later notice |
 
 ### Flows
 
@@ -108,7 +114,14 @@ Connection's `attached` and `write`; the process root for mounting a leaf sessio
 - The twenty-second start window is the owner's state: a leaf that does not attach is closed as `close` would.
 - `expected_generation` stays a request field: it is the version the client observed and confirmed, so the owner cannot choose it; a stale client is refused with `ui_generation` instead of silently replacing a newer interface.
 
+## Supersedes
+
+- [Tui design](Tui.md#36-ui-registry-and-ui-leaves) §3.6: the registry's state and operations are those in this contract; the leaf lifecycle description stays.
+- [Service faces](../service-faces.md) §3.6 row `uiHost`.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
 
 | Rule | Application |
 | --- | --- |
@@ -168,9 +181,9 @@ pub struct StatusReply { pub instances: Vec<Instance>, pub web_connections: usiz
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum UiError {
     #[error("Attach to the Session before registering an interface on it")]
-    NotAttached,
+    SessionNotAttached,
     #[error("{message}")]
-    Invalid { message: String },
+    InvalidParams { message: String },
     #[error("The UI leaf token is not valid")]
     UiToken,
     #[error("Another connection already is this UI leaf")]
@@ -181,6 +194,8 @@ pub enum UiError {
     UiGeneration,
     #[error("{message}")]
     UiLeafFailed { message: String },
+    #[error("This UI leaf is between a detach and its reattach")]
+    UiDetached,
 }
 
 #[rutis::service(name = "uiHost")]

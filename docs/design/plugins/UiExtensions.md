@@ -57,12 +57,12 @@ FileStorage (`add_root`, `list`, `read`) for the declared roots and files; Manag
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `register` | Publish one package's UI content | `{plugin, manifest?}` | `{}`; a failed preparation is recorded as a refusal, not an error | While the files are copied; nothing is published | `invalid` (unknown plugin id, unsupported version, bad declaration) |
+| `register` | Publish one package's UI content | `{plugin, manifest?}` | `{}`; a failed preparation is recorded as a refusal, not an error | While the files are copied; nothing is published | `invalid_params` (unknown plugin id, unsupported version, bad declaration) |
 | `withdraw` | Remove a package's content | `{plugin}` | `{}` | None; the owner settles admitted reads | none |
 | `plugins` | The packages with content now | `{}` | `{plugins: [id]}` | None | none |
 | `refusal` | Why a package's content was refused | `{plugin}` | `{message?}` | None | none |
 | `directory` | The published directory | `{}` | `{revision, extensions, errors}` | None | none |
-| `read` | One page of a prepared file | `{generation, path, offset?, limit?}` | `{offset, bytes, total, media_type, data}` | The calling connection's task ends; the page stops | `unavailable` |
+| `read` | One page of a prepared file | `{generation, path, offset?, limit?}` | `{offset, bytes, total, media_type, data}` | The calling connection's task ends; the page stops | `resource_unavailable` |
 
 `register` with no manifest withdraws the package's content, the same as `withdraw`.
 
@@ -70,8 +70,8 @@ FileStorage (`add_root`, `list`, `read`) for the declared roots and files; Manag
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | The package id is unknown, the version unsupported or the declaration invalid; the reason is recorded as the package's refusal |
-| `unavailable` | The file is gone or unreadable; the client shows the panel as unavailable |
+| `invalid_params` | The package id is unknown, the version unsupported or the declaration invalid; the reason is recorded as the package's refusal |
+| `resource_unavailable` | The file is gone or unreadable; the client shows the panel as unavailable |
 
 ### Flows
 
@@ -81,12 +81,22 @@ FileStorage (`add_root`, `list`, `read`) for the declared roots and files; Manag
 | `withdraw` | Remove the entry, cancel admitted reads, wait for them, remove the directory, emit the change event | — | — | — | UiExtensions |
 | `read` | Resolve the generation and the path, read one bounded page under the read counter | The page stops; nothing changes | The read token is released | Admitted reads are cancelled and awaited before the directory goes | UiExtensions |
 
+The `ui.extensions.read` client method is the same `read`, served to clients; WebEntry's HTTP route is its transport. Both stay.
+
 ## Exceptions with reasons
 
 - `register` takes the declaration as an optional value: a package with no UI member withdraws, and the owner resolves the installation directory by plugin id through PluginManager, so no path or handle crosses.
 - The change event is the owner's fact, not a subscription: a subscriber reads `directory` when the revision differs, so no freshness state crosses.
 
+## Supersedes
+
+- [Client UI extensions](../client-ui-extensions.md) service table row `uiExtensions`: the operations are those in this contract.
+- [Service faces](../service-faces.md) §3.6 row `uiExtensions`.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
+
 
 | Rule | Application |
 | --- | --- |
@@ -138,7 +148,7 @@ pub struct ReadRequest {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Page {
+pub struct ContentPage {
     pub offset: u64,
     pub bytes: usize,
     pub total: u64,
@@ -150,9 +160,9 @@ pub struct Page {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ContentError {
     #[error("{message}")]
-    Invalid { message: String },
+    InvalidParams { message: String },
     #[error("The UI content file is unavailable")]
-    Unavailable,
+    ResourceUnavailable,
 }
 
 #[rutis::service(name = "uiExtensions")]
@@ -162,7 +172,7 @@ impl UiExtensions {
     pub async fn plugins(&self, request: Empty) -> PluginsReply { /* ... */ }
     pub async fn refusal(&self, request: PluginRef) -> RefusalReply { /* ... */ }
     pub async fn directory(&self, request: Empty) -> DirectoryReply { /* ... */ }
-    pub async fn read(&self, request: ReadRequest) -> Result<Page, ContentError> { /* ... */ }
+    pub async fn read(&self, request: ReadRequest) -> Result<ContentPage, ContentError> { /* ... */ }
 }
 ```
 

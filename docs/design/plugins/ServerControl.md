@@ -36,20 +36,22 @@ An operation or parameter exists only where the row says No.
 A process part that starts work before any Session exists:
 
 ```rust
-if !activity.activated().await {
+if !activity.activated().await.activated {
     return Err(WorkError::HostClosed); // startup failed or shutdown began
 }
-let hold = activity.hold().ok_or(WorkError::HostClosed)?;
+let hold = activity.hold(ctx).await?; // the id is bound to this row
 let result = run_work().await;
-activity.release(hold);
+activity.release(ReleaseRequest { hold_id: hold.hold_id }).await;
 ```
 
 The `daemon.shutdown` handler:
 
 ```rust
-match activity.shutdown(ShutdownMode::Graceful) {
+match activity.shutdown(ShutdownRequest { mode: ShutdownMode::Graceful }).await {
     Ok(()) => { /* hold the reply until the assembly settles, then write it */ }
-    Err(ShutdownError::Conflict) => return Err(RpcError::invalid("Shutdown already requested")),
+    // Rpc maps this kind to the protocol's `invalid_params`: "Shutdown already requested".
+    Err(ActivityError::Conflict) => return Err(RpcError::invalid("Shutdown already requested")),
+    Err(error) => return Err(error.into()),
 }
 ```
 
@@ -73,16 +75,16 @@ None. The owner injects no service.
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `activated` | Whether the host has opened; a reload does not reset it | `{}` | `{activated}` | None | none |
-| `closing` | Wait until the daemon starts closing | `{}` | `{}` when closing begins | The caller's token; the wait ends | none |
-| `hold` | Keep a graceful close until the work settles | `{}` | `{hold_id}` | None; the id is settled by `release` or the row's unload | `closed` |
+| `closing` | Wait until the daemon starts closing | `{}` | `{}` when closing begins | The caller's task ends; the wait ends | none |
+| `hold` | Keep a graceful close until the work settles | `{}` + `caller: &Ctx` | `{hold_id}` | None; the id is settled by `release` or the row's unload | `closed` |
 | `release` | The work settled | `{hold_id}` | `{released}`; an already released id is `false` | None | none |
 | `holds` | Whether any accepted work is held now | `{}` | `{count}` | None | none |
 | `shutdown` | Ask the process to close | `{mode: graceful \| forced}` | `{}` accepted | None; the close cannot be cancelled | `conflict` |
 | `fault` | A listener exited; end the process | `{listener, message}` | `{}` | None | none |
 
-`hold` and `release` are not a `withHold(work)` callback. The accepted work outlives the call that started it: a Workflow run spans several calls and several Sessions, and a Scheduler delivery settles after the launching call returned. No single function represents that work, and a callback form would make the owner keep the caller's future alive across those calls. The id lets the caller's business object own the hold while the owner only tracks it.
+`hold` takes the calling row's context because the hold is settled at that row's unload: an id that outlives its row is released by the owner, and a later `release` answers `false`. A row that crashes without unloading keeps its hold until the process ends, and `shutdown(forced)` proceeds without it.
 
-The pair is one id's acquire and release, not a multi-step session: `release` is idempotent, a lost id never corrupts owner state and only keeps a graceful close waiting, and the row's unload releases it. A hold released by the row's unload answers `false` to a later `release`. A row that crashes without unloading keeps its hold until the process ends, and `shutdown(forced)` proceeds without it.
+`hold` and `release` are not a `withHold(work)` callback. The accepted work outlives the call that started it: a Workflow run spans several calls and several Sessions, and a Scheduler delivery settles after the launching call returned. No single function represents that work, and a callback form would make the owner keep the caller's future alive across those calls. The id lets the caller's business object own the hold while the owner only tracks it.
 
 `shutdown` does not run the sequence. It records the intent; `closing` resolves for every waiter; the assembly settles Agents, drains Rpc, closes connections and answers the initiating client. A second `shutdown` with any mode is `conflict`.
 
@@ -90,10 +92,10 @@ The pair is one id's acquire and release, not a multi-step session: `release` is
 
 ### Errors
 
-| Kind | What the caller does next |
-| --- | --- |
-| `closed` | The daemon is closing; stop starting work |
-| `conflict` | A shutdown was already requested; answer the client as already requested |
+| Kind | Wire code | What the caller does next |
+| --- | --- | --- |
+| `closed` | `service_unavailable` at `daemon.ping`/`daemon.shutdown` | The daemon is closing; stop starting work |
+| `conflict` | `invalid_params` | A shutdown was already requested; answer the client as already requested |
 
 No other error exists: the owner has no "not found", "invalid input" or "too large" state.
 
@@ -111,7 +113,14 @@ No other error exists: the owner has no "not found", "invalid input" or "too lar
 - `processActivity` is the single published name for a merged owner: the publication gate, the holds and the shutdown intent share one plugin and one lifecycle, and `serverControl` had no method of its own. Keeping the name avoids a wire rename for Workflow and Scheduler.
 - `hold`/`release` are two calls rather than `withHold(work)`: the accepted work outlives the call (a Workflow run, a Scheduler delivery), so no callback represents it. Settlement: the calling row's unload releases its holds; the owner refuses new holds once closing starts and waits for the released ones; a lost owner keeps the close graceful until the process ends, and a forced close does not wait.
 
+## Supersedes
+
+- [Service faces](../service-faces.md) §3.6 row `serverControl`.
+- [Process owner operations](../contracts/process-owner-operations.md) row `Activity consumers / daemon clients → ServerControl`: the operations are those in this document.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
 
 | Rule | Application |
 | --- | --- |
@@ -130,16 +139,46 @@ No other error exists: the owner has no "not found", "invalid input" or "too lar
 
 ## Requirements raised to mechanism owners
 
-- **Agents (#2020)**: `quiesce` ([#2098](https://github.com/arcships/dim/pull/2098)) — the assembly calls it after `shutdown` is accepted; the pause lives in Agents until its generation unloads, so no guard crosses to this owner.
+- **Agents (#2020)**: `quiesce` ([PR #2098](https://github.com/arcships/dim/pull/2098)) — the assembly calls it after `shutdown` is accepted; the pause lives in Agents until its generation unloads, so no guard crosses to this owner.
 
 ## Binding appendix
 
 ```rust
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+use rutis::Ctx;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShutdownMode { Graceful, Forced }
 
-#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivatedReply { pub activated: bool }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldReply { pub hold_id: u64 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseRequest { pub hold_id: u64 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleasedReply { pub released: bool }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldsReply { pub count: usize }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShutdownRequest { pub mode: ShutdownMode }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaultRequest { pub listener: String, pub message: String }
+
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ActivityError {
     #[error("The daemon is closing")]
@@ -150,14 +189,14 @@ pub enum ActivityError {
 
 #[rutis::service(name = "processActivity")]
 impl ProcessActivity {
-    pub async fn activated(&self, request: Empty) -> ActivatedReply { /* ... */ }
-    pub async fn closing(&self, request: Empty) { /* waits */ }
-    pub async fn hold(&self, request: Empty) -> Result<HoldReply, ActivityError> { /* ... */ }
+    pub async fn activated(&self) -> ActivatedReply { /* ... */ }
+    pub async fn closing(&self) { /* waits */ }
+    pub async fn hold(&self, caller: &Ctx) -> Result<HoldReply, ActivityError> { /* ... */ }
     pub async fn release(&self, request: ReleaseRequest) -> ReleasedReply { /* ... */ }
-    pub async fn holds(&self, request: Empty) -> HoldsReply { /* ... */ }
+    pub async fn holds(&self) -> HoldsReply { /* ... */ }
     pub async fn shutdown(&self, request: ShutdownRequest) -> Result<(), ActivityError> { /* ... */ }
     pub async fn fault(&self, request: FaultRequest) { /* ... */ }
 }
 ```
 
-`HoldId` is a `u64`; the id is not authority — the owner releases it by id or by the calling row's unload.
+`hold_id` is a `u64`; the id is not authority — the owner releases it by id or by the calling row's unload.

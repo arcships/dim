@@ -255,6 +255,8 @@ or plugin.
 
 ### 3.6 UI registry and UI leaves
 
+The registry's operations are the [UiHost contract](UiHost.md); this section describes the leaf lifecycle.
+
 The daemon is the authority over which interfaces are alive, and can close
 or replace them. An attached terminal interface is a **UI leaf**: the interactive
 `dimcode` process is a rutis kernel in a rutis session with the daemon

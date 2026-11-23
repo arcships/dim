@@ -2,13 +2,13 @@
 
 Scope: process. Issue: #2021.
 
-Rpc owns the daemon's inbound protocol entry: the handshake, the built-in methods, the routing to method namespaces, and the settlement of accepted commands. This document is the owner's target contract; the current implementation is in `crates/dim-app-server/src/connection.rs` (`RpcService`, `RpcPlugin`). Connection, ManagementMethods, CallChannel, Agents and ServerControl are separate owners with their own contracts.
+Rpc owns the daemon's inbound protocol entry: the handshake, the built-in methods, the routing to method namespaces, and the settlement of accepted commands. This document is the owner's target contract; the current implementation is in `crates/dim-app-server/src/connection.rs` (`RpcService`, `RpcPlugin`). Connection, ManagementMethods, CallChannel, Agents and ServerControl are separate owners with their own contracts. The wire behaviour of methods — declarations, interruptions, `callChannel` — is the [methods contract](../contracts/session-boundary.md); this document states the owner's operations.
 
 ## Use and scope: responsibility split
 
 Rpc owns:
 
-- **The handshake.** Which protocol versions a connection may greet with, what the greeting records, and what the greeting reply carries.
+- **The handshake.** Which protocol versions a connection may greet with, what the greeting records, and the method list the greeting carries.
 - **Built-in methods.** `daemon.ping`, `daemon.shutdown`, `session.*` and the other methods the protocol reserves; each built-in's admission and reply.
 - **Routing.** For each call: the management table, the Session's table, or a built-in; the caller identity the table receives; the call id notifications are addressed by.
 - **Command settlement.** The commands a call starts, their drain on unload, and the interruption kinds their declarations name.
@@ -19,7 +19,7 @@ Callers keep:
 
 - Reading frames and writing replies: Connection owns the socket, the outbound queue and the reply ordering.
 - The namespace table and the registered handlers: ManagementMethods and the Session's method table own them.
-- Authorizing Session access: Agents decides whether a Session may be acquired; the built-in methods carry the decision.
+- Authorizing Session access: Agents decides whether a Session may be acquired.
 - The shutdown sequence: ServerControl owns the intent; the assembly runs the sequence.
 
 | Requirement (callers) | Can callers compose it from the operations below without breaking the owner's invariants? | Handling |
@@ -32,52 +32,63 @@ An operation or parameter exists only where the row says No.
 
 ## Caller example
 
-```rust
-// Connection reads one frame and asks the current generation.
-let hello = rpc.hello(HelloRequest { connection_id: id.clone(), params }).await?;
-connection.write(hello.reply);
+Connection reads one frame and asks the current generation:
 
-let reply = rpc.request(RequestCall { connection_id: id, call_id, request }).await?;
-connection.write_after(WriteAfter { connection_id: id, call_id, frame: reply.frame }).await?;
+```rust
+let hello = rpc.hello(HelloRequest { connection_id: id.clone(), params }, cancelled.clone()).await?;
+connection.reply(ReplyRequest { connection_id: id.clone(), call_id, frame: hello.reply }).await?;
+
+let reply = rpc.request(RequestCall { connection_id: id, call_id, request }, cancelled).await?;
+connection.reply(ReplyRequest { connection_id: id, call_id, frame: reply.reply }).await?;
 ```
 
 ## Own contract
 
 ### Dependencies
 
-Connection's `write_after` and `attached`; ManagementMethods' `call`; the Session's method table (the same shape, per [ManagementMethods](ManagementMethods.md)); Agents' `acquire` and running/close operations; CallChannel's `run`; ServerControl's `shutdown`.
+Connection's `reply` and `attached`; ManagementMethods' `call`; the Session's method table (the same shape, per [ManagementMethods](ManagementMethods.md)); Agents' `acquire` and `sessions` ([Agents contract, PR #2098](https://github.com/arcships/dim/pull/2098)); CallChannel's `run`; ServerControl's `shutdown`.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `hello` | Answer a client's greeting for this generation | `{connection_id, params}` | `{reply, records}` | None; the handshake is one step | `reloading` (no generation is serving), `invalid` (version, entry or hello fields), `closed` |
-| `request` | Dispatch one call and settle what it starts | `{connection_id, call_id, request}` | `{reply}` | The calling connection closing ends the call as interrupted; an unload ends it by the method's declaration | `reloading`, `unknown_method`, `interrupted`, `invalid`, and the method's own error |
+| `hello` | Answer a client's greeting for this generation | `{connection_id, params}` | `{reply, instance, methods}`: the frame, this generation's instance id and the management method names | The caller's token; the handshake stops before anything is recorded | `service_reloading`, `invalid_params`, `service_unavailable` |
+| `request` | Dispatch one call and settle what it starts | `{connection_id, call_id, request}` | `{reply}`: the frame | The caller's token stops the wait; the provider's call is not cancelled by it (see below) | `service_reloading`, `service_unavailable`, `unknown_method`, `operation_interrupted`, `invalid_params`, and the method's own error |
 
-`request` mints nothing: the `call_id` comes from Connection, so the provider, CallChannel and the reply ordering name one call. The method's own errors are the data the table returns; Rpc maps them to the protocol envelope and does not add kinds.
+`request` mints nothing: the `call_id` comes from Connection, so the provider, CallChannel and the reply ordering name one call. The method's own error is the data the table returns; Rpc maps it to the protocol envelope and does not add kinds.
+
+A calling connection closing stops delivery only: the admitted call belongs to the provider generation and settles according to its declaration, as the [methods contract A.1 and A.2](../contracts/session-boundary.md) require. Rpc's `request` returns the reply frame; writing it is Connection's.
 
 ### Errors
 
-| Kind | What the caller does next |
-| --- | --- |
-| `reloading` | Retry after the next generation is installed; the connection stays open |
-| `unknown_method` | The name no namespace holds; the client sees the method error |
-| `interrupted` | The call may have committed; read the current state before retrying |
-| `invalid` | The frame or the greeting is malformed; answer the client with the protocol error |
-| `closed` | The connection is gone; nothing was dispatched |
+The wire codes are the existing ones from the methods contract; a client matches them unchanged.
+
+| Kind | Wire code | What the caller does next |
+| --- | --- | --- |
+| `service_reloading` | `service_reloading` | Retry after the next generation is installed; the connection stays open |
+| `service_unavailable` | `service_unavailable` | The generation cannot run; reconnect or report the service as unavailable |
+| `unknown_method` | `unknown_method` | The name no namespace holds; the client sees the method error |
+| `operation_interrupted` | `operation_interrupted` | The call may have committed; read the current state before retrying |
+| `invalid_params` | `invalid_params` | The frame or the greeting is malformed; answer the client with the protocol error |
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `hello` | Check the version window and the entry, record the greeting, build the method list | — | — | New hellos are refused as `reloading`; open connections stay | Rpc |
-| `request` | Route, admit through the table with the caller identity and `call_id`, return the reply; commands settle in Rpc's tracker | A closing connection ends the call as interrupted | The call ends and its commands settle | An unloading generation cancels its commands, answers pending waits as interrupted and drains before unload; connections stay open | Rpc: the commands |
+| `hello` | Check the version window and the entry, record the greeting, build the method list | — | — | New hellos are refused as `service_reloading`; open connections stay | Rpc |
+| `request` | Route, admit through the table with the caller identity and `call_id`, return the reply; commands settle in Rpc's tracker | A closing connection stops waiting for the frame; the accepted call continues and settles by its declaration | The call finishes and its commands settle | An unloading generation cancels its commands, answers pending waits as `operation_interrupted` and drains before unload; connections stay open | Rpc: the commands |
 
 ## Exceptions with reasons
 
 - The built-in methods are a closed set on the owner type, not registrations: they are the protocol's own methods and never appear in the management table.
 
+## Supersedes
+
+None. The method declarations, interruptions and `callChannel` behaviour stay with the [methods contract](../contracts/session-boundary.md); this contract states the dispatcher owner's operations.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
 
 | Rule | Application |
 | --- | --- |
@@ -96,20 +107,26 @@ Connection's `write_after` and `attached`; ManagementMethods' `call`; the Sessio
 
 ## Requirements raised to mechanism owners
 
-- **Session registration (#2026)**: the Session method table's dispatch takes the same `{method, params, caller: {connectionId, callId}}` request and returns the same reply data, so one call path serves both tables.
+- **Session registration (#2026)**: the Session method table's dispatch takes the same `{method, params, caller: {connectionId, callId}}` request and returns the same `MethodReply`, so one call path serves both tables.
 
 ## Binding appendix
 
 ```rust
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+use crate::host::CancelledFn;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelloRequest { pub connection_id: String, pub params: HelloParams }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HelloReply { pub reply: Frame, pub records: Vec<String> }
+pub struct HelloReply {
+    pub reply: Frame,
+    pub instance: String,
+    pub methods: Vec<String>,
+}
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestCall {
     pub connection_id: String,
@@ -117,30 +134,32 @@ pub struct RequestCall {
     pub request: Request,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RequestReply { pub reply: Reply }
+pub struct RequestReply { pub reply: Frame }
 
-#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum RpcError {
     #[error("Service is reloading; retry")]
-    Reloading,
+    ServiceReloading,
+    #[error("Service is unavailable until it is fixed or restarted")]
+    ServiceUnavailable,
     #[error("Unknown method")]
     UnknownMethod,
     #[error("Service reloaded; the call may have committed")]
-    Interrupted,
+    OperationInterrupted,
     #[error("{message}")]
-    Invalid { message: String },
-    #[error("The connection is closed")]
-    Closed,
+    InvalidParams { message: String },
 }
 
 #[rutis::service(name = "rpc")]
 impl RpcService {
-    pub async fn hello(&self, request: HelloRequest) -> Result<HelloReply, RpcError> { /* ... */ }
-    pub async fn request(&self, request: RequestCall) -> Result<RequestReply, RpcError> { /* ... */ }
+    pub async fn hello(&self, request: HelloRequest, cancelled: CancelledFn)
+        -> Result<HelloReply, RpcError> { /* ... */ }
+    pub async fn request(&self, request: RequestCall, cancelled: CancelledFn)
+        -> Result<RequestReply, RpcError> { /* ... */ }
 }
 ```
 
-`Connection` looks the `rpc` service up on each frame; a generation that is unloading refuses new frames as `reloading`.
+`Frame` is the encoded protocol frame the client receives; `Request` is the decoded call. Connection looks the `rpc` service up on each frame; a generation that is unloading refuses new frames as `service_reloading`.

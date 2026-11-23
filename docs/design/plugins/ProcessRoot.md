@@ -82,7 +82,15 @@ None. The root reads the assembly's configuration and provides the values.
 - The root has no plugin row: the assembly is the provider, and a process-scope value needs no `apply`. It provides no resource, so no settlement path exists.
 - `credentialVariablesHost` covers the configured model catalog's names only; the managed provider's credentials are not environment variables and are not listed.
 
+## Supersedes
+
+- [Service faces](../service-faces.md) §3.1 row `localId`: the face is retired by this contract.
+- [Resource faces](../resource-faces.md) the `localId.get` example: the value stays a value; the face is retired.
+
 ## Rule check
+
+The checks below cite [design rules §7, PR #2029](https://github.com/arcships/dim/pull/2029) because the section is not yet on `main`.
+
 
 | Rule | Application |
 | --- | --- |
