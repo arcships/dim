@@ -130,7 +130,7 @@ No other error exists: the owner has no "not found", "invalid input" or "too lar
 
 ## Requirements raised to mechanism owners
 
-- **Agents (#2020)**: the Session pause and settle that the assembly runs after `shutdown` is accepted. The owner keeps no `SessionPause` value.
+- **Agents (#2020)**: `quiesce` ([#2098](https://github.com/arcships/dim/pull/2098)) — the assembly calls it after `shutdown` is accepted; the pause lives in Agents until its generation unloads, so no guard crosses to this owner.
 
 ## Binding appendix
 

@@ -62,16 +62,17 @@ append_snapshot(&timeline, body)?;
 The idle-close handler reads the other owners' facts, then commits the refusal in one call:
 
 ```rust
-let running = agents.running_sessions();
-let held = process_activity.holds(); // a count, not a guard
-let quiet = agents.sessions_quiescent();
+let running = agents.sessions().await?.sessions.iter().filter(|s| s.running).count();
+let held = process_activity.holds().await?.count; // a count, not a guard
 match connections.close_for_idle(CloseForIdle {
     exclude_connection_id: caller.clone(),
     running_sessions: running,
     held_work: held,
-    sessions_quiet: quiet,
 }) {
-    Ok(counts) => shutdown.request(ShutdownMode::Graceful),
+    Ok(counts) => {
+        // The refusal is committed; the assembly quiesces Agents and closes.
+        shutdown.request(ShutdownMode::Graceful);
+    }
     Err(CloseForIdleError::Busy(busy)) => return Err(busy.into()),
 }
 ```
@@ -86,7 +87,7 @@ channel.notify(NotifyRequest { connection_id, call_id, method, params }).await?;
 
 ### Dependencies
 
-Rpc's current generation (`hello`, `request`), read by name on each frame; UiHost's `detach` and `release`; Agents' `acquire`/`release` for attachment leases ([Agents #2020](../contracts/process-owner-operations.md)).
+Rpc's current generation (`hello`, `request`), read by name on each frame; UiHost's `detach` and `release`; Agents' `acquire {sessionId} → {useId, generation}`, `release {useId}` and `sessions` ([Agents contract](Agents.md)).
 
 ### Operations
 
@@ -104,13 +105,15 @@ The owner type is `ConnectionHub`. `accept` is crate-internal because a socket c
 | `attached` | Whether a connection views a Session now | `{connection_id, session_id}` | `{attached}` | None | none |
 | `presences` | The live clients of a Session | `{session_id}` | `{presences: [{channel, label?}]}` | None | none |
 | `counts` | Live connections and attached Sessions, excluding one connection | `{exclude_connection_id}` | `{connections, attached_sessions}` | None | none |
-| `close_for_idle` | Commit the daemon's refusal of new clients when nothing uses it | `{exclude_connection_id, running_sessions, held_work, sessions_quiet}` | `{counts}` | None | `busy{connections, attached_sessions, running_sessions}` |
+| `close_for_idle` | Commit the daemon's refusal of new clients when nothing uses it | `{exclude_connection_id, running_sessions, held_work}` | `{counts}` | None | `busy{connections, attached_sessions, running_sessions}` |
 | `close_all` | Close every connection and wait for its tasks | `{}` | `{}` | None; the owner completes the close | none |
 | `settle` (internal) | One connection ended: release its attachment, tell UiHost, end its writer | `{connection_id, reason}` | `{}` | None | none |
 
 `write` and `write_after` are one operation family: `write_after` exists because a notification sent while a call runs must follow that call's reply, and only the connection's outbound queue knows the reply has been written. `write` refuses a frame over the connection's frame budget with `too_large`, and closes a connection whose reliable allowance is exhausted, reporting `slow` to the writer of that frame.
 
-`close_for_idle` reads the other owners' facts from its request: the caller read them immediately before. The owner rechecks only its own counts under the admission lock and commits the refusal in the same step, so no hello or attach joins after the decision. A fact that changes afterwards is settled by the shutdown sequence; the refusal is not undone.
+`close_for_idle` reads the other owners' facts from its request: `running_sessions` from Agents' `sessions` value and `held_work` from `processActivity.holds`, both read immediately before. The owner rechecks only its own counts under the admission lock and commits the refusal in the same step, so no hello or attach joins after the decision.
+
+After the commit the assembly asks Agents to `quiesce` every Session. A `running` answer means a Session accepted work between the read and the pause; the refusal stands and the graceful close settles that work — admission is never reopened after the commit.
 
 ### Errors
 
@@ -136,7 +139,7 @@ The owner type is `ConnectionHub`. `accept` is crate-internal because a socket c
 | `closed` | Resolve when the reader or the owner ends the connection | — | The waiter ends | Resolves for every waiter | Connection |
 | `attach` | Acquire the Session lease, register the subscription, attach under the connection lock | Before the reply: lease released, listener disposed, nothing attached | The attachment is released with the connection | Pending calls end `closed`; every attachment is released | Connection: the attachment; Agents: the lease |
 | `detach` | Remove the attachment and release its lease and listener | — | — | The attachment is already gone | Connection |
-| `close_for_idle` | Recheck counts under the lock, set the refusal, return the counts | None | — | The refusal is the close | Connection |
+| `close_for_idle` | Recheck counts under the lock, set the refusal, return the counts; the caller then asks Agents to quiesce | None | — | The refusal is the close; a `running` quiesce answer does not reopen it | Connection |
 | `close_all` | Tell UiHost the connections ended, cancel each reader and writer, wait for the tasks | — | — | It is the close | Connection |
 
 ## Exceptions with reasons
@@ -171,7 +174,7 @@ The owner type is `ConnectionHub`. `accept` is crate-internal because a socket c
 
 ## Requirements raised to mechanism owners
 
-- **Agents (#2020)**: attachment leases as ids bound to the calling row (`acquire(sessionId) → leaseId`, `release(leaseId)`); a value for the running Session count and a value for Session quiescence used by `close_for_idle`; an operation that settles the Sessions for shutdown after `close_for_idle` commits.
+- **Agents (#2020)**: the operations are the ones in the Agents contract ([#2098](https://github.com/arcships/dim/pull/2098)): `acquire {sessionId} → {useId, generation}` and `release {useId}` for the attachment lease, `sessions` for the running count, and `quiesce` for the shutdown pause. No new operation is required; the caller passes the read values into `close_for_idle` and quiesces after the commit.
 - **rutis (runtime)**: none.
 
 ## Binding appendix
