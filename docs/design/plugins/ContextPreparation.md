@@ -8,7 +8,8 @@ ContextPreparation turns a step's source data into the model request ModelProvid
 
 ContextPreparation owns:
 
-- **The prepared request.** The request's system, messages and tools at the step's fixed cutoff, from the source data Loop passes and the request-local projection.
+- **The prepared request.** The request's system, messages and tools at the step's fixed cutoff, from the source data Loop passes and the history the owner projects at that cutoff.
+- **The projection.** The history that becomes the request, read through ContextProjection at the step's cutoff and consumed inside the preparation; no projection object crosses an owner.
 - **The budget.** The input threshold, the output allowance, the retention reserve and the projection's growth check; an estimate above the threshold starts a compaction before any model call.
 - **The compaction step.** The manual command, its single-flight slot and the threshold trigger; the step writes `context/compaction-start` and one `context/compaction`, and Loop starts no request while a step runs.
 - **Preparation recovery.** After a reload, a `context/prepare` without a matching `model/call` or `model-output-end`, and a compaction start without a result, settle as terminal facts without redoing host work.
@@ -25,7 +26,7 @@ Callers keep as business:
 
 | Requirement (caller) | Can callers compose it from the operations below without breaking ContextPreparation's invariants? | Handling |
 | --- | --- | --- |
-| Loop starts a step's request and hands over its request-local projection | No: the projection is consumed or discarded at the same cutoff the source names, and a second projection in the caller would duplicate the fold | `prepare` with the projection in the request |
+| Loop starts a step's request at a cutoff | No: the projection, its cutoff and its consumption are the owner's; a caller that projects and hands over duplicates the fold and moves a large value between owners | `prepare` with the source data; the owner projects at the cutoff |
 | ModelProvider confirms the final request fits the budget before sending it | No: the estimate reuse and the counter are the owner's, and a caller cannot know which estimate still matches | `validate` |
 | The operator asks for a manual compaction and needs its outcome | No: the single-flight command, the step and its outcome are one state machine | `compact` |
 | A caller reads whether a compaction is running | Yes: `context/compaction-start` and `context/compaction` are public facts | Business composition with `timelineTree.read` |
@@ -35,22 +36,17 @@ An operation exists only where the row says No.
 
 ## Caller example
 
-Loop prepares a step; the projection crosses as request data and is consumed inside the call:
+Loop prepares a step at its cutoff; the owner projects the line's history inside the call:
 
 ```rust
-let projection = context_projection
-    .rendered_stream(RenderedStreamRequest { through: cutoff, batch: 256 })
-    .await?;
 context_preparation
     .prepare(
-        PrepareRequest {
-            source: ContextPrepareData { turn_id, request_id, through: cutoff, ..source },
-            projection: Some(projection),
-        },
+        PrepareRequest { source: ContextPrepareData { turn_id, request_id, through: cutoff, ..source } },
         cancel.clone(),
     )
     .await?;
-// No request object is returned: the owner publishes model/call, which Loop consumes in order.
+// No projection and no request object crosses: the owner reads the history at the cutoff,
+// publishes model/call, and Loop consumes that fact in order.
 ```
 
 ModelProvider validates the final request, after image adaptation:
@@ -93,17 +89,17 @@ match outcome {
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `prepare` | Admit a step's request, build it at its fixed cutoff and publish the handoff facts | `{source, projection?}` | `{}` once `context/prepare` and the request are committed | The caller's cancel before admission writes nothing; after admission the owner settles the request | `invalid` (malformed source data, a projection for another cutoff), `cancelled`, `closed` |
+| `prepare` | Admit a step's request, project the history at its fixed cutoff, build the request and publish the handoff facts | `{source}` | `{}` once `context/prepare` and the request are committed | The caller's cancel before admission writes nothing; after admission the owner settles the request | `invalid` (malformed source data), `cancelled`, `closed` |
 | `validate` | Confirm the final request fits the budget, reusing the estimate when it still matches | `{request}` | `{}` | The caller's cancel stops the check; nothing changes | `over_budget` (the request is too large; the caller fails the turn or recovers), `invalid` (missing or foreign capability snapshot), `cancelled`, `closed` |
 | `compact` | Run one manual compaction step and answer its outcome | `{manual: true}` | `{outcome}`: `completed{sequence}`, `skipped{reason}` or `failed{reason}` | The caller's cancel stops the wait, not the committed step; a later call joins the same step | `cancelled` (the wait stopped), `closed` |
 
-`prepare` writes `context/prepare` and then `model/call`, or `model-output-end` with the failure when the host or the budget refuses. The request is the durable form; no prepared object crosses. `validate`'s reuse is expressed by the request data and the preparation's own record, never by object identity.
+`prepare` writes `context/prepare` and then `model/call`, or `model-output-end` with the failure when the host or the budget refuses. The projection is read inside the call and never persisted; the request is the durable form, and no prepared object crosses. `validate`'s reuse is expressed by the request data and the preparation's own record, never by object identity.
 
 ### Errors
 
 | Kind | Operation | What the caller does next |
 | --- | --- | --- |
-| `invalid` | `prepare`, `validate` | Fix the input: malformed source data, a projection from another cutoff, a capability snapshot that belongs to another model |
+| `invalid` | `prepare`, `validate` | Fix the input: malformed source data, a capability snapshot that belongs to another model |
 | `over_budget` | `validate` | The request is over the input threshold; end the turn or run the compaction path, then build a new request |
 | `cancelled` | `prepare`, `validate`, `compact` | Nothing was committed by the cancelled call; a committed compaction continues and a later `compact` joins it |
 | `closed` | all | The line is closing; stop preparing requests; the next generation serves a reloaded line |
@@ -114,7 +110,7 @@ match outcome {
 
 | Operation | Normal path | Caller cancels or unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- |
-| `prepare` | Take the single-flight slot, consume the projection at the fixed cutoff, apply the budget, write `context/prepare`, build the request, write `model/call` | Before admission: nothing written, the projection dropped. After admission: the preparation task finishes or ends cancelled; a steer waits for a running compaction | New preparations are refused; in-flight ones settle with `model-output-end`; an unconsumed handoff is discarded; recovery settles the facts without host work | ContextPreparation; the request's external effect by ModelProvider and Provider |
+| `prepare` | Take the single-flight slot, project the history at the source's fixed cutoff, apply the budget, write `context/prepare`, build the request, write `model/call` | Before admission: nothing written. After admission: the preparation task finishes or ends cancelled; a steer waits for a running compaction | New preparations are refused; in-flight ones settle with `model-output-end`; an unconsumed handoff is discarded; recovery settles the facts without host work | ContextPreparation; the request's external effect by ModelProvider and Provider |
 | `validate` | Reuse the matching estimate or count the final request; answer, or fail the request | The check stops; nothing changes | In-flight checks end `closed` | ContextPreparation |
 | `compact` | Join or write the command, run the step at the boundary or immediately, write `context/compaction-start` and the outcome | The wait stops; the committed step continues and its result is read by a later call | An in-flight step is cancelled and settled `cancelled`; recovery reports a start without a result | ContextPreparation; the summary model calls by SummaryStrategy and Provider |
 | digest entry | Register on `apply`, withdraw on unload | — | The entry leaves with the part; a reloaded part registers the new text | ContextPreparation |
@@ -122,11 +118,10 @@ match outcome {
 ## Exceptions with reasons
 
 - The threshold compaction runs inside `prepare`, not as a separate operation: an over-threshold request must either fit after the step or fail as that request, and a caller composing the two calls would have to hold the request and the slot across them.
-- `prepare` takes the projection as request data even though it can be large: it is consumed at one cutoff inside the call and never persisted or handed to a third owner.
 
 ## Verification
 
-- A prepared request equals the request built from the same source data and projection; the projection is consumed once, and a second `prepare` for the same cutoff projects again only when it carries no projection.
+- A prepared request equals the request built from the same source data and cutoff; the projection is read once per `prepare` and never crosses an owner.
 - An over-threshold estimate runs the compaction inside `prepare`; a compaction that cannot fit the request writes `model-output-end` and no recovery request follows.
 - `validate` reuses the estimate for the unchanged final request and counts the request otherwise; a request over the threshold is `over_budget`.
 - A cancel during `prepare` before admission writes nothing; a cancel during `compact` stops the wait and the step settles later.
@@ -149,7 +144,7 @@ match outcome {
 | §4 rule 7 | Callers use the three operations; the owner uses the siblings' operations. |
 | §4 rule 8 | No infrastructure change. |
 | §4 rule 9 | Compaction facts are durable history; a recovery snapshot is optional and never replaces them. |
-| §7 values, ids and objects | The projection and the request cross as data; no object, handle or callback crosses. |
+| §7 values, ids and objects | The request crosses as data and the projection stays inside the owner; no object, handle or callback crosses. |
 | §7 one interface | One name, `contextPreparation`, on the owner type; `configurationPublisher`, `usage` and the crate-private projection slot are removed. |
 | §7 cross-language | Every operation is data; no method exists only for Rust. |
 | ADR 002 D1 | Branch: preparation and compaction are per-line work. |
@@ -158,7 +153,7 @@ match outcome {
 
 ## Requirements raised to mechanism owners
 
-- #2025 (ContextProjection): `renderedStream` must answer the request-local projection as data, so `prepare` can take it without an object.
+- #2025 (ContextProjection): `renderedStream` is called inside `prepare` at the source's cutoff, so the ContextProjection document's caller is ContextPreparation, not Loop; the operation answers the branch's own projection to the branch part.
 - #2025 (ContextFacts, SummaryStrategy): the counting and summary operations above replace `contextModelHost` and `compactionStrategyHost`; this contract uses only those operations.
 - #2026 (GuideEntries): `register` must accept a line-scoped entry and withdraw it with the part.
 - #2025 (Session access): the client's `session.context.compact` reaches `compact` by line id through the Session access surface.
@@ -177,8 +172,6 @@ use rutis::Ctx;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrepareRequest {
     pub source: ContextPrepareData,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub projection: Option<crate::history::StreamedContext>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

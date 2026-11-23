@@ -18,7 +18,7 @@ Loop owns:
 Callers keep as business:
 
 - What a turn is for, and which input the operator or a plugin sends.
-- The request's messages, system prompt and tools: ContextPreparation, Prompt, ContextProjection and ToolBinding supply them.
+- The request's messages, system prompt and tools: ContextPreparation, Prompt and ToolBinding supply them.
 - Which model runs and what a failure means: ModelProvider decides the request's settlement, and Provider runs it.
 - When a manual compaction is asked for: the client calls ContextPreparation.
 - What a tool call does: ToolExecutor and the tool's owner.
@@ -64,8 +64,7 @@ let lease = agent_loop
 | Owner | Operation | Use |
 | --- | --- | --- |
 | RequestSettings (#2025) | `settings` | The Session's default model settings before a configuration is adopted. |
-| ContextProjection (#2025) | `renderedStream` | The request's history at the step's committed cutoff. |
-| ContextPreparation | `prepare` | Build the request from the source data and the request-local projection, and publish the handoff facts. |
+| ContextPreparation | `prepare` | Build the request at the source's cutoff, project the history there and publish the handoff facts. |
 | ToolBinding (#2028) | `bind`, `claim`, `transfer`, `retain_only`, `release` | Pin the request's tool handlers and release them when the request can no longer run. |
 | GuideEntries (#2026) | `compose` | The System the request carries. |
 | Provider (#2019) | — | Not called by Loop; ModelProvider calls `invoke`. |
@@ -98,7 +97,7 @@ The exact names above are the siblings' contracts; Loop calls those operations, 
 | `stopTurn` | Take the turn lock, check the id is the open turn and not ending, append `stop/interrupt` under the same lock, answer its sequence | No wait to cancel; a dropped call leaves the committed interrupt | An interrupt before close settles the open turn as cancelled; a turn without one is settled by the close | Loop |
 | `state` | Read the folded phase and open turn | Nothing to release | `closed` | Loop |
 | `observe` | Register the listener under the calling row, call it once, then on each change | The row's unload drops the listener | The generation stops calling and releases every listener | Loop; the listener's own work by the calling row |
-| internal turn pipeline | A driving input opens `turn/start`; the step reads the adopted configuration or `requestSettings`, `contextProjection.renderedStream`, `guideEntries.compose` and ToolBinding's definitions, calls `contextPreparation.prepare`, then follows `model/call`, the model facts and `step/tool-call` to the turn's single end | A stop cancels the step's task; the turn ends cancelled after the settlements Loop owes | A reload settles open turns, in-flight requests and undispatched calls as cancelled; no external effect is repeated | Loop; the request's external effect by Provider |
+| internal turn pipeline | A driving input opens `turn/start`; the step reads the adopted configuration or `requestSettings`, `guideEntries.compose` and ToolBinding's definitions, calls `contextPreparation.prepare` with the cutoff, then follows `model/call`, the model facts and `step/tool-call` to the turn's single end | A stop cancels the step's task; the turn ends cancelled after the settlements Loop owes | A reload settles open turns, in-flight requests and undispatched calls as cancelled; no external effect is repeated | Loop; the request's external effect by Provider |
 
 The request pipeline's own tasks and cancellation are Loop's: handlers register tasks and return, and cleanup cancels and joins them before the generation unloads.
 

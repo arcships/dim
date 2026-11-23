@@ -17,13 +17,13 @@ InputQueue owns:
 Callers keep as business:
 
 - What an input says and which mode it uses: the operator entry, a client, a plugin.
-- The operator's content validation and the submit checks it runs: the Session entries and SubmitChecks.
+- The operator's content validation: the Session entry. The submit checks are the queue's call to SubmitChecks before it admits a Steer.
 - The turn's run: Loop.
 - What a client shows for the queue: the client reads the pending and history reads.
 
 | Requirement (caller) | Can callers compose it from the operations below without breaking InputQueue's invariants? | Handling |
 | --- | --- | --- |
-| The operator entry writes a withdrawal, optionally replacing the input with a checked Steer | No: the conditional decision and the atomic replacement are the queue's; two calls would let a second withdrawal replace the deleted input | `withdraw` |
+| The operator entry writes a withdrawal, optionally replacing the input with a Steer | No: the checks, the conditional decision and the atomic replacement are the queue's; two calls would let a second withdrawal replace the deleted input | `withdraw` |
 | A plugin or another owner writes an input to the line by line id | No: the submission admission, the order and the turn decision are the owner's | `submit` |
 | A Session method answers whether an input is still pending | No: membership at a cutoff and the block-presence answer are the queue's folded state | `pending` |
 | A client learns how many inputs wait | Yes: `pending` for the ids it knows, and the history read for their modes | Business |
@@ -33,7 +33,7 @@ An operation exists only where the row says No.
 
 ## Caller example
 
-The operator entry runs the content checks, then asks for the conditional withdrawal and replacement:
+The operator entry validates the content, then asks for the conditional withdrawal and replacement; the queue runs the submit checks before admitting it:
 
 ```rust
 let answer = input_queue
@@ -41,7 +41,7 @@ let answer = input_queue
         WithdrawRequest {
             input_id,
             reason,
-            steer: Some(checked_candidate),
+            steer: Some(candidate),
         },
         cancel.clone(),
     )

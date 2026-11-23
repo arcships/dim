@@ -21,7 +21,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [ModelRecovery (proposal)](ModelRecovery.md) | — | — | proposed disposer registration (Loop port not implemented); the handover input it writes | [#1210](https://github.com/arcships/dim/issues/1210) |
 | [Web](Web.md) | — | `web_search`, `web_fetch` tools | — | P2; optional package |
 | [ContextCompaction](ContextCompaction.md) (policy detail for ContextPreparation and ContextUsage) | — | — | the threshold, retention, cut and recovery rules ContextPreparation applies | P2 |
-| [Prompt](Prompt.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | — (the branch part's contract is [Prompt adoption](PromptAdoption.md)) | #548 |
+| [Prompt guide](PromptGuide.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | — (the branch part is [Prompt adoption](PromptAdoption.md); the old [Prompt](Prompt.md) is a redirect) | #548 |
 | [Prompt adoption](PromptAdoption.md) | — | — | the adopted configuration, its atomic publication, the tool part and the guide adoption | #2027 |
 | [PromptSourcesBranch](PromptSourcesBranch.md) | — | — | the checked-source polling and the adoption request | #2027 |
 | [Loop](Loop.md) | — | — | turns, steps, the compaction boundary and the run state | #2027 |
@@ -60,5 +60,5 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | Scope | Parts |
 | --- | --- |
 | Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, PromptGuide (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
 | Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt adoption, PromptSourcesBranch, Loop, ContextPreparation, ContextUsage, ModelProvider, InputQueue, WaitBranch, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |
