@@ -73,9 +73,9 @@ let next = permission.update(UpdateRequest {
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionScope` (Session, [#2093](https://github.com/arcships/dim/pull/2093)) | The creation record's permission preset and working directory, and the Session id for facts queries. |
+| `S:SessionScope` (Session, [#2093](https://github.com/arcships/dim/pull/2093)) | The creation record's permission preset and working directory. |
 | `S:PermissionRules` (Session, [#2094](https://github.com/arcships/dim/pull/2094)) | `permissionRules.rules` answers the user's command rules at decision time. |
-| `S:FileAccessFacts` (Session owner, [#2025](https://github.com/arcships/dim/issues/2025)) | Resolve the call's target and answer the workspace, system, owned and grant facts. |
+| `S:FileAccessFacts` (Session owner, [#2025](https://github.com/arcships/dim/issues/2025)) | Resolve the call's target and answer the workspace, system, owned and grant facts; the caller resolves the service at the Session instance, so no Session id is a request field. |
 | `B:Timeline`, `B:Dispatcher` | Fold `permission/changed`; commit an update. |
 
 The file-access facts operation that resolves the target is not defined yet; it is stated in Requirements.
@@ -156,8 +156,8 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **File access facts ([#2025](https://github.com/arcships/dim/issues/2025)).** The Session owner must publish one data operation, `check({sessionId, access, mode, path}, cancelled) → {target, workspace, system, owned, grant, discoveryError?}`, that resolves the call's path (`~`, cwd, `..`, links) and answers the facts under the effective access. Permission currently reads the owner's Rust object and a host `home` value; both disappear with this operation.
-- **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093)).** `config` and `identity` are the target's operations; Permission's creation-record reads use them.
+- **File access facts ([#2025](https://github.com/arcships/dim/issues/2025)).** The Session owner publishes `check({access, mode, path}, cancelled) → {target, workspace, system, owned, grant, discoveryError?}` ([#2093](https://github.com/arcships/dim/pull/2093)), which resolves the call's path (`~`, cwd, `..`, links) and answers the facts under the effective access; `mode` is the grant mode the call asks for. Permission resolves the facts service at the Session instance; the Session id is not a request field. Errors are `invalid`, `unavailable`, `cancelled` and `closed`; a `discoveryError` is a field, not an error. Permission currently reads the owner's Rust object and a host `home` value; both disappear with this operation.
+- **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093)).** `config` is the target's operation; Permission's creation-record read (the preset seed and the working directory) uses it. `identity` is no longer needed: the facts service is Session-bound.
 - **Permission rules ([#2017](https://github.com/arcships/dim/issues/2017)).** `permissionRules.rules` ([#2094](https://github.com/arcships/dim/pull/2094)) is the command-rules operation Permission reads; the `commandRules` name is removed.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
