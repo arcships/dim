@@ -1,6 +1,6 @@
 # Prompt
 
-Status: Draft ([#548](https://github.com/arcships/dim/issues/548)). Requirements: [model-facing prompts §6 and §9.1](../model-prompts.md#6-the-input-guide). Rules: [design rules](../../architecture/rust-agent/principles.md) §1, §4 and §5, [ADR 002](../../adr/002-plugin-scope.md). Scope: branch, plus the entries table its Session holds. Language: Rust. The current capability is on [Prompt](../../architecture/rust-agent/plugins/Prompt.md)'s capability page.
+Status: Draft ([#548](https://github.com/arcships/dim/issues/548)). The branch part's target contract is [Prompt adoption](PromptAdoption.md). Requirements: [model-facing prompts §6 and §9.1](../model-prompts.md#6-the-input-guide). Rules: [design rules](../../architecture/rust-agent/principles.md) §1, §4 and §5, [ADR 002](../../adr/002-plugin-scope.md). Scope: branch, plus the entries table its Session holds. Language: Rust. The current capability is on [Prompt](../../architecture/rust-agent/plugins/Prompt.md)'s capability page.
 
 Prompt owns the input guide: the text every request carries about the model's own input. It owns the guide's frame, composes the frame and the entries in force into one text, and carries the entries each capability contributes. It owns none of the entries' words: the capability that writes a marker contributes the entry that explains it. The frame states the channels and their trust classes, the channel rule, escaping and the restatement after a summary, so the model can tell the operator's words from the runtime's, and both from material.
 
