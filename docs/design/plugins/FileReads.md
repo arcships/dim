@@ -70,7 +70,7 @@ let Some(binding) = binding.binding else {
 | --- | --- |
 | `B:Timeline` | The line's committed file-tool results, from which bindings are rebuilt, and the completed `context/compaction` facts that decide the context rule. |
 
-FileReads injects no other service. The Session's file tools reach this owner through the Session access mechanism by line id ([TimelineTree's route (#2092)](https://github.com/arcships/dim/pull/2092)); FileReads returns values and stores records, and no file handle crosses.
+FileReads injects no other service. The Session's file tools reach this owner by line id with `line_owner::<FileReads>(line)` ([ADR 027](https://github.com/arcships/dim/pull/2029)); FileReads returns values and stores records, and no file handle crosses.
 
 ### Operations
 
@@ -102,6 +102,12 @@ The rebuild uses the result event's sequence: no legal compaction cut separates 
 ## Exceptions with reasons
 
 - `record` takes the operation's start sequence from the caller: the window belongs to the caller's operation, and an owner that sampled the sequence at record time would sample after the operation's own writes.
+
+## Supersedes
+
+- `docs/design/service-faces.md` §3.5's `fileReads` row.
+- `docs/design/contracts/runtime-owner-operations.md`'s "File read/edit/write tools → branch FileReads" row.
+- The current implementation page (`docs/architecture/rust-agent/plugins/WorkspaceTools.md#filereads`) keeps describing the implementation until this contract lands.
 
 ## Verification
 
@@ -199,7 +205,8 @@ pub struct RecordRequest {
     pub established: u64,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FileReadsError {
     #[error("the line is closing")]
     Closed,
@@ -214,4 +221,4 @@ impl FileReads {
 }
 ```
 
-`TextEncoding`, `EncodingSource`, `Bom` and `Eol` are the existing value types of the file-tool codec; they cross as data and stay defined beside the codec, not here.
+`TextEncoding`, `EncodingSource`, `Bom` and `Eol` are the existing value types of the file-tool codec ([codec.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/codec.rs)); they cross as data and stay defined beside the codec, not here.

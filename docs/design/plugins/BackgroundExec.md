@@ -61,7 +61,7 @@ A client stops a task and waits for its terminal:
 
 ```rust
 let ended = background.stop(task_id.clone()).await?; // Unknown, Closed
-let ended = background.wait(WaitRequest { task_id, timeout_ms: 5_000 }, cancelled).await?; // Unknown, Timeout, Closed
+let ended = background.wait(WaitRequest { task_id, timeout_ms: 5_000 }, cancelled).await?; // Unknown, Timeout, Closed, Cancelled
 ```
 
 ## Own contract
@@ -83,8 +83,8 @@ The host's process-by-id operations are not defined yet; they are stated in Requ
 | --- | --- | --- | --- | --- | --- |
 | `adopt` | Take over supervision of a command the host started | `{taskId, description, title?, outputPath}` | `{}` | The caller drops the call: nothing was adopted, and the host's process is killed | `closed`, `unknown_task` (the host has no live task with this id) |
 | `output` | The task's tail preview | `{taskId}` | `{text}` | The caller drops the call; the read stops | `unknown`, `unavailable`, `closed` |
-| `output_page` | One bounded page of the registered output file | `{taskId, cursor, limit}` | `{text, bytes, nextCursor?, truncated}` | The caller drops the call; the read stops | `unknown`, `unavailable`, `invalid_limit`, `closed` |
-| `wait` | Wait until the task's terminal is dispatched | `{taskId, timeoutMs}` | `{terminal}` | The caller drops the call; the wait releases | `unknown`, `timeout`, `closed` |
+| `output_page` | One bounded page of the registered output file; a stateless offset read, with no pin or release | `{taskId, cursor, limit}` | `{text, bytes, nextCursor?, truncated}` | The caller drops the call; the read stops | `unknown`, `unavailable`, `invalid_limit`, `closed` |
+| `wait` | Wait until the task's terminal is dispatched | `{taskId, timeoutMs}` | `{terminal}` | The caller drops the call; the wait releases and nothing changes | `unknown`, `timeout`, `closed`, `cancelled` |
 | `stop` | Cancel a running task and answer its terminal | `{taskId}` | `{terminal}` | None: an admitted stop settles | `unknown`, `closed` |
 
 `nextCursor` is present only for a full page; a client advances by `bytes`. `wait` with `timeout_ms = 0` answers `timeout` for a running task and the terminal for an ended one. `stop` on an ended task answers its terminal and changes no wake.
@@ -98,6 +98,7 @@ The host's process-by-id operations are not defined yet; they are stated in Requ
 | `unavailable` | `output`, `output_page` | The registered file is gone (cleaned or its Session deleted); report the loss, do not retry. |
 | `invalid_limit` | `output_page` | Use a limit of at least one byte. |
 | `timeout` | `wait` | The task is still running; wait again or stop it. |
+| `cancelled` | `wait` | The caller's token ended the wait; nothing changed. |
 | `closed` | any | The generation is closing or reloading; a replacement generation serves. |
 
 ### Flows
@@ -113,7 +114,13 @@ The host's process-by-id operations are not defined yet; they are stated in Requ
 ## Exceptions with reasons
 
 - The registered output file's bytes are produced by the process, while the artifact reference and every read belong to this owner: the path is fixed in `exec/started`, the process only appends, and a read opens and closes within one call, so no file handle crosses an owner.
-- ShellSession's commands appear in `exec/started` without an adopting caller: the PTY owner settles its own commands and writes their terminals; this owner consumes them for the notices and recovery, as it does for its own tasks.
+- Each command's `exec/started` and `exec/ended` have exactly one writer: this owner for the tasks it adopts, and ShellSession for its PTY commands, which appear in `exec/started` without an adopting caller; this owner consumes those terminals for the notices and recovery.
+
+## Supersedes
+
+- `docs/design/service-faces.md` §3.4's `backgroundExec` row and the sentence about `backgroundExec.start`.
+- `docs/design/background-task-output.md`'s `TreeCommands` lookup paragraph (the task read now goes by line id).
+- The current implementation page (`docs/architecture/rust-agent/plugins/WorkspaceTools.md#backgroundexec`) keeps describing the implementation until this contract lands.
 
 ## Verification
 
@@ -129,7 +136,7 @@ Flow tests on the owner:
 
 | Rule | Application |
 | --- | --- |
-| §1 parts and Capabilities | BackgroundExec is one branch part and a Capability: it injects `dispatcher` and `timeline`, writes `exec/ended` and folds the terminals. |
+| §1 parts and Capabilities | BackgroundExec is one branch part and a Capability: it injects `dispatcher` and `timeline`, writes its adopted tasks' `exec/started`/`exec/ended` and folds the terminals; ShellSession writes its own commands' facts, as the exception states. |
 | §2 scopes | Branch: a task belongs to the line that started it; the process belongs to the host's process owner. |
 | §3 orthogonality | The host's process, the Session's hold and the guide table are other owners' operations; no state is read directly. |
 | §4 rule 1 | A stop and a close cancel the task; the owner writes the terminal. |
@@ -160,12 +167,12 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on the owner type; the name stays `backgroundExec`.
+The service is marked on the owner type; the name stays `backgroundExec`. `ExecEndedData` and `ExecStatus` are `dim_agent_types` values.
 
 ```rust
 use crate::host::CancelledFn;
 use dim_agent_runtime::PublicService;
-use dim_agent_types::{ExecEndedData, ExecStatus};
+use dim_agent_types::ExecEndedData;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,7 +209,8 @@ pub struct WaitRequest {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BackgroundError {
     #[error("the host has no live task with this id")]
     UnknownTask,
@@ -216,6 +224,8 @@ pub enum BackgroundError {
     Timeout,
     #[error("the background exec service is closing")]
     Closed,
+    #[error("the wait was cancelled")]
+    Cancelled,
 }
 
 impl PublicService for BackgroundExec {}

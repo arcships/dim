@@ -23,7 +23,7 @@
 | History RPC and line-read tools → timelineTree | `batchEnd(id, sequence) → void`, `pageEnd(id, after, limit, through) → sequence`, and `page` at the same cutoff. Preserve complete batches and the fixed head of ended lines. |
 | Context RPC → target branch | `agentLoop.compact` and `contextUsage.read`. |
 | Goal and Shell admission → timelineTree | `directory({id})` returns the matching directory entry or the unknown-branch error using a single-branch lookup. Goal reads ended history through `query`; writes retain the ended/unknown errors. |
-| InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch. |
+| InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch（[Approval](../plugins/Approval.md)）; the caller reaches the line's owner by line id ([ADR 027](https://github.com/arcships/dim/pull/2029)). |
 | PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report also uses `timelineTree.query` at the selected head for evidence. |
 | Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |
 | Fault producers and Session observers → `sessionLifecycle` | `reportFault(error) → void`, `failure({}) → SessionFault or null`, `observeFault(listener) → id`, `release(id) → boolean`. The listener receives the current failure (initially null) and subsequent reports. Caller unload releases the observation. The first fault wins until a storage failure supersedes it; the first storage failure wins. |
@@ -45,7 +45,7 @@ own methods.
 | --- | --- |
 | Context RPC / PromptSuggestion | `contextUsage.read`. The `compactAndWait` variant runs the existing compact RPC handler: it calls `agentLoop.compact` and waits for the compaction fact matching that command sequence and returns the existing completed/skipped/failed reply. The committed sequence watch and bounded query run inside the selected branch for that wait. |
 | Session language / Agent configuration / Report | `prompt.configure` or `prompt.adoptedConfiguration` with the existing source, model and outcome records. |
-| InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
+| InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the line's existing pending requests, and `approval.decide` settles the selected request（[Approval](../plugins/Approval.md)）. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
 
 For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
 and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in
@@ -60,7 +60,7 @@ substitutes a newer head.
 | --- | --- |
 | ToolBinding, Session language and Agent configuration → `prompt` | `prompt.initialCompletion({}) → void or opening error`; `prompt.configure({sources, model?}) → unchanged, adopted or superseded`. |
 | Prompt and guide adoption → `contextPreparation` | `contextPreparation.publish({adopted, changes, model?, toolAdoption?, inputs}) → sequence or null`; `awaitPublished({sequence}) → sequence`. Publication commits adoption atomically. |
-| File read/edit/write tools → branch FileReads | `binding({path}) → TextFileBinding or null`, `writeBinding({path}) → absent, compacted or bound`, `record({path, binding, established}) → void`. The original read supplies the established sequence; file I/O stays on the file node. |
+| File read/edit/write tools → branch FileReads | `binding({path, purpose}) → {binding?} or {unavailable: neverRead\|compacted}`, `record({path, binding, established}) → void`（[FileReads](../plugins/FileReads.md)）. The original read supplies the established sequence; file I/O stays on the file node. |
 
 ### Model preparation, history and tools
 
@@ -73,5 +73,5 @@ substitutes a newer head.
 | Loop and ContextPreparation → HistoryRenderer | `context({branchId, through}) → ContextHistory`, `renderedContext({branchId, through}) → {context, history: HistoryEntry[]}`, `snapshot({context, retainFrom, anchor}) → RecoverySnapshot`, `streamCheckpoint({branchId, through, retainFrom, batch}) → ProjectionCheckpoint`. |
 | Loop and ModelProvider → ContextPreparation | `prepare({source: ContextPrepareData, projection?}, cancelled) → ModelRequest`, `validate({requestId, request}, cancelled) → void`. Reuse the prepared projection at the original cutoff. |
 | ContextPreparation and usage readers → ContextUsage | `read({through?}, cancelled) → {through, contextWindow, outputTokens, thresholdTokens, estimatedInputTokens, baselineSource}`. |
-| Loop, ToolExecutor and Code Mode definition readers → `toolBinding` | `bind({requestId, through, tools, toolSources}) → void`, `bindCurrent({requestId, declared?}) → ToolDefinition[]`, `definitions({requestId}) → ToolDefinition[]`, `transfer({from, to}) → void`, `release({requestId}) → void`. ToolBinding retains the pinned handler generation. |
-| Nested tool execution → `toolExecutor` | `open({parentCallId, context}, cancelled) → gateId`, `invoke({gateId, call}) → ToolResult`, `close({gateId}) → ToolEffect[]`. Close joins children in order; interruption releases the gate. |
+| Loop, ToolExecutor and Code Mode readers → `toolBinding` | `bind({requestId, turnId, through, declared, sources}) → void`, `adopted({requestId}) → {adoption, tools}`, `claim({requestId, calls, context}) → void`, `transfer({from, to}) → void`（[ToolBinding](../plugins/ToolBinding.md)）. The record is settled from the line's `step/tool-result` and `turn/end`. |
+| Nested tool execution → `toolExecutor` | `open({parentCallId, context}, cancelled) → gateId`, `invoke({gateId, call}, cancelled) → ToolResult`, `close({gateId}) → {effects}`（[ToolExecutor](../plugins/ToolExecutor.md)）. The owner closes the gate at the parent's settlement; interruption releases it. |

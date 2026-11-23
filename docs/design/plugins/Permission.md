@@ -31,7 +31,7 @@ Callers keep as business:
 | Update the policy | No: the version check and the fact are one write | `update` |
 | Register tool advice | No: the registration is bound to the registering part's lifetime and asked by name order | `advise` |
 
-An operation exists only where its row says No.
+An advisor's failure counts as no advice: its code and message are not forwarded, and the owner decides on its own result. An operation exists only where its row says No.
 
 ## Caller example
 
@@ -52,10 +52,7 @@ if admission.outcome == Outcome::Ask && !admission.advisor_question {
 Hooks registers advice for the lifetime of its branch part; the registration ends with the part:
 
 ```rust
-permission.advise(AdviseRequest {
-    name: "hooks".into(),
-    advise: Arc::new(HookAdvice { branch: self.clone() }),
-}).await?; // Duplicate, Closed
+permission.advise(&ctx, "hooks".into(), Arc::new(HookAdvice { branch: self.clone() })).await?; // Duplicate, Closed
 ```
 
 A client updates the policy with the version it read:
@@ -86,7 +83,7 @@ The file-access facts operation that resolves the target is not defined yet; it 
 | --- | --- | --- | --- | --- | --- |
 | `decide` | One call's outcome | `{call, risk?, source?}` | `{outcome: allow\|ask\|deny, reason?, advisorQuestion}` | The caller's token stops the facts or advice read; the decision is not made | `cancelled`, `closed` |
 | `update` | Versioned policy write | `{expectedVersion, policy}` | `{version}` | None; one commit | `conflict {current}`, `closed` |
-| `advise` | Register tool advice for the calling row's lifetime | `{name, advise}` | `{}` | None | `duplicate`, `closed` |
+| `advise` | Register tool advice for the calling row's lifetime | `caller: &Ctx`, `name`, callback | `{}` | None | `duplicate`, `closed` |
 | `PermissionState` (published value) | Read the policy and its version | — | `{version, policy}` | None | — |
 
 `risk` is the tool owner's declaration (`read_filesystem`, `write_filesystem`, `execute_process`, `network`, `session`, or absent). `source` is present exactly for an admission; the owner asks the advisors only then, and `advisorQuestion` says whether an advisor required an explicit answer, so a policy change can end a policy question but never an advisor's.
@@ -116,6 +113,11 @@ An unreadable fact or rule is not an error: the owner denies the call with its r
 
 - A branch part registers a callback (`advise`): §7 allows a callback by reference; the owner never calls it inside the Timeline's commit lock, and the calling row's unload withdraws it.
 - The policy value is published as a read-only view: Approval subscribes to it to recheck a waiting call, and the App Server reads it for the client; neither reads Permission's internals.
+
+## Supersedes
+
+- `docs/design/service-faces.md` §3.4's `permission` row and its pointer to the implementation page.
+- The current implementation page (`docs/architecture/rust-agent/plugins/Permission.md#permission`) keeps describing the implementation until this contract lands.
 
 ## Verification
 
@@ -163,12 +165,13 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on the owner type; the name stays `permission`.
+The service is marked on the owner type; the name stays `permission`. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, it is not a request field, and no caller sends or names a row.
 
 ```rust
 use crate::host::CancelledFn;
 use dim_agent_runtime::PublicService;
-use dim_agent_types::{ApprovalCallData, BranchSource, CommandRule, PermissionPolicy};
+use dim_agent_types::{ApprovalCallData, BranchSource, PermissionPolicy};
+use rutis::Ctx;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -205,16 +208,28 @@ pub struct UpdateRequest {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AdviseRequest {
-    pub name: String,
-    pub advise: AdviseFn,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PermissionState {
     pub version: u64,
     pub policy: PermissionPolicy,
+}
+
+/// What one advisor is asked: the call, its source, its risk and the owner's
+/// own decision before advice (allow or ask; a deny asks no advisor).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdviceRequest {
+    pub source: BranchSource,
+    pub call: ApprovalCallData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
+    pub decision: OwnDecision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnDecision {
+    Allow,
+    Ask,
 }
 
 /// One advisor's answer: none, allow, ask with a reason, or deny with a reason.
@@ -233,7 +248,8 @@ pub type AdviseFn = std::sync::Arc<
         + Sync,
 >;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PermissionError {
     #[error("the decision was cancelled")]
     Cancelled,
@@ -251,6 +267,6 @@ impl PublicService for Permission {}
 impl Permission {
     pub async fn decide(&self, request: DecideRequest, cancelled: CancelledFn) -> Result<DecisionReply, PermissionError> { /* ... */ }
     pub async fn update(&self, request: UpdateRequest) -> Result<u64, PermissionError> { /* ... */ }
-    pub async fn advise(&self, request: AdviseRequest) -> Result<(), PermissionError> { /* ... */ }
+    pub fn advise(&self, caller: &Ctx, name: String, advise: AdviseFn) -> Result<(), PermissionError> { /* ... */ }
 }
 ```

@@ -70,9 +70,10 @@ contain `session.exec.stop`; the sibling `session.exec.output` does not.
 WorkspaceTools registers the leaf; Rpc's built-in list and namespace checks are
 unchanged.
 
-Each call resolves the named branch through WorkspaceTools' existing
-`TreeCommands`, then asks that branch's BackgroundExec for the active task's
-capture. No Session part retains branch business state.
+Each call resolves the line with `line_owner::<BackgroundExec>(line)`
+([ADR 027](https://github.com/arcships/dim/pull/2029)), then asks that line's
+BackgroundExec for the task's output artifact. No Session part retains branch
+business state.
 
 **Task identity.** Every request resolves `taskId` inside the branch it names:
 `sessionId` admits the Session, `branchId` selects that Session's branch, and

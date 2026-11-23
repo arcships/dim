@@ -108,6 +108,12 @@ A call that a policy change no longer requires is not restarted; an explicit adv
 
 - `pending` is kept although the App Server's attach path no longer needs a lock-held replay: the Collaboration route in [runtime-owner-operations.md](../contracts/runtime-owner-operations.md) reads a member line's pending approvals, and one owner operation serves it. The App Server orders its own notifications; the owner promises only a point-in-time set.
 
+## Supersedes
+
+- `docs/design/service-faces.md` §3.4's `approval` row and its pointer to the implementation page.
+- `docs/design/contracts/runtime-owner-operations.md`'s Collaboration-approval rows (`approval.pending/decide`).
+- The current implementation page (`docs/architecture/rust-agent/plugins/Permission.md#approval`) keeps describing the implementation until this contract lands.
+
 ## Verification
 
 Flow tests on the owner:
@@ -153,7 +159,7 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on the owner type; the name stays `approval`.
+The service is marked on the owner type; the name stays `approval`. `BranchSource`, `ApprovalCallData`, `ApprovalDecision` and `ApprovalRequestData` are `dim_agent_types` values.
 
 ```rust
 use crate::host::CancelledFn;
@@ -181,7 +187,8 @@ pub struct DecideRequest {
     pub decision: ApprovalDecision,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApprovalError {
     #[error("the call was denied: {reason}")]
     Denied { reason: String },

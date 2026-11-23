@@ -164,6 +164,13 @@ A record is settled before the branch accepts closing work. A reload rebuilds th
 - Pins are values, not handles: a pin is a record whose adoption a later prefix may still name, and the registry keeps those versions resolvable until the owner releases the adoption at the next bind or the close. ToolBinding holds no handler and no guard.
 - The record's settlement reads the line's facts (`step/tool-result`, `turn/end`) instead of a caller's release call: only the owner of the record can guarantee every end path, and the facts are public.
 
+## Supersedes
+
+- `docs/design/service-faces.md` §3.5's `toolBinding` row.
+- `docs/design/contracts/runtime-owner-operations.md`'s "Loop, ToolExecutor and Code Mode readers → `toolBinding`" row.
+- `docs/design/contracts/session-boundary.md` §A.5's ToolBinding adoption sentences.
+- The current implementation page (`docs/architecture/rust-agent/plugins/ToolExecution.md#toolbinding`) and `tool-contributions.md` §7.5–7.6 keep describing the implementation until this contract lands.
+
 ## Verification
 
 Flow tests on the owner:
@@ -210,9 +217,10 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on the owner type; the name stays `toolBinding`. Every operation completes without waiting; the registry's operations take the cancellation argument.
+The service is marked on the owner type; the name stays `toolBinding`. Every operation completes without waiting; the registry's operations take the cancellation argument. `ToolDefinition` and `ToolSourceVersion` are `dim_agent_types` values; `ToolExecutionContext` is the crate's existing execution context (`dim_agent_capabilities::host`), not a type of this owner.
 
 ```rust
+use crate::host::ToolExecutionContext;
 use dim_agent_runtime::PublicService;
 use dim_agent_types::{ToolCall, ToolDefinition, ToolSourceVersion};
 
@@ -250,7 +258,8 @@ pub struct TransferRequest {
     pub to: String,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BindingError {
     #[error("request {request_id} is already bound")]
     AlreadyBound { request_id: String },

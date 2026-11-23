@@ -36,17 +36,17 @@ An operation exists only where its row says No.
 Code Mode opens a gate for one outer call and invokes child tools through it:
 
 ```rust
-let gate = executor.open(OpenRequest {
+let gate = executor.open(&ctx, OpenRequest {
     parent_call_id: outer_call_id.clone(),
     context: execution.clone(),
-}, cancelled.clone()).await?; // Closed, Interrupted, NoBatch
+}, cancelled.clone()).await?; // Closed, Interrupted, NoBatch, Cancelled
 // The program's tools.call:
-let result = executor.invoke(InvokeRequest {
+let result = executor.invoke(&ctx, InvokeRequest {
     gate_id: gate.gate_id.clone(),
     call,
 }, cancelled.clone()).await?; // GateClosed, Closed; a tool failure is result.is_error
 // The program ended: take the confirmed effects to word the result.
-let effects = executor.close(CloseRequest { gate_id: gate.gate_id }).await?; // GateClosed, Closed
+let effects = executor.close(&ctx, CloseRequest { gate_id: gate.gate_id }).await?; // GateClosed, Closed
 ```
 
 A program's declarations come from the pin owner, not the executor:
@@ -77,11 +77,11 @@ The owner closes the gate when the parent call settles; a program that returns e
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `open` | Open a child-call gate for one outer call of the current batch | `{parentCallId, context}` | `{gateId}` | Before the gate id is issued; nothing was created | `closed`, `interrupted`, `no_batch` (no current batch, or the parent call does not belong to it) |
-| `invoke` | Run one child call through the same admission and execution path | `{gateId, call}` | `{result}` | The gate's parent token; the child is cancelled and its result says so | `closed`, `gate_closed` (the gate was closed by its parent's settlement or by an interrupt) |
+| `open` | Open a child-call gate for one outer call of the current batch | `{parentCallId, context}` | `{gateId}` | Before the gate id is issued; nothing was created | `closed`, `interrupted`, `no_batch` (no current batch, or the parent call does not belong to it), `cancelled` |
+| `invoke` | Run one child call through the same admission and execution path | `{gateId, call}` | `{result}` | The caller's token before the child settles: the child is cancelled and its fact records it; the gate stays usable | `closed`, `gate_closed` (the gate was closed by its parent's settlement or by an interrupt), `cancelled` |
 | `close` | Close the gate now and answer the confirmed child effects | `{gateId}` | `{effects}` | None: the close settles | `closed`, `gate_closed` (the batch was interrupted or settled before the call) |
 
-`gateId` is bound to the calling row and the parent call; a call from another row is `gate_closed`. `close` is idempotent for the owner's own settlement: the parent's settlement closes the gate whether or not the program did, and the effects reach the parent result once. A child call's refusal, cancellation, unknown tool or tool failure is a `ToolResult` with `is_error: true`, not an operation error: the program decides what to do with it.
+`caller: &Ctx` is the binding's calling-row parameter: it is not a request field, and the gate id's row binding follows from it. `gateId` is bound to the calling row and the parent call; a call from another row is `gate_closed`. `close` is idempotent for the owner's own settlement: the parent's settlement closes the gate whether or not the program did, and the effects reach the parent result once. A child call's refusal, cancellation, unknown tool or tool failure is a `ToolResult` with `is_error: true`, not an operation error: the program decides what to do with it.
 
 ### Errors
 
@@ -91,12 +91,13 @@ The owner closes the gate when the parent call settles; a program that returns e
 | `interrupted` | `open` | The turn was interrupted; stop the program. |
 | `no_batch` | `open` | The parent call is not part of the current batch; a caller bug: stop the program and report it. |
 | `gate_closed` | `invoke`, `close` | The gate's parent call settled or the batch was interrupted; stop the program; the parent result carries the effects already confirmed. |
+| `cancelled` | `open`, `invoke` | The caller's token ended the call; for `invoke` the child's result records the cancellation and the gate stays usable. |
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `open` | Check the current batch and the parent call, issue a gate id under the calling row, subscribe the gate to the parent token | Before the id is issued: nothing exists | The row's gates are closed with their child tasks | New calls are refused; every gate of the generation is closed | ToolExecutor |
+| `open` | Check the current batch and the parent call, issue a gate id under the calling row, subscribe the gate to the parent token | Before the id is issued: nothing exists, `cancelled` | The row's gates are closed with their child tasks | New calls are refused; every gate of the generation is closed | ToolExecutor |
 | `invoke` | Write the child `step/tool-call` with the parent call id, resolve the write target, admit the call, run it through the registry, write the child `step/tool-result`, record its effects | The child is cancelled; its fact records the cancellation; the gate stays usable for the program's next call | The row's gates close; in-flight children end cancelled and are recorded | In-flight children end as reload settlements; the gate is closed | ToolExecutor for the facts and the gate; ToolRegistry for the handler and its claim; the calling row for the program future |
 | `close` | Mark the gate closed, refuse new children, wait for its running children within the owner's grace, answer the confirmed effects | The close waits; a child past the grace is outside the contract | The row's gates close with their children | A close in flight finishes; the parent settlement closes the gate again | ToolExecutor |
 | Parent settlement | After the parent call's result is known, close every gate of the parent, wait for its children within the owner's grace, and merge their effects into the result in invocation order | — | — | — | ToolExecutor |
@@ -106,6 +107,12 @@ The owner never hands out a gate: `gateId` names the gate only for `invoke` and 
 ## Exceptions with reasons
 
 - A child call's failure is a result, not an operation error: a program may catch it, and the model sees the same `ToolResult` text a top-level call would produce.
+
+## Supersedes
+
+- `docs/design/service-faces.md` §3.5's `toolExecutor` row.
+- `docs/design/contracts/runtime-owner-operations.md`'s "Nested tool execution → `toolExecutor`" row.
+- The current implementation page (`docs/architecture/rust-agent/plugins/ToolExecution.md#toolexecutor`) keeps describing the implementation until this contract lands.
 
 ## Verification
 
@@ -152,12 +159,13 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on the owner type; the name stays `toolExecutor`.
+The service is marked on the owner type; the name stays `toolExecutor`. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, it is not a request field, and no caller sends or names a row.
 
 ```rust
-use crate::host::CancelledFn;
+use crate::host::{CancelledFn, ToolExecutionContext};
 use dim_agent_runtime::PublicService;
-use dim_agent_types::ToolCall;
+use dim_agent_types::{ToolCall, ToolEffect, ToolResult};
+use rutis::Ctx;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,7 +199,8 @@ pub struct CloseReply {
     pub effects: Vec<dim_agent_types::ToolEffect>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExecutorError {
     #[error("the tool executor is closing")]
     Closed,
@@ -201,14 +210,16 @@ pub enum ExecutorError {
     NoBatch,
     #[error("the child gate is closed")]
     GateClosed,
+    #[error("the call was cancelled")]
+    Cancelled,
 }
 
 impl PublicService for ToolExecutor {}
 
 #[rutis::service(name = "toolExecutor")]
 impl ToolExecutor {
-    pub async fn open(&self, request: OpenRequest, cancelled: CancelledFn) -> Result<OpenReply, ExecutorError> { /* ... */ }
-    pub async fn invoke(&self, request: InvokeRequest, cancelled: CancelledFn) -> Result<ToolResult, ExecutorError> { /* ... */ }
-    pub async fn close(&self, request: CloseRequest) -> Result<CloseReply, ExecutorError> { /* ... */ }
+    pub async fn open(&self, caller: &Ctx, request: OpenRequest, cancelled: CancelledFn) -> Result<OpenReply, ExecutorError> { /* ... */ }
+    pub async fn invoke(&self, caller: &Ctx, request: InvokeRequest, cancelled: CancelledFn) -> Result<ToolResult, ExecutorError> { /* ... */ }
+    pub async fn close(&self, caller: &Ctx, request: CloseRequest) -> Result<CloseReply, ExecutorError> { /* ... */ }
 }
 ```

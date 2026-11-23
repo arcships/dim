@@ -136,13 +136,13 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | 名字 | 数据面 | 所有者保留的状态 |
 | --- | --- | --- |
 | `toolHost` | `execute(call, caller, cancelled)` | ToolDriver、工具声明 |
-| `approval` | `pending()`、`decide(requestId, decision)` | 待处理请求、批次准入 |
-| `permission` | `check(call, risk, cancelled)` | 预设、权限状态、advisor |
+| `approval` | `admit(source, call, risk?, cancelled)`、`pending()`、`decide(requestId, decision)`（[Approval](plugins/Approval.md)） | 待处理请求、准入与重查 |
+| `permission` | `decide(call, risk?, source?, cancelled)`、`update(expectedVersion, policy)`、`advise(name, advise)`（[Permission](plugins/Permission.md)） | 预设与版本、advisor 表、决策输入 |
 | `inputQueue` | `submit(input)`、`withdraw(command)` | 排序、恢复、InputSnapshot |
 | `wait` | `wait(taskId, timeoutMs, cancelled)` | 到达记录、单次等待槽 |
 
-形状与错误见所有者：[Permission](../architecture/rust-agent/plugins/Permission.md#permission-data-face)、
-[Approval](../architecture/rust-agent/plugins/Permission.md#approval-data-face)、
+形状与错误见所有者：[Permission](plugins/Permission.md)、
+[Approval](plugins/Approval.md)、
 [InputQueue](../architecture/rust-agent/plugins/InputQueue.md#data-face)、
 [Wait](../architecture/rust-agent/plugins/Wait.md#data-face) 与
 [toolHost](../architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)。
@@ -153,11 +153,11 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | 名字 | 数据面 | 所有者把什么留在内部 |
 | --- | --- | --- |
 | `mcpSession` | `state()`、`refresh()`、`widget(published)`、`call(server, tool, arguments)` | 连接代次、已发布工具、发现与重连 |
-| `backgroundExec` | `output(taskId)`、`outputPage(taskId, cursor, limit)`、`wait(taskId, timeoutMs)`、`stop(taskId)` | 任务表、活进程、输出采集与唤醒 |
+| `backgroundExec` | `adopt(taskId, …)`、`output(taskId)`、`outputPage(taskId, cursor, limit)`、`wait(taskId, timeoutMs)`、`stop(taskId)`（[BackgroundExec](plugins/BackgroundExec.md)） | 任务表、活进程、输出采集与唤醒 |
 
 形状与错误由所有者文档定义：[MCP Apps](appserver/mcp-apps.md#44-the-mcpsession-data-face)（`mcpSession`）和
-[WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md#data-face)（`backgroundExec`）。
-`backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`backgroundExec.stop` 是 kill。
+[BackgroundExec](plugins/BackgroundExec.md)（`backgroundExec`）。
+`backgroundExec.adopt` 按 task id 接管已启动的命令，进程创建归 HostPlatform（#2032）；`backgroundExec.stop` 是 kill。
 这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
 
 `hostPlatform`、`fileStorage`、`timelineStore` 不按对象分类保留：数据面就是公开契约，`execHost`、`fsHost`、`store`、`timelineStore` 的操作就是它们的接口，旧名字是提供方和它的 Rust binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
@@ -175,11 +175,11 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `prompt` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextPreparation` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextUsage` | branch | ContextUsage | hot-path | 本地请求计数器、请求引用与按序统计；`session.context.usage` 是 App Server RPC。按 #1292 确认是否需要独立插件操作。 |
-| `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
-| `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
+| `toolBinding` | branch | ToolBinding | hot-path | 数据面见 [ToolBinding](plugins/ToolBinding.md) |
+| `toolExecutor` | branch | ToolExecutor | hot-path | 数据面见 [ToolExecutor](plugins/ToolExecutor.md) |
 | `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
-| `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
+| `fileReads` | branch | FileReads | hot-path | 数据面见 [FileReads](plugins/FileReads.md) |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
