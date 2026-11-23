@@ -10,6 +10,7 @@ use crate::{
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules, PermissionPlugin},
     prompt::{InitialPromptConfiguration, PromptPlugin},
+    prompt_sources::PromptSourcesConfig,
     session_broadcast::{SessionBroadcastEndPlugin, SessionBroadcastPlugin},
     summary_strategy::{ProductSummaryStrategyConfig, ProductSummaryStrategyPlugin},
     timeline_tree::{BranchToolConfig, TimelineTreePlugin, TreeTimelinePlugin},
@@ -263,12 +264,36 @@ pub fn install_local_execution(
     workspace: crate::workspace_tools::WorkspaceToolsConfig,
     branch_text: BranchToolConfig,
 ) {
+    install_local_execution_with(
+        builder,
+        model,
+        workspace,
+        branch_text,
+        PromptSourcesConfig::default(),
+    );
+}
+
+/// [`install_local_execution`] with PromptSources' factory configuration:
+/// the product passes its defaults, and an evaluation passes a candidate base
+/// prompt (model-prompts §8.1).
+pub fn install_local_execution_with(
+    builder: &mut AgentBuilder,
+    model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
+    workspace: crate::workspace_tools::WorkspaceToolsConfig,
+    branch_text: BranchToolConfig,
+    prompt_sources: PromptSourcesConfig,
+) {
     install_with_prompt_capability_and_branch(builder, model, true, branch_text);
     crate::workspace_tools::install(builder, workspace);
     crate::wait::install(builder);
     crate::recall::install(builder);
     crate::shell_input::install(builder);
-    crate::prompt_sources::install(builder);
+    crate::prompt_sources::install_with_config(
+        builder,
+        Arc::new(crate::prompt_sources::local_today),
+        crate::prompt_sources::DATE_CHECK,
+        prompt_sources,
+    );
     crate::skills::install(builder);
 }
 

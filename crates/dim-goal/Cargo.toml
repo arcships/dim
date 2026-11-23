@@ -11,6 +11,10 @@ autotests = false
 name = "goal_suite"
 path = "tests/goal_suite.rs"
 
+[features]
+# Hooks that race flow tests use to hold a continuation write open.
+testing = []
+
 [dependencies]
 dim-agent-capabilities.workspace = true
 dim-agent-runtime.workspace = true
@@ -26,6 +30,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 dim-agent-aimux.workspace = true
+# The flow tests drive Goal through the `testing` module; a self
+# dev-dependency enables the feature for them.
+dim-goal = { path = ".", features = ["testing"] }
 dim-agent-runtime = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 dim-app-server = { workspace = true, features = ["testing"] }

@@ -53,7 +53,7 @@ pub type Today = Arc<dyn Fn() -> String + Send + Sync>;
 /// environment and the local date with what it adopted. Polling the wall clock, instead of sleeping
 /// until midnight on the monotonic clock, follows system sleep and clock or
 /// zone changes; polling the files avoids watchers tied to branch lifetimes.
-const DATE_CHECK: Duration = Duration::from_secs(60);
+pub(crate) const DATE_CHECK: Duration = Duration::from_secs(60);
 
 /// Registers PromptSources with the process-local clock.
 pub fn install(builder: &mut AgentBuilder) {
@@ -63,13 +63,33 @@ pub fn install(builder: &mut AgentBuilder) {
 /// Registers PromptSources with a replaceable date source, checked every
 /// `every`.
 pub fn install_with_clock(builder: &mut AgentBuilder, today: Today, every: Duration) {
+    install_with_config(builder, today, every, PromptSourcesConfig::default());
+}
+
+/// [`install_with_clock`] with the policy texts at their factory
+/// configuration: a candidate replaces its built-in text, and the default
+/// configuration keeps every built-in text ([PromptSources §2],
+/// [model-prompts §8.1]).
+///
+/// [PromptSources §2]: ../../../docs/design/plugins/PromptSources.md
+/// [model-prompts §8.1]: ../../../docs/design/model-prompts.md
+pub fn install_with_config(
+    builder: &mut AgentBuilder,
+    today: Today,
+    every: Duration,
+    config: PromptSourcesConfig,
+) {
     builder.require_feature(
         dim_agent_runtime::Feature::new("PromptSources")
             .session("PromptRegistry", |names| {
                 Ok(Box::new(PromptRegistryPlugin::new(names)?))
             })
             .session("PromptSources", move |names| {
-                Ok(Box::new(PromptSourcesPlugin::new(names, today.clone())?))
+                Ok(Box::new(PromptSourcesPlugin::with_config(
+                    names,
+                    today.clone(),
+                    config.clone(),
+                )?))
             })
             .branch("PromptSourcesBranch", move |names| {
                 Ok(Box::new(PromptSourcesBranchPlugin {

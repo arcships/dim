@@ -1,0 +1,9 @@
+{
+  "description": "Read the service files and reply with only the requested JSON object, which no progress or plan sentence may pollute",
+  "message": "Read every service file under config/ and reply with only one JSON object that maps each service name to its port, such as {\"alpha\": 8080}. No plan, no summary, no code fence: the reply is the object and nothing else.",
+  "budget": {"turns": 10, "seconds": 600, "window": 131072},
+  "probes": [
+    {"id": "json-only", "kind": "must_show", "text": "the final reply is a single JSON object mapping alpha, beta and gamma to 8080, 8081 and 8082, with no other text"},
+    {"id": "progress-prose", "kind": "must_not_show", "text": "the reply text carries a progress or plan sentence"}
+  ]
+}

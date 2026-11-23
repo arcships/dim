@@ -40,7 +40,7 @@ dim-app-server.workspace = true
 http = "1"
 serde_json.workspace = true
 sha2 = "0.10.9"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true

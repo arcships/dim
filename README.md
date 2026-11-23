@@ -85,6 +85,8 @@ The alpha keeps its state in `~/.dimcode-alpha` and can coexist with the earlier
 
 ## Daily development
 
+To contribute a change, see [Contributing to Dim](CONTRIBUTING.md).
+
 Install Rust through rustup. Cargo selects the version pinned in `rust-toolchain.toml`. The native API-key build needs no Node or pnpm. Run the following from the repository root. [Build prerequisites](docs/architecture/build.md)
 
 ```sh

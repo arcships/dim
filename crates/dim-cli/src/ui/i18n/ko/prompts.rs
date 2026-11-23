@@ -36,6 +36,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Finish or stop the current work first (a running turn, shell command, or pending prompt)." => {
             "먼저 진행 중인 작업(실행 중인 턴, 셸 명령, 대기 중인 질문)을 끝내거나 중지하세요."
         }
+        "Waiting for this Session's state after the switch." => {
+            "전환된 세션의 상태를 기다리는 중입니다."
+        }
+        "Waiting for the Session switch to finish." => "세션 전환이 끝나기를 기다리는 중입니다.",
         "Checking for updates…" => "업데이트 확인 중…",
         "DimCode {version} is up to date." => "DimCode {version}은(는) 최신 버전입니다.",
         "Skip this version" => "이 버전 건너뛰기",

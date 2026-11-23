@@ -7,6 +7,16 @@ impl Owner {
             _ = self.stop.cancelled() => return Err(AgentError::Closed(self.branch_id.clone())),
         };
         self.await_fold().await?;
+        self.await_dispatched().await?;
+        self.write_status.borrow().clone()?;
+        Ok(write)
+    }
+
+    /// Waits until the Dispatcher has delivered every fact committed at the
+    /// call. A decision taken after this wait sees an input or a turn that
+    /// committed before it, so the caller does not act on a stale fold (C4,
+    /// C5).
+    pub(super) async fn await_dispatched(&self) -> Result<(), AgentError> {
         let through = self.timeline.committed();
         let mut dispatched = self.dispatcher.watch();
         while self.dispatcher.sequence() < through {
@@ -15,8 +25,7 @@ impl Owner {
             }
             tokio::select! {result=dispatched.changed()=>result.map_err(|_|AgentError::Closed("Goal".into()))?,_=self.stop.cancelled()=>return Err(AgentError::Closed("Goal".into()))}
         }
-        self.write_status.borrow().clone()?;
-        Ok(write)
+        Ok(())
     }
 
     pub(super) fn resume_decisions(self: &Arc<Self>) {

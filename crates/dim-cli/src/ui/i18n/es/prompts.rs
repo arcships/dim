@@ -36,6 +36,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Finish or stop the current work first (a running turn, shell command, or pending prompt)." => {
             "Termina o detén primero el trabajo en curso (un turno, un comando de shell o una pregunta pendiente)."
         }
+        "Waiting for this Session's state after the switch." => {
+            "Esperando el estado de esta sesión tras el cambio."
+        }
+        "Waiting for the Session switch to finish." => {
+            "Esperando a que termine el cambio de sesión."
+        }
         "Checking for updates…" => "Buscando actualizaciones…",
         "DimCode {version} is up to date." => "DimCode {version} está actualizado.",
         "Skip this version" => "Omitir esta versión",

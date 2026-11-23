@@ -7,6 +7,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::{IdentityContext, PrepareContextHost},
     model_provider::ModelProviderPlugin,
+    prompt_sources::PromptSourcesConfig,
     summary_strategy::ProductSummaryStrategyConfig,
     workspace_tools::WorkspaceToolsConfig,
 };
@@ -31,6 +32,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// sets a member here.
 #[derive(Clone, Debug, Default)]
 pub struct Overrides {
+    /// The base prompt in place of the built-in identity and rules
+    /// (model-prompts §8.1, PromptSources §2).
+    pub base_prompt: Option<Arc<str>>,
     /// The summary strategy's system prompt in place of its built-in
     /// `SYSTEM` (ContextCompaction §13.5).
     pub summary_prompt: Option<Arc<str>>,
@@ -220,7 +224,7 @@ pub async fn serve_home(
     };
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_session_title::install(&mut builder);
-    defaults::install_local_execution(
+    defaults::install_local_execution_with(
         &mut builder,
         ModelProviderPlugin::process,
         WorkspaceToolsConfig {
@@ -231,6 +235,10 @@ pub async fn serve_home(
             description: run.overrides.branch_description.clone(),
             roster_closing: run.overrides.roster_closing.clone(),
             max_open_lines: None,
+        },
+        PromptSourcesConfig {
+            base: run.overrides.base_prompt.clone(),
+            ..Default::default()
         },
     );
     dim_app_server::permission_rules::install(&mut builder);

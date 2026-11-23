@@ -444,7 +444,13 @@ echo 'Installed package'
             }
             fs::write(&resume, "continue").unwrap();
         }
-        assert_eq!(terminal.wait().success(), !fail);
+        let status = terminal.wait();
+        assert_eq!(
+            status.success(),
+            !fail,
+            "update (fail={fail}) reported {status}; terminal:\n{}",
+            terminal.transcript
+        );
         let outcome = if fail {
             "Error: fixture install failed"
         } else {

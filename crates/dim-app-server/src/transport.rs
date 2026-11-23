@@ -806,6 +806,7 @@ async fn run_connection(
                                             "session.history",
                                             "session.branches",
                                             "session.branch.get",
+                                            "session.model.get",
                                             "session.turn.get",
                                             "session.turn.get.inputId",
                                             "session.input.pending.blockPresence",

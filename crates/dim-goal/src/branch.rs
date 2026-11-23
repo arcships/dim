@@ -223,6 +223,8 @@ impl DynPlugin for GoalBranch {
             let (write_status, _) = watch::channel(Ok(()));
             let owner = Arc::new(Owner {
                 branch_id: identity.branch_id.clone(),
+                #[cfg(feature = "testing")]
+                session_id: identity.session_id.clone(),
                 timeline,
                 dispatcher: dispatcher.clone(),
                 tree,
@@ -376,6 +378,8 @@ struct State {
 
 struct Owner {
     branch_id: String,
+    #[cfg(feature = "testing")]
+    session_id: String,
     timeline: Arc<Timeline>,
     dispatcher: Arc<Dispatcher>,
     tree: Arc<TreeCommands>,
@@ -1598,6 +1602,25 @@ impl Owner {
                 return Ok(());
             }
             fold::decide_turn_end(&state.fold, limit, progress)
+        };
+        let Some(decision) = decision else {
+            return Ok(());
+        };
+        #[cfg(feature = "testing")]
+        crate::testing::write_held(&self.session_id, &self.branch_id, after).await;
+        // C4, C5, #1989: a report input or a new turn that commits behind the
+        // decision makes this continuation stale.
+        let decision = if matches!(decision, Decision::Continuation { .. }) {
+            self.await_dispatched().await?;
+            let state = self.state.lock().unwrap();
+            if state.fold.turn_end.as_ref().map(|end| end.sequence) != Some(after)
+                || state.fold.interrupt_after(after).is_some()
+            {
+                return Ok(());
+            }
+            fold::decide_turn_end(&state.fold, limit, progress)
+        } else {
+            Some(decision)
         };
         let Some(decision) = decision else {
             return Ok(());

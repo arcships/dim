@@ -159,6 +159,7 @@ impl Projection {
                         parent: Some(parent.to_owned()),
                         purpose,
                         state: LineState::Waiting,
+                        running: None,
                         cut: Some(LineCut {
                             sequence,
                             messages: inherited + own,
@@ -1291,11 +1292,6 @@ impl Projection {
             .map(|row| row.text.clone())
     }
 
-    /// Whether this transcript's turn runs.
-    pub fn running(&self) -> bool {
-        self.running
-    }
-
     pub fn missing_tool(&self) -> Option<(String, String)> {
         self.rows.iter().find_map(|row| {
             if row.kind != RowKind::ToolCall || row.tool_lookup_done {
@@ -1361,6 +1357,7 @@ impl Projection {
             } else {
                 LineState::Waiting
             },
+            running: None,
             cut: entry
                 .branch_point
                 .zip(entry.cut_messages)
@@ -2859,6 +2856,7 @@ mod tests {
                 parent: Some("main".into()),
                 purpose: "parser race hypothesis".into(),
                 state: LineState::Waiting,
+                running: None,
                 cut: Some(LineCut {
                     sequence: 5,
                     messages: 2,
@@ -2943,6 +2941,7 @@ mod tests {
                 parent: Some("b-7c".into()),
                 purpose: "review the change".into(),
                 state: LineState::Waiting,
+                running: None,
                 cut: Some(LineCut {
                     sequence: 12,
                     messages: 3,

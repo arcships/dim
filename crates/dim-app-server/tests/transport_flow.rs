@@ -72,6 +72,9 @@ mod branches;
 #[path = "transport_flow/branch_end.rs"]
 mod branch_end;
 
+#[path = "transport_flow/model_get.rs"]
+mod model_get;
+
 #[path = "transport_flow/default_branch.rs"]
 mod default_branch;
 

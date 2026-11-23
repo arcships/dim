@@ -224,7 +224,7 @@ impl Realtime {
         )
         .await?;
         let model = resolve_task_model(&evaluation, category.name, row, request.model.as_ref())?;
-        let Some(spec) = evaluation.operation_spec(&model, category.name, row.operation) else {
+        let Ok(spec) = evaluation.operation_spec(&model, category.name, row.operation) else {
             return Err(unavailable(format!(
                 "No available adapter serves {} for this model",
                 row.id(category.name)

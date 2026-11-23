@@ -173,6 +173,7 @@ The last row is the rule's limit at the floor: catching that loss 80% of the tim
 
 - **The summary prompt and its length sentence** have `summary-eval --candidate`, which runs the current and the candidate prompt on the same cases, model and target rule ([ContextCompaction §13.4](plugins/ContextCompaction.md#134-evaluation)).
 - **A behavioural text** is evaluated by scenarios in the shape of [Timeline branches §12.3](timeline-branches.md#123-evaluation-scenarios): scripted input, the real tools, probes for what a run must show and must not show, both arms judged by the fixed judge. The requirement to the evaluation tooling is a scenario runner with the same candidate injection and the same test (§9.8).
+- **The base prompt** (`dim/base`, text id `prompt-sources/base`) has the `progress-updates` scenario set under `xtask/scenario-eval/`: an interactive multi-tool repair requested the way an operator asks for work, whose probes judge progress updates and that both repairs land and the test run passes; a quick read of a named document and answer; and an answer-only JSON reply. A candidate takes the place of PromptSources' factory member ([PromptSources §2](plugins/PromptSources.md#2-policy-at-the-factory-configuration)).
 - **Until a text has a harness, a change to it brings its own scenario set**, run locally current against candidate and reported in the pull request. No text is frozen for lack of a harness.
 - **Protocol text is not evaluated.** Its flow test changes with it (§4).
 

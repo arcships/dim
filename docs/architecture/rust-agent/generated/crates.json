@@ -424,6 +424,10 @@
     "to": "dim-client"
   },
   {
+    "from": "dim-goal",
+    "to": "dim-goal"
+  },
+  {
     "from": "dim-report",
     "to": "dim-agent-capabilities"
   },

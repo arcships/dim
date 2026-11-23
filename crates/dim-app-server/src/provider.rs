@@ -757,22 +757,79 @@ impl ProviderCatalog {
     }
 }
 
+/// Image models whose listing may carry no media metadata: a relay or an
+/// account catalog lists them under their bare id. The operations are the ones
+/// the vendor documents for the id.
+const KNOWN_IMAGE_MODELS: &[&str] = &[
+    "arcship-image",
+    "gpt-image-2",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare-2026-09-08",
+    "gpt-image-2.5-sunburst-2026-09-08",
+    "grok-imagine-image",
+    "grok-imagine-image-2.0",
+    "grok-imagine-image-quality",
+];
+
 impl ProviderModel {
-    /// The `<category>.<operation>` ids this entry declares for modality
-    /// (Modality §9.2), in their catalog order; `None` when it declares none.
+    /// The `<category>.<operation>` ids this entry serves for modality
+    /// (Modality §9.2, provider management §3.6); `None` when it serves none.
+    /// An explicit `modalityCapabilities` list is the answer, an empty one
+    /// included. Without one, an image model is recognized from its id or its
+    /// kind and output: `image.generate`, and `image.edit` when it also reads
+    /// images; `imageGeneration: false` recognizes nothing.
     fn modality_operations(&self) -> Option<Vec<String>> {
-        let values = self
-            .metadata
-            .as_ref()?
-            .raw
-            .get("modalityCapabilities")?
-            .as_array()?;
-        let operations: Vec<String> = values
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .collect();
-        (!operations.is_empty()).then_some(operations)
+        let raw = self.metadata.as_ref().map(|metadata| &metadata.raw);
+        let field = |name: &str| raw.and_then(|raw| raw.get(name));
+        if let Some(values) = field("modalityCapabilities").and_then(serde_json::Value::as_array) {
+            let operations: Vec<String> = values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            return (!operations.is_empty()).then_some(operations);
+        }
+        if field("imageGeneration") == Some(&serde_json::Value::Bool(false)) {
+            return None;
+        }
+        let modalities = |direction: &str| -> Vec<&str> {
+            field("modalities")
+                .and_then(|modalities| modalities.get(direction))
+                .and_then(serde_json::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (input, output) = (modalities("input"), modalities("output"));
+        let kind = field("type").and_then(serde_json::Value::as_str);
+        let operations: &[&str] = if KNOWN_IMAGE_MODELS.contains(&self.id.as_str())
+            || self
+                .id
+                .split(['.', '/', '_', '-'])
+                .any(|part| part == "seedream")
+        {
+            &["image.generate", "image.edit"]
+        } else if kind == Some("image-edit") {
+            &["image.edit"]
+        } else if field("imageGeneration") == Some(&serde_json::Value::Bool(true))
+            || (matches!(kind, Some("image" | "image-generation"))
+                && (output.is_empty() || output.contains(&"image")))
+            || (output == ["image"])
+        {
+            if input.contains(&"image") {
+                &["image.generate", "image.edit"]
+            } else {
+                &["image.generate"]
+            }
+        } else {
+            return None;
+        };
+        Some(operations.iter().map(|id| (*id).to_owned()).collect())
     }
 
     /// The realtime transport this entry's `metadata.raw.realtime` declares,

@@ -44,11 +44,24 @@ impl Choice {
 
 pub struct UpgradeDialog {
     pub offer: Offer,
-    /// `Update now` was refused while this Session was working; the dialog
-    /// says so for as long as it still is.
+    /// `Update now` was refused; the dialog says why for as long as it still
+    /// cannot leave.
     blocked: bool,
     focused: usize,
     offset: Cell<usize>,
+}
+
+/// Why `Update now` cannot leave yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blocked {
+    /// Work in the shown Session, or a prompt waiting for an answer.
+    Busy,
+    /// A Session was just switched to; the daemon has not reported every
+    /// live line's state yet.
+    Session,
+    /// A Session switch the user asked for has not resolved: the target
+    /// Session's activity is not known yet.
+    Switch,
 }
 
 impl UpgradeDialog {
@@ -94,17 +107,33 @@ impl UpgradeDialog {
         Effect::None
     }
 
-    /// `busy`: this Session has work `Update now` waits for.
-    pub fn render(&self, width: usize, height: usize, busy: bool, p: &Palette) -> Vec<String> {
+    /// `blocked`: why `Update now` cannot leave yet, while that holds.
+    pub fn render(
+        &self,
+        width: usize,
+        height: usize,
+        blocked: Option<Blocked>,
+        p: &Palette,
+    ) -> Vec<String> {
         let version = self.offer.version.as_str();
         let mut body = vec![tf(
             "Version {latest} is available (you have {current}).",
             &[("latest", version), ("current", &self.offer.current)],
         )];
-        if self.blocked && busy {
+        if self.blocked
+            && let Some(reason) = blocked
+        {
             body.push(
-                t("Finish or stop the current work first (a running turn, shell command, or pending prompt).")
-                    .to_owned(),
+                match reason {
+                    Blocked::Busy => t(
+                        "Finish or stop the current work first (a running turn, shell command, or pending prompt).",
+                    ),
+                    Blocked::Session => {
+                        t("Waiting for this Session's state after the switch.")
+                    }
+                    Blocked::Switch => t("Waiting for the Session switch to finish."),
+                }
+                .to_owned(),
             );
         } else if !self.offer.direct {
             body.push(tf(

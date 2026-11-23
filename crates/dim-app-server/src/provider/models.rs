@@ -2,6 +2,20 @@
 use super::*;
 use crate::model_catalog::FieldUpdate;
 
+pub(super) fn validate_context_window(
+    requested: u64,
+    maximum: Option<u64>,
+) -> Result<(), ProviderError> {
+    if let Some(maximum) = maximum
+        && requested > maximum
+    {
+        return Err(ProviderError::InvalidConfig(format!(
+            "Context window must be at most {maximum} tokens for this model"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreferencesPatch {
@@ -433,10 +447,23 @@ impl ProviderService {
                             .position(|entry| entry.model_id == model_id);
                         match edit {
                             Some(edit) if descriptor => {
-                                let current = static_entries(&bundled, &id, record)
+                                let mut current = static_entries(&bundled, &id, record)
                                     .into_iter()
                                     .find(|entry| entry.model_id == model_id)
                                     .ok_or(ProviderError::NotFound)?;
+                                if record.credential_authority == CredentialAuthority::OpenaiCodex {
+                                    if let Some(requested) = edit.context_window {
+                                        validate_context_window(
+                                            requested.get(),
+                                            current.codex_context_window_ceiling(),
+                                        )?;
+                                    } else if let Some(index) = index {
+                                        current.capabilities.context_window = record
+                                            .model_config_overrides[index]
+                                            .capabilities
+                                            .context_window;
+                                    }
+                                }
                                 let next = bundled.merge_visible_edit(&current, edit);
                                 if let Some(user) = user {
                                     record.user_models[user] = next;

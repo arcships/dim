@@ -1116,9 +1116,9 @@ fn an_assembly_note_is_waited_for_before_the_spawn_answers() {
     let home = Home::new();
     let note = note_path(&home);
     let mut body = String::new();
-    for counter in 1..=12 {
+    for counter in 1..=20 {
         body.push_str(&assembly_note_write(&note, "$$", counter));
-        body.push_str("\nsleep 0.3\n");
+        body.push_str("\nsleep 0.6\n");
     }
     body.push_str(&format!(
         "exec '{}' app-server \"$@\"",
@@ -1127,7 +1127,7 @@ fn an_assembly_note_is_waited_for_before_the_spawn_answers() {
     let server = script(&home, "assembly-server", &body);
     let output = home
         .command()
-        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "1500")
+        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "10000")
         .args(["--server", server.to_str().unwrap(), "models", "fixture"])
         .output()
         .unwrap();

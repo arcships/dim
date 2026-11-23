@@ -22,7 +22,7 @@ use dim_app_server::{
         OpenAICodexOAuthService,
     },
     grok_oauth::{GrokOAuthPlugin, GrokOAuthService},
-    provider::{ModelPreferences, ProviderPlugin, ProviderService},
+    provider::{ModelPreferences, ProviderCatalog, ProviderError, ProviderPlugin, ProviderService},
 };
 use futures_util::StreamExt;
 use rutis::Ctx;
@@ -48,6 +48,7 @@ struct Fixture {
     refreshes: Arc<AtomicUsize>,
     polls: Arc<AtomicUsize>,
     device_requests: Arc<AtomicUsize>,
+    device_successes: Arc<AtomicUsize>,
     block_refresh: Arc<AtomicBool>,
     started: Arc<Notify>,
     release: Arc<Notify>,
@@ -136,9 +137,16 @@ async fn token(State(f): State<Fixture>, headers: HeaderMap, body: String) -> Re
             assert_eq!(fields["client_id"], "grok-fixture");
             assert_eq!(fields["device_code"], "device-secret");
             match f.polls.fetch_add(1, Ordering::SeqCst) {
-                0 => (StatusCode::BAD_REQUEST, Json(json!({"error":"authorization_pending"}))).into_response(),
+                0 => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"authorization_pending"})),
+                )
+                    .into_response(),
                 1 => (StatusCode::BAD_REQUEST, Json(json!({"error":"slow_down"}))).into_response(),
-                _ => Json(json!({"access_token":jwt(json!({"sub":"grok-account", "email":"grok@example.test", "name":"Grok Name"})), "id_token":jwt(json!({"tier":"super"})), "refresh_token":"grok-refresh", "expires_in":3600})).into_response(),
+                _ => {
+                    f.device_successes.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"access_token":jwt(json!({"sub":"grok-account", "email":"grok@example.test", "name":"Grok Name"})), "id_token":jwt(json!({"tier":"super"})), "refresh_token":"grok-refresh", "expires_in":3600})).into_response()
+                }
             }
         }
         other => panic!("unexpected grant: {other}"),
@@ -167,6 +175,7 @@ async fn fixture() -> (Fixture, tokio::task::JoinHandle<()>, PathBuf) {
         refreshes: Arc::default(),
         polls: Arc::default(),
         device_requests: Arc::default(),
+        device_successes: Arc::default(),
         block_refresh: Arc::default(),
         started: Arc::default(),
         release: Arc::default(),
@@ -999,15 +1008,23 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         "{signed_out:?}"
     );
     login(&codex, "account-a").await;
+    let token_responses = f.device_successes.load(Ordering::SeqCst);
     f.polls.store(2, Ordering::SeqCst);
     let begin = grok.begin_device(&cancel).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while f.device_successes.load(Ordering::SeqCst) == token_responses {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the device token response did not arrive");
     tokio::time::timeout(Duration::from_secs(3), async {
         while grok.attempt_status(begin.attempt_id).await.unwrap() == AttemptStatus::Pending {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap();
+    .expect("the device login did not complete after the token response");
     assert_eq!(
         grok.attempt_status(begin.attempt_id).await.unwrap(),
         AttemptStatus::Completed
@@ -1378,15 +1395,23 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         );
     }
 
+    let token_responses = f.device_successes.load(Ordering::SeqCst);
     f.polls.store(2, Ordering::SeqCst);
     let begin = grok.begin_device(&cancel).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while f.device_successes.load(Ordering::SeqCst) == token_responses {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the device token response did not arrive");
     tokio::time::timeout(Duration::from_secs(3), async {
         while grok.attempt_status(begin.attempt_id).await.unwrap() == AttemptStatus::Pending {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap();
+    .expect("the device login did not complete after the token response");
     assert!(grok.status(&cancel).await.unwrap().authenticated);
     let auxiliary = root.get::<AuxiliaryModel>().unwrap();
     let sent = f.model_requests.lock().unwrap().len();
@@ -1443,6 +1468,118 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         .await
         .unwrap();
     assert!(updated.info.connection.unwrap().credential_configured);
+    let window = |catalog: &ProviderCatalog, id| {
+        let model = catalog.models.iter().find(|model| model.id == id).unwrap();
+        (
+            model.capabilities.context_window,
+            model.metadata.as_ref().unwrap().raw["max_context_window"].as_u64(),
+        )
+    };
+    let catalog = provider
+        .catalog_for("openai-codex".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    for model in &catalog.models {
+        let raw = &model.metadata.as_ref().unwrap().raw;
+        if raw.get("type").and_then(Value::as_str) != Some("chat") {
+            continue;
+        }
+        assert!(
+            matches!(
+                (
+                    model.capabilities.context_window,
+                    raw.get("max_context_window").and_then(Value::as_u64)
+                ),
+                (Some(default), Some(ceiling)) if default > 0 && ceiling >= default
+            ),
+            "{} must declare a positive default and a ceiling at least as large",
+            model.id
+        );
+    }
+    for model_id in ["gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra"] {
+        assert_eq!(window(&catalog, model_id), (Some(500_000), Some(872_000)));
+    }
+    assert_eq!(window(&catalog, "gpt-5.5"), (Some(272_000), Some(272_000)));
+    let target = ModelId {
+        provider_id: "openai-codex".into(),
+        model_id: "gpt-6.2-sol".into(),
+    };
+    let edit_window = |version, tokens| {
+        provider.update_model_config(
+            target.provider_id.clone(),
+            version,
+            target.model_id.clone(),
+            Some(serde_json::from_value(json!({"contextWindow": tokens})).unwrap()),
+            &cancel,
+        )
+    };
+    assert!(matches!(
+        edit_window(catalog.version, 872_001_u64).await,
+        Err(ProviderError::InvalidConfig(message)) if message.contains("872000")
+    ));
+    let edited = edit_window(catalog.version, 872_000_u64).await.unwrap();
+    assert_eq!(
+        window(&edited, "gpt-6.2-sol"),
+        (Some(872_000), Some(872_000))
+    );
+    let selection = provider
+        .configuration(
+            Some(target.clone()),
+            None,
+            ModelPreferences::default(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        selection
+            .capability_snapshot
+            .unwrap()
+            .capabilities
+            .context_window,
+        872_000
+    );
+    let startup = |tokens| {
+        provider.startup_configuration(
+            dim_app_server::protocol::ModelSelection {
+                provider: Some(target.provider_id.clone()),
+                model_id: Some(target.model_id.clone()),
+            },
+            &home,
+            ModelPreferences::default(),
+            serde_json::from_value(json!({"contextWindow": tokens, "autoCompactWindow": 400_000}))
+                .unwrap(),
+            None,
+            &cancel,
+        )
+    };
+    assert!(
+        matches!(startup(872_001_u64).await, Err(error) if error.to_string().contains("872000"))
+    );
+    let startup = startup(600_000_u64).await.unwrap();
+    assert_eq!(
+        startup
+            .model
+            .capability_snapshot
+            .as_ref()
+            .unwrap()
+            .capabilities
+            .context_window,
+        600_000
+    );
+    assert_eq!(
+        startup
+            .model
+            .metadata
+            .as_ref()
+            .unwrap()
+            .startup
+            .as_ref()
+            .unwrap()
+            .auto_compact_window,
+        Some(400_000)
+    );
     let old_request = {
         let selection = provider
             .configuration(
@@ -1487,6 +1624,16 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     assert_eq!(record["credentialAuthority"], "openai_codex");
     assert!(record["credential"].is_null());
     assert!(!record.to_string().contains("rotated-"));
+    let legacy_window = 900_000_i64;
+    assert_eq!(
+        db.execute(
+            "UPDATE provider_models SET entry=json_set(entry, '$.capabilities.contextWindow', ?1) \
+             WHERE provider_id='openai-codex' AND model_id='gpt-6.2-sol' AND source='override'",
+            [legacy_window],
+        )
+        .unwrap(),
+        1
+    );
     drop(db);
     let (restarted, _, _, _) = self::codex(&home, &f.base).await;
     let plugins = [
@@ -1521,6 +1668,57 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        window(&catalog, "gpt-6.2-sol"),
+        (Some(872_000), Some(872_000))
+    );
+    let renamed = provider
+        .update_model_config(
+            target.provider_id.clone(),
+            catalog.version,
+            target.model_id.clone(),
+            Some(serde_json::from_value(json!({"displayName": "Renamed Sol"})).unwrap()),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        renamed
+            .models
+            .iter()
+            .find(|model| model.id == target.model_id)
+            .unwrap()
+            .name,
+        "Renamed Sol"
+    );
+    assert_eq!(
+        window(&renamed, "gpt-6.2-sol"),
+        (Some(872_000), Some(872_000))
+    );
+    let stored_window: i64 = rusqlite::Connection::open(home.join("native.sqlite"))
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(entry, '$.capabilities.contextWindow') FROM provider_models \
+             WHERE provider_id='openai-codex' AND model_id='gpt-6.2-sol' AND source='override'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_window, legacy_window);
+    let reset = provider
+        .update_model_config(
+            target.provider_id,
+            renamed.version,
+            target.model_id,
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        window(&reset, "gpt-6.2-sol"),
+        (Some(500_000), Some(872_000))
+    );
     assert_eq!(
         catalog
             .models

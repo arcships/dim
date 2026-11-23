@@ -400,6 +400,10 @@ pub struct Options {
     /// The host's user override of `dim/base`, provided at the root when
     /// present.
     pub base_prompt: Option<Arc<dyn dim_agent_capabilities::prompt_sources::BasePromptSettings>>,
+    /// PromptSources' factory configuration: the policy texts that replace the
+    /// built-in ones. `None` installs the plugin with the default
+    /// configuration.
+    pub prompt_sources: Option<prompt_sources::PromptSourcesConfig>,
     /// The host's user override of the Skills instructions, provided at the
     /// root when present.
     pub skills_instructions:
@@ -422,6 +426,7 @@ impl Default for Options {
             clients: None,
             execution: None,
             base_prompt: None,
+            prompt_sources: None,
             skills_instructions: None,
             missing_settings_hosts: false,
         }
@@ -522,11 +527,20 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
         );
     defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
     let today = options.today.clone();
-    prompt_sources::install_with_clock(
-        &mut builder,
-        Arc::new(move || today.lock().unwrap().clone()),
-        std::time::Duration::from_millis(10),
-    );
+    let clock: prompt_sources::Today = Arc::new(move || today.lock().unwrap().clone());
+    match options.prompt_sources {
+        Some(config) => prompt_sources::install_with_config(
+            &mut builder,
+            clock,
+            std::time::Duration::from_millis(10),
+            config,
+        ),
+        None => prompt_sources::install_with_clock(
+            &mut builder,
+            clock,
+            std::time::Duration::from_millis(10),
+        ),
+    }
     let (clients, execution) = (options.clients.is_some(), options.execution.is_some());
     if clients || execution {
         builder.plugin(move |names| {

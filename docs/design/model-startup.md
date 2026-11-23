@@ -27,7 +27,7 @@ contracts; this document does not introduce a second model backend.
 | `DIM_API_KEY` | Key sent through the selected protocol's existing default authentication mapping. |
 | `DIM_AUTH_TOKEN` | Bearer authentication, independent of the message format. |
 | `DIM_CUSTOM_HEADERS` | Additional headers, one `Name: Value` per line. Parse names case-insensitively; reject invalid or repeated names and conflicting generated authentication headers. Split a line at its first colon only. |
-| `DIM_MAX_CONTEXT_TOKENS` | Positive safe integer declaring the adopted context capacity, not a promise that the server supports a larger window. |
+| `DIM_MAX_CONTEXT_TOKENS` | Positive safe integer declaring the adopted context capacity. For `openai-codex` models with a [declared ceiling](appserver/provider-management.md#35-declared-model-limits), a larger value fails before Session creation or resume reconfiguration. |
 | `DIM_MAX_OUTPUT_TOKENS` | Positive safe integer declaring output capacity where the catalog does not declare it. It is a declared fact, so it may equal or exceed the adopted context capacity; the request output allowance is derived from the final declared pair (see [ContextCompaction §5.1](plugins/ContextCompaction.md#51-productcontextmodel)) and always leaves at least half the window as input budget. |
 | `--autocompact auto\|TOKENS` / `DIM_AUTO_COMPACT_WINDOW` | Separate compaction window, not model capacity. The explicit flag wins. Accept positive token counts with optional `k`/`m` suffixes; `auto` uses the existing model-derived threshold. Do not impose Claude's vendor-specific 100K minimum or 1M maximum on Dim models. Reserve the existing output allowance. |
 

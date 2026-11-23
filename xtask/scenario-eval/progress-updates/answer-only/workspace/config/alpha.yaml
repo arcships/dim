@@ -1,0 +1,3 @@
+service: alpha
+port: 8080
+owner: team-a

@@ -475,20 +475,33 @@ fn metadata_revision(file: &std::fs::File) -> std::io::Result<Vec<u8>> {
     crate::file_storage::windows::workspace_security_revision(file)
 }
 
+// The BSD flags Apple's copyfile does not copy (`COPYFILE_OMIT_FLAGS` in
+// copyfile_private.h): `UF_TRACKED`, `UF_DATAVAULT`, `SF_RESTRICTED` and
+// `SF_NOUNLINK`. They need entitlements or block unlinking.
+#[cfg(target_os = "macos")]
+const COPYFILE_OMIT_FLAGS: u32 = 0x0000_0040 | 0x0000_0080 | 0x0008_0000 | 0x0010_0000;
+
 fn preserve_metadata(source: &std::fs::File, target: &std::fs::File) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
+        use std::os::macos::fs::MetadataExt;
         if unsafe {
             libc::fcopyfile(
                 source.as_raw_fd(),
                 target.as_raw_fd(),
                 std::ptr::null_mut(),
-                libc::COPYFILE_METADATA,
+                libc::COPYFILE_ACL | libc::COPYFILE_XATTR,
             )
         } != 0
         {
             return Err(std::io::Error::last_os_error());
+        }
+        // Flags go last: `uchg` and `uappnd` block later metadata changes. A
+        // refused `fchflags` stays ignored, as it was in the metadata copy.
+        let flags = source.metadata()?.st_flags() & !COPYFILE_OMIT_FLAGS;
+        if flags != 0 {
+            let _ = unsafe { libc::fchflags(target.as_raw_fd(), flags) };
         }
     }
     #[cfg(target_os = "linux")]

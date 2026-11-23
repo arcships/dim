@@ -1119,5 +1119,127 @@ async fn batched_timeline() -> Timeline {
     timeline
 }
 
+/// A store that accepts the first batch and answers it as failed without
+/// writing, as a writer whose commit fails after admission would.
+#[derive(Default)]
+struct FailedAppend {
+    memory: MemoryTimelineStore,
+    held: Mutex<Option<PublishCallback>>,
+}
+impl TimelineStore for FailedAppend {
+    fn query<'a>(
+        &'a self,
+        scope: &'a dim_agent_runtime::TimelineReadScope,
+        query: &'a dim_agent_runtime::QuerySpec,
+        page: Option<&'a dim_agent_runtime::QueryPage>,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<dim_agent_runtime::QueryResult>>
+    {
+        self.memory.query(scope, query, page)
+    }
+    fn create_session<'a>(
+        &'a self,
+        id: &'a str,
+        config: &'a SessionConfig,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.memory.create_session(id, config)
+    }
+    fn rollback_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.memory.rollback_session(id)
+    }
+    fn release_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.memory.release_session(id)
+    }
+    fn session_config<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<SessionConfig>>> {
+        self.memory.session_config(id)
+    }
+    fn branches<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Vec<StoredBranch>>> {
+        self.memory.branches(id)
+    }
+    fn head<'a>(&'a self, key: &'a TimelineKey) -> BoxFuture<'a, Result<u64>> {
+        self.memory.head(key)
+    }
+    fn batch_end<'a>(&'a self, key: &'a TimelineKey, sequence: u64) -> BoxFuture<'a, Result<()>> {
+        self.memory.batch_end(key, sequence)
+    }
+    fn append(
+        &self,
+        key: TimelineKey,
+        events: Vec<StoredEvent>,
+        publish: PublishCallback,
+    ) -> Result<()> {
+        let mut held = self.held.lock().unwrap();
+        if held.is_none() {
+            *held = Some(publish);
+            return Ok(());
+        }
+        drop(held);
+        self.memory.append(key, events, publish)
+    }
+    fn read_segments<'a>(
+        &'a self,
+        id: &'a str,
+        segments: Vec<(String, RangeInclusive<u64>)>,
+    ) -> BoxFuture<'a, Result<Vec<Vec<StoredEvent>>>> {
+        self.memory.read_segments(id, segments)
+    }
+    fn trace<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<Option<TimelineTrace>>> {
+        self.memory.trace(key, sequence)
+    }
+    fn save_snapshot<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        snapshot: RecoverySnapshot,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.memory.save_snapshot(key, snapshot)
+    }
+    fn latest_snapshot<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        through: u64,
+        interpreter: &'a str,
+    ) -> BoxFuture<'a, Result<Option<RecoverySnapshot>>> {
+        self.memory.latest_snapshot(key, through, interpreter)
+    }
+}
+
+#[tokio::test]
+async fn a_failed_append_cannot_shift_the_stored_sequence_of_the_next_batch() {
+    let store = Arc::new(FailedAppend::default());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let key = TimelineKey {
+        session_id: "session".into(),
+        branch_id: "main".into(),
+    };
+    let timeline = Timeline::new(Ctx::root().unwrap(), key.clone(), vec![], store.clone());
+    timeline
+        .append(input("failed"))
+        .expect("the store accepted the batch");
+    let later = timeline.append(input("later"));
+    let head = store.head(&key).await.unwrap();
+    if head > 0 {
+        let error = store.read(&key, 1..=head).await.unwrap_err();
+        panic!(
+            "the rejected sequence moved to a lower position: reading 1..={head} failed with {error}"
+        );
+    }
+    assert!(
+        matches!(&later, Err(AgentError::Storage(message)) if message == "Timeline sequence is not contiguous"),
+        "{later:?}"
+    );
+    let held = store.held.lock().unwrap().take().expect("the held batch");
+    held(Err(AgentError::Storage("injected append failure".into())));
+    assert!(
+        timeline.failure().is_some(),
+        "the failed batch faults the timeline"
+    );
+}
+
 #[path = "timeline/position_queries.rs"]
 mod position_queries;

@@ -732,6 +732,7 @@ impl Connection {
                     | Call::HistoryDetail(_)
                     | Call::Branches(_)
                     | Call::BranchGet(_)
+                    | Call::ModelGet(_)
                     | Call::Keys(_)
                     | Call::Summaries(_)
                     | Call::Catalog(_)
@@ -836,6 +837,12 @@ impl Connection {
             }
             Call::Branches(p) => (Some(&p.session_id), None),
             Call::BranchGet(p) => {
+                if p.branch_id.is_empty() {
+                    return Err(RpcError::invalid("branchId must not be empty"));
+                }
+                (Some(&p.session_id), None)
+            }
+            Call::ModelGet(p) => {
                 if p.branch_id.is_empty() {
                     return Err(RpcError::invalid("branchId must not be empty"));
                 }
@@ -1005,6 +1012,7 @@ impl Connection {
             Call::HistoryDetail(p) => Some(&p.session_id),
             Call::Branches(p) => Some(&p.session_id),
             Call::BranchGet(p) => Some(&p.session_id),
+            Call::ModelGet(p) => Some(&p.session_id),
             Call::Keys(p) => Some(&p.session_id),
             Call::Stop(p) => Some(&p.session_id),
             Call::Idle(p) => Some(&p.session_id),
@@ -1318,6 +1326,7 @@ impl Connection {
             },
             Call::Branches(params) => self.branches(rpc, params).await,
             Call::BranchGet(params) => self.branch_get(rpc, params).await,
+            Call::ModelGet(params) => self.model_get(rpc, params).await,
             Call::Keys(params) => self.keys(rpc, params).await,
             Call::Stop(params) => match self.session(rpc, &params.session_id) {
                 Ok(session) => {

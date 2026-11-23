@@ -713,6 +713,22 @@ already records:
 | Bundled catalog | `metadataSource` naming the matched bundled provider: an entry declares a limit only where its `metadata.raw` does, and the bundle drops every other limit when it is loaded; that provider's `contextWindowOverride` and `contextWindowFallback` metadata stay declarations | The models the lookup matches, or every model of the provider |
 | User | The same `capabilityOverrideFields` field on the descriptor override or user model: `models.edit` writes it for each limit it edits, and either legacy importer for an imported value it keeps | The model the override names |
 
+The bundled `openai-codex` chat rows declare a default `contextWindow` and a
+read-only `metadata.raw.max_context_window` for user configuration. These are the
+nominal token counts from the
+[Codex catalog](https://github.com/openai/codex/blob/8653ca9e99b2c805107bde7b7d6f57a634c643d0/codex-rs/models-manager/models.json),
+its [older catalog](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/models-manager/models.json)
+for GPT-5.4 and GPT-5.4 Mini, and the
+[published Spark window](https://openai.com/index/introducing-gpt-5-3-codex-spark/).
+Dim uses its own input and compaction budgets. For example, GPT-6.2 Sol,
+GPT-6.1 Sol and GPT-6.1 Terra default to 500,000 tokens and allow up to 872,000.
+Edit `contextWindow` with `dimcode models openai-codex edit gpt-6.2-sol` or
+`provider.models.edit`. Reset restores the bundled default. Source adoption
+preserves explicit overrides and caps their effective value at the model's
+current ceiling. New edits above the ceiling return `provider_invalid_config`.
+The [Session startup override](../model-startup.md) is subject to the same
+ceiling when setting a new value.
+
 A listing declares a model's reasoning efforts the same way, and the first shape
 it states is the model's own list: the `values` of its `reasoning_options` entry
 of type `effort`, else the `effort` of each `supported_reasoning_levels` item,
@@ -1025,9 +1041,19 @@ process read, for non-conversational uses (Modality §9.2): operation
 `selectableForModality`, asynchronous, request `{}`, reply
 `{models: ModalityModelSnapshot[]}` with each element
 `{target: {providerId, modelId}, operations: string[]}`. `operations` holds the
-`<category>.<operation>` ids the model's catalog entry declares in
-`metadata.raw.modalityCapabilities`, in that entry's order; a model that
-declares none is omitted. The read applies the same provider, account, model,
+`<category>.<operation>` ids the model's catalog entry declares, in that entry's
+order; a model that declares none is omitted. An entry declares its operations
+in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
+included, is the whole answer. An entry with no list is recognized as an image
+model, because relay and account catalogs list such models without media
+metadata: its id is `arcship-image`, a known ID in the `gpt-image-2` or
+`grok-imagine-image` family, or names `seedream`, or its `type` is
+`image`/`image-generation` with image or no stated output, or `imageGeneration`
+is true, or its only output is `image`. Such a model declares
+`image.generate`, and `image.edit` too when it also reads images or is a known
+model; a `type` of `image-edit` declares `image.edit` alone, and
+`imageGeneration: false` recognizes nothing. The connection rule below reads
+the same declaration. The read applies the same provider, account, model,
 route, credential and status rules as `selectableModels`, without its
 text-modality, chat-kind and declared-text-limit requirements: a model without
 a `text` modality, a non-chat model and a model with `limits_undeclared`
@@ -1161,8 +1187,8 @@ adapters. A cross-language operation contract is tracked in [#1613](https://gith
 
 **Rules.** It applies exactly the rules of the `selectableForModality` read —
 provider, account, model, route, credential and status — and additionally
-requires the model's catalog entry to declare `operation` in its
-`metadata.raw.modalityCapabilities`. A model that fails any of these is refused
+requires the model's catalog entry to declare `operation`, as the read above
+derives it. A model that fails any of these is refused
 before any network call: the availability cases with the reason execution reports
 for that model, and an undeclared operation as an invalid request that names it.
 The read and the connection cannot disagree, because they share the catalog and

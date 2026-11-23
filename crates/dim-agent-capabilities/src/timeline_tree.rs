@@ -110,6 +110,86 @@ pub mod testing {
             }
         }
     }
+
+    type EndHold = (
+        String,
+        String,
+        mpsc::UnboundedSender<()>,
+        watch::Receiver<bool>,
+    );
+    static ENDS: Mutex<Vec<EndHold>> = Mutex::new(Vec::new());
+
+    /// One line's end, stopped after its scope closed and before its parent
+    /// records the fact.
+    pub struct HeldEnd {
+        session: String,
+        line: String,
+        arrived: mpsc::UnboundedReceiver<()>,
+        release: watch::Sender<bool>,
+    }
+    impl HeldEnd {
+        /// Resolves once the line's scope is closed and its end is not yet on
+        /// the parent.
+        pub async fn arrived(&mut self) {
+            let _ = self.arrived.recv().await;
+        }
+        /// Lets the end be recorded.
+        pub fn release(&self) {
+            self.release.send_replace(true);
+        }
+    }
+    impl Drop for HeldEnd {
+        fn drop(&mut self) {
+            self.release.send_replace(true);
+            let session = std::mem::take(&mut self.session);
+            let line = std::mem::take(&mut self.line);
+            ENDS.lock()
+                .unwrap()
+                .retain(|(held_session, held_line, ..)| {
+                    *held_session != session || *held_line != line
+                });
+        }
+    }
+
+    /// Holds the next end of `line` in `session_id` between the close of its
+    /// scope and the parent's `branch/ended`. The tests of one process run in
+    /// parallel, so the key is the Session and the line.
+    pub fn hold_end_record(session_id: &str, line: &str) -> HeldEnd {
+        let (arrived, arrivals) = mpsc::unbounded_channel();
+        let (release, released) = watch::channel(false);
+        ENDS.lock()
+            .unwrap()
+            .push((session_id.to_owned(), line.to_owned(), arrived, released));
+        HeldEnd {
+            session: session_id.to_owned(),
+            line: line.to_owned(),
+            arrived: arrivals,
+            release,
+        }
+    }
+
+    pub(crate) async fn end_record(session_id: &str, line: &str) {
+        let found = {
+            let ends = ENDS.lock().unwrap();
+            ends.iter()
+                .find(|(held_session, held_line, ..)| {
+                    held_session == session_id && held_line == line
+                })
+                .map(|(_, _, arrived, released)| (arrived.clone(), released.clone()))
+        };
+        let Some((arrived, mut released)) = found else {
+            return;
+        };
+        let _ = arrived.send(());
+        loop {
+            if *released.borrow_and_update() {
+                return;
+            }
+            if released.changed().await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 /// How a loaded branch begins on its Timeline.
@@ -2228,6 +2308,8 @@ impl TimelineTree {
         if let Err(error) = context.branch().close().await {
             errors.push(error);
         }
+        #[cfg(feature = "testing")]
+        testing::end_record(&self.session_id, id).await;
         if undelivered {
             // The message is still owed: recording the end now would make
             // restore skip the line and lose it. Leave the line ending, with

@@ -943,15 +943,47 @@ async fn capabilities_show_the_mapped_provider_and_refuse_a_created_one() {
         )
         .await;
     assert_ok(&reply);
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    let unserved = json!({"providerId": created, "modelId": "custom-image", "available": false,
+        "reason": {"dimension": "adapter", "detail": "No available adapter serves the model"}});
+    let generate = |snapshot: &Value| -> Value {
+        snapshot["result"]["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|category| category["category"] == "image")
+            .unwrap()["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|operation| operation["operation"] == "generate")
+            .unwrap()
+            .clone()
+    };
+    assert!(
+        generate(&capabilities)["options"]
+            .as_array()
+            .unwrap()
+            .contains(&unserved),
+        "the created provider's model is listed with the adapter reason: {capabilities}"
+    );
     let revision = capabilities["result"]["revision"].as_str().unwrap();
-    let refused = client
+    let configured = client
         .rpc(
             "modality.configure",
             json!({"expectedRevision": revision, "category": "image", "operation": "generate",
                 "model": model(created, "custom-image")}),
         )
         .await;
-    assert_eq!(app_error(&refused), "modality_invalid_selection");
+    assert_ok(&configured);
+    assert_eq!(generate(&configured)["default"], unserved);
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"}, "files": []}),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "default_unavailable", "{refused}");
     assert!(
         refused["error"]["message"]
             .as_str()

@@ -674,6 +674,25 @@ branch is an error. This read writes no facts and does not reopen an ended line.
 have no own history; its fixed directory end identity remains even when the
 `end` detail is unavailable.
 
+`session.model.get {sessionId, branchId, through?}` (v3, listed in `hello.features` with the
+other Session methods under `session.attach`'s admission) reads one line's adopted configuration at
+that line's own cutoff: `{branchId, through, configuration: {model: {providerId, modelId},
+capabilitySnapshot?, modelPreferences?} | null}`. The returned `through` is always the requested
+line's committed cutoff, never the sequence of an ancestor's adoption, so a client applies only
+that line's `Configuration` events whose `sequence > through` and refreshes by calling again without
+`through`. An open line waits for the Dispatcher to reach the committed head, so an adoption
+committed just before the call is included rather than missed, and it reports the cutoff of the
+state it answers from: that is the captured head while the owner is still there, and the last
+applied source fact's sequence when the owner has already applied a later one, so reading at the
+returned cutoff always answers the returned configuration. A line whose scope is closing answers
+at its published head instead of its owner: a fact whose publication is still pending is not visible
+to any read, so the line does not answer past it, and the read never replays sources or writes a
+recovery checkpoint while the line closes. An ended line reads at
+its fixed head through the ancestor chain and is not reopened; an explicit `through` reads the same
+chain at that cutoff, and a value past the line's head is refused as a future sequence. An unknown
+line is an error. Old servers do not advertise the method: a client then uses the attach reply for
+the root alone and does not present the root's configuration as another line's.
+
 Three rules about `head` decide what a client may do with it:
 
 - An `ended` line's `head` and `endEvent` are fixed. The client passes `head` as `through` to `session.history` to
@@ -719,7 +738,8 @@ New public content:
 - the `branch_changed` reason a PromptSuggestion clearing notice and refusal carry;
 - a `BranchSource` kind for a line the user opened;
 - the roster's key, `branch:roster`, announced to the model through the `<dim-branch-lines>` guide entry;
-- two refusal codes, `branch_not_opener` and `branch_limit_reached`.
+- two refusal codes, `branch_not_opener` and `branch_limit_reached`;
+- one branch-qualified read, `session.model.get`, which answers a line's adopted configuration at that line's own committed cutoff.
 
 BranchLine's service is read only by the tool, inside the same plugin. The turn-end signal is crate-internal, beside `TreeCommands.page` and `head`: it is not exported, and the TypeScript binding does not change.
 

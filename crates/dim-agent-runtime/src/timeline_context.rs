@@ -737,6 +737,8 @@ impl TimelineContext {
         let this = self.clone();
         self.lifecycle.advance(BranchPhase::Closing);
         self.close.start(self.ctx.handle(), async move {
+            #[cfg(feature = "testing")]
+            crate::testing::closing(&this.timeline.key().session_id, &this.id).await;
             let _guard = this.control.lock().await;
             let span = tracing::info_span!(
                 "timeline.close",

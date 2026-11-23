@@ -126,6 +126,18 @@ impl PromptSourcesPlugin {
         config: PromptSourcesConfig,
     ) -> rutis::Result<Self>;
 }
+
+/// Registers PromptSources with the policy texts at `config`.
+pub fn install_with_config(
+    builder: &mut AgentBuilder,
+    today: Today,
+    every: Duration,
+    config: PromptSourcesConfig,
+);
+
+/// Registers PromptSources with the built-in texts: `install` and
+/// `install_with_clock` are this entry with the default configuration.
+pub fn install(builder: &mut AgentBuilder);
 ```
 
 The language source's binding is one more arm of the source loader: name `dim/language`, delivery `State`, order 220, body from the operator's setting when one is carried and no entry when none is.

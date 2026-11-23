@@ -1,7 +1,8 @@
 use crate::local_support;
 
 use dim_agent_capabilities::{
-    prompt_sources::BasePromptSettings, skills::SkillsInstructionsSettings,
+    prompt_sources::{BasePromptSettings, PromptSourcesConfig},
+    skills::SkillsInstructionsSettings,
 };
 use local_support::*;
 use std::sync::Arc;
@@ -98,7 +99,7 @@ async fn a_registered_but_missing_host_keeps_the_built_in_text() {
 }
 
 /// The factory configuration stays authoritative: a candidate assembly keeps
-/// its text even when the host provides an override.
+/// its base prompt and Skills texts even when the host provides an override.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn factory_texts_outrank_host_overrides() {
     let dirs = Dirs::new();
@@ -107,6 +108,11 @@ async fn factory_texts_outrank_host_overrides() {
         &dirs,
         Options {
             instructions: Some("FACTORY-SKILLS".into()),
+            prompt_sources: Some(PromptSourcesConfig {
+                base: Some("FACTORY-BASE".into()),
+                ..Default::default()
+            }),
+            base_prompt: Some(Arc::new(FixedBase("HOST-BASE"))),
             skills_instructions: Some(Arc::new(FixedInstructions("HOST-SKILLS"))),
             ..Options::default()
         },
@@ -116,6 +122,9 @@ async fn factory_texts_outrank_host_overrides() {
     run(&session, "hello").await;
     let sent = requests(&session).await;
     let system = system_text(sent.last().unwrap().system.as_deref().unwrap());
+    assert!(system.contains("FACTORY-BASE"), "{system}");
+    assert!(!system.contains("HOST-BASE"), "{system}");
+    assert!(!system.contains("You are DimAgent."), "{system}");
     assert!(system.contains("FACTORY-SKILLS"), "{system}");
     assert!(!system.contains("HOST-SKILLS"), "{system}");
     env.agent.close().await.unwrap();

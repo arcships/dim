@@ -263,6 +263,7 @@ Model startup:
     and it wins over the `provider` setting of the same thing.
   DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS declare positive capacities
     up to 9007199254740991; the request output allowance is derived from them.
+    For openai-codex, a context window above the model's ceiling fails startup.
   --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto or a positive count,
     optionally suffixed k/m (1000/1000000). This is not the model capacity.
   Effort, autocompact and capacity startup controls require the product Provider

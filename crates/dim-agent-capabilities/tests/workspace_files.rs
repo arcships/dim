@@ -190,6 +190,152 @@ async fn atomic_mutations_preserve_native_metadata() {
         );
     }
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn atomic_mutations_advance_modification_time() {
+    use std::time::{Duration, SystemTime};
+    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_577_836_800);
+    for tool in ["write", "edit"] {
+        let workspace = Workspace::new();
+        workspace.put("file", b"before\n");
+        let path = workspace.path("file");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), old);
+        let recent = SystemTime::now() - Duration::from_secs(300);
+        let reads = branch();
+        workspace.read(&reads, "file").await;
+        let result = workspace.call(&reads, tool, json!({"path": "file", "content": "after\n", "oldText": "before", "newText": "after"})).await;
+        assert_eq!(result.is_error, None, "{}", text(&result));
+        assert_eq!(workspace.bytes("file"), b"after\n");
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(
+            modified > old && modified >= recent,
+            "{tool} kept the previous modification time: {modified:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn atomic_mutations_preserve_bsd_flags() {
+    use std::{
+        os::macos::fs::MetadataExt,
+        process::Command,
+        time::{Duration, SystemTime},
+    };
+    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_577_836_800);
+    let recent = SystemTime::now() - Duration::from_secs(300);
+    for tool in ["write", "edit"] {
+        let workspace = Workspace::new();
+        workspace.put("file", b"before\n");
+        let path = workspace.path("file");
+        assert!(
+            Command::new("chflags")
+                .arg("nodump")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        assert_ne!(fs::metadata(&path).unwrap().st_flags() & libc::UF_NODUMP, 0);
+        let reads = branch();
+        workspace.read(&reads, "file").await;
+        let result = workspace.call(&reads, tool, json!({"path": "file", "content": "after\n", "oldText": "before", "newText": "after"})).await;
+        assert_eq!(result.is_error, None, "{} {}", tool, text(&result));
+        assert_eq!(workspace.bytes("file"), b"after\n");
+        let after = fs::metadata(&path).unwrap();
+        assert_ne!(
+            after.st_flags() & libc::UF_NODUMP,
+            0,
+            "{tool} dropped the BSD flags"
+        );
+        let modified = after.modified().unwrap();
+        assert!(
+            modified > old && modified >= recent,
+            "{tool} kept the previous modification time: {modified:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn atomic_mutations_succeed_when_acl_denies_writeattr() {
+    use std::{
+        process::Command,
+        time::{Duration, SystemTime},
+    };
+    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_577_836_800);
+    let user = String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout).unwrap();
+    for tool in ["write", "edit"] {
+        let workspace = Workspace::new();
+        workspace.put("file", b"before\n");
+        let path = workspace.path("file");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        for entry in [
+            "everyone deny writeattr".to_owned(),
+            format!("{} allow read,write", user.trim()),
+        ] {
+            assert!(
+                Command::new("chmod")
+                    .arg("+a")
+                    .arg(&entry)
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "{entry}"
+            );
+        }
+        let acl = || {
+            let output = Command::new("ls").arg("-le").arg(&path).output().unwrap();
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .skip(1)
+                .filter(|line| {
+                    line.trim_start()
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_digit())
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let before = acl();
+        assert!(before.contains("deny writeattr"), "{before}");
+        assert!(before.contains("allow read,write"), "{before}");
+        let recent = SystemTime::now() - Duration::from_secs(300);
+        let reads = branch();
+        workspace.read(&reads, "file").await;
+        let result = workspace.call(&reads, tool, json!({"path": "file", "content": "after\n", "oldText": "before", "newText": "after"})).await;
+        assert_eq!(result.is_error, None, "{} {}", tool, text(&result));
+        assert_eq!(workspace.bytes("file"), b"after\n");
+        assert_eq!(acl(), before);
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(
+            modified > old && modified >= recent,
+            "{tool} kept the previous modification time: {modified:?}"
+        );
+    }
+}
+
 fn structured(result: &ToolResult) -> &serde_json::Map<String, Value> {
     result.structured_content.as_ref().unwrap()
 }

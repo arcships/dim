@@ -32,6 +32,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Finish or stop the current work first (a running turn, shell command, or pending prompt)." => {
             "請先完成或停止目前的工作（執行中的回合、Shell 指令或待處理的提問）。"
         }
+        "Waiting for this Session's state after the switch." => "切換後正在等待此工作階段的狀態。",
+        "Waiting for the Session switch to finish." => "正在等待工作階段切換完成。",
         "Checking for updates…" => "正在檢查更新…",
         "DimCode {version} is up to date." => "DimCode {version} 已是最新版本。",
         "Skip this version" => "略過此版本",

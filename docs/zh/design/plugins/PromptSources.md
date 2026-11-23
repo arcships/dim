@@ -121,6 +121,18 @@ impl PromptSourcesPlugin {
         config: PromptSourcesConfig,
     ) -> rutis::Result<Self>;
 }
+
+/// 在出厂配置 `config` 下注册 PromptSources。
+pub fn install_with_config(
+    builder: &mut AgentBuilder,
+    today: Today,
+    every: Duration,
+    config: PromptSourcesConfig,
+);
+
+/// 用内建文字注册 PromptSources：`install` 与 `install_with_clock` 就是这个入口
+/// 配上默认配置。
+pub fn install(builder: &mut AgentBuilder);
 ```
 
 语言来源的绑定是来源加载器里多出来的一个分支：名字 `dim/language`、投递 `State`、顺序 220，有操作者设置时给出正文，没有时不产生条目。

@@ -364,6 +364,13 @@ impl ProviderService {
             .as_mut()
             .expect("Provider adopts capabilities");
         if let Some(limit) = input.context_window {
+            if model.provider_id == "openai-codex" {
+                let maximum = self
+                    .bundled
+                    .model(&model.provider_id, &model.model_id)
+                    .and_then(|entry| entry.codex_context_window_ceiling());
+                super::models::validate_context_window(limit, maximum).map_err(failure)?;
+            }
             snapshot.capabilities.context_window = limit;
         }
         if let Some(limit) = input.max_output_tokens {

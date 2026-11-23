@@ -72,6 +72,16 @@ pub struct ModelEntry {
     pub metadata: Option<ModelMetadata>,
 }
 
+impl ModelEntry {
+    pub(crate) fn codex_context_window_ceiling(&self) -> Option<u64> {
+        self.metadata
+            .as_ref()?
+            .raw
+            .get("max_context_window")?
+            .as_u64()
+    }
+}
+
 /// The editable surface excludes model identity, lookup diagnostics and raw
 /// provider fields. Resetting an override is a separate provider operation.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -817,7 +827,21 @@ impl BundledCatalog {
             .collect::<Vec<_>>();
         for item in overrides {
             if let Some(pos) = models.iter().position(|m| m.model_id == item.model_id) {
-                models[pos] = inherit_limits(item.clone(), &models[pos])
+                let base = &models[pos];
+                let mut model = inherit_limits(item.clone(), base);
+                if provider.provider_id == "openai-codex"
+                    && let Some(maximum) = base.codex_context_window_ceiling()
+                {
+                    model
+                        .metadata
+                        .get_or_insert_default()
+                        .raw
+                        .insert("max_context_window".into(), maximum.into());
+                    if let Some(window) = &mut model.capabilities.context_window {
+                        *window = (*window).min(maximum);
+                    }
+                }
+                models[pos] = model;
             } else {
                 models.push(item.clone())
             }

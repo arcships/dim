@@ -89,6 +89,108 @@ enum Command {
     Panic,
 }
 
+/// Holds one Timeline publication for race flow tests. Feature `testing` only;
+/// production builds have no hook.
+#[cfg(feature = "testing")]
+pub mod testing {
+    use super::{StoredEvent, TimelineKey};
+    use std::sync::{Arc, Condvar, Mutex};
+    use tokio::sync::mpsc;
+
+    type Hold = (
+        String,
+        String,
+        String,
+        mpsc::UnboundedSender<()>,
+        Arc<(Mutex<bool>, Condvar)>,
+    );
+    static HOLDS: Mutex<Vec<Hold>> = Mutex::new(Vec::new());
+
+    /// One line's publication of `kind`, stopped after its rows commit and
+    /// before the writer reports it.
+    pub struct HeldPublication {
+        session: String,
+        branch: String,
+        kind: String,
+        arrived: mpsc::UnboundedReceiver<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl HeldPublication {
+        /// Resolves once the batch is committed and held before publication.
+        pub async fn arrived(&mut self) {
+            let _ = self.arrived.recv().await;
+        }
+        /// Lets the held publication continue.
+        pub fn release(&self) {
+            let (released, wake) = &*self.release;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+    }
+    impl Drop for HeldPublication {
+        fn drop(&mut self) {
+            self.release();
+            let (session, branch, kind) = (
+                std::mem::take(&mut self.session),
+                std::mem::take(&mut self.branch),
+                std::mem::take(&mut self.kind),
+            );
+            HOLDS
+                .lock()
+                .unwrap()
+                .retain(|(held_session, held_branch, held_kind, ..)| {
+                    *held_session != session || *held_branch != branch || *held_kind != kind
+                });
+        }
+    }
+
+    /// Holds the next batch of `kind` on `branch_id` in `session_id` after its
+    /// rows commit and before it is published. The tests of one process run in
+    /// parallel, so the key is the Session, the line and the kind.
+    pub fn hold_publication(session_id: &str, branch_id: &str, kind: &str) -> HeldPublication {
+        let (arrived, arrivals) = mpsc::unbounded_channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        HOLDS.lock().unwrap().push((
+            session_id.to_owned(),
+            branch_id.to_owned(),
+            kind.to_owned(),
+            arrived,
+            release.clone(),
+        ));
+        HeldPublication {
+            session: session_id.to_owned(),
+            branch: branch_id.to_owned(),
+            kind: kind.to_owned(),
+            arrived: arrivals,
+            release,
+        }
+    }
+
+    /// Stops the writer when this batch carries the armed kind. It runs on the
+    /// writer thread, so the hold takes no async lock and holds none while it
+    /// waits.
+    pub(super) fn publication(key: &TimelineKey, events: &[StoredEvent]) {
+        let found = {
+            let mut holds = HOLDS.lock().unwrap();
+            let Some(index) = holds.iter().position(|(session, branch, kind, ..)| {
+                session == &key.session_id
+                    && branch == &key.branch_id
+                    && events.iter().any(|record| record.event.kind.key() == kind)
+            }) else {
+                return;
+            };
+            let hold = holds.remove(index);
+            (hold.3, hold.4)
+        };
+        let _ = found.0.send(());
+        let (released, wake) = &*found.1;
+        let mut released = released.lock().unwrap();
+        while !*released {
+            released = wake.wait(released).unwrap();
+        }
+    }
+}
+
 /// One process writer batches every Session; only pending events reside here.
 pub struct SqliteTimelineStore {
     pub(super) db: Arc<SqliteStorage>,
@@ -473,6 +575,8 @@ impl SqliteTimelineStore {
             }
         }
         for mut entry in accepted {
+            #[cfg(feature = "testing")]
+            testing::publication(&entry.batch.key, &entry.batch.events);
             entry.publish(outcomes[&entry.batch.key.session_id].clone());
         }
         self.db.checkpoint();

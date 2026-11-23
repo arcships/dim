@@ -128,6 +128,8 @@ pub struct Wait {
     arrived: Notify,
     generation: CancellationToken,
     calls: TaskTracker,
+    #[cfg(feature = "testing")]
+    subscribed: Mutex<Option<tokio::sync::mpsc::UnboundedSender<()>>>,
 }
 
 #[rutis::service]
@@ -325,6 +327,13 @@ impl Wait {
                     waited_ms: waited(),
                 });
             }
+            #[cfg(feature = "testing")]
+            {
+                let signal = self.subscribed.lock().unwrap().take();
+                if let Some(signal) = signal {
+                    let _ = signal.send(());
+                }
+            }
             let result = tokio::select! {
                 _ = self.generation.cancelled() => return Err(WaitCallError::Reloading),
                 _ = &mut arrived => continue,
@@ -337,6 +346,19 @@ impl Wait {
                 Ok(result)
             };
         }
+    }
+}
+
+#[cfg(feature = "testing")]
+impl Wait {
+    /// Arms the readiness signal of the next wait. A wait that ends on its
+    /// first take never signals; the next call arms again. A signal still
+    /// armed but unused is replaced by the next arm: its sender is dropped,
+    /// so `subscribed()` on it returns at once instead of waiting.
+    pub fn subscription(&self) -> testing::Subscription {
+        let (signal, subscribed) = tokio::sync::mpsc::unbounded_channel();
+        *self.subscribed.lock().unwrap() = Some(signal);
+        testing::Subscription { signal: subscribed }
     }
 }
 
@@ -521,6 +543,8 @@ impl DynPlugin for WaitBranchPlugin {
                 arrived: Notify::new(),
                 generation: ctx.cancellation_token(),
                 calls: TaskTracker::new(),
+                #[cfg(feature = "testing")]
+                subscribed: Mutex::new(None),
             });
             let closing = wait.clone();
             ctx.effect(move || async move {
@@ -562,5 +586,23 @@ impl DynPlugin for WaitBranchPlugin {
             ctx.provide_at(self.wait.clone(), wait)?;
             Ok(Effect::Done)
         })
+    }
+}
+
+/// Hooks that let a flow test release its notice only after a wait has
+/// subscribed, so the result depends on waking a waiter that is already
+/// waiting. Feature `testing` only: a production build has no hook.
+#[cfg(feature = "testing")]
+pub mod testing {
+    /// One armed wait's readiness signal.
+    pub struct Subscription {
+        pub(super) signal: tokio::sync::mpsc::UnboundedReceiver<()>,
+    }
+    impl Subscription {
+        /// Resolves once the wait has enabled the notification of a new
+        /// arrival and its first take found nothing pending.
+        pub async fn subscribed(&mut self) {
+            let _ = self.signal.recv().await;
+        }
     }
 }

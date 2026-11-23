@@ -173,6 +173,7 @@
 
 - **摘要提示词与它的长度指令**有 `summary-eval --candidate`：同样的用例、模型和目标规则下对照当前与候选（[ContextCompaction §13.4](plugins/ContextCompaction.md#134-评估)）。
 - **行为类文本**用场景评估，形式同 [Timeline 分支 §12.3](timeline-branches.md#123-评估场景)：脚本化输入、真实工具、对"必须出现"和"不得出现"的探针，两臂交给固定判分模型。对评估工具的要求是一个场景运行器，带同样的候选注入和同样的检验（§9.8）。
+- **基础提示词**（`dim/base`，文本 id `prompt-sources/base`）有 `progress-updates` 场景集，位于 `xtask/scenario-eval/`：一次按普通工作请求交代的交互式多工具修复，探针判定进度更新、两处修复都完成且测试通过；一次指定文件的快速阅读回答；以及一次只返回 JSON 的回答。候选文字放进 PromptSources 的出厂成员（[PromptSources §2](plugins/PromptSources.md#2-策略在出厂配置)）。
 - **还没有装置的文本，改动自带场景集**，本地当前对照候选跑完，写在 PR 里。没有文本因为没有装置而被冻住。
 - **协议文本不评估。** 它的流程测试随它一起改（§4）。
 
