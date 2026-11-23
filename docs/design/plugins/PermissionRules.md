@@ -2,7 +2,7 @@
 
 Scope: process. Issue: [#2017](https://github.com/arcships/dim/issues/2017). Feature: [Permission command rules](../appserver/permission-command-rules.md).
 
-PermissionRules owns the `permission` document: the user's command rules. The permission decision that applies the rules is the `CommandRules` capability; this owner answers the rules. This document is the owner's target contract; it replaces the `commandRules` Session service and the Session part that read the rules from the store.
+PermissionRules owns the `permission` document: the user's command rules. The permission decision that applies the rules is the `CommandRules` capability; this owner answers the rules. This document is the owner's target contract; it replaces the `commandRules` Session service and the Session part that read the rules from the store. `permissionRules.rules` replaces `commandRules.read`: a consumer that read `commandRules` calls `permissionRules.rules` and handles this owner's errors.
 
 ## Use and scope: responsibility split
 
