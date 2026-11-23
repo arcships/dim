@@ -97,7 +97,7 @@ for line in tree.directory(None)?.lines {
 | `invalid` | The source name is empty or outside the source grammar |
 | `unknown` | No source of that name is registered now; drop the target or re-read `initial` |
 | `cancelled` | The load stopped before the entry was produced; the branch adopts nothing |
-| `failed` | The source failed while producing the entry; `code` and `message` are the source's own; the branch keeps its adopted text and retries on its next check |
+| `failed` | The source failed while producing the entry; `cause.code` and `cause.message` are the source's own; the branch keeps its adopted text and retries on its next check |
 | `closed` | This Session is closing; a later generation serves the next Session |
 
 ### Flows
@@ -204,8 +204,8 @@ pub enum SourceError {
     Unknown { message: String },
     #[error("the load was cancelled")]
     Cancelled,
-    #[error("{code}: {message}")]
-    Failed { code: String, message: String },
+    #[error("{cause}")]
+    Failed { cause: PromptCallbackError },
     #[error("the Session is closing")]
     Closed,
 }

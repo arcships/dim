@@ -152,7 +152,7 @@ The service is marked on `SubmitChecks` under `submitChecks`. `append_blocks` st
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_types::{InputMode, MethodDecl, SubmitCheckReply, SubmitCheckRequest, SubmitEntry, UserInput};
+use dim_agent_types::{InputMode, SubmitCheckReply, SubmitCheckRequest, SubmitEntry, SubmitWarning, UserInput};
 use rutis::host::BoxFuture;
 use rutis::Ctx;
 

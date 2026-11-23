@@ -119,7 +119,7 @@ An adoption id and a claim's `(request, call)` entry are bound to the calling ro
 | --- | --- |
 | `invalid` | Fix the input: a name outside `[A-Za-z0-9_-]{1,64}`, a host tool's name, a name registered already, a declaration without a risk or with an unknown field, a declared tool with no handler or a changed definition, an unknown adoption, request or claim |
 | `unavailable` | The adopted source version is no longer this owner's; re-read the configuration and adopt again |
-| `callback` | The contributor's claim callback refused; act on the callback's own `code` and `message` |
+| `callback` | The contributor's claim callback refused; act on its `cause.code` and `cause.message` |
 | `cancelled` | Nothing ran; the call stopped before the tool or the resolver started |
 | `closed` | This Session is closing or this generation is unloading; a follow-up decision waits for the replacement generation |
 
@@ -211,8 +211,8 @@ pub enum ToolError {
     Invalid { message: String },
     #[error("{message}")]
     Unavailable { message: String },
-    #[error("{code}: {message}")]
-    Callback { code: String, message: String },
+    #[error("{cause}")]
+    Callback { cause: ToolCallbackError },
     #[error("the call was cancelled")]
     Cancelled,
     #[error("the tool registry is unloading")]
@@ -257,6 +257,10 @@ pub struct Claimed { pub claimed: Vec<String> }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Declarations { pub tools: Vec<ToolDefinition>, pub sources: Vec<ToolSourceVersion> }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSourceRejection { pub version: String, pub reason: String }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
