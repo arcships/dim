@@ -61,14 +61,15 @@ client
 
 - [Settings](Settings.md): `register` for the `permission` source and `read`/`change` for its value.
 - `managementMethods`: the two client methods.
+- The Rust port, for consumers outside the App Server: the trait `ReadCommandRules` stays in `dim-agent-capabilities` ([`permission`](../../../crates/dim-agent-capabilities/src/permission.rs)); the App Server binds it to this owner's `rules`, not to the store. The command rules' type stays in `dim-agent-types`.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `rules` | The user's command rules as stored now | `{}` | `{rules}` | The caller's token; nothing changes | `failed`, `cancelled` |
-| `permission.rules` | The rules with the revision a draft starts from | `{}` | `{revision, commandRules}` | The call is dropped | `permission_rules_failed`, reloading |
-| `permission.set_rules` | Replace the whole list at the revision read | `{expectedRevision, commandRules}` | `{revision}` | The call is dropped | invalid params, `permission_rules_conflict`, `permission_rules_failed`, reloading |
+| `permission.rules` | The rules with the revision a draft starts from | `{}` | `{revision, commandRules}` | The call is dropped | `permission_rules_failed`, `operation_interrupted`, reloading |
+| `permission.set_rules` | Replace the whole list at the revision read | `{expectedRevision, commandRules}` | `{revision}` | The call is dropped | invalid params, `permission_rules_conflict`, `permission_rules_failed`, `operation_interrupted`, reloading |
 
 ### Errors
 
@@ -79,6 +80,7 @@ client
 | invalid params | Fix the request: a rule without a command word, or with a shell separator |
 | `permission_rules_conflict` | Read again; the user's draft is stale |
 | `permission_rules_failed` | Read again before retrying |
+| `operation_interrupted` | The call was cancelled or the owner is unloading; read again before retrying |
 | reloading | The daemon is restarting; retry after it is back |
 
 ### Flows
@@ -92,7 +94,13 @@ client
 
 - The rules' validation is Rust code rather than a JSON Schema: a shell separator and an empty command word are expressible only as code, so the source is a Rust document and the client reaches it through this owner's namespace instead of `settings.*`.
 
+## Supersedes
+
+- [Permission command rules](../appserver/permission-command-rules.md) §4.1's `commandRules` service; the `permission.*` management methods stay with the same shapes.
+
 ## Rule check
+
+Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -113,6 +121,7 @@ client
 | ADR 002 D3 | The decision depends on this owner's value; this owner depends on Settings. |
 | ADR 002 D4 | Business configuration in the owner's named source, read at use time. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
+| ADR 027 | Not applicable: the consumer is a Session part reading a process value. |
 
 ## Requirements raised to mechanism owners
 
@@ -132,12 +141,13 @@ pub struct Rules {
     pub rules: Vec<CommandRule>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum PermissionRulesError {
-    #[error("the command rules could not be read: {0}")]
-    Failed(String),
-    #[error("the command rules read was cancelled")]
-    Cancelled,
+    #[error("{message}")]
+    Failed { message: String },
+    #[error("{message}")]
+    Cancelled { message: String },
 }
 
 impl PublicService for PermissionRules {}

@@ -8,9 +8,9 @@ aimux's RFC-0023 JSONL (`aimux-core`'s `recording.rs`).
 
 | Owner | Responsibility |
 | --- | --- |
-| ModelLog, process | Register the `model-log` Settings source, start and stop the recorder, follow its changes |
-| Aimux, process | Bind a request to the recorder that is on when the request is built, and close the recording when its stream ends |
-| Settings service | Validate and persist `model-log.json`, user scope only |
+| ModelLog, process | Register the `model-log` Settings source and answer its `recording` value ([ModelLog](../plugins/ModelLog.md)) |
+| Aimux, process | Read the recording value when a request is built and close the recording when its stream ends |
+| Settings | Validate and persist `model-log.json`, user scope only |
 
 The switch is user scope only: recordings hold prompts, code and tool output, so
 project content must not turn them on.

@@ -8,7 +8,7 @@ ExecutionSettings owns the `execution` document and the process execution switch
 
 ExecutionSettings owns:
 
-- The `execution` source: its file, its schema, and the two switches `sandbox` and `network`, both defaulting to `false` and changed only by the user.
+- The `execution` source: its file, its schema, and the two switches `sandbox` and `network`, both defaulting to `false` and declared as user-only members. This contract changes their authority: today the source declares no user-only member, so an owner or agent write could change the switches; under this contract such a write is `user_only`, and the delivery lists the change.
 - The value `{sandbox, network}`: the switches in force now, read at each use.
 
 Callers keep:
@@ -40,6 +40,7 @@ let switches = execution_settings.read(cancelled.clone()).await.map_err(|error| 
 ### Dependencies
 
 - [Settings](Settings.md): `register` for the `execution` source and `read` for its value.
+- The Rust port, for consumers outside the App Server: the trait `ExecutionSettingsRead` and the reply type `ExecutionSettings` live in `dim-agent-capabilities` ([`execution_settings`](../../../crates/dim-agent-capabilities/src/execution_settings.rs)). HostPlatform and the `settings` tool depend on the trait; the App Server's `ExecutionSettings` implements it and serves the same read on the wire.
 
 ### Operations
 
@@ -65,7 +66,14 @@ let switches = execution_settings.read(cancelled.clone()).await.map_err(|error| 
 
 - A missing value fails preparation instead of defaulting to unsandboxed: the built-in default is already "off", and silently running unsandboxed is the one failure the feature exists to prevent.
 
+## Supersedes
+
+- [ADR 011](../../adr/011-execution-settings.md) D1's port name `executionSettingsHost`: the decision is unchanged, the port is `executionSettings` and its Rust binding is `ExecutionSettingsRead`.
+- [Service faces](../service-faces.md) §3.2's and §4.10's `executionSettingsHost` entries.
+
 ## Rule check
+
+Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -86,6 +94,7 @@ let switches = execution_settings.read(cancelled.clone()).await.map_err(|error| 
 | ADR 002 D3 | HostPlatform depends on the port; the port has no Settings or file dependency. |
 | ADR 002 D4 | Business configuration in the owner's named source, read at use time. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
+| ADR 027 | Not applicable: the consumers are process or Session parts reading a process value. |
 
 ## Requirements raised to mechanism owners
 
@@ -105,10 +114,11 @@ pub struct Switches {
     pub network: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum ExecutionSettingsError {
-    #[error("the execution settings could not be read: {0}")]
-    Failed(String),
+    #[error("{message}")]
+    Failed { message: String },
 }
 
 impl PublicService for ExecutionSettings {}

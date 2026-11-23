@@ -56,7 +56,8 @@ the profile enables account methods. Settings supplies generic
 BusinessDocument persistence and the declared sources of
 [the settings service](settings-service.md), not approvals, a method contribution or a configuration
 namespace; SettingsMethods, which depends on it, owns
-`settings.read`/`settings.update`/`settings.sources`/`settings.projects`.
+`settings.read`/`settings.update` for declared sources ([SettingsMethods](../plugins/SettingsMethods.md)); a Rust source is
+served by its owner's own namespace.
 StorageMethods serves `storage.report` through the native binding of the same SQLite owner operation exposed as `sqliteStorage.storageReport({})`.
 MCP owns its configuration types in `mcp/config.rs`; the Skills owner supplies
 the existing `SkillSettingsHost`. App Server's SkillsCatalog mounts the reusable catalog

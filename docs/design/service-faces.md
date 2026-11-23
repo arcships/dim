@@ -101,7 +101,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `worktreeAssociations` | `store.associateWorktree` | 形状见 §4.8。 |
 | `toolSourcesView` | `toolSourcesView.get/observe` | 同一 ToolRegistry owner 的独立只读观察面；贡献注册仍由 `toolRegistry` 负责，见 [工具贡献 §7.5](../architecture/rust-agent/tool-contributions.md#75-服务接口)。 |
 
-宿主读取端口的数据面（§4.10）包括 `executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`。模型选择与列表统一由 `providerService` 提供；调用方和配置见[进程操作](contracts/process-owner-operations.md)；其余读取端口沿用现名。
+宿主读取端口的数据面（§4.10）包括 `executionSettings`、`toolchainSourceHost`、`promptSuggestionSettings`；前两者的操作由 [ExecutionSettings](plugins/ExecutionSettings.md) 与 [PromptSuggestionSettings](plugins/PromptSuggestionSettings.md) 定义。模型选择与列表统一由 `providerService` 提供；调用方和配置见[进程操作](contracts/process-owner-operations.md)；其余读取端口沿用现名。
 
 ### 3.3 所有者 API，已有数据兄弟
 
@@ -110,7 +110,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | 名字 | 数据兄弟 | 说明 |
 | --- | --- | --- |
 | `agentIndex` | `sessions` | 目录查询走 `sessions` |
-| `settingsService` | `settings` | GoalBranch 的取消契约见 §4.1。 |
+| `settingsService` | `settings` | 已由 [Settings](plugins/Settings.md) 取代：一个服务标注在所有者类型上，不保留 owner API 行。 |
 | `modelHost` | `modelHost` | 完整模型请求直接调用所选配置的执行入口；辅助请求使用 `providerService.complete`。 |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
 | `sessionStore` | `store`、`sessionFiles`、`timelineStore` | 标题与 worktree 关联直接调 store |
@@ -216,7 +216,7 @@ PromptSettings 的三个只读端口按 [prompt overrides §3.1](appserver/promp
 
 ### 4.1 `settingsService`：保留调用取消
 
-迁移前 `GoalBranch` 继续用类型化调用，读取随 branch stop token 取消。设置 owner 在 #1292 的批次内确定如何将调用方取消传递给读取操作，并验证 `settings.read` 的 `SettingsResult<T>` 信封和现有错误语义。Goal 切到同一数据契约的 Rust 绑定时，覆盖分支停止中断设置读取的流程。
+已由 [Settings](plugins/Settings.md) 与 [SettingsMethods](plugins/SettingsMethods.md) 取代：所有者按 source id 读值，调用方的取消随读取结束；GoalBranch 的读取改走该绑定。
 
 ### 4.2 `modelHost`：保留完整模型请求
 

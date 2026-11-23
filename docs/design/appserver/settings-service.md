@@ -207,78 +207,11 @@ plugin unloads. Nothing else is new. Nothing enters the Timeline.
 
 ### 4.2 Service `settings` (owner path)
 
-Process scope, no instance key, provided by Settings.
-
-| Method | Mode | Request | Reply |
-| --- | --- | --- | --- |
-| `register` | async | a declaration (§3.1) | nothing; rejects when refused |
-| `read` | async | `{source, scope: Scope}` | `Snapshot` |
-| `update` | async | `{source, scope: Scope, expectedRevision, document}` | `Snapshot` (the stored document) |
-| `declaredBy` | sync | `{instanceId: string}` (the live loader instance ID in decimal) | The JSON Schema declarations registered by that instance, ordered by source name. An instance with no live declarations returns an empty array. |
-| `projects` | sync | `{}` | `{projects: [{root, cwd}]}`: the authorized project roots now |
-
-- `register` is a registration of the calling row, withdrawn when that row unloads. It is called
-  from the row's own `apply`; a refusal (§3.1) rejects the call rather than returning an
-  envelope, so it fails that `apply` as every owner's `register` does.
-- `update` is CAS: it fails with `conflict` unless `expectedRevision` is the current revision.
-- `update` is an owner write. It fails with `user_only_field` when the stored document and the new
-  one differ at any `userOnly` pointer (a value changed, added or removed). The comparison uses
-  the documents after defaults.
-- `projects` is what an owner reads first. Afterwards it follows `settings/projects` (§4.4).
-- Cancellation: the caller drops the call. A write that has already committed stays committed,
-  as in S8a.
-- Errors of `read`, `update` and `projects` (§6): `unknown_source`, `invalid_scope`,
-  `invalid_document`, `user_only_field`, `conflict`, `unsynced`, `failed`, `closed`, `cancelled`.
-
-Only `register` uses the caller's identity, to withdraw the registration with the calling row.
-Ownership comes from the registering row: each source has one owner, and only that package is
-written against it. This is the trust model of in-process plugins
-(AGENTS.md rule 11): dependency declarations are not a sandbox.
+Superseded by [Settings](../plugins/Settings.md): one service on the `Settings` type, one source id per registration, a value read, a change callback, the user draft path and the agent path. §4.1 and §4.4 stay in force.
 
 ### 4.3 Management methods `settings.*` (client path)
 
-Namespace `settings`, which `SettingsMethods`, a process part that depends on Settings, registers
-with `managementMethods` (§4.5). They are never served to paired devices (overview §6.2 rule 9).
-
-| Method | Request | Reply | Errors |
-| --- | --- | --- | --- |
-| `settings.read` | `{source, scope}` | `{revision, document}` | invalid params (bad scope), `settings_unknown_source`, `settings_failed` |
-| `settings.update` | `{source, scope, expectedRevision, document}` | `{revision, document}` | invalid params (bad scope, schema violation), `settings_unknown_source`, `settings_conflict`, `settings_unsynced`, `settings_failed` |
-| `settings.sources` | `{}` | `{dialect, sources: [...]}` (`Sources`, §4.1) | invalid params |
-| `settings.projects` | `{}` | `{projects: [{root, cwd}]}`: the authorized project roots now, as the service's `projects` answers them (§4.2) | invalid params |
-
-- Only registered declared sources are served. A Rust source (for example `mcp`) is
-  `settings_unknown_source`.
-  Its owner's methods stay the way to change it.
-- A client write may change user-only fields. There is no other difference from the owner path.
-- `closed` maps to the existing retryable reloading error.
-- `settings.sources` lists every registered declared source in source-name order, and never a
-  Rust source; an empty registry is an empty `sources` array, not an error. An item is the
-  declaration without its file names or its owner (§4.1). The `schema` member round-trips what
-  the owner registered, and the schema's own `title`/`description` annotations are the display
-  metadata, if the owner added them.
-- A client reads the declarations here, through a public method, rather than from a plugin
-  package or manifest (§9, §4 rule 7: public interfaces only). The agent-side counterpart stays
-  the `plugin` tool's `config` command, which additionally returns the user document with
-  `writeOnly` members redacted and listed in `writeOnlySet` (PluginManager §6).
-- `schedule` is not a declared source. `ScheduleDocument` is a Rust `BusinessDocument`,
-  registered with `settings.register::<ScheduleDocument>`, validated by its own `validate()`,
-  served by `schedule.*`, and `settings_unknown_source` on every `settings.*` path. A Rust
-  source keeps its own typed methods and is out of a schema-driven surface; `settings.sources`
-  lists declared sources only and therefore never lists it.
-- `settings.sources` is never served to paired devices (§4.3 opening) and is absent from the
-  Web entry's allowlist, so the Web entry answers `unknown_method` (§11 items 7–8): discovery
-  is local-only like the rest of the namespace.
-- `settings.projects` is the read a client needs before it can pass `{project: root}`: it
-  answers the same `{projects: [{root, cwd}]}` as the owner-facing `projects` service (§4.2),
-  in cwd order, and the same Web-entry and paired-device rule applies (absent from the
-  allowlist, so `unknown_method`). **`root` is a process-local number** (§4.1): it holds for the
-  life of the daemon process, is not a durable identity, and a client re-reads
-  `settings.projects` after it reconnects to a restarted daemon rather than storing a root. The
-  list only grows while the process runs — authorizing the same cwd again adds no item and
-  emits nothing (§4.4) — so no event or push carries it; the client reads it when it opens a
-  project-scoped form. A `{project: root}` this process has not authorized is invalid params,
-  the same answer as for a source without project scope.
+Superseded by [SettingsMethods](../plugins/SettingsMethods.md): `settings.read` and `settings.update` serve declared sources only, keep their request and reply shapes, and admit a write that survives a dropped client wait. `settings.sources` and `settings.projects` are deleted; the Web entry is served for its allowlisted sources.
 
 ### 4.4 Events
 
@@ -312,97 +245,8 @@ Permission does).
 
 ### 4.5 Rust binding
 
-The `Settings` binding exposes the owner operations of the public `settings` data face.
-It provides `register(ctx, declaration)`, `read(source, scope, cancel)`,
-`update(source, scope, expected, document, cancel)` and `projects()`.
-The dispatcher calls these same operations, and native consumers call them directly
-without JSON conversion. Registration retains the caller's lifetime; updates are owner
-writes and preserve user-only fields. The existing Settings owner still supplies the
-source registry, validation and persistence.
+Superseded by the binding appendix of [Settings](../plugins/Settings.md). The error variants, events, security boundary and state descriptions of this document stay in force.
 
-`SettingsService` retains the native `BusinessDocument` and client management paths below.
-PluginManager's declared-source tools also use it for reads and owner writes.
-This binding does not make native sources visible through declared-source operations or
-change the local-client boundary in §4.3 and §7.
-
-In `dim-app-server::settings` (S8a types, changed only where noted):
-
-```rust
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SettingsScope { User, Project(usize) }            // + Serialize/Deserialize
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettingsChanged { pub source: String,           // was &'static str
-                             pub scope: SettingsScope, pub revision: String }
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectAuthorized { pub root: usize, pub cwd: PathBuf }   // + Serialize/Deserialize
-
-/// A declaration (§3.1), as `register` receives it.
-pub struct SourceDeclaration { pub source: String, pub user_file: String,
-                               pub project_file: Option<String>, pub schema: serde_json::Value,
-                               pub user_only: Vec<String> }
-
-pub enum Writer { Owner, Client }
-
-impl SettingsService {
-    /// Registers `D` (or a declaration) until the plugin owning `ctx` unloads.
-    pub fn register<D: BusinessDocument>(&self, ctx: &Ctx) -> rutis::Result<()>;
-    pub fn register_declared(&self, ctx: &Ctx, declaration: SourceDeclaration) -> rutis::Result<()>;
-    pub fn declarations(&self) -> Vec<SourceDeclaration>;
-    pub async fn read_declared(&self, source: &str, scope: SettingsScope,
-                               cancel: &CancellationToken) -> Result<SettingsSnapshot<Value>>;
-    pub async fn update_declared(self: &Arc<Self>, source: &str, scope: SettingsScope,
-                                 expected: &str, document: Value, writer: Writer,
-                                 cancel: &CancellationToken) -> Result<SettingsSnapshot<Value>>;
-}
-```
-
-- `declarations()` is the registry-wide listing behind `settings.sources` (§4.3): every
-  registered declared source in name order, never a Rust source. Unlike `declared_by`, it does
-  not filter to one registering fiber.
-- Both registrations are effects of the plugin owning `ctx`, withdrawn when it unloads, and are
-  checked under one registry state (§3.1). `register_declared` compiles the schema with
-  `jsonschema`. The process owners register in their `apply`: Mcp (`mcp`, `mcp-projects`, `mcp-plugins`),
-  SkillsCatalog (`skills`), PermissionRules (`permission`), CollaborationModelPolicy
-  (`collaboration`) and the App Server's ExecutionSettings (`execution`). Readers in other plugins
-  only read; `read::<D>`/`update::<D>` of a type that is not the registered one for its name is
-  `UnknownSource`. The `settings` service's `register` calls `register_declared` with the calling
-  row's context.
-- `execution` is user scope only: it declares no project file, so a project-scope read or write is
-  refused. It holds two booleans, `sandbox` and `network`, both defaulting to `false`, and its
-  revisions are the ordinary CAS ones. The TUI's `Process isolation` control and any local management client use
-  `settings.read`/`settings.update`; the owner's reader reaches the document through the
-  `ExecutionSettingsHost` port, which is an in-process read contract and not a management method
-  ([ADR 011](../../adr/011-execution-settings.md) D1). The visible choices map to these existing
-  booleans as defined by [process isolation](../host-platform-isolation.md#process-isolation);
-  Permission presets and tool lists do not write this source.
-- The file and native paths are shared with `BusinessDocument`, keyed by source name instead of
-  `D::NAMESPACE`. CAS, the gate, leases, the unsynced case and `publish` stay as they are.
-- `SettingsError` gains `UnknownSource`, `UserOnlyField(pointer)`, `InvalidScope`,
-  `Document(message)` and `DocumentShape { reason, position }`. A written document that
-  breaks the schema or is not an object is `Document` with the validator's message (the
-  instance path, never the value). `DocumentShape` is how `McpSettings` refuses an MCP
-  document as a whole — not an object, no `mcpServers` object, `mcpServers` not an object,
-  an empty server entry id, a file that is not JSON: the owner's static `reason`, which a
-  client may see, and `position` when the document was read from bytes. Its `Display` is
-  byte for byte what `Document` printed for the same text. No other owner has adopted it:
-  HooksSettings refuses a hook document as `Invalid("invalid hook document")`, and a
-  persisted file that the default `BusinessDocument` decode or a declared source cannot
-  parse is `Invalid("invalid settings document")`. `reason()` reports the static message of `Invalid` and of `DocumentShape`, and
-  `None` for every other variant, `Document` included, whose text is arbitrary. The
-  client path maps `Document` and `DocumentShape` to invalid params. A persisted document
-  that breaks the schema stays `Invalid` (`invalid_document` / `settings_failed`).
-- The `settings` service is a `HostDispatch` under `host_key("settings")`, and assembly registers
-  `settings` in the `ServiceCatalog`, as `pluginFiles` is done today. Replies use
-  the envelope of `sessions`: `{ok: true, value}` or `{ok: false, error: {code, message}}`.
-- The `ManagementMethods` for `settings` come from `SettingsMethods`, a process part that depends
-  on Settings (module `settings_methods`), the way PermissionRules owns `permission`. Settings
-  itself cannot own a namespace: Rpc reaches Settings through Agents, Rpc may not reach a
-  management owner (methods contract §3.2), and the module boundary keeps Settings persistence
-  infrastructure (ADR 004 D4, `xtask check`). Assembly lists the `SettingsMethods` row as the
-  owner of `settings`.
 ## 5. Flows
 
 ### 5.1 Owner reads and updates

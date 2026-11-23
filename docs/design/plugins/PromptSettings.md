@@ -29,7 +29,7 @@ Callers keep:
 PromptSources reads the base text once, while its Session part applies.
 
 ```rust
-let base = prompt_settings.base().await.ok().flatten();
+let base = prompt_settings.base(cancelled.child_token()).await.ok().flatten();
 let text = factory.base.or(base).unwrap_or_else(|| BUILT_IN.into());
 ```
 
@@ -38,6 +38,7 @@ let text = factory.base.or(base).unwrap_or_else(|| BUILT_IN.into());
 ### Dependencies
 
 - [Settings](Settings.md): `register` for the `prompts` source and `read` for its value. PromptSettings registers the source from its own process row and keeps the source id.
+- The Rust port, for consumers outside the App Server: the three traits `BasePromptSettings`, `SkillsInstructionsSettings` and `SummaryPromptSettings` stay in `dim-agent-capabilities` ([`prompt_sources`](../../../crates/dim-agent-capabilities/src/prompt_sources.rs), [`skills`](../../../crates/dim-agent-capabilities/src/skills/mod.rs), [`summary_strategy`](../../../crates/dim-agent-capabilities/src/summary_strategy.rs)), each covering one text. The App Server's `PromptSettings` implements all three and serves the same reads on the wire; a consumer in `dim-agent-capabilities` depends on the trait, never on the App Server.
 
 ### Operations
 
@@ -66,7 +67,13 @@ A read returns the member as stored after the schema check; an absent member is 
 - The three texts share one document and one registering row: a file has one owner, while each text belongs to a different capability; the schema keeps each member independent, and a user-only member cannot be changed by the owner.
 - A read failure does not fail the Session: the text is policy with a safe default, and the consumer keeps the built-in text.
 
+## Supersedes
+
+- [Prompt overrides](../appserver/prompt-overrides.md) §3.1: the three services and their bare string replies are replaced by `promptSettings` and `{text}`. The precedence rules above and §4's client entry stay in force.
+
 ## Rule check
+
+Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -84,7 +91,8 @@ A read returns the member as stored after the schema check; an absent member is 
 | §7 caller complexity | Nothing of the store, the schema or the file name reaches the consumer. |
 | §7 one change | The one service replaces the three names, and all three consumers migrate in the same change. |
 | ADR 002 D1 | Process scope: the setting is shared configuration, not Session state. |
-| ADR 002 D3 | The consumers' crates depend on the port type, not on the App Server. |
+| ADR 002 D3 | The consumers' crates depend on the port traits, not on the App Server. |
+| ADR 027 | Not applicable: the consumers are process or Session parts reading a process value. |
 | ADR 002 D4 | Business configuration in the owner's named source, read at use time. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
 
@@ -103,22 +111,23 @@ use rutis::host::BoxFuture;
 // `CancelledFn` is the binding's cancellation argument, not a request field.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Text {
+pub struct PromptText {
     pub text: Option<String>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum PromptSettingsError {
-    #[error("the prompts setting could not be read: {0}")]
-    Failed(String),
+    #[error("{message}")]
+    Failed { message: String },
 }
 
 impl PublicService for PromptSettings {}
 
 #[rutis::service(name = "promptSettings")]
 impl PromptSettings {
-    pub async fn base(&self, cancelled: CancelledFn) -> Result<Text, PromptSettingsError> { /* ... */ }
-    pub async fn summary(&self, cancelled: CancelledFn) -> Result<Text, PromptSettingsError> { /* ... */ }
-    pub async fn skills(&self, cancelled: CancelledFn) -> Result<Text, PromptSettingsError> { /* ... */ }
+    pub async fn base(&self, cancelled: CancelledFn) -> Result<PromptText, PromptSettingsError> { /* ... */ }
+    pub async fn summary(&self, cancelled: CancelledFn) -> Result<PromptText, PromptSettingsError> { /* ... */ }
+    pub async fn skills(&self, cancelled: CancelledFn) -> Result<PromptText, PromptSettingsError> { /* ... */ }
 }
 ```

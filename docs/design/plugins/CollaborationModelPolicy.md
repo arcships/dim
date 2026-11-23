@@ -44,14 +44,15 @@ let policy = if startup {
 
 - [Settings](Settings.md): `register` for the `collaboration` source and `read`/`change` for its value.
 - `managementMethods`: the two client methods.
+- Collaboration: the App Server's `Collaboration` calls `policy` directly in-process; it is in the same crate as this owner, so no port type is needed. The policy type stays in this owner's module.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `policy` | The policy in force now | `{}` | `{policy}` | The caller's token; nothing changes | `failed`, `cancelled` |
-| `collaboration.model_policy` | The policy with the revision a draft starts from | `{}` | `{revision, policy}` | The call is dropped | `collaboration_model_policy_failed`, reloading |
-| `collaboration.set_model_policy` | Replace the policy at the revision read | `{expectedRevision, policy}` | `{revision}` | The call is dropped | invalid params, `collaboration_model_policy_conflict`, `collaboration_model_policy_failed`, reloading |
+| `collaboration.model_policy` | The policy with the revision a draft starts from | `{}` | `{revision, policy}` | The call is dropped | `collaboration_model_policy_failed`, `operation_interrupted`, reloading |
+| `collaboration.set_model_policy` | Replace the policy at the revision read | `{expectedRevision, policy}` | `{revision}` | The call is dropped | invalid params, `collaboration_model_policy_conflict`, `collaboration_model_policy_failed`, `operation_interrupted`, reloading |
 
 ### Errors
 
@@ -62,6 +63,7 @@ let policy = if startup {
 | invalid params | Fix the request: an unknown mode, or a `fixed` policy without a provider and a model |
 | `collaboration_model_policy_conflict` | Read again; the user's draft is stale |
 | `collaboration_model_policy_failed` | Read again before retrying |
+| `operation_interrupted` | The call was cancelled or the owner is unloading; read again before retrying |
 | reloading | The daemon is restarting; retry after it is back |
 
 ### Flows
@@ -75,7 +77,13 @@ let policy = if startup {
 
 - The policy document is a Rust type rather than a JSON Schema: the closed mode set with a typed model is the owner's validation, so the client reaches it through this owner's namespace.
 
+## Supersedes
+
+- [Subagent model policy](../subagent-model-policy.md)'s row that persists and edits the policy through `SettingsService::read/update`; the `collaboration.*` management methods keep their shapes.
+
 ## Rule check
+
+Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -96,6 +104,7 @@ let policy = if startup {
 | ADR 002 D3 | Collaboration depends on this owner's value; this owner depends on Settings. |
 | ADR 002 D4 | Business configuration in the owner's named source, read at use time. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
+| ADR 027 | Not applicable: the consumer is a process part reading a process value. |
 
 ## Requirements raised to mechanism owners
 
@@ -123,12 +132,13 @@ pub struct Policy {
     pub policy: ModelPolicy,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum CollaborationPolicyError {
-    #[error("the collaboration model policy could not be read: {0}")]
-    Failed(String),
-    #[error("the collaboration model policy read was cancelled")]
-    Cancelled,
+    #[error("{message}")]
+    Failed { message: String },
+    #[error("{message}")]
+    Cancelled { message: String },
 }
 
 impl PublicService for CollaborationModelPolicy {}

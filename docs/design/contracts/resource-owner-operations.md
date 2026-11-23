@@ -131,21 +131,4 @@ serves declared sources and excludes the native `mcp-secrets` document.
 
 ## Settings
 
-| Caller → Settings | Current operation and contract |
-| --- | --- |
-| PluginManager; declared-source consumers | Filter declarations by live loader instance using declaredBy above. Reuse settings.read/update/projects for owner edits and reads. SettingsMethods uses its client path and lists only declared sources. |
-| Agents create/restore, Hooks and MCP management | authorize_project(cwd,cancelled) → root registers the authorized root and publishes the existing notice. It is a write performed at trusted admission. project_root/path/sources are reads covered by settings.projects. |
-| PermissionRules and CommandRules; CollaborationModelPolicy and optional Collaboration runtime | User permission and collaboration policy reads/writes. Expose the existing commandRules.read projection to rule consumers; use the policy owner's read returning {revision,policy} for Collaboration. Preserve absent-profile fallback. |
-| HooksSettings and HookSources | hooks, hooks-projects and hooks-plugins. The runtime consumes sources(cwd,cancelled) → HookSourcesSnapshot. Source resolution, revisions and enablement belong to Hooks. |
-| Mcp and McpPublication | mcp, mcp-projects, mcp-plugins and mcp-secrets. Publication reads effective server configuration and constructs live connections. Keep partial decoding of individual server entries and credential use at the MCP owner. |
-| SkillsCatalog, Scheduler, Modality | Each registers and reads/updates its own native source. Keep the existing SkillDocument, ScheduleDocument and ModalitySettings behavior, including duplicate-job checks and validated model defaults. Their public management methods run at the feature owner. |
-| Settings → sqliteStorage in the native user profile | Read the existing row; on first use import validated content and provenance atomically; replace at expected revision and publish after commit. File-backed and project settings keep their existing file path and lease behavior. |
-| Sources using a declared schema → Settings | `settings.register/read/update`. |
-| Native non-secret sources with custom decoding → Settings | `settings.registerDocument({source,userFile,projectFile?},codec) → {read,update}`. The source-bound operations are `read(scope) → {revision,document}` and `update(scope,expectedRevision,document) → {revision,document}`. Registration ends on owner unload. |
-
-The source codec has two operations. `decode(bytes or null) → document` uses the source's
-existing decoder for stored bytes, its default for absence, and validates the result.
-`validate(document) → void` applies BusinessDocument write validation before admitting a
-replacement. Settings performs serialization, version checks and persistence. Both calls
-propagate the original Settings error and end with the registration generation. Foreign codec
-calls occur outside SQLite transactions. Declared-schema sources reuse their existing codec.
+The Settings operations, the authorized-project table and each source's own contract are defined by [Settings](../plugins/Settings.md) and [SettingsMethods](../plugins/SettingsMethods.md). The `settingsService` owner API and the `registerDocument` operation are replaced by the one `settings` service: a source id per registration, a value read, a change callback, the user draft path and the agent path.

@@ -39,6 +39,7 @@ if let Some(directory) = destination.directory {
 ### Dependencies
 
 - [Settings](Settings.md): `register` for the `model-log` source and `read` for its value.
+- The Rust port, for the consumer outside the App Server: the trait `RecordingDestination` lives in `dim-agent-aimux` where the recorder is, and the App Server's `ModelLog` implements it and serves the same read on the wire.
 - FileStorage: `root_path` for the home root, once, to build the destination directory.
 
 ### Operations
@@ -63,7 +64,13 @@ if let Some(directory) = destination.directory {
 
 - The directory is computed from the home root at each read instead of being pushed into the recorder: the recorder belongs to aimux, and a value read keeps the write inside its owner.
 
+## Supersedes
+
+- [Model request log](../appserver/model-log.md)'s sentence that ModelLog starts and stops the recorder by pushing a directory into it.
+
 ## Rule check
+
+Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -84,6 +91,7 @@ if let Some(directory) = destination.directory {
 | ADR 002 D3 | The recorder depends on the value; ModelLog depends on Settings and FileStorage. |
 | ADR 002 D4 | Business configuration in the owner's named source, read at use time. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
+| ADR 027 | Not applicable: the consumer is a process part reading a process value. |
 
 ## Requirements raised to mechanism owners
 
@@ -102,10 +110,11 @@ pub struct Recording {
     pub directory: Option<String>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum ModelLogError {
-    #[error("the model-log setting could not be read: {0}")]
-    Failed(String),
+    #[error("{message}")]
+    Failed { message: String },
 }
 
 impl PublicService for ModelLog {}

@@ -38,6 +38,7 @@ let user_agent = configured.unwrap_or_else(|| dim_user_agent());
 ### Dependencies
 
 - [Settings](Settings.md): `register` for the `provider` source and `read` for its value.
+- The Rust port, for the consumer outside the App Server: the trait `ProviderUserAgent` lives in `dim-agent-capabilities` where the model request is built, and the App Server's `ProviderSettings` implements it and serves the same read on the wire.
 
 ### Operations
 
@@ -61,7 +62,13 @@ let user_agent = configured.unwrap_or_else(|| dim_user_agent());
 
 - The value is read per request instead of being published into the process identity: the identity belongs to Provider, and a value read keeps the write inside its owner.
 
+## Supersedes
+
+- [Provider management](../appserver/provider-management.md) §2's sentences that say the Provider part holds the value and pushes it into the model identity.
+
 ## Rule check
+
+Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -82,6 +89,7 @@ let user_agent = configured.unwrap_or_else(|| dim_user_agent());
 | ADR 002 D3 | Provider depends on the value; ProviderSettings depends only on Settings. |
 | ADR 002 D4 | Business configuration in the owner's named source, read at use time. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
+| ADR 027 | Not applicable: the consumer is a process part reading a process value. |
 
 ## Requirements raised to mechanism owners
 
@@ -100,10 +108,11 @@ pub struct UserAgent {
     pub user_agent: Option<String>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum ProviderSettingsError {
-    #[error("the provider setting could not be read: {0}")]
-    Failed(String),
+    #[error("{message}")]
+    Failed { message: String },
 }
 
 impl PublicService for ProviderSettings {}

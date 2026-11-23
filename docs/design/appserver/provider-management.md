@@ -50,7 +50,7 @@ with its existing owner; management never writes another owner's state.
 | Account namespaces | Account owners provide login, usage and logout. The [ChatGPT plan provider](chatgpt-plan.md) owns `account.chatgpt`. |
 | `ProviderConnectionResolver`, `ModelSelectionHost` | Provider implements catalog/route decisions through existing types; no new core port |
 | `auxiliaryModel.complete` | Existing caller-selected S4 contract, unchanged |
-| `provider` Settings source, user scope (`provider.json`) | The Provider part registers it; it holds `userAgent`, the User-Agent override (§2, Model request identity), so a user's choice is a declared, validated document rather than a request-local input |
+| `provider` Settings source, user scope (`provider.json`) | [ProviderSettings](../plugins/ProviderSettings.md) owns it; it holds `userAgent`, the User-Agent override (§2, Model request identity), and publishes it as a value a model request reads |
 | Native CLI Provider flows | Migrate discovery, create, update and disconnect together with the new owner methods |
 
 Business logic stays in Provider, not `connection.rs`, `protocol.rs` or a wiring
@@ -101,7 +101,7 @@ default identity like any other Provider.
 
 | Override | Where | Notes |
 | --- | --- | --- |
-| `provider` settings source, `userAgent` | `provider.json`, user scope, owned by the Provider part | Replaces the whole User-Agent string; 1–512 printable ASCII characters, refused by the source's schema otherwise. The part serving one App Server holds it, so two Servers in one process keep theirs apart |
+| `provider` settings source, `userAgent` | `provider.json`, user scope ([ProviderSettings](../plugins/ProviderSettings.md)) | Replaces the whole User-Agent string; 1–512 printable ASCII characters, refused by the source's schema otherwise. A model request reads the value from ProviderSettings at request time, so two Servers in one process keep theirs apart |
 | `DIM_USER_AGENT` | Environment of the process that hosts models | The same validation; wins over the setting. Read once by the App Server command line, beside the other startup inputs, and passed to each Server it builds, so a value a request cannot carry fails that process's startup |
 
 `DIM_USER_AGENT` wins over the setting because it is set for one run of the

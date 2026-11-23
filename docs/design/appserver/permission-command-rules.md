@@ -109,23 +109,15 @@ restore and fork neither restore nor widen them.
 
 ### 4.1 Language-neutral (ADR 002 D5)
 
-**Session service `commandRules`**, Session scope, no instance key, provided by the profile.
-
-| Method | Mode | Request | Reply |
-| --- | --- | --- | --- |
-| `read` | async | `{}` | `{rules: CommandRule[]}` |
-
-`CommandRule = {command: string, match: "exact" | "prefix", decision: "allow" | "deny"}`. Errors
-are data: `unavailable` (the source could not be read, including an invalid persisted file),
-`cancelled` (the caller dropped the call or the provider is unloading).
+**Session service `commandRules`** is deleted. Rule consumers call [PermissionRules](../plugins/PermissionRules.md)'s `permissionRules.rules` (`{}` → `{rules}`); `CommandRule = {command: string, match: "exact" | "prefix", decision: "allow" | "deny"}`.
 
 **Management methods**, namespace `permission`, which the process part registers with
 `managementMethods` (overview §6.2 rule 9; never served to paired devices).
 
 | Method | Request | Reply | Errors |
 | --- | --- | --- | --- |
-| `permission.rules` | `{}` | `{revision, commandRules}` | `permission_rules_failed` |
-| `permission.set_rules` | `{expectedRevision, commandRules}` | `{revision}` | invalid params (validation), `permission_rules_conflict` (stale revision), `permission_rules_failed` |
+| `permission.rules` | `{}` | `{revision, commandRules}` | `permission_rules_failed`, `operation_interrupted` |
+| `permission.set_rules` | `{expectedRevision, commandRules}` | `{revision}` | invalid params (validation), `permission_rules_conflict` (stale revision), `permission_rules_failed`, `operation_interrupted` |
 
 `set_rules` replaces the whole list. The reply's `revision` is the Settings revision. Settings
 emits its existing `settings.changed` event for the write; F2 adds no listener.

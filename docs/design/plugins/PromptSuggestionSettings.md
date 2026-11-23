@@ -40,6 +40,7 @@ let max_chars = settings.max_chars; // the owner's schema already bounded it
 ### Dependencies
 
 - [Settings](Settings.md): `register` for the `prompt-suggestion` source and `read` for its value.
+- The Rust port, for consumers outside the App Server: the trait `PromptSuggestionSettingsRead` and the reply type `SuggestionSettings` live in `dim-agent-capabilities` ([`prompt_suggestion`](../../../crates/dim-agent-capabilities/src/prompt_suggestion.rs)). The PromptSuggestion Session part depends on the trait; the App Server's `PromptSuggestionSettings` implements it and serves the same read on the wire.
 
 ### Operations
 
@@ -65,7 +66,13 @@ The reply carries both members because the schema gives both a default; a docume
 
 - The assembler may leave the port absent: an evaluation or a host without Settings then keeps the feature off, so the read is optional at assembly.
 
+## Supersedes
+
+- [Service faces](../service-faces.md) §3.2's and §4.10's `promptSuggestionSettingsHost` entries.
+
 ## Rule check
+
+Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -86,6 +93,7 @@ The reply carries both members because the schema gives both a default; a docume
 | ADR 002 D3 | The Session part depends on the port type, not on the App Server. |
 | ADR 002 D4 | Business configuration in the owner's named source, read at use time. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
+| ADR 027 | Not applicable: the consumer is a Session part reading a process value. |
 
 ## Requirements raised to mechanism owners
 
@@ -105,10 +113,11 @@ pub struct SuggestionSettings {
     pub max_chars: u32,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum PromptSuggestionSettingsError {
-    #[error("the prompt-suggestion setting could not be read: {0}")]
-    Failed(String),
+    #[error("{message}")]
+    Failed { message: String },
 }
 
 impl PublicService for PromptSuggestionSettings {}
