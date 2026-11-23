@@ -51,7 +51,7 @@ line_owner::<InputQueue>(target.line.clone())?
     .await?;
 
 // read: the cursor is the calling line's, the page is the tool's rendering.
-let own = branch_line::state(execution.branch_id.clone()).await?;
+let own = line_owner::<BranchLine>(&execution.branch_id)?.state().await?;
 let after = input.after.unwrap_or_else(|| own.cursor(&target.line).unwrap_or(cut));
 let page = tree.read(ReadLines {
     line: target.line.clone(),

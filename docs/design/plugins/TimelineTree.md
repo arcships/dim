@@ -31,14 +31,14 @@ Callers keep:
 | End a line: a tool line ending itself with a last word, a user ending a line, a plugin ending what it opened | No: the target's guards, ending descendants first, closing the scope and recording the end are one settled operation | `end` |
 | Move the conversation to another line and tell every participant | No: the pointer, the `branch/default` fact and the per-line notes commit in one order | `set_default` |
 | Read the lines and the current default | No: `default` and the directory come from one read; states, heads and end events are this owner's | `directory` |
-| Read one line's record | No: same record as the directory's, by id | `directory` with `{line}` |
+| Read one line's record: is it open, where is its head, when did it end | No: the record is the directory's own entry | `line` |
 | Read a line's facts at a cutoff: a client's history, a method's turn, a tool's recall, an index build, a report's evidence | No: the cutoff's validity, the atomic-batch boundary, the fixed head of an ended line and the continuation rule are this owner's knowledge | `read` |
 | Read a line and its ancestors as one cut: a search over the chain, an index over the chain | No: each ancestor is bounded by the cut the line inherited from it, and the chain is the directory's knowledge | `read` with the chain scope |
-| Read a line's purpose and source for its detail view | Yes: the record carries the cut and source; the purpose is the parent's `branch/create` facts at that cut | Business composes with `read` |
-| Learn whether a line is still open before writing to it | Yes: the record's state answers open, ending or ended | Business composes with `directory` |
-| Learn the configuration a line adopted at a cutoff | Yes for a live line: Prompt answers it; for an ended line the facts are read at the fixed head | Business composes with `read`; Prompt keeps its own operation |
-| Write an input to a line | Not this owner: the line's input owner decides order, idempotency and rejection | See "Session parts reaching a line's owners" |
-| Act on a line's own owner: compact it, read its usage, withdraw from it, approve in it, adopt a language or a profile in it | Not this owner: each is that owner's operation, reached by line id | See "Session parts reaching a line's owners" |
+| Read a line's purpose and source for its detail view | Yes: `line` carries the cut and source; the purpose is the parent's `branch/create` facts at that cut | Business composes with `line` and `read` |
+| Learn whether a line is still open before writing to it | Yes: the record's state answers open, ending or ended | Business composes with `line` |
+| Learn the configuration a line adopted at a cutoff | Yes for a live line: Prompt answers it through `line_owner`; for an ended line the facts are read at the fixed head | Business composes with `read`; Prompt keeps its own operation |
+| Write an input to a line | Not this owner: the line's input owner decides order, idempotency and rejection | `line_owner::<InputQueue>`, see "Session parts reaching a line's owners" |
+| Act on a line's own owner: compact it, read its usage, withdraw from it, approve in it, adopt a language or a profile in it | Not this owner: each is that owner's operation, reached by line id | `line_owner::<T>`, see "Session parts reaching a line's owners" |
 | Create the root line, restore the stored directory, settle on close | No, but not public: the Session assembly drives these; a client or plugin must not | Assembly-internal |
 
 ## Caller example
@@ -56,10 +56,7 @@ let line = tree.create(CreateLine {
 }, cancelled).await?;
 
 // session.branches: the default and every line from one read.
-let Directory { default, lines } = match tree.directory(None)? {
-    DirectoryReply::All(directory) => directory,
-    DirectoryReply::One(_) => unreachable!("no line named"),
-};
+let Directory { default, lines } = tree.directory()?;
 let current = lines.iter().find(|record| record.line == default).expect("the default is a line");
 
 // A Session method answering a turn read on the conversation line, at its head.
@@ -73,10 +70,7 @@ let page = tree.read(ReadLines {
 }).await?;
 
 // A method that names a line reads its record first, then the same page.
-let record = match tree.directory(Some(requested.clone()))? {
-    DirectoryReply::One(record) => record,
-    DirectoryReply::All(_) => unreachable!("a named line answers one record"),
-};
+let record = tree.line(requested.clone())?;
 let page = tree.read(ReadLines {
     line: requested,
     scope: None,
@@ -92,38 +86,28 @@ tree.end(EndLine { line, source, final_message: None }).await?;
 // Nothing is released here: the line id is a value and the record's head is a number.
 ```
 
-A caller that needs the line's own owners — the input queue it writes into, the capability it compacts — calls no operation of this owner for that; the next section says how a Session part reaches those owners. The Session assembly drives the root line, the restore and the close through the owner's crate-private lifecycle, not through these five operations, and no client or plugin may reach them.
+A caller that needs the line's own owners — the input queue it writes into, the capability it compacts — calls no operation of this owner for that; the next section says how a Session part reaches those owners. The Session assembly drives the root line, the restore and the close through the owner's crate-private lifecycle, not through these operations, and no client or plugin may reach them.
 
 ## Session parts reaching a line's owners
 
 A Session part acts on one line by line id, never through a `Branch` object. Two families of operation exist, and neither is TimelineTree's:
 
 - **Change the line's state: write an input.** The target line's input owner (`inputQueue.submit` in that line's scope) accepts it in order and decides the outcome. TimelineTree is not in this path.
-- **Read the line's published state: read the value the owner publishes.** Each owner publishes its own read-only value; a part reads that value at the line id. TimelineTree answers which line is the conversation line and what state a line is in; it never answers for another owner.
+- **Read the line's published state: read the value the owner publishes.** Each owner publishes its own value; a part reads it at the line id. TimelineTree answers which line is the conversation line and what state a line is in; it never answers for another owner.
 
-The provider is the Session access surface (#2025), one operation named `lineOwner`: `lineOwner.call(session, {line, operation, request}, cancelled)` resolves the line to the instance the runtime built for it (`SessionScope.openBranch`) and runs `operation` there. The owner of that operation executes it and answers with its own reply and its own errors; `operation` is a branch-scope operation's name from the catalog, so the mechanism carries any of them without curating a list (`inputQueue.submit`, `inputQueue.withdraw`, `contextUsage.read`, `prompt.adoptedConfiguration`, `approval.pending`, …). The runtime indexes a line when it constructs the context and drops the entry when that context closes: a line that is not live answers `ended` or `unknown`, and a closing Session answers `closed`. The request and reply types belong to #2025.
-
-TimelineTree is not in this path: the tree answers its own directory and the facts, and it writes no live line's timeline. The same operation serves Goal and Code Mode (#2033).
+The provider is the mechanism, and its shape is typed: `line_owner::<T>(line)` returns the branch-scope service `T` of the live instance the runtime built for that line, and the caller then calls that owner's own operation. `line_owner` answers the caller's context with the service; a line that is not live (ended, or never this Session's) answers `NoInstance`, and a closing Session answers `Closed`. No operation name is a string, no request is a `json!` value, and no forwarding facade sits between the caller and the owner. The mechanism keeps the `(session, line)` index it builds when it constructs a line's context; TimelineTree is not in this path.
 
 Caller code after the change: a Session method steering a member line, and a method reading a line owner's published value.
 
 ```rust
-// Write the line's state: the target line's input owner decides order and outcome.
-line_owner(session, LineOwnerCall {
-    line: member.clone(),
-    operation: "inputQueue.submit",
-    request: json!({ "input": steer_input }),
-}, cancelled).await?;
+// Write the line's state: the member's input owner decides order and outcome.
+line_owner::<InputQueue>(&member)?.submit(steer_input, cancelled).await?;
 
 // Read a line's published value: the owner answers, not its timeline.
-let usage = line_owner(session, LineOwnerCall {
-    line: line.clone(),
-    operation: "contextUsage.read",
-    request: json!({ "through": null }),
-}, cancelled).await?;
+let usage = line_owner::<ContextUsage>(&line)?.read(None, cancelled).await?;
 ```
 
-A Session part that cannot reach `lineOwner` keeps its business blocked; it does not fall back to holding a `Branch`, and TimelineTree adds no forwarding operation for it.
+A Session part that cannot resolve a line keeps its business blocked; it does not fall back to holding a `Branch`, and TimelineTree adds no forwarding operation for it. [SessionScope](SessionScope.md) documents the mechanism side with this contract.
 
 ## Own contract
 
@@ -142,7 +126,8 @@ A Session part that cannot reach `lineOwner` keeps its business blocked; it does
 | `create` | Open a line at a cut of its parent | `{parent, cut, prompt, source, idle_notice?}` | `{line}` | While the line is admitted and built; an admitted creation is not abandoned and a cancelled one is rolled back before the reply | `invalid_parent` (no such line), `parent_ended`, `invalid_cut` (over the parent's head, or not an atomic-batch boundary), `not_opener` (this line may not open one), `limit_reached` (the Session's cap of open tool lines), `closed`, `cancelled` |
 | `end` | End a line and settle it | `{line, source, final?}` | `{}` | None: an admitted end settles even if the caller goes away | `unknown`, `already_ended`, `protected` (the root, the default line, or an ancestor of the default line), `final_undelivered` (the line ended and its final message is still owed; a later end retries delivery only), `closed` |
 | `set_default` | Move the conversation to a line | `{line, source}` | `{default}` | None: the move is one commit | `unknown`, `already_default`, `not_selectable` (a plugin line, a line that is ending, or a line whose chain is ending), `closed` |
-| `directory` | The lines and the current default, from one read | `{}` or `{line}` | `{default, lines}` or `{line: record}` | None | `unknown` (for `{line}`), `closed` |
+| `directory` | The lines and the current default, from one read | `{}` | `{default, lines}` | None | `closed` |
+| `line` | One line's record | `{line}` | `record` | None | `unknown`, `closed` |
 | `read` | A line's facts at a cutoff, or the line and its ancestors at one cut | `{line, scope?, from?, through?, fields?, limit?}` | `{through, events}` or `{through, rows}` | None: one bounded read, and the reply is the cutoff's answer | `unknown`, `beyond_head` (a cutoff past the line's head), `not_batch_boundary` (a cutoff inside an atomic batch), `continuation_without_cutoff` (a continuation page with no original cutoff), `closed` |
 
 A record is `{line, parent, cut, source, state, head, end_event?}`; `state` is `open`, `ending` or `ended`. `read` answers a live line from its scope and an ended line from the store at its fixed head, with the same shape and the same visibility. The chain scope reads only published facts, bounds every ancestor at the cut the line inherited, and keeps the original cutoff across a continuation page. `ids` and sizes cross as strings and numbers; no handle, cursor or channel crosses.
@@ -156,7 +141,7 @@ A record is `{line, parent, cut, source, state, head, end_event?}`; `state` is `
 | `invalid_cut` | Use the parent's head from `directory`, or a cutoff that ends an atomic batch |
 | `not_opener` | Only the root and the conversation line open lines; ask one of those, or move the conversation first with `set_default` |
 | `limit_reached` | End an open tool line, or open on a line whose chain is protected |
-| `unknown` | The line id is not this Session's; read `directory` |
+| `unknown` | `line` or `read` named an id this Session never had; read `directory` for the lines in force |
 | `already_ended` | Nothing happened; read the line with `read` |
 | `protected` | The root, the conversation line and its ancestors cannot end; move the conversation first |
 | `final_undelivered` | The line is ended; call `end` again to retry only the message, which never delivers twice |
@@ -175,6 +160,7 @@ A record is `{line, parent, cut, source, state, head, end_event?}`; `state` is `
 | `end` | Check the target, end descendants deepest first, commit `branch/end`, close the scope, write `branch/ended` on the parent, deliver the final message as data | None; the call answers when the end settles | The end continues; the caller's absence changes nothing | An end in flight finishes before the generation closes; the generation's close waits for it and for the store's answer | TimelineTree: the scope's close and the end record |
 | `set_default` | Validate the target and its chain, write `branch/default` on the root, queue one note per participant, wake the writers | None | Nothing to release | Refused with `closed` once closing starts | TimelineTree; each participant's BranchLine writes its own note |
 | `directory` | Read the default and every record under one lock, resolve each head | None | Nothing to release | Pending reads answer at the state they observed | TimelineTree |
+| `line` | Read one record under the tree lock | None | Nothing to release | A line that ended before the call answers until its record leaves; an id the Session never had answers `unknown` | TimelineTree |
 | `read` | Resolve the line and the cutoff, check the batch boundary, read the facts, answer with the cutoff | None | Nothing to release | An ended line's read answers from the store; a live line's read answers `closed` once its scope is gone | TimelineTree |
 
 ## Exceptions with reasons
@@ -192,7 +178,7 @@ Flow tests on the owner:
 - A cancelled create rolls back its scope and writes `branch/create-failed`; a create admitted before the cancellation still publishes and returns its id.
 - `end` ends descendants before their parent, records one `branch/ended` each, and refuses the root, the conversation line and its ancestors with `protected` and no write.
 - A tool end whose final message cannot be delivered answers `final_undelivered`, and a later `end` delivers the message exactly once.
-- `directory` answers `default` and the lines from one read under a concurrent move or end; a single-line read answers a reservation, an ending line and an ended line.
+- `directory` answers `default` and the lines from one read under a concurrent move or end; `line` answers a reservation, an ending line and an ended line, and `unknown` for an id the Session never had.
 - `read` answers an ended line at its fixed head with the same field selection as the live line, refuses a cutoff inside an atomic batch, and keeps the original cutoff across a continuation page.
 - Close cancels reservations, joins builds, closes every live scope and answers after the store's last batch.
 
@@ -209,12 +195,12 @@ Flow tests on the owner:
 | §4 rule 4 | The directory and the facts are the Session's own state; no other owner's record is copied into them. |
 | §4 rule 5 | Batch boundaries are enforced by `read` and by `create`'s cut. |
 | §4 rule 6 | No event reaches the model from here; the opening blocks are inputs the tree writes, and the model reads them as inputs. |
-| §4 rule 7 | Callers use the five operations; no caller reads a node, a queue or a scope. |
-| §4 rule 8 | One requirement is raised below: addressing a line's owners by line id. |
+| §4 rule 7 | Callers use these six operations; no caller reads a node, a queue or a scope. |
+| §4 rule 8 | One requirement is raised below: resolving a line id to a branch-scope service. |
 | §4 rule 9 | Facts are published after their atomic batch commits; the end and its message are one fact. |
 | §7 callbacks and ids | `create` takes the caller's cancellation as an argument; every argument and reply is data, a line is an id, and no object or handle crosses. |
 | §7 one change | The implementation task deletes the old surface, adds these operations and migrates every caller in one change. |
-| §7 no proxy reads | The tree answers its own directory and the facts, never another owner's record; a line's owners are reached through the mechanism's `lineOwner`, not through this owner. |
+| §7 no proxy reads | The tree answers its own directory and the facts, never another owner's record; a line's owners are reached through `line_owner`, not through this owner. |
 | ADR 002 D1 | Session scope: the directory outlives every line and every branch scope is created and settled here. |
 | ADR 002 D2 | No wiring plugin: the service is on `TimelineTree`; no wrapper type and no trait object remain beside it. |
 | ADR 002 D3 | Dependencies point from extensions to the core; TimelineTree depends on the store, the factory and the identity only. |
@@ -223,7 +209,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-1. **A line-addressed call on the Session access surface.** Provide `lineOwner.call({line, operation, request}, cancelled)`: resolve the line to the instance the runtime built for it (`openBranch`) and run the named branch-scope operation there, answering that owner's reply and errors unchanged; `ended` or `unknown` when the line is not live, `closed` when the Session is closing. A Session part uses it only for the two families decision 2 allows: writing input to the line's input owner, and reading the value a line owner publishes. The runtime indexes a line when it constructs the context and drops the entry when that context closes; TimelineTree stays out of the path and adds no forwarding operation. Goal and Code Mode (#2033) need the same operation. [#2025 comment](https://github.com/arcships/dim/issues/2025#issuecomment-7093420098).
+1. **Resolve a line id to a branch-scope service.** Provide `line_owner::<T>(line)`: resolve the line to the live instance the runtime built for it (`SessionScope.openBranch`) and answer the branch-scope service `T` there, so the caller calls that owner's own typed operation; `NoInstance` when the line is not live, `Closed` when the Session is closing. A Session part uses it only for the two families decision 2 allows: writing input to the line's input owner, and reading the value a line owner publishes. The mechanism keeps the index; TimelineTree stays out of the path and adds no forwarding operation. [#2025](https://github.com/arcships/dim/issues/2025) and #2093 define the mechanism side with this contract, and Goal, Collaboration, Wait and the tool owners (#2033, #2098, #2103) call the same shape.
 
 2. **The Session access surface stops carrying line operations.** `Session::end_branch`, `set_default_branch`, `branch`, `branches`, `directory`, `default_and_directory`, `ended_head`, `sequence`, `batch_end`, `query` forward here today; after this contract the tree is the only face and the Session surface must not restate it. #2025 owns that surface.
 
@@ -352,7 +338,11 @@ impl TimelineTree {
         // ...
     }
 
-    pub fn directory(&self, line: Option<String>) -> Result<DirectoryReply, LineError> {
+    pub fn directory(&self) -> Result<Directory, LineError> {
+        // ...
+    }
+
+    pub fn line(&self, line: String) -> Result<LineRecord, LineError> {
         // ...
     }
 
@@ -362,4 +352,4 @@ impl TimelineTree {
 }
 ```
 
-`DirectoryReply` is `{default, lines}` or `{line}`; `ReadReply` is `{through, events}` or `{through, rows}`. Records, requests and replies are camelCase on the wire; `cut`, `through` and `head` are unsigned integers; a line id is a string.
+`Directory` is `{default, lines}`; `LineRecord` is the record above; `ReadReply` is `{through, events}` or `{through, rows}`. Records, requests and replies are camelCase on the wire; `cut`, `through` and `head` are unsigned integers; a line id is a string.

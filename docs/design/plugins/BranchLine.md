@@ -34,7 +34,7 @@ BranchTool decides what the calling line may do; the state is one read at the li
 
 ```rust
 // The tool execution carries the calling line id as a value.
-let line = branch_line::state(execution.branch_id.clone()).await?;
+let line = line_owner::<BranchLine>(&execution.branch_id)?.state().await?;
 match line.role {
     LineRole::Tool => { /* may end itself, message its parent, read its children */ }
     LineRole::Host => { /* follows its creator's protocol; message refused */ }
@@ -122,7 +122,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-None beyond TimelineTree's: BranchTool is a Session part and reaches this owner by line id, which is the addressing requirement stated there (#2025 owns the surface).
+None beyond TimelineTree's: BranchTool is a Session part and reaches this owner with `line_owner::<BranchLine>(line)`, which is the typed resolution requirement stated there (#2025 owns the mechanism side).
 
 ## Binding appendix
 
