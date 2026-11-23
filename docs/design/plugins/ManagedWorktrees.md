@@ -28,7 +28,7 @@ Callers keep:
 | Settle a created worktree that the Session creation did not adopt | No: the branch and base are the owner's, and the cleanup path must not be cancelled | `discard` |
 | List managed worktrees with their branch, HEAD, content state and Session use | No: the view joins Git with the store's records and associations | `list` |
 | Preview a prune: which directories are candidates and why the others stay | No: the age, keep and force rules and the re-checks are the owner's | `pruneSelection` |
-| Remove one managed worktree | No: the removal needs the store's exclusion for the record and the owner's Git removal; a caller composing the two would hold the exclusion itself | `remove` |
+| Remove one managed worktree | No: the removal needs the store's exclusion for the record and this owner's Git removal; the store's operation takes the Git step as the caller's own callback, so no lock or claim crosses | `remove` |
 | Remove an unregistered directory left by a failed creation | No: the directory has no record; the owner decides whether it is a plain managed directory and whether its content allows removal | `remove` with `taskId` |
 
 An operation exists only where its row says No.
@@ -61,7 +61,7 @@ for candidate in confirmed(&preview) {
 
 ### Dependencies
 
-`store` for the directory records, the Session associations, the stored workspaces and the removal claim; `managementMethods` for the `worktree.*` client methods. Git is the owner's own process resource, started and reaped by this owner.
+`store` for the directory records, the Session associations, the stored workspaces and `removeWorktree`, which runs this owner's Git step under the store's exclusion; `managementMethods` for the `worktree.*` client methods. Git is the owner's own process resource, started and reaped by this owner.
 
 ### Operations
 
@@ -75,7 +75,7 @@ for candidate in confirmed(&preview) {
 
 `create` returns a value; `discard` and `remove` take the task id. No object crosses. The preparation table is the owner's generation state: a reload drops it, and `discard` for a task id the generation did not create answers `unknown_preparation`; the directory is then an unregistered directory that `remove` handles.
 
-`remove` composes the store: `claimWorktree` (the record, the associations and the stored workspaces), the Git removal, then `settleWorktree` (delete the record on success, restore it on failure). The claim id is bound to this owner's calling row, so an unload restores the record. `force` overrides only the content check; the Git removal receives `--force` only then.
+`remove` composes the store's `removeWorktree`: the store checks the record, the associations and the stored workspaces under its exclusion and calls this owner's Git removal as a callback; the record is deleted when the callback succeeds and kept when it refuses or fails. No claim id or lock crosses. `force` overrides only the content check; the Git removal receives `--force` only then.
 
 ### Errors
 
@@ -96,12 +96,12 @@ for candidate in confirmed(&preview) {
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `create` | Resolve the source and the Git roots, resolve the base, allocate a task id, `git worktree add -b`, canonicalize the root, check the subtree, return the value; the caller adopts it with `store.create` | Each Git call ends `interrupted`; an empty task directory this call made is removed; a created worktree is rolled back by the owner | The call ends `interrupted`; the rollback path runs | New calls are refused; an in-flight creation is rolled back or left as an unregistered directory | Git and the directory by ManagedWorktrees; the record by the store |
-| `discard` | Look up the preparation, `claimWorktree`, Git removal, delete the branch, `settleWorktree` | No cancellation; the cleanup is the owner's | The preparation ends with the row; the directory is unregistered | The table drops with the generation; the directory stays unregistered | Directory and branch by ManagedWorktrees; record by the store |
+| `discard` | Look up the preparation, `store.removeWorktree(directory, remove)`, delete the branch; the record may be absent | No cancellation; the cleanup is the owner's | The preparation ends with the row; the directory is unregistered | The table drops with the generation; the directory stays unregistered | Directory and branch by ManagedWorktrees; record by the store |
 | `list` | Read the records and associations, join Git state per directory, add unregistered directories | Before the reply | Nothing to release | Pending calls end `closed` | ManagedWorktrees |
 | `pruneSelection` | `list`, then apply age, keep and force rules per candidate | Before the reply | Nothing to release | Pending calls end `closed` | ManagedWorktrees |
-| `remove` | Resolve the record or the unregistered directory, `claimWorktree`, Git removal, `settleWorktree` | Before the claim or the Git removal; a started removal completes or reports `git` | The claim ends with the row; the record is restored | The claim drops with the store generation; the record stays for a retry | Directory by ManagedWorktrees; record by the store |
+| `remove` | Resolve the record or the unregistered directory, then `store.removeWorktree(directory, remove)`: the store checks and holds the exclusion, this owner removes the Git worktree, the store deletes or keeps the record | Before the Git removal; a started removal completes or reports `git`; the store keeps the record | The callback ends with the row; the store keeps the record | An in-flight removal ends; the store keeps the record unless the Git step succeeded | Directory by ManagedWorktrees; record by the store |
 
-A process death between `create` and `store.create` leaves an unregistered directory; `list` reports it and `remove` deletes it after the operator names the task id. A process death between the claim and the settle leaves the record; the next `list` reports the directory as missing or no longer registered, and `remove` cleans the record.
+A process death between `create` and `store.create` leaves an unregistered directory; `list` reports it and `remove` deletes it after the operator names the task id. A process death during the removal step leaves the record; the next `list` reports the directory as missing or no longer registered, and `remove` cleans the record.
 
 ## Exceptions with reasons
 
@@ -118,7 +118,7 @@ Flow tests on the owner:
 - `discard` removes a created worktree that no Session adopted; a Session association or a stored workspace keeps it and answers `in_use`; `unknown_preparation` after a generation change.
 - `remove` deletes a recorded directory and its record; a directory with content refuses without `force`; a missing root deletes the record only; an unregistered directory with content refuses without `force`; a link is refused.
 - `pruneSelection` never selects an unregistered, unknown, used or unremovable directory; `keep` treats an unknown use time as oldest; `olderThanMs` never selects an unknown time.
-- A claim is restored when the calling row unloads; a settle after the claim ended answers `unknown_claim`.
+- A failed or cancelled Git removal keeps the record; a row unload or owner close keeps the record; a successful removal deletes it.
 
 ## Rule check
 
@@ -136,9 +136,9 @@ Flow tests on the owner:
 | §4 rule 7 | Callers use these operations; no caller invokes Git or reads the root directly. |
 | §4 rule 8 | No infrastructure change. |
 | §4 rule 9 | No Timeline fact; a worktree is a process fact. |
-| §7.2 ids and values | Task ids, paths and policies cross as data; the created value is data; no object crosses. |
+| §7.2 ids and values | Task ids, paths and policies cross as data; the created value is data; the removal step crosses as a callback by reference; no object or claim id crosses. |
 | §7.2 one public face | The service is marked on the ManagedWorktrees type under the existing `managedWorktrees` name; the client methods `worktree.*` are registration points, not a second face. |
-| §7.2 caller mechanisms | The root, Git, the preparation table and the claim stay inside the owner; callers handle the business errors only. |
+| §7.2 caller mechanisms | The root, Git, the preparation table and the record settlement through the store's operation stay inside the owners; callers handle the business errors only. |
 | ADR 002 D1 | Process scope. |
 | ADR 002 D2 | No wiring plugin; the `worktree.*` rows register methods, they do not own state. |
 | ADR 002 D3 | Depends on the store for records; no lower handle. |
@@ -147,7 +147,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-None new. The store's `claimWorktree` and `settleWorktree` are defined in [SessionStore's contract](SessionStore.md); the `managementMethods` registration point is the existing mechanism.
+None new. The store's `removeWorktree` is defined in [SessionStore's contract](SessionStore.md); the `managementMethods` registration point is the existing mechanism.
 
 ## Binding appendix
 

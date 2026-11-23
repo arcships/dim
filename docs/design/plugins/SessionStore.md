@@ -42,10 +42,10 @@ Callers keep:
 | Add or remove one grant | No: the upsert rule that keeps a write grant is the owner's invariant | `addGrant`, `removeGrant` |
 | Write the reply language into the stored configuration | No: the caller must not rewrite the stored record | `setLanguage` |
 | Read the title and its revision | No: the caller has no row access | `title` |
-| Write a title under its expected revision and announce the commit | No: the revision check, the single writer and the post-commit notice are the owner's | `setTitle` |
+| Write a title and announce the commit | No: title writes are serialized inside the owner and the committed notice is published after the commit; a caller cannot order writers or publish that notice | `setTitle` |
 | Record a verified worktree directory and the Session's subtree | No: the directory record, the association and the last-use time are one commit | `associateWorktree` |
 | List recorded worktree directories or their Session associations, or learn which stored Sessions have a workspace under a root | No: the caller has no row access | `worktrees`, `worktreeUsages`, `sessionsUnder` |
-| Remove one recorded worktree together with its directory | No: the association and workspace checks, the physical removal and the record deletion must not interleave with a Session creation that would point into the removed root | `claimWorktree`, `settleWorktree` |
+| Remove one recorded worktree together with its directory | No: the association and workspace checks, the caller's own removal step and the record deletion must not interleave with a Session creation that would point into the removed root | `removeWorktree` with a removal callback |
 
 An operation exists only where its row says No.
 
@@ -68,25 +68,23 @@ store.fork(Fork { source, id: fork, at, config_text: source_text.config_text }, 
 let removed = store.delete(Delete { id }, cancelled).await?;
 ```
 
-SessionTitle reads the revision, writes one revision later and announces the commit inside the owner.
+SessionTitle reads the current title, decides the text and writes it; the owner serializes the write and announces the committed revision.
 
 ```rust
 let current = store.title(TitleRead { id }, cancelled.clone()).await?;
-// A conflict means another writer committed a revision first; the title text is recomputed.
-let next = store.setTitle(SetTitle { id, expected_revision: current.revision, title }, cancelled).await?;
+// The text is the caller's business; the owner serializes the write and answers the committed revision.
+let next = store.setTitle(SetTitle { id, title: Some(title_for(&current)) }, cancelled).await?;
 ```
 
-ManagedWorktrees removes a directory: the claim holds the exclusion, Git removes the root, the settle deletes or restores the record.
+ManagedWorktrees removes a directory: the owner holds the exclusion while the caller's Git step removes the root, and deletes or keeps the record by that step's result.
 
 ```rust
-let claim = store.claimWorktree(Directory { repository, root }, cancelled.clone()).await?;
-match git_remove(&root, force, cancelled).await {
-    Ok(()) => store.settleWorktree(Settle { claim: claim.claim_id, removed: true }, cancelled).await?,
-    Err(error) => {
-        store.settleWorktree(Settle { claim: claim.claim_id, removed: false }, CancellationToken::new()).await?;
-        return Err(error);
-    }
-}
+// The owner holds the Session exclusion and settles the record by this step's result.
+let remove: RemoveFn = Arc::new(move |root: String| {
+    let cancelled = cancelled.clone();
+    Box::pin(async move { git_remove(&root, force, &cancelled).await })
+});
+store.removeWorktree(Directory { repository, root }, remove, cancelled.clone()).await?;
 ```
 
 ## Own contract
@@ -116,13 +114,12 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `removeGrant` | Remove one grant; an absent grant counts as removed | `{id, path}` | `{}` | None | `storage` |
 | `setLanguage` | Write the reply language into the stored configuration | `{id, language?}` | `{}` | None | `not_found`, `invalid`, `storage` |
 | `title` | The title and its committed revision | `{id}` | `{revision, title?}` | None | `not_found`, `storage` |
-| `setTitle` | Commit a title as the next revision and announce it | `{id, expectedRevision, title?}` | `{revision}` | The reply may be dropped; the admitted write is not cancelled | `not_found`, `conflict`, `storage` |
+| `setTitle` | Commit a title and announce it; the owner serializes writes | `{id, title?}` | `{revision}` | The reply may be dropped; the admitted write is not cancelled | `not_found`, `storage` |
 | `associateWorktree` | Record a verified directory and the Session's subtree in one commit | `{id, repository, root, subtree}` | `{}` | None | `not_found`, `invalid`, `storage` |
 | `worktrees` | Recorded directories, with their last use when known | `{}` | `{directories}` | None | `storage` |
 | `worktreeUsages` | The Session associations of one recorded directory | `{repository, root}` | `{usages}` | None | `invalid`, `storage` |
 | `sessionsUnder` | Stored Sessions whose workspace is a root or lies under it | `{root}` | `{sessionIds}` | None | `invalid`, `storage` |
-| `claimWorktree` | Claim one recorded directory for removal under the Session exclusion; the claim id is bound to the calling row | `{repository, root}` | `{claim}` | Before the claim is written | `not_found`, `in_use`, `invalid`, `storage` |
-| `settleWorktree` | End a claim: delete the record when the directory is gone, restore it otherwise | `{claim, removed}` | `{}` | None; the owner completes the settlement | `unknown_claim`, `storage` |
+| `removeWorktree` | Remove one recorded directory under the Session exclusion, with the caller's own removal step | `{repository, root}` + `remove` | `{removed}` | The caller's step ends; the record stays | `invalid`, `in_use`, `rejected`, `storage` |
 
 `worktree` in `create` and `associateWorktree` is `{repository, root, subtree}`: absolute UTF-8 paths, `subtree` inside `root`. The caller passes paths it already resolved; the owner re-checks that each is absolute, UTF-8 and, for an association, that the root still is a directory.
 
@@ -133,9 +130,8 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `invalid` | Fix the request: an id that is not one path component, a relative or non-UTF-8 path, a subtree outside the root, an unknown language code, an invalid catalog cursor |
 | `workspace_missing` | The creation's `cwd` no longer is a directory; the caller reports the failed creation and discards the worktree |
 | `not_found` | No stored Session has the id; the caller decides whether that is a business error or an answer |
-| `conflict` | Another title write committed first; re-read `title` and decide |
 | `in_use` | A Session association or a stored workspace still names the directory; delete that Session or refuse the removal |
-| `unknown_claim` | The claim ended (the calling row unloaded, the owner reloaded, or another settlement ran); the directory state must be inspected before a retry |
+| `rejected` | The removal step refused or failed with its own `code` and `message`; the record stays and the caller acts on that code |
 | `cancelled` | The caller stopped the read; nothing changed |
 | `closed` | This generation is unloading; call the replacement generation |
 | `storage` | The store failed; the caller reports the failure and keeps the Session or worktree for a retry |
@@ -144,22 +140,21 @@ Every operation takes one request object and answers one reply object. Writes ar
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `create` | Validate the id and the workspace, take the exclusion, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller's row cannot use a Session it did not learn the id of, and a retry is a new id | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
+| `create` | Validate the id and the workspace, take the exclusion, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller keeps the id it supplied and decides whether to publish or delete the Session | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
 | `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove visible and Timeline rows, schedule the file sweep | Before the first commit: every row stays. After: the steps run to their end | The work continues under the owner's task; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
 | `fork` | Take the exclusion, copy in bounded transactions, write the target row with the supplied text, commit | Before the first copy | The copy continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
 | `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `sessionConfigText`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
 | `catalog`, `query` | One consistent read under the caller's token | The read stops; no partial page | Nothing to release | Pending reads end `cancelled` | SessionStore |
 | `addGrant`, `removeGrant`, `setLanguage`, `associateWorktree` | One write transaction | None after it starts | The write completes; the reply may be lost | Admitted writes end before close | SessionStore |
-| `setTitle` | Admit the write under the owner's admission, run it as the owner's task, commit, announce, answer the revision | Dropping the reply never cancels the admitted write | The admitted write completes and announces | Close stops admission, waits for every admitted write | SessionStore |
-| `claimWorktree` | Check associations and stored workspaces, mark the record claimed under the exclusion, bind the claim to the calling row | Before the mark | The owner restores the record and ends the claim | Claims are generation state: a reload drops them and restores the records | SessionStore |
-| `settleWorktree` | End the claim; `removed` deletes the record, otherwise the record stays | None; the owner completes | Nothing to release | Pending settlements end `closed` | SessionStore; the directory by ManagedWorktrees |
+| `setTitle` | Admit the write behind earlier admitted writes, run it as the owner's task, commit, announce, answer the revision | Dropping the reply never cancels the admitted write | The admitted write completes and announces | Close stops admission, waits for every admitted write | SessionStore |
+| `removeWorktree` | Validate the paths, take the exclusion, check associations and stored workspaces, call `remove`, delete the record on success, release | The removal step ends `cancelled`; the record stays | The callback ends; the record stays; the exclusion releases | New calls are refused `closed`; an in-flight removal ends, and the record stays unless the step succeeded | Directory by the caller; record by SessionStore |
 
 ## Exceptions with reasons
 
 - `create` and `fork` take the caller's already-validated configuration and the fork text: validating the protocol, the collaboration role and the cut belongs to the Session lifecycle owner, and re-serializing the text would change bytes.
-- `delete` does not close the Session, remove its Agent admission slot or remove the worktree: closing is Agents', and a managed worktree is removed by ManagedWorktrees under `claimWorktree`.
+- `delete` does not close the Session, remove its Agent admission slot or remove the worktree: closing is Agents', and a managed worktree is removed by ManagedWorktrees under `removeWorktree`.
 - `setTitle` hands the write over at admission: the reply may be lost, so the caller re-reads rather than assumes failure.
-- `claimWorktree` and `settleWorktree` are two operations because the physical removal is ManagedWorktrees' resource: the claim is the store's exclusion state, not a handle; the id is bound to the calling row, so an unload restores the record instead of leaving it claimed.
+- `removeWorktree` runs ManagedWorktrees' removal step under the Session exclusion: the directory is that owner's resource, and the checks and the record deletion cannot interleave with a Session creation that would point into the removed root. The caller must not call SessionStore operations from the step; a failed or cancelled step keeps the record, and a row unload or owner close keeps it too.
 - `owner` answers the Agent id for a delete notice; the Agent directory's own records are not returned here.
 
 ## Verification
@@ -167,14 +162,14 @@ Every operation takes one request object and answers one reply object. Writes ar
 Flow tests on the owner:
 
 - `create` writes the Session, the owner, the main branch, the catalog row and the worktree association together; a failed association writes nothing.
-- `delete` removes output first, then the rows; a failure before the first commit leaves every row; a concurrent creation cannot associate with a directory whose record is claimed.
+- `delete` removes output first, then the rows; a failure before the first commit leaves every row; a concurrent creation waits for an in-flight removal and then either sees the surviving directory or fails on the missing workspace.
 - `fork` copies the supplied text unchanged and never parses it.
 - `addGrant` on a missing Session answers `not_found`; `removeGrant` on an absent grant answers success; a read grant never downgrades a write grant.
-- `setTitle` with a stale revision answers `conflict`; a dropped reply still commits and announces; close waits for the admitted write.
-- `claimWorktree` answers `in_use` while an association or a stored workspace remains; a claimed directory refuses creation and association; an unloaded caller restores the record; `settleWorktree` with `removed: false` keeps the record.
-- A call in flight when the generation closes ends `closed`; claims do not survive the generation.
+- Two concurrent `setTitle` calls commit in admission order and each announces its revision; a dropped reply still commits and announces; close waits for the admitted write.
+- `removeWorktree` answers `in_use` while an association or a stored workspace remains; a failed or cancelled removal keeps the record; a successful removal deletes it; a concurrent creation waits for the removal and then either associates with the surviving directory or fails on the missing workspace.
+- A call in flight when the generation closes ends `closed`; a dropped callback keeps the record.
 
-Material uncertainty: the claim's lifetime when the daemon process dies between claim and settle is recorded only in memory; the record survives, the directory state is Git's, and a later `worktrees`/`remove` reconciles the pair. Review checks that no caller treats `unknown_claim` as success.
+Material uncertainty: a process death during the caller's removal step leaves the record; the directory state is Git's, and a later `worktrees`/`remove` reconciles the pair. Review checks that no caller treats `rejected` as success.
 
 ## Rule check
 
@@ -192,9 +187,9 @@ Material uncertainty: the claim's lifetime when the daemon process dies between 
 | §4 rule 7 | Callers use these operations; no caller reads a row, a writer generation or a lock. |
 | §4 rule 8 | No infrastructure change; requirements are listed below. |
 | §4 rule 9 | The store publishes no Timeline fact of its own; the attached worktree stays a process fact. |
-| §7.2 ids and values | Requests and replies are data; the worktree value and the claim id cross, no object does. |
+| §7.2 ids and values | Requests and replies are data; the worktree value crosses, and the removal step crosses as a callback by reference. No object crosses. |
 | §7.2 one public face | The service is marked on the SessionStore type under the existing `store` name; `Store`, `SessionMetadata` and `WorktreeAssociations` do not exist beside it. |
-| §7.2 caller mechanisms | The exclusion, the title admission and the claim lifetime stay inside the owner; callers handle business errors only. |
+| §7.2 caller mechanisms | The exclusion, the title admission and the record settlement stay inside the owner; callers handle business errors only. |
 | ADR 002 D1 | Process scope: the Session row set and its records outlive a Session. |
 | ADR 002 D2 | No wiring plugin: one service on the owner type. |
 | ADR 002 D3 | Dependencies point to the engine and the file owner; no caller holds a lower handle. |
@@ -208,7 +203,7 @@ Material uncertainty: the claim's lifetime when the daemon process dies between 
 
 ## Binding appendix
 
-The service is marked on the `SessionStore` type; the wire name stays `store`. `Store` the wrapper, `SessionMetadata` and `WorktreeAssociations` no longer exist. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, so a claim id binds to the row without a request field. `CancelledFn` is the binding's cancellation argument.
+The service is marked on the `SessionStore` type; the wire name stays `store`. `Store` the wrapper, `SessionMetadata` and `WorktreeAssociations` no longer exist. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, so no caller sends or names a row. `CancelledFn` is the binding's cancellation argument.
 
 ```rust
 use dim_agent_capabilities::host::CancelledFn;
@@ -226,23 +221,29 @@ pub struct Worktree {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Removed {
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Directory {
     pub repository: String,
     pub root: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Claim {
-    pub claim: String,
+/// The caller's own refusal or failure, carried unchanged.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
+#[error("{code}: {message}")]
+pub struct Rejected {
+    pub code: String,
+    pub message: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Settle {
-    pub claim: String,
-    pub removed: bool,
-}
+/// The caller's own removal step: it removes the checked directory and reports success, or refuses with its own code and message.
+pub type RemoveFn = Arc<
+    dyn Fn(String) -> rutis::host::BoxFuture<'static, Result<(), Rejected>> + Send + Sync,
+>;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,12 +268,10 @@ pub enum StoreError {
     WorkspaceMissing(String),
     #[error("no stored Session {0}")]
     NotFound(String),
-    #[error("the title revision changed")]
-    Conflict,
     #[error("{0} is in use")]
     InUse(String),
-    #[error("the claim ended before settlement")]
-    UnknownClaim,
+    #[error("{code}: {message}")]
+    Rejected { code: String, message: String },
     #[error("the call was cancelled")]
     Cancelled,
     #[error("the store is unloading")]
@@ -312,21 +311,13 @@ impl SessionStore {
         // ...
     }
 
-    pub async fn claim_worktree(
+    pub async fn remove_worktree(
         &self,
         caller: &Ctx,
         request: Directory,
+        remove: RemoveFn,
         cancelled: CancelledFn,
-    ) -> Result<Claim, StoreError> {
-        // ...
-    }
-
-    pub async fn settle_worktree(
-        &self,
-        caller: &Ctx,
-        request: Settle,
-        cancelled: CancelledFn,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Removed, StoreError> {
         // ...
     }
 }
