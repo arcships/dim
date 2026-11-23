@@ -21,6 +21,7 @@ Callers keep:
 - Which root and file a business uses, and the file names.
 - What a `busy` answer means for a flow, and what a business conflict means.
 - Permission and approval: FileStorage never decides whether a call may run.
+- Workspace, system and worktree facts: FileAccess owns them; FileStorage answers only whether an absolute path is inside a root.
 - Files a plugin creates and manages itself under a root, such as SQLite's database, the model-log recorder's JSONL and the UI extension cache.
 
 | Requirement (callers) | Compose from the operations below without breaking the owner's invariants? | Handling |
