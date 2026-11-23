@@ -148,7 +148,7 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `add_root` | Make an existing absolute directory addressable | `{path}` | `{root}`; an existing root answers its id | Before the directory handle is opened | `invalid`, `closed` |
+| `add_root` | Make an existing absolute directory addressable | `{path}` | `{root}`; an existing root answers its id | Before the directory handle is opened | `invalid`, `closed`, `cancelled` |
 | `root_path` | A root's absolute directory for another module | `{root}` | `{path}` | None; the owner completes the read | `invalid`, `closed` |
 | `open_read` | Pin the file's current version for bounded random reads; the id is bound to the caller's row | `{path}` | `{read_id, size}` or none | While the file is opened | `invalid`, `closed`, `cancelled` |
 | `read_at` | One bounded page of a pinned version | `{read_id, offset}` | `{bytes}`, empty at or past the end | The caller's token; nothing changes | `invalid`, `closed`, `cancelled` |
@@ -457,4 +457,4 @@ impl FileStorage {
 }
 ```
 
-`CancelledFn` is the crate's existing cancellation argument ([`host::CancelledFn`](../../../crates/dim-agent-capabilities/src/host.rs)). `Bytes` crosses as base64 text; `Name` as a string or a native-bytes object; `RootId`, `ReadId`, `WriteId` and sizes as strings and numbers. No method takes a closure: every argument and reply is data.
+`CancelledFn` is the crate's existing cancellation argument ([`host::CancelledFn`](../../../crates/dim-agent-capabilities/src/host.rs)). `Bytes` crosses as base64 text; `Name` as a string or a native-bytes object; `RootId`, `ReadId`, `WriteId` and sizes as strings and numbers. No request or reply contains a closure; `CancelledFn` is the binding's cancellation argument and `caller: &Ctx` is the dispatch's caller argument, neither is a request field.
