@@ -1,6 +1,6 @@
-import { ref, watch } from "vue"
-import { defineStore } from "pinia"
-import { setAppLocale } from "../i18n"
+import { ref, watch } from "@vue/reactivity"
+import { defineStore } from "#workspace-store"
+import { setAppLocale } from "#workspace-i18n"
 
 type Theme = "light" | "dark" | "system"
 type Language = "" | "en" | "zh-CN"
@@ -35,7 +35,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
     error.value = ""
     try { localStorage.setItem(key, JSON.stringify({ theme: theme.value, fontSize: fontSize.value, language: language.value })) }
     catch { error.value = "Browser storage is unavailable. Appearance changes will not survive a reload." }
-  }, { flush: "sync" })
+  })
 
   async function selectLanguage(value: Language): Promise<void> {
     try {

@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@nuxt/ui";
+@import "./primary-colors.css";
 /* The shared timeline's components use Tailwind utilities; generate them here. */
 @source "../../packages/chat-ui/src";
 
@@ -140,8 +140,6 @@
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.6 0.138 150);
-  --primary-foreground: oklch(1 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.52 0 0); /* small text passes AA on --muted */
   --fg-2: oklch(0.38 0 0); /* secondary text: ghost/chip labels, descriptions, neutral banners */
@@ -159,15 +157,6 @@
   --success: oklch(0.596 0.145 163.225); /* Desktop --activity-success */
   --info: oklch(0.55 0.17 255);
   --accent-ultra: oklch(0.51 0.18 306); /* the one non-semantic hue: the smartness slider's Ultra tier (Desktop #8241b8) */
-  /* Primary fill — button background (white text ≥ 4.5:1); paint as
-     linear-gradient(180deg, var(--primary-fill-top), var(--primary-fill)).
-     --primary stays for rings, selection and progress. */
-  --primary-fill-top: oklch(0.56 0.135 150);
-  --primary-fill: oklch(0.51 0.125 150);
-  --primary-fill-hover-top: oklch(0.6 0.14 150); /* hover gradient pair */
-  --primary-fill-hover: oklch(0.55 0.132 150);
-  --primary-fill-press: oklch(0.48 0.12 150); /* solid while pressed */
-  --primary-ink: oklch(0.45 0.11 150); /* green text on --background */
   --danger-hover: oklch(0.61 0.235 27.3); /* solid danger button states */
   --danger-press: oklch(0.52 0.22 27.3);
   --border-strong: oklch(0.86 0 0);   /* hovered fields, unchecked boxes, off switch track */
@@ -177,7 +166,6 @@
   --control-bg: var(--background); /* fill of bordered controls: secondary buttons, fields, chips, checkboxes */
   /* Tone tints — badge, banner and selected-card backgrounds; text keeps the solid tone.
      Declared on :root = <html>, which also carries .dark, so they follow the theme. */
-  --primary-soft: color-mix(in oklab, var(--primary) 12%, transparent);
   --danger-soft: color-mix(in oklab, var(--danger) 10%, transparent);
   --warning-soft: color-mix(in oklab, var(--warning) 12%, transparent);
   --success-soft: color-mix(in oklab, var(--success) 12%, transparent);
@@ -218,8 +206,6 @@
   --foreground: oklch(0.9431 0 0);
   --card: oklch(0.21 0 0);
   --card-foreground: oklch(0.9431 0 0);
-  --primary: oklch(0.76 0.15 149);
-  --primary-foreground: oklch(0.11 0.024 150);
   --muted: oklch(0.27 0 0);
   --muted-foreground: oklch(0.6334 0 0);
   --fg-2: oklch(0.8 0 0);
@@ -234,14 +220,8 @@
   --success: oklch(0.765 0.177 163.223);
   --info: oklch(0.72 0.14 255);
   --accent-ultra: oklch(0.72 0.15 306);
-  --primary-fill-top: oklch(0.79 0.15 149);
-  --primary-fill: oklch(0.73 0.15 149); /* paired with --primary-foreground (dark text) */
-  --primary-fill-hover-top: oklch(0.83 0.15 149);
-  --primary-fill-hover: oklch(0.77 0.15 149);
-  --primary-fill-press: oklch(0.69 0.14 149);
   --danger-hover: oklch(0.74 0.18 22.2);
   --danger-press: oklch(0.65 0.19 22.2);
-  --primary-ink: oklch(0.8 0.13 149);
   --border-strong: oklch(1 0 0 / 22%);
   --hover: oklch(1 0 0 / 7%);
   --press: oklch(1 0 0 / 12%);

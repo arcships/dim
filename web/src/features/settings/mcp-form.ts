@@ -1,4 +1,4 @@
-import type { McpConfigurationPatch, McpOAuthInput, McpServerInput } from "../../rpc/general-settings"
+import type { McpConfigurationPatch, McpEditableEntry, McpOAuthInput, McpServerInput } from "../../rpc/general-settings"
 
 export type SecretField = { name: string; action: "keep" | "set" | "remove"; value: string; stored?: boolean }
 export type Draft = {
@@ -55,4 +55,32 @@ export function patch(form: Draft): McpConfigurationPatch {
     ...(form.metadataAction === "remove" ? { authServerMetadataUrl: null } : form.metadataAction === "set" ? { authServerMetadataUrl: form.metadataUrl.trim() } : {}),
   }
   return value
+}
+
+export function blankMcpDraft(): Draft {
+  return {
+    id: "", source: "user", type: "stdio", command: "", args: [], argsAction: "replace", storedArgsCount: 0,
+    cwd: "", url: "", secrets: [], enabled: false, oauth: false, clientId: "", token: "", bearerAction: "keep",
+    authConfigured: false, oauthAction: "keep", callbackPort: "", scopes: "", metadataUrl: "",
+    metadataConfigured: false, metadataAction: "keep", secretsInUserScope: false, timeout: "",
+  }
+}
+
+export function draftFromEntry(id: string, source: Draft["source"], entry: McpEditableEntry): Draft {
+  const config = entry.configuration
+  return {
+    id, source, type: config.type,
+    command: config.type === "stdio" ? config.command : "", args: [], argsAction: "keep", storedArgsCount: config.type === "stdio" ? config.argsCount : 0, cwd: config.type === "stdio" ? config.cwd ?? "" : "",
+    url: "", ...(config.type !== "stdio" ? { endpoint: config.endpoint } : {}),
+    secrets: (config.type === "stdio" ? config.envNames : config.headerNames).map((name) => ({ name, action: "keep", value: "", stored: true })),
+    enabled: entry.enabled, oauth: config.type !== "stdio" && config.oauthConfigured,
+    authConfigured: config.type !== "stdio" && config.authConfigured,
+    clientId: config.type !== "stdio" ? config.oauth?.clientId ?? "" : "",
+    callbackPort: config.type !== "stdio" ? String(config.oauth?.callbackPort ?? "") : "",
+    scopes: config.type !== "stdio" ? config.oauth?.scopes ?? "" : "",
+    metadataConfigured: config.type !== "stdio" && (config.oauth?.metadataConfigured ?? false),
+    metadataUrl: "", metadataAction: "keep", token: "", bearerAction: "keep", oauthAction: "keep",
+    timeout: config.timeout === undefined ? "" : String(config.timeout),
+    secretsInUserScope: entry.secretsInUserScope,
+  }
 }

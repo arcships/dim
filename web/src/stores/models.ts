@@ -1,4 +1,4 @@
-import { computed, getCurrentScope, onScopeDispose, reactive, ref } from "vue"
+import { computed, getCurrentScope, onScopeDispose, reactive, ref } from "@vue/reactivity"
 import { readAck, readModelPage, readModelPreview } from "../rpc/read"
 import type { ModelId, ProviderModel } from "../rpc/protocol"
 import { useConnectionStore } from "./connection"

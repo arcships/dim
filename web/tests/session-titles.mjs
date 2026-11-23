@@ -160,7 +160,7 @@ test("reconnect reads current titles after attaching so a rename without a liste
     await flush()
     reply("session.methods", { methods: ["session.input.pending", "session.question.pending", "session.turn.get"].map(name => ({ name })) })
     await flush()
-    reply("session.branches", { branches: [] })
+    reply("session.branches", { defaultBranchId: "main", branches: [] })
     await flush()
     reply("session.history", { events: [], through: 0, nextAfter: 0, done: true })
     await flush()

@@ -81,7 +81,7 @@ Every response carries `Content-Security-Policy: default-src 'self'; style-src '
 
 ### 2.4 Assets
 
-The frontend is a separate artifact, `dimcode-web`, not bytes in every `dimcode` executable. `scripts/stage-web.mjs` builds `web/` once per release (`npm ci`, `npm run build`, which runs `vue-tsc`), writes `web/dimcode-web.json` beside the build (`{version, protocolVersion, sourceCommit}`) and packs the same tree as a native archive `dimcode-web-VERSION.tar.gz` and an npm package `dimcode-web`, a platform-independent optional dependency of the `dimcode` wrapper. The entry serves files only from the directory it is given and canonicalizes request paths before opening them; gzip is not pre-applied to directory files.
+The frontend ships as the separate `dimcode-web` artifact. `scripts/stage-web.mjs` builds `web/` once per release with `npm ci` and `npm run build`. The build type-checks the React entry and runs Vite. The script writes `web/dimcode-web.json` beside the build with `version`, `protocolVersion` and `sourceCommit`, and packs the same tree as `dimcode-web-VERSION.tar.gz` and the platform-independent optional npm dependency `dimcode-web`. The entry canonicalizes request paths before opening files under the configured directory and serves those files as built.
 
 The App Server takes the directory with `--web-assets DIR`. The CLI finds it, in this order, and passes it when it starts the daemon:
 
@@ -149,17 +149,17 @@ The frontend directory is fixed when the daemon starts (§2.4); a daemon started
 
 ## 4. Frontend
 
-`web/` is a Vue 3 + Vite + Pinia + vue-router project built with npm (Node from `.node-version`), using Nuxt UI v4 (`@nuxt/ui`) and Tailwind CSS v4 tokens on top of Dim's semantic light/dark palettes and offline bundled Lucide icons (`@iconify-json/lucide`, keeping CSP `default-src 'self'`). The protocol transport and data model target App Server protocol v4 directly. `main.ts` initializes the Pinia stores before mounting the shell, so `stores/ui.ts` and `stores/appearance.ts` apply the color scheme and font scale before the first paint without flashing on load.
+`web/` uses React 19, HeroUI and Vite with Tailwind CSS v4 and bundled Lucide icons. The Web entry uses App Server protocol v4. The React entry initializes browser appearance preferences before mounting the shell.
 
 | Layer | Phase 1 |
 | --- | --- |
-| `rpc/client.ts` | JSON-RPC over `/ws`: `hello` v3 (`clientKind: "web"`), request timeout, heartbeat with `daemon.ping`, reconnect with backoff and re-attach. Strict readers at this boundary; the rest of the app uses typed data |
-| `rpc/protocol.ts` | Hand-written types for the v3 methods and notifications the UI uses (`session.*`, `approval.*`, `session.event`, `session.state`, `session.model.progress`) |
+| `rpc/client.ts` | JSON-RPC over `/ws` with protocol v4 (`clientKind: "web"`), request timeout, heartbeat with `daemon.ping`, reconnect with backoff and re-attach. Strict readers at this boundary; the rest of the app uses typed data |
+| `rpc/protocol.ts` | Types for the Web methods and notifications the UI uses (`session.*`, `approval.*`, `session.event`, `session.state`, `session.model.progress`) |
 | `projection.ts` | Folds `session.history` pages, `session.event` and `session.model.progress` into timeline rows (user, assistant text, thinking, tool call and result, approval), following `crates/dim-cli/src/projection.rs`; also tracks the waiting `ask_user` calls of each branch (`step/tool-call` until its batch's `step/tool-result`) and applies owner reads for pending inputs/questions and current Goal state |
 | Sidebar | Workspaces group Session summaries by `cwd` after excluding rows with the [internal origin](appserver/session-classification.md#31-the-origin) and the [automation origin](appserver/session-classification.md#31-the-origin); new Session by `session.create {cwd}` with a typed path or a known workspace; a row can be hidden by the browser-local archive (§4.4) |
-| Chat | Shared timeline (`web/src/chat-ui`; markdown, Shiki) with the package's message rail (one marker per user message from three messages on: hover shows the message and its first reply, a click scrolls it into view; `/timeline` is not offered, dim-agent has none) and message actions: copy; quote into the composer; branch from a user message (the new-line dialog at the message's cut, `session.branch_create`; disabled with its reason while an approval or question waits, after the line has ended, while that message is queued or its turn runs (the Projection marks a user row settled once a turn end follows its `input/consumed`, or once it is withdrawn), or when the connection does not serve the method); on `main` only, fork before a user message (`session.fork {at}` at its cut after a confirmation, then the new Session opens; disabled with its reason while that message is queued or its turn runs); retry and edit shown disabled with their reason; a tool result's images from `/api/sessions/{sessionId}/files/{fileId}`, also when the result has no text, composer (submit, steer or hold, interrupt and send now, stop, model menu and permission preset picker, below), approval prompt (`approval.request` → `approval.respond`; "Allow for this session" → `session.grants.add` and "Always allow" for a simple `exec` command → `permission.set_rules`, both before the allow), question prompt for `ask_user` (`step/tool-call` → `session.question.respond`, closed by `step/tool-result`); the approval and question prompts take the composer's place, and the composer they displace keeps its draft, its images and an in-flight send-now until it returns, because a failed stop writes its recalled message back into that draft after the prompt has already arrived; queued messages of the shown line above the composer (`input/message` until `input/consumed` or `input/deleted`; Steer and Remove → `session.input.withdraw`, Steer resends the message's content with the withdrawal); composer attachments: pasted or dropped images are sent as image content blocks (`session.submit` with `user.content`), a paste longer than 16 KiB is stored with `attachment.put` when the Session serves it and its path is named in the message, as the TUI does (`crates/dim-cli/src/attachments.rs`); a message recalls into the draft with its own content in the order it was written, so an image recalled with it keeps its stored file reference and the place between the words it held; `@` file mentions: the composer offers the files of the Session's workspace from `session.files.search` (WorkspaceTools; the TUI picker's index and ranking), inserts a file as `@path` and sends it as a Markdown link to its absolute path (`[@path](/abs)`, as the TUI sends it); a directory steps into `@dir/` |
+| Chat | Virtualized React timeline with Markdown, code diff highlighting and a conversation outline that scrolls to loaded user messages and message actions: copy; quote into the composer; branch from a user message (the new-line dialog at the message's cut, `session.branch_create`; disabled with its reason while an approval or question waits, after the line has ended, while that message is queued or its turn runs (the Projection marks a user row settled once a turn end follows its `input/consumed`, or once it is withdrawn), or when the connection does not serve the method); on `main` only, fork before a user message (`session.fork {at}` at its cut after a confirmation, then the new Session opens; disabled with its reason while that message is queued or its turn runs); retry and edit shown disabled with their reason; a tool result's images from `/api/sessions/{sessionId}/files/{fileId}`, also when the result has no text, composer (submit, steer or hold, interrupt and send now, stop, model menu and permission preset picker, below), approval prompt (`approval.request` → `approval.respond`; "Allow for this session" → `session.grants.add` and "Always allow" for a simple `exec` command → `permission.set_rules`, both before the allow), question prompt for `ask_user` (`step/tool-call` → `session.question.respond`, closed by `step/tool-result`); the approval and question prompts take the composer's place, and the composer they displace keeps its draft, its images and an in-flight send-now until it returns, because a failed stop writes its recalled message back into that draft after the prompt has already arrived; queued messages of the shown line above the composer (`input/message` until `input/consumed` or `input/deleted`; Steer and Remove → `session.input.withdraw`, Steer resends the message's content with the withdrawal); composer attachments: pasted or dropped images are sent as image content blocks (`session.submit` with `user.content`), a paste longer than 16 KiB is stored with `attachment.put` when the Session serves it and its path is named in the message, as the TUI does (`crates/dim-cli/src/attachments.rs`); a message recalls into the draft with its own content in the order it was written, so an image recalled with it keeps its stored file reference and the place between the words it held; `@` file mentions: the composer offers the files of the Session's workspace from `session.files.search` (WorkspaceTools; the TUI picker's index and ranking), inserts a file as `@path` and sends it as a Markdown link to its absolute path (`[@path](/abs)`, as the TUI sends it); a directory steps into `@dir/` |
 | Session permissions | The composer and `/permissions` select the `main` preset under [ADR 018](../adr/018-permission-is-the-preset.md) and the [Permission policy contract](../architecture/rust-agent/plugins/Permission.md#policy-contract). The client reads `session.permission.get` and `permission/changed`, displays the preset and tool lists, and preserves both lists in a versioned `session.permission.update`. Conflicts refresh without retrying. Choosing Full access requires confirmation. Process isolation links to its Settings control. |
-| Lines | Right detail panel with a Lines tree and one tab per opened line; each tab folds that line's own history and sends, stops, approves and ends on its `branchId` (§4.1) |
+| Branches | Session List nests branches under their owning Session. Selecting a branch shows its own history and controls in the main conversation (§4.1) |
 | i18n | `en` and `zh-CN` |
 
 Session labels in the sidebar, chat header, browser title and archived-session
@@ -170,16 +170,61 @@ reply cannot replace a newer title. After reconnect, re-attach before reading
 the directory, following the [Session notice window](appserver/session-notices.md#5-rpc-forwarding).
 
 Opening a Session by ID can still show its history. A Session with a known parent
-links to that parent. A parent's chat header offers a collapsed list of its child
-Sessions, using the relationships already returned in the directory.
+links to that parent.
+
+#### Delegation menu and sidebar relationships
+
+The conversation toolbar has a **Delegations** entry.
+The entry is available when the Session
+serves the delegation inventory, including before the first delegation.
+
+In the workspace sidebar, a leader with known native member Sessions has a
+separate expand and collapse button at the end of its row. Selecting the
+leader's title opens its conversation. Expanding the row shows each member
+Session directly underneath, indented with a subtle connector. Each row shows
+its Session title and distinct preview when available. Opening a member row
+shows the read-only conversation for that member. The sidebar shows each
+member Session once, even when multiple delegation requests used it. Search
+matches member titles and previews and reveals their matching parent path.
+Clearing search restores the previous expansion. Collapsing a parent hides its
+member rows. Use the existing sidebar colors and focus styles.
 
 ```text
-Sidebar                   Conversation
-  Update cache            Update cache
-                          > Child sessions (2)
-                            Inspect stale entries
-                            Approval review
+Workspace sidebar                  Conversation toolbar
+  Update cache               [v]    [Delegations]
+    L Cache reviewer                     |
+      Checking stale entries              +-- Active
+                                               Inspect stale entries   Running
+                                            Recent
+                                               Approval review         Complete
 ```
+
+The desktop menu opens next to its trigger. On narrow screens it opens as a
+sheet. Show the task title and state, and
+include the line name for requests from a non-root line. Group running and
+starting requests before recent terminal requests. Use one row per request,
+even when Collaboration reuses a member. While loading, show a loading state.
+Show an empty state after a successful inventory with zero requests, and a
+retry action for failed reads. Changes to another Session dismiss the menu.
+
+Selecting a task opens its details. An available native member conversation
+opens read-only with the leader's transcript, scroll position and draft
+preserved. Before delivery and for provider members, show the available task
+details from the leader. Back returns to the task list. Closing the list
+returns focus to the toolbar entry. Closing a member opened from the sidebar
+returns to the sidebar row; on narrow screens it restores the workspace drawer.
+User-created forks remain independent sidebar Sessions.
+
+The list reads the leader's existing branch directory and the per-branch
+[Collaboration inventory](collaboration-timeline.md#unfinished-delegation-read)
+on open. Use request identity and delivery/result facts for live updates, and
+use the owner's bounded recent results. The sidebar uses recorded native
+member relationships from the directory, following the
+[Session classification contract](appserver/session-classification.md#31-the-origin).
+Member detail uses the existing [read-only member interfaces](member-conversation.md#1-existing-mechanisms).
+To verify, open a leader with two requests to the same member. The sidebar shows
+one member row, and the toolbar shows both requests. Search for the member,
+open its conversation, then close it and check that the leader draft is intact.
 
 Features outside the settings scope with no v3 backend are left out rather than stubbed: follow-up queue, attachments and file previews, file-history rewind, rename, workflows, subagent panes, directory picker and git branch menu. Settings and saved-session management follow §4.3.
 
@@ -190,7 +235,7 @@ A line is a Timeline of the same Session ([Timeline branches](timeline-branches.
 The main chat and every line share one timeline with two history controls:
 
 - While an earlier page exists, the first item of the scroll content, above the oldest row and in the message column, is a divider row: “Load earlier messages”, “Loading…” with a spinner, or the error with an inline Retry. It loads while it is in view and the reader has scrolled away from the end, whichever happens last, or on click; a history that fits the viewport and is still following waits for the click, and a failed read waits for Retry. One read runs at a time. When the page lands, the first visible row keeps its offset from the viewport top. The row disappears when nothing earlier is left.
-- While the timeline is not following the end, a “Return to latest” pill with a down arrow sits centered at the bottom of the timeline, above the composer; output that arrives meanwhile adds “New messages” to it. Following stops when the reader scrolls more than 96 px from the end, expands or collapses an item, jumps to a message from the rail, or clicks Load earlier. The pill scrolls smoothly to the end, following output that arrives on the way, and resumes following. The line panel draws a smaller pill. The shared surface's own icon button is not shown.
+- While the timeline is not following the end, a “Return to latest” pill with a down arrow floats centered over the bottom of the timeline, above the composer dock. The Outline control floats at the trailing edge. The space between the controls passes pointer input to the transcript. Output that arrives meanwhile adds “New messages” to the return pill. Following stops when the reader scrolls more than 96 px from the end, expands or collapses an item, jumps to a message from the rail, or clicks Load earlier. The pill scrolls smoothly to the end, following output that arrives on the way, and resumes following. The shared surface's own icon button is not shown.
 
 ```
 │ ──────── ↑ Load earlier messages ──────── │  first item of the scroll content
@@ -201,16 +246,19 @@ The main chat and every line share one timeline with two history controls:
 │ [composer]                                │
 ```
 
-The Web workspace keeps the default branch's transcript in the center and follows other lines in a right-side detail panel, modeled on the Kimi Code Web `/btw` panel (tabs, a scroll region with a composer, an empty state, and a full-screen panel on narrow shells). Unlike Kimi's read-only side chat, a Dim line continues to run tools and accepts operator input; the panel therefore includes `session.submit`, `session.stop`, approvals and `session.branch_end` for the line.
+The Session List shows each Session's branches beneath its row, with an
+indent and a connector. Expand the Session to read its branch directory.
+Attached Sessions reflect branch lifecycle notices in the list. Search matches
+titles in directories already read and reveals their ancestor rows.
+Selecting a branch opens its transcript in the main conversation area.
+A Session title opens its current default conversation.
+The row menu offers available branch actions and keeps the end confirmation.
 
-```
-┌──────────────┬────────────────────────────────┬─────────────────────────────────┐
-│ sessions     │ main Timeline                  │ [Lines] [parser ×] [docs ×] + × │
-│              │ ⑂ parser race · b-7c            │ ⑂ parser race · b-7c            │
-│              │ ◂ from b-7c (steer) …           │ from main · after message 3     │
-│              │ [main composer]                │ … line transcript …             │
-│              │                                │ ⑂ working · [message this line] │
-└──────────────┴────────────────────────────────┴─────────────────────────────────┘
+```text
+Session List                        Conversation
+  Update cache              [v]       Check parser
+    L Check parser        [...]       [branch transcript]
+    L Review docs         [...]       [branch composer]
 ```
 
 | Item | Contract |
@@ -219,11 +267,10 @@ The Web workspace keeps the default branch's transcript in the center and follow
 | Derived data | `lines.ts` keeps directory metadata, not historical input identities. Unknown message counts remain absent. `projection.ts` owns visible rows and live controls. `stores/chat.ts` keeps each opened window’s fixed head, backward cursor and in-flight live queue. |
 | Actions | `session.branch_create {parentBranchId, at, prompt}`, `session.branch_end {branchId}`, `session.branch_set_default {branchId}` (continue from here), `session.submit`/`session.stop` with the line's `branchId`; approvals use the request's `branchId` |
 | Points | A user message's cut is its sequence minus one; a line's end is its newest `turn-end`. `session.branch_create` remains the validator; its refusal is shown in the dialog or line tab |
-| Switching | Opening a line adds or activates a tab, the root included while another line is the default branch, so the root's own transcript and pending approvals and questions stay reachable without moving the Session back; closing a tab does not end the line; the center shows the default branch, which `session.branches` reports as `defaultBranchId`, and `session.branch_set_default` changes it. A move reads the new centre's window before the center changes hands, so the transcript on screen, its actions and the line they name change together, and a read that fails reports the failure instead of showing the outgoing transcript. The root and that line are the two that can open a line, so the Lines tree marks both |
+| Switching | Opening a line sets the Session URL’s `branch` query, the root included while another line is the default branch, so the root's own transcript and pending approvals and questions stay reachable without moving the Session back; the Session URL without a branch shows the default branch, which `session.branches` reports as `defaultBranchId`, and `session.branch_set_default` changes it. A move reads the new centre's window before the center changes hands, so the transcript on screen, its actions and the line they name change together, and a read that fails reports the failure instead of showing the outgoing transcript. The root and that line are the two that can open a line, so the Lines tree marks both |
 | Errors | `branch_missing`, `branch_ended`, `input_blocked`, an invalid cut and a disabled Branch tool are shown at the action that raised them; an ended line is read-only |
-| State | Line tabs are per Session and live in `stores/ui.ts`; the tree is read from the existing directory on reload and reconnect. No storage format is added |
+| State | Previously viewed lines keep their draft, scroll position and disclosures while the Session tab stays open. The tree is read from the existing directory on reload and reconnect. |
 
-**Not in this phase:** session fork from a line, a drawn DAG, compare/adopt and per-line model selection. Each needs its own client design.
 
 #### State outside the window
 
@@ -283,9 +330,10 @@ presented as a successful empty list.
 
 Each editable composer opens a command menu for a leading `/` followed by an optional
 command-name prefix, not for a slash inside ordinary prose. Search filters the
-available commands; categories and canonical English command names follow the
+available commands; the order and canonical English command names follow the
 repository menu ordering convention. Arrow keys move selection, Enter executes,
-and Escape dismisses without sending or deleting the draft. Mouse selection has
+Tab fills the selected command or Skill, and Escape dismisses without sending
+or deleting the draft. Mouse selection has
 the same behavior. Command handling does not run during IME composition. Known
 commands are handled locally rather than submitted as model input.
 
@@ -308,9 +356,9 @@ A daemon that does not serve `session.skills` shows the commands alone.
 | `session` | `/usage` | Show the shown line's context window usage (`session.context.usage`, the same line); listed under the same condition as `/compact` |
 | `session` | `/fork` | Fork the Session at its last finished turn (`session.fork {at}`) after a confirmation, then open the new Session; listed when the connection serves `session.fork` and the root has a finished turn |
 | `session` | `/goal [words]` | Show the shown line's current goal through `session.goal.get`, or write it: `/goal OBJECTIVE`, `set`, `edit`, `pause`, `resume` and `clear` call `session.goal.<call>` with the shown line's `branchId` (it is the default branch), so two lines keep two goals; listed when the Session's method table lists `session.goal.set`. The menu fills `/goal ` for its words |
+| `session` | `/loop [words]` | List, start or stop the shown line's loops under the [CLI command contract](cli-commands.md#loop). Listed when the Session serves `session.loop.start` |
 | `model` | `/effort [value]` | List the shown line's model reasoning effort choices (from `provider.catalog`, when the model advertises reasoning preferences), or set one with `session.model.update {modelPreferences: {reasoningEffort}}`, as `/effort` does in the TUI (`configure.rs`). Listed only when the model has choices. `/fast` is not offered: no model advertises service tiers yet |
 | `model` | `/permissions` | Open the composer's permission selector (below). Listed where the Session serves `session.permission.get` and `session.permission.update` |
-| `session` | `/lines` | Open the existing Session lines panel |
 | `session` | `/new` | Navigate to the existing new-Session page, seeded with the current Session's working directory |
 | `session` | `/scheduled` | Open Scheduled tasks when the connection admits `schedule.list`; `/schedule` is an alternate. The current Session's `cwd` seeds creation, not the list's workspace filter |
 
@@ -337,7 +385,6 @@ menu closes while typing `/branch <prompt>`; Enter then sends it as a message.
 ┌──────────────────────────────────────────────────┐
 │ model     /models             Choose a model      │
 │ session   /branch <prompt>    Open a line here    │
-│           /lines             Show Session lines  │
 │           /new               New Session         │
 │ ↑↓ select · Enter confirm · Esc close            │
 ├──────────────────────────────────────────────────┤
@@ -373,6 +420,10 @@ leaving. English and Chinese labels follow the existing locale choice.
 Forms use the shared page-content width and control size ladder. Action buttons
 fit their labels with horizontal padding rather than stretching with a grid;
 action groups wrap on narrow screens. Checkbox labels stay beside their controls.
+Inputs, selects, and adjacent actions in the same row share a control height.
+Wrapped rows keep labels attached to their fields.
+Select fields use the workspace theme for their trigger, list, and selected
+indicator, with keyboard navigation and unavailable choices shown in place.
 Save actions follow all fields they submit, including model preferences. Provider
 list and add-dialog searches are independent; the custom-provider form can return
 to the picker, confirming before discarding a changed draft. Dialog close buttons
@@ -1031,6 +1082,9 @@ switches it, so a missing or unknown stored value means `steer`.
 An idle line always submits as `queue`, whatever the default: the mode decides
 which of a run's two destinations a draft takes, and an idle line has only one.
 
+Queued messages sit above the composer in a scrollable strip. Each entry has
+a lightly shaded rounded row with its available actions beside the preview.
+
 ```text
 ┌──────────────────────────────────────────────────────────┐
 │ Timeline: the run in flight                              │
@@ -1103,6 +1157,128 @@ authority over the read.
 | Q2 | Settings pages (providers, MCP, skills) are management | Decided: serve an explicit settings allowlist on the authenticated local Web entry (§4.3); paired RemoteGateway devices remain Session-only |
 | Q3 | A browser-local archive list is scoped by storage origin, so a daemon that comes back on another port starts with an empty list, and two homes served one after another on the same address share the key | Decided for now: no daemon identity is added for a browser-owned list (#279). Markers the current daemon does not store are reported as unavailable with a browser-only cleanup, so a foreign or unreachable list is visible instead of hiding Sessions. A stable per-home identity would be a protocol addition owned by the App Server and must be raised there, not decided in the browser |
 
+### React workspace
+
+The browser workspace uses React 19 and HeroUI v3 with
+Vite, TypeScript, Tailwind CSS v4, and the static `dimcode-web` distribution
+in §2.4 and §5. HeroUI would supply controls and overlays such as menus,
+dialogs, and the compact sidebar drawer. Dim's existing surface colors,
+typography and theme controls carry over to HeroUI. The theme control offers
+Light and Dark. Light mode uses white and
+neutral grays, dark mode uses near black and neutral grays, and Dim's accent
+marks actions, focus and selection.
+The [Web entry protocol](#25-protocol-on-the-entry) remains the client boundary.
+The browser continues to use the same routes, App Server operations, and
+browser-local preferences described in §4.
+
+```text
+Workspace sidebar | Open Session tabs                 | Lines / extensions
+                  | User message                      |
+                  | --- Reasoning · Duration > ---   |
+                  | Execution summary >              |
+                  | Assistant reply                   |
+                  |            Outline  Jump to latest|
+                  | Queue / approval / question       |
+                  | Composer                          |
+Compact: sidebar drawer and on-demand detail panel
+```
+
+```text
+Dim                         [×]
+[+ New session]
+[Search sessions]     [Filters]
+v workspace                 [+]
+  Current session
+  Another session
+  Show older sessions
+...
+Archived sessions
+```
+
+In the compact drawer, the workspace list scrolls between the search controls
+and the archive entry.
+
+The Web workspace uses one React timeline for the main chat and Lines.
+It uses the existing event projection and history model, with
+pure formatting and grouping logic reused where it can be imported without
+Vue. This replaces the Web host's dependency on the Vue timeline components.
+The Vue `@dimcode/chat-ui` package keeps its desktop contract and publication
+scope (#1839). The browser build starts directly from the React entry.
+The shared stores use standalone reactivity primitives. The React build
+checks its emitted chunks for Vue components, the Vue renderer, Vue I18n
+and Pinia.
+
+The sidebar groups Sessions by workspace. Each row shows its title, a distinct
+preview when available, and whether it is running. Search matches a workspace
+name, path, title, or preview and reveals groups with matching Sessions.
+Clearing search restores the saved group expansion. Collapsing a group hides
+all its session rows, including the open one, and leaves the session count and
+any running indicator in the header. Reopening restores the rows already
+revealed with Show older sessions. Expand and collapse slide the child rows
+under the fixed heading and honor reduced motion. The filter can show running
+Sessions only. The list uses the browser's saved sort by activity or creation.
+The desktop sidebar can be resized by dragging its edge or using arrow keys
+on the separator. The tab strip switches among opened Sessions. Closing a tab
+leaves the Session in the sidebar and leaves any running work attached to its
+Session. Opening a Session by URL selects its tab.
+Settings and Archived sessions are in the sidebar footer, below the scrollable
+Session List. In the narrow layout, selecting either closes the sidebar drawer.
+
+User messages and assistant replies read in order in a centered text column.
+Reasoning and consecutive tool calls have separate disclosures. The reasoning
+row shows an excerpt and elapsed time when available. The tool group shows
+counts by operation. Expanding it pushes subsequent messages down and reveals compact rows in timeline order
+with the operation and its target. Open an individual row to see its input,
+output, images or diff.
+
+```text
+--- Inspect the workspace · 4 seconds > ---
+Ran 1 search, ran 1 command, read 1 file v
+  | Search source
+  | Run git status --short
+  | Read src/workspace.ts    L12-27
+```
+
+The queue sits above the composer with a gap between them. Three complete
+rows fit in the queue viewport, or two on short displays. Additional rows
+scroll within the queue. Pending approvals and questions remain actionable
+beside the composer.
+Wide output such as images and diffs can use the wider content area.
+
+The composer stays outside the scroll viewport. An outline next to it lists
+loaded user messages and jumps to their location in the current line. The Web
+uses TanStack Virtual with stable row keys to keep the visible row in place
+when older history arrives. Incoming output follows the end while the reader
+is there. When the reader scrolls away, a jump-to-latest action becomes
+available. It returns to the end and resumes following. Expansion and tab
+switches must preserve the reader's position. The outline, execution summary,
+and jump action are all keyboard accessible. The extension menu opens a panel
+beside the conversation and follows the [extension binding contract](client-ui-extensions.md).
+
+The workspace header opens Settings. The active section has its own URL and
+stays highlighted in the Settings navigation. A section with an unsaved draft
+asks for confirmation before leaving.
+
+```text
+[Account]  [Appearance]  [Agent]  [Providers]  [Modality]  [MCP]  [Plugins]  [Skills]  [Permissions]
+[Scheduled tasks]  [Archived sessions]  [Diagnostics*]
+Diagnostics
+  Server version       ...
+  Protocol             ...
+  [Refresh diagnostics]
+  Model request recording
+  [ ] Record model requests and responses
+  [Save recording settings]
+```
+
+Exercise the
+supported Web flows in §4 against a disposable App Server home, including
+streaming, history paging and reading-position retention, draft retention
+through approval and question prompts, queued inputs, keyboard navigation,
+reconnection, and light and dark appearance at desktop and compact widths.
+Verify that both the packaged static build and `embedded-web` serve the
+frontend under the existing [Web entry CSP](#23-http-surface).
+
 ## 7. Rule check
 
 | Rule | How this document complies |
@@ -1171,7 +1347,8 @@ the total length; multiple ranges and unknown units return the full file.
 Bounded producers apply backpressure and release file reads on disconnect or
 owner withdrawal. Active content from Session files is downloaded as octet-stream.
 
-AppShell places the selected extension in the existing Lines detail region.
+The workspace places the selected extension beside the transcript and binds it
+to the branch shown in the conversation.
 The UI store persists only its stable selection and existing size. Each panel
 component owns its ShadowRoot and mount lifetime; the connection store owns
 catalog synchronization and the chat store owns Session activity. Compact mode
@@ -1187,11 +1364,9 @@ or directory changes and when the menu gains focus; mounting rechecks them.
 Extensions:
   Activity
   Preview — Unavailable method: session.preview.open [disabled]
-Wide:    [Conversation] | [Extension title] [Lines] [Close]
-                       | [Bound line selector]
+Wide:    [Conversation] | [Extension title] [Close]
                        | [Plugin ShadowRoot]
 Compact: [Modal title] [Close]
-         [Bound line selector]
          [Plugin ShadowRoot]
 ```
 

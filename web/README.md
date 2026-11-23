@@ -1,6 +1,6 @@
 # Web workspace frontend
 
-The browser frontend that `dimcode web` opens: a Vue 3 + Vite app that speaks App Server protocol v3 (JSON-RPC over the web entry's `/ws`). The design is [docs/design/web-workspace.md](../docs/design/web-workspace.md) §4.
+The React 19 and HeroUI frontend opened by `dimcode web`. Vite builds the app, which talks to the App Server over protocol v4 JSON-RPC on `/ws`. See the [Web workspace design](../docs/design/web-workspace.md).
 
 Use the Node version in [`.node-version`](../.node-version) and npm.
 
@@ -25,25 +25,28 @@ The proxy rewrites `Origin` to the entry's own address, because the entry accept
 ```sh
 cd web
 npm ci
-npm run build      # vue-tsc type check, then vite build into web/dist
-npm run typecheck  # type check only (against the declarations of packages/chat-ui)
+npm run build      # React type check and Vite build into web/dist
+npm run typecheck  # React type check only
 npm test           # Node test runner over unit and component tests, then Vitest over src/**/*.test.ts
 ```
 
-`web/dist` is what the entry serves: `index.html` for every non-asset path and `/assets/*` as immutable files. The build keeps to the entry's CSP: no inline scripts, no `data:` fonts, `@nuxt/ui` v4 icons are bundled offline from `@iconify-json/lucide` (network Iconify API providers are disabled in `main.ts`), and Shiki highlights with its JavaScript regex engine (WebAssembly would need `wasm-unsafe-eval`). `vite.config.ts` replaces markstream's optional `@terrastruct/d2` renderer with an inert module; that renderer is intentionally not shipped, so removing the alias pulls it into the bundle.
+`web/dist` is the release artifact input. The Web entry serves `index.html`
+for the workspace routes and immutable files under `/assets/`. Lucide icons,
+fonts and JavaScript ship with the build. Shiki uses its JavaScript regex
+engine under the Web entry's CSP. Test the packaged entry by pointing
+`DIMCODE_WEB_ASSETS` at the build directory's absolute path when starting
+`dimcode --home` with a disposable home.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/styles/global.css` | Tailwind CSS v4, `@nuxt/ui` v4 theme tokens (`--ui-*`, `--text-*` scaled by `--ui-font-size`), light/dark palettes and layout rules |
-| `src/rpc/client.ts` | WebSocket JSON-RPC client: `hello` v3, timeouts, `daemon.ping` heartbeat, reconnect with backoff, bootstrap exchange |
+| `src/react/` | Web workspace, settings, virtualized timeline, Lines and composer using React and HeroUI |
+| `src/react/workspace.css`, `src/styles/primary-colors.css` | Tailwind CSS v4, HeroUI theme, Dim accent, light and dark surfaces, and responsive layout |
+| `src/rpc/client.ts` | WebSocket JSON-RPC client with `hello` v4, timeouts, `daemon.ping` heartbeat, reconnect with backoff and bootstrap exchange |
 | `src/rpc/protocol.ts`, `src/rpc/read.ts` | Protocol types and the strict readers that decode every reply and notification |
 | `src/projection.ts` | Folds history pages, `session.event` and `session.model.progress` into timeline rows (as `crates/dim-cli/src/projection.rs`) |
 | `src/lines.ts` | Folds branch facts into the Session's line tree, line states and cut message counts |
 | `src/stores/` | Connection, session directory, attached sessions and their per-line streams, models, layout, toasts and line tabs |
-| `src/features/chat/` | Chat page, new-session page, composer, model menu, approval prompt |
-| `src/features/lines/` | Right-side Lines panel, tree, line conversation, new-line and end-line dialogs |
-| `packages/chat-ui/` | Shared presentational chat timeline package (`@dimcode/chat-ui`); host contracts and component tests |
-| `src/chat-ui/` | The Web host of `@dimcode/chat-ui` and the only Web code that imports it: row mapping, the `ChatUiHost` whose commands call the chat store, labels, and `WebChatTimeline`, the chat and line timeline |
-| `src/features/settings/` | Account, appearance, agent defaults, providers, modality, MCP, plugins, skills, permissions, scheduled tasks, archived sessions and diagnostics |
+| `src/features/` | Shared view helpers and the previous Vue implementation used by compatibility tests |
+| `packages/chat-ui/` | Vue chat timeline package (`@dimcode/chat-ui`) with its own desktop contract and publication |

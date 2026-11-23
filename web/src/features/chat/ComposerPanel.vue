@@ -2,7 +2,8 @@
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, useId, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import type { DraftAttachments, FileCandidate, ModelId, PermissionPreset, PermissionPolicy, QueuedInput, RestoredImage, SubmitMode, UserInput, WithdrawResult } from "../../rpc/protocol"
+import type { DraftAttachments, FileCandidate, ModelId, PermissionPreset, PermissionPolicy, QueuedInput, SubmitMode, UserInput, WithdrawResult } from "../../rpc/protocol"
+import { moveImageOffsets, restoreQueuedContent, type RecalledImage } from "./recall"
 import { linkMentions, mentionTrigger, type FileMention, type MentionTrigger } from "../../mentions"
 import { SKILL_TOKEN_PREFIX, namesSkillToken, skillCommandQuery, skillSegments, startsWithSkillToken } from "../../skill-token"
 import { useComposerStore } from "../../stores/composer"
@@ -136,7 +137,6 @@ const pastes = ref<Array<{ id: number; text: string }>>([])
  * past text inserted at its own offset, and which of several images at one offset
  * comes first.
  */
-type RecalledImage = RestoredImage & { batch: number }
 
 /** The stored images a recalled message carried, each with the draft offset it keeps its place at. */
 const restored = ref<RecalledImage[]>([])
@@ -337,13 +337,8 @@ watch(text, (next) => {
   const previous = anchored
   anchored = next
   if (recalling || next === previous || restored.value.length === 0) return
-  let start = 0
-  while (start < next.length && start < previous.length && next[start] === previous[start]) start++
-  let end = 0
-  while (end < next.length - start && end < previous.length - start && next[next.length - 1 - end] === previous[previous.length - 1 - end]) end++
-  const delta = next.length - previous.length
-  const tail = previous.length - end
-  for (const block of restored.value) block.at = block.at <= start ? block.at : block.at >= tail ? block.at + delta : start
+  const positions = moveImageOffsets(previous, next, restored.value)
+  restored.value.forEach((block, index) => { block.at = positions[index]! })
 }, { flush: "sync" })
 
 /** The `@` mention the caret is in, read from the field's own value (the field is the source of truth for the caret). */
@@ -409,39 +404,13 @@ function acceptCandidate(candidate: FileCandidate): void {
 function recall(item: QueuedInput, at: number): number {
   if (recalled.value.has(item.id)) return at
   recalled.value = new Set([...recalled.value, item.id])
-  const blocks = item.content
-  if (blocks.length === 0) return at
+  if (item.content.length === 0) return at
   recalling = true
   try {
-    const draft = text.value
-    const position = Math.min(at, draft.length)
-    const followed = position < draft.length
-    let inserted = ""
-    const placements: RecalledImage[] = []
-    let opened = false
-    let previousText = false
-    for (const block of blocks) {
-      if (!opened) {
-        opened = true
-        if (position > 0 && !draft.slice(0, position).endsWith("\n")) inserted += "\n"
-      } else if (block.type === "text" && previousText) {
-        inserted += "\n"
-      }
-      if (block.type === "image") {
-        previousText = false
-        placements.push({ at: position + inserted.length, image: block, batch: recallBatch })
-        continue
-      }
-      inserted += block.text
-      previousText = true
-    }
-    if (followed) inserted += "\n"
-    for (const block of restored.value) {
-      if (block.at > position || (block.at === position && block.batch !== recallBatch)) block.at += inserted.length
-    }
-    text.value = draft.slice(0, position) + inserted + draft.slice(position)
-    restored.value = [...restored.value, ...placements]
-    return position + inserted.length
+    const next = restoreQueuedContent(text.value, restored.value, item.content, at, recallBatch)
+    text.value = next.draft
+    restored.value = next.images
+    return next.next
   } finally {
     recalling = false
   }

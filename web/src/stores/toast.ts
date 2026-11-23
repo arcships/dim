@@ -1,5 +1,5 @@
-import { ref } from "vue"
-import { defineStore } from "pinia"
+import { ref } from "@vue/reactivity"
+import { defineStore } from "#workspace-store"
 
 export type ToastTone = "success" | "info" | "danger"
 

@@ -149,6 +149,7 @@ export type WithdrawResult =
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
+  | { kind: "delegation-changed"; delivered: boolean }
   | { kind: "input"; text?: string; user?: UserInput; content: OperatorBlock[]; skills?: string[]; hooks?: number; blocks: RawBlock[] }
   | { kind: "source-input"; text: string; mode?: string; blocks: RawBlock[] }
   | { kind: "input-consumed"; inputId: string }
@@ -158,6 +159,7 @@ export type EventContent =
   | { kind: "branch-start" }
   | { kind: "session-forked" }
   | { kind: "branch-create"; branchId: string; at: number | undefined; prompt: string; source: BranchSource }
+  | { kind: "branch-default"; branchId: string }
   | { kind: "branch-create-failed"; branchId: string; status: "failed" | "cancelled"; error: string }
   | { kind: "branch-end"; source: BranchSource; ancestor?: string }
   | { kind: "branch-ended"; branchId: string; source: BranchSource; ancestor?: string }

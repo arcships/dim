@@ -1,12 +1,12 @@
-import { ref, shallowRef } from "vue"
-import { defineStore } from "pinia"
+import { ref, shallowRef } from "@vue/reactivity"
+import { defineStore } from "#workspace-store"
 import { RpcClient, type ConnectionPhase } from "../rpc/client"
 import type { HelloResult } from "../rpc/protocol"
 import { useChatStore } from "./chat"
 import { useSessionsStore } from "./sessions"
 import { useToastStore } from "./toast"
 import { useExtensionsStore } from "./extensions"
-import { translate } from "../i18n"
+import { translate } from "#workspace-i18n"
 
 /** The one App Server connection of this tab and its handshake state. */
 export const useConnectionStore = defineStore("connection", () => {

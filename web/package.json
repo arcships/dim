@@ -3,44 +3,55 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "imports": {
+    "#workspace-store": "./src/stores/pinia.ts",
+    "#workspace-i18n": "./src/i18n/index.ts"
+  },
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -p packages/chat-ui/tsconfig.build.json && vue-tsc --noEmit && vite build",
+    "build": "tsc -p tsconfig.react.json && vite build",
     "test": "node --test \"tests/*.mjs\" \"**/*.test.mjs\" && vitest run",
-    "typecheck": "vue-tsc -p packages/chat-ui/tsconfig.build.json && vue-tsc --noEmit"
+    "typecheck": "tsc -p tsconfig.react.json",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@dimcode/chat-ui": "0.1.0",
     "@fontsource-variable/geist": "5.3.0",
     "@fontsource-variable/geist-mono": "5.3.0",
-    "@nuxt/ui": "^4.12.0",
+    "@heroui/react": "3.2.8",
+    "@heroui/styles": "3.2.8",
+    "@intlify/core-base": "11.4.14",
     "@pierre/diffs": "^1.2.12",
     "@shikijs/core": "^3.23.0",
     "@shikijs/engine-javascript": "^3.23.0",
     "@shikijs/langs": "^3.23.0",
     "@shikijs/themes": "^3.23.0",
-    "@tanstack/vue-virtual": "3.13.22",
-    "katex": "0.16.47",
-    "markstream-vue": "2.0.19",
-    "mermaid": "11.16.1",
-    "pinia": "^2.3.1",
+    "@tanstack/react-virtual": "3.14.28",
+    "@vue/reactivity": "3.5.45",
+    "lucide-react": "1.78.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "shiki": "^3.23.0",
-    "stream-diffs": "0.0.2",
-    "vue": "3.5.45",
-    "vue-i18n": "^11.4.5",
-    "vue-router": "^4.6.4"
+    "streamdown": "2.8.0"
   },
   "devDependencies": {
-    "@iconify-json/lucide": "^1.2.154",
+    "@dimcode/chat-ui": "0.1.0",
     "@tailwindcss/vite": "^4.3.0",
+    "@tanstack/vue-virtual": "3.13.22",
     "@types/node": "^24.12.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "4.7.0",
     "@vitejs/plugin-vue": "^5.2.4",
     "jsdom": "^26.1.0",
+    "markstream-vue": "2.0.19",
+    "pinia": "^2.3.1",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.3",
     "vitest": "^4.1.8",
-    "vue-tsc": "^2.2.12"
+    "vue": "3.5.45",
+    "vue-i18n": "^11.4.5",
+    "vue-router": "^4.6.4"
   },
   "workspaces": [
     "packages/*"

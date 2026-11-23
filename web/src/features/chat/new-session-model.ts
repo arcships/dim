@@ -1,4 +1,4 @@
-import { computed, reactive, ref } from "vue"
+import { computed, reactive, ref } from "@vue/reactivity"
 import type { ModelId } from "../../rpc/protocol"
 
 /** How a new Session's model stands right now. */

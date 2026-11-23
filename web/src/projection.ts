@@ -192,6 +192,8 @@ export class Projection {
         if (index !== undefined) this.update(index, { failed: true })
         break
       }
+      case "branch-default":
+        break
       case "branch-end": {
         const ancestor = content.ancestor
         this.push({

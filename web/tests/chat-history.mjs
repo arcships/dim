@@ -22,6 +22,7 @@ registerHooks({
 })
 const { useChatStore } = await import("../src/stores/chat.ts")
 const { RpcError, RpcClient, ConnectionLost } = await import("../src/rpc/client.ts")
+const { readBranches, readNotification } = await import("../src/rpc/read.ts")
 const event = (sequence, content) => ({ id: `e${sequence}`, sequence, createAt: sequence, content })
 const input = (sequence, text) => event(sequence, { kind: "input", text, content: [{ type: "text", text }], blocks: [] })
 const goalInput = (sequence, text) => event(sequence, { kind: "input", text, content: [{ type: "text", text }], blocks: [{ type: "raw", text, key: "goal:1", retire: false }] })
@@ -510,6 +511,41 @@ test("a retry loads the side lines an earlier sync left waiting", async t => {
   await flush()
   assert.equal(chat.views.session.status, "ready")
   assert.equal(chat.views.session.branches.worker.status, "ready", "the retry loads the side line the earlier sync queued")
+})
+
+test("committed default-line notifications switch the transcript after the replacement is read", async t => {
+  const rootWindow = deferred()
+  const rootRequested = deferred()
+  const chat = session(t, ({ branchId }) => {
+    if (branchId === "worker") return page([input(1, "worker transcript")], 1)
+    rootRequested.resolve()
+    return rootWindow.promise
+  }, {
+    "session.branches": () => readBranches({
+      defaultBranchId: "worker",
+      branches: [
+        { branchId: "main", head: 8, state: "open" },
+        { branchId: "worker", parentBranchId: "main", branchPoint: 0, head: 1, state: "open" },
+      ],
+    }),
+  })
+  const moved = (sequence, branch) => chat.receive(readNotification("session.display", {
+    sessionId: "session", branchId: "main",
+    item: { id: `default-${sequence}`, sequence, create_at: sequence, type: "branch", name: "default", data: { branch } },
+  }))
+
+  await until(() => chat.views.session.status === "ready")
+  moved(7, "main")
+  assert.equal(chat.views.session.defaultBranchId, "worker")
+  moved(9, "main")
+  await rootRequested.promise
+  assert.equal(chat.views.session.defaultBranchId, "worker")
+  assert.equal(chat.views.session.rows[0].text, "worker transcript")
+  rootWindow.resolve(page([input(9, "root transcript")], 9))
+  await until(() => chat.views.session.defaultBranchId === "main")
+  moved(8, "worker")
+  assert.equal(chat.views.session.defaultBranchId, "main")
+  assert.equal(chat.views.session.rows[0].text, "root transcript")
 })
 
 for (const display of [true, false]) test(`conversation windows negotiate ${display ? "display summaries" : "bounded legacy history"}`, async t => {

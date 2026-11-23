@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useSettingsText } from "../../i18n/settings-general"
 import { readMcp, readMcpAuthStart, readMcpEditableEntry, readMcpImportApplied, readMcpImportPreview, readMcpImportSources, readMcpInspection, readMcpTest, type McpConfigurationPatch, type McpEntry, type McpImportEntry, type McpImportPreviewSource, type McpImportResolution, type McpImportSource, type McpInspection, type McpInvalidEntry, type McpProbe, type McpServerInput, type McpView } from "../../rpc/general-settings"
 import { RpcError } from "../../rpc/client"
-import { configuration, patch, type Draft } from "./mcp-form"
+import { blankMcpDraft, configuration, draftFromEntry, patch, type Draft } from "./mcp-form"
 import { readAck } from "../../rpc/read"
 import { useConnectionStore } from "../../stores/connection"
 import { useSessionsStore } from "../../stores/sessions"
@@ -307,7 +307,7 @@ function importUnknown(): string {
 }
 function create(): void {
   if (dirty.value && !window.confirm(s('Discard unsaved MCP configuration?', '放弃未保存的 MCP 配置？'))) return
-  draft.value = { id: "", source: "user", type: "stdio", command: "", args: [], argsAction: "replace", storedArgsCount: 0, cwd: "", url: "", secrets: [], enabled: false, oauth: false, clientId: "", token: "", bearerAction: "keep", authConfigured: false, oauthAction: "keep", callbackPort: "", scopes: "", metadataUrl: "", metadataConfigured: false, metadataAction: "keep", secretsInUserScope: false, timeout: "" }
+  draft.value = blankMcpDraft()
   baseline.value = JSON.stringify(draft.value)
   editing.value = false
   editorRevision.value = revision("user")
@@ -320,22 +320,7 @@ async function edit(server: McpEntry): Promise<void> {
   try {
     const entry = await connection.client.call("mcp.configuration", target(server), readMcpEditableEntry)
     if (entry.revision === undefined) throw new Error(s('This entry has no source revision and cannot be edited.', '此条目没有源修订号，无法编辑。'))
-    const config = entry.configuration
-    draft.value = {
-      id: server.id, source: server.source, type: config.type,
-      command: config.type === "stdio" ? config.command : "", args: [], argsAction: "keep", storedArgsCount: config.type === "stdio" ? config.argsCount : 0, cwd: config.type === "stdio" ? config.cwd ?? "" : "",
-      url: "", ...(config.type !== "stdio" ? { endpoint: config.endpoint } : {}),
-      secrets: (config.type === "stdio" ? config.envNames : config.headerNames).map((name) => ({ name, action: "keep", value: "", stored: true })),
-      enabled: entry.enabled, oauth: config.type !== "stdio" && config.oauthConfigured,
-      authConfigured: config.type !== "stdio" && config.authConfigured,
-      clientId: config.type !== "stdio" ? config.oauth?.clientId ?? "" : "",
-      callbackPort: config.type !== "stdio" ? String(config.oauth?.callbackPort ?? "") : "",
-      scopes: config.type !== "stdio" ? config.oauth?.scopes ?? "" : "",
-      metadataConfigured: config.type !== "stdio" && (config.oauth?.metadataConfigured ?? false),
-      metadataUrl: "", metadataAction: "keep", token: "", bearerAction: "keep", oauthAction: "keep",
-      timeout: config.timeout === undefined ? "" : String(config.timeout),
-      secretsInUserScope: entry.secretsInUserScope,
-    }
+    draft.value = draftFromEntry(server.id, server.source, entry)
     editing.value = true
     editorRevision.value = entry.revision
     baseline.value = JSON.stringify(draft.value)

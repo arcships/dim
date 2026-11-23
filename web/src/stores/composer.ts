@@ -1,5 +1,5 @@
-import { ref, watch } from "vue"
-import { defineStore } from "pinia"
+import { ref, watch } from "@vue/reactivity"
+import { defineStore } from "#workspace-store"
 import type { SubmitMode } from "../rpc/protocol"
 
 const STORAGE_KEY = "dim-web.send-mode.v1"

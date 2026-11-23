@@ -142,11 +142,11 @@ const virtualizer = useVirtualizer(computed(() => ({
 // every row above the held row moves the view, measured or partly visible.
 // During Return to latest none does: its smooth scroll aims at the end, and an
 // adjustment would be an instant scroll that ends it.
-let heldIndex: number | undefined
+let heldRow: { index: number; key: string; top: number } | undefined
 virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
   const element = viewport.value
   if (element === null || jumpResumed) return false
-  if (heldIndex !== undefined && item.index < heldIndex) return true
+  if (heldRow !== undefined && item.index < heldRow.index) return true
   instance.getTotalSize()
   const start = instance.measurementsCache[item.index]?.start ?? item.start
   return start + item.size <= element.scrollTop
@@ -175,7 +175,15 @@ function measureRows(): void {
   if (element === null || content == null) return
   const margin = content.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop
   if (Math.abs(margin - scrollMargin.value) > 0.5) scrollMargin.value = margin
-  for (const row of content.querySelectorAll<HTMLElement>(":scope > [data-timeline-row-index]")) virtualizer.value.measureElement(row)
+  const visible = content.querySelectorAll<HTMLElement>(":scope > [data-timeline-row-index]")
+  for (const row of visible) virtualizer.value.measureElement(row)
+  if (heldRow === undefined) return
+  for (const row of visible) {
+    if (row.dataset.timelineRowKey !== heldRow.key) continue
+    const drift = row.getBoundingClientRect().top - element.getBoundingClientRect().top - heldRow.top
+    if (Math.abs(drift) > 0.5) element.scrollTop += drift
+    break
+  }
 }
 
 const quoteTarget = ref<{ text: string; top: number; left: number }>()
@@ -201,7 +209,7 @@ function onScrollEnd(): void {
 
 function onReaderScroll(): void {
   jumpResumed = false
-  heldIndex = undefined
+  heldRow = undefined
 }
 
 const READER_SCROLL_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const
@@ -227,7 +235,7 @@ const unseen = ref(false)
 watch(following, (value) => {
   if (value) {
     unseen.value = false
-    heldIndex = undefined
+    heldRow = undefined
   } else jumpResumed = false
 })
 
@@ -298,7 +306,7 @@ watch(() => rows.value[0]?.key, async (first, previous) => {
   virtualizer.value.getTotalSize()
   const start = virtualizer.value.measurementsCache[index]?.start
   if (start === undefined) return
-  heldIndex = index
+  heldRow = { ...anchor, index }
   element.scrollTop = start - anchor.top
 }, { flush: "pre" })
 
@@ -309,13 +317,13 @@ function jumpTo(marker: ChatUiTimelineUserMessageMarker): void {
   const index = rows.value.findIndex(row => row.key === marker.rowKey)
   if (index < 0) return
   following.value = false
-  heldIndex = undefined
+  heldRow = undefined
   virtualizer.value.scrollToIndex(index, { align: "start" })
 }
 
 function onRailWheel(event: WheelEvent): void {
   jumpResumed = false
-  heldIndex = undefined
+  heldRow = undefined
   viewport.value?.scrollBy({ top: event.deltaY })
 }
 

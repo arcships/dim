@@ -1,6 +1,6 @@
 import { defineConfig, normalizePath } from "vite"
-import vue from "@vitejs/plugin-vue"
-import ui from "@nuxt/ui/vite"
+import react from "@vitejs/plugin-react"
+import tailwindcss from "@tailwindcss/vite"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
@@ -12,38 +12,28 @@ export default defineConfig({
   base: "/",
   resolve: {
     alias: [
+      { find: "#workspace-store", replacement: fileURLToPath(new URL("./src/react/define-store.ts", import.meta.url)) },
+      { find: "#workspace-i18n", replacement: fileURLToPath(new URL("./src/react/i18n.ts", import.meta.url)) },
       // Curated shiki bundle on the JavaScript regex engine (see src/vendor/shiki-web.ts).
       { find: /^shiki$/, replacement: fileURLToPath(new URL("./src/vendor/shiki-web.ts", import.meta.url)) },
       { find: /^shiki\/wasm$/, replacement: unused },
-      { find: /^@terrastruct\/d2$/, replacement: unused },
+      { find: /^client-only$/, replacement: unused },
     ],
   },
-  plugins: [vue(), ui({
-    colorMode: false,
-    autoImport: { dts: "src/auto-imports.d.ts" },
-    components: { dts: "src/components.d.ts" },
-    ui: {
-      colors: {
-        primary: "green",
-        neutral: "neutral",
-      },
-    },
-    icon: {
-      mode: "svg",
-      clientBundle: {
-        scan: true,
-        icons: [],
-      },
-    },
-  }), {
+  plugins: [react(), tailwindcss(), {
     name: "third-party-notices",
     apply: "build",
-    generateBundle() {
+    generateBundle(_options, bundle) {
+      for (const asset of Object.values(bundle)) {
+        if (asset.type !== "chunk") continue
+        const vueRuntime = Object.keys(asset.modules).find((module) =>
+          /\/node_modules\/(?:vue|vue-i18n|pinia|@vue\/runtime-(?:core|dom))\//.test(normalizePath(module)) || /\.vue(?:\?|$)/.test(module))
+        if (vueRuntime) this.error(`The React Web entry imports a Vue runtime module: ${vueRuntime}`)
+      }
       const lock = JSON.parse(readFileSync(new URL("./package-lock.json", import.meta.url), "utf8"))
       const webRoot = normalizePath(fileURLToPath(new URL("./", import.meta.url)))
       const bundledDirs = new Set<string>()
       for (const rawId of this.getModuleIds()) {
-        if (rawId === "virtual:nuxt-ui-icons") bundledDirs.add("node_modules/@iconify-json/lucide")
         const id = normalizePath(rawId.split("?", 1)[0]!)
         const rel = id.startsWith(webRoot) ? id.slice(webRoot.length) : id
         if (!rel.startsWith("node_modules/")) continue
@@ -81,16 +71,6 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: "dist",
     assetsInlineLimit: 0,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes("/node_modules/")) return undefined
-          if (/\/node_modules\/(@vue|vue|vue-router|vue-i18n|@intlify|pinia)\//.test(id)) return "vendor-vue"
-          return undefined
-        },
-      },
-    },
   },
 })

@@ -17,6 +17,8 @@ const NAME_LABELS: Record<string, TranslationKey> = {
   grep: "tool.grep",
   rg: "tool.grep",
   glob: "tool.glob",
+  ls: "tool.listFiles",
+  list_files: "tool.listFiles",
 }
 
 function normalize(toolName: string): string {

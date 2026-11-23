@@ -1,5 +1,5 @@
-import { computed, ref } from "vue"
-import { defineStore } from "pinia"
+import { computed, ref } from "@vue/reactivity"
+import { defineStore } from "#workspace-store"
 import { readCreate, readSummaries } from "../rpc/read"
 import type { ModelId, SessionSummary, SessionTitle } from "../rpc/protocol"
 import { useConnectionStore } from "./connection"

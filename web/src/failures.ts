@@ -5,7 +5,8 @@
  * client adds no prefix of its own.
  */
 import type { ModelFailure, ModelRetryProgress } from "../../npm/client-protocol"
-import { translate, type TranslationKey } from "./i18n/index"
+import { translate } from "#workspace-i18n"
+import type { TranslationKey } from "./i18n/en"
 
 /** Every kind the wire can carry; the tables must have a row for each. */
 export const FAILURE_KINDS = [

@@ -1,5 +1,5 @@
-import { computed, ref, watch } from "vue"
-import { defineStore } from "pinia"
+import { computed, ref, watch } from "@vue/reactivity"
+import { defineStore } from "#workspace-store"
 import { approvalKeyboardBranch } from "../features/lines/line-state"
 import { useAppearanceStore } from "./appearance"
 

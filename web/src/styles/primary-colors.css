@@ -1,0 +1,22 @@
+:root {
+  --primary: oklch(0.6 0.138 150);
+  --primary-foreground: oklch(1 0 0);
+  --primary-fill-top: oklch(0.56 0.135 150);
+  --primary-fill: oklch(0.51 0.125 150);
+  --primary-fill-hover-top: oklch(0.6 0.14 150); /* hover gradient pair */
+  --primary-fill-hover: oklch(0.55 0.132 150);
+  --primary-fill-press: oklch(0.48 0.12 150); /* solid while pressed */
+  --primary-ink: oklch(0.45 0.11 150); /* green text on --background */
+  --primary-soft: color-mix(in oklab, var(--primary) 12%, transparent);
+}
+
+.dark {
+  --primary: oklch(0.76 0.15 149);
+  --primary-foreground: oklch(0.11 0.024 150);
+  --primary-fill-top: oklch(0.79 0.15 149);
+  --primary-fill: oklch(0.73 0.15 149); /* paired with --primary-foreground (dark text) */
+  --primary-fill-hover-top: oklch(0.83 0.15 149);
+  --primary-fill-hover: oklch(0.77 0.15 149);
+  --primary-fill-press: oklch(0.69 0.14 149);
+  --primary-ink: oklch(0.8 0.13 149);
+}

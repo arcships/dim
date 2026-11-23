@@ -93,7 +93,7 @@ export function readSkills(value: unknown): SkillsView {
 export type PluginEntry = {
   name: string; use: string | undefined; off: boolean; locked: boolean; status: string | undefined; error: string | undefined
   optional: boolean | undefined
-  candidates: { id: string; kinds: string[]; git: string | undefined }[]
+  candidates: { id: string; kinds: string[]; git: string | undefined; optionalSource?: string }[]
   refused: { kind: string; error: string }[]
 }
 export function readPlugins(value: unknown): PluginEntry[] {
@@ -104,7 +104,9 @@ export function readPlugins(value: unknown): PluginEntry[] {
       candidates: array(plugin.candidates, (item) => {
         const candidate = object(item)
         const source = candidate.source === undefined ? undefined : object(candidate.source)
-        return { id: string(candidate.id), kinds: array(candidate.kinds, string), git: source === undefined ? undefined : optionalString(source.git) }
+        const optionalSource = optionalString(source?.optional)
+        return { id: string(candidate.id), kinds: array(candidate.kinds, string), git: optionalString(source?.git),
+          ...(optionalSource === undefined ? {} : { optionalSource }) }
       }),
       refused: plugin.refused === undefined ? [] : array(plugin.refused, (item) => {
         const refusal = object(item)

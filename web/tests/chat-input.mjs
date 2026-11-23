@@ -146,7 +146,7 @@ async function permissionSession(t, policy) {
     client: { async call(method, params, read) {
       if (method === "session.attach") return read({ model: { providerId: "test", modelId: "test" } })
       if (method === "session.methods") return read({ methods: ["session.input.pending", "session.question.pending", "session.turn.get"].map((name) => ({ name })) })
-      if (method === "session.branches") return read({ branches: [] })
+      if (method === "session.branches") return read({ defaultBranchId: "main", branches: [] })
       if (method === "session.input.pending") return read({ ...params, inputs: [], next: null })
       if (method === "session.question.pending") return read({ ...params, batches: [], next: null })
       if (method === "session.turn.get") return read({ ...params, turn: null, output: null })

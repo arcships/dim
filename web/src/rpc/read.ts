@@ -17,6 +17,7 @@ import type {
   BranchCreateResult,
   BranchSource,
   CreateResult,
+  Delegation,
   EventContent,
   HelloResult,
   HistoryPage,
@@ -615,6 +616,11 @@ function branchCut(value: unknown, at: string): number | undefined {
 
 function content(type: string, name: string, data: Json, at: string): EventContent {
   switch (`${type}/${name}`) {
+    case "collaboration/request":
+    case "collaboration/result":
+      return { kind: "delegation-changed", delivered: false }
+    case "collaboration/delivered":
+      return { kind: "delegation-changed", delivered: data.status === "ok" }
     case "input/message": {
       const blocks = rawBlocks(data.blocks, `${at}.blocks`)
       if (data.user === undefined || data.user === null) {
@@ -637,6 +643,8 @@ function content(type: string, name: string, data: Json, at: string): EventConte
       return { kind: "input-deleted", inputId: str(data, "input_id", at) }
     case "branch/start":
       return { kind: "branch-start" }
+    case "branch/default":
+      return { kind: "branch-default", branchId: str(data, "branch", at) }
     case "session/forked":
       return { kind: "session-forked" }
     case "branch/create":
@@ -1019,6 +1027,46 @@ export function readAttached(value: unknown): ModelId {
 }
 
 export type InputPage = { branchId: string; through: number; inputs: import("./protocol").QueuedInput[]; next: unknown }
+
+function delegation(start: Json, at: string): Delegation {
+  const request = obj(start.request, `${at}.request`)
+  const prompt = str(request, "prompt", at)
+  const delivery = start.delivery === null ? undefined : obj(start.delivery, `${at}.delivery`)
+  const status = delivery === undefined ? undefined : str(delivery, "status", at)
+  if (status !== undefined && status !== "ok" && status !== "error") fail(`${at}.delivery.status`, "ok or error")
+  const agentId = status === "ok" ? str(delivery!, "agent_id", at) : undefined
+  return {
+    id: str(start, "eventId", at),
+    title: optStr(request, "title", at)?.trim() || prompt.trim().split("\n", 1)[0] || "",
+    prompt,
+    at: num(start, "startedAt", at),
+    state: status === undefined ? "starting" : status === "ok" ? "running" : "failed",
+    agentId,
+    memberId: agentId !== undefined && !agentId.includes(":") ? str(delivery!, "session_id", at) : undefined,
+    reason: status === "error" ? str(delivery!, "error", at) : undefined,
+  }
+}
+
+export function readPendingDelegations(value: unknown) {
+  const at = "session.collaboration.pending"
+  const page = obj(value, at)
+  return { through: num(page, "through", at), next: page.next,
+    tasks: arr(page.requests, `${at}.requests`).map((item) => delegation(obj(item, at), at)) }
+}
+
+export function readFinishedDelegations(value: unknown): Delegation[] {
+  const at = "session.collaboration.finished"
+  return arr(obj(value, at).requests, `${at}.requests`).map((item) => {
+    const entry = obj(item, at)
+    const start = delegation(obj(entry.start, at), at)
+    const ended = { ...start, at: num(entry, "endedAt", at) }
+    if (entry.result === null) return ended
+    const result = obj(entry.result, `${at}.result`)
+    const state = str(result, "status", at)
+    if (state !== "completed" && state !== "failed" && state !== "cancelled") fail(`${at}.result.status`, "completed, failed or cancelled")
+    return { ...ended, state, result: str(result, "text", at), reason: optStr(result, "reason", at) }
+  })
+}
 
 export function readPendingInputs(value: unknown): InputPage {
   const at = "session.input.pending"

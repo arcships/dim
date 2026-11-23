@@ -1,5 +1,5 @@
-import { ref, shallowRef } from "vue"
-import { defineStore } from "pinia"
+import { ref, shallowRef } from "@vue/reactivity"
+import { defineStore } from "#workspace-store"
 import type { ExtensionDirectory } from "../../../npm/ui"
 import { readExtensions } from "../rpc/read"
 import { useConnectionStore } from "./connection"
