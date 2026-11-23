@@ -384,8 +384,11 @@ pub struct FullScreen {
     /// The picked member card in that block, by delegation id.
     focus_card: Option<String>,
     focus_tool: Option<(usize, String)>,
+    /// Top, height and scrollbar colours of an undecorated committed viewport.
+    painted_view: Option<(usize, usize, String, String)>,
+    painted_live_view: Option<(usize, usize)>,
     /// Rows as last painted; `None` entries are unknown (repaint).
-    painted: Vec<Option<String>>,
+    painted: Vec<Option<PaintedRow>>,
     cursor_visible: bool,
     cursor_at: Option<(u16, u16)>,
     synchronized: bool,
@@ -423,6 +426,8 @@ impl FullScreen {
             focus: None,
             focus_card: None,
             focus_tool: None,
+            painted_view: None,
+            painted_live_view: None,
             painted: Vec::new(),
             cursor_visible: true,
             cursor_at: None,
@@ -481,6 +486,8 @@ impl FullScreen {
 
     /// Forgets what is on screen: the next frame paints every row.
     pub fn invalidate(&mut self) {
+        self.painted_view = None;
+        self.painted_live_view = None;
         self.painted.clear();
         self.cursor_at = None;
         self.cursor_visible = true;
@@ -1318,10 +1325,11 @@ impl FullScreen {
             self.press = None;
         }
         self.model_label = model_label;
-        let covered = frame.overlay.as_ref().map_or(0..0, |overlay| {
-            let (_, y) = overlay_origin(overlay, cols, rows, self.view_rows);
-            y..y + overlay.rows.len()
+        let overlay = frame.overlay.as_ref().map(|panel| {
+            let (x, y) = overlay_origin(panel, cols, rows, self.view_rows);
+            (panel, x, y)
         });
+        let covered = overlay.map_or(0..0, |(panel, _, y)| y..y + panel.rows.len());
         self.task_rows = frame
             .task_rows
             .iter()
@@ -1447,12 +1455,37 @@ impl FullScreen {
                 None => self.clear_focus(),
             }
         }
-        let bar = scrollbar(
-            self.view_rows,
-            self.content_rows(),
-            top.min(self.max_top()),
-            palette,
-        );
+        let view = (split == 0
+            && frame.home.is_empty()
+            && !dim
+            && self.focus.is_none()
+            && self.selection.is_none()
+            && self.hovered.is_none()
+            && self.clicked.is_none())
+        .then(|| {
+            (
+                top,
+                self.view_rows,
+                palette.scroll_thumb.clone(),
+                palette.scroll_track.clone(),
+            )
+        });
+        let first = if view.is_some() && view == self.painted_view {
+            self.view_rows
+        } else {
+            0
+        };
+        self.painted_view = view;
+        let bar = if first < self.view_rows {
+            scrollbar(
+                self.view_rows,
+                self.content_rows(),
+                top.min(self.max_top()),
+                palette,
+            )
+        } else {
+            None
+        };
         let focus = self.focus_rows();
         let card = self.card_focus_rows(doc);
         let blank_rows = self.view_rows.saturating_sub(self.content_rows());
@@ -1465,8 +1498,8 @@ impl FullScreen {
         };
         let home_top = (blank_rows.saturating_sub(home.len())) / 2;
         let home_left = width.saturating_sub(home.first().map_or(0, |row| clip(row, width).1)) / 2;
-        let mut screen: Vec<String> = Vec::with_capacity(rows);
-        for y in 0..self.view_rows {
+        let mut screen: Vec<String> = Vec::with_capacity(rows - first);
+        for y in first..self.view_rows {
             let body = match self.at(y) {
                 None => y
                     .checked_sub(home_top)
@@ -1537,45 +1570,69 @@ impl FullScreen {
             let selected = self
                 .selection
                 .filter(|s| s.panel && s.dragged)
-                .and_then(|selection| self.panel_selection_columns(&selection, screen.len()));
+                .and_then(|selection| {
+                    self.panel_selection_columns(&selection, first + screen.len())
+                });
             screen.push(match selected {
                 Some(range) => highlight(row, range, cols),
                 None => clip(row, cols).0,
             });
         }
-        screen.truncate(rows);
-        for row in &mut screen {
-            *row = scrub(row).into_owned();
-        }
+        screen.truncate(rows - first);
+        let screen = screen
+            .into_iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let base = scrub(&row);
+                if let Some((panel, x, y)) = overlay
+                    && let Some(text) = (first + i)
+                        .checked_sub(y)
+                        .and_then(|offset| panel.rows.get(offset))
+                {
+                    composite(&base, text, x, cols)
+                } else {
+                    PaintedRow::Plain(base.into_owned())
+                }
+            })
+            .collect();
 
         let mut cursor = frame.cursor.and_then(|(row, column)| {
             let row = (row as usize).checked_sub(split + dock_skip)?;
             Some((column, (self.view_rows + row).min(rows - 1) as u16))
         });
-        if let Some(overlay) = &frame.overlay {
-            let (x, y) = overlay_origin(overlay, cols, rows, self.view_rows);
-            for (offset, row) in overlay.rows.iter().enumerate() {
-                if let Some(base) = screen.get_mut(y + offset) {
-                    *base = composite(base, row, x, cols);
-                }
-            }
-            if let Some((row, column)) = overlay.cursor {
-                cursor = Some(((x + column as usize) as u16, (y + row as usize) as u16));
-            }
+        if let Some((panel, x, y)) = overlay
+            && let Some((row, column)) = panel.cursor
+        {
+            cursor = Some(((x + column as usize) as u16, (y + row as usize) as u16));
         }
-        self.paint(screen, cursor)
+        let live_bar = bar.as_deref().filter(|_| split != 0 && !dim);
+        let view = (live_bar.is_some() && self.pinned.is_none()).then_some((top, self.view_rows));
+        let shift = match (self.painted_live_view, view) {
+            (Some((old, h)), Some((new, height))) if h == height => new.saturating_sub(old),
+            _ => 0,
+        };
+        self.painted_live_view = view;
+        self.paint(first, screen, cursor, live_bar, shift)
     }
 
     /// Writes the rows that changed and moves the cursor.
-    fn paint(&mut self, screen: Vec<String>, cursor: Option<(u16, u16)>) -> Vec<u8> {
+    fn paint(
+        &mut self,
+        first: usize,
+        screen: Vec<PaintedRow>,
+        cursor: Option<(u16, u16)>,
+        live_bar: Option<&[String]>,
+        shift: usize,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
-        if self.painted.len() != screen.len() {
-            self.painted = vec![None; screen.len()];
+        if self.painted.len() != first + screen.len() {
+            self.painted.truncate(first);
+            self.painted.resize_with(first + screen.len(), || None);
         }
         let changed = screen
             .iter()
-            .enumerate()
-            .any(|(i, row)| self.painted[i].as_deref() != Some(row.as_str()));
+            .zip(&self.painted[first..])
+            .any(|(row, old)| old.as_ref() != Some(row));
         if !changed && cursor == self.cursor_at && self.cursor_visible == cursor.is_some() {
             return out;
         }
@@ -1585,14 +1642,64 @@ impl FullScreen {
             out.extend_from_slice(CURSOR_HIDE);
             self.cursor_visible = false;
         }
-        for (i, row) in screen.into_iter().enumerate() {
-            if self.painted[i].as_deref() == Some(row.as_str()) {
+        let height = self.view_rows;
+        if shift > 0 && shift < height {
+            let matches = |offset| {
+                screen
+                    .iter()
+                    .zip(&self.painted[offset..height])
+                    .filter(|(new, old)| old.as_ref() == Some(*new))
+                    .count()
+            };
+            if matches(shift) > matches(0) {
+                let _ = write!(out, "\x1b[1;{height}r\x1b[{height};1H");
+                out.extend(std::iter::repeat_n(b'\n', shift));
+                out.extend_from_slice(b"\x1b[r");
+                self.painted[..height].rotate_left(shift);
+                self.painted[height - shift..height].fill_with(|| None);
+                self.cursor_at = None;
+            }
+        }
+        for (i, row) in (first..).zip(screen) {
+            let old = self.painted[i].as_ref();
+            if old == Some(&row) {
                 continue;
             }
-            push_move(&mut out, 0, i as u16);
-            out.extend_from_slice(ERASE_LINE);
-            out.extend_from_slice(row.as_bytes());
-            out.extend_from_slice(b"\x1b[0m");
+            match (&row, old) {
+                (PaintedRow::Plain(new), Some(PaintedRow::Plain(old)))
+                    if let Some((col, text, blanks)) =
+                        plain_row_patch(old, new).or_else(|| {
+                            let (col, added) = padded_append(old, new, live_bar?.get(i)?)?;
+                            Some((col, added, 0))
+                        }) =>
+                {
+                    push_move(&mut out, col, i as u16);
+                    out.extend_from_slice(text.as_bytes());
+                    out.extend(std::iter::repeat_n(b' ', blanks));
+                }
+                (PaintedRow::Plain(text), _) => {
+                    push_move(&mut out, 0, i as u16);
+                    out.extend_from_slice(ERASE_LINE);
+                    out.extend_from_slice(text.as_bytes());
+                    out.extend_from_slice(b"\x1b[0m");
+                }
+                (PaintedRow::Panel { margins, x, text }, old) => {
+                    if matches!(old, Some(PaintedRow::Panel { margins: prev, x: left, text: old_text })
+                    if x == left && margins == prev && strip_escapes(text) == strip_escapes(old_text))
+                    {
+                        push_move(&mut out, *x, i as u16);
+                        out.extend_from_slice(b"\x1b[?7l");
+                    } else {
+                        push_move(&mut out, 0, i as u16);
+                        out.extend_from_slice(ERASE_LINE);
+                        out.extend_from_slice(margins.as_bytes());
+                        let _ = write!(out, "\x1b[{}G", usize::from(*x) + 1);
+                    }
+                    out.extend_from_slice(b"\x1b[0m");
+                    out.extend_from_slice(text.as_bytes());
+                    out.extend_from_slice(b"\x1b[?7h\x1b[0m");
+                }
+            }
             self.painted[i] = Some(row);
             self.cursor_at = None;
         }
@@ -1709,6 +1816,7 @@ impl FullScreen {
 
     /// Recomputes the first row of each block from the heights.
     fn restart(&mut self) {
+        self.painted_view = None;
         self.starts.clear();
         self.starts.push(0);
         let mut total = 0;
@@ -2247,19 +2355,32 @@ fn overlay_origin(
     (x, y)
 }
 
+#[derive(PartialEq, Eq)]
+enum PaintedRow {
+    Plain(String),
+    Panel {
+        margins: String,
+        x: u16,
+        text: String,
+    },
+}
+
 /// `base` with `row` laid over it from column `x`; what shows of `base`
 /// around it is plain, dimmed text.
-fn composite(base: &str, row: &str, x: usize, cols: usize) -> String {
+fn composite(base: &str, row: &str, x: usize, cols: usize) -> PaintedRow {
     let plain = strip_escapes(base);
     let width = clip(row, usize::MAX).1;
-    let row = scrub(row);
-    format!(
-        "\x1b[?7l\x1b[2m{}\x1b[{}G{}\x1b[{}G\x1b[0m{row}\x1b[?7h",
+    let margins = format!(
+        "\x1b[?7l\x1b[2m{}\x1b[{}G{}",
         cells(&plain, 0, x),
         x + width + 1,
         cells(&plain, x + width, cols),
-        x + 1,
-    )
+    );
+    PaintedRow::Panel {
+        margins,
+        x: x as u16,
+        text: scrub(row).into_owned(),
+    }
 }
 
 /// Exactly the cells `[start, end)` of plain `text`: a wide character cut
@@ -2365,6 +2486,58 @@ fn scrollbar(view: usize, content: usize, top: usize, palette: &Palette) -> Opti
     )
 }
 
+fn padded_append<'a>(old: &str, new: &'a str, bar: &str) -> Option<(u16, &'a str)> {
+    let (prefix, old_pad) = old.strip_suffix(bar)?.split_once("\x1b[0m")?;
+    let (added, new_pad) = new
+        .strip_prefix(prefix)?
+        .strip_suffix(bar)?
+        .split_once("\x1b[0m")?;
+    if added.is_empty()
+        || !old_pad.bytes().all(|b| b == b' ')
+        || !prefix
+            .chars()
+            .chain(added.chars())
+            .all(|c| matches!(c, ' '..='~' | '\u{4e00}'..='\u{9fff}'))
+        || display_width(added) != old_pad.strip_suffix(new_pad)?.len()
+    {
+        return None;
+    }
+    Some((display_width(prefix) as u16, added))
+}
+
+fn plain_row_patch<'a>(old: &str, new: &'a str) -> Option<(u16, &'a str, usize)> {
+    let mut old_chars = old.chars();
+    let mut new_chars = new.char_indices();
+    let mut start = None;
+    let mut end = 0;
+    let mut blanks = 0;
+    for col in 0.. {
+        let before = old_chars.next();
+        let after = new_chars.next();
+        if before.is_none() && after.is_none() {
+            break;
+        }
+        let before = before.unwrap_or(' ');
+        let (offset, after) = after.unwrap_or((new.len(), ' '));
+        if ![before, after]
+            .iter()
+            .all(|c| matches!(c, ' '..='~' | '\u{2500}'..='\u{257f}'))
+        {
+            return None;
+        }
+        if before != after {
+            start.get_or_insert((col, offset));
+            end = (offset + after.len_utf8()).min(new.len());
+        }
+        if offset == new.len() && start.is_some() {
+            blanks += 1;
+        }
+    }
+    let (col, offset) = start?;
+    let text = &new[offset..end];
+    (text.len() + blanks <= new.len()).then_some((col as u16, text, blanks))
+}
+
 /// CUP with 0-based (column, row).
 fn push_move(out: &mut Vec<u8>, column: u16, row: u16) {
     let _ = write!(out, "\x1b[{};{}H", row + 1, column + 1);
@@ -2383,6 +2556,7 @@ mod tests {
     struct Doc {
         blocks: Vec<(bool, Vec<String>)>,
         dropped: usize,
+        revision: u64,
         headers: HashMap<(Option<usize>, usize), String>,
         bodies: HashMap<(Option<usize>, usize), String>,
         panel: HashMap<String, bool>,
@@ -2396,6 +2570,7 @@ mod tests {
             Self {
                 blocks: Vec::new(),
                 dropped: 0,
+                revision: 0,
                 headers: HashMap::new(),
                 bodies: HashMap::new(),
                 panel: HashMap::new(),
@@ -2447,8 +2622,8 @@ mod tests {
         fn estimate(&self, _index: usize, _cols: usize) -> usize {
             2
         }
-        fn rewritten(&self, _since: u64) -> (u64, Option<Vec<usize>>) {
-            (0, Some(Vec::new()))
+        fn rewritten(&self, since: u64) -> (u64, Option<Vec<usize>>) {
+            (self.revision, (since == self.revision).then(Vec::new))
         }
         fn cards(&self, index: usize) -> Vec<String> {
             self.cards
@@ -2533,6 +2708,91 @@ mod tests {
     }
 
     const DOCK: [&str; 2] = ["> x", "status"];
+
+    #[test]
+    fn following_streamed_rows_keeps_the_dock_and_does_not_resend_retained_text() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.say(&["history"; 20]);
+        let rows = [
+            "alpha", "bravo", "charlie", "delta", "echo", "界", "golf", "hotel",
+        ];
+        draw(&mut screen, &mut emu, &frame(&rows[..6], &DOCK), &doc);
+        let patch = draw(&mut screen, &mut emu, &frame(&rows, &DOCK), &doc);
+        assert!(!String::from_utf8_lossy(&patch).contains("delta"));
+        let after = (emu.rows_text(), emu.cx, emu.cy);
+        screen.invalidate();
+        draw(&mut screen, &mut emu, &frame(&rows, &DOCK), &doc);
+        assert_eq!(after, (emu.rows_text(), emu.cx, emu.cy));
+        assert_eq!(emu.row(6), DOCK[0]);
+        assert_eq!(emu.row(7), DOCK[1]);
+    }
+
+    #[test]
+    fn streaming_text_appends_beside_an_unchanged_scrollbar() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.say(&["history"; 12]);
+        for (old, new, added) in [
+            ("ans", "answer", "wer"),
+            ("答", "答复", "复"),
+            (
+                "123456789012345678901234567",
+                "123456789012345678901234567界",
+                "界",
+            ),
+        ] {
+            draw(&mut screen, &mut emu, &frame(&[old], &DOCK), &doc);
+            let f = frame(&[new], &DOCK);
+            let bytes = draw(&mut screen, &mut emu, &f, &doc);
+            let patch = String::from_utf8(bytes).unwrap();
+            assert!(patch.contains(added) && !patch.contains(old) && !patch.contains("\x1b[2K"));
+            let after = emu.rows_text();
+            screen.invalidate();
+            draw(&mut screen, &mut emu, &f, &doc);
+            assert_eq!(after, emu.rows_text());
+        }
+        draw(&mut screen, &mut emu, &frame(&["ans"], &DOCK), &doc);
+        let bytes = draw(
+            &mut screen,
+            &mut emu,
+            &frame(&["ans\x1b[1mwer\x1b[0m"], &DOCK),
+            &doc,
+        );
+        assert!(String::from_utf8_lossy(&bytes).contains("\x1b[1mwer"));
+    }
+
+    #[test]
+    fn rewriting_a_link_target_updates_a_stationary_transcript() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.say(&["\x1b]8;;https://old.test\x1b\\link\x1b]8;;\x1b\\"]);
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        let edited = frame(&[], &["> xy", "status"]);
+        draw(&mut screen, &mut emu, &edited, &doc);
+        doc.blocks[0].1[0] = "\x1b]8;;https://new.test\x1b\\link\x1b]8;;\x1b\\".into();
+        doc.revision += 1;
+        let bytes = draw(&mut screen, &mut emu, &edited, &doc);
+        assert!(String::from_utf8_lossy(&bytes).contains("https://new.test"));
+        assert_eq!(emu.row(5), "link");
+    }
+
+    #[test]
+    fn editing_a_plain_row_preserves_its_borders_and_clears_deleted_text() {
+        let (mut screen, mut emu) = setup();
+        let doc = Doc::new();
+        for (old, new) in [
+            ("│ draft     │", "│ draftx    │"),
+            ("│ draftx    │", "│ draft     │"),
+            ("draft stale", "draft"),
+        ] {
+            draw(&mut screen, &mut emu, &frame(&[], &[old]), &doc);
+            let bytes = draw(&mut screen, &mut emu, &frame(&[], &[new]), &doc);
+            assert_eq!(emu.row(SIZE.1 as usize - 1), new);
+            assert!(!bytes.windows(ERASE_LINE.len()).any(|s| s == ERASE_LINE));
+            assert!(!String::from_utf8_lossy(&bytes).contains("draft"));
+        }
+    }
 
     fn thought_panel() -> Frame {
         let mut f = frame(
@@ -3704,9 +3964,25 @@ mod tests {
         assert_eq!(emu.row(4), "unchanged");
         assert_eq!(emu.row(5), "behind the box");
         assert!(draw(&mut screen, &mut emu, &f, &doc).is_empty());
+        f.overlay.as_mut().unwrap().rows[1] = "│\x1b[7m> \x1b[0m│".into();
+        let bytes = draw(&mut screen, &mut emu, &f, &doc);
+        assert!(!bytes.windows(ERASE_LINE.len()).any(|s| s == ERASE_LINE));
+        assert_eq!(
+            emu.screen[2][13..22].iter().collect::<String>(),
+            "│> │right"
+        );
+        doc.blocks[0].1[1] = "👍🏽 0123456789ABC newer".into();
+        doc.revision += 1;
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert_eq!(
+            emu.screen[2][13..22].iter().collect::<String>(),
+            "│> │newer"
+        );
         f.overlay = None;
         draw(&mut screen, &mut emu, &f, &doc);
-        assert_eq!(emu.rows_text(), before);
+        let mut expected = before;
+        expected[2] = expected[2].replace("right", "newer");
+        assert_eq!(emu.rows_text(), expected);
     }
 
     #[test]
