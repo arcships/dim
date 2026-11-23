@@ -67,7 +67,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 pub use targets::{ModalityTargets, TargetError, TargetReply, TargetRequest};
 pub use task::{TaskRecord, TaskState};
@@ -454,6 +454,7 @@ pub(crate) struct Evaluation {
     global: Option<ModelId>,
     /// The process context adapter copies are read from per call (A.2).
     ctx: Ctx,
+    has_resolved_adapter: OnceLock<bool>,
     /// Whether this daemon holds a HostPlatform, which a host task runs on
     /// (A14).
     host_platform: bool,
@@ -639,10 +640,11 @@ impl Evaluation {
         })
     }
     fn image_adapter_reason(&self, unserved: &str) -> Reason {
-        let detail = if self
-            .candidates()
-            .any(|model| self.adapter(&model.provider_id).is_some())
-        {
+        let has_adapter = *self.has_resolved_adapter.get_or_init(|| {
+            self.candidates()
+                .any(|model| self.adapter(&model.provider_id).is_some())
+        });
+        let detail = if has_adapter {
             unserved
         } else {
             "No image adapter in this build"
@@ -1087,6 +1089,7 @@ pub(crate) async fn evaluate(
             declared,
             global,
             ctx: ctx.clone(),
+            has_resolved_adapter: OnceLock::new(),
             host_platform: ctx
                 .get::<dim_agent_capabilities::host_platform::HostPlatform>()
                 .is_some(),
