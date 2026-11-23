@@ -51,7 +51,7 @@ let page = ui.read(ReadRequest { generation, path, offset: 0, limit: None }).awa
 
 ### Dependencies
 
-FileStorage (`add_root`, `list`, `read`) for the declared roots and files; ManagementMethods' `register` for the `ui.extensions` namespace; PartRegistry to mount the UiResources Session part (defined in the [UiResources contract](UiResources.md)).
+FileStorage (`add_root`, `list`, `read`) for the declared roots and files, with `read`'s offset form for a page; ManagementMethods' `register` for the `ui.extensions` namespace; PartRegistry to mount the UiResources Session part (defined in the [UiResources contract](UiResources.md)).
 
 ### Operations
 
@@ -114,7 +114,7 @@ The checks below cite [design rules §7, PR #2029](https://github.com/arcships/d
 
 ## Requirements raised to mechanism owners
 
-None. FileStorage's contract (#2016) supplies `add_root`, `list` and `read`.
+None. FileStorage's contract (#2016) supplies `add_root`, `list` and the offset `read`.
 
 ## Binding appendix
 

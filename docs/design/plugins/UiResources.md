@@ -48,7 +48,7 @@ let page = resources.read(ReadRequest { reference: reference.clone(), offset: 0,
 
 ### Dependencies
 
-FileStorage (`open_read`, `read_at`, `close_read`) for the file; SessionLifecycle's `closing` for the Session's end.
+FileStorage's offset read `read {path, offset, length}` and its path resolution for the file; SessionLifecycle's `closing` for the Session's end. No pinned reader id crosses.
 
 ### Operations
 
@@ -75,9 +75,9 @@ The media type decides inline display: a listed image, audio, video, text or PDF
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `publish` | Check the Session phase, resolve the path in FileStorage, open the file, register the reference and the row's cleanup | The file is closed, nothing is registered | The reference is removed by the row's cleanup | Every reference is closed and removed | UiResources: the reference and the file |
+| `publish` | Check the Session phase, resolve the path in FileStorage and read its size, register the reference and the row's cleanup | Nothing is registered | The reference is removed by the row's cleanup | Every reference is removed | UiResources: the reference and its read counter |
 | `withdraw` | Check the owner row, cancel and wait for admitted reads, remove the reference | — | Already removed | Already removed | UiResources |
-| `read` | Resolve the reference, take a read token, read one page, release the token | The page stops; the token is released | The read ends with the row | Admitted reads are cancelled before the reference goes | UiResources |
+| `read` | Resolve the reference, take a read token, call FileStorage's offset read for one page, release the token | The page stops; the token is released | The read ends with the row | Admitted reads are cancelled before the reference goes | UiResources: the token; FileStorage: the page |
 
 The `session.ui.resources.read` client method is the same `read`, served to RPC clients; the web entry's HTTP route is its transport. Both stay.
 
@@ -112,7 +112,7 @@ The checks below cite [design rules §7, PR #2029](https://github.com/arcships/d
 
 ## Requirements raised to mechanism owners
 
-None. FileStorage's contract (#2016) supplies `open_read`, `read_at` and `close_read`.
+None. FileStorage's contract (#2016) supplies the offset read.
 
 ## Binding appendix
 
