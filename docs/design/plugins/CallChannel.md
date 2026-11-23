@@ -2,15 +2,15 @@
 
 Scope: process. Issue: #2021.
 
-CallChannel owns the binding between one admitted call and the connection it arrived on: which notifications the provider may send, whether the call is still answerable, and when the connection is gone. This document is the owner's target contract; the current implementation is `CallChannelPlugin` in `crates/dim-app-server/src/connection.rs` and `Caller`/`Callers` in `crates/dim-agent-capabilities/src/methods.rs`. Connection, Rpc and the method tables are separate owners.
+CallChannel owns the binding between one admitted table call and the connection it arrived on: which notifications the provider may send while the call runs, whether a notification is declared, and when the connection is gone. This document is the owner's target contract; the current implementation is `CallChannelPlugin` in `crates/dim-app-server/src/connection.rs` and `Caller`/`Callers` in `crates/dim-agent-capabilities/src/methods.rs`. Connection, Rpc and the method tables are separate owners.
 
 ## Use and scope: responsibility split
 
 CallChannel owns:
 
-- **Bindings.** For each admitted call that may notify, the connection id, the call id, the row instance that registered the namespace, and the notification names that namespace declared.
+- **The call binding.** One per admitted table call: the connection id, the call id, the registering row instance and the notification names that namespace declared. The binding lives for the call's extent — from `run` until the callback ends or the caller's future is dropped — and the owner always removes it.
 - **The declared-name answer.** A name the registration did not declare is refused before anything is written.
-- **The connection's end.** A binding resolves when its connection closes, when the reply is written, or when the registering row unloads.
+- **The connection's end.** `closed` resolves when the connection closes; the binding does not have to be alive.
 - **Routing the write.** A notification is written by Connection, addressed by the call id so it follows the reply.
 
 CallChannel writes no socket and holds no connection state.
@@ -18,35 +18,37 @@ CallChannel writes no socket and holds no connection state.
 Callers keep:
 
 - What a notification means: the provider chooses the name and the payload.
-- The reply: Rpc returns it; Connection writes it.
+- The reply: the callback produces it; Rpc writes it after `run` returns.
 - The declarations: the registering part declared them; the table admitted the call with them.
 
 | Requirement (callers) | Can callers compose it from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| Rpc must make an admitted call addressable before the handler can notify | No: the binding's lifetime and the declared-name answer are the owner's | `bind` |
+| Rpc must run one admitted table call with the caller's notifications enabled and its reply ordered | No: the binding, the declared-name answer and the write ordering are the owner's; a `bind`/`finish` pair would make Rpc drive three owners and could leave the binding behind on an error path | `run` |
 | A provider must send a notification to the calling connection, in order after its reply | No: the declared-name check, the binding lookup and the ordering are the owner's | `notify` |
-| A provider must stop when the connection closes | Yes: `closed` composes | `closed` |
-| Rpc must end a binding once the reply is written | No: the end and the removal are the owner's | `finish` |
+| A provider must stop when the connection closes, including after the call returned | Yes: `closed` composes, and it is addressed by the connection alone | `closed` |
 
 An operation or parameter exists only where the row says No.
 
 ## Caller example
 
-Rpc binds the call before invoking the handler:
+Rpc runs the call once; the owner binds, invokes and settles:
 
 ```rust
-channel.bind(BindRequest {
+let reply = channel.run(RunRequest {
     connection_id: caller.connection_id.clone(),
     call_id: caller.call_id.clone(),
     instance: row_instance.clone(),
-    notifications: declarations.iter().flat_map(|d| d.notifications.clone()).collect(),
-}).await?;
-let reply = table.call(CallRequest { method, params, caller: Some(caller.clone()) }).await?;
-connection.write_after(WriteAfter { connection_id, call_id, frame: reply.frame }).await?;
-channel.finish(FinishRequest { connection_id, call_id }).await?;
+    notifications: declared_notifications.clone(),
+    call: Arc::new(move || {
+        let table = table.clone();
+        let (method, params) = (method.clone(), params.clone());
+        Box::pin(async move { table.call(CallRequest { method, params, caller: None }).await })
+    }),
+}, cancel).await?;
+// Notifications sent inside the callback were held by Connection; the reply releases them in order.
 ```
 
-A provider notifies and waits for the end:
+A provider inside the callback builds a notification and waits for the caller to leave:
 
 ```rust
 match channel.notify(NotifyRequest { connection_id, call_id, method, params }).await {
@@ -55,7 +57,7 @@ match channel.notify(NotifyRequest { connection_id, call_id, method, params }).a
     Err(NotifyError::Gone) => return Ok(()), // the caller left; nothing to do
     Err(NotifyError::TooLarge) => return Err(ProviderError::TooLarge),
 }
-channel.closed(ClosedRequest { connection_id, call_id }).await;
+channel.closed(ClosedRequest { connection_id }).await; // also usable after the call returned
 ```
 
 ## Own contract
@@ -68,12 +70,11 @@ Connection's `write_after` and `closed`.
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `bind` | Make one admitted call addressable by its notifications | `{connection_id, call_id, instance, notifications}` | `{}` | None | `duplicate` |
-| `notify` | Send a notification to the calling connection, after the call's reply | `{connection_id, call_id, method, params}` | `{}` | None; the frame is queued or refused | `undeclared`, `gone`, `too_large` |
-| `closed` | Wait until the calling connection is gone | `{connection_id, call_id}` | `{}` when the connection closes | The provider's task ends; the wait ends | none |
-| `finish` | The call's reply was written; the binding ends | `{connection_id, call_id}` | `{}` | None | none |
+| `run` | Run one admitted table call with its caller's notifications enabled | `{connection_id, call_id, instance, notifications, call}` | the callback's reply | The caller's token: the callback stops and the binding is removed | the callback's own error; `duplicate` |
+| `notify` | Send a notification to the calling connection while the call runs | `{connection_id, call_id, method, params}` | `{}` | None; the frame is queued or refused | `undeclared`, `gone`, `too_large` |
+| `closed` | Wait until the calling connection is gone | `{connection_id}` | `{}` when the connection closes; an unknown id resolves at once | The caller's task ends; the wait ends | none |
 
-`instance` is the registering row's instance id: two rows of the same language runtime may declare different notifications for the same namespace name, and the binding belongs to the row that admitted the call.
+`run`'s `call` is a callback by reference. The owner invokes it once with the binding open and removes the binding when the callback ends or the caller's future is dropped; no caller frees the binding on any path. `instance` is the registering row's instance id: two rows of the same language runtime may declare different notifications for the same namespace name.
 
 ### Errors
 
@@ -81,21 +82,21 @@ Connection's `write_after` and `closed`.
 | --- | --- |
 | `duplicate` | The call id is bound already; this is a programming error in the caller |
 | `undeclared` | The registration did not declare the name; fix the declaration, nothing was written |
-| `gone` | The connection closed or the row unloaded; stop notifying for this call |
+| `gone` | The call ended or the connection closed; stop notifying for the call |
 | `too_large` | The notification exceeds the connection's frame budget; shorten it — the connection stays open |
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `bind` | Record the binding under the row instance and the connection | — | The row's bindings are removed | New bindings are refused; existing ones resolve as gone | CallChannel |
-| `notify` | Find the binding, check the declared name, ask Connection to write after the call | The provider's task ends before the write; nothing is written | The binding is removed; `gone` | Pending notifications are `gone` | Connection: the frame; CallChannel: the binding |
-| `closed` | Wait on Connection's `closed` for the binding's connection | The provider stops waiting | The wait ends | The wait ends | Connection |
-| `finish` | Remove the binding; later notifications are `gone` | — | Already removed | Already removed | CallChannel |
+| `run` | Record the binding under the row instance and the connection, invoke the callback, remove the binding | The callback stops; the binding is removed; nothing else changes | The caller's future drops; a guard removes the binding | A connection close interrupts the call through its cancellation; the binding is removed | CallChannel: the binding; the caller: the callback's future |
+| `notify` | Find the binding, check the declared name, ask Connection to write after the call | The provider's task ends before the write; nothing is written | The binding is gone; `gone` | Pending notifications are `gone` | Connection: the frame; CallChannel: the binding |
+| `closed` | Wait on Connection's `closed` for the connection | The provider stops waiting | The wait ends | The wait ends | Connection |
 
 ## Exceptions with reasons
 
-- `bind`/`finish` are called by Rpc, not by the table: the table is in another crate and must not depend on the App Server; Rpc knows both the admitted call and the connection.
+- `run` takes the callback by reference, like SessionScope's `withHold`: the callback is never called inside a commit lock, and it may notify through this owner while it runs.
+- A notification sent after the callback returned is `gone`: the binding is the call's, not the connection's, so a provider that wants to react to the caller leaving uses `closed`, which is addressed by the connection and needs no binding.
 
 ## Rule check
 
@@ -106,28 +107,33 @@ Connection's `write_after` and `closed`.
 | §3 orthogonality | No other owner's state is read; Connection is asked to write and to report its close. |
 | §4 rules 1–6, 9 | No event, handoff, before callback, business meaning, batch, model context or Timeline fact. |
 | §4 rule 7 | Callers use these operations; no caller sees the binding table. |
+| §7 one operation | `run` binds, invokes and settles in one call; there is no `bind` or `finish` to pair or leak. |
 | §7 no proxy | The binding, the declared-name answer and the connection's end are this owner's state; Connection writes the frame. |
 | §7 no handle | The binding is addressed by `{connection_id, call_id}`; no writer crosses. |
 | ADR 002 D1 | Process scope: calls span rows and connections. |
 | ADR 002 D2 | No wiring plugin: the service is on the owner type. |
 | ADR 002 D3 | Dependencies point to Connection as an operation. |
 | ADR 002 D4 | No business setting. |
-| ADR 002 D5 | The contract is data; the Rust binding is the appendix. |
+| ADR 002 D5 | The contract is data and one callback; the Rust binding is the appendix. |
 
 ## Requirements raised to mechanism owners
 
-None. The call id is data minted by Rpc; no runtime change is needed.
+None. The callback is the same binding rutis already gives `withHold` and FileStorage's `write` source; no runtime change is needed.
 
 ## Binding appendix
 
 ```rust
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BindRequest {
+pub type CallFn = Arc<
+    dyn Fn() -> BoxFuture<'static, Result<serde_json::Value, CallError>> + Send + Sync,
+>;
+
+#[derive(Clone)]
+pub struct RunRequest {
     pub connection_id: String,
     pub call_id: String,
     pub instance: String,
-    pub notifications: Vec<String>,
+    pub notifications: BTreeSet<String>,
+    pub call: CallFn,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -140,17 +146,21 @@ pub struct NotifyRequest {
     pub params: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosedRequest { pub connection_id: String }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyError { Undeclared, Gone, TooLarge }
 
 #[rutis::service(name = "callChannel")]
 impl CallChannel {
-    pub async fn bind(&self, request: BindRequest) -> Result<(), BindError> { /* ... */ }
+    pub async fn run(&self, request: RunRequest, cancel: CancellationToken)
+        -> Result<serde_json::Value, CallError> { /* ... */ }
     pub async fn notify(&self, request: NotifyRequest) -> Result<(), NotifyError> { /* ... */ }
     pub async fn closed(&self, request: ClosedRequest) { /* waits */ }
-    pub async fn finish(&self, request: FinishRequest) { /* ... */ }
 }
 ```
 
-The native `Caller` type no longer exists: Rust providers keep `{connection_id, call_id}` and call the same two operations.
+`CallFn` is passed by reference; the owner invokes it once and removes the binding when it returns or the caller's future is dropped. The native `Caller` type no longer exists: Rust providers keep `{connection_id, call_id}` and call the same two operations.

@@ -45,7 +45,7 @@ connection.write_after(WriteAfter { connection_id: id, call_id, frame: reply.fra
 
 ### Dependencies
 
-Connection's `write_after` and `attached`; ManagementMethods' `call`; the Session's method table (the same shape, per [ManagementMethods](ManagementMethods.md)); Agents' `acquire` and running/close operations; CallChannel's `bind` and `finish`; ServerControl's `shutdown`.
+Connection's `write_after` and `attached`; ManagementMethods' `call`; the Session's method table (the same shape, per [ManagementMethods](ManagementMethods.md)); Agents' `acquire` and running/close operations; CallChannel's `run`; ServerControl's `shutdown`.
 
 ### Operations
 
