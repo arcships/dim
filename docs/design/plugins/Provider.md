@@ -10,7 +10,7 @@ Provider owns:
 
 - **Records.** Provider, model and selection records: static and imported records, descriptor overrides, user models, enables, per-model preferences, workspace and global selections, source generations and per-provider adoption. The records are Provider's own; the storage engine holds the file, lease and transaction primitive as a private implementation, and the rows never cross a public face.
 - **Selection.** The precedence among an explicit target, the workspace and global selections, the configured default and account-backed candidates; the availability rule execution applies; the adopted capability snapshot and configuration a selection carries.
-- **Credentials.** Static credentials read from the record or an external secret store, managed-account leases, and temporary startup connections. A credential is used for one request and never leaves Provider except as the one-attempt lease a media call needs.
+- **Credentials.** Static credentials read from the record or an external secret store, the managed-account credentials Provider uses for a request, and temporary startup connections. A credential is used for one request; the only value that crosses is the credential a media executor reads for one call.
 - **Execution.** One model request from the adopted selection through adaptation, transport, retries, credential recovery, streaming and settlement. Provider owns the driver that performs the request and its connection pool, request identity, stream set and tasks.
 - **Temporary connections.** A startup connection admitted for one Session creation; it is bound to the calling row until a Session adopts it, then to that Session.
 - **Client management.** The reads and writes the `provider` client namespace serves, with their transactions and versions.
@@ -33,7 +33,7 @@ Callers keep:
 | Admit a temporary connection for a Session creation | No: the credential is a resource bound to the calling row and then to the Session; expiring or releasing it is Provider's | `prepare_startup`, `retain_startup`, `release_startup` |
 | Run one model request with retries, recovery and streaming | No: credentials, retry budgets, failure chains and output adaptation stay with the owner | `invoke` |
 | Learn a media model's route and where its credential comes from (the media executor) | No: the route is catalog state; the credential owner is the record's authority | `media_route` |
-| Run one media exchange with a static model's credential (the media executor) | No: the credential is Provider's resource, and a caller holding it would release it on every error path | `with_lease` |
+| Read a static model's credential for one media exchange (the media executor) | No: the record, the route and the credential are Provider's | `credential` |
 | Read or write a Provider's management record | No: records, versions and transactions are Provider's | The `provider` client namespace; handlers call the same operations |
 | Show a retry countdown | Yes: the `invoke` progress callback | Business |
 | Learn where the recorder writes | Yes: read ModelLog's `recording` value | Business |
@@ -76,14 +76,15 @@ let SelectableReply { models, default } = provider
     .await?;
 ```
 
-The media executor (the adapter that owns the protocol) resolves the route and then the credential owner it names; Modality passes the model target and holds no lease:
+The media executor (the adapter that owns the protocol) resolves the route and then reads the credential from the owner it names; Modality passes the model target and holds nothing to release:
 
 ```rust
 let route = provider
     .media_route(MediaRouteRequest { target, operation: "image.generate".into() }, cancelled.clone())
     .await?;
-// `with_lease` resolves the face named by `route.credential` and runs the exchange inside it.
-with_lease(&self.ctx, &route.credential, target, |lease| send_media(&lease), cancelled.clone()).await?;
+// `credential` resolves the face named by `route.credential` and reads the value for this call.
+let credential = credential_from(&self.ctx, &route.credential, target, cancelled.clone()).await?;
+send_media(&credential).await?;
 ```
 
 ModelProvider runs a turn; `consume` is the branch part's own callback that writes `step/*` events and reports how the stream ended:
@@ -153,7 +154,7 @@ provider.release_startup(ReleaseRequest { model: selection }, cancelled).await?;
 | FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)) | `root_path` | The directory the wire recorder writes under |
 | Storage engine ([#2018](https://github.com/arcships/dim/issues/2018)) | private transaction primitive; the public face keeps `storageReport` and the offline operations | Provider's records, selections, candidates, pages, source activation, adoption, edit commits, legacy import and `store.creationRecord` |
 | Session directory ([#2020](https://github.com/arcships/dim/issues/2020)) | session close observation | Releasing a retained startup source |
-| Account owners ([ManagedAccount](ManagedAccount.md)) | `availability`, `catalog`, `with_lease` | Account-backed models; the record's authority names the owner |
+| Account owners ([ManagedAccount](ManagedAccount.md)) | `availability`, `catalog`, `credential`, `rejected` | Account-backed models; the record's authority names the owner |
 
 Provider reads an account owner by the name its record's credential authority carries; the face names are in [ManagedAccount](ManagedAccount.md).
 
@@ -171,9 +172,9 @@ All operations are marked on `Provider` and provided under `providerService`; re
 | `release_startup` | Release a source still bound to the calling row | `{model}` | `{}` | None; completes immediately | `not_found` (already retained by a Session), `closed` |
 | `invoke` | Run one model request | `{request, mode, consume, admit?}` | `{outcome}` | The caller cancels; the request stops and the consumer is released. No owner timeout; a request may wait on the transport through its configured HTTP timeout | `invalid`, `unavailable`, `cancelled`, `closed`, `provider_failed {retryable}` |
 | `media_route` | A media model's route and the owner of its credential | `{target, operation}` | `{protocol, base_url, headers, realtime?, credential: Owner}` | The caller cancels; no timeout | `invalid`, `not_found`, `unavailable`, `cancelled`, `closed`, `failed` |
-| `with_lease` | Run the caller's attempt with a static model's credential | `{provider, model}` plus `attempt(lease) -> {rejected}` | `{}` | The caller cancels; the attempt stops | `not_found`, `unavailable`, `cancelled`, `closed` |
+| `credential` | A static model's connection facts for one request | `{provider, model}` | `{protocol, base_url, headers, bearer, generation: none}` | The caller cancels; no timeout | `not_found`, `unavailable`, `cancelled`, `closed` |
 
-`prepare_startup` admits the source under the calling row; the row's unload releases it, so a missed `retain_startup` or `release_startup` settles with the row. `retain_startup({session, model})` moves the source to the Session named by the caller and the model's metadata; the Session's close releases it, so a missed failure-path release settles with the Session. `release_startup({model})` is the optional early release for a creation that failed; it answers `not_found` once a Session retains the source. A member Session that inherits the leader's model retains the same source by value. A connection never crosses. `Selection` is the adopted provider, model, configuration, capability snapshot and metadata. `Lease` is [ManagedAccount](ManagedAccount.md)'s one-attempt value; `with_lease` hands it to the caller's attempt and releases it when the attempt ends, so no lease id crosses.
+`prepare_startup` admits the source under the calling row; the row's unload releases it, so a missed `retain_startup` or `release_startup` settles with the row. `retain_startup({session, model})` moves the source to the Session named by the caller and the model's metadata; the Session's close releases it, so a missed failure-path release settles with the Session. `release_startup({model})` is the optional early release for a creation that failed; it answers `not_found` once a Session retains the source. A member Session that inherits the leader's model retains the same source by value. A connection never crosses. `Selection` is the adopted provider, model, configuration, capability snapshot and metadata. `Credential` is [ManagedAccount](ManagedAccount.md)'s value: static credentials carry no generation; an account owner's carry the grant's. `invoke` calls the account owner's `credential`, sends, and on a refusal calls `rejected` with the refused generation before retrying within its own failure chain.
 
 `invoke`'s `mode` is `Dialogue { chain? }` or `Once`. `Dialogue` continues the failure chain when given one and reports retry waits through the optional `admit`/progress callbacks; `Once` makes exactly one request with no retry and no model substitution, which is what a caller sending one paid request needs (Report's model generation). `consume(next)` receives chunks, ends and typed failures and returns how the call ended and whether output was accepted; output accepted before a failure prevents replay. `admit` runs before each attempt and returns `admitted` or `rejected {message}`; only a caller with its own budget passes it.
 
@@ -196,14 +197,14 @@ All operations are marked on `Provider` and provided under `providerService`; re
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `resolve`, `selectable` | Read records and account state, apply the precedence and availability rule, return the value | The read stops; nothing changes | The call ends `cancelled` | Pending calls end `closed`; the next generation answers from current records | Provider's read tasks |
-| `invoke` | Resolve or adopt the request's selection, adapt images, resolve the credential (account lease or static), send, adapt chunks, hand them to `consume`, retry or recover per the failure chain, settle the consumer | The transport is cancelled, the stream is dropped, the consumer is released; accepted output stays committed | The consumer callback is revoked; the call ends `cancelled`; admitted work is joined | Admission stops; in-flight requests are cancelled and joined; account leases are settled | Provider: request tasks, stream and lease. ModelProvider: the Timeline writes already committed |
+| `invoke` | Resolve or adopt the request's selection, adapt images, read the credential (account owner or static), send, on a refusal call `rejected` and retry within the failure chain, adapt chunks, hand them to `consume`, settle the consumer | The transport is cancelled, the stream is dropped, the consumer is released; accepted output stays committed | The consumer callback is revoked; the call ends `cancelled`; admitted work is joined | Admission stops; in-flight requests are cancelled and joined; a started refresh finishes under the account owner | Provider: request tasks and stream. ModelProvider: the Timeline writes already committed |
 | `prepare_startup` | Validate and admit the connection under the calling row, select its model | Before admission; nothing is retained | The row's unretained sources are released | Unretained sources are dropped; a retained Session's source is restored by its next generation | Provider: the source; the calling row: its lifetime |
 | `retain_startup` / `release_startup` | Read the model's source, add the Session to its owners, watch the Session; release a source not yet retained | — | An unretained source is released with the row | Retained sources survive the owner's reload as Session state is re-read | Provider: the source and its owners; the Session directory reports close |
-| `media_route`, `with_lease` | Read the catalog and the credential owner, or hand a static credential to the attempt | The read stops; the attempt ends and the credential is dropped | The call ends `cancelled` | Pending calls end `closed` | Provider |
+| `media_route`, `credential` | Read the catalog and the credential owner, or read a static credential | The read stops; the credential is dropped | The call ends `cancelled` | Pending calls end `closed` | Provider |
 
 ## Exceptions with reasons
 
-- `with_lease` and the lease inside `invoke` hand the bearer to the caller's attempt for one request: the executor is the model owner or the media adapter and the account owner holds the grant, so the value crosses once and is never persisted, logged, quoted in an error or returned to a client. The account owner cannot perform the exchange itself: the model protocol, transport, streaming, adaptation and the per-profile driver are the executor's, and executing them in every account owner would duplicate the transport. A secret value in a reply is forbidden by AGENTS.md and an object or handle by §7. The boundary is raised for maintainer confirmation in [#2096](https://github.com/arcships/dim/pull/2096).
+- The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary): Provider never writes the account bearer it receives from `credential` or `rejected` to a client reply, the UI, a log, an error text, a persisted record, the model context or the Timeline. Static credentials in Provider's own records are the record's data, not this value.
 - The `provider` client namespace is a client protocol, not a second service face: it is the mechanism's registration point for protected-local v3 clients, and every handler calls the operations above or the management operations this owner also owns.
 
 ## Rule check
@@ -222,7 +223,7 @@ All operations are marked on `Provider` and provided under `providerService`; re
 | §4 rule 7 | Callers use these operations; no caller reads a record, a connection or a catalog internal. |
 | §4 rule 8 | Requirements are listed below; no runtime mechanism is added. |
 | §4 rule 9 | No Timeline fact: selections and records are process state with owner writes. |
-| §7 objects, ids, values, callbacks | Values: selections, lists, leases, routes. Callbacks: `consume`, `admit`. Ids: the calling row and the Session. No object crosses. |
+| §7 objects, ids, values, callbacks | Values: selections, lists, credentials with a generation, routes. Callbacks: `consume`, `admit`. Ids: the calling row and the Session. No object crosses. |
 | §7 no proxy | Account data comes from the account owner; records are Provider's own. The storage engine is not a face. |
 | §7 one change | The delivery part migrates every caller and deletes every pre-migration name in one change. |
 | ADR 002 D1 | Process: records, catalogs and credentials are shared across Sessions. |
@@ -237,8 +238,8 @@ All operations are marked on `Provider` and provided under `providerService`; re
 - **ProviderSettings and ModelLog ([#2017](https://github.com/arcships/dim/issues/2017)).** Their owner contracts define `user_agent` and `recording`; Provider reads both at request time. No requirement remains.
 - **Session directory ([#2020](https://github.com/arcships/dim/issues/2020)).** Provider needs a close observation for a retained startup source: when the Session closes without unload, the source is released; an unload keeps it for restore.
 - **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `root_path` only; the recorder owns its JSONL file.
-- **Account owners ([ManagedAccount](ManagedAccount.md)).** `availability`, `catalog`, `with_lease`; the face name comes from the record's credential authority.
-- **Media executor (Modality's adapter contract).** The adapter resolves `media_route` and calls `with_lease` on the credential owner for the model target; Modality passes the target and settles the task, so no business caller holds a lease id. The adapter's service shape is Modality's contract.
+- **Account owners ([ManagedAccount](ManagedAccount.md)).** `availability`, `catalog`, `credential`, `rejected`; the face name comes from the record's credential authority.
+- **Media executor (Modality's adapter contract).** The adapter resolves `media_route` and reads the credential from the owner it names; Modality passes the target and settles the task, so no business caller holds a credential. The adapter's service shape is Modality's contract.
 
 ## Binding appendix
 
@@ -324,13 +325,14 @@ pub struct MediaRouteReply {
     pub base_url: String,
     pub headers: BTreeMap<String, String>,
     pub realtime: Option<RealtimeDeclaration>,
-    /// The credential owner the media executor calls `with_lease` on: this owner, or an account owner.
+    /// The credential owner the media executor calls `credential` on: this owner, or an account owner.
     pub credential: CredentialOwner,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LeaseRequest { pub provider: String, pub model: String }
+pub struct CredentialRequest { pub provider: String, pub model: String }
+// `Credential` is the shared value defined in ManagedAccount.md; static credentials carry no generation.
 
 #[derive(thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -359,7 +361,7 @@ impl Provider {
     pub async fn release_startup(&self, request: ReleaseRequest) -> Result<(), ProviderError> { /* ... */ }
     pub async fn invoke(&self, request: InvokeRequest, cancelled: CancelledFn) -> Result<InvokeReply, ProviderError> { /* ... */ }
     pub async fn media_route(&self, request: MediaRouteRequest, cancelled: CancelledFn) -> Result<MediaRouteReply, ProviderError> { /* ... */ }
-    pub async fn with_lease(&self, request: LeaseRequest, attempt: AttemptFn, cancelled: CancelledFn) -> Result<(), ProviderError> { /* ... */ }
+    pub async fn credential(&self, request: CredentialRequest, cancelled: CancelledFn) -> Result<Credential, ProviderError> { /* ... */ }
 }
 ```
 

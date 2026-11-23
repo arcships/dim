@@ -12,7 +12,7 @@ The remaining owner, the ChatGPT account, holds:
 - **Login.** Browser PKCE, the discovery document, the profile read and the pending attempt.
 - **Tokens.** The access token's 30-second freshness window, one serialized refresh, rotation and the sign-out rule.
 - **The plan catalog.** The models the ChatGPT plan serves, as the account catalog.
-- **Request leases.** Lease ids, capacity and expiry [ManagedAccount](ManagedAccount.md) defines.
+- **Credentials.** The connection facts for one request and the grant generation [ManagedAccount](ManagedAccount.md) defines.
 - **The client namespace** `account.chatgpt.*`.
 
 Removed with the host binding:
@@ -25,7 +25,7 @@ Callers keep the same responsibilities as [ManagedAccount](ManagedAccount.md): t
 
 | Requirement (callers) | Compose from the account owners' operations without breaking their invariants? | Handling |
 | --- | --- | --- |
-| Read the ChatGPT account's status, catalog and one-attempt credential | No: the grant, plan and lease table are this owner's | `availability`, `catalog`, `with_lease` |
+| Read the ChatGPT account's status, catalog and credential | No: the grant, plan and its generation are this owner's | `availability`, `catalog`, `credential`, `rejected` |
 | Search through the Dim relay | No: the Dim account's grant is DimOAuth's | DimOAuth's `availability`, `subscribe`, `search` |
 | List the accounts a user can sign into | Yes: `provider.management` reports each record's account namespace | Business |
 | Sign in, cancel, sign out | No: the attempt and record are this owner's | `account.chatgpt.*` |
@@ -43,9 +43,9 @@ The model owner runs a ChatGPT request inside the owner's operation:
 
 ```rust
 chatgpt_account
-    .with_lease(LeaseRequest { provider: "openai-chatgpt".into(), model: model.clone() }, attempt, cancelled)
+    .credential(CredentialRequest { provider: "openai-chatgpt".into(), model: model.clone() }, cancelled)
     .await?;
-// The request itself is Provider's; the lease is handed to `attempt` for one exchange.
+// The request itself is Provider's; on a rejection it calls `rejected` with the generation.
 ```
 
 A client signs in through the namespace; no part calls it:
@@ -59,7 +59,7 @@ account.chatgpt.login.status { attemptId } -> { state }
 
 ### Face
 
-`chatgptAccount`, marked on `ChatGptAccount`, implements [ManagedAccount](ManagedAccount.md)'s `availability`, `subscribe`, `catalog` and `with_lease`. The provider id is `openai-chatgpt`; login is browser PKCE; the record keeps its existing file and revision fields; the catalog keeps the plan's models and capabilities.
+`chatgptAccount`, marked on `ChatGptAccount`, implements [ManagedAccount](ManagedAccount.md)'s `availability`, `subscribe`, `catalog`, `credential` and `rejected`. The provider id is `openai-chatgpt`; login is browser PKCE; the record keeps its existing file and revision fields; the catalog keeps the plan's models and capabilities.
 
 The client namespace `account.chatgpt.*` keeps its published methods. The existing rule that a ChatGPT plan request needs an interactive client Session stays in Provider: Provider reads the Session's creation record and refuses a non-client Session with `invalid`.
 
@@ -70,14 +70,14 @@ The client namespace `account.chatgpt.*` keeps its published methods. The existi
 ## Exceptions with reasons
 
 - The external account plugin's face name comes from its row: the plugin is built outside this repository, so the assembly supplies the name the Provider record's authority uses.
-- `Lease` carries the bearer to the caller's attempt for one request; [ManagedAccount](ManagedAccount.md) states the rule.
+- The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary); these replies and errors omit it.
 
 ## Rule check
 
 | Rule | Application |
 | --- | --- |
 | §1 parts and Capabilities | One process part; ChatGPT is an account owner, not a Capability. |
-| §2 scopes | Process: the grant and leases are shared across Sessions. |
+| §2 scopes | Process: the grant and its generation are shared across Sessions. |
 | §3 orthogonality | No other owner's state is read; the host binding and its account forwarding are gone. |
 | §4 rules 1–6, 9 | No events, handoffs, callbacks, batches, context or Timeline state. |
 | §4 rule 7 | Callers use the account faces; no caller reads the binding or the account record. |
@@ -106,6 +106,7 @@ impl ChatGptAccount {
     pub async fn availability(&self, cancelled: CancelledFn) -> Result<AccountAvailability, AccountError> { /* ... */ }
     pub async fn subscribe(&self, cancelled: CancelledFn) -> Result<Subscription, AccountError> { /* ... */ }
     pub async fn catalog(&self, cancelled: CancelledFn) -> Result<AccountCatalog, AccountError> { /* ... */ }
-    pub async fn with_lease(&self, request: LeaseRequest, attempt: AttemptFn, cancelled: CancelledFn) -> Result<WithLeaseReply, AccountError> { /* ... */ }
+    pub async fn credential(&self, request: CredentialRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }
+    pub async fn rejected(&self, request: RejectedRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }
 }
 ```

@@ -21,7 +21,7 @@ Callers keep everything they keep with Provider: the Session's adopted model and
 | List the models a use can run | No: the file and its limits are this owner's | `selectable` |
 | Run one model request | No: credentials, retries and streaming are the owner's | `invoke` |
 | A media model's route and credential | No: the file declares no modality operation | `media_route` answers `unavailable` for every operation |
-| Run one exchange with a model's environment credential (the media executor) | No: the credential is this owner's resource | `with_lease` |
+| Read a model's environment credential for one exchange (the media executor) | No: the file and the environment variable are this owner's | `credential` |
 | Apply a preference patch | No: the file declares no effort or tier | `preferences` is absent in this profile; the client protocol rejects preferences |
 | Admit a temporary connection | No: the file is the only connection source | `prepare_startup` is absent; the client protocol rejects startup |
 | Learn where the recorder writes | Yes: read ModelLog's `recording` value | Business |
@@ -48,21 +48,21 @@ let outcome = provider
 
 ### Face and operations
 
-Face `providerService`, marked on `ConfiguredModels`; operations `resolve`, `selectable`, `invoke`, `media_route` and `with_lease`, with [Provider](Provider.md)'s request and reply types. `media_route` answers `unavailable`: a model file declares no `<category>.<operation>`, so no media call resolves. `with_lease` hands the environment credential to the caller's attempt for one exchange and drops it when the attempt ends. `preferences`, `prepare_startup`, `retain_startup` and `release_startup` do not exist in this profile; the recorder reads ModelLog's `recording` value.
+Face `providerService`, marked on `ConfiguredModels`; operations `resolve`, `selectable`, `invoke`, `media_route` and `credential`, with [Provider](Provider.md)'s request and reply types. `media_route` answers `unavailable`: a model file declares no `<category>.<operation>`, so no media call resolves. `credential` returns the environment credential for one exchange; the file carries no generation and this profile has no `rejected`, so a refusal is terminal for the caller. `preferences`, `prepare_startup`, `retain_startup` and `release_startup` do not exist in this profile; the recorder reads ModelLog's `recording` value.
 
 The file's entries declare both limits; a selection always carries them, so `resolve` and `selectable` cannot fail for an undeclared limit. `selectable(chat)` returns every entry in file order; `selectable(modality)` returns none.
 
 ### Errors
 
-[Provider](Provider.md)'s kinds, minus `invalid_connection`, `invalid_path` and `output_limit`'s startup variants: `invalid` for a malformed request, `not_found` for a target missing from the file, `unavailable` for a media operation or a missing environment variable, `cancelled`, `closed`, `failed` and `provider_failed {retryable}`; `with_lease` has `not_found`, `unavailable`, `cancelled` and `closed`.
+[Provider](Provider.md)'s kinds, minus `invalid_connection`, `invalid_path` and `output_limit`'s startup variants: `invalid` for a malformed request, `not_found` for a target missing from the file, `unavailable` for a media operation or a missing environment variable, `cancelled`, `closed`, `failed` and `provider_failed {retryable}`; `credential` has `not_found`, `unavailable`, `cancelled` and `closed`.
 
 ### Flows
 
-[Provider](Provider.md)'s `resolve`, `selectable`, `invoke` and `with_lease` flows. The file is loaded at `apply`; a reload re-reads it. No record, selection or lease is persisted.
+[Provider](Provider.md)'s `resolve`, `selectable`, `invoke` and `credential` flows. The file is loaded at `apply`; a reload re-reads it. No record, selection or credential is persisted.
 
 ## Exceptions with reasons
 
-- `with_lease` hands the environment credential to the caller's attempt for one exchange; the same prohibition as [ManagedAccount](ManagedAccount.md) applies.
+- The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary); `credential` is the only operation that returns it.
 
 ## Rule check
 
@@ -87,7 +87,7 @@ None. The model file and its validation are this owner's; no other owner's opera
 
 ## Binding appendix
 
-`providerService` is [Provider](Provider.md)'s name; this profile registers the same name from `ConfiguredModels`. The types are shared; only the operations listed above exist.
+`providerService` is [Provider](Provider.md)'s name; this profile registers the same name from `ConfiguredModels`. The types are shared, including `Credential` and `CredentialRequest` from [ManagedAccount](ManagedAccount.md); only the operations listed above exist.
 
 ```rust
 impl PublicService for ConfiguredModels {}
@@ -98,6 +98,6 @@ impl ConfiguredModels {
     pub async fn selectable(&self, request: SelectableRequest, cancelled: CancelledFn) -> Result<SelectableReply, ProviderError> { /* ... */ }
     pub async fn invoke(&self, request: InvokeRequest, cancelled: CancelledFn) -> Result<InvokeReply, ProviderError> { /* ... */ }
     pub async fn media_route(&self, request: MediaRouteRequest, cancelled: CancelledFn) -> Result<MediaRouteReply, ProviderError> { /* ... */ }
-    pub async fn with_lease(&self, request: LeaseRequest, attempt: AttemptFn, cancelled: CancelledFn) -> Result<(), ProviderError> { /* ... */ }
+    pub async fn credential(&self, request: CredentialRequest, cancelled: CancelledFn) -> Result<Credential, ProviderError> { /* ... */ }
 }
 ```
