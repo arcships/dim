@@ -151,7 +151,6 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 The service is marked on the `Loop` type; the wire name stays `agentLoop`.
 
 ```rust
-use crate::host::CancelledFn;
 use dim_agent_runtime::PublicService;
 use rutis::Ctx;
 use std::sync::Arc;
