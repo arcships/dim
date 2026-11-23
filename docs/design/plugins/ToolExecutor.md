@@ -9,11 +9,11 @@ ToolExecutor owns one committed tool batch on a line: its cancellation, its inte
 ToolExecutor owns:
 
 - **The current batch.** One top-level batch at a time: its token, its interrupt state, the per-call admission and the ordered settlement of the calls.
-- **Child calls.** A program's nested call is opened against the current batch, addressed by a gate id the owner issues; the owner writes the child's `step/tool-call`/`step/tool-result`, runs the same admission and execution path, and closes the gate and collects the child effects when the parent call settles.
+- **Child calls.** A program's nested call is opened against the current batch, addressed by a gate id the owner issues; the owner writes the child's `step/tool-call`/`step/tool-result`, runs the same admission and execution path, and closes the gate and collects the child effects when the parent call settles. A program that ends early may close its gate and read the confirmed effects to word its result; the owner closes it again at the parent's settlement without effect.
 - **The facts.** `step/tool-start` and `step/tool-completed` when progress is enabled, `step/tool-result` with the correlated results, and the child facts with their parent call id.
 - **Reload and interrupt settlement.** An open batch settles as a reload settlement, or as not executed, when the generation reloads; an interrupt cancels the current batch.
 
-ToolExecutor does not declare tools, decide admission, resolve write targets, execute a handler or hold a handler. Declarations and the adopted value belong to ToolBinding; admission belongs to Approval; write-target resolution, ordering class, claims and execution belong to ToolRegistry.
+ToolExecutor does not declare tools, decide admission, resolve a write target's facts, execute a handler or hold a handler. The adoption and declarations belong to ToolBinding; admission belongs to Approval; write-target resolution (`resolve_write`), ordering class (`ordering`), claims and execution (`run`) belong to ToolRegistry.
 
 Callers keep as business:
 
@@ -26,7 +26,7 @@ Callers keep as business:
 | Run a committed batch | No: the batch's order, admission, cancellation and terminal fact are one state machine | Loop writes `step/tool-call`; the owner consumes it (no caller operation) |
 | Open a child call against the current batch | No: a program's child must belong to the running parent call, and a caller-composed id could outlive or precede it | `open` |
 | Run a child call and receive its result | No: the child must take the same admission and execution path, write its own facts and settle before the parent | `invoke` |
-| Collect the child effects before the parent result | No: only the owner knows which gates belong to the parent call and when they settled | the owner merges at parent settlement; no caller operation |
+| Collect the child effects before the parent result | No: only the owner knows which gates belong to the parent call and when they settled | `close` returns the confirmed effects; the owner merges them again at parent settlement |
 | Read the request's declarations for the program | Yes: ToolBinding's `adopted` answers the declarations | Business composition |
 
 An operation exists only where its row says No.
@@ -45,19 +45,21 @@ let result = executor.invoke(InvokeRequest {
     gate_id: gate.gate_id.clone(),
     call,
 }, cancelled.clone()).await?; // GateClosed, Closed; a tool failure is result.is_error
+// The program ended: take the confirmed effects to word the result.
+let effects = executor.close(CloseRequest { gate_id: gate.gate_id }).await?; // GateClosed, Closed
 ```
 
 A program's declarations come from the pin owner, not the executor:
 
 ```rust
-let adopted = binding.adopted(&execution.request_id).await?; // NoRecord
+let adopted = binding.adopted(&execution.request_id).await?; // Invalid
 let declared: Vec<ToolDefinition> = adopted.tools
     .into_iter()
     .filter(|tool| tool.name != CODEMODE_TOOL)
     .collect();
 ```
 
-The owner closes the gate when the parent call settles; a program that returns early needs no close, and the effects of every child call it made are merged into the parent call's result in invocation order.
+The owner closes the gate when the parent call settles; a program that returns early closes it early to read the effects, and the effects of every child call are merged into the parent call's result in invocation order either way.
 
 ## Own contract
 
@@ -65,7 +67,7 @@ The owner closes the gate when the parent call settles; a program that returns e
 
 | Service | Purpose |
 | --- | --- |
-| `S:ToolRegistry` (Session, [#2026](https://github.com/arcships/dim/issues/2026)) | Resolve a call's write target and ordering class, and execute an admitted call for the request's adopted value. |
+| `S:ToolRegistry` (Session, [#2026](https://github.com/arcships/dim/issues/2026)) | `resolve_write` before admission, `ordering` for the batch's steps, and `run` for an admitted call. |
 | `B:Approval` | Admit each call, including the user's answer and the policy recheck. |
 | `B:Timeline`, `B:Dispatcher` | Commit progress and results; consume batches, interrupts and turn boundaries; report faults. |
 | `B:TimelineIdentity` | The calling line's identity in the execution context and the span. |
@@ -77,27 +79,29 @@ The owner closes the gate when the parent call settles; a program that returns e
 | --- | --- | --- | --- | --- | --- |
 | `open` | Open a child-call gate for one outer call of the current batch | `{parentCallId, context}` | `{gateId}` | Before the gate id is issued; nothing was created | `closed`, `interrupted`, `no_batch` (no current batch, or the parent call does not belong to it) |
 | `invoke` | Run one child call through the same admission and execution path | `{gateId, call}` | `{result}` | The gate's parent token; the child is cancelled and its result says so | `closed`, `gate_closed` (the gate was closed by its parent's settlement or by an interrupt) |
+| `close` | Close the gate now and answer the confirmed child effects | `{gateId}` | `{effects}` | None: the close settles | `closed`, `gate_closed` (the batch was interrupted or settled before the call) |
 
-`gateId` is bound to the calling row and the parent call; a call from another row is `gate_closed`. A child call's refusal, cancellation, unknown tool or tool failure is a `ToolResult` with `is_error: true`, not an operation error: the program decides what to do with it.
+`gateId` is bound to the calling row and the parent call; a call from another row is `gate_closed`. `close` is idempotent for the owner's own settlement: the parent's settlement closes the gate whether or not the program did, and the effects reach the parent result once. A child call's refusal, cancellation, unknown tool or tool failure is a `ToolResult` with `is_error: true`, not an operation error: the program decides what to do with it.
 
 ### Errors
 
 | Kind | Operation | What the caller does next |
 | --- | --- | --- |
-| `closed` | `open`, `invoke` | The executor is closing or reloading; stop the program; its batch is settled. |
+| `closed` | `open`, `invoke`, `close` | The executor is closing or reloading; stop the program; its batch is settled. |
 | `interrupted` | `open` | The turn was interrupted; stop the program. |
 | `no_batch` | `open` | The parent call is not part of the current batch; a caller bug: stop the program and report it. |
-| `gate_closed` | `invoke` | The gate's parent call settled or the batch was interrupted; stop the program. |
+| `gate_closed` | `invoke`, `close` | The gate's parent call settled or the batch was interrupted; stop the program; the parent result carries the effects already confirmed. |
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `open` | Check the current batch and the parent call, issue a gate id under the calling row, subscribe the gate to the parent token | Before the id is issued: nothing exists | The row's gates are closed with their child tasks | New calls are refused; every gate of the generation is closed | ToolExecutor |
-| `invoke` | Write the child `step/tool-call` with the parent call id, prepare and admit the call, execute it, write the child `step/tool-result`, record its effects | The child is cancelled; its fact records the cancellation; the gate stays usable for the program's next call | The row's gates close; in-flight children end cancelled and are recorded | In-flight children end as reload settlements; the gate is closed | ToolExecutor for the facts and the gate; ToolRegistry for the handler and its claim; the calling row for the program future |
+| `invoke` | Write the child `step/tool-call` with the parent call id, resolve the write target, admit the call, run it through the registry, write the child `step/tool-result`, record its effects | The child is cancelled; its fact records the cancellation; the gate stays usable for the program's next call | The row's gates close; in-flight children end cancelled and are recorded | In-flight children end as reload settlements; the gate is closed | ToolExecutor for the facts and the gate; ToolRegistry for the handler and its claim; the calling row for the program future |
+| `close` | Mark the gate closed, refuse new children, wait for its running children within the owner's grace, answer the confirmed effects | The close waits; a child past the grace is outside the contract | The row's gates close with their children | A close in flight finishes; the parent settlement closes the gate again | ToolExecutor |
 | Parent settlement | After the parent call's result is known, close every gate of the parent, wait for its children within the owner's grace, and merge their effects into the result in invocation order | — | — | — | ToolExecutor |
 
-The owner never hands out a gate: `gateId` names the gate only for `invoke`, and the owner closes it. A batch's calls settle in step order, each call's admission runs when the batch starts, and an interrupt cancels the current token: those rules stay as they are, and the caller sees only the results.
+The owner never hands out a gate: `gateId` names the gate only for `invoke` and `close`, and the owner closes it. A batch's calls settle in step order, each call's admission runs when the batch starts, and an interrupt cancels the current token: those rules stay as they are, and the caller sees only the results.
 
 ## Exceptions with reasons
 
@@ -108,7 +112,7 @@ The owner never hands out a gate: `gateId` names the gate only for `invoke`, and
 Flow tests on the owner:
 
 - A child call writes its own `step/tool-call`/`step/tool-result` with the parent call id; its effects appear in the parent result in invocation order; the outer result is written after its children settle.
-- A program that returns early still has its child effects merged; a child that ignores cancellation past the owner's grace leaves a result the parent result does not wait for.
+- A program that returns early still has its child effects merged; a `close` before the program ends answers the confirmed effects, and the same effects appear once in the parent result.
 - An interrupt cancels a running child and refuses a new gate; a reload settles an open child and an open parent, and a reload-settled result fails the turn.
 - `open` refuses a parent call that is not in the current batch and a second batch while one runs; `gate_closed` answers a call after the parent settled.
 - The same operations over the face and in process answer the same results and errors.
@@ -131,7 +135,7 @@ Flow tests on the owner:
 | §4 rule 9 | Progress and results are facts later decisions use; the batch's completion is consumed by Loop and the client. |
 | §7 resources and objects | The gate is the owner's; only its id crosses, and the owner closes it. |
 | §7 no proxy | No forwarding of declarations; Code Mode reads ToolBinding. |
-| §7 one surface | `open` and `invoke` are the operations; `definitions` and the gate object are removed. |
+| §7 one surface | `open`, `invoke` and `close` are the operations; `definitions` and the gate object are removed. |
 | §7 cross-language | Both operations take and answer data; a program in another language uses the same ids. |
 | §7 responsibility split | The caller keeps the program's control flow and its reaction to results; the owner keeps order, admission, cancellation and facts. |
 | ADR 002 D1 | Branch scope. |
@@ -142,7 +146,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **ToolRegistry ([#2026](https://github.com/arcships/dim/issues/2026)).** The owner needs `prepare({adopted, call}, cancelled) → {call, risk}` (resolve the write target and answer the ordering class and risk without side effects) and `execute({adopted, call, context}, cancelled) → {result}` (take the call's claim, run the handler and settle it). These are the registry's operations for the branch executor; the registry's contract states them.
+- **ToolRegistry ([#2026](https://github.com/arcships/dim/issues/2026)).** The registry's contract ([#2103](https://github.com/arcships/dim/pull/2103)) defines `resolve_write({adoption, call})`, `ordering({adoption, call})` and `run({adoption, call, caller}, cancelled)`. The executor uses those three; the tool's own failure comes back as a `ToolResult`, not as an error kind.
 - **Approval (#2028).** `admit` is this board's own operation (see [Approval](Approval.md)).
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
@@ -175,6 +179,18 @@ pub struct InvokeRequest {
     pub call: ToolCall,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseRequest {
+    pub gate_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseReply {
+    pub effects: Vec<dim_agent_types::ToolEffect>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
     #[error("the tool executor is closing")]
@@ -193,5 +209,6 @@ impl PublicService for ToolExecutor {}
 impl ToolExecutor {
     pub async fn open(&self, request: OpenRequest, cancelled: CancelledFn) -> Result<OpenReply, ExecutorError> { /* ... */ }
     pub async fn invoke(&self, request: InvokeRequest, cancelled: CancelledFn) -> Result<ToolResult, ExecutorError> { /* ... */ }
+    pub async fn close(&self, request: CloseRequest) -> Result<CloseReply, ExecutorError> { /* ... */ }
 }
 ```

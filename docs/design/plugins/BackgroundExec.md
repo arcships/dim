@@ -154,7 +154,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **HostPlatform ([#2032](https://github.com/arcships/dim/issues/2032)).** The process owner must expose a started process by task id: `wait({taskId}, cancelled) → {status, exit}`, `kill({taskId}) → {}`, and the task id in its start reply. BackgroundExec adopts that id and never receives a process object. Until the host's id operations land, this board's `adopt` and `stop` cannot be implemented; the other owners' contracts are independent.
+- **HostPlatform ([#2032](https://github.com/arcships/dim/issues/2032)).** The process owner must expose a started process by task id: `spawn(...) → {taskId}`, `wait({taskId}, cancelled)`, `kill({taskId})`, `settle({taskId})`, and settle its task table on close or reload. BackgroundExec adopts that id and never receives a process object. Until the host's id operations land, this board's `adopt` and `stop` cannot be implemented; the other owners' contracts are independent.
 - **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093)).** `hold` returns the lease id, `release` ends it early, and `activated`/`closing` gate the watcher.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 

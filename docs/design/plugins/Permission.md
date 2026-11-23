@@ -74,7 +74,7 @@ let next = permission.update(UpdateRequest {
 | Service | Purpose |
 | --- | --- |
 | `S:SessionScope` (Session, [#2093](https://github.com/arcships/dim/pull/2093)) | The creation record's permission preset and working directory, and the Session id for facts queries. |
-| `S:CommandRules` (Session port) | The user's command rules, read at decision time. |
+| `S:PermissionRules` (Session, [#2094](https://github.com/arcships/dim/pull/2094)) | `permissionRules.rules` answers the user's command rules at decision time. |
 | `S:FileAccessFacts` (Session owner, [#2025](https://github.com/arcships/dim/issues/2025)) | Resolve the call's target and answer the workspace, system, owned and grant facts. |
 | `B:Timeline`, `B:Dispatcher` | Fold `permission/changed`; commit an update. |
 
@@ -158,6 +158,7 @@ Flow tests on the owner:
 
 - **File access facts ([#2025](https://github.com/arcships/dim/issues/2025)).** The Session owner must publish one data operation, `check({sessionId, access, mode, path}, cancelled) → {target, workspace, system, owned, grant, discoveryError?}`, that resolves the call's path (`~`, cwd, `..`, links) and answers the facts under the effective access. Permission currently reads the owner's Rust object and a host `home` value; both disappear with this operation.
 - **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093)).** `config` and `identity` are the target's operations; Permission's creation-record reads use them.
+- **Permission rules ([#2017](https://github.com/arcships/dim/issues/2017)).** `permissionRules.rules` ([#2094](https://github.com/arcships/dim/pull/2094)) is the command-rules operation Permission reads; the `commandRules` name is removed.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix
