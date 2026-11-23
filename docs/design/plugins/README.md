@@ -13,6 +13,15 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
 | [ShellInput](ShellInput.md) | — | `shell.*` methods, command runs | — | P1 |
 | [Attachments](Attachments.md) | — | `attachment.put`, Session files | — | P1 |
+| [Connection](Connection.md) | client connections, hello/attach admission, attachments and presence; `connection` | — | — | #2021 |
+| [Transport](Transport.md) | listening endpoints, accepting and bound addresses; `listenAddresses` | — | — | #2021 |
+| [ServerControl](ServerControl.md) | publication gate, shutdown intent and accepted-work holds; `processActivity` | — | — | #2021 |
+| [Rpc](Rpc.md) | handshake, built-in methods and dispatch of one call; `rpc` | — | — | #2021 |
+| [ManagementMethods](ManagementMethods.md) | the process namespace table; `managementMethods` | — | — | #2021 |
+| [ProcessRoot](ProcessRoot.md) | process values: reserved names and credential variable names | — | — | #2021 |
+| [CallChannel](CallChannel.md) | call bindings for connection-bound notifications; `callChannel` | — | — | #2021 |
+| [UiHost](UiHost.md) | interface registrations and UI leaves; `uiHost` | — | — | #2021 |
+| [UiExtensions](UiExtensions.md) | the UI content catalog; `uiExtensions` | UiResources | — | #2021 |
 | [Report](Report.md) | error-only `report.*` and its connection-bound drafts | `session.report.*` and its connection-bound drafts | — | [#1319](https://github.com/arcships/dim/issues/1319) |
 | [SessionTitle](SessionTitle.md) | — | observes adoption of the first user input, `session.rename` | — | P1 |
 | [PromptSuggestion](PromptSuggestion.md) | `PromptSuggestionSettings` in App Server: the `prompt-suggestion` Settings source | observes the completed turn's events, `session.suggestion.request` and `session.suggestion.respond`, the offer in flight and the shown offer; no events | — | P1; [#943](https://github.com/arcships/dim/issues/943) |
@@ -23,7 +32,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation; [ContextUsage proposal](ContextUsage.md)) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
 | [Prompt](Prompt.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | `Prompt`: the System its publisher adopts carries the composition over the entries in force, and a host-prepared request carries the same composition, placed by Loop | #548 |
 | [PromptSources](PromptSources.md) | — | the named sources, their policy texts at the factory configuration, and the state and rule entries | — | #548 |
-| [EnvironmentClients](EnvironmentClients.md) | App Server read-only `sessionClientsHost` presence (Connection and UiHost) | — | presence snapshots as `<dim-state>` inputs at branch open and on `ClientsChanged` | #1019 |
+| [EnvironmentClients](EnvironmentClients.md) | App Server read-only `connection.presences` (Connection and UiHost) | — | presence snapshots as `<dim-state>` inputs at branch open and on `ClientsChanged` | #1019 |
 | [EnvironmentSettings](EnvironmentSettings.md) | — (reads each setting module's read port) | — | settings snapshots as `<dim-state>` inputs at branch open and on a Settings change | #1020 |
 | [ClientView](ClientView.md) | per-connection viewed-line record in App Server | — | — | #1021, deferred for model state |
 | [AgentSettings](AgentSettings.md) | — | one `settings` tool: `list`, `get` | — | #1022 |

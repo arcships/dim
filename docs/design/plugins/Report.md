@@ -1,29 +1,52 @@
-# Report plugin
+# Report
 
-The [target Session tree binding](../contracts/runtime-owner-operations.md) moves calls from `treeCommands` to `timelineTree` with the same arguments and replies. The catalog entry and consumer injections change together. References to `treeCommands` below describe the pre-migration binding.
+Scope: process and Session. Issue: [#1319](https://github.com/arcships/dim/issues/1319), contract #2021.
 
-Status: Draft. Scope: Session reports and a process entry for errors without a readable Session.
-Issue: [#1319](https://github.com/arcships/dim/issues/1319).
+Report owns the drafts behind `/report` and the error-only report a client opens when no Session can be read. This document is the owner's target contract; the client interaction and the evidence rules below are the same design, restated in the contract's shape. The TimelineTree, SessionScope, ManagementMethods and SessionMethods owners are separate; their operations are dependencies.
 
-## 1. Ownership
+## 1. Use and scope: responsibility split
 
-Report captures a bounded snapshot when a client opens the dialog. It owns evidence selection, filtering, the model-send preview, one-shot generation, and the final report and ZIP. The client owns the error hint or action, confirmation, and local save or sharing. App Server assembles the parts and admits RPC. The first integration uses both TUI renderers. Desktop and Web use the same report shapes and archive.
+Report owns:
 
-```text
-TUI /report        Desktop or Web "Report this error"
-     \                          /
-      authenticated App Server connection
-            |                         |
-     session.report.*             report.*
-     Session evidence             Error-only evidence
-            \                         /
-          Report preview, generation and ZIP
+- **Drafts.** One per calling connection in each part instance: the captured snapshot, the plan, at most one generation in flight, a five-minute expiry, and the Session hold that keeps the dialog's Session loaded.
+- **Evidence.** Which records of the admitted Session or the observed error are selected, filtered, bounded and redacted, and what the caller sees before a plan.
+- **Plans and generation.** The immutable plan, its consumption, one-shot generation, cancellation and the settlement of accepted work.
+- **The archive.** `report.md`, `diagnostics.json` and the bounded ZIP returned to the client.
+
+Callers keep:
+
+- The error hint or action, confirmation and local save or sharing: the client owns all three.
+- Session admission: Rpc and Agents decide whether the Session can be read; Report reads only the admitted Session.
+- The model's transport and retry policy: the Provider and auxiliary-model owners.
+- The TUI menu entry: the CLI command owner.
+
+| Requirement (callers) | Can callers compose it from the operations below without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| A client prepares a report on the Session it views | No: the draft, its expiry, its hold and the captured cutoff are the owner's | `prepare` (Session namespace) |
+| A client on Home reports a conversation-open failure | No: the process part has no Session and drafts from the observed error | `prepare` (process namespace) |
+| A client reviews the exact material and chooses redaction and instructions | No: an immutable plan is the owner's state | `plan` |
+| A client generates and receives the preview and the ZIP | No: plan consumption, one-shot generation and the archive are the owner's | `generate` |
+| A client cancels a plan or the draft | No: only the owner can stop its generation and discard the draft | `cancel` |
+
+An operation or parameter exists only where the row says No.
+
+## Caller example
+
+The TUI's `/report` flow:
+
+```rust
+let prepared = report.prepare(PrepareRequest { error: None }).await?; // Session namespace
+let plan = report.plan(PlanRequest {
+    report_id: prepared.report_id,
+    generation: Generation::Local,
+    redact: true,
+    instructions: None,
+}).await?; // the exact material and the directives, reviewed before Generate
+let report = report.generate(GenerateRequest { report_id, plan_id: plan.plan_id }).await?;
+save(report.archive); // the client saves after the connection may close
 ```
 
-The Session part owns the draft and reads only the admitted Session. If its history read fails, the draft proceeds with an explicit missing-evidence reason and any captured error supplied by the client. If Session admission fails, the process part can prepare an error-only draft from a client-observed error. The process request accepts neither a Session nor a branch ID.
-
-The error-only entry uses `managementMethods` on the local App Server connection and requires explicit admission on the authenticated local Web entry (§7). Paired connections can use `session.report.*` while Session admission succeeds. The paired error-only entry is a separate admission decision in §7. Preparing a report requires a live connection. A TUI that already received the generated ZIP can still save it after the connection closes.
-
+Home's error-only flow uses the same three calls in the process namespace with `error` present.
 ## 2. Client interaction
 
 In both TUI modes, `/report` opens a report for the current Session, including while a turn is running. It needs no captured error. Users can report an unsatisfactory answer or a repeating turn without waiting for a failure or stopping the turn. The dialog keeps the Session selected when it opened, including when preparing again after expiry. Returning to the composer and running `/report` again selects the Session shown at that time.
@@ -79,26 +102,51 @@ The Timeline read is branch-local and bounded by 32 candidate events ending at t
 
 Diagnostics never include message bodies, raw logs, workspace files, tool input or output, or raw model requests. Their fields come from typed sources or fixed renderings, and correlation IDs come from verified metadata. With redaction on, remove correlation IDs and do not select conversation text. Only an explicit local plan with redaction off may add a recent excerpt to the Session report. Do not collect hidden reasoning, tool calls or results, attachments, instructions, or full history for the excerpt. User and assistant text can itself contain sensitive details; the user should inspect the ZIP before attaching it. Options maps recognized omit or keep instructions to field directives and shows unsupported instructions in the dialog. A keep directive cannot override redaction. The generation result cannot add new evidence.
 
-## 4. Report methods
+## 4. Own contract
 
-Register the Session namespace in `sessionMethods` and discover it via `session.methods`. The local error-only namespace is `report`, discovered as an admitted management contribution. Below, methods are suffixes of either namespace. Session calls include the ordinary `sessionId` required by the methods contract. Report calls require a live authenticated caller origin. [Session method contributions](../contracts/session-boundary.md#a1-method-contributions).
+### Dependencies
 
-| Method | Inputs | Reply |
-| --- | --- | --- |
-| `prepare` | Session calls accept optional `error`. Omit it for a report on the admitted Session. When supplied, `error` is `{kind: "timeline", branchId, sequence, observed}` or `{kind: "observed", observed}`. The process part requires `error` in the observed variant. | `{reportId, defaultModel?, plan}`. Evidence availability is included in the plan. The default plan lets the dialog open with a preview without an extra round trip. |
-| `plan` | `{reportId, generation, redact, instructions?}`, with generation `{kind: "local"}` or `{kind: "model", model: {providerId, modelId}}` | `{planId, generation, evidence, instructionsStatus}`. A model plan includes `material`, `maxOutputTokens` and `estimatedCost` as `{amount, currency}` or `null` for unknown. A successful replacement invalidates the previous plan. |
-| `generate` | `{reportId, planId}` | `{title, body, files: {"report.md", "diagnostics.json"}, archive: {filename, base64}, sharing: {githubIssueUrl, discordUrl, description}}` |
-| `cancel` | `{reportId, target: "generation", planId}` or `{reportId, target: "report"}` | `{cancelled: boolean}`. Generation cancellation affects only the named in-flight plan and keeps the evidence available for a new plan. An inactive plan returns `{cancelled: false}`. Report cancellation drops the draft. |
+TimelineTree's bounded branch read and branch summary ([#2024](https://github.com/arcships/dim/issues/2024)); SessionScope's hold and closing ([#2025](https://github.com/arcships/dim/issues/2025)); ManagementMethods' `register` (process namespace) and the Session method table's registration; the process build label and protocol version for diagnostics.
 
-The TUI omits `error` for a Session report and sends the `observed` variant to the process entry for a conversation-open failure. Clients with an error-bound action, such as the Desktop and Web action in §2, can use the `timeline` variant to attach a known failure position in an admitted Session.
+### Operations
 
-The local plan uses `generation: {kind: "local"}`. The `evidence` object includes the filtered diagnostic sources and a Timeline availability reason when activity records are absent. For a Session report, only a local plan with `redact: false` and Timeline enabled may also return `evidence.conversation` (an ordered array of `{role, sequence, text}`); the field is absent if no eligible text is available. `generate` renders that plan without reading later messages. Options recognizes comma- or newline-separated `omit` and `keep` directives for `timeline`, `error codes`, and `correlation ids`. The reply reports `instructionsStatus` as `none`, `applied`, `partially_applied`, or `unsupported`. It does not echo the entered text. Redaction always removes correlation IDs, so `keep correlation ids` is unsupported while redaction is on.
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `prepare` | Capture a bounded snapshot and open a draft | `{error?}`; the process namespace requires `error` in the observed variant | `{reportId, defaultModel?, plan}` | Before the snapshot is captured; nothing is drafted | `caller_required`, `invalid`, `unavailable` |
+| `plan` | Bind the exact material, generation and directives | `{reportId, generation, redact, instructions?}` | `{planId, generation, evidence, instructionsStatus}` | None; the plan is a value | `not_found`, `invalid`, `busy`, `model_unavailable` |
+| `generate` | Consume the plan and produce the archive | `{reportId, planId}` | `{title, body, files, archive, sharing}` | The named plan stops; the evidence stays for a new plan | `not_found`, `stale`, `busy`, `generation_failed`, `cancelled` |
+| `cancel` | Stop a generation or drop a draft | `{reportId, target: "generation", planId}` or `{reportId, target: "report"}` | `{cancelled}` | — | `not_found` |
 
-The observed error contains `operation` (`session_read`, `session_fork`, `branch_create` or `model_generation`), `code?`, `observedAt` (UTC timestamp) and `clientVersion` (the reporting client's build label, as the client's own `--version` prints it). No reader orders or compares it; it is display only. These fields carry neither Session authority nor a provider connection. The report ID and plan ID are opaque. Access requires the same caller connection and, for a Session draft, the same admitted Session. A missing, expired or foreign draft returns `report_not_found`. Invalid fields return `invalid_params`. A replaced or consumed plan returns `report_plan_stale`. A concurrent generation returns `report_busy`. A missing or changed model selection returns `report_model_unavailable` before a request. The other execution failures use `report_generation_failed` or `report_cancelled`. Error messages use stable summaries. Prepare returns a local plan when no usable model is available and retains the adopted model identity when known.
+The draft is keyed by the calling connection and the part instance; a missing, expired or foreign draft is `not_found`. A new `prepare` replaces an idle draft for that connection. At most 16 drafts per part instance; a seventeenth is `busy`. The observed input and instructions are bounded to 1 KiB each; the prepared model material to 8 KiB; the encoded ZIP to 64 KiB before the reply.
 
-An immutable plan binds the exact material, selected model connection revision and output allowance. Generate atomically consumes the plan before starting work. Duplicate or late requests cannot resend it. Changing settings or retrying requires a new plan and a new explicit Generate. A model timeout or an ambiguous provider failure consumes the plan. Cancellation fences late replies, and a new generation waits for the old work to settle. Successful generation releases the draft and transfers the finished preview to the client. Closing the dialog or losing the connection releases any draft still open. The part cancels and settles accepted work on Session closing or unload using the existing call lifecycle and caller-closed signal. A bounded Session hold keeps the dialog alive between calls. [Part lifecycle](../plugin-contract.md#7-lifecycle-of-a-part), [call channels](../contracts/session-boundary.md#a2-call-channel), [activity holds](../appserver/idle-unload.md#51-activity-hold).
+### Errors
 
-Use one draft per caller connection in each part instance, with a five-minute expiry and at most one generation in flight per draft. A new prepare replaces an idle draft for that connection. Allow up to 16 simultaneous drafts per part instance and return `report_busy` when full. Refuse replacement while a generation is settling. Bound the observed input and instructions to 1 KiB each and the prepared model material to 8 KiB. Bound model output to the lower of 1,024 tokens and the owner's allowance, with a 30-second generation deadline. Limit the encoded ZIP before constructing the RPC reply (§6). Expiry, connection loss, and close discard unsettled outputs. Drafts are ephemeral and have no on-disk store.
+| Kind | What the caller does next |
+| --- | --- |
+| `caller_required` | The method needs a client connection; an in-process caller cannot prepare a report |
+| `invalid` | Fix the request: a missing or malformed error reference, a model id outside the admitted catalog, an out-of-range field |
+| `unavailable` | No draft can be prepared now: the Session is closing or its evidence cannot be read; use the local template or retry later |
+| `not_found` | The draft expired or belongs to another connection; prepare again |
+| `stale` | The plan was replaced or consumed; review the new plan before generating |
+| `busy` | A generation is running for this draft; cancel it or wait for it to settle |
+| `model_unavailable` | The selected model cannot serve this request; choose another or generate locally |
+| `generation_failed` | The generation failed; the draft keeps its evidence and the caller retries with a new plan or generates locally |
+| `cancelled` | The generation stopped; the draft keeps its evidence |
+
+### Flows
+
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| `prepare` | Capture the snapshot at the published cutoff within the bounds, take the Session hold, open the draft | The snapshot read stops; no draft | The draft is discarded with the part | Every draft is discarded and its hold released | Report: the draft and its hold |
+| `plan` | Validate the request, compute the reviewed evidence, replace the previous plan | — | The draft is discarded | The plan is discarded with the draft | Report |
+| `generate` | Consume the plan atomically, render or run the one-shot model call, return the archive | The named plan stops; late output is discarded; the evidence stays | The draft and its work are discarded | Accepted work settles; late output is discarded | Report |
+| `cancel` | Stop the named generation or drop the draft | — | — | — | Report |
+
+### Exceptions with reasons
+
+- The process namespace accepts no Session or branch id: an error-only report must work when Session admission failed, so the part has no Session to name.
+- The archive is returned in the `generate` reply: the client must be able to save after the connection closes, and a second download resource would be another owner's store.
+- Evidence is read at the published cutoff and rendered later: the snapshot is a projection Report owns, so a later turn cannot change a reviewed plan.
 
 ## 5. Generation
 
@@ -122,27 +170,30 @@ The client keeps the completed preview and bytes when a share action fails. The 
 
 ## 7. Requirements raised to mechanism owners
 
-| Blocker and existing alternatives | Required capability and ordering | Owner |
+| Owner | Required operation or value | Why the caller cannot compose it |
 | --- | --- | --- |
-| Session contribution admission requires a loaded Session. A conversation read may fail before that load completes. Local management contributions work outside a Session, but Web exposes only explicitly admitted names and paired entries serve only Session methods. | Admit the error-only methods on the authenticated local Web entry via its explicit allowlist. A paired error-only path needs an agreed authenticated admission contract for narrowly scoped client operations without a Session. Reject such calls under the current paired contract. The entry grants no Session access, adds no facts, and keeps existing disconnect and reload semantics. | App Server Web entry and Rpc owners, [#1319](https://github.com/arcships/dim/issues/1319). [Web admission](../web-workspace.md#23-http-surface), [paired entry](RemoteGateway.md). |
-| The auxiliary call accepts one request from its consumer but invokes the shared retry and credential-recovery policy underneath. A report cannot enforce its request budget from the caller side. | Offer a caller-selectable single-attempt policy through the auxiliary boundary, including its provider transport. The owner enforces the prepared target revision and never retries or substitutes after a send. Preserve cancellation, reload settlement and other callers' policy. Enable model-assisted reports only where the owner can honor this contract. | Auxiliary model and provider owners, [#1319](https://github.com/arcships/dim/issues/1319). [Auxiliary model interface](../appserver/auxiliary-model.md#4-interfaces), [model retry policy](../model-failures.md). |
-| The curated TUI list has no `/report` slot. A hidden command would leave the documented command discoverability incomplete. | The CLI command owner adds the menu entry with the order and behavior in §2. This is client-side and does not affect Timeline ordering, interruption or reload. | CLI command owner, [#1319](https://github.com/arcships/dim/issues/1319). [Command menu](../cli-commands.md#command-menu). |
+| TimelineTree ([#2024](https://github.com/arcships/dim/issues/2024)) | A bounded branch read `{branchId, through, kinds, limit} → {events, truncated}` and a branch summary `{head, adoptedModel}`; the default branch id | The read must stop at a committed cutoff and stay inside the owner's pages; composing it from raw queries would let the caller re-fold branch state |
+| SessionScope ([#2025](https://github.com/arcships/dim/issues/2025)) | `hold() → holdId`, `release(holdId)`, `closing()` | The hold keeps the Session loaded while the dialog is open; its settlement is the Session owner's |
+| Session registration ([#2026](https://github.com/arcships/dim/issues/2026)) | The Session method table's `call` request carries `{method, params, caller: {connectionId, callId}}` | Report binds its draft to the calling connection; the caller identity is data |
+| Provider ([#2019](https://github.com/arcships/dim/issues/2019)) | A one-shot completion with a caller-selected no-retry policy and the exact prepared material | Model-assisted generation is outside this contract until the owner offers that operation; the local template stays the default |
+| Web entry (App Server, this block) | Admit the process `report.*` namespace on the authenticated local Web entry | The error-only entry is served to the web client; the admission list is the entry's |
 
-## 8. Dependencies and rule check
+## 8. Rule check
 
-The Session part declares the `sessionMethods`, `sessionLifecycle` and `treeCommands` data faces. It uses the [public branch read surface](../timeline-read-ownership.md#8-binding-appendix) for the published cutoff and adopted model selection. The process part declares the `managementMethods` and `partRegistry` data faces. Both use caller origin and the process build metadata already available to App Server. With no approved typed diagnostics source, build and platform information are sufficient process evidence. Model-assisted generation depends on the model owners in §7. App Server composes the parts as one feature. [Service catalog](../../architecture/rust-agent/generated/catalog.md).
-
-| Rule | Check |
+| Rule | Application |
 | --- | --- |
-| Principles §1 and ADR 002 D1 | Report has a Session part and a process part for its respective draft scopes. Neither is a Capability. They read a bounded snapshot and do not fold or write Timeline state. |
-| §4 rules 1 and 2 | Neither part commands another state owner or hands off an object through the Timeline. The client explicitly submits an immutable plan to its owner. |
+| Principles §1 and ADR 002 D1 | Report has a Session part and a process part for their draft scopes; neither is a Capability. |
+| §2 scopes | The Session part drafts for its Session; the process part drafts for errors without a readable Session. |
+| §3 orthogonality | No other owner's state is read; TimelineTree, SessionScope and the method tables are asked through their operations. |
+| §4 rules 1 and 2 | Neither part commands another state owner or hands off an object through the Timeline; the client submits an immutable plan. |
 | §4 rules 3 and 5 | No before callback or event batch applies. |
-| §4 rules 4 and 8 | Report uses generic method admission, public reads and lifecycle. Owner changes needed for Web admission and model policy are listed in §7. |
-| §4 rule 6 | Source context is untouched. The isolated operation uses only reviewed material. |
-| §4 rule 7 and ADR 002 D3 | Dependencies point to public read, lifecycle, and model services. Report reads no private storage or provider state. |
-| §4 rule 9 | No Timeline events or broadcast notices are added. Results go to the originating RPC caller. |
-| ADR 002 D2 | The feature owns the report work and state. Its parts register their own methods. |
-| ADR 002 D4 and D5 | Per-report settings live in the draft. The RPC contract is language-neutral. |
+| §4 rules 4 and 8 | Report uses generic method admission, public reads and lifecycle; the requirements above are the only owner changes. |
+| §4 rule 6 | Source context is untouched; the one-shot operation uses only reviewed material. |
+| §4 rule 7 and ADR 002 D3 | Dependencies point to public read, lifecycle and model services; no private storage or provider state is read. |
+| §4 rule 9 | No Timeline events or broadcast notices; results go to the originating caller. |
+| §7 no handle | The draft, the plan and the ZIP are values addressed by ids; the Session hold is an id. |
+| ADR 002 D2 | The feature owns the report work and state; its parts register their own methods. |
+| ADR 002 D4 and D5 | Per-report options live in the draft; the RPC contract is language-neutral. |
 
 ## 9. Verification
 
@@ -157,3 +208,68 @@ The Session part declares the `sessionMethods`, `sessionLifecycle` and `treeComm
 ## 10. Ablation
 
 The Session namespace serves current-Session reports through the existing prepare method. The process entry is needed for a conversation-open error that fails Session admission and uses the same flow with fewer evidence sources. The plan ID ties a paid request to the exact preview the user confirmed. The bounded ZIP in the generation reply lets the client save without a second download resource or archive store. An isolated one-shot model operation supplies drafting and redaction without a general-purpose report Session.
+
+## 11. Binding appendix
+
+```rust
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorReference>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareReply {
+    pub report_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<ModelId>,
+    pub plan: Plan,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanRequest {
+    pub report_id: String,
+    pub generation: Generation,
+    pub redact: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateReply {
+    pub title: String,
+    pub body: String,
+    pub files: std::collections::BTreeMap<String, String>,
+    pub archive: Archive,
+    pub sharing: Sharing,
+}
+
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ReportError {
+    #[error("Report methods require a client connection")]
+    CallerRequired,
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("The report cannot be prepared now")]
+    Unavailable,
+    #[error("The report draft is missing or expired")]
+    NotFound,
+    #[error("The plan was replaced or consumed")]
+    Stale,
+    #[error("A generation is running for this report")]
+    Busy,
+    #[error("The selected model is unavailable")]
+    ModelUnavailable,
+    #[error("The generation failed")]
+    GenerationFailed,
+    #[error("The generation was cancelled")]
+    Cancelled,
+}
+```
+
+The two namespaces register the same four operations: `session.report.*` on the Session method table and `report.*` on the process table.
