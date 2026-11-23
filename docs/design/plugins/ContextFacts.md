@@ -41,12 +41,29 @@ let Some(algorithm) = described.algorithm else {
     return Err(UsageError::NotCountable); // the caller keeps complete-request counts only
 };
 let parts = facts.contributions(ContributionsRequest {
-    model: selection,
+    model: selection.clone(),
     fixed: Some(Fixed { system, tools }),
     messages,
 }).await?;
-let total: f64 = parts.fixed.map(|fixed| fixed.estimated).unwrap_or_default()
-    + parts.messages.iter().map(|message| message.estimated).sum::<f64>();
+// Contributions are the counter's facts; the caller estimates them, now and after a restart.
+let total = match parts.fixed {
+    Some(fixed) => facts.estimate(EstimateRequest {
+        model: selection.clone(),
+        algorithm: parts.algorithm.clone(),
+        contribution: fixed,
+    }).await?.tokens,
+    None => 0.0,
+} + {
+    let mut sum = 0.0;
+    for message in parts.messages {
+        sum += facts.estimate(EstimateRequest {
+            model: selection.clone(),
+            algorithm: parts.algorithm.clone(),
+            contribution: message,
+        }).await?.tokens;
+    }
+    sum
+};
 ```
 
 ## Own contract
@@ -60,11 +77,11 @@ None. The capability snapshot, the config and the messages arrive in the request
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `describe` | The model's limits and counter identity | `{model}` | `{contextWindow, outputTokens, thresholdTokens, algorithm?}` | None; the owner completes the read | `not_adopted`, `closed` |
-| `count` | One complete request's tokens | `{model, request}` | `{tokens}` | None | `not_adopted`, `closed` |
-| `contributions` | The fixed and per-message contributions of a request | `{model, fixed?, messages}` | `{algorithm, fixed?, messages}` | None | `not_adopted`, `unsupported`, `closed` |
+| `count` | One complete request's tokens | `{request}` | `{tokens}` | None | `not_adopted`, `closed` |
+| `contributions` | The fixed and per-message contributions of a request, as the counter's facts | `{model, fixed?, messages}` | `{algorithm, fixed?: Contribution, messages: [Contribution]}` | None | `not_adopted`, `unsupported`, `closed` |
 | `estimate` | The tokens of one contribution | `{model, algorithm, contribution}` | `{tokens}` | None | `not_adopted`, `unsupported`, `algorithm_mismatch`, `closed` |
 
-`model` is the Session's model selection: provider, model, adopted capability snapshot, config and metadata. `contributions` answers contributions in request order and, when `fixed` is present, the fixed contribution of the given system and tools.
+`model` is the Session's model selection: provider, model, adopted capability snapshot, config and metadata; `count` takes the request, which already carries the selection. `contributions` answers the counter's facts in request order and, when `fixed` is present, the fixed contribution of the given system and tools. A `Contribution` is the serialized-byte and image facts the counter works from, so a caller can save it and estimate it again after a restart.
 
 ### Errors
 
@@ -94,8 +111,8 @@ The four operations hold no resource and wait for nothing; their rows cover only
 ## Verification
 
 - `describe` answers the window, allowance and threshold of an adopted model; a missing or foreign snapshot is `not_adopted`.
-- `count` equals the fixed contribution plus the message contributions summed through `estimate`, for a model with an additive counter.
-- `contributions` is `unsupported` for a model without a counter; `estimate` with another algorithm is `algorithm_mismatch`.
+- `count` equals the fixed contribution plus the message contributions, each summed through `estimate`, for a model with an additive counter; a saved contribution estimates again after a restart with the same number.
+- `contributions` answers the counter's facts for a model with an additive counter and is `unsupported` otherwise; `estimate` with another algorithm is `algorithm_mismatch`.
 - A call in flight when the generation closes ends `closed`.
 
 ## Rule check
@@ -126,6 +143,15 @@ The four operations hold no resource and wait for nothing; their rows cover only
 
 None.
 
+## Supersedes
+
+This contract replaces the `contextModelHost` object; the delivery in #2025 carries the migration.
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `Context accounting and compaction → ContextModelHost` row of "Model preparation, history and tools".
+- `docs/design/service-faces.md`: §3.5's `contextModelHost` row.
+
+Rule D: no client wire protocol or user-visible behavior changes; the statistics ContextUsage persists keep the same facts.
+
 ## Binding appendix
 
 ```rust
@@ -151,7 +177,6 @@ pub struct Limits {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountRequest {
-    pub model: ModelSelection,
     pub request: ModelRequest,
 }
 
@@ -187,8 +212,9 @@ pub struct Contribution {
 #[serde(rename_all = "camelCase")]
 pub struct ContributionsReply {
     pub algorithm: String,
-    pub fixed: Option<f64>,
-    pub messages: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<Contribution>,
+    pub messages: Vec<Contribution>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -225,4 +251,4 @@ impl ContextFacts {
 }
 ```
 
-`ContributionsReply.fixed` and `.messages` are token counts, aligned with the request's messages; `Contribution` stays the serialized-bytes and image facts the counter works from.
+`ContributionsReply.fixed` and `.messages` are the counter's facts, aligned with the request's messages; `estimate` turns one into tokens. `Contribution` stays the serialized-bytes and image facts the counter works from. `ContributionsReply.fixed` and `.messages` are the counter's facts, aligned with the request's messages; `estimate` turns one into tokens. Errors cross as `{code, message}`, `code` from the variant name.

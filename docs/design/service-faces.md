@@ -94,10 +94,10 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `sessionFiles` | `sessionFiles.put/import/read/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFiles` 是进程内绑定。 |
 | `commandRules` | `commandRules.read` | Session 命令规则读取，按 [命令规则](appserver/permission-command-rules.md#41-language-neutral-adr-002-d5) §4.1。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
-| `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
+| ~~`agentConfig`~~ | 无 | 面移出（#2093）：Agent 的配置不归 Session，值仍由装配提供 |
 | `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
-| `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
-| `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.8。 |
+| ~~`skillsConfig`~~ | 无 | 面移出（#2093）：工厂文本只在自己的 part 内读 |
+| ~~`collaborationConfig`~~ | 无 | 面移出（#2093）：工厂文本只在自己的 part 内读 |
 | `worktreeAssociations` | `store.associateWorktree` | 形状见 §4.8。 |
 | `toolSourcesView` | `toolSourcesView.get/observe` | 同一 ToolRegistry owner 的独立只读观察面；贡献注册仍由 `toolRegistry` 负责，见 [工具贡献 §7.5](../architecture/rust-agent/tool-contributions.md#75-服务接口)。 |
 
@@ -180,11 +180,11 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
-| `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
-| `prepareContextHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 待迁移；按 #1292 定义操作面 |
+| ~~`historyRenderer`~~ | session | SessionScope | hot-path | 由 `contextProjection` 取代（[Context projection](plugins/ContextProjection.md)，#2093） |
+| ~~`contextModelHost`~~ | session | SessionScope | hot-path | 由 `contextFacts` 取代（[Context facts](plugins/ContextFacts.md)，#2093） |
+| ~~`prepareModelHost`~~ | session | PrepareModelHost | hot-path | 由 `requestSettings` 值取代（[Request settings](plugins/RequestSettings.md)，#2093） |
+| ~~`prepareContextHost`~~ | session | SessionScope | hot-path | 无目标，移出目录（#2093） |
+| ~~`compactionStrategyHost`~~ | session | ProductSummaryStrategy | hot-path | 由 `summaryStrategy` 取代（[Summary strategy](plugins/SummaryStrategy.md)，#2093） |
 
 ### 3.6 入口、凭据与宿主资源
 
@@ -203,7 +203,7 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `hooksService` | process | HooksSettings | host-resource |
 | `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |
 | `providerConnectionResolver` | process | Provider | host-resource |
-| `timelineFactory` | session | SessionScope | control |
+| ~~`timelineFactory`~~ | session | SessionScope | control | 由 `sessionScope.openBranch` 取代（[SessionScope](plugins/SessionScope.md)，#2093） |
 
 ## 4. 批次契约（#1292）
 

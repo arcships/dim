@@ -8,7 +8,7 @@
 | Language readers → PromptSources | `sessionLanguage.get`. |
 | Language updates → App Server | [`session.language.update`](session-access.md) accepts the existing language code or clear action. The owner serializes persistence, live-state replacement and Prompt adoption on main and loaded branches before replying. |
 | Prompt → PromptRegistry; guide and tool contributors → their registries | `initialPromptConfiguration.get`, `promptHost.load`, `guideEntries.register`, `toolRegistry.register`, `toolSourcesView.get/observe`. |
-| Session and branch parts → their lifecycle; branch fact consumers → Dispatcher | `sessionLifecycle.activated/closing/hold/release`, `branchLifecycle.activated/closing`, `dispatcher.listen/consume/committed`. |
+| Session and branch parts → their lifecycle; branch fact consumers → Dispatcher | `sessionScope.activated/closing/hold/release` and its fault operations ([SessionScope](../../../docs/design/plugins/SessionScope.md), #2093); `branchLifecycle.activated/closing`, `dispatcher.listen/consume/committed`. The old `sessionLifecycle` name is superseded. |
 
 ## New rutis APIs on existing owners
 
@@ -17,7 +17,7 @@
 | Caller → owner | New API |
 | --- | --- |
 | Branch directory readers → `timelineTree` | `timelineTree.directory({}) → [{info, head, state, endEvent?}]`, including ending and ended branches. |
-| Skills content and MCP publication → Session loader | `sessionLoader.create({group, definitionId, instanceData}) → {instanceId}`; `remove({instanceId}) → void`. The Session loader admits groups whose configured parent is the Session group. Registered Session extension definitions must activate their instance rows. Host-added optional groups retain their optional rows. Skills supplies its content definition; MCP supplies its connection definition ID and retains the resolved transport configuration. |
+| Skills content and MCP publication → Session mounts | `sessionScope.mount({group, definitionId, instanceData}) → {instanceId}`; `unmount({instanceId})`. The owner admits groups whose configured parent is the Session group, waits for the definition's rows and settles a rejected instance. Skills supplies its content definition; MCP supplies its connection definition ID and retains the resolved transport configuration ([SessionScope](../../../docs/design/plugins/SessionScope.md), #2093). |
 | Goal → timelineTree | `inputs(id, inputs) → committed events`. One validated atomic batch for the Goal record and trigger. |
 | Branch-detail RPC → timelineTree | `display(id) → {entry,purpose?,cutMessages?,end?}`. |
 | History RPC and line-read tools → timelineTree | `batchEnd(id, sequence) → void`, `pageEnd(id, after, limit, through) → sequence`, and `page` at the same cutoff. Preserve complete batches and the fixed head of ended lines. |
@@ -26,26 +26,18 @@
 | InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch. |
 | PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report also uses `timelineTree.query` at the selected head for evidence. |
 | Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |
-| Fault producers and Session observers → `sessionLifecycle` | `reportFault(error) → void`, `failure({}) → SessionFault or null`, `observeFault(listener) → id`, `release(id) → boolean`. The listener receives the current failure (initially null) and subsequent reports. Caller unload releases the observation. The first fault wins until a storage failure supersedes it; the first storage failure wins. |
+| Fault producers and Session observers → `sessionScope` | `reportFault(fault) → void`, `failure() → SessionFault or none`, `observeFault(listener) → id`, `release({leaseId}) → boolean`. The listener receives the current failure (none included) and later reports; the calling row's unload releases the observation. The first fault wins until a storage failure supersedes it ([SessionScope](../../../docs/design/plugins/SessionScope.md), #2093). |
 | Check providers and input admission → SubmitChecks | `register(name, check) → void`; `check({entry, branchId, user?, mode}, cancelled) → proceed{blocks, warnings} or block{message}`. Run in name order through the first block. Interrupted checks write nothing. |
 | Compaction, stop and activity callers → `agentLoop` | `agentLoop.compact({}) → sequence`, `stopTurn({turnId, reason}) → sequence or null`; `agentLoop.state({}) → {phase, turnId?}`, `observe(listener)` delivers that snapshot. |
 
 ### Calls from a Session to a selected branch
 
-Within a branch, inject its owner face directly. For Session callers the existing
-`timelineTree` face gains `call({branchId,operation}, cancelled) → operation reply`.
-TimelineTree resolves the admitted live branch once using its existing branch lookup and
-dispatches on that branch instance. The operation is a tagged union of the calls below;
-Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
-Ended and unknown branches retain their original errors. Calls admitted before close stay
-with that generation. Tree history, directory and batch input continue to use the tree's
-own methods.
-
-| Session caller | Target operation |
-| --- | --- |
-| Context RPC / PromptSuggestion | `contextUsage.read`. The `compactAndWait` variant runs the existing compact RPC handler: it calls `agentLoop.compact` and waits for the compaction fact matching that command sequence and returns the existing completed/skipped/failed reply. The committed sequence watch and bounded query run inside the selected branch for that wait. |
-| Session language / Agent configuration / Report | `prompt.configure` or `prompt.adoptedConfiguration` with the existing source, model and outcome records. |
-| InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
+Within a branch, inject its owner face directly. A Session part reaches one line's owners by
+line id: `line_owner::<T>(line)?.op(..)` resolves the branch-group service at the instance the
+runtime built for that line, and the caller calls that owner's typed operation. Any branch-group
+data face is reachable this way except registration points and lifecycle services; there is no
+generic operation-name dispatch and no `timelineTree.call`. A line that is not live answers
+`ended` or `unknown`, and a closing Session answers `closed`.
 
 For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
 and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in
@@ -66,11 +58,11 @@ substitutes a newer head.
 
 | Caller → owner | New API |
 | --- | --- |
-| Loop → PrepareModelHost | `prepare({turnId, requestId, history, availableTools}) → ModelSettings`, with pinned tool definitions in order. |
-| ContextPreparation → PrepareContextHost | `prepare({request, source:{turnId, requestId, through}}, cancelled) → ModelRequest`. |
-| Context accounting and compaction → ContextModelHost | `describe(model facts) → {contextWindow, outputTokens, thresholdTokens, algorithm?}`, `count(request) → tokens`, `contributions({model, fixed?, messages}) → {algorithm, fixed?, messages}`, `estimate({model, algorithm, contribution}) → tokens`. |
-| Loop and ContextPreparation → CompactionStrategyHost | `describe(model facts) → {name, replacementSize}`; `compact(input, cancelled) → completed, skipped or failed` with StrategyDiagnostics. Input carries history, checkpoint, request, legal cuts, trigger, budgets, prior diagnostics and model facts. |
-| Loop and ContextPreparation → HistoryRenderer | `context({branchId, through}) → ContextHistory`, `renderedContext({branchId, through}) → {context, history: HistoryEntry[]}`, `snapshot({context, retainFrom, anchor}) → RecoverySnapshot`, `streamCheckpoint({branchId, through, retainFrom, batch}) → ProjectionCheckpoint`. |
+| Loop → `requestSettings` | `settings() → {providerId, modelId, capabilitySnapshot?, config?, system?, metadata?}`; Loop adds the pinned tools, the guide's system and the turn's ids ([Request settings](../../../docs/design/plugins/RequestSettings.md), #2093). |
+| ContextPreparation → no host port | The request transformation has no owner and leaves the catalog; a content change enters only through adopted inputs or tool results (#2093). |
+| Context accounting and compaction → `contextFacts` | `describe({model})`, `count({request})`, `contributions({model, fixed?, messages}) → {algorithm, fixed?, messages}`, `estimate({model, algorithm, contribution})` ([Context facts](../../../docs/design/plugins/ContextFacts.md), #2093). |
+| Loop and ContextPreparation → `summaryStrategy` | `describe({model}) → {name, replacementSize}`; `compact(input, cancelled) → completed, skipped or failed` with diagnostics. The input carries history, checkpoint, request, legal cuts, trigger, budgets and prior diagnostics, and no model object ([Summary strategy](../../../docs/design/plugins/SummaryStrategy.md), #2093). |
+| Loop and ContextPreparation → `contextProjection` | `renderedStream({through, batch})`, `renderedContext({through})`, `snapshot({context, retainFrom, anchor})`, `streamCheckpoint({through, retainFrom, batch})`, `snapshotFromCheckpoint({checkpoint, anchor})`; the fold is the branch's own ([Context projection](../../../docs/design/plugins/ContextProjection.md), #2093). |
 | Loop and ModelProvider → ContextPreparation | `prepare({source: ContextPrepareData, projection?}, cancelled) → ModelRequest`, `validate({requestId, request}, cancelled) → void`. Reuse the prepared projection at the original cutoff. |
 | ContextPreparation and usage readers → ContextUsage | `read({through?}, cancelled) → {through, contextWindow, outputTokens, thresholdTokens, estimatedInputTokens, baselineSource}`. |
 | Loop, ToolExecutor and Code Mode definition readers → `toolBinding` | `bind({requestId, through, tools, toolSources}) → void`, `bindCurrent({requestId, declared?}) → ToolDefinition[]`, `definitions({requestId}) → ToolDefinition[]`, `transfer({from, to}) → void`, `release({requestId}) → void`. ToolBinding retains the pinned handler generation. |

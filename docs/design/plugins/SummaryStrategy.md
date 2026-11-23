@@ -62,6 +62,7 @@ match outcome.outcome {
 - `P:modelHost` — the summarizer's model calls, under the existing failure and credential policy.
 - `P:providerConnectionResolver` — the connection each summarizer request uses; the connection lives only inside the call.
 - `S:summaryPromptSettingsHost` — optional: the operator's system prompt override, read once when the owner loads.
+- `S:guideEntries` — the `<dim-summary>` entry, registered until the owner unloads.
 
 ### Operations
 
@@ -72,7 +73,7 @@ match outcome.outcome {
 
 `model` is a model selection; the owner asks `contextFacts` for its limits and counts. `retainLimit` is the cut the retention rule allows; `cuts` lists every legal cut in order; `request` is the request whose context is compacted.
 
-`completed` carries `{retainFrom, replacement, diagnostics}`; `skipped` carries `{reason, diagnostics}`; `failed` carries `{error, diagnostics}`. `diagnostics` holds the model call count, the summed usage, the strategy's own record and the duration.
+`completed` carries `{retainFrom, replacement, diagnostics}`; `skipped` carries `{reason, diagnostics}`; `failed` carries `{error, diagnostics}`. A compaction with no legal cut, or nothing before the cut, is `skipped { reason: "nothing_to_compact" }` with no model call. `diagnostics` holds the model call count, the summed usage and the strategy's own record; the caller measures the duration in its compaction record.
 
 ### Errors
 
@@ -80,7 +81,7 @@ match outcome.outcome {
 | --- | --- | --- |
 | `cancelled` | `compact` | The call was stopped before any model work or by the caller's cancellation; the history is unchanged |
 | `closed` | both | The owner is unloading; the compaction did not run |
-| `invalid` | `compact` | Fix the input: no legal cut, a cut outside the history, a request without an adopted model |
+| `invalid` | `compact` | Fix the input: a cut outside the history, or a request without an adopted model. A history with no legal cut is the `skipped` outcome, not an error |
 | `not_adopted` | `describe` | Adopt the model again; without it the plan cannot be computed |
 
 A strategy failure after model work is the `failed` outcome with its diagnostics, not an error: the caller writes the compaction fact with those diagnostics.
@@ -100,7 +101,7 @@ A strategy failure after model work is the `failed` outcome with its diagnostics
 
 ## Verification
 
-- A threshold compaction over the retention limit completes, skips or fails with diagnostics; a compaction with no legal cut is `invalid` and sends no model call.
+- A threshold compaction over the retention limit completes, skips or fails with diagnostics; a compaction with no legal cut is `skipped { reason: "nothing_to_compact" }` and sends no model call.
 - `describe` equals the target rule plus the empty wrapper's count; a caller that reserved that size keeps it.
 - A cancel during the model call answers nothing and leaves the history unchanged.
 - A re-planned compaction sums both passes' model calls and usage.
@@ -134,6 +135,16 @@ A strategy failure after model work is the `failed` outcome with its diagnostics
 ## Requirements raised to mechanism owners
 
 None.
+
+## Supersedes
+
+This contract replaces the `compactionStrategyHost` object; the delivery in #2025 carries the migration.
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `Loop and ContextPreparation → CompactionStrategyHost` row of "Model preparation, history and tools".
+- `docs/design/service-faces.md`: §3.5's `compactionStrategyHost` row.
+- `docs/design/plugins/ContextCompaction.md` §4.2's ports table: `CompactionStrategyHost` becomes this owner's two operations, and `CompactionInput.model` leaves the input.
+
+Rule D: no client wire protocol or user-visible behavior changes; `completed`, `skipped` and `failed` keep their fact shapes and the summary's model-visible text is unchanged.
 
 ## Binding appendix
 
@@ -235,4 +246,4 @@ impl SummaryStrategy {
 }
 ```
 
-`cancelled` is the binding's cancellation argument, not a request field. `AgentEvent` is not part of the request: the caller writes the compaction facts.
+`cancelled` is the binding's cancellation argument, not a request field. `AgentEvent` is not part of the request: the caller writes the compaction facts. `CompactionCut`, `CompactionCheckpoint` and `StrategyDiagnostics` gain `Serialize`/`Deserialize` for this face; their fields do not change. Errors cross as `{code, message}`, `code` from the variant name; a strategy failure is the `failed` outcome, not an error.

@@ -9,8 +9,8 @@ The owner answers what one call's target path is and which file-access facts hol
 The owner answers:
 
 - **The resolved target.** The path a call names with `~`, the working directory, `..` and links resolved, as the workspace sees it.
-- **The facts.** Workspace, system, owned and grant membership under the effective access mode, plus the reason a workspace discovery failed when it did.
-- **The confirmed roots.** The workspace and confirmed grant roots a command's process boundary may use.
+- **The facts.** Workspace, system, owned and grant membership under the branch's effective access preset and the grant mode the call asks for, plus the reason a workspace discovery failed when it did.
+- **The confirmed roots.** The workspace and the managed worktree roots a command's process boundary may use.
 
 Callers keep:
 
@@ -20,14 +20,16 @@ Callers keep:
 
 | Requirement (caller) | Compose from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| Permission resolves a file call's target and decides with the facts | No: `~`, cwd, `..` and link resolution are the workspace's knowledge, and the owned and grant facts come from two owners the caller would otherwise each hold | `check` |
-| A command's preparation needs the confirmed workspace roots | No: the roots are validated against the Session's workspace and grants; a caller that composed them could start a process with an expired grant | `workspaceRoots` |
+| Permission resolves a file call's target and decides with the facts under the branch's access preset | No: `~`, cwd, `..` and link resolution are the workspace's knowledge, the grant rule reads the preset, and the owned and grant facts come from two owners the caller would otherwise each hold | `check` |
+| A command's preparation needs the confirmed workspace boundary | No: the workspace and the managed worktree roots are validated against the Session's workspace; a caller that composed them could start a process outside the boundary | `workspaceRoots` |
 
 ## Caller example
 
 ```rust
 // Permission: one file call's target and facts under the requested access.
-let facts = access.check(Check { access: FileAccess::Write, mode: GrantMode::Ask, path }).await?;
+let facts = access
+    .check(Check { access: FileAccess::WorkspaceReadWrite, mode: GrantMode::Write, path }, cancelled)
+    .await?;
 let inside = facts.workspace || facts.system || facts.owned || facts.grant;
 ```
 
@@ -43,17 +45,17 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 - The Session's working directory and identity: the owner's own Session part.
 - `P:fileStorage` — `stat` and the path validation the workspace root uses.
 - `P:sessionFiles` — whether the Session owns the target file.
-- `S:sessionGrants` — the Session's file grants.
+- `S:sessionGrants` — the Session's file grants, read by `check` only.
 - `P:worktrees` — managed worktree roots that extend the workspace.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `check` | Resolve a call's target and answer the facts under one access mode | `{access, mode, path}` | `{target, workspace, system, owned, grant, discoveryError?}` | The caller drops the call; the reads stop | `invalid`, `unavailable`, `cancelled`, `closed` |
-| `workspaceRoots` | The workspace and confirmed grant roots a command may use | `{cwd}` | `{roots}` | The caller drops the call | `invalid`, `unavailable`, `cancelled`, `closed` |
+| `check` | Resolve a call's target and answer the facts under the branch's access preset | `{access, mode, path}` | `{target, workspace, system, owned, grant, discoveryError?}` | The caller drops the call; the reads stop | `invalid`, `unavailable`, `cancelled`, `closed` |
+| `workspaceRoots` | The workspace and managed worktree roots a command may use | `{cwd}` | `{roots}` | The caller drops the call | `invalid`, `unavailable`, `cancelled`, `closed` |
 
-`access` is read or write; `mode` is the grant mode the call asks for; `path` is the path the call named. `target` is the resolved path, and it is what the caller passes to the file operation.
+`access` is the branch's access preset (`dim_agent_types::FileAccess`: `read-only`, `workspace-read-write`, `unrestricted`); `mode` is the grant mode the call asks for (`dim_agent_types::GrantMode`: `read`, `write`); `path` is the path the call named. `target` is the resolved path, and it is what the caller passes to the file operation. A write grant is inert under `read-only` and active under `workspace-read-write` or `unrestricted`.
 
 ### Errors
 
@@ -71,20 +73,21 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 | Operation | Normal path | Caller cancels or unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- |
 | `check` | The owner resolves the target, reads the owned file and the grants, and answers the facts | A dropped call ends the reads; nothing is decided | An in-flight call ends `closed` | The calling row; the owner holds no resource |
-| `workspaceRoots` | The owner resolves the cwd, returns the workspace and the confirmed grant roots | A dropped call ends the read | `closed` | The calling row |
+| `workspaceRoots` | The owner resolves the cwd, returns the workspace and the managed worktree roots | A dropped call ends the read | `closed` | The calling row |
 
 ## Exceptions with reasons
 
 - No `sessionId` in the request: the owner is the Session's instance, so the Session id is the owner's own identity; a request field would let one Session ask for another's facts.
 - `discoveryError` is a field: a workspace that cannot be discovered is a fact the caller shows, not a refusal; approvals the user already gave stay available.
+- `access` is the three-valued access preset, not a read/write flag: under `read-only` a write grant is inert, and the owner decides that from the preset the caller passes.
 - `workspaceRoots` fails rather than answering an empty list: a command started with an unconfirmed boundary would run outside the workspace the user approved.
 
 ## Verification
 
-- `check` resolves `~`, `..` and a link before answering; the target is absolute.
+- `check` resolves `~`, `..` and a link before answering; the target is absolute; a write grant under `read-only` answers `grant: false`.
 - An owned Session file and a granted path each answer their fact under the requested mode; a path outside every fact answers all false.
 - A failed discovery answers `workspace: false` with `discoveryError` and no error.
-- `workspaceRoots` answers the workspace plus confirmed grants; `unavailable` when the grants cannot be read.
+- `workspaceRoots` answers the workspace plus the managed worktree roots; `unavailable` when the workspace cannot be read.
 - A call in flight when the Session closes ends `closed`.
 
 ## Rule check
@@ -115,31 +118,28 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 
 None.
 
+## Supersedes
+
+This contract replaces the object shape of the file-access facts; the delivery in #2025 carries the migration.
+
+- [ADR 014](../../adr/014-file-access-facts.md): the query is stated here as a Session-scoped operation `check`, with the Session instance supplying the session id and `FileAccess` and `GrantMode` as the same query arguments the ADR names.
+- `crate::file_access::ReadFileAccessFacts` and the `FileAccessFacts` wrapper: the two reads replace the trait and the object.
+
+Rule D: no client wire protocol or user-visible behavior changes; the change is plugin-facing.
+
 ## Binding appendix
 
 ```rust
 use dim_agent_capabilities::host::CancelledFn;
 use dim_agent_runtime::PublicService;
+use dim_agent_types::{FileAccess, GrantMode};
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Access {
-    Read,
-    Write,
-}
-
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GrantMode {
-    Ask,
-    Session,
-    Once,
-}
+use dim_agent_types::{FileAccess, GrantMode};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Check {
-    pub access: Access,
+    pub access: FileAccess,
     pub mode: GrantMode,
     pub path: String,
 }
@@ -193,4 +193,4 @@ impl FileAccessFacts {
 }
 ```
 
-`cancelled` is the binding's cancellation argument, not a request field. Paths cross as UTF-8 strings; a path that is not UTF-8 is `invalid`.
+`cancelled` is the binding's cancellation argument, not a request field. Paths cross as UTF-8 strings; a path that is not UTF-8 is `invalid`. Errors cross as `{code, message}`, `code` from the variant name.

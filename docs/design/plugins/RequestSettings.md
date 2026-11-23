@@ -22,13 +22,13 @@ Callers keep:
 | --- | --- | --- |
 | Loop prepares the model settings of a turn that has no adopted configuration yet | No: the catalog defaults and the allowance rule are the owner's knowledge; composing them in Loop duplicates the provider profile's decision | `settings` |
 | Loop requests with a configuration Prompt adopted during the run | Yes: Loop reads the adopted record from the Timeline | Business |
-| A caller changes the model for the next turn | Yes: the Session's model methods write the record and Prompt adopts it | Business |
+| A caller changes the model for the next turn | Yes: Prompt adopts the change as the `context/configured` Timeline record; the creation record does not change | Business |
 
 ## Caller example
 
 ```rust
 // Loop: the first request of a Session before any configuration is adopted.
-let defaults = request_settings.settings()?;
+let defaults = request_settings.settings();
 let settings = ModelSettings {
     provider_id: defaults.provider_id,
     model_id: defaults.model_id,
@@ -39,6 +39,7 @@ let settings = ModelSettings {
     metadata: defaults.metadata.map(|mut metadata| {
         metadata.session_id = Some(session_id);
         metadata.turn_id = Some(turn_id);
+        metadata.extensions.insert("requestId".into(), request_id); // per request, written by Loop
         metadata
     }),
 };
@@ -68,7 +69,7 @@ None: the operation holds no resource and waits for nothing.
 
 - `config` may already be the adopted allowance repair: the owner repairs the stored allowance against the declared limits, so a request started from this value cannot exceed the model's capacity.
 - The value is fixed at creation: a model change during the run is a Timeline record (`context/configured`), and Loop reads that record; the value is never stale for its one use.
-- `metadata` carries the profile's extensions (for example a request-id extension); the owner publishes them and Loop only adds the turn's ids.
+- `metadata` carries the profile's static extensions. The per-request members — session, turn and request id — are Loop's: the aimux request log reads `requestId` from the request in flight, so the value cannot carry it.
 
 ## Verification
 
@@ -103,6 +104,15 @@ None: the operation holds no resource and waits for nothing.
 
 None.
 
+## Supersedes
+
+This contract replaces the `prepareModelHost` object; the delivery in #2025 carries the migration.
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `Loop → PrepareModelHost` row of "Model preparation, history and tools".
+- `docs/design/service-faces.md`: §3.5's `prepareModelHost` row.
+
+Rule D: no client wire protocol or user-visible behavior changes; the aimux request log keeps its `requestId`, now written by Loop.
+
 ## Binding appendix
 
 ```rust
@@ -132,4 +142,4 @@ impl RequestSettings {
 }
 ```
 
-`ModelSelection`, `ModelId` and the reply's members are the crate's existing data; `settings` answers the value itself, as `agentConfig.get` did before this owner existed.
+`ModelSelection`, `ModelId` and the reply's members are the crate's existing data; `settings` answers the value itself, as `agentConfig.get` did before this owner existed. The reply's members are the crate's existing data. Errors cross as `{code, message}`; this owner has none.

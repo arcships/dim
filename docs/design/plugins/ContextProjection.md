@@ -10,7 +10,7 @@ The owner answers:
 
 - **The context at a cutoff.** Which events place context, how a compaction's replacement and baseline apply, and the positions the fold covered.
 - **Rendered entries.** The context and its `HistoryEntry` list at one cutoff, for callers that need both.
-- **A request-local projection.** The same content as the fold's streamed form, so a long history is released page by page instead of held whole.
+- **A request-local projection.** The rendered entries and the compaction in force at a cutoff, folded page by page; the fold releases each page and the reply carries no event list, so a long history is not held whole.
 - **Recovery snapshots.** Encode the projection at a completed compaction's cut, validate a saved snapshot against its anchor, and decode the checkpoint it carries.
 
 Callers keep:
@@ -64,8 +64,8 @@ else {
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `renderedStream` | The context and rendered entries at a cutoff, folded page by page | `{through, batch}` | `{context, history, configuration?, prompt?}` | The caller drops the call; the fold stops at its last page | `future_sequence`, `invalid`, `storage`, `closed` |
-| `renderedContext` | The context and rendered entries at a cutoff | `{through}` | `{context, history}` | The caller drops the call | `future_sequence`, `storage`, `closed` |
+| `renderedStream` | The rendered entries and the compaction in force at a cutoff, folded page by page, without retaining events | `{through, batch}` | `{history, configuration?, prompt?, ancestry, compaction?, branches, compactionCut?}` | The caller drops the call; the fold stops at its last page | `future_sequence`, `invalid`, `storage`, `closed` |
+| `renderedContext` | The context and rendered entries at a cutoff, with the events the projection kept | `{through}` | `{context, history}` | The caller drops the call | `future_sequence`, `invalid`, `storage`, `closed` |
 | `snapshot` | Encode the projection at a completed compaction's cut | `{context, retainFrom, anchor}` | `{snapshot}` | None; the owner completes the read | `invalid`, `storage`, `closed` |
 | `streamCheckpoint` | The checkpoint of the fold that starts after a compaction's cut | `{through, retainFrom, batch}` | `{checkpoint}` | The caller drops the call | `future_sequence`, `invalid`, `storage`, `closed` |
 | `snapshotFromCheckpoint` | A snapshot that carries an already-computed checkpoint | `{checkpoint, anchor}` | `{snapshot}` or none when the anchor does not match | None | `invalid`, `storage`, `closed` |
@@ -103,7 +103,7 @@ else {
 ## Verification
 
 - A fold at a cutoff returns the events that place context and the compaction in force, with positions that compare across the branch chain.
-- `renderedStream` releases each page: a fold larger than one page keeps only the current projection.
+- `renderedStream` releases each page and its reply carries no event list: a fold larger than one page keeps only the current projection. `renderedContext` materializes the events and is the inspection read.
 - `snapshot` encodes the checkpoint of a completed compaction; a snapshot of another interpreter or a mismatched anchor is `invalid` or answers none.
 - `context_in` no longer exists; every read is the caller's own branch.
 - A call in flight when the branch closes ends `closed`.
@@ -137,6 +137,15 @@ else {
 
 None: the owner needs only the branch's `timeline` operations.
 
+## Supersedes
+
+This contract replaces the `historyRenderer` value; the delivery in #2025 carries the migration.
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `Loop and ContextPreparation → HistoryRenderer` row of "Model preparation, history and tools".
+- `docs/design/service-faces.md`: §3.5's `historyRenderer` row.
+
+Rule D: no client wire protocol or user-visible behavior changes; `StreamedContext` keeps its fields and the model-visible text is unchanged.
+
 ## Binding appendix
 
 ```rust
@@ -153,12 +162,21 @@ pub struct RenderedStreamRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamedContext {
-    pub context: ContextHistory,
     pub history: Vec<HistoryEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<dim_agent_types::ContextConfiguredData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<dim_agent_types::PromptData>,
+    pub prompt: Option<dim_agent_types::PromptReference>,
+    /// Root first: how positions compare across the branch chain.
+    pub ancestry: Vec<String>,
+    /// The completed compaction in force, with its cut and baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<dim_agent_types::AgentEvent>,
+    /// Root first: the segments the fold read.
+    pub branches: Vec<String>,
+    /// The position of the cut in effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_cut: Option<dim_agent_types::TimelinePosition>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -245,4 +263,4 @@ impl ContextProjection {
 }
 ```
 
-`ContextHistory`, `HistoryEntry`, `ProjectionCheckpoint`, `RecoverySnapshot`, `AgentEvent` and `TimelinePosition` are the types those facts already use; the reply carries no event handle beyond the events the facts are.
+`ContextHistory`, `HistoryEntry`, `ProjectionCheckpoint`, `RecoverySnapshot`, `AgentEvent` and `TimelinePosition` are the types those facts already use and gain `Serialize`/`Deserialize` for this face; their fields do not change. `renderedStream` carries no `ContextHistory`, so a streamed fold never holds the event list; `renderedContext` and the snapshot reads carry events or checkpoints because their callers need them. Errors cross as `{code, message}`, `code` from the variant name.

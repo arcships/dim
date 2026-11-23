@@ -115,10 +115,7 @@ R4). This table says what each name Dim defines is for.
 | `eventHub` | process | EventHub | designed, not implemented | A producer declares a source and publishes an event; EventHub delivers it to the Sessions subscribed, through Agents' `sessions` ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
 | `treeCommands` | `session` | TimelineTree | yes | `input` by branch id, `create`, `list`, `info` |
-| `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
-| `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload. `reportFault` reports a fault, `failure` reads it and `observeFault` subscribes. The calling row releases its subscription with `release(id)` or on unload. |
-| `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |
-| `agentConfig` | `session` | SessionScope | yes | `get()`: the Agent's identity and default model |
+| `sessionScope` | `session` | SessionScope | yes | `config`, `identity`, `phase`, `activated`, `closing`, `hold`, `release`, `reportFault`, `failure`, `observeFault`, `mount`, `unmount`, `openBranch` ([SessionScope](plugins/SessionScope.md), #2093) |
 | `timeline` | `branch` | BranchScope | yes, except `before` | `append`, the published sequence and the event query (§5.4); the query reaches other languages with its declaration |
 | `dispatcher` | `branch` | BranchScope | yes, `consume`, `listen` and reads; their Rust forms are the same `consume` and `subscribe`, which is Rust-only | Ordered consumption (§5.2) |
 | `branchLifecycle` | `branch` | BranchScope | yes | `activated`, `closing`. `registerOpening` registers work that branch opening waits for. |
