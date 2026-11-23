@@ -364,6 +364,67 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "Utilisez l'invite de ligne ou dimcode permissions."
         }
+        "Tool call timeout: {millis} ms" => "Délai d'appel d'outil : {millis} ms",
+        "Variables: {names}" => "Variables : {names}",
+        "Unset variables: {names}" => "Variables non définies : {names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "La source MCP a changé depuis l'aperçu ; aucune entrée n'a été importée, et une entrée qu'elle aurait remplacée peut désormais être désactivée. Relancez l'aperçu."
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "Les entrées de projet ont été écrites, pas leurs valeurs retenues ; remplacez-les à nouveau pour réessayer."
+        }
+        "Replaced {id}." => "{id} remplacé.",
+        "Added {id}." => "{id} ajouté.",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "Livre à la session {session}, branche {branch} ({mode})."
+        }
+        "Launches a new Session in {cwd}." => "Lance une nouvelle session dans {cwd}.",
+        "Disabled: {code} at {instant}." => "Désactivé : {code} à {instant}.",
+        "The definition changed since it was read; nothing was written." => {
+            "La définition a changé depuis sa lecture ; rien n'a été écrit."
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "Colonnes : ID, client, portée, chemin, état, entrées ou erreur."
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "Aucune valeur d'un stock n'est lue ni affichée ; --from ID en prévisualise un dans le démon."
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "Colonnes : ID, action, ID de destination.\nUne entrée renommée est écrite sous son id de destination ; l'entrée de la source portant l'ancien id reste telle quelle."
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "Les entrées importées et remplacées démarrent désactivées : une entrée utilisateur est écrite avec enabled: false, et une entrée de projet n'a aucun enregistrement d'activation avant que vous ne l'activiez localement."
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "Ce démon ne peut pas lister les stocks MCP des autres clients."
+        }
+        "This daemon cannot import MCP servers." => {
+            "Ce démon ne peut pas importer de serveurs MCP."
+        }
+        "The document holds no mcpServers entries." => {
+            "Le document ne contient aucune entrée mcpServers."
+        }
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "Colonnes : ID, état, transport, champs modifiés, champs non pris en charge, erreur.\nUn champ modifié nomme ce qu'une écriture changerait et le type de valeur qu'il porte ; aucune valeur n'est affichée.\nUn champ non pris en charge reste inutilisé ou est supprimé, comme indiqué après le champ."
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "Une entrée de projet est écrite sous sa forme publique : le fichier d'espace de travail reçoit la commande, le cwd déclaré, l'origine de l'URL et les champs OAuth publics. Ses arguments, valeurs d'environnement et d'en-tête, jeton bearer, une URL avec userinfo, chemin, requête ou fragment, et les membres inconnus vont dans votre enregistrement mcp-secrets de portée utilisateur, jamais dans le fichier d'espace de travail."
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id} a {count} noms de champs de plus que les listes ci-dessus n'en montrent."
+        }
+        "Top-level members the import does not carry: none." => {
+            "Membres de premier niveau que l'importation ne reprend pas : aucun."
+        }
+        "Top-level members the import does not carry: {names}." => {
+            "Membres de premier niveau que l'importation ne reprend pas : {names}."
+        }
+        "Applying the selection at this revision." => {
+            "Application de la sélection à cette révision."
+        }
+        "An unchanged entry was already in the source and was not written." => {
+            "Une entrée inchangée était déjà dans la source et n'a pas été écrite."
+        }
         _ => return None,
     })
 }

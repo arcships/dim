@@ -125,6 +125,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "editing" => "正在編輯",
         "changed" => "變更了",
         "changing" => "正在變更",
+        "Ran code" => "執行了程式碼",
+        "Running code" => "正在執行程式碼",
         "checked on" => "查看了",
         "checking on" => "正在查看",
         "Explored" => "瀏覽了",
@@ -169,6 +171,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Checked on background task" => "查看了背景工作",
         "Waiting…" => "等待中…",
         "… +{count} lines" => "… 還有 {count} 行",
+        "New members from main inherit this policy; existing members retain theirs." => {
+            "之後從 main 建立的成員繼承此權限；既有成員保留自身權限。"
+        }
+        "Subagent tool approval" => "子代理工具核准",
         _ => return None,
     })
 }

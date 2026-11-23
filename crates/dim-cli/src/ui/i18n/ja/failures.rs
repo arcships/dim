@@ -55,6 +55,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "retrying {attempt}/{max} in {seconds} s: {reason}" => {
             "{seconds} 秒後に {attempt}/{max} 回目の再試行：{reason}"
         }
+        "Retrying {attempt}/{max} in {seconds} s" => {
+            "{seconds} 秒後に {attempt}/{max} 回目の再試行"
+        }
         "Retrying {attempt}/{max} in {seconds} s · {reason} · Esc stops" => {
             "{seconds} 秒後に {attempt}/{max} 回目の再試行 · {reason} · Esc 停止"
         }
@@ -68,6 +71,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "cause:" => "原因：",
         "Tried {count} times over {seconds} s." => "{count} 回試行、{seconds} 秒経過。",
+        "Waiting for the provider" => "プロバイダーを待機中",
         "Waiting for the provider · {reason} · Esc stops" => {
             "プロバイダーを待機中 · {reason} · Esc 停止"
         }

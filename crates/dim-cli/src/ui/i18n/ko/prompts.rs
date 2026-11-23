@@ -133,6 +133,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "editing" => "편집 중",
         "changed" => "변경함",
         "changing" => "변경 중",
+        "Ran code" => "코드 실행함",
+        "Running code" => "코드 실행 중",
         "checked on" => "확인함",
         "checking on" => "확인 중",
         "Explored" => "탐색함",
@@ -177,6 +179,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Checked on background task" => "백그라운드 작업 확인함",
         "Waiting…" => "대기 중…",
         "… +{count} lines" => "… +{count}줄",
+        "New members from main inherit this policy; existing members retain theirs." => {
+            "main에서 만들어지는 새 멤버는 이 권한을 상속하고, 기존 멤버는 자기 권한을 유지합니다."
+        }
+        "Subagent tool approval" => "하위 에이전트 도구 승인",
         _ => return None,
     })
 }

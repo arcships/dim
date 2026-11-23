@@ -7,6 +7,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // providers_panel.rs
         "Providers" => "Fornecedores",
         "Enter open · Esc clear/close" => "Enter abrir · Esc limpar/fechar",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab mover · Enter ativar · Ctrl+R reler · Esc voltar"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => {
             "↑↓/Tab mover · Enter ativar · Esc voltar"
         }
@@ -72,6 +75,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "Abra este URL: {url}",
         "Enter code:    {code}" => "Código:    {code}",
         "Waiting after server slow-down" => "À espera após abrandamento do servidor",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "Início de sessão OAuth cancelado",
         "Enter your work email" => "Introduza o email profissional",
         "Invalid OAuth state - possible CSRF attempt" => {

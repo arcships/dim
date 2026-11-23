@@ -268,6 +268,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "ファイル",
         "Searching…" => "検索中…",
+        "type filter · enter select · esc clear/close" => {
+            "フィルタを入力 · enter 選択 · esc 消去/閉じる"
+        }
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 選択 · enter/tab 挿入 · esc 閉じる",
         "not sent to the model" => "モデルへ未送信",
         "… {count} more lines" => "… 残り {count} 行",
@@ -320,6 +323,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Sign-in link:" => "サインインリンク：",
         "Resume" => "再開",
         "Press Ctrl+C to stop the Web workspace." => "Ctrl+C で Web ワークスペースを停止。",
+        "Feedback or ideas? Join us on Discord:" => "フィードバックやアイデアは Discord へ：",
         "To resume this session:" => "セッションの再開：",
 
         // commands.rs: descriptions
@@ -541,6 +545,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Background task finished: {label}" => "バックグラウンドタスク完了：{label}",
         "Background task failed: {label}" => "バックグラウンドタスク失敗：{label}",
         "Background task stopped: {label}" => "バックグラウンドタスク停止：{label}",
+        "Background tasks" => "バックグラウンドタスク",
+        "Nothing runs in the background." => "バックグラウンドで実行中のものはありません。",
+        "No matching tasks." => "一致するタスクがありません。",
         "Permission needed: {tool}" => "許可が必要：{tool}",
         "Question waiting for your answer" => "回答待ちの質問あり",
         "Notify when agent needs you" => "要対応時に通知",
@@ -666,6 +673,186 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "checking and committing the upgraded store" => {
             "アップグレードしたストアを検証してコミットしています"
         }
+        "A prompt save is still in progress" => "プロンプトの保存がまだ進行中です",
+        "Base prompt" => "基本プロンプト",
+        "Before/after comparison is unavailable for this record." => {
+            "この記録には変更前後の比較がありません。"
+        }
+        "Cancelling generation…" => "生成をキャンセルしています…",
+        "Changes" => "変更",
+        "Compaction prompt" => "圧縮プロンプト",
+        "Could not open the share destination" => "共有先を開けませんでした",
+        "Could not save ZIP" => "ZIP を保存できませんでした",
+        "Default: current-session diagnostics only." => "既定：現在のセッションの診断情報のみ。",
+        "Draft a GitHub issue" => "GitHub Issue を下書き",
+        "Email the ZIP to {email}" => "ZIP を {email} にメール送信",
+        "Enter apply · Esc back" => "Enter 適用 · Esc 戻る",
+        "Error diagnostics only; no session text is available." => {
+            "エラー診断情報のみ。セッション本文は取得できません。"
+        }
+        "Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 戻る · x エージェントを停止 · ↑↓ PgUp PgDn スクロール · Home/End 移動"
+        }
+        "Esc back · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 戻る · ↑↓ PgUp PgDn スクロール · Home/End 移動"
+        }
+        "Evidence · No recent session activity" => "証拠 · 最近のセッション活動なし",
+        "Evidence · Observed error only" => "証拠 · 観測されたエラーのみ",
+        "Evidence · Recent session activity" => "証拠 · 最近のセッション活動",
+        "Evidence · Timeline omitted" => "証拠 · タイムラインを省略",
+        "Evidence · Timeline read failed" => "証拠 · タイムラインを読み取れません",
+        "Evidence · Timeline unavailable" => "証拠 · タイムラインは利用できません",
+        "Generate report" => "レポートを生成",
+        "Generate/save never uploads. Share manually after saving." => {
+            "生成・保存はアップロードしません。保存後に手動で共有してください。"
+        }
+        "Generating report…" => "レポートを生成しています…",
+        "Give feedback on Discord" => "Discord でフィードバック",
+        "Input" => "入力",
+        "Invalid report ZIP" => "レポート ZIP が無効です",
+        "Local generation makes zero model requests." => {
+            "ローカル生成ではモデルへのリクエストは発生しません。"
+        }
+        "Model · Generate locally" => "モデル · ローカルで生成",
+        "New" => "新規",
+        "No content changes." => "内容の変更はありません。",
+        "No session to report." => "報告するセッションがありません。",
+        "Old" => "旧",
+        "Opened Discord" => "Discord を開きました",
+        "Opened GitHub issue draft" => "GitHub Issue の下書きを開きました",
+        "Options" => "オプション",
+        "Options must fit within 1 KiB" => "オプションは 1 KiB 以内に収めてください",
+        "Options · for example: omit timeline, keep error codes" => {
+            "オプション · 例：omit timeline, keep error codes"
+        }
+        "Prepare report again" => "レポートを再準備",
+        "Preparing report…" => "レポートを準備しています…",
+        "Prompt saved; applies to new Sessions" => {
+            "プロンプトを保存しました。新しいセッションに適用されます"
+        }
+        "Prompt settings are not available" => "プロンプト設定は利用できません",
+        "Prompts" => "プロンプト",
+        "Read-only: this agent has finished." => "読み取り専用：このエージェントは終了しました。",
+        "Read-only: you can watch this agent or stop it." => {
+            "読み取り専用：このエージェントを観察するか停止できます。"
+        }
+        "Redact [ ]" => "秘匿 [ ]",
+        "Redact [x]" => "秘匿 [x]",
+        "Redact is off. The ZIP may contain sensitive text from recent messages." => {
+            "秘匿はオフです。ZIP に最近のメッセージの機密テキストが含まれる可能性があります。"
+        }
+        "Refresh report plan" => "レポート計画を更新",
+        "Report ready" => "レポートの準備ができました",
+        "Report this error" => "このエラーを報告",
+        "Report this session" => "このセッションを報告",
+        "Resetting {field}; the old text is kept in {path}" => {
+            "{field} をリセットしています。元のテキストは {path} に保持されます"
+        }
+        "Result" => "結果",
+        "Run /report to create a report." => "/report でレポートを作成できます。",
+        "Running…" => "実行中…",
+        "Save ZIP" => "ZIP を保存",
+        "Saved ZIP" => "ZIP を保存しました",
+        "Session model" => "セッションモデル",
+        "Skills instructions" => "スキル指示",
+        "Some options were unsupported." => "一部のオプションはサポートされていません。",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab でもツール見出しを選択 · Enter/スペースで対象ツールを切り替え"
+        }
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "このセッションは閉じられており、再開できません。同じ --home で dimcode export {id} を実行すると保存済みの履歴を読めます。"
+        }
+        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
+            "秘匿をオフにすると、最近のユーザーとアシスタントの本文が ZIP に添付されます。機密情報が含まれる可能性があります。"
+        }
+        "Updating report plan…" => "レポート計画を更新しています…",
+        "Usage: /report" => "使い方：/report",
+        "Waiting for result…" => "結果を待っています…",
+        "ZIP contents: report.md, diagnostics.json" => "ZIP の内容：report.md、diagnostics.json",
+        "agent result" => "エージェント結果",
+        "built-in" => "組み込み",
+        "custom" => "カスタム",
+        "report the current session" => "現在のセッションを報告",
+        "skills replaces the marker and call shape; the skill tool and list stay · r reset" => {
+            "skills はマーカーと呼び出し形式を置き換えます。スキルツールと一覧はそのまま · r リセット"
+        }
+        "… {count} unchanged lines" => "… {count} 行が未変更",
+        "↑↓ move · Enter edit · r reset · Esc close" => {
+            "↑↓ 移動 · Enter 編集 · r リセット · Esc 閉じる"
+        }
+        "↑↓ move · Enter select · ←→/Space change · r reset · Esc close" => {
+            "↑↓ 移動 · Enter 選択 · ←→/スペース 変更 · r リセット · Esc 閉じる"
+        }
+        "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 移動 · Enter 選択 · Esc 閉じる",
+        "Permission mode" => "権限モード",
+        "Related settings" => "関連設定",
+        "Process isolation" => "プロセス分離",
+        "open" => "開く",
+        "User-wide command rules. Allow skips asks, never denials." => {
+            "ユーザー全体のコマンドルール。許可は確認を省略しますが、拒否を越えることはありません。"
+        }
+        "Opens Settings; user-wide, for new processes; independent of permission mode." => {
+            "設定を開きます。ユーザー全体、新しいプロセス向けで、権限モードとは独立しています。"
+        }
+        "keep mode" => "モードを維持",
+        "use mode" => "モードを使用",
+        "Current session; remembered for new sessions. {consequence}" => {
+            "現在のセッションのみ。新しいセッション用に記憶されます。{consequence}"
+        }
+        "↑↓/Tab move · Enter {action} · Esc close" => {
+            "↑↓/Tab 移動 · Enter {action} · Esc 閉じる"
+        }
+        "Writes and commands denied; external reads may ask." => {
+            "書き込みとコマンドは拒否されます。外部の読み取りは確認を求めることがあります。"
+        }
+        "Workspace writes allowed; commands, network and ungranted outside access usually ask." => {
+            "ワークスペースへの書き込みは許可されます。コマンド、ネットワーク、未許可の外部アクセスは通常確認を求めます。"
+        }
+        "Skips preset approval; pending calls on this branch are reevaluated. Explicit denies and isolation remain." => {
+            "プリセットの承認を省略します。このブランチの保留中の呼び出しは再評価されます。明示的な拒否と分離は残ります。"
+        }
+        "↑↓ move · Enter select · Esc close" => "↑↓ 移動 · Enter 選択 · Esc 閉じる",
+        "Loading process isolation…" => "プロセス分離を読み込んでいます…",
+        "Sandbox is unavailable on this host: {reason}" => {
+            "このホストではサンドボックスを利用できません：{reason}"
+        }
+        "Applies to new processes and shells." => "新しいプロセスとシェルに適用されます。",
+        "Off: commands use your OS permissions, not file-tool limits." => {
+            "オフ：コマンドはファイルツールの制限ではなく OS の権限を使います。"
+        }
+        "Off" => "オフ",
+        "Sandboxed · No network" => "サンドボックス · ネットワークなし",
+        "Sandboxed · Network allowed" => "サンドボックス · ネットワーク許可",
+        "selected" => "選択中",
+        "Save" => "保存",
+        "Reset to defaults" => "既定値にリセット",
+        "Reload" => "再読み込み",
+        "Discard edits and read the current settings" => "編集を破棄して現在の設定を読み込む",
+        "Reset the execution switches to defaults?" => "実行スイッチを既定値にリセットしますか？",
+        "Discard unsaved changes?" => "保存されていない変更を破棄しますか？",
+        "Yes (y)" => "はい (y)",
+        "Cancel (n)" => "キャンセル (n)",
+        "y confirm · Enter/Esc cancel" => "y 確認 · Enter/Esc キャンセル",
+        "Read only" => "読み取り専用",
+        "Workspace write" => "ワークスペース書き込み",
+        "Agent" => "エージェント",
+        "agent" => "エージェント",
+        "command" => "コマンド",
+        "ended" => "終了",
+        "Signed in" => "サインイン済み",
+        "Retry" => "再試行",
+        "Provider changed; review the retained draft and press Apply again" => {
+            "プロバイダーが変更されました。保持された下書きを確認して、もう一度「適用」を押してください"
+        }
+        "y allow · a always · n reject · ←→/Tab move · Enter confirm" => {
+            "y 許可 · a 常に許可 · n 拒否 · ←→/Tab 移動 · Enter 確定"
+        }
+        "{count} in background · /tasks" => "バックグラウンド {count} 件 · /tasks",
+        "{field}: {error} Your text is kept in {path}" => {
+            "{field}：{error} 入力したテキストは {path} に保持されています"
+        }
+        "{field}: {error}" => "{field}：{error}",
+        "Prompts: {error}" => "プロンプト：{error}",
         _ => return None,
     })
 }

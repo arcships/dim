@@ -47,6 +47,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "retrying {attempt}/{max} in {seconds} s: {reason}" => {
             "Mencoba lagi {attempt}/{max} dalam {seconds} s: {reason}"
         }
+        "Retrying {attempt}/{max} in {seconds} s" => {
+            "Mencoba lagi {attempt}/{max} dalam {seconds} s"
+        }
         "Retrying {attempt}/{max} in {seconds} s · {reason} · Esc stops" => {
             "Mencoba lagi {attempt}/{max} dalam {seconds} s · {reason} · Esc berhenti"
         }
@@ -58,6 +61,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "the provider asked to wait {seconds} s" => "provider meminta menunggu {seconds} s",
         "cause:" => "penyebab:",
         "Tried {count} times over {seconds} s." => "{count} percobaan dalam {seconds} s.",
+        "Waiting for the provider" => "Menunggu provider",
         "Waiting for the provider · {reason} · Esc stops" => {
             "Menunggu provider · {reason} · Esc berhenti"
         }

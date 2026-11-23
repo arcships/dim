@@ -6,6 +6,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Refreshing model list… · esc close" => "正在刷新模型列表… · Esc 关闭",
         "Providers" => "模型服务",
         "Enter open · Esc clear/close" => "Enter 打开 · Esc 清除/关闭",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab 移动 · Enter 执行 · Ctrl+R 重新读取 · Esc 返回"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => "↑↓/Tab 移动 · Enter 执行 · Esc 返回",
         "Loading providers..." => "正在加载模型服务…",
         "No matching providers." => "无匹配的模型服务。",
@@ -64,6 +67,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "打开此 URL：{url}",
         "Enter code:    {code}" => "输入配对码：{code}",
         "Waiting after server slow-down" => "服务端要求减慢检查频率，继续等待",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "OAuth 登录已取消",
         "Enter your work email" => "请输入工作邮箱",
         "Invalid OAuth state - possible CSRF attempt" => "无效的 OAuth state — 可能有 CSRF 尝试",

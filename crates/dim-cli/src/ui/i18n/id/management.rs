@@ -346,6 +346,61 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "Gunakan prompt baris atau dimcode permissions."
         }
+        "Tool call timeout: {millis} ms" => "Batas waktu panggilan tool: {millis} ms",
+        "Variables: {names}" => "Variabel: {names}",
+        "Unset variables: {names}" => "Variabel yang belum diset: {names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "Sumber MCP berubah sejak pratinjau; tidak ada entri yang diimpor, dan entri yang seharusnya digantikannya kini mungkin nonaktif. Pratinjau lagi."
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "Entri proyek sudah ditulis, nilai yang ditahan tidak; ganti lagi untuk mencoba ulang."
+        }
+        "Replaced {id}." => "{id} diganti.",
+        "Added {id}." => "{id} ditambahkan.",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "Mengirim ke Sesi {session} cabang {branch} ({mode})."
+        }
+        "Launches a new Session in {cwd}." => "Menjalankan Sesi baru di {cwd}.",
+        "Disabled: {code} at {instant}." => "Dinonaktifkan: {code} pada {instant}.",
+        "The definition changed since it was read; nothing was written." => {
+            "Definisi berubah sejak dibaca; tidak ada yang ditulis."
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "Kolom: ID, klien, cakupan, path, status, entri atau galat."
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "Tidak ada nilai dari penyimpanan yang dibaca atau dicetak; --from ID mempratinjau satu di dalam daemon."
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "Kolom: ID, aksi, ID tujuan.\nEntri yang diganti namanya ditulis dengan id tujuannya; entri sumber dengan id lama dibiarkan apa adanya."
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "Entri yang diimpor dan diganti mulai nonaktif: entri pengguna ditulis dengan enabled: false, dan entri proyek tidak punya catatan pengaktifan sampai kamu mengaktifkannya secara lokal."
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "Daemon ini tidak bisa mendaftar penyimpanan MCP klien lain."
+        }
+        "This daemon cannot import MCP servers." => "Daemon ini tidak bisa mengimpor server MCP.",
+        "The document holds no mcpServers entries." => "Dokumen tidak memuat entri mcpServers.",
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "Kolom: ID, status, transport, field yang berubah, field tak didukung, galat.\nField yang berubah menyebut apa yang akan diubah oleh penulisan dan jenis nilainya; tidak ada nilai yang dicetak.\nField tak didukung dibiarkan tak terpakai atau dibuang, seperti yang ditampilkan setelah field."
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "Entri proyek ditulis sebagai kerangka publiknya: file ruang kerja mendapat perintah, cwd yang dideklarasikan, asal URL, dan field OAuth publik. Argumen, nilai lingkungan dan header, token bearer, URL dengan userinfo, path, query atau fragmen, serta anggota yang tidak dikenal masuk ke catatan mcp-secrets lingkup pengguna, tidak pernah ke file ruang kerja."
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id} punya {count} nama field lagi yang tidak ditampilkan daftar di atas."
+        }
+        "Top-level members the import does not carry: none." => {
+            "Anggota tingkat atas yang tidak dibawa impor: tidak ada."
+        }
+        "Top-level members the import does not carry: {names}." => {
+            "Anggota tingkat atas yang tidak dibawa impor: {names}."
+        }
+        "Applying the selection at this revision." => "Menerapkan pilihan pada revisi ini.",
+        "An unchanged entry was already in the source and was not written." => {
+            "Entri yang tidak berubah sudah ada di sumber dan tidak ditulis."
+        }
         _ => return None,
     })
 }

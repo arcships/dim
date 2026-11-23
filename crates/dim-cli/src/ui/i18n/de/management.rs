@@ -356,6 +356,67 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "Nutze die Zeilenaufforderung oder dimcode permissions."
         }
+        "Tool call timeout: {millis} ms" => "Tool-Aufruf-Timeout: {millis} ms",
+        "Variables: {names}" => "Variablen: {names}",
+        "Unset variables: {names}" => "Nicht gesetzte Variablen: {names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "Die MCP-Quelle wurde seit der Vorschau geändert; es wurde kein Eintrag importiert, und ein Eintrag, den sie ersetzt hätte, kann jetzt deaktiviert sein. Erneut in der Vorschau ansehen."
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "Die Projekteinträge wurden geschrieben, ihre zurückgehaltenen Werte nicht; erneut ersetzen, um es noch einmal zu versuchen."
+        }
+        "Replaced {id}." => "{id} ersetzt.",
+        "Added {id}." => "{id} hinzugefügt.",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "Liefert an Session {session}, Zweig {branch} ({mode})."
+        }
+        "Launches a new Session in {cwd}." => "Startet eine neue Session in {cwd}.",
+        "Disabled: {code} at {instant}." => "Deaktiviert: {code} um {instant}.",
+        "The definition changed since it was read; nothing was written." => {
+            "Die Definition wurde seit dem Lesen geändert; es wurde nichts geschrieben."
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "Spalten: ID, Client, Bereich, Pfad, Status, Einträge oder Fehler."
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "Kein Wert wird aus einem Speicher gelesen oder ausgegeben; --from ID zeigt einen im Daemon in der Vorschau."
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "Spalten: ID, Aktion, Ziel-ID.\nEin umbenannter Eintrag wird unter seiner Ziel-id geschrieben; der Eintrag der Quelle mit der alten id bleibt, wie er war."
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "Importierte und ersetzte Einträge beginnen deaktiviert: Ein Benutzereintrag wird mit enabled: false geschrieben, und ein Projekteintrag hat keinen Aktivierungsdatensatz, bis du ihn lokal aktivierst."
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "Dieser Daemon kann die MCP-Speicher anderer Clients nicht auflisten."
+        }
+        "This daemon cannot import MCP servers." => {
+            "Dieser Daemon kann keine MCP-Server importieren."
+        }
+        "The document holds no mcpServers entries." => {
+            "Das Dokument enthält keine mcpServers-Einträge."
+        }
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "Spalten: ID, Status, Transport, geänderte Felder, nicht unterstützte Felder, Fehler.\nEin geändertes Feld nennt, was ein Schreiben ändern würde und welche Art von Wert es hält; kein Wert wird ausgegeben.\nEin nicht unterstütztes Feld bleibt ungenutzt oder wird verworfen, wie hinter dem Feld angegeben."
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "Ein Projekteintrag wird als sein öffentliches Gerüst geschrieben: Die Arbeitsbereichsdatei erhält den Befehl, das deklarierte cwd, den URL-Ursprung und die öffentlichen OAuth-Felder. Seine Argumente, Umgebungs- und Header-Werte, das Bearer-Token, eine URL mit userinfo, Pfad, Abfrage oder Fragment sowie unbekannte Mitglieder gehen in deinen user-scope-Datensatz mcp-secrets, nie in die Arbeitsbereichsdatei."
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id} hat {count} weitere Feldnamen, als die Listen oben zeigen."
+        }
+        "Top-level members the import does not carry: none." => {
+            "Top-Level-Mitglieder, die der Import nicht übernimmt: keine."
+        }
+        "Top-level members the import does not carry: {names}." => {
+            "Top-Level-Mitglieder, die der Import nicht übernimmt: {names}."
+        }
+        "Applying the selection at this revision." => {
+            "Die Auswahl wird in dieser Revision angewendet."
+        }
+        "An unchanged entry was already in the source and was not written." => {
+            "Ein unveränderter Eintrag war bereits in der Quelle und wurde nicht geschrieben."
+        }
         _ => return None,
     })
 }

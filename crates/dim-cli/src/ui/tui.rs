@@ -24,7 +24,7 @@ use crate::model::view::{
 };
 use crate::ui::Env;
 use crate::ui::Initial;
-use crate::ui::approvals_panel::ApprovalsPanel;
+use crate::ui::approvals_panel::{ApprovalsPanel, preset_label};
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
 use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
 use crate::ui::i18n::{self, t, tf};
@@ -149,15 +149,6 @@ enum Jump {
 
 /// The card id of fullscreen's load-more row: no line or delegation id.
 const LOAD_MORE: &str = "\u{1}load-more";
-
-/// The preset as the status line names it.
-fn permission_label(preset: dim_agent_types::PermissionPreset) -> &'static str {
-    match preset {
-        dim_agent_types::PermissionPreset::ReadOnly => "Read only",
-        dim_agent_types::PermissionPreset::WorkspaceWrite => "Workspace write",
-        dim_agent_types::PermissionPreset::FullAccess => "Full access",
-    }
-}
 
 fn apply_jump(full: &mut FullScreen, app: &App, jump: Jump) {
     match jump {
@@ -8572,7 +8563,7 @@ impl App {
             PermissionPreset::WorkspaceWrite => &p.permission_write,
             PermissionPreset::FullAccess => &p.permission_full,
         };
-        let permission = fg(&format!("⏵⏵ {}", permission_label(preset)), color);
+        let permission = fg(&format!("⏵⏵ {}", preset_label(preset)), color);
         let hint = fg(t("(shift+tab to cycle)"), &p.muted);
         let total = cols.saturating_sub(2);
         let prefix = format!("{}{permission}", " ".repeat(MARGIN));

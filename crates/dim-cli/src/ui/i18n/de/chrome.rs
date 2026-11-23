@@ -288,6 +288,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "Dateien",
         "Searching…" => "Suche…",
+        "type filter · enter select · esc clear/close" => {
+            "Filter eingeben · enter wählen · esc leeren/schließen"
+        }
         "↑↓ select · enter/tab insert · esc close" => {
             "↑↓ wählen · enter/tab einfügen · esc schließen"
         }
@@ -348,6 +351,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Sign-in link:" => "Anmeldelink:",
         "Resume" => "Fortsetzen",
         "Press Ctrl+C to stop the Web workspace." => "Ctrl+C beendet Web-Workspace.",
+        "Feedback or ideas? Join us on Discord:" => "Feedback oder Ideen? Komm zu uns auf Discord:",
         "To resume this session:" => "Diese Session fortsetzen:",
 
         // commands.rs: descriptions
@@ -575,6 +579,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Background task finished: {label}" => "Hintergrundaufgabe beendet: {label}",
         "Background task failed: {label}" => "Hintergrundaufgabe fehlgeschlagen: {label}",
         "Background task stopped: {label}" => "Hintergrundaufgabe gestoppt: {label}",
+        "Background tasks" => "Hintergrundaufgaben",
+        "Nothing runs in the background." => "Im Hintergrund läuft nichts.",
+        "No matching tasks." => "Keine passenden Aufgaben.",
         "Permission needed: {tool}" => "Freigabe nötig: {tool}",
         "Question waiting for your answer" => "Frage wartet auf Antwort",
         "Notify when agent needs you" => "Benachrichtigen, wenn Agent Eingabe braucht",
@@ -706,6 +713,192 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "checking and committing the upgraded store" => {
             "der aktualisierte Speicher wird geprüft und übergeben"
         }
+        "A prompt save is still in progress" => "Ein Speichern der Prompts läuft noch",
+        "Base prompt" => "Basis-Prompt",
+        "Before/after comparison is unavailable for this record." => {
+            "Für diesen Eintrag ist kein Vorher/Nachher-Vergleich verfügbar."
+        }
+        "Cancelling generation…" => "Erstellung wird abgebrochen…",
+        "Changes" => "Änderungen",
+        "Compaction prompt" => "Kompaktierungs-Prompt",
+        "Could not open the share destination" => "Das Freigabeziel ließ sich nicht öffnen",
+        "Could not save ZIP" => "ZIP konnte nicht gespeichert werden",
+        "Default: current-session diagnostics only." => {
+            "Standard: nur Diagnosedaten der aktuellen Sitzung."
+        }
+        "Draft a GitHub issue" => "GitHub-Issue entwerfen",
+        "Email the ZIP to {email}" => "ZIP an {email} senden",
+        "Enter apply · Esc back" => "Enter anwenden · Esc zurück",
+        "Error diagnostics only; no session text is available." => {
+            "Nur Fehlerdiagnose; es ist kein Sitzungstext verfügbar."
+        }
+        "Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc zurück · x Agent stoppen · ↑↓ PgUp PgDn scrollen · Home/End springen"
+        }
+        "Esc back · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc zurück · ↑↓ PgUp PgDn scrollen · Home/End springen"
+        }
+        "Evidence · No recent session activity" => "Belege · Keine aktuelle Sitzungsaktivität",
+        "Evidence · Observed error only" => "Belege · Nur beobachteter Fehler",
+        "Evidence · Recent session activity" => "Belege · Aktuelle Sitzungsaktivität",
+        "Evidence · Timeline omitted" => "Belege · Zeitleiste ausgelassen",
+        "Evidence · Timeline read failed" => "Belege · Zeitleiste nicht lesbar",
+        "Evidence · Timeline unavailable" => "Belege · Zeitleiste nicht verfügbar",
+        "Generate report" => "Bericht erstellen",
+        "Generate/save never uploads. Share manually after saving." => {
+            "Erstellen und Speichern laden nichts hoch. Nach dem Speichern manuell teilen."
+        }
+        "Generating report…" => "Bericht wird erstellt…",
+        "Give feedback on Discord" => "Feedback auf Discord geben",
+        "Input" => "Eingabe",
+        "Invalid report ZIP" => "Ungültiges Bericht-ZIP",
+        "Local generation makes zero model requests." => {
+            "Lokales Erstellen stellt keine Modellanfragen."
+        }
+        "Model · Generate locally" => "Modell · Lokal erstellen",
+        "New" => "Neu",
+        "No content changes." => "Keine inhaltlichen Änderungen.",
+        "No session to report." => "Keine Sitzung zum Melden.",
+        "Old" => "Alt",
+        "Opened Discord" => "Discord geöffnet",
+        "Opened GitHub issue draft" => "GitHub-Issue-Entwurf geöffnet",
+        "Options" => "Optionen",
+        "Options must fit within 1 KiB" => "Optionen dürfen höchstens 1 KiB groß sein",
+        "Options · for example: omit timeline, keep error codes" => {
+            "Optionen · zum Beispiel: Zeitleiste auslassen, Fehlercodes behalten"
+        }
+        "Prepare report again" => "Bericht erneut vorbereiten",
+        "Preparing report…" => "Bericht wird vorbereitet…",
+        "Prompt saved; applies to new Sessions" => "Prompt gespeichert; gilt für neue Sessions",
+        "Prompt settings are not available" => "Prompt-Einstellungen sind nicht verfügbar",
+        "Prompts" => "Prompts",
+        "Read-only: this agent has finished." => "Schreibgeschützt: Dieser Agent ist fertig.",
+        "Read-only: you can watch this agent or stop it." => {
+            "Schreibgeschützt: Du kannst diesen Agenten beobachten oder stoppen."
+        }
+        "Redact [ ]" => "Schwärzen [ ]",
+        "Redact [x]" => "Schwärzen [x]",
+        "Redact is off. The ZIP may contain sensitive text from recent messages." => {
+            "Schwärzen ist aus. Das ZIP kann sensiblen Text aus aktuellen Nachrichten enthalten."
+        }
+        "Refresh report plan" => "Berichtsplan aktualisieren",
+        "Report ready" => "Bericht bereit",
+        "Report this error" => "Diesen Fehler melden",
+        "Report this session" => "Diese Sitzung melden",
+        "Resetting {field}; the old text is kept in {path}" => {
+            "{field} wird zurückgesetzt; der alte Text bleibt in {path}"
+        }
+        "Result" => "Ergebnis",
+        "Run /report to create a report." => "Führe /report aus, um einen Bericht zu erstellen.",
+        "Running…" => "Läuft…",
+        "Save ZIP" => "ZIP speichern",
+        "Saved ZIP" => "ZIP gespeichert",
+        "Session model" => "Sitzungsmodell",
+        "Skills instructions" => "Skills-Anweisungen",
+        "Some options were unsupported." => "Einige Optionen werden nicht unterstützt.",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab wählt auch Tool-Kopfzeilen · Enter/Leertaste schaltet das fokussierte Tool um"
+        }
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "Diese Sitzung ist geschlossen und lässt sich nicht fortsetzen. Lies ihren gespeicherten Verlauf mit dimcode export {id} und demselben --home."
+        }
+        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
+            "Schalte Schwärzen aus, um aktuellen Text von Benutzer und Assistent an das ZIP anzuhängen; er kann sensible Daten enthalten."
+        }
+        "Updating report plan…" => "Berichtsplan wird aktualisiert…",
+        "Usage: /report" => "Verwendung: /report",
+        "Waiting for result…" => "Warte auf Ergebnis…",
+        "ZIP contents: report.md, diagnostics.json" => "ZIP-Inhalt: report.md, diagnostics.json",
+        "agent result" => "Agent-Ergebnis",
+        "built-in" => "integriert",
+        "custom" => "benutzerdefiniert",
+        "report the current session" => "die aktuelle Sitzung melden",
+        "skills replaces the marker and call shape; the skill tool and list stay · r reset" => {
+            "skills ersetzt Markierung und Aufrufform; Skill-Tool und -Liste bleiben · r zurücksetzen"
+        }
+        "… {count} unchanged lines" => "… {count} unveränderte Zeilen",
+        "↑↓ move · Enter edit · r reset · Esc close" => {
+            "↑↓ bewegen · Enter bearbeiten · r zurücksetzen · Esc schließen"
+        }
+        "↑↓ move · Enter select · ←→/Space change · r reset · Esc close" => {
+            "↑↓ bewegen · Enter wählen · ←→/Leertaste ändern · r zurücksetzen · Esc schließen"
+        }
+        "↑↓/Tab move · Enter select · Esc close" => {
+            "↑↓/Tab bewegen · Enter wählen · Esc schließen"
+        }
+        "Permission mode" => "Berechtigungsmodus",
+        "Related settings" => "Zugehörige Einstellungen",
+        "Process isolation" => "Prozessisolierung",
+        "open" => "öffnen",
+        "User-wide command rules. Allow skips asks, never denials." => {
+            "Befehlsregeln für alle Sitzungen. Erlauben überspringt Rückfragen, nie Ablehnungen."
+        }
+        "Opens Settings; user-wide, for new processes; independent of permission mode." => {
+            "Öffnet die Einstellungen; für alle Sitzungen, für neue Prozesse; unabhängig vom Berechtigungsmodus."
+        }
+        "keep mode" => "Modus behalten",
+        "use mode" => "Modus verwenden",
+        "Current session; remembered for new sessions. {consequence}" => {
+            "Aktuelle Sitzung; für neue Sitzungen gemerkt. {consequence}"
+        }
+        "↑↓/Tab move · Enter {action} · Esc close" => {
+            "↑↓/Tab bewegen · Enter {action} · Esc schließen"
+        }
+        "Writes and commands denied; external reads may ask." => {
+            "Schreibvorgänge und Befehle abgelehnt; externe Lesezugriffe können nachfragen."
+        }
+        "Workspace writes allowed; commands, network and ungranted outside access usually ask." => {
+            "Schreiben im Arbeitsbereich erlaubt; Befehle, Netzwerk und nicht gewährter Zugriff außerhalb fragen meist nach."
+        }
+        "Skips preset approval; pending calls on this branch are reevaluated. Explicit denies and isolation remain." => {
+            "Überspringt die Freigabe der Voreinstellung; ausstehende Aufrufe auf diesem Zweig werden neu bewertet. Ausdrückliche Ablehnungen und Prozessisolierung bleiben."
+        }
+        "↑↓ move · Enter select · Esc close" => "↑↓ bewegen · Enter wählen · Esc schließen",
+        "Loading process isolation…" => "Prozessisolierung wird geladen…",
+        "Sandbox is unavailable on this host: {reason}" => {
+            "Sandbox ist auf diesem Host nicht verfügbar: {reason}"
+        }
+        "Applies to new processes and shells." => "Gilt für neue Prozesse und Shells.",
+        "Off: commands use your OS permissions, not file-tool limits." => {
+            "Aus: Befehle nutzen deine OS-Berechtigungen, nicht die Grenzen der Datei-Tools."
+        }
+        "Off" => "Aus",
+        "Sandboxed · No network" => "Sandbox · Kein Netzwerk",
+        "Sandboxed · Network allowed" => "Sandbox · Netzwerk erlaubt",
+        "selected" => "ausgewählt",
+        "Save" => "Speichern",
+        "Reset to defaults" => "Auf Standard zurücksetzen",
+        "Reload" => "Neu laden",
+        "Discard edits and read the current settings" => {
+            "Änderungen verwerfen und aktuelle Einstellungen lesen"
+        }
+        "Reset the execution switches to defaults?" => {
+            "Ausführungsschalter auf Standard zurücksetzen?"
+        }
+        "Discard unsaved changes?" => "Nicht gespeicherte Änderungen verwerfen?",
+        "Yes (y)" => "Ja (y)",
+        "Cancel (n)" => "Abbrechen (n)",
+        "y confirm · Enter/Esc cancel" => "y bestätigen · Enter/Esc abbrechen",
+        "Read only" => "Nur lesen",
+        "Workspace write" => "Arbeitsbereich schreiben",
+        "Agent" => "Agent",
+        "agent" => "Agent",
+        "command" => "Befehl",
+        "ended" => "beendet",
+        "Signed in" => "Angemeldet",
+        "Retry" => "Erneut versuchen",
+        "Provider changed; review the retained draft and press Apply again" => {
+            "Anbieter geändert; prüfe den behaltenen Entwurf und drücke erneut Anwenden"
+        }
+        "y allow · a always · n reject · ←→/Tab move · Enter confirm" => {
+            "y erlauben · a immer · n ablehnen · ←→/Tab bewegen · Enter bestätigen"
+        }
+        "{count} in background · /tasks" => "{count} im Hintergrund · /tasks",
+        "{field}: {error} Your text is kept in {path}" => {
+            "{field}: {error} Dein Text bleibt in {path}"
+        }
+        "{field}: {error}" => "{field}: {error}",
+        "Prompts: {error}" => "Prompts: {error}",
         _ => return None,
     })
 }

@@ -278,6 +278,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "File",
         "Searching…" => "Mencari…",
+        "type filter · enter select · esc clear/close" => {
+            "ketik filter · enter pilih · esc hapus/tutup"
+        }
         "↑↓ select · enter/tab insert · esc close" => {
             "↑↓ pilih · enter/tab sisip · esc tutup"
         }
@@ -334,6 +337,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Sign-in link:" => "Tautan masuk:",
         "Resume" => "Lanjutkan",
         "Press Ctrl+C to stop the Web workspace." => "Ctrl+C untuk menghentikan workspace Web.",
+        "Feedback or ideas? Join us on Discord:" => {
+            "Ada masukan atau ide? Bergabunglah dengan kami di Discord:"
+        }
         "To resume this session:" => "Lanjutkan sesi ini:",
 
         // commands.rs: descriptions
@@ -559,6 +565,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Background task finished: {label}" => "Tugas latar selesai: {label}",
         "Background task failed: {label}" => "Tugas latar gagal: {label}",
         "Background task stopped: {label}" => "Tugas latar dihentikan: {label}",
+        "Background tasks" => "Tugas latar",
+        "Nothing runs in the background." => "Tidak ada yang berjalan di latar.",
+        "No matching tasks." => "Tidak ada tugas yang cocok.",
         "Permission needed: {tool}" => "Perlu izin: {tool}",
         "Question waiting for your answer" => "Pertanyaan menunggu jawaban",
         "Notify when agent needs you" => "Beri tahu saat agen butuh Anda",
@@ -686,6 +695,186 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "checking and committing the upgraded store" => {
             "memeriksa dan menyimpan penyimpanan yang dimutakhirkan"
         }
+        "A prompt save is still in progress" => "Penyimpanan prompt masih berjalan",
+        "Base prompt" => "Prompt dasar",
+        "Before/after comparison is unavailable for this record." => {
+            "Perbandingan sebelum/sesudah tidak tersedia untuk catatan ini."
+        }
+        "Cancelling generation…" => "Membatalkan pembuatan…",
+        "Changes" => "Perubahan",
+        "Compaction prompt" => "Prompt pemadatan",
+        "Could not open the share destination" => "Gagal membuka tujuan berbagi",
+        "Could not save ZIP" => "Gagal menyimpan ZIP",
+        "Default: current-session diagnostics only." => "Bawaan: hanya diagnostik sesi saat ini.",
+        "Draft a GitHub issue" => "Buat draf issue GitHub",
+        "Email the ZIP to {email}" => "Kirim ZIP ke {email} lewat email",
+        "Enter apply · Esc back" => "Enter terapkan · Esc kembali",
+        "Error diagnostics only; no session text is available." => {
+            "Hanya diagnostik galat; tidak ada teks sesi yang tersedia."
+        }
+        "Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc kembali · x hentikan agen · ↑↓ PgUp PgDn gulir · Home/End lompat"
+        }
+        "Esc back · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc kembali · ↑↓ PgUp PgDn gulir · Home/End lompat"
+        }
+        "Evidence · No recent session activity" => "Bukti · Tidak ada aktivitas sesi terbaru",
+        "Evidence · Observed error only" => "Bukti · Hanya galat yang teramati",
+        "Evidence · Recent session activity" => "Bukti · Aktivitas sesi terbaru",
+        "Evidence · Timeline omitted" => "Bukti · Linimasa dihilangkan",
+        "Evidence · Timeline read failed" => "Bukti · Gagal membaca linimasa",
+        "Evidence · Timeline unavailable" => "Bukti · Linimasa tidak tersedia",
+        "Generate report" => "Buat laporan",
+        "Generate/save never uploads. Share manually after saving." => {
+            "Membuat dan menyimpan tidak pernah mengunggah. Bagikan sendiri setelah menyimpan."
+        }
+        "Generating report…" => "Membuat laporan…",
+        "Give feedback on Discord" => "Beri masukan di Discord",
+        "Input" => "Masukan",
+        "Invalid report ZIP" => "ZIP laporan tidak valid",
+        "Local generation makes zero model requests." => {
+            "Pembuatan lokal tidak mengirim permintaan model."
+        }
+        "Model · Generate locally" => "Model · Buat secara lokal",
+        "New" => "Baru",
+        "No content changes." => "Tidak ada perubahan isi.",
+        "No session to report." => "Tidak ada sesi untuk dilaporkan.",
+        "Old" => "Lama",
+        "Opened Discord" => "Discord dibuka",
+        "Opened GitHub issue draft" => "Draf issue GitHub dibuka",
+        "Options" => "Opsi",
+        "Options must fit within 1 KiB" => "Opsi harus muat dalam 1 KiB",
+        "Options · for example: omit timeline, keep error codes" => {
+            "Opsi · misalnya: omit timeline, keep error codes"
+        }
+        "Prepare report again" => "Siapkan laporan lagi",
+        "Preparing report…" => "Menyiapkan laporan…",
+        "Prompt saved; applies to new Sessions" => "Prompt disimpan; berlaku untuk Sesi baru",
+        "Prompt settings are not available" => "Pengaturan prompt tidak tersedia",
+        "Prompts" => "Prompt",
+        "Read-only: this agent has finished." => "Hanya baca: agen ini sudah selesai.",
+        "Read-only: you can watch this agent or stop it." => {
+            "Hanya baca: Anda bisa memantau agen ini atau menghentikannya."
+        }
+        "Redact [ ]" => "Samarkan [ ]",
+        "Redact [x]" => "Samarkan [x]",
+        "Redact is off. The ZIP may contain sensitive text from recent messages." => {
+            "Penyamaran nonaktif. ZIP bisa memuat teks sensitif dari pesan terbaru."
+        }
+        "Refresh report plan" => "Segarkan rencana laporan",
+        "Report ready" => "Laporan siap",
+        "Report this error" => "Laporkan galat ini",
+        "Report this session" => "Laporkan sesi ini",
+        "Resetting {field}; the old text is kept in {path}" => {
+            "Mengatur ulang {field}; teks lama disimpan di {path}"
+        }
+        "Result" => "Hasil",
+        "Run /report to create a report." => "Jalankan /report untuk membuat laporan.",
+        "Running…" => "Berjalan…",
+        "Save ZIP" => "Simpan ZIP",
+        "Saved ZIP" => "ZIP tersimpan",
+        "Session model" => "Model sesi",
+        "Skills instructions" => "Instruksi skill",
+        "Some options were unsupported." => "Sebagian opsi tidak didukung.",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab juga memilih judul tool · Enter/Spasi membuka atau menutup tool yang difokuskan"
+        }
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "Sesi ini sudah ditutup dan tidak bisa dilanjutkan. Baca riwayat tersimpannya dengan dimcode export {id} memakai --home yang sama."
+        }
+        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
+            "Matikan Samarkan agar teks pengguna dan asisten terbaru dilampirkan ke ZIP; isinya bisa memuat data sensitif."
+        }
+        "Updating report plan…" => "Memperbarui rencana laporan…",
+        "Usage: /report" => "Penggunaan: /report",
+        "Waiting for result…" => "Menunggu hasil…",
+        "ZIP contents: report.md, diagnostics.json" => "Isi ZIP: report.md, diagnostics.json",
+        "agent result" => "hasil agen",
+        "built-in" => "bawaan",
+        "custom" => "kustom",
+        "report the current session" => "laporkan sesi saat ini",
+        "skills replaces the marker and call shape; the skill tool and list stay · r reset" => {
+            "skills mengganti penanda dan bentuk pemanggilan; tool skill dan daftarnya tetap · r atur ulang"
+        }
+        "… {count} unchanged lines" => "… {count} baris tidak berubah",
+        "↑↓ move · Enter edit · r reset · Esc close" => {
+            "↑↓ pindah · Enter ubah · r atur ulang · Esc tutup"
+        }
+        "↑↓ move · Enter select · ←→/Space change · r reset · Esc close" => {
+            "↑↓ pindah · Enter pilih · ←→/Spasi ubah · r atur ulang · Esc tutup"
+        }
+        "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab pindah · Enter pilih · Esc tutup",
+        "Permission mode" => "Mode izin",
+        "Related settings" => "Pengaturan terkait",
+        "Process isolation" => "Isolasi proses",
+        "open" => "buka",
+        "User-wide command rules. Allow skips asks, never denials." => {
+            "Aturan perintah untuk seluruh pengguna. Izinkan melewati pertanyaan, tidak pernah melewati penolakan."
+        }
+        "Opens Settings; user-wide, for new processes; independent of permission mode." => {
+            "Membuka Pengaturan; lingkup pengguna, untuk proses baru; tidak bergantung pada mode izin."
+        }
+        "keep mode" => "pertahankan mode",
+        "use mode" => "pakai mode",
+        "Current session; remembered for new sessions. {consequence}" => {
+            "Sesi saat ini saja; diingat untuk sesi baru. {consequence}"
+        }
+        "↑↓/Tab move · Enter {action} · Esc close" => {
+            "↑↓/Tab pindah · Enter {action} · Esc tutup"
+        }
+        "Writes and commands denied; external reads may ask." => {
+            "Penulisan dan perintah ditolak; pembacaan eksternal bisa meminta izin."
+        }
+        "Workspace writes allowed; commands, network and ungranted outside access usually ask." => {
+            "Penulisan ruang kerja diizinkan; perintah, jaringan, dan akses luar tanpa izin biasanya bertanya."
+        }
+        "Skips preset approval; pending calls on this branch are reevaluated. Explicit denies and isolation remain." => {
+            "Melewati persetujuan preset; panggilan tertunda di cabang ini dinilai ulang. Penolakan eksplisit dan isolasi tetap berlaku."
+        }
+        "↑↓ move · Enter select · Esc close" => "↑↓ pindah · Enter pilih · Esc tutup",
+        "Loading process isolation…" => "Memuat isolasi proses…",
+        "Sandbox is unavailable on this host: {reason}" => {
+            "Sandbox tidak tersedia di host ini: {reason}"
+        }
+        "Applies to new processes and shells." => "Berlaku untuk proses dan shell baru.",
+        "Off: commands use your OS permissions, not file-tool limits." => {
+            "Mati: perintah memakai izin OS Anda, bukan batas tool file."
+        }
+        "Off" => "Mati",
+        "Sandboxed · No network" => "Sandbox · Tanpa jaringan",
+        "Sandboxed · Network allowed" => "Sandbox · Jaringan diizinkan",
+        "selected" => "dipilih",
+        "Save" => "Simpan",
+        "Reset to defaults" => "Atur ulang ke bawaan",
+        "Reload" => "Muat ulang",
+        "Discard edits and read the current settings" => {
+            "Buang perubahan dan baca pengaturan saat ini"
+        }
+        "Reset the execution switches to defaults?" => "Atur ulang sakelar eksekusi ke bawaan?",
+        "Discard unsaved changes?" => "Buang perubahan yang belum disimpan?",
+        "Yes (y)" => "Ya (y)",
+        "Cancel (n)" => "Batal (n)",
+        "y confirm · Enter/Esc cancel" => "y konfirmasi · Enter/Esc batal",
+        "Read only" => "Hanya baca",
+        "Workspace write" => "Tulis ruang kerja",
+        "Agent" => "Agen",
+        "agent" => "agen",
+        "command" => "perintah",
+        "ended" => "berakhir",
+        "Signed in" => "Sudah masuk",
+        "Retry" => "Coba lagi",
+        "Provider changed; review the retained draft and press Apply again" => {
+            "Provider berubah; periksa draf yang ditahan lalu tekan Terapkan lagi"
+        }
+        "y allow · a always · n reject · ←→/Tab move · Enter confirm" => {
+            "y izinkan · a selalu · n tolak · ←→/Tab pindah · Enter konfirmasi"
+        }
+        "{count} in background · /tasks" => "{count} di latar belakang · /tasks",
+        "{field}: {error} Your text is kept in {path}" => {
+            "{field}: {error} Teks Anda disimpan di {path}"
+        }
+        "{field}: {error}" => "{field}: {error}",
+        "Prompts: {error}" => "Prompt: {error}",
         _ => return None,
     })
 }

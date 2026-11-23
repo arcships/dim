@@ -141,6 +141,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "editing" => "a editar",
         "changed" => "alterou",
         "changing" => "a alterar",
+        "Ran code" => "executou código",
+        "Running code" => "a executar código",
         "checked on" => "verificou",
         "checking on" => "a verificar",
         "Explored" => "Explorou",
@@ -185,6 +187,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Checked on background task" => "Verificou tarefa em segundo plano",
         "Waiting…" => "Em espera…",
         "… +{count} lines" => "… +{count} linhas",
+        "New members from main inherit this policy; existing members retain theirs." => {
+            "Novos membros de main herdam esta política; os membros existentes mantêm a sua."
+        }
+        "Subagent tool approval" => "Aprovação de ferramenta do subagente",
         _ => return None,
     })
 }

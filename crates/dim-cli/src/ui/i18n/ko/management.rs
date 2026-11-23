@@ -350,6 +350,61 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "줄 프롬프트 또는 dimcode permissions에서 사용하세요."
         }
+        "Tool call timeout: {millis} ms" => "도구 호출 시간 제한: {millis} ms",
+        "Variables: {names}" => "변수: {names}",
+        "Unset variables: {names}" => "설정되지 않은 변수: {names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "MCP 소스가 미리보기 후 변경되었습니다. 항목은 가져오지 않았고, 대체하려던 항목은 이제 비활성일 수 있습니다. 다시 미리보기하세요."
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "프로젝트 항목은 기록되었지만 보류된 값은 기록되지 않았습니다. 다시 대체해 재시도하세요."
+        }
+        "Replaced {id}." => "{id}을(를) 대체했습니다.",
+        "Added {id}." => "{id}을(를) 추가했습니다.",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "세션 {session} 브랜치 {branch}({mode})(으)로 전달합니다."
+        }
+        "Launches a new Session in {cwd}." => "{cwd}에서 새 세션을 시작합니다.",
+        "Disabled: {code} at {instant}." => "비활성: {instant}의 {code}.",
+        "The definition changed since it was read; nothing was written." => {
+            "정의가 읽은 뒤 변경되었습니다. 아무것도 기록되지 않았습니다."
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "열: ID, 클라이언트, 범위, 경로, 상태, 항목 수 또는 오류."
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "저장소에서 값을 읽거나 출력하지 않습니다. --from ID는 데몬 안에서 하나를 미리보기합니다."
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "열: ID, 작업, 대상 ID.\n이름이 바뀐 항목은 대상 id로 기록되고, 소스의 이전 id 항목은 그대로 남습니다."
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "가져오거나 대체된 항목은 비활성 상태로 시작합니다. 사용자 항목은 enabled: false로 기록되고, 프로젝트 항목은 로컬에서 활성화하기 전까지 활성화 기록이 없습니다."
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "이 데몬은 다른 클라이언트의 MCP 저장소를 나열할 수 없습니다."
+        }
+        "This daemon cannot import MCP servers." => "이 데몬은 MCP 서버를 가져올 수 없습니다.",
+        "The document holds no mcpServers entries." => "문서에 mcpServers 항목이 없습니다.",
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "열: ID, 상태, 전송 방식, 변경된 필드, 지원되지 않는 필드, 오류.\n변경된 필드는 쓰기가 무엇을 바꾸는지와 값의 종류를 나타냅니다. 값은 출력되지 않습니다.\n지원되지 않는 필드는 필드 뒤 설명대로 사용되지 않거나 버려집니다."
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "프로젝트 항목은 공개 뼈대만 기록됩니다. 작업 공간 파일에는 명령, 선언된 cwd, URL 출처, 공개 OAuth 필드가 들어갑니다. 인수, 환경 변수와 헤더 값, bearer 토큰, userinfo·경로·쿼리·프래그먼트가 있는 URL, 알 수 없는 멤버는 사용자 범위 mcp-secrets 기록에 기록되며 작업 공간 파일에는 절대 기록되지 않습니다."
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id}에는 위 목록에 표시되지 않은 필드 이름이 {count}개 더 있습니다."
+        }
+        "Top-level members the import does not carry: none." => {
+            "가져오기가 옮기지 않는 최상위 멤버: 없음."
+        }
+        "Top-level members the import does not carry: {names}." => {
+            "가져오기가 옮기지 않는 최상위 멤버: {names}."
+        }
+        "Applying the selection at this revision." => "이 리비전에서 선택을 적용하는 중입니다.",
+        "An unchanged entry was already in the source and was not written." => {
+            "변경되지 않은 항목은 이미 소스에 있어 기록하지 않았습니다."
+        }
         _ => return None,
     })
 }

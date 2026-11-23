@@ -254,6 +254,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "파일",
         "Searching…" => "검색 중…",
+        "type filter · enter select · esc clear/close" => {
+            "필터 입력 · enter 선택 · esc 지우기/닫기"
+        }
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 선택 · enter/tab 삽입 · esc 닫기",
         "not sent to the model" => "모델에 전송 안 됨",
         "… {count} more lines" => "… {count}줄 더",
@@ -306,6 +309,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Sign-in link:" => "로그인 링크:",
         "Resume" => "재개",
         "Press Ctrl+C to stop the Web workspace." => "Ctrl+C로 Web 작업 공간 중지",
+        "Feedback or ideas? Join us on Discord:" => {
+            "피드백이나 아이디어가 있다면 Discord로 오세요:"
+        }
         "To resume this session:" => "세션 재개:",
 
         // commands.rs: descriptions
@@ -521,6 +527,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Background task finished: {label}" => "백그라운드 작업 완료: {label}",
         "Background task failed: {label}" => "백그라운드 작업 실패: {label}",
         "Background task stopped: {label}" => "백그라운드 작업 중지됨: {label}",
+        "Background tasks" => "백그라운드 작업",
+        "Nothing runs in the background." => "백그라운드에서 실행 중인 작업이 없습니다.",
+        "No matching tasks." => "일치하는 작업이 없습니다.",
         "Permission needed: {tool}" => "권한 필요: {tool}",
         "Question waiting for your answer" => "답변 대기 중인 질문",
         "Notify when agent needs you" => "에이전트 요청 시 알림",
@@ -648,6 +657,182 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "checking and committing the upgraded store" => {
             "업그레이드된 저장소를 검사하고 커밋하는 중"
         }
+        "A prompt save is still in progress" => "프롬프트 저장이 아직 진행 중입니다",
+        "Base prompt" => "기본 프롬프트",
+        "Before/after comparison is unavailable for this record." => {
+            "이 기록에는 변경 전후 비교가 없습니다."
+        }
+        "Cancelling generation…" => "생성을 취소하는 중…",
+        "Changes" => "변경 사항",
+        "Compaction prompt" => "압축 프롬프트",
+        "Could not open the share destination" => "공유 대상을 열지 못했습니다",
+        "Could not save ZIP" => "ZIP을 저장하지 못했습니다",
+        "Default: current-session diagnostics only." => "기본값: 현재 세션 진단 정보만.",
+        "Draft a GitHub issue" => "GitHub 이슈 초안 작성",
+        "Email the ZIP to {email}" => "ZIP을 {email}(으)로 이메일 전송",
+        "Enter apply · Esc back" => "Enter 적용 · Esc 뒤로",
+        "Error diagnostics only; no session text is available." => {
+            "오류 진단 정보만. 수집할 세션 본문이 없습니다."
+        }
+        "Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 뒤로 · x 에이전트 중지 · ↑↓ PgUp PgDn 스크롤 · Home/End 이동"
+        }
+        "Esc back · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 뒤로 · ↑↓ PgUp PgDn 스크롤 · Home/End 이동"
+        }
+        "Evidence · No recent session activity" => "증거 · 최근 세션 활동 없음",
+        "Evidence · Observed error only" => "증거 · 관찰된 오류만",
+        "Evidence · Recent session activity" => "증거 · 최근 세션 활동",
+        "Evidence · Timeline omitted" => "증거 · 타임라인 생략됨",
+        "Evidence · Timeline read failed" => "증거 · 타임라인을 읽지 못함",
+        "Evidence · Timeline unavailable" => "증거 · 타임라인 사용 불가",
+        "Generate report" => "보고서 생성",
+        "Generate/save never uploads. Share manually after saving." => {
+            "생성과 저장은 업로드하지 않습니다. 저장 후 직접 공유하세요."
+        }
+        "Generating report…" => "보고서를 생성하는 중…",
+        "Give feedback on Discord" => "Discord에서 피드백",
+        "Input" => "입력",
+        "Invalid report ZIP" => "잘못된 보고서 ZIP",
+        "Local generation makes zero model requests." => "로컬 생성은 모델 요청을 보내지 않습니다.",
+        "Model · Generate locally" => "모델 · 로컬에서 생성",
+        "New" => "신규",
+        "No content changes." => "내용 변경이 없습니다.",
+        "No session to report." => "보고할 세션이 없습니다.",
+        "Old" => "이전",
+        "Opened Discord" => "Discord를 열었습니다",
+        "Opened GitHub issue draft" => "GitHub 이슈 초안을 열었습니다",
+        "Options" => "옵션",
+        "Options must fit within 1 KiB" => "옵션은 1 KiB를 넘을 수 없습니다",
+        "Options · for example: omit timeline, keep error codes" => {
+            "옵션 · 예: omit timeline, keep error codes"
+        }
+        "Prepare report again" => "보고서 다시 준비",
+        "Preparing report…" => "보고서를 준비하는 중…",
+        "Prompt saved; applies to new Sessions" => "프롬프트를 저장했습니다. 새 세션에 적용됩니다",
+        "Prompt settings are not available" => "프롬프트 설정을 사용할 수 없습니다",
+        "Prompts" => "프롬프트",
+        "Read-only: this agent has finished." => "읽기 전용: 이 에이전트는 종료되었습니다.",
+        "Read-only: you can watch this agent or stop it." => {
+            "읽기 전용: 이 에이전트를 보거나 중지할 수 있습니다."
+        }
+        "Redact [ ]" => "가리기 [ ]",
+        "Redact [x]" => "가리기 [x]",
+        "Redact is off. The ZIP may contain sensitive text from recent messages." => {
+            "가리기가 꺼져 있습니다. ZIP에 최근 메시지의 민감한 텍스트가 포함될 수 있습니다."
+        }
+        "Refresh report plan" => "보고서 계획 새로 고침",
+        "Report ready" => "보고서 준비됨",
+        "Report this error" => "이 오류 보고",
+        "Report this session" => "이 세션 보고",
+        "Resetting {field}; the old text is kept in {path}" => {
+            "{field}을(를) 초기화하는 중입니다. 이전 텍스트는 {path}에 보관됩니다"
+        }
+        "Result" => "결과",
+        "Run /report to create a report." => "/report를 실행해 보고서를 만드세요.",
+        "Running…" => "실행 중…",
+        "Save ZIP" => "ZIP 저장",
+        "Saved ZIP" => "ZIP 저장됨",
+        "Session model" => "세션 모델",
+        "Skills instructions" => "스킬 지침",
+        "Some options were unsupported." => "일부 옵션은 지원되지 않습니다.",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab으로도 도구 제목 선택 · Enter/스페이스로 선택한 도구 전환"
+        }
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "이 세션은 닫혀 있어 이어갈 수 없습니다. 같은 --home으로 dimcode export {id}를 실행하면 저장된 기록을 읽을 수 있습니다."
+        }
+        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
+            "가리기를 끄면 최근 사용자와 어시스턴트 본문이 ZIP에 첨부됩니다. 민감한 정보가 포함될 수 있습니다."
+        }
+        "Updating report plan…" => "보고서 계획을 업데이트하는 중…",
+        "Usage: /report" => "사용법: /report",
+        "Waiting for result…" => "결과를 기다리는 중…",
+        "ZIP contents: report.md, diagnostics.json" => "ZIP 내용: report.md, diagnostics.json",
+        "agent result" => "에이전트 결과",
+        "built-in" => "내장",
+        "custom" => "사용자 지정",
+        "report the current session" => "현재 세션 보고",
+        "skills replaces the marker and call shape; the skill tool and list stay · r reset" => {
+            "skills는 표시와 호출 형식을 바꿉니다. 스킬 도구와 목록은 그대로 · r 초기화"
+        }
+        "… {count} unchanged lines" => "… 변경되지 않은 {count}줄",
+        "↑↓ move · Enter edit · r reset · Esc close" => {
+            "↑↓ 이동 · Enter 편집 · r 초기화 · Esc 닫기"
+        }
+        "↑↓ move · Enter select · ←→/Space change · r reset · Esc close" => {
+            "↑↓ 이동 · Enter 선택 · ←→/스페이스 변경 · r 초기화 · Esc 닫기"
+        }
+        "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 이동 · Enter 선택 · Esc 닫기",
+        "Permission mode" => "권한 모드",
+        "Related settings" => "관련 설정",
+        "Process isolation" => "프로세스 격리",
+        "open" => "열기",
+        "User-wide command rules. Allow skips asks, never denials." => {
+            "사용자 전체 명령 규칙. 허용은 확인을 건너뛰지만 거부를 넘지 않습니다."
+        }
+        "Opens Settings; user-wide, for new processes; independent of permission mode." => {
+            "설정을 엽니다. 사용자 전체, 새 프로세스 대상, 권한 모드와 무관합니다."
+        }
+        "keep mode" => "모드 유지",
+        "use mode" => "모드 사용",
+        "Current session; remembered for new sessions. {consequence}" => {
+            "현재 세션만. 새 세션을 위해 기억됩니다. {consequence}"
+        }
+        "↑↓/Tab move · Enter {action} · Esc close" => {
+            "↑↓/Tab 이동 · Enter {action} · Esc 닫기"
+        }
+        "Writes and commands denied; external reads may ask." => {
+            "쓰기와 명령은 거부됩니다. 외부 읽기는 확인을 요청할 수 있습니다."
+        }
+        "Workspace writes allowed; commands, network and ungranted outside access usually ask." => {
+            "작업 공간 쓰기는 허용됩니다. 명령, 네트워크, 허용되지 않은 외부 접근은 보통 확인을 요청합니다."
+        }
+        "Skips preset approval; pending calls on this branch are reevaluated. Explicit denies and isolation remain." => {
+            "프리셋 승인을 건너뜁니다. 이 브랜치의 대기 중인 호출은 다시 평가됩니다. 명시적 거부와 격리는 그대로입니다."
+        }
+        "↑↓ move · Enter select · Esc close" => "↑↓ 이동 · Enter 선택 · Esc 닫기",
+        "Loading process isolation…" => "프로세스 격리를 불러오는 중…",
+        "Sandbox is unavailable on this host: {reason}" => {
+            "이 호스트에서는 샌드박스를 사용할 수 없습니다: {reason}"
+        }
+        "Applies to new processes and shells." => "새 프로세스와 셸에 적용됩니다.",
+        "Off: commands use your OS permissions, not file-tool limits." => {
+            "끔: 명령은 파일 도구 제한이 아니라 OS 권한을 사용합니다."
+        }
+        "Off" => "끔",
+        "Sandboxed · No network" => "샌드박스 · 네트워크 없음",
+        "Sandboxed · Network allowed" => "샌드박스 · 네트워크 허용",
+        "selected" => "선택됨",
+        "Save" => "저장",
+        "Reset to defaults" => "기본값으로 초기화",
+        "Reload" => "다시 로드",
+        "Discard edits and read the current settings" => "편집을 버리고 현재 설정 읽기",
+        "Reset the execution switches to defaults?" => "실행 스위치를 기본값으로 초기화할까요?",
+        "Discard unsaved changes?" => "저장하지 않은 변경을 버릴까요?",
+        "Yes (y)" => "예 (y)",
+        "Cancel (n)" => "취소 (n)",
+        "y confirm · Enter/Esc cancel" => "y 확인 · Enter/Esc 취소",
+        "Read only" => "읽기 전용",
+        "Workspace write" => "작업 공간 쓰기",
+        "Agent" => "에이전트",
+        "agent" => "에이전트",
+        "command" => "명령",
+        "ended" => "종료됨",
+        "Signed in" => "로그인됨",
+        "Retry" => "재시도",
+        "Provider changed; review the retained draft and press Apply again" => {
+            "프로바이더가 변경되었습니다. 보관된 초안을 확인하고 다시 적용을 누르세요"
+        }
+        "y allow · a always · n reject · ←→/Tab move · Enter confirm" => {
+            "y 허용 · a 항상 · n 거부 · ←→/Tab 이동 · Enter 확인"
+        }
+        "{count} in background · /tasks" => "백그라운드 {count}개 · /tasks",
+        "{field}: {error} Your text is kept in {path}" => {
+            "{field}: {error} 입력한 텍스트는 {path}에 보관됩니다"
+        }
+        "{field}: {error}" => "{field}: {error}",
+        "Prompts: {error}" => "프롬프트: {error}",
         _ => return None,
     })
 }

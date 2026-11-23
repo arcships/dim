@@ -7,6 +7,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // providers_panel.rs
         "Providers" => "프로바이더",
         "Enter open · Esc clear/close" => "Enter 열기 · Esc 지우기/닫기",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab 이동 · Enter 실행 · Ctrl+R 새로 읽기 · Esc 뒤로"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => "↑↓/Tab 이동 · Enter 실행 · Esc 뒤로",
         "Loading providers..." => "프로바이더 불러오는 중…",
         "No matching providers." => "일치하는 프로바이더 없음",
@@ -68,6 +71,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "이 URL 열기: {url}",
         "Enter code:    {code}" => "코드 입력:    {code}",
         "Waiting after server slow-down" => "서버 감속 요청으로 대기 중",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "OAuth 로그인 취소됨",
         "Enter your work email" => "회사 이메일 입력",
         "Invalid OAuth state - possible CSRF attempt" => "잘못된 OAuth state - CSRF 시도 가능성",

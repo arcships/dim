@@ -80,7 +80,7 @@ Run at the workspace root:
 | `./dev check` | Daily: formatting and Clippy for the CLI and App Server |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Before merging |
 | `cargo test --workspace --locked` | Before merging |
-| `cargo run --locked -p xtask-check` | Pure static repository checks only (crate/module boundaries, plugin docs, `npm/branch-services.d.ts`, plugin locks, comment links, `literal_main`), without compiling business crates |
+| `cargo run --locked -p xtask-check` | Pure static repository checks only (crate/module boundaries, plugin docs, `npm/branch-services.d.ts`, plugin locks, comment links, `literal_main`, i18n table keys), without compiling business crates |
 | `cargo run --locked -p xtask -- check` | After changing capabilities, assembly or crate dependencies (runs `xtask-check` plus runtime-assembled `catalog.md`) |
 | `node --test scripts/*.test.mjs` | After changing development or release scripts |
 | `cargo build --locked -p dimcode -p dim-app-server && node scripts/tui-tmux/run.mjs` | Before and after changing terminal UI behavior; local only, never in CI ([suite](docs/architecture/tui-e2e.md)) |
@@ -95,7 +95,7 @@ Assembly graphs and crate dependencies are computed from the actual code by `xta
 | --- | --- |
 | `cargo run --locked -p xtask -- graph` | Regenerate `docs/architecture/rust-agent/generated/`: `services.mmd` / `services.md` (service assembly), `instances.mmd` (instance keys), `crates.mmd` (crate dependencies) and their `.json` snapshots, and `catalog.md` (the service catalog and the parts that are Capabilities) |
 | `cargo run --locked -p xtask -- module-graph DIR` | Emit `modules.json` and `modules.mmd` into `DIR` on demand for local inspection without committing them |
-| `cargo run --locked -p xtask-check` | Run the pure static checks without compiling workspace runtime crates (crate/module boundaries, `crates.*` freshness, plugin pages, `npm/branch-services.d.ts`, plugin locks, comment links, `literal_main`); also supports `module-graph DIR` and `types` |
+| `cargo run --locked -p xtask-check` | Run the pure static checks without compiling workspace runtime crates (crate/module boundaries, `crates.*` freshness, plugin pages, `npm/branch-services.d.ts`, plugin locks, comment links, `literal_main`, i18n table keys); also supports `module-graph DIR` and `types` |
 | `cargo run --locked -p xtask -- check` | Run `xtask-check` plus the runtime-assembled `catalog.md` check against the real App Server assembly |
 | `cargo run --locked -p xtask -- types` | Regenerate `npm/branch-services.d.ts`, the TypeScript declarations of the services marked `#[rutis::service]`, after changing one of them or a type it uses |
 | `cargo run --release --locked -p xtask -- measure` | Resource measurement; pass `--model-config PATH` (e.g. `crates/dim-agent-aimux/examples/offline.json`) |

@@ -3,6 +3,7 @@
 
 pub mod boundaries;
 pub mod comment_links;
+pub mod i18n;
 pub mod literal_main;
 pub mod modules;
 pub mod npm;
@@ -29,6 +30,7 @@ pub fn check_all(root: &Path) -> Result<()> {
     types::check(root)?;
     npm::check(root)?;
     comment_links::check(root)?;
+    i18n::check(root)?;
     literal_main::check(root)?;
     Ok(())
 }
