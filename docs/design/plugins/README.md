@@ -8,6 +8,12 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Plugin | Process part | Session part | Branch part | Phase / issue |
 | --- | --- | --- | --- | --- |
+| [ToolBinding](ToolBinding.md) (owner contract) | — | — | a request's adopted tool set, its claims and its pins behind the `toolBinding` operations | [#2028](https://github.com/arcships/dim/issues/2028) |
+| [ToolExecutor](ToolExecutor.md) (owner contract) | — | — | one committed tool batch, its child-call gates and its terminal facts behind the `toolExecutor` operations | [#2028](https://github.com/arcships/dim/issues/2028) |
+| [Approval](Approval.md) (owner contract) | — | — | a call's admission, the pending approval requests and the answer path behind the `approval` operations | [#2028](https://github.com/arcships/dim/issues/2028) |
+| [Permission](Permission.md) (owner contract) | — | — | the branch's permission policy, one call's decision and its tool advisors behind the `permission` operations | [#2028](https://github.com/arcships/dim/issues/2028) |
+| [BackgroundExec](BackgroundExec.md) (owner contract) | — | — | a line's background tasks, their terminals, wakes and output artifact behind the `backgroundExec` operations | [#2028](https://github.com/arcships/dim/issues/2028) |
+| [FileReads](FileReads.md) (owner contract) | — | — | a line's text bindings and their context rule behind the `fileReads` operations | [#2028](https://github.com/arcships/dim/issues/2028) |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
