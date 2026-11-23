@@ -120,6 +120,10 @@ The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, 
 
 None beyond the claim contract recorded in [ToolRegistry](ToolRegistry.md#requirements-raised-to-mechanism-owners).
 
+## Supersedes
+
+- [session boundary A.1](../contracts/session-boundary.md): the `ask_user` tool's registration and the `session.question.respond`/`pending` handlers; the claim moves to `toolRegistry.claim`/`release_claims` and the methods stay the client's.
+
 ## Binding appendix
 
 The claim callback is the tool contract's `ClaimFn`; the method handler is the table's `call` callback. The waiter table and its entries stay private.

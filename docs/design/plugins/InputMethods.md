@@ -22,7 +22,8 @@ Callers keep:
 | --- | --- | --- |
 | A part checks operator input for its row's lifetime | No: the duplicate check and the row's lifetime are the owner's | `register` |
 | An entry turns a candidate input into the input it writes | No: the check order, the block placement and the drop rule are the owner's; a caller composing them forgets the placement | `check` |
-| An entry reads or withdraws a line's pending input | No: the input state is InputQueue's and is reached by line id | `session.input.withdraw`, `session.input.pending` (the methods below) |
+| An entry withdraws a line's pending input | No: the conditional decision and the atomic replacement are InputQueue's, reached by line id | `session.input.withdraw` (the method below) |
+| A client reads a line's pending inputs at a cutoff | No: the cutoff, the candidate selection and the applied-state lookup are the read's | `session.input.pending` (the method below) |
 | A check refuses the input with its own code | Yes: `check` answers `blocked` with the check's message | Business |
 | A check contributes context | Yes: `check` appends the check's marker blocks after the operator's content | Business |
 
@@ -33,18 +34,19 @@ An operation or parameter exists only where the row says No.
 Hooks registers its `UserPromptSubmit` check from its `apply`:
 
 ```rust
-checks.register(RegisterCheck { name: "hooks".into(), check: Arc::new(run_hooks) }).await?;
+checks.register(ctx, "hooks", |request, cancelled| Box::pin(run_hooks(request, cancelled))).await?;
 ```
 
 An operator entry checks the input before writing it:
 
 ```rust
-let checked = checks.check(CheckInput {
-    entry: SubmitEntry::Submit,
-    branch_id: line.clone(),
-    user: data.user.clone(),
-    mode: data.effective_mode(),
-}).await?;
+let checked = checks.check(
+    SubmitEntry::Submit,
+    line.clone(),
+    data.user.clone(),
+    data.effective_mode(),
+    cancelled.clone(),
+).await?;
 let warnings = match checked {
     Checked::Proceed { user, warnings } => {
         session.input.commit(user, &line).await?;
@@ -75,7 +77,7 @@ None beyond the line's input owner, reached by line id.
 | `register` | Publish a check for the calling row's lifetime | `{name, check}` | `{}` | None | `duplicate`, `invalid`, `closed` |
 | `check` | Turn a candidate input into the input an entry writes | `{entry, branchId, user, mode}` | `{proceed: {user, warnings}}` or `{blocked: {message}}` | The caller's token stops the checks; a check already running stops with the token | `cancelled`, `closed` |
 | `session.input.withdraw` | Withdraw a pending input on a line | `{sessionId, branchId, inputId, reason?, steer?}` | the queue's receipt | The caller's token; a committed withdrawal is not undone | `invalid`, `input_blocked`, `interrupted`, `closed` |
-| `session.input.pending` | Whether an input is held and unapplied at a cutoff | `{sessionId, branchId, inputId, through?, includeBlockPresence?}` | `{pending, blockPresence?}` | The caller's token stops the wait for the cutoff | `invalid`, `cancelled`, `closed` |
+| `session.input.pending` | A line's pending inputs at a cutoff, one page | `{sessionId, branchId, through?, after?}` | `{branchId, through, inputs, next}` | The caller's token stops the read | `invalid`, `cancelled`, `closed` |
 
 `check` is a callback by reference; it never runs inside the Timeline's commit lock. `check` returns the input the entry writes, with the checks' marker blocks already placed after the operator's content, and the warnings the client shows; a non-marker block is dropped with a diagnostic, as today.
 
@@ -97,7 +99,7 @@ None beyond the line's input owner, reached by line id.
 | `register` | Check the name and record the callback under the row | — | The registration is withdrawn | New registrations are refused | The registering row |
 | `check` | Take the registered checks in name order, run each with the token, combine, place the blocks, answer | A running check stops with the token; the entry writes nothing | The checks' callbacks are revoked; the entry writes nothing | Pending checks end `closed` | InputMethods for the combination; each check for its own work |
 | `session.input.withdraw` | Validate the input, run the checks, write the command to the line's queue, wait for publication, answer the receipt | A committed withdrawal is not undone; the wait ends `interrupted` | The command settles with the line | The line's queue answers by its own state | The line's InputQueue |
-| `session.input.pending` | Read the line's queue `pending` at the cutoff | The wait stops | Nothing | Answers the state it observed | The line's InputQueue |
+| `session.input.pending` | Read the line's facts at the cutoff, select the candidates, read their applied state, page | The read stops | Nothing | Answers the state it observed | TimelineTree for the read; InputMethods for the projection |
 
 ## Exceptions with reasons
 
@@ -137,49 +139,95 @@ None beyond the line's input owner, reached by line id.
 
 ## Requirements raised to mechanism owners
 
-1. [#2027](https://github.com/arcships/dim/issues/2027): the line's InputQueue needs `withdraw`/`pending` operations reached by line id, including the publication wait. The line mechanism is [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)'s `(session, line)` access; until it exists the two methods cannot be migrated off `TreeCommands`. `withdraw` uses the `user` returned by `check` instead of appending blocks itself.
+1. [#2027](https://github.com/arcships/dim/issues/2027): the line's InputQueue needs `withdraw` reached by line id, including the publication wait. The line mechanism is [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)'s `(session, line)` access; until it exists the method cannot be migrated off `TreeCommands`. `withdraw` uses the `user` returned by `check` instead of appending blocks itself. The `session.input.pending` page reads the line through `timelineTree.query`; it needs no InputQueue operation.
+
+## Supersedes
+
+- [session boundary A.1](../contracts/session-boundary.md): the `session.input.withdraw` and `session.input.pending` shapes; the client shapes stay, and the method table registration is `sessionMethods.register`.
+- [pending input read](../input-state-read.md): the read's data source moves from `TreeCommands` to `timelineTree.query`; the request, page and reply shapes are unchanged.
 
 ## Binding appendix
 
-The service is marked on `SubmitChecks` under `submitChecks`. `append_blocks` stops being public. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is not a request field.
+The service is marked on `SubmitChecks` under `submitChecks`. `append_blocks` stops being public. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is not a request field. A check's failure is no opinion, so the callback returns no error; the table treats a thrown error as proceed.
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_types::{InputMode, UserInput};
+use dim_agent_types::{InputMode, MethodDecl, SubmitCheckReply, SubmitCheckRequest, SubmitEntry, UserInput};
 use rutis::host::BoxFuture;
 use rutis::Ctx;
-use std::sync::Arc;
 
-pub type CheckFn = Arc<dyn Fn(SubmitCheckRequest, CancelledFn) -> BoxFuture<'static, Result<SubmitCheckReply, String>> + Send + Sync>;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterCheck { pub name: String, pub check: CheckFn }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckInput {
-    pub entry: SubmitEntry,
-    pub branch_id: String,
-    pub user: Option<UserInput>,
-    pub mode: InputMode,
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum InputError {
+    #[error("{message}")]
+    Duplicate { message: String },
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("the call was cancelled")]
+    Cancelled,
+    #[error("{message}")]
+    Blocked { message: String },
+    #[error("the withdrawal committed and its publication is unconfirmed")]
+    Interrupted,
+    #[error("the Session or line is closing")]
+    Closed,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Checked {
     Proceed { user: Option<UserInput>, warnings: Vec<SubmitWarning> },
     Blocked { message: String },
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InputError {
-    Duplicate { message: String },
-    Invalid { message: String },
-    Cancelled,
-    Blocked { message: String },
-    Interrupted,
-    Closed,
+/// The client's `session.input.pending` request and page, unchanged.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    #[serde(default)] pub through: Option<u64>,
+    #[serde(default)] pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReply {
+    pub branch_id: String,
+    pub through: u64,
+    pub inputs: Vec<PendingInput>,
+    #[serde(default)] pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingInput {
+    pub input_id: String,
+    pub sequence: u64,
+    pub mode: InputMode,
+    #[serde(default)] pub user: Option<UserInput>,
+    pub applied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub has_raw_blocks: Option<bool>,
+}
+
+#[rutis::service(name = "submitChecks")]
+impl SubmitChecks {
+    pub async fn register(
+        &self,
+        caller: &Ctx,
+        name: String,
+        check: impl Fn(SubmitCheckRequest, CancelledFn) -> BoxFuture<'static, SubmitCheckReply> + Send + Sync + 'static,
+    ) -> Result<(), InputError> { /* ... */ }
+
+    pub async fn check(
+        &self,
+        entry: SubmitEntry,
+        branch_id: String,
+        user: Option<UserInput>,
+        mode: InputMode,
+        cancelled: CancelledFn,
+    ) -> Result<Checked, InputError> { /* ... */ }
 }
 ```
+
+`session.input.withdraw` and `session.input.pending` are registered with `sessionMethods.register`; their handlers take the client's data and call the line's InputQueue or `timelineTree.query`.

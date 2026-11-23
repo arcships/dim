@@ -34,22 +34,21 @@ An operation or parameter exists only where the row says No.
 A writer registers from its `apply`; the entry ends with the row:
 
 ```rust
-guide.register(RegisterEntry {
-    scope: GuideScope::Session,
-    entry: GuideEntry { markers: vec!["dim-exec".into()], order: 90, text: EXEC_ENTRY.into() },
-}).await?;
+guide.register(
+    ctx,
+    GuideScope::Session,
+    GuideEntry { markers: vec!["dim-exec".into()], order: 90, text: EXEC_ENTRY.into() },
+).await?;
 ```
 
 Prompt composes for its line over the adopted base, and observes changes:
 
 ```rust
-let SystemReply { system } = guide.compose(ComposeGuide { line: line.clone(), base: Some(base) }).await?;
-let _ = guide.observe(ObserveGuide {
-    listener: Arc::new(move |version| {
-        let guide = guide.clone();
-        let line = line.clone();
-        Box::pin(async move { adopt_composed(guide.compose(ComposeGuide { line, base: None }).await).await })
-    }),
+let system = guide.compose(line.clone(), Some(base))?;
+let _ = guide.observe(ctx, move |version| {
+    let guide = guide.clone();
+    let line = line.clone();
+    Box::pin(async move { adopt_composed(guide.compose(line, None)) .await })
 }).await?;
 ```
 
@@ -64,7 +63,7 @@ None.
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `register` | Publish an entry for the calling row's lifetime | `{scope, entry}` | `{}` | None | `invalid`, `duplicate_marker`, `too_large`, `closed` |
-| `compose` | The System for one line over a base | `{line, base?}` | `{system}` | None; a pure read | None |
+| `compose` | The System for one line over a base | `{line, base?}` | `{system}` | None; a pure read | `invalid` (a malformed line id or base) |
 | `observe` | The composition version now and on each change until the row unloads | `{listener}` | `{}` | The row's unload ends the subscription | `closed` |
 
 `scope` is `"session"` or `{branch: lineId}`; `entry` is `{markers, order, text}`, `markers` at least one and each `[a-z][a-z0-9_-]{0,63}`, `text` at most 4096 bytes. `listener` is a callback by reference; it runs outside the table's lock and outside the Timeline's commit lock.
@@ -124,49 +123,51 @@ None.
 
 None.
 
+## Supersedes
+
+- [session boundary A.1](../contracts/session-boundary.md): the `guideEntries` registration shape; `register`, `compose` and `observe` replace `compose`/`compose_system`/`changes`.
+- [Prompt §4](../plugins/Prompt.md): the entry table and the composition's Rust readers; the entry data and the composed System are unchanged.
+
 ## Binding appendix
 
-The service is marked on `GuideEntries` under `guideEntries`. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is not a request field.
+The service is marked on `GuideEntries` under `guideEntries`. `caller: &Ctx` is the rutis caller parameter for `register` and `observe`; `CancelledFn` is not a request field.
 
 ```rust
-use crate::host::CancelledFn;
 use dim_agent_types::SystemPrompt;
 use rutis::host::BoxFuture;
 use rutis::Ctx;
-use std::sync::Arc;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuideScope { Session, Branch(String) }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuideEntry { pub markers: Vec<String>, pub order: i32, pub text: String }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterEntry { pub scope: GuideScope, pub entry: GuideEntry }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComposeGuide { pub line: String, #[serde(default)] pub base: Option<SystemPrompt> }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemReply { pub system: SystemPrompt }
-
-pub type Listener = Arc<dyn Fn(u64) -> BoxFuture<'static, ()> + Send + Sync>;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ObserveGuide { pub listener: Listener }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum GuideError {
+    #[error("{message}")]
     Invalid { message: String },
+    #[error("{message}")]
     DuplicateMarker { message: String },
+    #[error("{message}")]
     TooLarge { message: String },
+    #[error("the Session is closing")]
     Closed,
+}
+
+#[rutis::service(name = "guideEntries")]
+impl GuideEntries {
+    pub async fn register(&self, caller: &Ctx, scope: GuideScope, entry: GuideEntry) -> Result<(), GuideError> { /* ... */ }
+
+    pub fn compose(&self, line: String, base: Option<SystemPrompt>) -> Result<SystemPrompt, GuideError> { /* ... */ }
+
+    pub async fn observe(
+        &self,
+        caller: &Ctx,
+        listener: impl Fn(u64) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    ) -> Result<(), GuideError> { /* ... */ }
 }
 ```

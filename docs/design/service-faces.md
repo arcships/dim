@@ -95,11 +95,11 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `commandRules` | `commandRules.read` | Session 命令规则读取，按 [命令规则](appserver/permission-command-rules.md#41-language-neutral-adr-002-d5) §4.1。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
-| `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
+| `sessionLanguage` | `sessionLanguage.get()`、`sessionLanguage.set(language?)` | 读是值与版本，写是一次状态迁移；形状见 [PromptSources](plugins/PromptSources.md#own-contract)。 |
 | `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
 | `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.8。 |
 | `worktreeAssociations` | `store.associateWorktree` | 形状见 §4.8。 |
-| `toolSourcesView` | `toolSourcesView.get/observe` | 同一 ToolRegistry owner 的独立只读观察面；贡献注册仍由 `toolRegistry` 负责，见 [工具贡献 §7.5](../architecture/rust-agent/tool-contributions.md#75-服务接口)。 |
+| `toolSourcesView` | `toolRegistry.sources()`、`toolRegistry.observe_sources(listener)` | 不再有独立面：观察是 `toolRegistry` 上的只读操作，见 [ToolRegistry](plugins/ToolRegistry.md#own-contract)。 |
 
 宿主读取端口的数据面（§4.10）包括 `executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`。模型选择与列表统一由 `providerService` 提供；调用方和配置见[进程操作](contracts/process-owner-operations.md)；其余读取端口沿用现名。
 
@@ -135,7 +135,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 
 | 名字 | 数据面 | 所有者保留的状态 |
 | --- | --- | --- |
-| `toolHost` | `execute(call, caller, cancelled)` | ToolDriver、工具声明 |
+| `toolHost` | `declarations()`、`execute(call, caller, cancelled)`、`resolve_write(call, cancelled)`、`ordering(call)` | 宿主工具表、写协调 |
 | `approval` | `pending()`、`decide(requestId, decision)` | 待处理请求、批次准入 |
 | `permission` | `check(call, risk, cancelled)` | 预设、权限状态、advisor |
 | `inputQueue` | `submit(input)`、`withdraw(command)` | 排序、恢复、InputSnapshot |
@@ -198,7 +198,7 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | secret |
 | `uiHost` | process | UiHost | control |
 | `uiExtensions` | process | UiExtensions | control |
-| `mentionIndex` | process | WorkspaceToolsOwner | host-resource |
+| `mentionIndex` | process | WorkspaceToolsOwner | host-resource；操作是 `search(root, query, limit, cancelled)` |
 | `mcpService` | process | Mcp | host-resource |
 | `hooksService` | process | HooksSettings | host-resource |
 | `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |
@@ -304,7 +304,7 @@ loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: fa
 ```text
 agentConfig.get() -> {name, systemPrompt, model: {providerId, modelId}}
   -- Agent 的身份与默认模型；SessionScope 提供
-sessionLanguage.get() -> {language?}
+sessionLanguage.get() -> {language?, version}
   -- 只读：更新还要写 Session 记录并让 Prompt 采用来源，仍走 session.language.update
 skillsConfig.get() -> {instructions?}
   -- Skills 的 factory 文本；null 表示内置
@@ -317,7 +317,7 @@ store.associateWorktree {sessionId, repository, root, subtree} -> {}
 
 - `agentConfig` 在 runtime 的 catalog 注册 shared instance；`SessionScope` 已经提供值，`get` 返回同一个快照。 配置快照直接使用所有者的数据定义，接收端允许未知字段；公开类型名称的迁移见[插件配置类型兼容性说明](../release/README.md#plugin-configuration-type-compatibility)。
 - `skillsConfig`、`collaborationConfig` 的注册从 typed 改成 shared instance；值仍由 `install_with_config` 的 `session_value` 提供。
-- `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 通过 `PromptSourcesBranch::language()` 读同一个 cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
+- `sessionLanguage` 的读是 `{language?, version}`，写是 `set(language?) -> {previous?, version}`；值由 PromptSources 的 Session part 提供，branch 读同一个版本化值，`session.language.update` 先写 Session 记录、再 `set`、再按行调 Prompt 的 `configure`。见 [PromptSources](plugins/PromptSources.md#own-contract)。
 - FileAccess 通过 `store.associateWorktree` 调用 SessionStore；Rust 与跨语言调用共享同一写入操作。迁移调用方时移除 `worktreeAssociations`。路径校验和原子关联由 SessionStore 负责。
 - 测试：`crates/dim-agent-capabilities/tests/legacy_session_faces.rs` 与 `crates/dim-app-server/tests/legacy_session_faces.rs` 比较 typed binding 与 wire 的同一操作。
 

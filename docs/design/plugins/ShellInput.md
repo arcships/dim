@@ -8,39 +8,40 @@ ShellInput owns the operator's shell in the Session's workspace: `shell.run`, `s
 
 ShellInput owns:
 
-- **Runs.** One run id per accepted command, its output capture and its terminal record; a run ends when its command settles.
+- **Runs.** One run id per accepted command, its output capture, its progress and its terminal record; a run ends when its command settles.
 - **The shell.** Where a command runs, how its output is captured, and when a command is stopped.
-- **The input it writes.** A command's result becomes an input on the line that asked, carrying the `<dim-shell-input>` entry.
+- **The input it writes.** A `record` run's result becomes an Append input on the line that asked, carrying the `<dim-shell-input>` entry; a `private` run's result goes only to the caller.
 - **The Session's hold.** A running command holds the Session so an idle release does not end it.
 
 Callers keep:
 
-- When to run a command: the client calls the method.
+- When to run a command: the client casts `runId`, chooses `mode` and calls the method.
 - What a command means: the operator writes it.
 - The line's other input: the line's InputQueue decides order and idempotency.
 
 | Requirement (caller) | Compose from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| A client runs a command in the Session's workspace | No: the run table, the capture and the hold are the owner's | `shell.run` |
+| A client runs a command in the Session's workspace | No: the run table, the capture, the hold and the result input are the owner's | `shell.run` |
 | A client stops a running command | No: the run's process tree is the owner's | `shell.stop` |
 | A client lists the running commands | No: the run table is the owner's | `shell.list` |
-| The command's result reaches the model | No: writing the input is the owner's; the line's queue decides the order | the same run operation |
 | A command runs when the Session is closing | No: the phase check and the hold are the owner's | `shell.run` answers `closed` |
+| A second command runs beside the first | No: one run per Session is the owner's rule | `shell.run` answers `shell_busy` |
 
 An operation or parameter exists only where the row says No.
 
 ## Caller example
 
-A client runs a command and later stops it:
+A client runs a command, watches its progress and later stops it:
 
 ```rust
-let RunReply { run_id, output_path } = shell.run(RunCommand {
-    branch_id: line.clone(),
+let RunReply { run_id, status, output, duration_ms, .. } = shell.run(RunParams {
+    session_id: session.clone(),
+    branch_id: Some(line.clone()),
+    run_id: cast_run_id,
     command,
-    run_in_background: false,
-    timeout_ms: 30_000,
-}, cancelled.clone()).await?;
-shell.stop(StopRun { run_id }, cancelled).await?;
+    mode: Mode::Record,
+}, progress, cancelled.clone()).await?;
+shell.stop(StopParams { session_id: session.clone(), run_id }, cancelled).await?;
 ```
 
 ## Own contract
@@ -58,40 +59,43 @@ shell.stop(StopRun { run_id }, cancelled).await?;
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `shell.run` | Run one command and write its result as the line's input | `{branchId, command, runInBackground?, timeoutMs?}` | `{runId, outputPath?}` | The caller's token stops the command; the line's input is not written | `invalid`, `closed`, `cancelled` |
-| `shell.stop` | Stop a running command | `{runId}` | `{}` | None; the stop settles | `invalid`, `closed` |
-| `shell.list` | The commands running now | `{}` | `{runs}` | None | None |
+| `shell.run` | Run one command and, in `record` mode, write its result as the line's input | `{sessionId, branchId?, runId, command, mode}` | `{runId, status, output, truncated, durationMs}`, with `progress` while it runs | The wait for the reply ends as `operation_interrupted`; the run stays with this generation and its result is still written | `invalid`, `shell_busy`, `closed` |
+| `shell.stop` | Stop a running command | `{sessionId, runId}` | `{stopped}` | None; the stop settles | `invalid`, `closed` |
+| `shell.list` | The commands running now | `{sessionId}` | `{runs: [{runId, branchId, mode, command, startedAt}]}` | None | `invalid`, `closed` |
 
-`branchId` is the line id. The result input is written to that line's input owner by id; the entry's text is registered with `guideEntries`.
+`runId` is cast by the client and is the run's identity: a command never runs twice under one id, and a `shell.stop` that arrives before its run makes that run start nothing. `mode` is `record` (`!command`) or `private` (`!!command`). `branchId` is the line id; absent names the default line.
 
 ### Errors
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | The command is empty, the run id is unknown, or the line id is malformed |
+| `invalid` | The command is empty, the run id is reused with a different call, or the parameters are malformed |
+| `shell_busy` | Another run of this Session is running; wait for it or stop it |
 | `closed` | The Session or the line is closing; no command starts |
-| `cancelled` | The command stopped before its result was written; the run's process tree is released |
+| `operation_interrupted` | The wait ended before the run did; the run continues and its result still arrives |
+
+The wire codes stay the client's: `shell_busy`, `shell_unavailable`, `spawn_failed`, `operation_interrupted`, `service_reloading`, `invalid_params`.
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `shell.run` | Check the phase, take the hold, spawn the command, capture, write the input, release the hold | The command stops; the input is not written; the hold is released | The command's process tree is released; the part's unload joins the runs | New runs are refused; running commands stop and settle | ShellInput for the run and the process tree; the line's queue for the input's order |
+| `shell.run` | Check the phase, take the hold, admit the run id, spawn the process, stream progress, answer the run's result, write the `record` input, release the hold | The wait ends `operation_interrupted`; the run continues; a stop that arrived first leaves the run stopped | The run's process tree is released; the part's unload joins the runs | New runs are refused; running commands stop and settle | ShellInput for the run and the process tree; the line's queue for the input's order |
 | `shell.stop` | Stop the run and settle it | Nothing | Nothing | Refused `closed` | ShellInput |
 | `shell.list` | Read the run table | — | Nothing | Answers the state it observed | ShellInput |
 
 ## Exceptions with reasons
 
-- The result input is written by this owner, not by the client: the command's output and the entry belong to the run, and the line's queue receives one input.
-- A background command is not started here; the tool's background mode is `exec`'s, and ShellInput's runs are the operator's shell commands.
+- The `record` input is written by this owner, not by the client: the command's output and the entry belong to the run, and the line's queue receives one input.
+- Progress is a notification on the call, not a Timeline fact: a client that disconnects mid-run does not cancel the run; the result still lands.
 - The hold is taken before the spawn and released after the input commits: an idle release must not end the Session between the command and its result.
 
 ## Verification
 
-- `shell.run` writes the result as one input on the named line; a cancelled run writes nothing and releases its process tree.
-- `shell.stop` ends a running command; an unknown or ended run id is `invalid`; `shell.list` answers the running set.
-- A Session closing before the spawn answers `closed`; a hold taken before the spawn keeps an idle release from ending the Session.
-- The entry is registered at apply and its text reaches the model through the input.
+- `shell.run` answers the run's status, output, truncation and duration; a `record` run writes one input on the named line carrying `<dim-shell-input>`; a `private` run writes none.
+- A cancelled wait ends `operation_interrupted` and the run continues; a `shell.stop` before the run starts makes it start nothing.
+- `shell.stop` answers `{stopped}`; an unknown run id is `invalid`; `shell.list` answers the running set with the client fields.
+- A Session closing before the spawn answers `closed`; a hold taken before the spawn keeps an idle release from ending the Session; a second run answers `shell_busy`.
 
 ## Rule check
 
@@ -101,10 +105,10 @@ shell.stop(StopRun { run_id }, cancelled).await?;
 | §2 scopes | Session: the runs belong to the Session's workspace; the line is an id. |
 | §3 orthogonality | No other owner's state is read; the line's queue is reached by id. |
 | §4 rules 1–5, 9 | No command event, handoff, before callback, batch or Timeline fact of its own. |
-| §4 rule 6 | The result reaches the model as the input this owner writes. |
+| §4 rule 6 | The result reaches the model as the input this owner writes; a private run reaches only the caller. |
 | §4 rule 7 | Callers use the three methods; no caller reads the run table. |
 | §4 rule 8 | No infrastructure change. |
-| §7 values, ids and callbacks | The run id, the line id and the output path are data; no process handle crosses. |
+| §7 values, ids and callbacks | The run id, the line id and the output are data; progress is the call's notification; no process handle crosses. |
 | §7 no proxy | The line's queue answers its input; this owner answers its runs. |
 | §7 one interface | One name, `shell`, on the method table; no wrapper. |
 | §7 cross-language | The methods are data; no method exists only for Rust. |
@@ -117,46 +121,62 @@ shell.stop(StopRun { run_id }, cancelled).await?;
 
 ## Requirements raised to mechanism owners
 
-1. [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025): the line access that lets this Session part write an input to the named line by `(session, line)` id.
-2. [#2027](https://github.com/arcships/dim/issues/2027): the line's `inputQueue.submit` operation the result input is written through.
+1. [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025): `line_owner::<T>(line)` gives this Session part a branch owner's data face by id; registration points and lifecycle services are excluded.
+2. [#2027](https://github.com/arcships/dim/issues/2027): the line's `inputQueue.submit` operation the `record` input is written through.
+
+## Supersedes
+
+- [session boundary A.1](../contracts/session-boundary.md): the `shell.*` method shapes stay; the part's access to a line changes from a `Branch` lookup to `line_owner::<T>(line)`.
 
 ## Binding appendix
 
-The `shell` namespace is registered with the method table; the handler is a callback. The run table is private.
+The `shell` namespace is registered with `sessionMethods.register`; the handlers are callbacks. The run table is private. `CancelledFn` is the binding's cancellation argument and is not a request field.
 
 ```rust
-#[derive(serde::Serialize, serde::Deserialize)]
+use crate::host::CancelledFn;
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode { Record, Private }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunCommand {
-    pub branch_id: String,
+pub struct RunParams {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    pub run_id: String,
     pub command: String,
-    #[serde(default)]
-    pub run_in_background: bool,
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    pub mode: Mode,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunReply {
     pub run_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_path: Option<String>,
+    pub status: String,
+    pub output: String,
+    pub truncated: bool,
+    pub duration_ms: u64,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StopRun { pub run_id: String }
+pub struct StopParams { pub session_id: String, pub run_id: String }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunList { pub runs: Vec<RunInfo> }
+pub struct StopReply { pub stopped: bool }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShellError {
-    Invalid { message: String },
-    Closed,
-    Cancelled,
-}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListParams { pub session_id: String }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunInfo { pub run_id: String, pub branch_id: String, pub mode: Mode, pub command: String, pub started_at: u64 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListReply { pub runs: Vec<RunInfo> }
 ```

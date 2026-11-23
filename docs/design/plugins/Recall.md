@@ -104,6 +104,10 @@ The tool answers `ToolResult`s; the tree's read errors become the tool's content
 
 None.
 
+## Supersedes
+
+- [session boundary A.1](../contracts/session-boundary.md): the `recall` tool's registration; the history read moves from `TreeCommands` to `timelineTree.read`.
+
 ## Binding appendix
 
 No service. The tool registers through the tool contract; its input is `{query?, after?, limit?}` and its result is one `ToolResult` whose content is the rendered page.

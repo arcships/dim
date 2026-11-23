@@ -12,6 +12,12 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
 | [ShellInput](ShellInput.md) | — | `shell.*` methods, command runs | — | P1 |
+| [ToolRegistry](ToolRegistry.md) | — | `toolRegistry`: the host tool table, registered tools and sources, adoptions and the source view | — | #2026 |
+| [SessionMethods](SessionMethods.md) | — | `sessionMethods`: the Session's method table | — | #2026 |
+| [PromptGuide](PromptGuide.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | — | #2026 |
+| [InputMethods](InputMethods.md) | — | `submitChecks` and the `session.input.*` method handlers | — | #2026 |
+| [WorkspaceTools](WorkspaceTools.md) | `mentionIndex`: the walked @-mention index and the file-write coordinator | `toolHost`: the host tools and their methods | — | #2026 |
+| [Wait](Wait.md) | — | the `wait` tool | WaitBranch: the arrival table (#2027) | #2026 |
 | [Attachments](Attachments.md) | — | `attachment.put`, Session files | — | P1 |
 | [Report](Report.md) | error-only `report.*` and its connection-bound drafts | `session.report.*` and its connection-bound drafts | — | [#1319](https://github.com/arcships/dim/issues/1319) |
 | [SessionTitle](SessionTitle.md) | — | observes adoption of the first user input, `session.rename` | — | P1 |
@@ -22,7 +28,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Web](Web.md) | — | `web_search`, `web_fetch` tools | — | P2; optional package |
 | [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation; [ContextUsage proposal](ContextUsage.md)) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
 | [Prompt](Prompt.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | `Prompt`: the System its publisher adopts carries the composition over the entries in force, and a host-prepared request carries the same composition, placed by Loop | #548 |
-| [PromptSources](PromptSources.md) | — | the named sources, their policy texts at the factory configuration, and the state and rule entries | — | #548 |
+| [PromptSources](PromptSources.md) | — | `promptSources`: the named sources, their policy texts at the factory configuration, and the state and rule entries; `sessionLanguage`: the versioned reply-language value | — | #548, #2026 |
 | [EnvironmentClients](EnvironmentClients.md) | App Server read-only `sessionClientsHost` presence (Connection and UiHost) | — | presence snapshots as `<dim-state>` inputs at branch open and on `ClientsChanged` | #1019 |
 | [EnvironmentSettings](EnvironmentSettings.md) | — (reads each setting module's read port) | — | settings snapshots as `<dim-state>` inputs at branch open and on a Settings change | #1020 |
 | [ClientView](ClientView.md) | per-connection viewed-line record in App Server | — | — | #1021, deferred for model state |
@@ -51,6 +57,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
-| Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report, WorkspaceToolsOwner (the mention index and write coordinator); AcpGateway in its client host process; ClientView (the connection's viewed line) |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, PromptGuide, ToolRegistry, SessionMethods, InputMethods, WorkspaceTools, Wait, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
+| Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt, WaitBranch, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |

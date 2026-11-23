@@ -79,8 +79,8 @@ let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).aw
 | `ordering` | The class deciding whether the call shares its step | `{call}` | `{class: "concurrent" \| "exclusive"}` | None | `invalid`, `closed` |
 | `search` | The files an `@` mention offers under one root | `{root, query, limit?}` | `{candidates: [{relativePath, absolutePath, dir}]}` | The caller's token stops the search; the walk ends at its budget | `invalid`, `cancelled`, `closed` |
 | `session.files.search` | The Session's own workspace search | `{sessionId, query, limit?}` | `{candidates}` | The caller's token | `invalid`, `cancelled`, `closed` |
-| `session.exec.pending` | A line's pending commands | `{sessionId, branchId}` | `{pending}` | None | `invalid`, `closed` |
-| `session.exec.finished` | A line's recently finished commands | `{sessionId, branchId}` | `{finished}` | None | `invalid`, `closed` |
+| `session.exec.pending` | A line's pending commands at a cutoff | `{sessionId, branchId, through?, after?}` | `{branchId, through, tasks, next}` | The caller's token stops the read | `invalid`, `cancelled`, `closed` |
+| `session.exec.finished` | A line's finished commands at a cutoff | `{sessionId, branchId, through?}` | `{branchId, through, tasks}` | The caller's token stops the read | `invalid`, `cancelled`, `closed` |
 | `session.exec.output` | A task's bounded live tail | `{sessionId, branchId, taskId}` | `{text}` | None | `invalid`, `missing`, `closed` |
 | `session.exec.output.page` | One page of a task's registered output file | `{sessionId, branchId, taskId, cursor, limit?}` | `{text, bytes, nextCursor?, truncated}` | The caller's token | `invalid`, `missing`, `unavailable`, `closed` |
 
@@ -126,7 +126,7 @@ let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).aw
 | Rule | Application |
 | --- | --- |
 | §1 parts and Capabilities | One Session part and one process owner; neither writes a Timeline fact, so neither is a Capability. BackgroundExec is the branch Capability (#2028). |
-| §2 scopes | The tools, the output directory and the methods are Session; the index and the write coordinator are process; branch state is reached by line id. |
+| §2 scopes | The tools, the output directory and the methods are Session; the index and the write coordinator are process; branch state is reached by line id through `line_owner::<T>(line)`, which may call any branch data face except registration points and lifecycle services. |
 | §3 orthogonality | No other owner's state is read; the line's owners are reached by id. |
 | §4 rules 1–5, 9 | No command event, handoff, before callback, batch or Timeline fact of this owner. |
 | §4 rule 6 | Results reach the model through ToolExecutor; this owner adds no context path. |
@@ -149,55 +149,72 @@ let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).aw
 2. [#2028](https://github.com/arcships/dim/issues/2028): FileReads' binding operation and BackgroundExec's `adopt`/`output`/`wait` operations, reached by line id; the current calls take them from `TreeCommands.get(line)?.service::<T>()`.
 3. [#2018](https://github.com/arcships/dim/issues/2018): `sessionFiles.register` and the read/write operations the output and attachment paths use.
 
+## Supersedes
+
+- [tool-contributions §2.1](../../architecture/rust-agent/tool-contributions.md): the `toolHost` data face's `execute(call, caller, cancelled)` is joined by `declarations`, `resolve_write` and `ordering`, and `ToolDriver` no longer exists.
+- [service faces](../service-faces.md): the `toolHost` and `mentionIndex` rows; `mentions.search` replaces the `MentionIndex::candidates` reader.
+
 ## Binding appendix
 
-The service is marked on the host tools owner under `toolHost`. `ToolHost` and `ToolDriver` no longer exist; `ToolDriver`'s declarations, resolution and ordering become operations on the owner. `caller: &Ctx` fills the Session's identity for the tools; `CancelledFn` is not a request field.
+The host tools' face is marked on the host tools owner under `toolHost`; the index's face is marked on the process owner under `mentionIndex`. `ToolHost` and `ToolDriver` no longer exist. `CancelledFn` is the binding's cancellation argument and is not a request field; `context` is `{turnId, requestId, branchId}` data.
 
 ```rust
 use crate::host::CancelledFn;
 use dim_agent_types::{ToolCall, ToolDefinition, ToolExecutionContext, ToolResult};
-use rutis::host::BoxFuture;
-use rutis::Ctx;
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeclarationsReply { pub tools: Vec<ToolDefinition> }
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ToolHostError {
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    Missing { message: String },
+    #[error("{message}")]
+    Unavailable { message: String },
+    #[error("the call was cancelled")]
+    Cancelled,
+    #[error("the Session or line is closing")]
+    Closed,
+}
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecuteTool { pub call: ToolCall, pub caller: ToolExecutionContext }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunReply { pub result: ToolResult }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolveWrite { pub call: ToolCall }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Resolved { pub call: ToolCall }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchFiles { pub root: String, pub query: String, pub limit: Option<usize> }
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Candidate { pub relative_path: String, pub absolute_path: String, pub dir: bool }
-
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchReply { pub candidates: Vec<Candidate> }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate { pub relative_path: String, pub absolute_path: String, pub dir: bool }
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ToolHostError {
-    Invalid { message: String },
-    Missing { message: String },
-    Unavailable { message: String },
-    Cancelled,
-    Closed,
+pub enum OrderClass { Concurrent, Exclusive }
+
+#[rutis::service(name = "toolHost")]
+impl WorkspaceTools {
+    pub fn declarations(&self) -> Vec<ToolDefinition> { /* ... */ }
+
+    pub async fn execute(
+        &self,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancelled: CancelledFn,
+    ) -> ToolResult { /* ... */ }
+
+    pub async fn resolve_write(&self, call: ToolCall, cancelled: CancelledFn) -> Result<ToolCall, ToolHostError> { /* ... */ }
+
+    pub fn ordering(&self, call: ToolCall) -> Result<OrderClass, ToolHostError> { /* ... */ }
+}
+
+#[rutis::service(name = "mentionIndex")]
+impl WorkspaceToolsOwner {
+    pub async fn search(
+        &self,
+        root: String,
+        query: String,
+        limit: Option<usize>,
+        cancelled: CancelledFn,
+    ) -> Result<SearchReply, ToolHostError> { /* ... */ }
 }
 ```
+
+`session.files.search`, `session.exec.*` and `workspace.files.search` remain method handlers registered with `sessionMethods`; they call `search` or the line's BackgroundExec.

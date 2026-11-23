@@ -60,7 +60,7 @@ let ReadReply { data, eof } = attachments.read(ReadAttachment {
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `attachment.put` | Store a paste as a Session file | `{sessionId, name?, text}` | `{attachmentId, path, bytes}` | The caller's token; a committed file stays | `invalid`, `too_large`, `not_found`, `storage`, `closed` |
-| `attachment.import` | Copy a host file into the Session's files | `{sessionId, path, name?}` | `{attachmentId, path, bytes}` | The caller's token; a committed file stays | `invalid`, `too_large`, `not_found`, `storage`, `closed` |
+| `attachment.import` | Copy a host file into the Session's files, optionally as an image | `{sessionId, path, name?, image?}` | `{attachmentId, path, bytes, image}` | The caller's token; a committed file stays | `invalid`, `too_large`, `not_found`, `storage`, `closed` |
 | `attachment.read` | Read a stored attachment by offset | `{sessionId, fileId, offset}` | `{data, eof}` | The caller's token | `invalid`, `not_found`, `storage`, `closed` |
 
 ### Errors
@@ -130,39 +130,63 @@ The CLI prepares file and clipboard images, imports the accepted bytes by a loca
 
 1. [#2018](https://github.com/arcships/dim/issues/2018): the `sessionFiles` operations `put`, `import` and `read` with ids, and the image boundary this owner uses.
 
+## Supersedes
+
+- [session files §9 and §11](../appserver/session-files.md): the `attachment.*` methods stay the client's; this contract states the owner's method handlers and the image boundary they apply before `sessionFiles.import`.
+- [session boundary A.1](../contracts/session-boundary.md): the `attachment` namespace's registration shape; the request and reply data are unchanged.
+
 ## Binding appendix
 
-The `attachment` namespace is registered with the method table; the handlers are callbacks.
+The `attachment` namespace is registered with `sessionMethods.register`; the handlers are callbacks. The reply's `image` is the client's reference or null; the file id is SessionStore's.
 
 ```rust
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PutAttachment {
+pub struct PutAttachment { pub session_id: String, #[serde(default)] pub name: Option<String>, pub text: String }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportAttachment {
     pub session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub text: String,
+    pub path: String,
+    #[serde(default)] pub name: Option<String>,
+    #[serde(default)] pub image: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PutReply { pub attachment_id: String, pub path: String, pub bytes: u64 }
+pub struct FileReference { pub r#type: String, pub media_type: String, pub file_id: String }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentReply {
+    pub attachment_id: String,
+    pub path: String,
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<FileReference>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadAttachment { pub session_id: String, pub file_id: String, pub offset: u64 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadReply { pub data: String, pub eof: bool }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum AttachmentError {
+    #[error("{message}")]
     Invalid { message: String },
+    #[error("{message}")]
     TooLarge { message: String },
+    #[error("the file is gone")]
     NotFound,
+    #[error("{message}")]
     Storage { message: String },
+    #[error("the Session is closing")]
     Closed,
 }
 ```

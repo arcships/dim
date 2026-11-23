@@ -113,6 +113,11 @@ The tool's own input rules are its schema's: `timeoutMs` is 1 through 300,000, d
 1. [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025): the line access that lets the Session tool reach WaitBranch's `wait` by `(session, line)` id.
 2. [#2027](https://github.com/arcships/dim/issues/2027): WaitBranch's `wait {taskId?, timeoutMs?}` with `{reason, taskIds?, waitedMs}` and `already_waiting`/`closed`, as its contract states.
 
+## Supersedes
+
+- [session boundary A.1](../contracts/session-boundary.md): the `wait` tool's registration; the tool calls WaitBranch's `wait` by line id. The WaitBranch face is #2027's contract.
+- [tool-contributions §2.2](../../architecture/rust-agent/tool-contributions.md): the `wait` tool's registration shape.
+
 ## Binding appendix
 
 No service. The tool registers through the tool contract; its input is `{taskId?, timeoutMs?}` and its result is one `ToolResult` whose content is the text above.

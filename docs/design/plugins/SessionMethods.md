@@ -36,34 +36,37 @@ An operation or parameter exists only where the row says No.
 A part registers from its `apply`; the registration belongs to that part's row:
 
 ```rust
-methods.register(RegisterNamespace {
-    namespace: "session.input".into(),
+methods.register(
+    ctx,
+    "session.input",
     declarations,
-    call: Arc::new(|call, cancelled| Box::pin(withdraw(call, cancelled))),
-}).await?;
+    |call, cancelled| Box::pin(withdraw(call, cancelled)),
+).await?;
 ```
 
 Rpc dispatches one wire call; the caller identity is data, and the reply is `MethodReply` data:
 
 ```rust
-let reply = match table.call(CallRequest {
-    method: method.into(),
+let reply = match methods.call(
+    method.into(),
     params,
-    caller: Some(CallerRef { connection_id, call_id }),
-}).await {
+    Some(CallerRef { connection_id, call_id }),
+    cancelled.clone(),
+).await {
     Ok(reply) => reply,
-    Err(MethodError::UnknownMethod) => return Err(RpcError::unknown_method()),
-    Err(MethodError::Reloading) => return Err(RpcError::reloading()),
-    Err(MethodError::Unavailable) => return Err(RpcError::unavailable()),
-    Err(MethodError::Interrupted) => return Err(RpcError::interrupted()),
+    Err(MethodError::UnknownMethod { .. }) => return Err(RpcError::unknown_method()),
+    Err(MethodError::Reloading { .. }) => return Err(RpcError::reloading()),
+    Err(MethodError::Unavailable { .. }) => return Err(RpcError::unavailable()),
+    Err(MethodError::Interrupted { .. }) => return Err(RpcError::interrupted()),
     Err(MethodError::Invalid { .. }) => return Err(RpcError::invalid("Invalid request parameters")),
+    Err(MethodError::Reserved { .. }) | Err(MethodError::Duplicate { .. }) => unreachable!("dispatch cannot register"),
 };
 ```
 
 `session.methods` composes the value with the management table:
 
 ```rust
-let Methods { methods } = table.methods().await?;
+let methods = methods.methods()?;
 let listed = methods.into_iter().filter(|decl| !management.holds(&decl.name)).collect::<Vec<_>>();
 ```
 
@@ -80,11 +83,11 @@ let listed = methods.into_iter().filter(|decl| !management.holds(&decl.name)).co
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `register` | Publish a namespace for the calling row's lifetime | `{namespace, declarations, call}` | `{}` | None; the owner completes it | `reserved`, `duplicate`, `invalid` |
-| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}` | The calling connection closing ends the call as interrupted; the provider's unload ends it by its declaration (`report` or `drain`) | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `invalid` |
-| `methods` | The declarations registered now | `{}` | `{methods}` | None | None |
+| `register` | Publish a namespace for the calling row's lifetime | `{namespace, declarations}` and a call callback | `{}` | None; the owner completes it | `reserved`, `duplicate`, `invalid`, `closed` |
+| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}` | The calling connection closing ends the call as interrupted; the provider's unload ends it by its declaration (`report` or `drain`) | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `invalid`, `closed` |
+| `methods` | The declarations registered now | `{}` | `{methods}` | None | `closed` |
 
-`caller` is `{connectionId, callId}`: the connection the call arrived on and the call id the reply ordering uses; absent for an in-process call. The table passes the caller identity to the handler unchanged and writes no socket. `call` is a callback by reference; it never runs inside the Timeline's commit lock.
+`caller` is `{connectionId, callId}`: the connection the call arrived on and the call id the reply ordering uses; absent for an in-process call. The table passes the caller identity to the handler unchanged and writes no socket. The call callback is a direct parameter; it never runs inside the Timeline's commit lock.
 
 A handler's reply is `MethodReply` data: `{kind: "value", value}` or the handler's own error as `{code, message}`. The table adds no meaning.
 
@@ -99,6 +102,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or the handler
 | `reloading` | The registering row is starting or reloading; retry after it is Active |
 | `unavailable` | The registering row failed or cannot run; the client sees the service as unavailable |
 | `interrupted` | The provider unloaded while the call ran; the call may have committed, so read the current state before retrying |
+| `closed` | This Session is closing; a later generation serves the next Session |
 
 ### Flows
 
@@ -122,7 +126,7 @@ Flow tests on the owner:
 - `call` reaches the longest namespace holding the name; a withdrawn namespace answers `reloading` while the row starts and `unavailable` once it failed; a name no namespace ever held is `unknown_method`.
 - A `report` call interrupted by the provider's unload replies `interrupted` and the provider's unload waits for it; a `drain` call settles with its own result.
 - The caller identity reaches the handler unchanged for a wire call and is absent for an in-process call; the handler's notification with the same call id is written by `callChannel`.
-- `methods` lists the registered declarations and excludes nothing the table does not know; Rpc's filter removes management-held names.
+- `methods` lists the registered declarations; Rpc's filter removes management-held names.
 
 ## Rule check
 
@@ -140,7 +144,7 @@ Flow tests on the owner:
 | §4 rule 7 | Callers use `register`, `call` and `methods`; no caller sees the table, a provider or a channel. |
 | §4 rule 8 | No infrastructure change; the withdrawn-row answer is the loader's existing record. |
 | §4 rule 9 | No Timeline fact. |
-| §7 values, ids and callbacks | The caller identity is data; `call` is a callback by reference; a registration lives with its row; no object, channel or provider crosses. |
+| §7 values, ids and callbacks | The caller identity is data; the call callback crosses by reference; a registration lives with its row; no object, channel or provider crosses. |
 | §7 no proxy | The table answers its own registrations; the loader answers the row status. |
 | §7 one interface | One name, `sessionMethods`, on the owner type; the Rust binding and the wire call the same methods; `SessionMethods` no longer derefs to a shared table type. |
 | §7 cross-language | Every operation is data or a callback; no method exists only for Rust. |
@@ -156,55 +160,68 @@ Flow tests on the owner:
 1. [#2021](https://github.com/arcships/dim/issues/2021): the Session table takes the same `call {method, params, caller?}` request and `{reply}` shape as ManagementMethods, so Rpc has one call path for both tables (already recorded by the Connection contract).
 2. [#2021](https://github.com/arcships/dim/issues/2021): `reservedMethods` stays a process face; the Session table consults `check {namespace, declarations}` at registration.
 
+## Supersedes
+
+- [session boundary A.1](../contracts/session-boundary.md): the `MethodTable`/`MethodProvider`/`Accepted`/`Caller`/`CallSite`/`Callers` shapes and the `owner`/`provider`/`holds`/`listed` readers are replaced by `register`, `call` and `methods`.
+- [session access](../contracts/session-access.md): the Session method table's registration and dispatch paragraphs; the Session id routing and the client methods are unchanged.
+
 ## Binding appendix
 
-The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `caller: &Ctx` is the rutis caller parameter the dispatch fills for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field.
+The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field. A handler's error is `MethodReply` data, so the table returns it unchanged.
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_types::MethodReply;
+use dim_agent_types::{MethodCall, MethodDecl, MethodReply};
 use rutis::host::BoxFuture;
 use rutis::Ctx;
-use std::sync::Arc;
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterNamespace {
-    pub namespace: String,
-    pub declarations: Vec<MethodDecl>,
-    pub call: Arc<dyn Fn(MethodCall, CancelledFn) -> BoxFuture<'static, Result<MethodReply, MethodError>> + Send + Sync>,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Interruption { Report, Drain }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallerRef { pub connection_id: String, pub call_id: String }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CallRequest {
-    pub method: String,
-    pub params: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller: Option<CallerRef>,
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum MethodError {
+    #[error("{message}")]
+    Reserved { message: String },
+    #[error("{message}")]
+    Duplicate { message: String },
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("no namespace holds {method}")]
+    UnknownMethod { method: String },
+    #[error("the registering row is reloading")]
+    Reloading,
+    #[error("the registering row is unavailable")]
+    Unavailable,
+    #[error("the provider unloaded during the call")]
+    Interrupted,
+    #[error("the Session is closing")]
+    Closed,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CallReply { pub reply: MethodReply }
+#[rutis::service(name = "sessionMethods")]
+impl SessionMethods {
+    pub async fn register(
+        &self,
+        caller: &Ctx,
+        namespace: String,
+        declarations: Vec<MethodDecl>,
+        call: impl Fn(MethodCall, CancelledFn) -> BoxFuture<'static, MethodReply> + Send + Sync + 'static,
+    ) -> Result<(), MethodError> { /* ... */ }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Methods { pub methods: Vec<MethodDecl> }
+    pub async fn call(
+        &self,
+        method: String,
+        params: serde_json::Value,
+        caller: Option<CallerRef>,
+        cancelled: CancelledFn,
+    ) -> Result<MethodReply, MethodError> { /* ... */ }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MethodError {
-    Reserved { message: String },
-    Duplicate { message: String },
-    Invalid { message: String },
-    UnknownMethod,
-    Reloading,
-    Unavailable,
-    Interrupted,
+    pub fn methods(&self) -> Result<Vec<MethodDecl>, MethodError> { /* ... */ }
 }
 ```

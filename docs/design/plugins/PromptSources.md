@@ -40,7 +40,7 @@ The built-in sources register at apply, and Skills registers its own source the 
 
 ```rust
 for name in SOURCES {
-    sources.register(RegisterSource { name: name.into(), load: sources.clone() }).await?;
+    sources.register(ctx, name.into(), |target, cancelled| Box::pin(sources.load_one(target, cancelled))).await?;
 }
 ```
 
@@ -82,7 +82,7 @@ for line in tree.directory(None)?.lines {
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `register` | Publish a source for the calling row's lifetime | `{name, load}` | `{}` | None | `duplicate`, `invalid`, `closed` |
-| `load` | One source's entry for a target | `{source, scope}` | `{entry?}` | The caller's token stops the load; a withdrawn source only stops later lookups | `unknown`, `cancelled`, `failed` |
+| `load` | One source's entry for a target | `{source, scope}` | `{entry?}` | The caller's token stops the load; a withdrawn source only stops later lookups | `unknown`, `cancelled`, `failed`, `closed` |
 | `initial` | What a new branch adopts | `{}` | `{configuration?}`: source targets and model | None | None |
 | `get` | The reply language and its version | `{}` | `{language?, version}` | None | None |
 | `set` | Change the reply language | `{language?}` | `{previous?, version}` | None; the owner completes it | None |
@@ -97,7 +97,7 @@ for line in tree.directory(None)?.lines {
 | `invalid` | The source name is empty or outside the source grammar |
 | `unknown` | No source of that name is registered now; drop the target or re-read `initial` |
 | `cancelled` | The load stopped before the entry was produced; the branch adopts nothing |
-| `failed` | The source failed while producing the entry; the branch keeps its adopted text and retries on its next check |
+| `failed` | The source failed while producing the entry; `code` and `message` are the source's own; the branch keeps its adopted text and retries on its next check |
 | `closed` | This Session is closing; a later generation serves the next Session |
 
 ### Flows
@@ -114,6 +114,7 @@ for line in tree.directory(None)?.lines {
 
 - The base prompt setting is read while the part applies: a read failure keeps the factory text, and the source serves it for the Session's life; no per-load read means a later user change waits for the next Session.
 - A withdrawn source does not cancel a load it already accepted: the source's I/O is its own, and the branch's comparison by version makes a late entry harmless.
+- A source's failure keeps its own `code` and `message`: the registry adds no code of its own, so the branch can act on the source's reason.
 - The language value is a cell with a version, not a per-branch copy: every branch reads the same value and decides by version whether it adopted it; no branch holds the value's lock.
 
 ## Sources and classes
@@ -176,56 +177,86 @@ The value is `SessionConfig.language`, seeded by `session.create {language?}` an
 1. [#2027](https://github.com/arcships/dim/issues/2027): Prompt's branch owner needs a `configure` operation reached by line id that adopts a language update (the value's version) before the update replies. The line mechanism is [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)'s `(session, line)` access; until it exists the update cannot keep the before-reply promise and this contract records the gap.
 2. [#2018](https://github.com/arcships/dim/issues/2018): the Session record's `setLanguage` operation the update entry calls before `set`.
 
+## Supersedes
+
+- [model-facing prompts §7](../model-prompts.md#7-language): the `SessionLanguage` cell read by a branch gate; the gate is replaced by the versioned value and `sessionLanguage.get`/`set`.
+- [session boundary A.2 and A.3](../contracts/session-boundary.md): the `promptRegistry`, `promptHost` and `initialPromptConfiguration` faces; `promptSources.register`, `load`, `initial` and `sessionLanguage.get`/`set` replace them. The client methods `session.language.*` are unchanged.
+- [service faces §4.8](../service-faces.md): the `promptSources` and `sessionLanguage` rows.
+
 ## Binding appendix
 
-The services are marked on their owner types under `promptSources` and `sessionLanguage`. `PromptHost`, `PromptRegistry` as a second name and `InitialPromptConfiguration` leave; the shared types below are the wire shapes. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the cancellation argument and is not a request field.
+The services are marked on their owner types under `promptSources` and `sessionLanguage`. `PromptHost`, `PromptRegistry` as a second name and `InitialPromptConfiguration` leave. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the cancellation argument and is not a request field. A source's failure arrives as `CallError`; `PromptCallbackError` keeps its own `code` and `message`.
 
 ```rust
 use crate::host::CancelledFn;
 use dim_agent_runtime::{ConfigureUpdate, PromptEntry, PromptScope, PromptSourceTarget, ReplyLanguage};
-use rutis::host::BoxFuture;
+use rutis::host::{BoxFuture, CallError};
 use rutis::Ctx;
-use std::sync::Arc;
 
-pub type LoadFn =
-    Arc<dyn Fn(PromptSourceTarget, CancelledFn) -> BoxFuture<'static, Result<Option<PromptEntry>, String>> + Send + Sync>;
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum SourceError {
+    #[error("{message}")]
+    Duplicate { message: String },
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    Unknown { message: String },
+    #[error("the load was cancelled")]
+    Cancelled,
+    #[error("{code}: {message}")]
+    Failed { code: String, message: String },
+    #[error("the Session is closing")]
+    Closed,
+}
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RegisterSource { pub name: String, pub load: LoadFn }
+#[error("{code}: {message}")]
+pub struct PromptCallbackError { pub code: String, pub message: String }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoadSource { pub source: String, pub scope: PromptScope }
+impl From<CallError> for PromptCallbackError {
+    fn from(error: CallError) -> Self {
+        match error.raw().and_then(|raw| raw.downcast_ref::<rutis_bridge::session::Error>()) {
+            Some(remote) => Self { code: remote.code().unwrap_or("failed").into(), message: remote.message().into() },
+            None => Self { code: "failed".into(), message: error.message().into() },
+        }
+    }
+}
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadReply { pub entry: Option<PromptEntry> }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitialReply { pub configuration: Option<ConfigureUpdate> }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LanguageValue { pub language: Option<ReplyLanguage>, pub version: u64 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetLanguage { pub language: Option<ReplyLanguage> }
-
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Changed { pub previous: Option<ReplyLanguage>, pub version: u64 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceError {
-    Duplicate { message: String },
-    Invalid { message: String },
-    Unknown { message: String },
-    Cancelled,
-    Failed { message: String },
-    Closed,
+#[rutis::service(name = "promptSources")]
+impl PromptSources {
+    pub async fn register(
+        &self,
+        caller: &Ctx,
+        name: String,
+        load: impl Fn(PromptSourceTarget, CancelledFn) -> BoxFuture<'static, Result<Option<PromptEntry>, PromptCallbackError>> + Send + Sync + 'static,
+    ) -> Result<(), SourceError> { /* ... */ }
+
+    pub async fn load(&self, source: String, scope: PromptScope, cancelled: CancelledFn) -> Result<LoadReply, SourceError> { /* ... */ }
+
+    pub fn initial(&self) -> Result<InitialReply, SourceError> { /* ... */ }
+}
+
+#[rutis::service(name = "sessionLanguage")]
+impl SessionLanguage {
+    pub fn get(&self) -> LanguageValue { /* ... */ }
+    pub async fn set(&self, language: Option<ReplyLanguage>) -> Changed { /* ... */ }
 }
 ```
