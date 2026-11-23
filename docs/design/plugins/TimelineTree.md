@@ -41,6 +41,59 @@ Callers keep:
 | Act on a line's own owner: compact it, read its usage, withdraw from it, approve in it, adopt a language or a profile in it | Not this owner: each is that owner's operation, reached by line id | See "Session parts reaching a line's owners" |
 | Create the root line, restore the stored directory, settle on close | No, but not public: the Session assembly drives these; a client or plugin must not | Assembly-internal |
 
+## Caller example
+
+A client opens a line, reads the directory and ends a line; a Session method answers a turn read with one page. No call has a version to compare, a wait to bound, or an id the caller must release.
+
+```rust
+// session.branch_create: the client names the parent, the cut and the purpose.
+let line = tree.create(CreateLine {
+    parent: parent.clone(),
+    cut,
+    prompt,
+    source: BranchSource::User { operation_id },
+    idle_notice: None,
+}, cancelled).await?;
+
+// session.branches: the default and every line from one read.
+let Directory { default, lines } = match tree.directory(None)? {
+    DirectoryReply::All(directory) => directory,
+    DirectoryReply::One(_) => unreachable!("no line named"),
+};
+let current = lines.iter().find(|record| record.line == default).expect("the default is a line");
+
+// A Session method answering a turn read on the conversation line, at its head.
+let page = tree.read(ReadLines {
+    line: current.line.clone(),
+    scope: None,
+    from: Some(after + 1),
+    through: Some(current.head),
+    fields: TURN_FIELDS.to_vec(),
+    limit: None,
+}).await?;
+
+// A method that names a line reads its record first, then the same page.
+let record = match tree.directory(Some(requested.clone()))? {
+    DirectoryReply::One(record) => record,
+    DirectoryReply::All(_) => unreachable!("a named line answers one record"),
+};
+let page = tree.read(ReadLines {
+    line: requested,
+    scope: None,
+    from: None,
+    through: Some(record.head),
+    fields: TURN_FIELDS.to_vec(),
+    limit: None,
+}).await?;
+
+// session.branch_end: the client ends the line it opened.
+tree.end(EndLine { line, source, final_message: None }).await?;
+
+// Nothing is released here: the line id is a value and the record's head is a number.
+```
+
+A caller that needs the line's own owners — the input queue it writes into, the capability it compacts — calls no operation of this owner for that; the next section says how a Session part reaches those owners. The Session assembly drives the root line, the restore and the close through the owner's crate-private lifecycle, not through these five operations, and no client or plugin may reach them.
+
 ## Session parts reaching a line's owners
 
 A Session part acts on one line by line id, never through a `Branch` object. Two operations exist, and neither is TimelineTree's:
