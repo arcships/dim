@@ -51,7 +51,7 @@ methods.respond(RespondQuestion { line, request_id, call_id, answers })?; // {} 
 
 | Service | Purpose |
 | --- | --- |
-| `S:sessionConfig` | `interactive`, read per call; a non-interactive Session gets an error result. |
+| `S:sessionScope` | `config` for `interactive`, read per call; a non-interactive Session gets an error result. |
 | `S:toolRegistry` | Register `ask_user` until this part unloads. |
 | `S:sessionMethods` | Register `session.question` until this part unloads. |
 

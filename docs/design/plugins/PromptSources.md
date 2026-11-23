@@ -63,7 +63,7 @@ The language update entry composes the record, the value and each loaded branch:
 store.set_session_language(&session_id, language).await?; // #2018's record
 let Changed { previous, version } = language.set(SetLanguage { language }).await?;
 for line in tree.directory(None)?.lines {
-    line_owner::<Prompt>(line.line)?.adopt(LanguageUpdate { version }, cancelled.clone()).await?;
+    line_owner::<Prompt>(line.line)?.configure(LanguageUpdate { version }, cancelled.clone()).await?;
 }
 ```
 
@@ -74,7 +74,7 @@ for line in tree.directory(None)?.lines {
 | Service | Purpose |
 | --- | --- |
 | `P:HostPlatform` | Home, environment and shell/platform context for the environment source. |
-| `S:sessionConfig` | Working directory, Session context and the language seed. |
+| `S:sessionScope` | The creation record: working directory, Session context and the language seed (`config`). |
 | `P:basePromptSettingsHost` | The user's replacement of `dim/base`, read once at apply; absent keeps the factory text. |
 
 ### Operations
@@ -173,8 +173,8 @@ The value is `SessionConfig.language`, seeded by `session.create {language?}` an
 
 ## Requirements raised to mechanism owners
 
-1. [#2027](https://github.com/arcships/dim/issues/2027): Prompt's branch owner needs an operation reached by line id that adopts a language update (the value's version) before the update replies. The line mechanism is [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)'s `(session, line)` access; until it exists the update cannot keep the before-reply promise and this contract records the gap.
-2. [#2018](https://github.com/arcships/dim/issues/2018): the Session record's `setSessionLanguage` operation the update entry calls before `set`.
+1. [#2027](https://github.com/arcships/dim/issues/2027): Prompt's branch owner needs a `configure` operation reached by line id that adopts a language update (the value's version) before the update replies. The line mechanism is [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)'s `(session, line)` access; until it exists the update cannot keep the before-reply promise and this contract records the gap.
+2. [#2018](https://github.com/arcships/dim/issues/2018): the Session record's `setLanguage` operation the update entry calls before `set`.
 
 ## Binding appendix
 

@@ -90,9 +90,7 @@ let status = registry.sources().await?; // adopted or rejected per source key
 | Service | Purpose |
 | --- | --- |
 | `S:toolHost` | The host tools owner: declarations, execute, write-target resolution and ordering for the host's tools. |
-| `S:sessionConfig` | The mount list and the excluded names, fixed at creation. |
-| `S:sessionIdentity` | The Session id in a foreign tool's neutral call and the attach span. |
-| `S:sessionScope` | `activated` and `closing`: the refresh task starts at publication and ends when close starts. |
+| `S:sessionScope` | `config` for the mount list and the excluded names (fixed at creation), `identity` for the Session id in a foreign tool's neutral call and the attach span, and `activated`/`closing` for the refresh task. |
 
 The registry provides `toolRegistry` on its owner type and nothing else; `toolSourcesView` leaves the catalog and its value is `sources`/`observe_sources` on the same face.
 

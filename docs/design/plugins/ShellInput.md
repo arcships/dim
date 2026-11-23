@@ -50,9 +50,7 @@ shell.stop(StopRun { run_id }, cancelled).await?;
 | Service | Purpose |
 | --- | --- |
 | `P:HostPlatform` | Home, shell, environment and process supervision. |
-| `S:sessionConfig` | cwd, collaboration role and the shell preference. |
-| `S:sessionScope` | `phase` and `withHold` for the command's extent. |
-| `S:sessionIdentity` | The Session id in the entry and the output path. |
+| `S:sessionScope` | `config` for cwd, the collaboration role and the shell preference, `identity` for the Session id in the entry and the output path, and `phase`/`withHold` for the command's extent. |
 | `S:sessionMethods` | Register the `shell` namespace until this part unloads. |
 | `S:guideEntries` | The `<dim-shell-input>` entry, registered until this part unloads. |
 

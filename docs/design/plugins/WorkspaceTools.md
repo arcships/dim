@@ -64,9 +64,7 @@ let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).aw
 | Service | Purpose |
 | --- | --- |
 | `P:HostPlatform` | Home, shell, environment and process supervision. |
-| `S:sessionConfig` | cwd, collaboration role and the Session's output directory. |
-| `S:sessionIdentity` | The Session id for the output directory and the search root. |
-| `S:sessionScope` | `activated`/`closing` for the tool generation and `hold` for a running background task. |
+| `S:sessionScope` | `config` for cwd, the collaboration role and the output directory, `identity` for the Session id and the search root, and `activated`/`closing`/`hold` for the tool generation and a running background task. |
 | `S:sessionMethods` | Register the four method namespaces until the part unloads. |
 | `P:mentions` | The process owner's walked index. |
 | `P:sessionFiles` | Register an output path with the Session's file owner. |
@@ -148,7 +146,7 @@ let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).aw
 ## Requirements raised to mechanism owners
 
 1. [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025): the line access that lets this Session part reach FileReads and BackgroundExec by `(session, line)` id. The file tools need the line's read bindings and `exec` needs the line's background owner; neither may be taken from a `Branch` object.
-2. [#2028](https://github.com/arcships/dim/issues/2028): FileReads' binding operation and BackgroundExec's start/output/wait operations, reached by line id; the current calls take them from `TreeCommands.get(line)?.service::<T>()`.
+2. [#2028](https://github.com/arcships/dim/issues/2028): FileReads' binding operation and BackgroundExec's `adopt`/`output`/`wait` operations, reached by line id; the current calls take them from `TreeCommands.get(line)?.service::<T>()`.
 3. [#2018](https://github.com/arcships/dim/issues/2018): `sessionFiles.register` and the read/write operations the output and attachment paths use.
 
 ## Binding appendix

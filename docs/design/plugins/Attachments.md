@@ -51,7 +51,7 @@ let ReadReply { data, eof } = attachments.read(ReadAttachment {
 
 | Service | Purpose |
 | --- | --- |
-| `S:sessionIdentity` | The calling Session's id for the ownership check. |
+| `S:sessionScope` | `identity` for the calling Session's id, used by the ownership check. |
 | `P:sessionFiles` | The Session file store's `put`, `import` and `read` operations (#2018). |
 | `S:sessionMethods` | Register the `attachment` namespace until this part unloads. |
 

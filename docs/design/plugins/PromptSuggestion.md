@@ -43,14 +43,12 @@ suggestion.respond(RespondSuggestion { offer_id, accept: true }).await?;
 
 | Service | Purpose |
 | --- | --- |
-| `S:sessionConfig` | `interactive` and the collaboration role: only a leader's interactive Session offers suggestions. |
-| `S:sessionIdentity` | The Session id in the offer and the request. |
-| `S:sessionScope` | `activated`/`closing`: the part works only while the Session runs. |
+| `S:sessionScope` | `config` for `interactive` and the role (only a leader's interactive Session offers suggestions), `identity` for the Session id, and `activated`/`closing`: the part works only while the Session runs. |
 | `S:sessionMethods` | Register `session.suggestion` until this part unloads. |
 | `P:providerService` | `resolve` and `invoke` with `Once` for the suggestion request (#2019). |
 | `P:promptSuggestionSettingsHost` | The user's enable flag and size bound, read per decision. |
 | `S:timelineTree` | The line's directory record and the turn's end fact. |
-| The line's ContextUsage | The usage that decides an appended compaction request, reached by line id (#2027). |
+| The line's ContextUsage | `read`, the usage value that decides an appended compaction request, reached by line id (#2027). |
 
 ### Operations
 
@@ -111,7 +109,7 @@ suggestion.respond(RespondSuggestion { offer_id, accept: true }).await?;
 ## Requirements raised to mechanism owners
 
 1. [#2019](https://github.com/arcships/dim/issues/2019): `providerService.resolve` and `invoke {request, mode: "once"}` with the streamed consumer the suggestion needs.
-2. [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025): the line access that lets this Session part read the line's ContextUsage by `(session, line)` id, and [#2027](https://github.com/arcships/dim/issues/2027)'s usage operation for it.
+2. [#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025): the line access that lets this Session part read the line's ContextUsage by `(session, line)` id, and [#2027](https://github.com/arcships/dim/issues/2027)'s `read` operation for it.
 
 ## Binding appendix
 
