@@ -9,6 +9,12 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | Plugin | Process part | Session part | Branch part | Phase / issue |
 | --- | --- | --- | --- | --- |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
+| [Provider](Provider.md) (owner contract) | model owner of the product profile: provider and model records, selection, credentials, execution, temporary connections, the wire recorder | — | — | [#2019](https://github.com/arcships/dim/issues/2019) |
+| [ConfiguredModels](ConfiguredModels.md) (owner contract) | model owner of the API-key profile: the model file, its credentials and execution | — | — | [#2019](https://github.com/arcships/dim/issues/2019) |
+| [Managed account owners](ManagedAccount.md) (owner contract) | the account role: record, login, tokens, availability, catalog, request leases, client namespace | — | — | [#2019](https://github.com/arcships/dim/issues/2019) |
+| [DimOAuth](DimOAuth.md) (owner contract) | Dim account owner: record, login, leases, relay search and title | — | — | [#2019](https://github.com/arcships/dim/issues/2019) |
+| [Managed OAuth accounts](ManagedOAuth.md) (owner contract) | OpenAI Codex and Grok account owners: record, login, leases | — | — | [#2019](https://github.com/arcships/dim/issues/2019) |
+| [ManagedProviders](ManagedProviders.md) (owner contract) | ChatGPT account owner; the host binding and `managedSearch` face are retired | — | — | [#2019](https://github.com/arcships/dim/issues/2019) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
 | [ShellInput](ShellInput.md) | — | `shell.*` methods, command runs | — | P1 |
