@@ -1,5 +1,5 @@
 import { Button, Drawer, Modal, Popover } from "@heroui/react"
-import { ArrowLeft, ChevronRight, CirclePlus, GitBranch, Menu, PanelLeftClose, X } from "lucide-react"
+import { ArrowLeft, ChevronRight, GitBranch, Menu, PanelLeftClose, SquarePen, X } from "lucide-react"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { appLocale, translate } from "./i18n"
@@ -62,10 +62,10 @@ const settingsPages = [
 type SettingsPage = (typeof settingsPages)[number]["id"]
 type WorkspaceRoute = { kind: "root" | "missing" } | { kind: "settings"; page: SettingsPage | "index"; detail?: string; schedule?: SchedulePage } | { kind: "new"; cwd?: string } | { kind: "session"; id: string; branchId?: string }
 
-function currentRoute(): WorkspaceRoute {
-  const pathname = location.pathname.replace(/\/+$/, "")
+function currentRoute(url: Pick<Location, "pathname" | "search"> = location): WorkspaceRoute {
+  const pathname = url.pathname.replace(/\/+$/, "")
   if (pathname === "") return { kind: "root" }
-  if (pathname === "/chat/new") return { kind: "new", cwd: new URLSearchParams(location.search).get("cwd") ?? undefined }
+  if (pathname === "/chat/new") return { kind: "new", cwd: new URLSearchParams(url.search).get("cwd") ?? undefined }
   const settingsPage = settingsPages.find(({ id }) => pathname === `/settings/${id}`)
   if (pathname === "/settings" || settingsPage) return { kind: "settings", page: settingsPage?.id ?? "index" }
   const settingsDetail = /^\/settings\/(skills|permissions|plugins|mcp|providers)\/([^/]+)$/.exec(pathname)
@@ -84,8 +84,13 @@ function currentRoute(): WorkspaceRoute {
   }
   const match = /^\/chat\/([^/]+)$/.exec(pathname)
   if (match === null) return { kind: "missing" }
-  try { return { kind: "session", id: decodeURIComponent(match[1]!), branchId: new URLSearchParams(location.search).get("branch") || undefined } }
+  try { return { kind: "session", id: decodeURIComponent(match[1]!), branchId: new URLSearchParams(url.search).get("branch") || undefined } }
   catch { return { kind: "missing" } }
+}
+
+function workspaceReturnPath(): string {
+  const path = history.state?.workspaceReturn
+  return typeof path === "string" && /^\/(?:chat\/[^?#]+(?:\?[^#]*)?)?$/.test(path) ? path : "/"
 }
 
 export function WorkspaceApp() {
@@ -106,9 +111,7 @@ export function WorkspaceApp() {
   }
   const [route, setRoute] = useState(currentRoute)
   const lastPath = useRef(location.pathname + location.search)
-  const rememberedWorkspace = history.state?.workspaceReturn
-  const settingsReturn = useRef<string>(typeof rememberedWorkspace === "string" && /^\/(?:chat\/[^?#]+(?:\?[^#]*)?)?$/.test(rememberedWorkspace)
-    ? rememberedWorkspace : "/")
+  const settingsReturn = useRef(workspaceReturnPath())
   const settingsHeading = useRef<HTMLElement>(null)
   const settingsOpen = route.kind === "settings"
   const settingsIndex = route.kind === "settings" && route.page === "index"
@@ -136,7 +139,8 @@ export function WorkspaceApp() {
     settingsDirty.current = false
   }
   const active = route.kind === "session" ? route.id : undefined
-  const [tabs, setTabs] = useState<string[]>(() => active === undefined ? [] : [active])
+  const activeBranch = route.kind === "session" ? route.branchId : undefined
+  const conversation = settingsOpen ? currentRoute(new URL(settingsReturn.current, location.origin)) : route
   const [drawer, setDrawer] = useState(false)
   const [expandedSessions, setExpandedSessions] = useState<ReadonlySet<string>>(() => new Set())
   const [discoveredBranches, setDiscoveredBranches] = useState<ReadonlyMap<string, BranchDirectory>>(() => new Map())
@@ -145,7 +149,6 @@ export function WorkspaceApp() {
   const loadingBranches = useRef(new Set<string>())
   const attachedBranches = useStoreValue(readAttachedBranches)
   const branchDirectories = new Map([...discoveredBranches, ...attachedBranches])
-  const activeBranch = route.kind === "session" ? route.branchId : undefined
   const [openedMembers, setOpenedMembers] = useState<ReadonlyMap<string, { title: string; parentId: string }>>(() => new Map())
   const collapsed = useStoreValue(readSidebarCollapsed)
   const [sidebarWidth, setSidebarWidth] = useState(250)
@@ -167,9 +170,11 @@ export function WorkspaceApp() {
       settingsDirty.current = false
       lastPath.current = location.pathname + location.search
       const next = currentRoute()
-      if (next.kind === "settings") setDrawer(false)
+      if (next.kind === "settings") {
+        settingsReturn.current = workspaceReturnPath()
+        setDrawer(false)
+      }
       setRoute(next)
-      if (next.kind === "session") setTabs((previous) => previous.includes(next.id) ? previous : [...previous, next.id])
     }
     function beforeUnload(event: BeforeUnloadEvent) {
       if (!settingsDirty.current) return
@@ -229,7 +234,6 @@ export function WorkspaceApp() {
     const path = id === undefined ? `/chat/new${cwd === undefined ? "" : `?${new URLSearchParams({ cwd })}`}` : `/chat/${encodeURIComponent(id)}${branchId === undefined ? "" : `?${new URLSearchParams({ branch: branchId })}`}`
     if (!confirmDiscard()) return
     navigate(path, replace)
-    if (id !== undefined) setTabs((previous) => previous.includes(id) ? previous : [...previous, id])
     setRoute(id === undefined ? { kind: "new", cwd } : { kind: "session", id, branchId })
     setDrawer(false)
   }
@@ -268,18 +272,13 @@ export function WorkspaceApp() {
     }
   }
 
-  function close(id: string) {
-    setTabs(tabs.filter((tab) => tab !== id))
-    if (active === id) select(tabs[tabs.indexOf(id) + 1] ?? tabs[tabs.indexOf(id) - 1], true)
-  }
-
   function archiveSession(id: string) {
     if (!archive.archive(id)) {
       setArchiveError("This browser cannot store the archive list.")
       return
     }
     setArchiveError("")
-    close(id)
+    if (active === id) select(undefined, true)
   }
 
   function openSettings(page: SettingsPage | "index") {
@@ -306,9 +305,7 @@ export function WorkspaceApp() {
       return
     }
     navigate(settingsReturn.current, true)
-    const next = currentRoute()
-    if (next.kind === "session") setTabs((previous) => previous.includes(next.id) ? previous : [...previous, next.id])
-    setRoute(next)
+    setRoute(currentRoute())
   }
 
   function returnToSettingsIndex() {
@@ -329,6 +326,7 @@ export function WorkspaceApp() {
 
   const selected = active === undefined ? undefined : directoryById.get(active)
   const selectedTitle = active === undefined ? undefined : selected ? titleFor(selected) : openedMembers.get(active)?.title ?? titleFor(undefined)
+  const conversationSummary = conversation.kind === "session" ? directoryById.get(conversation.id) : undefined
   useEffect(() => {
     document.title = settingsOpen ? `${text("Settings", "设置")} — Dim` : active === undefined ? "Dim" : `${selectedTitle} — Dim`
   }, [active, selectedTitle, settingsOpen, locale])
@@ -338,6 +336,9 @@ export function WorkspaceApp() {
   }
 
   const newSession = (cwd: string | undefined = selected?.cwd) => select(undefined, false, cwd)
+  const newSessionLabel = text("New session", "新建会话")
+  const newSessionButton = <button type="button" className="rw-sidebar-icon rw-new-session"
+    aria-label={newSessionLabel} title={newSessionLabel} onClick={() => newSession()}><SquarePen size={15} aria-hidden="true" /></button>
   const directoryProps = {
     workspaces, members, expandedSessions, branchDirectories, branchErrors, active, activeBranch, phase, loaded: directorySettled, error: directoryError || archiveError,
     query, setQuery, runningOnly, setRunningOnly, select, newSession, archiveSession, openArchive: () => openSettings("archived"),
@@ -380,6 +381,7 @@ export function WorkspaceApp() {
         <div className="rw-sidebar-header">
           <strong className="rw-sidebar-title">Dim</strong>
           <button type="button" className="rw-sidebar-icon" aria-label="Hide workspace sidebar" onClick={() => { ui.sidebarCollapsed = true }}><PanelLeftClose size={16} aria-hidden="true" /></button>
+          {newSessionButton}
         </div>
         <SessionDirectory {...directoryProps} />
         <div className="rw-sidebar-resize" role="separator" tabIndex={0} aria-label="Resize workspace sidebar" aria-orientation="vertical"
@@ -401,7 +403,7 @@ export function WorkspaceApp() {
           onLostPointerCapture={() => { sidebarDrag.current = undefined }} />
       </aside>
       <main className="rw-main">
-        <header className="rw-tabbar" hidden={settingsOpen}>
+        <header className="rw-workspace-header" hidden={settingsOpen}>
           <Drawer isOpen={drawer} onOpenChange={setDrawer}>
             <Button className="rw-mobile-menu" size="sm" variant="tertiary" isIconOnly aria-label="Show workspace sidebar"><Menu size={18} /></Button>
             <Drawer.Backdrop>
@@ -410,6 +412,7 @@ export function WorkspaceApp() {
                   <header className="rw-sidebar-header">
                     <Drawer.Heading className="rw-sidebar-title">Dim</Drawer.Heading>
                     <button type="button" className="rw-sidebar-icon" aria-label="Close workspace sidebar" onClick={() => setDrawer(false)}><X size={16} aria-hidden="true" /></button>
+                    {newSessionButton}
                   </header>
                   <SessionDirectory {...directoryProps} />
                 </Drawer.Dialog>
@@ -417,32 +420,8 @@ export function WorkspaceApp() {
             </Drawer.Backdrop>
           </Drawer>
           <Button className="rw-show-sidebar" size="sm" variant="tertiary" isIconOnly aria-label="Show workspace sidebar" onPress={() => { ui.sidebarCollapsed = false }}><Menu size={18} /></Button>
-          <div className="rw-tabs" role="tablist" aria-label="Open sessions" onKeyDown={(event) => {
-            const target = event.target
-            if (!(target instanceof HTMLElement) || target.getAttribute("role") !== "tab") return
-            const keys = ["ArrowLeft", "ArrowRight", "Home", "End"]
-            if (!keys.includes(event.key)) return
-            event.preventDefault()
-            const index = tabs.indexOf(target.id.slice("session-tab-".length))
-            const offset = event.key === "ArrowLeft" ? -1 : 1
-            const next = tabs[event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + offset + tabs.length) % tabs.length]
-            if (next !== undefined) {
-              select(next)
-              document.getElementById(`session-tab-${next}`)?.focus()
-            }
-          }}>
-            {tabs.map((id) => {
-              const summary = directoryById.get(id)
-              const title = summary ? titleFor(summary) : openedMembers.get(id)?.title ?? titleFor(undefined)
-              return <div className="rw-tab" key={id} data-active={active === id}>
-                <button id={`session-tab-${id}`} type="button" role="tab" aria-controls={`session-pane-${id}`}
-                  aria-selected={active === id} tabIndex={active === id || (active === undefined && id === tabs[0]) ? 0 : -1}
-                  onClick={() => select(id)} title={title}>{title}</button>
-                <button type="button" className="rw-tab-close" aria-label={`Close ${title}`} onClick={() => close(id)}><X size={12} aria-hidden="true" /></button>
-              </div>
-            })}
-          </div>
-          <Button className="rw-new-tab" size="sm" variant="tertiary" isIconOnly aria-label="New session" onPress={() => newSession()}><CirclePlus size={18} /></Button>
+          {selectedTitle && <h1 className="rw-workspace-title" title={selectedTitle}>{selectedTitle}</h1>}
+          {newSessionButton}
         </header>
         <div className="rw-panes">
           {route.kind === "new" && <NewSession key={route.cwd ?? ""} preferredWorkspace={route.cwd} workspaces={workspaces.map(({ cwd }) => cwd)} enabled={phase === "connected"} onCreated={select} />}
@@ -485,23 +464,20 @@ export function WorkspaceApp() {
             <h1>Page not found</h1>
             <Button variant="secondary" onPress={() => select(undefined)}>Open a new session</Button>
           </section>}
-          {tabs.map((id) => {
-            const summary = directoryById.get(id)
-            const opened = openedMembers.get(id)
-            const memberParentId = summary?.origin === "internal" ? summary.parentSessionId ?? opened?.parentId : opened?.parentId
-            return <SessionPane key={id} id={id} active={id === active} branch={id === active ? activeBranch : undefined}
-              memberParentId={memberParentId} connected={phase === "connected"} openSession={select}
-              openMember={(memberId, title) => openDelegatedMember(memberId, title, id)}
-              openBranch={(branchId) => {
-                const current = currentRoute()
-                if (current.kind === "session" && current.id === id) openBranch(id, branchId)
-              }}
-              newSession={() => select(undefined, false, sessions.byId.get(id)?.cwd)}
-              scheduled={() => {
-                const cwd = sessions.byId.get(id)?.cwd
-                openSettingsPath(`/settings/scheduled${cwd === undefined ? "" : `?${new URLSearchParams({ cwd })}`}`)
-              }} />
-          })}
+          {conversation.kind === "session" && <SessionPane key={conversation.id} id={conversation.id} active={!settingsOpen} branch={conversation.branchId}
+            memberParentId={(conversationSummary?.origin === "internal" ? conversationSummary.parentSessionId : undefined)
+              ?? openedMembers.get(conversation.id)?.parentId}
+            connected={phase === "connected"} openSession={select}
+            openMember={(memberId, title) => openDelegatedMember(memberId, title, conversation.id)}
+            openBranch={(branchId) => {
+              const current = currentRoute()
+              if (current.kind === "session" && current.id === conversation.id) openBranch(conversation.id, branchId)
+            }}
+            newSession={() => select(undefined, false, sessions.byId.get(conversation.id)?.cwd)}
+            scheduled={() => {
+              const cwd = sessions.byId.get(conversation.id)?.cwd
+              openSettingsPath(`/settings/scheduled${cwd === undefined ? "" : `?${new URLSearchParams({ cwd })}`}`)
+            }} />}
         </div>
       </main>
       {newBranch && <ConversationActionDialog action={{ kind: "branch", cut: newBranch.cut, text: "" }}
@@ -571,8 +547,7 @@ function SessionPane({ id, active, branch, memberParentId, connected, openSessio
 
   const hasExtensions = !memberReadOnly && (directory?.extensions.some(({ panels }) => panels.length > 0) || directory?.errors.length || directoryError || showExtension)
   const hasDelegations = view?.methods.includes("session.collaboration.pending") && view.methods.includes("session.collaboration.finished")
-  return <div className="rw-session" id={`session-pane-${id}`} role="tabpanel" aria-labelledby={`session-tab-${id}`}
-    data-active={active} data-extension={showExtension} inert={!active}
+  return <div className="rw-session" data-active={active} data-extension={showExtension} inert={!active}
     style={showExtension ? { "--rw-extension-width": `${width}px` } as CSSProperties : undefined}>
     {view !== undefined && view.status !== "closed"
       ? <>

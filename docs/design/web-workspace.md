@@ -208,10 +208,9 @@ Show an empty state after a successful inventory with zero requests, and a
 retry action for failed reads. Changes to another Session dismiss the menu.
 
 Selecting a task opens its details. An available native member conversation
-opens in a normal Session tab from either the task details or the sidebar.
-The tab shows the conversation with a read-only label and leaves out the
-composer. The leader's transcript, scroll position, and draft stay available
-in its tab. Before delivery and for provider members, show the available task
+replaces the current conversation when selected from the task details or the sidebar.
+It shows a read-only label, a link to the leader, and no composer.
+Before delivery and for provider members, show the available task
 details from the leader. In the task details, Back returns to the task list.
 User-created forks remain independent sidebar Sessions.
 
@@ -266,10 +265,10 @@ Session List                        Conversation
 | Input | `session.branches` supplies the directory. Lifecycle facts and `session.state` update it. `session.branch.get` supplies the selected line’s purpose, end details and inherited message count. Only opened lines read their own transcript windows. |
 | Derived data | `lines.ts` keeps directory metadata, not historical input identities. Unknown message counts remain absent. `projection.ts` owns visible rows and live controls. `stores/chat.ts` keeps each opened window’s fixed head, backward cursor and in-flight live queue. |
 | Actions | `session.branch_create {parentBranchId, at, prompt}`, `session.branch_end {branchId}`, `session.branch_set_default {branchId}` (continue from here), `session.submit`/`session.stop` with the line's `branchId`; approvals use the request's `branchId` |
-| Points | A user message's cut is its sequence minus one; a line's end is its newest `turn-end`. `session.branch_create` remains the validator; its refusal is shown in the dialog or line tab |
-| Switching | Opening a line sets the Session URL’s `branch` query, the root included while another line is the default branch, so the root's own transcript and pending approvals and questions stay reachable without moving the Session back; the Session URL without a branch shows the default branch, which `session.branches` reports as `defaultBranchId`, and `session.branch_set_default` changes it. A move reads the new centre's window before the center changes hands, so the transcript on screen, its actions and the line they name change together, and a read that fails reports the failure instead of showing the outgoing transcript. The root and that line are the two that can open a line, so the Lines tree marks both |
-| Errors | `branch_missing`, `branch_ended`, `input_blocked`, an invalid cut and a disabled Branch tool are shown at the action that raised them; an ended line is read-only |
-| State | Previously viewed lines keep their draft, scroll position and disclosures while the Session tab stays open. The tree is read from the existing directory on reload and reconnect. |
+| Points | A user message's cut is its sequence minus one; a line's end is its newest `turn-end`. `session.branch_create` remains the validator; its refusal is shown in the dialog or line view |
+| Switching | The Session URL accepts a `branch` query for an explicit selection without changing the default. Without that query, it opens the default reported by `session.branches`. Continue from here calls `session.branch_set_default` and opens the default conversation. The client reads the new default's window before switching the transcript and its actions together; a failed read reports the failure instead of showing the outgoing transcript. Only the root and default can open a line. |
+| Errors | `branch_missing`, `branch_ended`, `input_blocked`, an invalid cut and a disabled Branch tool are shown at the action that raised them. An ended branch is read-only. |
+| State | Previously viewed branches retain drafts, scroll positions, and disclosures within the current Session view. The directory is read on reload and reconnect; branch history is read when opened. |
 
 
 #### State outside the window
@@ -1172,7 +1171,7 @@ The browser continues to use the same routes, App Server operations, and
 browser-local preferences described in §4.
 
 ```text
-Workspace sidebar | Open Session tabs                 | Lines / extensions
+Workspace     [+] | Current Session title             | Lines / extensions
                   | User message                      |
                   | --- Reasoning · Duration > ---   |
                   | Execution summary >              |
@@ -1184,8 +1183,7 @@ Compact: sidebar drawer and on-demand detail panel
 ```
 
 ```text
-Dim                         [×]
-[+ New session]
+Dim                     [×] [+]
 [Search sessions]     [Filters]
 v workspace                 [+]
   Current session
@@ -1218,13 +1216,29 @@ revealed with Show older sessions. Expand and collapse slide the child rows
 under the fixed heading and honor reduced motion. The filter can show running
 Sessions only. The list uses the browser's saved sort by activity or creation.
 The desktop sidebar can be resized by dragging its edge or using arrow keys
-on the separator. The tab strip switches among opened Sessions. Closing a tab
-leaves the Session in the sidebar and leaves any running work attached to its
-Session. Opening a Session by URL selects its tab.
+on the separator. The workspace shows one Session at a time. Selecting a
+Session in the sidebar, following a Session link, or using browser history
+replaces the current conversation without stopping any running Session.
+Drafts and scroll positions belong to the current Session view, not the sidebar.
 Settings and Archived sessions are in the sidebar footer, below the scrollable
 Session List. In the narrow layout, selecting either closes the sidebar drawer.
 
-User messages and assistant replies read in order in a centered text column.
+The desktop directory and conversation have aligned title bars. The directory
+header holds New session; when the sidebar is collapsed or becomes a drawer,
+the conversation header also makes that action available. The active row uses
+a tinted background distinct from hover. The transcript and composer share a
+centered column, with user messages aligned to its trailing edge.
+
+```text
+Dim       [Hide] [New]  |  Session title
+-----------------------+---------------------------------------
+[Search]      [Filter] |           [User message]
+Workspace              |     Assistant reply
+  Selected Session     |
+                       |     [ Composer                 Send ]
+Archived / Settings    |
+```
+
 Reasoning and consecutive tool calls have separate disclosures. The reasoning
 row shows an excerpt and elapsed time when available. The tool group shows
 counts by operation. Expanding it pushes subsequent messages down and reveals compact rows in timeline order
@@ -1250,8 +1264,8 @@ loaded user messages and jumps to their location in the current line. The Web
 uses TanStack Virtual with stable row keys to keep the visible row in place
 when older history arrives. Incoming output follows the end while the reader
 is there. When the reader scrolls away, a jump-to-latest action becomes
-available. It returns to the end and resumes following. Expansion and tab
-switches must preserve the reader's position. The outline, execution summary,
+available. It returns to the end and resumes following. Expansion and switches
+between branches of the current Session preserve the reader's position. The outline, execution summary,
 and jump action are all keyboard accessible. The extension menu opens a panel
 beside the conversation and follows the [extension binding contract](client-ui-extensions.md).
 

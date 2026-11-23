@@ -1,5 +1,5 @@
 import { Button, Popover } from "@heroui/react"
-import { Archive, ArrowDownUp, ChevronRight, Folder, GitBranch, GitFork, Monitor, Plus, Search, Settings } from "lucide-react"
+import { Archive, ArrowDownUp, ChevronRight, Folder, GitBranch, GitFork, MessageSquare, Plus, Search, Settings } from "lucide-react"
 import { useCallback, useId, useState } from "react"
 import { sortKey } from "../components/sidebar-sort"
 import { ROOT_BRANCH_ID, type SessionSummary } from "../rpc/protocol"
@@ -78,7 +78,6 @@ export function SessionDirectory({ workspaces, members, openMember, active, phas
   }).sort((left, right) => bySort(left.rows[0]!.session, right.rows[0]!.session))
 
   return <>
-    <button type="button" className="rw-sidebar-action rw-new-button" onClick={() => newSession()}><Plus size={16} aria-hidden="true" /> New session</button>
     <div className="rw-directory-controls">
       <label className="rw-directory-search">
         <Search size={15} aria-hidden="true" />
@@ -170,7 +169,7 @@ function SessionGroup({ workspace, rows, active, searching, phase, expandedSessi
             <div className="rw-directory-row-main">
               <button className="rw-directory-session" type="button" aria-label={title} aria-description={session.running ? "Running" : undefined}
                 aria-current={active === sessionId && activeBranch === undefined ? "page" : undefined} onClick={() => select(sessionId)}>
-                <Monitor className="rw-session-icon" size={15} aria-hidden="true" />
+                <MessageSquare className="rw-session-icon" size={14} aria-hidden="true" />
                 <span className="rw-session-copy"><span>{title}</span>{preview && <small>{preview}</small>}</span>
                 {session.running && <span className="rw-live" aria-hidden="true" />}
               </button>
