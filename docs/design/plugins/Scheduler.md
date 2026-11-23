@@ -109,7 +109,7 @@ let receipt = sessions
 - `pluginFiles` ([#2016](https://github.com/arcships/dim/issues/2016)): the by-name text update and read for `scheduler/runs.json`, `scheduler/wakeups.json` and `scheduler/loops.json`, under each file's lock.
 - `processActivity` ([#2021](https://github.com/arcships/dim/issues/2021)): `activated` before background work, and `hold`/`release` around accepted deliveries.
 - `managementMethods` ([#2021](https://github.com/arcships/dim/issues/2021)): `register` for the `schedule` namespace.
-- `SessionScope` ([#2025](https://github.com/arcships/dim/issues/2025)): `config` and `identity` for the Session part.
+- `SessionScope` ([#2025](https://github.com/arcships/dim/issues/2025)): `config` and `identity` for the Session part. The deleted `SessionConfig` and `SessionIdentity` names are not used.
 - `sessionMethods`, `toolRegistry` and `guideEntries` ([#2026](https://github.com/arcships/dim/issues/2026)): register `session.loop.*`, the three tools and the guide entry.
 
 ### Operations
@@ -135,6 +135,8 @@ The job operations are the `scheduleJobs` data face; the `schedule` tool and the
 | `listLoops` | One Session branch's loops | `{sessionId, branchId?}` | `{loops}` | None | `invalid`, `storage`, `closed` |
 
 A job's target is data: `{type: "session", sessionId, branchId, inputMode?}` or `{type: "launch", cwd, agentId?, policy?, maxRunMinutes?}`. Only a management create or update may set a launch target; the tool's create and update set the calling Session and branch. A job stores its revision; an update reads the stored job under the Settings change and replaces the fields the caller sent. The job's submission ids are `scheduler:<runId>`, `wakeup:<wakeupId>` and `loop:<loopId>:<round>`.
+
+The `scheduleJobs` face has these eight operations and no `call` action menu. The `schedule.*` namespace maps `list` → `list`, `save` → `create` or `update`, `delete` → `delete`, `set_enabled` → `setEnabled`, `run_now` → `runNow`, `history` → `history`; `watch` is removed. The `schedule` tool maps its `list`/`get`/`create`/`update`/`delete`/`set_enabled`/`run_now`/`history` actions to the same eight operations.
 
 ### Errors
 
@@ -176,7 +178,7 @@ A loop is a Scheduler record whose rounds are ordinary queued inputs of one bran
 
 - A launch target's Session belongs to Agents; the Scheduler record owns the stop time and retention. The record is the settlement: `stop` at the deadline, `delete` at retention, and a disabled row's existing launch is stopped at the next load.
 - The `schedule.*` namespace and the `wakeup`/`loop` tools are registration points, not facades: they map client or model arguments to the owner's operations, and the operations keep the business meaning.
-- `session.wakeup.*` is removed because no client ships; the `wakeup` tool gains `list` and `cancel`. `session.loop.*` stays because CLI, ACP and web call it.
+- `session.wakeup.*`, `schedule.watch`, the `loops` and `wakeups` catalog names, and the `source: "Scheduler"` Session notices are removed: no client ships for the first three, and the Scheduler writes no notification. The `wakeup` tool gains `list` and `cancel`; `session.loop.*` stays because CLI, ACP and web call it.
 
 ## Verification
 

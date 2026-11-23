@@ -111,6 +111,7 @@ let all = hub.list(ListRequest { session_id: None });
 - `sessionFiles` ([#2018](https://github.com/arcships/dim/issues/2018)): `put` for a body over 5120 bytes; the reply must name what the read tool opens.
 - `pluginFiles` ([#2016](https://github.com/arcships/dim/issues/2016)): the by-name text update and read for `eventhub/subscriptions.json`, under the file's lock.
 - `processActivity` ([#2021](https://github.com/arcships/dim/issues/2021)): `hold` and `release` for accepted publish and subscription work, and `activated` before the reconciliation reads the Sessions.
+- `SessionScope` ([#2025](https://github.com/arcships/dim/issues/2025)): `identity` for the `events` tool's own Session id; the deleted `SessionIdentity` name is not used.
 - `guideEntries`, `toolRegistry` and `partRegistry`: the registration points the Session part uses; they add no operation.
 
 ### Operations
@@ -204,6 +205,7 @@ Flow tests on the owner:
 - **SessionFiles (#2018):** `put` answers the value the read tool opens for a Session file — a path, or a file id the read tool accepts. EventHub carries that value in the `dim-event` marker; `{fileId, size}` alone does not let the model read the body.
 - **PluginFiles (#2016):** the by-name text update and read for the owner's own file, with the lock held across the caller's change; no scope object.
 - **ServerControl (#2021):** `hold`/`release` ids for accepted publish and subscribe work, and `activated` for the reconciliation. EventHub does not hold a `ProcessHold` guard.
+- **SessionScope (#2025):** `identity` for the `events` tool's own Session id; `SessionIdentity` is removed by #2025.
 
 ## Binding appendix
 
