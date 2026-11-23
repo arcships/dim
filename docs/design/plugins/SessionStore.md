@@ -30,12 +30,11 @@ Callers keep:
 | --- | --- | --- |
 | Create an admitted Session and its optional worktree association | No: the rows, the owner row, the main branch, the catalog row and the association are one transaction; a partial write would publish a Session without its rows or an association without its Session | `create` |
 | Close a Session, then remove its output directories and rows | No: output removal, visible rows and Timeline rows must run under the Session exclusion and in this order; a caller composing them could delete a row a concurrent creation still names | `delete` |
-| Copy a source Session's rows at a cut with the source's exact configuration text | No: the copy is bounded transactions; parsing and re-serializing the text would change bytes | `fork` |
+| Copy a source Session's rows at a cut, deciding the target text from the source's exact text | No: the source text must be read and the target text written in one transaction, and the lifecycle owner's decision must run under the fork's exclusion | `fork` with a text callback |
 | Read a stored Session's creation origin and leader link for an attach reply | No: the caller has no row access | `creationRecord` |
 | Read the Agent that owns a stored Session before its delete notice | No: the caller has no row access | `owner` |
 | Ask whether an id has stored rows without loading a Session | No: the check spans five tables | `hasRecords` |
 | Read a stored Session's configuration without loading the Session | No: the caller has no row access and must not parse a stored record | `sessionConfig` |
-| Read the configuration text a fork copies | No: the text must be copied byte for byte | `sessionConfigText` |
 | List stored Sessions as one page, filtered and ordered by the storage contract | No: the page is a consistent read over the catalog row, the Session row and the title | `catalog` |
 | Read a Session's stored history, loaded or not | No: the caller has no Timeline row access | `query` |
 | Read the Session's grants | No: the caller has no row access | `grants` |
@@ -63,8 +62,12 @@ store.create(Create {
 Agents forks and deletes; both mistakes are the caller's to fix, and a concurrent deletion is not an error the caller retries.
 
 ```rust
-let source_text = store.sessionConfigText(ForkSource { id: source }, cancelled.clone()).await?;
-store.fork(Fork { source, id: fork, at, config_text: source_text.config_text }, cancelled).await?;
+// The source text arrives in the callback; the initialTitle decision runs under the fork's exclusion.
+let text: TextFn = Arc::new(move |source: String| {
+    let next = strip_initial_title(&source); // lifecycle owner's decision
+    Box::pin(async move { Ok(next) })
+});
+store.fork(Fork { source, id: fork, at }, text, cancelled).await?;
 let removed = store.delete(Delete { id }, cancelled).await?;
 ```
 
@@ -93,7 +96,7 @@ store.removeWorktree(Directory { repository, root }, remove, cancelled.clone()).
 
 ### Dependencies
 
-The engine's data face `sqliteStorage` for every row read and write and for the Timeline batches. The file owner `sessionFiles` for the Session file steps a delete releases. Neither dependency crosses back into SessionStore. The assembly provides both; deployment chooses the instance.
+The engine's crate-private operations for every row read and write and for the Timeline batches; `sqliteStorage` is not a service face. The file owner `sessionFiles` for the Session file steps a delete releases. Neither dependency crosses back into SessionStore. The assembly provides both; deployment chooses the instance.
 
 ### Operations
 
@@ -103,12 +106,11 @@ Every operation takes one request object and answers one reply object. Writes ar
 | --- | --- | --- | --- | --- | --- |
 | `create` | Write one admitted Session and its optional worktree association | `{id, config, agentId, protocolVersion, leader?, origin, worktree?}` | `{}` | Before the transaction starts; a dropped future does not undo a commit | `invalid`, `workspace_missing`, `storage` |
 | `delete` | Remove a closed Session's output, visible rows and Timeline rows | `{id}` | `{hadRows}` | Before the first step; after the first commit the steps run to their end | `storage` |
-| `fork` | Copy a source's rows at a cut with the supplied configuration text | `{source, id, at, configText}` | `{}` | Before the first transaction | `invalid`, `storage` |
+| `fork` | Copy a source's rows at a cut, with the target text decided from the source text under the fork's exclusion | `{source, id, at}` + `text` | `{}` | Before the first transaction; the callback's future is dropped | `invalid`, `rejected`, `storage` |
 | `creationRecord` | One Session's origin and leader link | `{id}` | `{origin, leader?}` | None | `not_found`, `storage` |
 | `owner` | The Agent that owns a stored Session | `{id}` | `{agentId?}` | None | `storage` |
 | `hasRecords` | Whether an id has any stored row | `{id}` | `{exists}` | None | `storage` |
 | `sessionConfig` | A stored Session's decoded configuration | `{id}` | `{config?}` | None | `not_found`, `storage` |
-| `sessionConfigText` | A stored Session's configuration text, byte for byte | `{id}` | `{configText?}` | None | `not_found`, `storage` |
 | `catalog` | One stored Session page | `{request, agent?, version, hosts, closed}` | the stored page | While the page is read | `invalid`, `cancelled`, `storage` |
 | `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{scope, query, page?}` | the query result | While the page is read | `storage`, `cancelled` |
 | `grants` | The Session's grant set | `{id}` | `{grants}` | None | `storage` |
@@ -133,7 +135,7 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `workspace_missing` | The creation's `cwd` no longer is a directory; the caller reports the failed creation and discards the worktree |
 | `not_found` | No stored Session has the id; the caller decides whether that is a business error or an answer |
 | `in_use` | A Session association or a stored workspace still names the directory; delete that Session or refuse the removal |
-| `rejected` | The caller's change or removal step refused with its own `code` and `message`; the title or the record is unchanged and the caller acts on that code |
+| `rejected` | The caller's change, text or removal step refused with its own `code` and `message`; nothing was written and the caller acts on that code |
 | `cancelled` | The caller stopped the read; nothing changed |
 | `closed` | This generation is unloading; call the replacement generation |
 | `storage` | The store failed; the caller reports the failure and keeps the Session or worktree for a retry |
@@ -144,8 +146,8 @@ Every operation takes one request object and answers one reply object. Writes ar
 | --- | --- | --- | --- | --- | --- |
 | `create` | Validate the id and the workspace, take the exclusion, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller keeps the id it supplied and decides whether to publish or delete the Session | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
 | `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove visible and Timeline rows, schedule the file sweep | Before the first commit: every row stays. After: the steps run to their end | The work continues under the owner's task; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
-| `fork` | Take the exclusion, copy in bounded transactions, write the target row with the supplied text, commit | Before the first copy | The copy continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
-| `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `sessionConfigText`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
+| `fork` | Take the exclusion, read the source text, call `text`, copy in bounded transactions with the returned text, write the target row, commit | Before the first copy; a refused text step copies nothing | The copy continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
+| `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
 | `catalog`, `query` | One consistent read under the caller's token | The read stops; no partial page | Nothing to release | Pending reads end `cancelled` | SessionStore |
 | `addGrant`, `removeGrant`, `setLanguage`, `associateWorktree` | One write transaction | None after it starts | The write completes; the reply may be lost | Admitted writes end before close | SessionStore |
 | `setTitle` | Admit the write behind earlier admitted writes, read the current title, call `change` under the serialization, write the returned title as revision + 1, commit, announce, answer the revision | Dropping the reply never cancels the admitted write; a change that refuses leaves the title unchanged | The change callback is revoked before it returns; the admitted write fails and the title stays | Close stops admission, waits for every admitted write | SessionStore; the change computes only |
@@ -153,7 +155,7 @@ Every operation takes one request object and answers one reply object. Writes ar
 
 ## Exceptions with reasons
 
-- `create` and `fork` take the caller's already-validated configuration and the fork text: validating the protocol, the collaboration role and the cut belongs to the Session lifecycle owner, and re-serializing the text would change bytes.
+- `create` takes the caller's already-validated configuration; `fork` reads the source text itself and calls the caller's text step under the fork's exclusion, so the lifecycle owner's `initialTitle` decision cannot race the copy and the copied bytes stay the source's text.
 - `delete` does not close the Session, remove its Agent admission slot or remove the worktree: closing is Agents', and a managed worktree is removed by ManagedWorktrees under `removeWorktree`.
 - `setTitle` runs the caller's change under the owner's serialization: the change only computes the next title from the current title and revision, and returns its own refusal; the reply may be lost, so the caller re-reads rather than assumes failure.
 - `removeWorktree` runs ManagedWorktrees' removal step under the Session exclusion: the directory is that owner's resource, and the checks and the record deletion cannot interleave with a Session creation that would point into the removed root. The caller must not call SessionStore operations from the step; a failed or cancelled step keeps the record, and a row unload or owner close keeps it too.
@@ -165,7 +167,7 @@ Flow tests on the owner:
 
 - `create` writes the Session, the owner, the main branch, the catalog row and the worktree association together; a failed association writes nothing.
 - `delete` removes output first, then the rows; a failure before the first commit leaves every row; a concurrent creation waits for an in-flight removal and then either sees the surviving directory or fails on the missing workspace.
-- `fork` copies the supplied text unchanged and never parses it.
+- `fork` calls the text step with the source text, copies the returned text unchanged, and a refused step copies nothing.
 - `addGrant` on a missing Session answers `not_found`; `removeGrant` on an absent grant answers success; a read grant never downgrades a write grant.
 - The change receives the current title, its source and revision; a change that returns `Rejected` leaves the title and revision unchanged; concurrent changes commit in admission order and each announces its revision; a dropped reply still commits and announces; close waits for the admitted write.
 - `removeWorktree` answers `in_use` while an association or a stored workspace remains; a failed or cancelled removal keeps the record; a successful removal deletes it; a concurrent creation waits for the removal and then either associates with the surviving directory or fails on the missing workspace.
@@ -240,6 +242,11 @@ pub struct TitleState {
     pub revision: u64,
     pub title: Option<Title>,
 }
+
+/// The caller's fork decision: the source's exact configuration text in, the target's text or its own refusal out.
+pub type TextFn = Arc<
+    dyn Fn(String) -> rutis::host::BoxFuture<'static, Result<String, Rejected>> + Send + Sync,
+>;
 
 /// The caller's decision: the current title and revision in, the next title (none clears) or its own refusal out.
 pub type ChangeFn = Arc<
@@ -335,6 +342,7 @@ impl SessionStore {
         &self,
         caller: &Ctx,
         request: Fork,
+        text: TextFn,
         cancelled: CancelledFn,
     ) -> Result<(), StoreError> {
         // ...
