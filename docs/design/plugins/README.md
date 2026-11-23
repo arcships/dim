@@ -13,6 +13,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Context facts](ContextFacts.md) (owner contract) | — | the model's limits and token counting behind `contextFacts` | — | [#2025](https://github.com/arcships/dim/issues/2025) |
 | [Context projection](ContextProjection.md) (owner contract) | — | — | the branch's context fold and recovery snapshots behind `contextProjection` | [#2025](https://github.com/arcships/dim/issues/2025) |
 | [Summary strategy](SummaryStrategy.md) (owner contract) | — | the summary policy for compaction behind `summaryStrategy` | — | [#2025](https://github.com/arcships/dim/issues/2025) |
+| [File access facts](FileAccessFacts.md) (owner contract) | — | the Session's resolved file facts and confirmed roots behind `fileAccessFacts` | — | [#2025](https://github.com/arcships/dim/issues/2025) |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
