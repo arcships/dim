@@ -2,6 +2,167 @@
 
 Status: Draft, aligned with the maintainer on 2026-10-27. Requirements: [plugin management](../plugin-management.md) ([#432](https://github.com/arcships/dim/issues/432)). Issues: [#3](https://github.com/arcships/dim/issues/3), [#384](https://github.com/arcships/dim/issues/384). Scope: [ADR 002](../../adr/002-plugin-scope.md) (process: installation is per host). Language: Rust. Milestone: M1 for the parts marked in §0.
 
+## Target contract
+
+Scope: process, with a Session tool part. Issue: #2022.
+
+The owners are `PluginManager` (process) and `PluginTools` (Session). `Owners` and the in-memory content refusals are private parts of `PluginManager`. The loader's rows are rutis-loader's state and are outside this contract; `UiExtensions` owns the UI content and is outside this contract. The feature's manifest, `plugins.json` format, default configuration and install/update/remove behavior stay as this document describes.
+
+### Use and scope: responsibility split
+
+`PluginManager` owns:
+
+- **Package records.** `plugins.json`, the default configuration, the plugin directories, the installed name/version/source and the enabled/disabled state.
+- **Package operations.** `plugin.list`, `plugin.install`, `plugin.enable`, `plugin.disable`, `plugin.reload`, `plugin.update`, `plugin.remove`.
+- **Content registration.** The manifest's MCP, Hooks and Skills content is given to those owners; the UI content is given to `UiExtensions`. The refusal is a value from the content owner and is kept for the package.
+- **Code rows.** The plugin code rows it creates, turns on, replaces and removes through rutis-loader; the loader is a separate owner and its data face is not part of this contract.
+- **Runtime acquisition.** The Node and Python runtimes a plugin declares are requested from `RuntimeManager`; the package record does not own the runtime.
+
+`PluginTools` owns:
+
+- **The `plugin` tool.** It maps the model's command to one process operation and returns the tool result. It holds the process owner's operation or callback, not the `Manager` object.
+
+Callers keep:
+
+- The plugin package's manifest, files and lock; `PluginManager` installs and records them.
+- The content owners' documents and refusal rules; `PluginManager` passes the manifest content and reports the refusal.
+- The model's choice to use the `plugin` tool and the client's choice to install or enable a package.
+- The loader's row state and reloads; rutis-loader owns them.
+
+| Requirement (callers) | Compose from existing operations without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| List, install, update, remove, enable, disable or reload a package | No: the records, directory, lock and content registration are `PluginManager`'s state | `plugin.*` operations |
+| Install a package's code and content atomically | No: the loader rows, package record and content registration must be settled together | the install/update/remove operations; the owner rolls back the package record when the content is refused |
+| Read or change a package's content | No: the content belongs to the MCP, Hooks, Skills or UI owner | the content owners' operations; `PluginManager` only registers and withdraws |
+| Run a plugin command from the model | No: the tool needs the process owner's operation, not a package record | the `plugin` tool; `PluginTools` calls the operation |
+| Start the runtime a package declares | No: the runtime is another owner's resource | `RuntimeManager`; `PluginManager` records the requirement |
+
+### Caller example
+
+The local client installs and enables a package:
+
+```rust
+let listed = plugin.list().await?;
+let installed = plugin.install(source, cancelled).await?; // progress is an owner value
+plugin.enable(installed.name, cancelled).await?;
+```
+
+The model's tool:
+
+```rust
+let result = plugin_tool.call("enable", args, cancelled).await?;
+// the owner records the change; the tool returns the owner's value
+```
+
+`PluginManager` registers content during install:
+
+```rust
+let refusal = mcp.register(ctx, plugin, dir, document).await?;
+if let Some(reason) = refusal {
+    rollback_package_record(plugin, reason);
+}
+```
+
+### Own contract
+
+#### Dependencies
+
+`PluginManager` uses FileStorage or PluginFiles for `plugins.json` and the package files (#2080/#2016), `RuntimeManager` for the npm/Python runtime (#2019), rutis-loader for the code rows (out of scope), MCP/Hooks/Skills/UiExtensions for content, and the management-methods mechanism of #2095. `PluginTools` uses `ToolRegistry` (#2026) and the process owner's operation or callback.
+
+#### Operations
+
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `plugin.list` | The installed packages and their state | `{}` | `{packages}` | None | `closed` |
+| `plugin.install` | Install a local path or Git source | `{source, name?, lock?}` | `{package, progress?}` | Accepted install settles or rolls back | `invalid_source`, `invalid_manifest`, `exists`, `load_failed`, `content_refused`, `restart_required`, `write_failed`, `closed` |
+| `plugin.enable` | Make one installed package the name's active package | `{name, version?}` | `{}` | Accepted operation settles | `missing`, `load_failed`, `content_refused`, `restart_required`, `closed` |
+| `plugin.disable` | Turn a package name off | `{name}` | `{}` | Accepted operation settles | `missing`, `restart_required`, `closed` |
+| `plugin.reload` | Reload a package's rows | `{name}` | `{}` | Accepted operation settles | `missing`, `load_failed`, `content_refused`, `closed` |
+| `plugin.update` | Update a package to a source revision | `{name, source?, lock?}` | `{package, progress?}` | Accepted update settles or rolls back | `missing`, `invalid_source`, `load_failed`, `content_refused`, `write_failed`, `closed` |
+| `plugin.remove` | Remove a package | `{name, version?}` | `{}` | Accepted remove settles or restores | `missing`, `load_failed`, `write_failed`, `closed` |
+| Startup reconcile | Remove directories and records that are not installed; restore the default configuration | internal | — | None | `record_read`, `record_write`, `cleanup` |
+| Content registration | Register or withdraw a package's MCP, Hooks, Skills and UI content | internal | `refusal` | The owner's content call can be cancelled | the content owners' refusals are values |
+| `plugin` tool | Map one model command to a process operation | `{command, args}` | tool result content | The tool call's cancel stops the operation | `usage`, the owner's errors |
+
+#### Errors
+
+| Kind | What the caller does next |
+| --- | --- |
+| `invalid_source`, `invalid_manifest` | Fix the source or manifest; nothing was installed |
+| `exists`, `missing` | Re-read the list; choose another name/version or install first |
+| `load_failed`, `restart_required` | The package record is written but the rows did not load; report the required restart/reload |
+| `content_refused` | The content owner refused; the package record is rolled back or the content is left out as the owner states |
+| `write_failed` | The record or files could not settle; report the partial state and its recovery |
+| `usage` | Fix the tool command |
+| `closed` | The owner is unloading; use the replacement generation |
+
+#### Flows
+
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| Install/update | Fetch, validate, write the package directory, register content, write the record, load the rows | Accepted work settles or rolls back; no half record | The caller's row unload does not undo an accepted package | In-flight work settles; the next generation reads the records | Files and records by `PluginManager`; rows by rutis-loader; content by the owners |
+| Enable/disable/reload | Write the record, replace or reload the loader rows, withdraw/register content | Accepted operation settles | The caller's row unload leaves the package state | New calls refused; the next generation reads the records | Record by `PluginManager`; rows by rutis-loader |
+| Remove | Withdraw content, remove the rows, remove the directory, remove the record | Accepted remove settles or restores | The caller's row unload leaves the package state | In-flight removes settle | Content by the owners; rows by rutis-loader; files/record by `PluginManager` |
+| `plugin` tool | Dispatch the command to the process operation and return its value | The tool call's cancel stops the operation | The Session row unload stops its tool | Pending calls end `closed` | Operation by `PluginManager`; tool result by `PluginTools` |
+
+### Exceptions with reasons
+
+- The loader's rows are rutis-loader's state; this contract does not define its data face. The loader is outside the plugin board's scope.
+- `UiExtensions` owns the UI content; `PluginManager` only gives it the manifest content. It is outside this contract.
+- `Owners` is a private object of `PluginManager`; its content refusals are values kept by the owner.
+- `PluginTools` holds the process owner's operation or callback, not the `Manager` object. The Session part is registered by the process row and withdrawn with it; the operation is the shared lifecycle boundary.
+- The `plugin.*` methods are management methods (#2095), not a second `pluginService` face.
+- The package's code rows are loaded by rutis-loader; `PluginManager` does not hold a row handle. The loader returns row values/status.
+
+### Rule check
+
+| Rule | Application |
+| --- | --- |
+| §1 parts and Capabilities | `PluginManager` is one process part; `PluginTools` is a Session part. Neither folds Timeline state; they are not Capabilities. |
+| §2 scopes | Package records and operations are process; the tool is Session. |
+| §3 orthogonality | The content owners decide content; the loader decides rows; `PluginManager` composes their operations and owns the package record. |
+| §4 rule 1 | No plugin command Timeline event. |
+| §4 rule 2 | No handoff: the `Manager` object does not reach the Session; the content and row values are data. |
+| §4 rule 3 | Installs run in the owner's tasks; the model tool runs in the Session's tool task. |
+| §4 rule 4 | The vocabulary is packages, records, content refusals and rows; no client or model business appears. |
+| §4 rule 5 | No batches. |
+| §4 rule 6 | The tool result is the only text the model reads; the owner's install output is a value. |
+| §4 rule 7 | Callers use `plugin.*`, the `plugin` tool and the content owners; no caller holds `Manager` or `Owners`. |
+| §4 rule 8 | Requirements to #2016, #2019, #2026, #2027, #2032, #2095 are listed below. |
+| §4 rule 9 | No Timeline fact. |
+| §7 callbacks and ids | Package names/versions and progress values cross; the `Manager` object does not. The tool gets an operation/callback. |
+| §7 one change | The `Manager` handoff and the public `PluginTools` field are removed in the same change that migrates the tool. |
+| ADR 002 D1 | Process `PluginManager`; Session `PluginTools`. |
+| ADR 002 D2 | No wrapper: `plugin.*` are management methods of the owner; no facade. |
+| ADR 002 D3 | Extensions depend on the plugin manager; the loader and content owners are separate. |
+| ADR 002 D4 | `plugins.json` and the default configuration are the owner's structural configuration. |
+| ADR 002 D5 | Operations, values and ids are language-neutral; the Rust binding is the appendix. |
+
+### Requirements raised to mechanism owners
+
+- #2016: `PluginFiles` must provide the package file reads/writes and the `plugins.json` record operations the owner uses; if the record stays a FileStorage `update`, the FileStorage contract covers it.
+- #2019: `RuntimeManager` must provide the npm/Python runtime install/start/settle operations the package declares; the plugin manager records the requirement.
+- #2026: `ToolRegistry.register` must accept the `plugin` tool source with a process operation/callback.
+- #2027: the `plugin` tool's call is an ordinary tool call; Permission decides it; no plugin-specific approval is added.
+- #2032: HostPlatform must provide the git source fetch with cancellation; npm is RuntimeManager's.
+- #2095: `ManagementMethods.register` must host the `plugin.*` namespace; the local client and the `dimcode plugin` commands use it.
+
+### Binding appendix
+
+`plugin.*` are management methods (#2095) on `PluginManager`; `PluginTools` registers the `plugin` tool through #2026. The `Manager` is `pub(crate)`; the Session tool holds an operation/callback.
+
+```rust
+tool_registry.register(
+    ctx,
+    "plugin",
+    plugin_tool_spec(),
+    move |call, cancelled| manager.call(call.command, call.args, cancelled),
+);
+```
+
+`manager` is the process owner's operation/callback, not the `Manager` object. The request, reply and error types are the typed structures in `plugin_manager.rs` and the management module. The `PluginTools` `manager` field is deleted; the install/update/remove result values remain.
+
+
 PluginManager keeps the plugin configuration of a host: which plugins are installed, where they came from, which plugin each name uses, and which names are turned off. It keeps this configuration in its own file, `plugins.json`, in Dim's own format. It keeps no runtime state, except, in memory, the content it refused itself (§3.7). Whether a plugin is loaded, running or failed is rutis' state, read from rutis-loader. What content an owner holds (skills, MCP servers, hooks, client UI) is that owner's state. PluginManager carries out a configuration change by giving commands to the owners: rutis-loader for plugin code, and SkillsCatalog, Mcp, Hooks and UiExtensions for content. Each owner decides and keeps its own state.
 
 A plugin is a directory with a manifest. It may carry code (a rutis plugin in TypeScript or Python), content (skills, MCP configuration, hooks, client UI), or both. Plugins are identified by **name**. Several plugins with the same name may be installed, but only one of them is used at a time. Turning another one on replaces the one in use. This is how a built-in plugin is replaced.

@@ -2,6 +2,192 @@
 
 Status: Ready ([#143](https://github.com/arcships/dim/issues/143)); maintainer decisions of 2026-10-22 and 2026-10-31 are applied (§10). Overall design: [overview](../overview.md) (Hooks). Phase: M1 (user, project and plugin sources). Language: Rust. Scope: [ADR 002](../../adr/002-plugin-scope.md) (process + Session + branch).
 
+## Target contract
+
+Scope: process, Session and branch. Issue: #2022.
+
+The owners are `HooksSettings` (process), `HooksSession` (Session) and `HooksBranch` (branch). `HooksRuntime` is a private Session service; `HookSourcesHost` is the agent-crate port that binds the owner's one reader. The feature's event points, document shape and script protocol stay as this document describes; this section replaces the public-surface decisions.
+
+### Use and scope: responsibility split
+
+`HooksSettings` owns:
+
+- **Sources.** The Settings documents `hooks` (user), `hooks-projects` and `hooks-plugins`; `.dimcode/hooks.json` is read through FileStorage under the project root Settings authorizes.
+- **Content registration.** The hook document a plugin package carries, the holding plugin and its refusal.
+- **One reader.** `sources(cwd)` resolves the user, project and plugin sources into the value a hook point reads. The management methods and the agent-crate port use this same reader.
+- **Client operations.** `hooks.catalog`, `hooks.save` and `hooks.set_enabled`.
+
+`HooksSession` owns:
+
+- **Command execution.** The Session's `HooksRuntime`, the command processes, their stdin payloads, timeouts, cancellation and settlement.
+- **Submit check.** The `hooks` check registered with `submitChecks` for operator input. The check writes no input; it returns the context or a block.
+- **Source read.** It calls the `HookSourcesHost` binding; it does not build a second reader.
+
+`HooksBranch` owns:
+
+- **Hook decisions.** Folding the public events into the six hook points, the Permission advisor, the Approval answers and the branch input that carries hook context or diagnostics.
+- **Observed state.** The branch-input writes are the only state it adds; the decision itself is the owner's.
+
+Callers keep:
+
+- The hook document's business meaning and the command scripts.
+- The admission, approval and input operations: Permission, Approval and the operator-input entries own them; Hooks only registers a check or advice and answers through their operations.
+- The context the model reads; `HooksSession`/`HooksBranch` contribute through the owners' inputs and tool results.
+
+| Requirement (callers) | Compose from existing operations without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| Register a package's hook document | No: the content registry and refusal are `HooksSettings`' state | `register`, `withdraw`, `plugins`, `refusal` |
+| Client reads and edits hooks | No: the merged catalog and the revision write are the owner's state | `hooks.catalog`, `hooks.save`, `hooks.set_enabled` |
+| A hook point reads the current sources | No: the project file read and the source merge are the owner's knowledge | `sources(cwd)` |
+| The Session runs a hook command | No: the process, timeout and settlement are the Session's resource | `HooksSession`'s runner; the command is private |
+| Operator input is checked before it is written | No: the check must run before the entry writes, and the entry owner provides the registration point | `submitChecks.register("hooks")`; the check returns a value |
+| A tool call gets hook advice | No: Permission owns the admission; Hooks contributes through its advisor registration | `Permission.registerAdvice`; the advisor returns deny/ask/allow |
+| Hooks answers an approval | No: Approval owns the question and the decision | `Approval.respond` |
+| Hook context or diagnostics reaches the branch | No: branch input is the branch owner's entry | `Branch.input` with source `hooks` |
+
+### Caller example
+
+`PluginManager` registers a package's hook document:
+
+```rust
+hooks.register(ctx, plugin, dir, document).await?; // refusal is a value
+```
+
+The local client:
+
+```rust
+let catalog = hooks.catalog(project, cancelled.clone()).await?;
+hooks.save(revision, document, cancelled).await?; // conflict -> re-read
+```
+
+`HooksSession` registers the submit check and runs a command:
+
+```rust
+submit_checks.register(ctx, "hooks", move |input, cancelled| {
+    let sources = host.read(cwd, cancelled.clone());
+    run_user_prompt_submit(sources, input, cancelled)
+});
+```
+
+`HooksBranch` registers advice, answers an approval and writes an observation:
+
+```rust
+permission.register_advice(ctx, "hooks", move |call, cancelled| advise(hook_sources(), call, cancelled));
+approval.respond(approval_id, decision);
+branch.input(source, HookInput::observation(text));
+```
+
+### Own contract
+
+#### Dependencies
+
+`HooksSettings` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`) and FileStorage (`read` for `.dimcode/hooks.json`). `HooksSession` uses SessionScope (`config`, `identity`, `activated`, `closing`, `withHold`), the agent-crate `HookSourcesHost` binding, `submitChecks` and HostPlatform (`spawn`, `wait`, `kill`, `settle`). `HooksBranch` uses the branch's `HooksRuntime`, `Permission.registerAdvice`, `Approval.respond`, `Branch.input`, and the public events it folds. `HooksRuntime` is not a public service; the Session and branch parts are the same feature.
+
+#### Operations
+
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `hooksService.register` | Register a package's hooks document | `{plugin, dir, document}` | `{}` or `{refusal}` | Accepted write is not cancelled | `invalid_document`, `settings_write`, `settings_conflict`, `closed` |
+| `hooksService.withdraw` | Withdraw a package's document | `{plugin}` | `{}` | Accepted write is not cancelled | `closed` |
+| `hooksService.plugins` | The packages holding hook content | `{}` | `{plugins}` | None | `closed` |
+| `hooksService.refusal` | The refusal of a package | `{plugin}` | `{reason?}` | None | `closed` |
+| `hooksService.sources` | The merged hook sources for a cwd | `{cwd}` | `{sources, project?}` | The read can be cancelled | `unreadable`, `closed`, `cancelled` |
+| `hooks.catalog` | The client's hook catalog | `{project?}` | `{sources, entries}` | The read can be cancelled | `invalid`, `closed`, `cancelled` |
+| `hooks.save` | Save the user document at a revision | `{revision, document}` | `{revision}` | Accepted write is not cancelled | `invalid`, `conflict`, `settings_write`, `closed` |
+| `hooks.set_enabled` | Enable or disable a project source | `{project, enabled}` | `{}` | Accepted write is not cancelled | `invalid`, `conflict`, `closed` |
+| `HooksSession` runner | Run one hook command with a payload | `{hook, payload}` | `{decision, output}` | The Session's cancel kills the process tree; the owner settles | `failed`, `timeout`, `block`, `cancelled`, `closed` |
+| `HooksSession` submit check | Check operator input before it is written | `{input}` | `{context?}` or block | The entry's call cancel stops the check and its command | `block`, `warnings`, `proceed` |
+| `HooksBranch` advice | Advise a tool admission | `{call, source}` | deny/ask/allow | The admission's cancel stops the advisor | `deny`, `ask`, `allow`; failures map to allow/ask |
+| `HooksBranch` approval | Answer an approval question | `{approvalId, decision}` | `{}` | The live answer's cancel | `Approval`'s errors |
+| `HooksBranch` observation | Write hook context or diagnostics to the branch | `{input}` | `{}` | The branch close cancels the write; the owner rechecks | none; only diagnostics |
+
+The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` use it directly. The `HookSourcesHost` port is the agent-crate binding of `hooksService.sources`; the port and the data face share one reader. The `SettingsHookSources` duplicate is deleted.
+
+#### Errors
+
+| Kind | What the caller does next |
+| --- | --- |
+| `invalid_document`, `invalid`, `conflict` | Fix the document or re-read the revision; nothing was written |
+| `unreadable` | The project file cannot be read; report the source error; the user document still applies |
+| `settings_write`, `settings_conflict` | Retry after Settings is available, or report the conflict |
+| `failed` | The hook command failed; apply `onFailure` |
+| `timeout` | The handler exceeded its timeout; apply `onFailure` |
+| `block` | The hook blocked the operation; report its reason |
+| `cancelled` | The operation stopped; nothing was written |
+| `closed` | The Session or owner is unloading; use the replacement generation |
+
+#### Flows
+
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| Content register/withdraw | Validate, write the Settings document, update the content registry | The accepted write completes | The plugin row unloads; its content is withdrawn | New registrations refused; the next generation reads the documents | Settings write by `HooksSettings`; registry by `HooksSettings` |
+| `sources` | Resolve the user document, the project file under the authorized root, and plugin content; return a snapshot | The read stops; no partial source | The caller's row unload drops the read | The next call reads the new generation | Source read by `HooksSettings`; project file by FileStorage |
+| Command | Build the payload, spawn through HostPlatform, write stdin, wait with the handler timeout, settle the process tree | The cancel kills the process tree and settles it | The Session's row unload cancels its commands | Pending commands end `closed`; every process is settled | Command process by `HooksSession`; the work's future by the calling row |
+| Submit check | Read the sources, run the `UserPromptSubmit` handler, return context or block | The entry's cancel stops the check | The check registration is withdrawn with the Session row | The entry does not write after a closed check | Check by `HooksSession`; input write by the entry owner |
+| Advice | Read the sources, run the `PreToolUse` handler, return deny/ask/allow | The admission's cancel stops the advisor | The advisor registration is withdrawn with the branch | Permission's admission sees the failure mapping | Advice by `HooksBranch`; admission by Permission |
+| Approval answer | Run the `PermissionRequest` handler, call `Approval.respond` | The live answer's cancel ends the answer | The branch row unload drops the answer | Approval's own errors | Approval by Approval; answer by `HooksBranch` |
+| Observation | Write `Branch.input` with source `hooks` | The branch close stops the write | The branch row unload ends writes | The branch's input entry decides | Input by the branch owner; the hook result by `HooksBranch` |
+
+### Exceptions with reasons
+
+- `HooksRuntime` is the Session's private runner. `HooksSession` and `HooksBranch` are one feature; the command processes and their settlement stay in the Session part; the runtime has no public name.
+- `HookSourcesHost` is the agent-crate port. It binds `HooksSettings.sources`; the port and the data face share the one reader; the project file is read through FileStorage.
+- Hook commands run because they are configured; they need no host-local approval (AGENTS rule 11). `PreToolUse` only advises Permission; the tool call's approval stays with Approval.
+- `UserPromptSubmit` runs only at the operator-input entries, before the write; other inputs do not run it.
+- `HooksBranch` writes observations through `Branch.input`; it does not write the Timeline directly.
+- The `hooks.*` methods are management methods (#2095), not a second `hooksService` face.
+
+### Rule check
+
+| Rule | Application |
+| --- | --- |
+| §1 parts and Capabilities | `HooksSettings` process; `HooksSession` Session; `HooksBranch` branch. The branch part folds public events and writes branch input; it is a Capability. |
+| §2 scopes | Configuration is process; command execution and the submit check are Session; decisions and observations are branch. |
+| §3 orthogonality | The branch part uses Permission, Approval and Branch input operations; the Session part uses the Settings source through the port. |
+| §4 rule 1 | Hook commands are configuration-run commands, not agent commands; no Timeline command event. |
+| §4 rule 2 | No handoff: the runner and command processes stay in the Session; the branch uses the Session's service. |
+| §4 rule 3 | Commands wait in Hooks' tasks, never in a Dispatcher handler or under the commit lock. |
+| §4 rule 4 | The vocabulary is hook points, sources, handlers and decisions; no caller business appears. |
+| §4 rule 5 | No batches. |
+| §4 rule 6 | Hook context reaches the model only through adopted inputs or tool results. |
+| §4 rule 7 | Callers use `hooksService`, `hooks.*`, the port, the check, the advisor, Approval and Branch input; no caller holds `SettingsHookSources` or a command process. |
+| §4 rule 8 | Requirements to #2026, #2027/#2028, #2032, #2094, #2080, #2093 are listed below. |
+| §4 rule 9 | The branch input is written after the command's decision; the Timeline commit is the branch owner's. |
+| §7 callbacks and ids | The submit check and the Permission advisor are callbacks by reference; no object or handle crosses. |
+| §7 one change | The two readers are merged into one; the old `SettingsHookSources` and the session-port duplicate are deleted with the caller migration. |
+| ADR 002 D1 | Process `HooksSettings`; Session `HooksSession`; branch `HooksBranch`. |
+| ADR 002 D2 | No wrapper: `hooksService` is on `HooksSettings`; the port is a host binding, not a facade. |
+| ADR 002 D3 | Extensions depend on the Hooks owner; the agent crate uses the port. |
+| ADR 002 D4 | The hook documents are Settings sources and a FileStorage project file; no assembly business setting. |
+| ADR 002 D5 | Operations, values and callbacks are language-neutral; the Rust binding is the appendix. |
+
+### Requirements raised to mechanism owners
+
+- #2026: `submitChecks.register` must accept the `hooks` check with a value result; the operator-input entries must call it before writing.
+- #2027/#2028: `Permission.registerAdvice` must give the advisor the call source and the admission decision; `Approval.respond` must accept a decision; `Branch.input` must accept `hooks` observations.
+- #2032: HostPlatform `spawn`, `wait`, `kill`, `settle` must carry stdin, a handler timeout and tree cancellation for hook commands.
+- #2094: Settings `register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`; no new operation.
+- #2080: FileStorage `read` for `.dimcode/hooks.json`; no new operation.
+- #2093: SessionScope `config`, `identity`, `activated`, `closing`, `withHold`; no new operation.
+
+### Binding appendix
+
+`hooksService` is on `HooksSettings`; the `hooks.*` methods are registered through #2095; `HookSourcesHost` is the agent-crate port. `HooksRuntime` is `pub(crate)`.
+
+```rust
+#[rutis::service(name = "hooksService")]
+impl HooksSettings {
+    pub async fn register(&self, ctx: &Ctx, plugin: String, dir: String, document: HooksDocument, cancelled: CancelledFn) -> Result<Option<Refusal>, HooksContentError>;
+    pub async fn withdraw(&self, ctx: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), HooksContentError>;
+    pub fn plugins(&self) -> Vec<String>;
+    pub fn refusal(&self, plugin: &str) -> Option<Refusal>;
+    pub async fn sources(&self, cwd: String, cancelled: CancelledFn) -> Result<HookSources, HookSourceError>;
+}
+```
+
+The Session and branch parts keep their internal types; the port's request and reply are `{cwd}` and `HookSources`.
+
+
 Hooks runs user-configured commands at fixed points of a Session's **business operations** and hands each command's decision to the owner of that operation. Dim reads only its own hooks configuration; it does not load Claude Code or Codex hook files. For easy migration, the document shape (event names, matcher groups, command handlers, `timeout`, `onFailure`) and the script protocol (stdin JSON, exit codes, decision and output fields) follow Claude Code and Codex, so existing scripts and pasted configuration work (Appendix G).
 
 Hooks never hooks infrastructure. The withdrawn design ([#21](https://github.com/arcships/dim/issues/21)) made Timeline `before` callbacks asynchronous so a command could hold a write; that is not done, and Hooks registers no before callback. Timeline, Dispatcher, the event envelope and assembly are unchanged. Each hook point instead attaches to the business owner that already decides the operation, through that owner's public events or services:

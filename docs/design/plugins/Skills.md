@@ -2,6 +2,203 @@
 
 Status: Draft. Delivery status is tracked in the issue, not here.
 
+## Target contract
+
+Scope: process, Session and branch. Issue: #2022.
+
+The owners are `SkillsCatalog` (process), `Skills` (Session), `SkillsBranch` (branch), `SkillContent` (Session content instance) and `SkillContentInstances` (the group template). The existing installation design below is `SkillsCatalog`'s current behavior; the discovery, enablement and Session view sections of the Skills capability stay as [Skills](../../architecture/rust-agent/plugins/Skills.md) describes.
+
+### Use and scope: responsibility split
+
+`SkillsCatalog` owns:
+
+- **Roots and enablement.** The user, plugin and project Skill roots, the enabled set, the project table, the Settings sources `skills` and `skills-projects` (through the Settings owner), and the `catalog_changed` generation.
+- **Installation.** Preview, install, update, remove and the install records and files; the source fetch and the user root.
+- **Content registration.** The Skill root a plugin package carries, the holding plugin and the issues value.
+- **Reads.** The Session view value `query(cwd)` and the management methods `skills.catalog`, `skills.set_enabled`, `skills.refresh`, `skills.preview`, `skills.install`, `skills.update`, `skills.remove`, `skills.installations`.
+
+`Skills` owns:
+
+- **The Session view.** The list, descriptions and errors folded from `SkillsCatalog.query`, published as `SessionSkills`.
+- **Content instances.** The `SkillContent` rows it mounts and unmounts through `SessionScope`, and the `skill` tool, prompt source and `skills` submit check registered with the Session's registries.
+
+`SkillsBranch` owns:
+
+- **The list.** `skillsBranch.list` returns the Session's published `SessionSkills` value; the branch part does not re-query the catalog.
+- **The Prompt adoption.** When the list changes, it asks the Prompt owner to adopt the current list; it does not own the Prompt state.
+
+`SkillContent` is one immutable content instance; `SkillContentInstances` is the group template. Neither has a public surface.
+
+Callers keep:
+
+- The Skill's text, its source format and its repository selection; the installation selects and writes files, it does not author content.
+- The model's `skill` tool use and the prompt composition; the Session part contributes the tool and the prompt source.
+- The client UI around the catalog and the install preview.
+- Permission and approval of a tool call; the `skill` tool is an ordinary tool.
+
+| Requirement (callers) | Compose from existing operations without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| Register a package's Skills root | No: the root registry and issues are `SkillsCatalog`'s state | `register`, `withdraw`, `plugins`, `issues` |
+| Edit the catalog, enablement or projects | No: the merged view and the Settings write are the owner's state | `skills.catalog`, `skills.set_enabled`, `skills.refresh` |
+| Preview, install, update or remove a Skill | No: the fetch, selection, files and records are the owner's state | `skills.preview`, `skills.install`, `skills.update`, `skills.remove` |
+| Read the Session's Skills view | No: the Session owns the folded view and its generation | `SkillsCatalog.query` + `catalog_changed`; `Skills` folds `SessionSkills` |
+| Mount a Skill's content in a Session | No: the instance is a Session resource with its own lifecycle | `SessionScope.mount` with the `skill-content` group; `Skills` owns the instance |
+| List the current Skills on a branch | No: the branch must read the Session's published value, not re-query the catalog | `skillsBranch.list` |
+| Adopt a changed list into the Prompt | No: the Prompt owner owns the composition; the branch requests it | the Prompt owner's configure operation |
+| Load a Skill from the `skill` tool | No: the tool result and the content lookup are the Session's view | the `skill` tool registered by `Skills` |
+
+### Caller example
+
+`PluginManager` registers a package's Skills root:
+
+```rust
+let issues = skills_catalog.register(ctx, plugin, dir, document).await?;
+report_issues(plugin, issues); // the package is installed; the root is refused or partly scanned
+```
+
+The local client previews and installs:
+
+```rust
+let preview = skills.preview(source, selection, cancelled.clone()).await?;
+let installed = skills.install(preview.token, selection, cancelled).await?;
+```
+
+`Skills` mounts one content instance:
+
+```rust
+let content = skills_catalog.content(skill_id).await?;
+let instance = session_scope.mount("skill-content", content.id, content.data, cancelled).await?;
+tool_registry.register(ctx, "skill", skill_tool(instance));
+prompt_registry.register(ctx, "skills", skill_source(instance));
+```
+
+`SkillsBranch` reads the list and asks the Prompt owner to adopt it:
+
+```rust
+let list = session_skills.list(); // the published value
+if list.generation != seen {
+    prompt.configure(list);
+}
+```
+
+### Own contract
+
+#### Dependencies
+
+`SkillsCatalog` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`), FileStorage (`root_path`, `write`, `remove`, `list` for install files), HostPlatform (the source fetch and the user home), and the management-methods mechanism of #2095. `Skills` uses SessionScope (`mount`, `unmount`, `config`, `identity`, `activated`, `closing`), `ToolRegistry`, `PromptRegistry` and `SubmitChecks` (#2026), and the SkillsCatalog's private `query`/`catalog_changed` operations. `SkillsBranch` uses the branch's Prompt owner and the Session's published value. `SkillContent` is mounted through SessionScope; `SkillContentInstances` is its group template.
+
+#### Operations
+
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `skillsCatalog.register` | Register a package's Skill root | `{plugin, dir, document}` | `{}` or `{issues}` | Accepted write is not cancelled | `invalid_manifest`, `unreadable`, `settings_write`, `settings_conflict`, `closed` |
+| `skillsCatalog.withdraw` | Withdraw a package's root | `{plugin}` | `{}` | Accepted write is not cancelled | `closed` |
+| `skillsCatalog.plugins` | The packages holding Skill roots | `{}` | `{plugins}` | None | `closed` |
+| `skillsCatalog.issues` | The scan issues of a package | `{plugin}` | `{issues}` | None | `closed` |
+| `skillsCatalog.query` | The Session's view source for a cwd | `{cwd}` | `{skills, generation, errors}` | The read can be cancelled | `unavailable`, `closed`, `cancelled` |
+| `skills.catalog` | The client catalog | `{project?}` | `{skills, projects, invalid}` | The read can be cancelled | `invalid`, `closed`, `cancelled` |
+| `skills.set_enabled` | Enable or disable a Skill or project | `{id, enabled, project?}` | `{}` | Accepted write is not cancelled | `missing`, `invalid`, `conflict`, `closed` |
+| `skills.refresh` | Rescan the roots | `{}` | `{generation}` | None; the scan is the owner's | `closed` |
+| `skills.preview` | Preview a local or Git source | `{source, selection}` | `{token, entries, invalid}` | The read can be cancelled; the token expires | `invalid_source`, `fetch_failed`, `too_large`, `cancelled`, `closed` |
+| `skills.install` | Install the selected entries | `{token, selection}` | `{installed}` | Accepted work is not cancelled; it settles or restores | `expired`, `invalid_selection`, `exists`, `conflict`, `write_failed`, `closed` |
+| `skills.update` | Update installed entries | `{id, revision?}` | `{installed}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `conflict`, `write_failed`, `closed` |
+| `skills.remove` | Remove installed entries | `{id}` | `{}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `delete_failed`, `closed` |
+| `skills.installations` | The install records | `{}` | `{installations}` | None | `closed` |
+| `Skills` view | The `SessionSkills` value and its generation | `{}` | `{list, generation}` | The Session close stops the read | `unavailable`, `closed` |
+| `skill` tool | Read one Skill's content for the model | `{name}` | tool result content | The tool call's cancel | `unknown`, `disabled`, `unavailable`, `invalid` |
+| `skills` check | Check operator input before it is written | `{input}` | context or block | The entry's cancel | `block`, `warnings`, `proceed` |
+| `skillsBranch.list` | The branch's current list | `{}` | `{skills}` | The branch close stops the read | `unavailable`, `closed` |
+| Prompt adoption | Ask the Prompt owner to adopt the list | `{list}` | `{}` | The branch close stops the request | the Prompt owner's errors |
+
+The `SkillsCatalog`'s management methods are registered through #2095; the `skillsCatalog` data face carries the four content operations. The `query` and `catalog_changed` are the private Session-facing read; no other owner calls them. The `Skills` Session part has no public service.
+
+#### Errors
+
+| Kind | What the caller does next |
+| --- | --- |
+| `invalid_manifest`, `invalid_source`, `invalid_selection` | Fix the package, source or selection; nothing was written |
+| `unreadable`, `fetch_failed`, `too_large` | Report the source error; the catalog is unchanged |
+| `missing`, `expired`, `unmanaged` | Re-read the catalog or preview; the entry is gone or not owned |
+| `exists`, `conflict` | Re-read and decide; the write did not happen |
+| `write_failed`, `delete_failed` | The accepted work could not settle; report the partial state and its recovery |
+| `settings_write`, `settings_conflict` | Retry after Settings is available, or report the conflict |
+| `unknown`, `disabled`, `unavailable` | Report the Skill view or tool error |
+| `block`, `warnings`, `proceed` | The check's result; `block` stops the input |
+| `cancelled` | Nothing was committed; the read or preview stopped |
+| `closed` | The owner is unloading; use the replacement generation |
+
+#### Flows
+
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| Content register/withdraw | Validate the root, scan it within the limit, write the Settings document, update the registry | Accepted write completes | The plugin row unloads; its root is withdrawn | New registrations refused; the next generation reads the documents | Settings write and registry by `SkillsCatalog`; scan by `SkillsCatalog` |
+| `query` / `Skills` view | Scan the roots, fold the enabled list, publish `SessionSkills` and its generation | The read stops; the last value stays | The Session's view ends; the branch sees unavailable | The Session's view is rebuilt from the next catalog generation | Scan by `SkillsCatalog`; view by `Skills` |
+| Preview | Fetch to a bounded staging area, parse, return a token and entries | The fetch and staging stop; the token is discarded | The preview token expires with the caller | Staging is cleaned up | Staging by `SkillsCatalog` |
+| Install/update/remove | Validate the selection, write the files and records, settle the batch | Accepted work is not cancelled; it finishes or restores | The caller's row unload does not undo an accepted batch | In-flight batches settle; the next generation reads the records | Files and records by `SkillsCatalog` |
+| Content instance | `Skills` mounts the `SkillContent` child after `activated`, registers the tool and prompt source | A dropped mount unmounts the child | The Session's instances unmount | New mounts refused; every instance unmounts | Instance by `Skills` through `SessionScope.unmount` |
+| `skill` tool | Resolve the content instance and return the text | The tool call's cancel stops the read | The row unload stops its tool | Pending calls end `closed` | Content by the instance; result by the tool caller |
+| Branch list | Read the published `SessionSkills`; no catalog query | The read stops | The branch's row unload stops it | The next value is published by `Skills` | Value by `Skills`; read by `SkillsBranch` |
+| Prompt adoption | The branch asks the Prompt owner to configure the list | The branch close stops the request | The branch row unload ends the adoption | The Prompt owner's state decides | Prompt by the Prompt owner; request by `SkillsBranch` |
+
+### Exceptions with reasons
+
+- `SkillContent` is an immutable content instance mounted through `SessionScope`; its lifecycle is the Session's. `SkillContentInstances` is the group template; neither has a public name.
+- Install/update/remove do not cancel after acceptance: the files and records must finish or restore; the caller sees the batch settle or the recovery error. The design §6 wording about cancellation is corrected by this contract.
+- `SkillsCatalog.query` and `catalog_changed` are a private Session-facing read, not a public face. `Skills` owns the folded view; `SkillsBranch.list` is the public list.
+- `SkillsBranch` asks the Prompt owner's configure operation; the old `ConfigureControl` interface is deleted. The branch part does not own the Prompt state.
+- `skills.install`'s token is a value with an expiry; it is not a handle and carries no authority.
+- The `skills.*` methods are management methods (#2095), not a second `skillsCatalog` face.
+
+### Rule check
+
+| Rule | Application |
+| --- | --- |
+| §1 parts and Capabilities | `SkillsCatalog` process; `Skills` Session; `SkillsBranch` branch. The branch part folds the published list and writes no Timeline event; it is not a Capability. |
+| §2 scopes | Installation and enablement are process; the view, content instances and tool are Session; the list read is branch. |
+| §3 orthogonality | The Session part reads the catalog's private value; the branch reads the Session's published value; no catalog re-query in the branch. |
+| §4 rule 1 | No install or catalog command event; the Settings and install records are the owners' state. |
+| §4 rule 2 | No handoff: content instances are mounted by `Skills`; tokens and records are values. |
+| §4 rule 3 | Installs and previews run in the owner's tasks; the Session's view is published as a value. |
+| §4 rule 4 | The vocabulary is roots, entries, installations, generations and views; no client or package business appears. |
+| §4 rule 5 | No batches. |
+| §4 rule 6 | Skill text reaches the model only through the `skill` tool result or the prompt source; no other path. |
+| §4 rule 7 | Callers use `skillsCatalog`, `skills.*`, `skill`, `skillsBranch.list` and the Prompt configure; no caller holds `SkillContent`, `SkillContentInstances` or the catalog's private state. |
+| §4 rule 8 | Requirements to #2080, #2026, #2027, #2032, #2093, #2094 are listed below. |
+| §4 rule 9 | No Timeline fact. |
+| §7 callbacks and ids | The view generation, install token and installation id cross as values; content instances stay with the Session. |
+| §7 one change | The old `SkillsCatalogBinding`, `ConfigureControl` and public Rust-only management methods are removed in the same change that migrates every caller. |
+| ADR 002 D1 | Process `SkillsCatalog`; Session `Skills`/`SkillContent`; branch `SkillsBranch`. |
+| ADR 002 D2 | No wrapper: `skillsCatalog` is on `SkillsCatalog`; `skillsBranch` on `SkillsBranch`. |
+| ADR 002 D3 | Extensions depend on the SkillsCatalog; the Session part owns its content. |
+| ADR 002 D4 | Roots and Settings sources are structural; no assembly business setting. |
+| ADR 002 D5 | Operations, values and ids are language-neutral; the Rust binding is the appendix. |
+
+### Requirements raised to mechanism owners
+
+- #2080: FileStorage `root_path`, `write`, `remove` and `list` for the install files under the user root; no new operation.
+- #2026: `ToolRegistry.register` must accept the `skill` tool source; `PromptRegistry.register` must accept the Skills prompt source; `SubmitChecks.register` must accept the `skills` check.
+- #2027: the Prompt owner's configure operation must replace `ConfigureControl`; the branch passes the current `SessionSkills` value.
+- #2032: HostPlatform must provide the user home value and the source fetch command (git/HTTP) with cancellation.
+- #2093: SessionScope `mount`/`unmount` with the `skill-content` group and the `config`/`identity`/`activated`/`closing` values.
+- #2094: Settings `skills`/`skills-projects` sources and `SkillSettingsHost`; the existing operations cover the read and write.
+
+### Binding appendix
+
+`skillsCatalog` is on `SkillsCatalog`; `skillsBranch.list` on `SkillsBranch`; the `skills.*` methods are registered through #2095. `SkillsCatalogBinding` does not exist. `Skills`' tool, prompt source and check are private registrations; `SkillContent` is a private instance mounted through SessionScope.
+
+```rust
+#[rutis::service(name = "skillsCatalog")]
+impl SkillsCatalog {
+    pub async fn register(&self, ctx: &Ctx, plugin: String, dir: String, document: SkillDocument, cancelled: CancelledFn) -> Result<SkillIssues, SkillContentError>;
+    pub async fn withdraw(&self, ctx: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), SkillContentError>;
+    pub fn plugins(&self) -> Vec<String>;
+    pub fn issues(&self, plugin: &str) -> SkillIssues;
+}
+```
+
+`SkillsBranch`'s list is a data face; the request is empty and the reply is the current `SessionSkills` value. The install and management operations are the typed requests and replies in `skills/catalog.rs`; the install token and installation id are values.
+
+
 Scope: process.
 Issue: [#740](https://github.com/arcships/dim/issues/740).
 Rules: [design rules](../../architecture/rust-agent/principles.md), [ADR 002](../../adr/002-plugin-scope.md).
