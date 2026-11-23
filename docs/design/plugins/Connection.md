@@ -87,7 +87,7 @@ channel.notify(NotifyRequest { connection_id, call_id, method, params }).await?;
 
 ### Dependencies
 
-Rpc's current generation (`hello`, `request`), read by name on each frame; UiHost's `detach` and `release`; Agents' `acquire {sessionId} → {useId, generation}`, `release {useId}` and `sessions` ([Agents contract](Agents.md)).
+Rpc's current generation (`hello`, `request`), read by name on each frame; UiHost's `detach` and `release`; Agents' `acquire {sessionId} → {leaseId, generation}`, `release {leaseId}` and `sessions` ([Agents contract](Agents.md)).
 
 ### Operations
 
@@ -174,7 +174,7 @@ After the commit the assembly asks Agents to `quiesce` every Session. A `running
 
 ## Requirements raised to mechanism owners
 
-- **Agents (#2020)**: the operations are the ones in the Agents contract ([#2098](https://github.com/arcships/dim/pull/2098)): `acquire {sessionId} → {useId, generation}` and `release {useId}` for the attachment lease, `sessions` for the running count, and `quiesce` for the shutdown pause. No new operation is required; the caller passes the read values into `close_for_idle` and quiesces after the commit.
+- **Agents (#2020)**: the operations are the ones in the Agents contract ([#2098](https://github.com/arcships/dim/pull/2098)): `acquire {sessionId} → {leaseId, generation}` and `release {leaseId}` for the attachment lease, `sessions` for the running count, and `quiesce` for the shutdown pause. No new operation is required; the caller passes the read values into `close_for_idle` and quiesces after the commit.
 - **rutis (runtime)**: none.
 
 ## Binding appendix
