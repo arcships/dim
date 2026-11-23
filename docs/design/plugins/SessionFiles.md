@@ -26,9 +26,11 @@ Callers keep:
 | --- | --- | --- |
 | Store produced bytes under a new file id for a Session | No: the reservation, the file write and the ownership commit are one ordered protocol; a caller composing them would drive a half transaction | `put` |
 | Import a host file the user or model named as a Session file | No: the source is outside the file namespace and the size limit must stop the copy before it lands | `import` |
+| Replace the bytes of an existing Session file under the same id and path | No: the id, the path and the ownership row are the owner's; a replace must keep the read tool's path valid | `write` |
 | Read a Session file for a model request or a UI | No: the caller cannot read the owner's directory or the file id's row | `read` |
 | Record a command output path as owned by the Session | No: ownership is the owner's row and the path must stay inside the Session's output directory | `register` |
 | Answer whether a path or file id belongs to the Session | No: the answer composes two ownership tables and the file directory mapping | `owns` |
+| Remove a Session file and its ownership row | No: the directory entry and the row are the owner's | `remove` |
 | List every path the Session owns, for deletion or for a grant | No: the caller has no row access | `ownedPaths` |
 
 An operation exists only where its row says No.
@@ -63,9 +65,11 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `put` | Store bytes under a new file id and commit ownership | `{sessionId, name, bytes}` | `{fileId, size}` | While the bytes land; a cancelled put leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `put` | Store bytes under a new file id and commit ownership | `{sessionId, name, bytes}` | `{fileId, path, size}` | While the bytes land; a cancelled put leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `import` | Copy a regular host file into the Session namespace and commit ownership | `{sessionId, name, source}` | `{fileId, size}` | Before the replacement; a cancelled import leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, bytes}` | `{fileId, path, size}` | Before the replacement; the old bytes stay | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `read` | Read one Session file whole, within the owner's limit | `{sessionId, fileId}` | `{bytes}` | While the file is read; nothing changes | `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `remove` | Remove one Session file and its ownership row; a file the Session does not own answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal | `not_found`, `node_unavailable`, `storage` |
 | `register` | Record an output path as owned by the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `storage` |
 | `owns` | Whether a path or file id belongs to the Session | `{sessionId, path}` | `{owned}` | While the path is resolved | `node_unavailable`, `cancelled`, `storage` |
 | `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `node_unavailable`, `storage` |
@@ -90,7 +94,9 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | --- | --- | --- | --- | --- | --- |
 | `put` | Reserve the file under the generation, write the bytes through FileStorage, commit the ownership row while the generation and the Session still exist | The reservation and the written bytes are abandoned; the sweep removes them; no owned row | The write completes under the owner's task, or the reservation expires with the generation; the sweep removes unowned bytes | Admission stops; admitted writes finish; a new generation sweeps the old one's pending rows | FileSystem by FileStorage; rows and sweep by SessionFiles |
 | `import` | Open the source, check size, copy through FileStorage into a temporary file, commit ownership | The temporary file is removed; no owned row | The copy completes or is abandoned; the sweep removes what no row owns | As `put` | Source and temporary file by FileStorage; rows by SessionFiles |
+| `write` | Resolve the file id, write the new bytes through FileStorage under the same path, keep the row | Before the replacement: the old bytes stay | The write completes or is abandoned | As `put` | File and path by FileStorage; row by SessionFiles |
 | `read` | Resolve the file id under the generation's directory, read the bytes within the limit | The read stops; nothing changes | The read stops | Pending reads end `closed` | FileStorage |
+| `remove` | Resolve the file id, remove the directory entry through FileStorage, delete the row | None | The call ends | Rows stay for the next generation | File and row by SessionFiles |
 | `register` | Check the Session and the output directory, insert the ownership row | None | The row stays; a later Session delete removes it | Rows stay for the next generation | SessionFiles |
 | `owns` | Resolve the path, check the output row, else map the file directory and the file id row | The resolution stops | Nothing to release | Pending calls end `closed` | SessionFiles |
 | `ownedPaths` | Read both ownership rows, map file ids to the directory | None | Nothing to release | Rows stay | SessionFiles |
@@ -110,6 +116,8 @@ Flow tests on the owner:
 
 - `put` reserves, writes and commits; a cancelled put leaves no owned row and the sweep removes the bytes; a second put with the same name gets a new file id.
 - `import` refuses a directory, a non-regular file and a source over the limit without landing anything.
+- `write` keeps the file id and path and replaces the bytes; an unknown id answers `not_found`; the old bytes survive a cancelled write.
+- `remove` answers success for a file the Session does not own, deletes the file and the row for an owned one, and never removes another Session's file.
 - `read` answers `not_found` for another Session's file id and for an unknown id; a file over the limit is never stored.
 - `register` refuses a path outside the output directory; `owns` answers true for a registered output and for a Session file path, and false for another Session's file.
 - A Session delete releases the rows; the sweep removes the bytes; a file still owned by another Session survives.
@@ -158,6 +166,7 @@ use rutis::Ctx;
 #[serde(rename_all = "camelCase")]
 pub struct StoredFile {
     pub file_id: String,
+    pub path: String,
     pub size: u64,
 }
 
@@ -207,12 +216,30 @@ impl SessionFiles {
         // ...
     }
 
+    pub async fn write(
+        &self,
+        caller: &Ctx,
+        request: WriteFile,
+        cancelled: CancelledFn,
+    ) -> Result<StoredFile, SessionFileError> {
+        // ...
+    }
+
     pub async fn read(
         &self,
         caller: &Ctx,
         request: ReadFile,
         cancelled: CancelledFn,
     ) -> Result<FileBytes, SessionFileError> {
+        // ...
+    }
+
+    pub async fn remove(
+        &self,
+        caller: &Ctx,
+        request: RemoveFile,
+        cancelled: CancelledFn,
+    ) -> Result<(), SessionFileError> {
         // ...
     }
 

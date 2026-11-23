@@ -15,7 +15,7 @@ SqliteStorage owns:
 - **Offline operations.** Backup, restore and vacuum, each holding the same lease and refusing while a daemon owns the store.
 - **The capacity value.** Database bytes, WAL bytes and reclaimable bytes.
 
-The stored form of each group of rows belongs to a data owner: the Timeline batches and positions to the Session store's engine, the Agent records to the Agent directory, the Settings documents to Settings, the Provider selection and preferences to Provider. Each group's request and reply shape is that owner's persistence contract; this contract names the transactions and keeps their boundaries.
+The stored form of each group of rows belongs to a data owner: the Timeline batches and positions to the Session store's engine, the Agent records to the Agent directory, the Settings documents to Settings, the Provider records to Provider. Each group's operations and request and reply shapes are defined here; the data owner composes them and owns the business meaning.
 
 Callers keep:
 
@@ -28,8 +28,8 @@ Callers keep:
 | Admit and commit a Timeline batch round | No: one grouped transaction, the writer queue and the per-Session fallback are the engine's | `commitTimelineRound` and the Timeline operations |
 | Read a Timeline position, session configuration or branch set | No: the caller cannot read the file | `head`, `batchEnd`, `batchEndAt`, `branches`, `sessionConfig`, `createSession` |
 | Load, save or delete Agent records and their relations | No: the records are rows with one writer and one transaction | the Agent record group |
-| Read, import and replace Settings documents | No: the version check and the document row are one transaction | the Settings group |
-| Read and write Provider selection and preferences | No: the scope version and the selected model are one transaction | the Provider group |
+| Read, import, change and replace Settings documents | No: the change must run under the row's exclusion, and the version check and the write are one transaction | the Settings group |
+| Read and commit Provider records, selections and preferences | No: each read, activation, adoption and edit is one transaction with its own precondition | the Provider group |
 | Report the store's own bytes | No: only the process holding the file knows them | `storageReport` |
 | Read and write Session file ownership rows | No: they belong to SessionFiles | not on this face: SessionFiles' private row operations |
 
@@ -45,7 +45,7 @@ let owners = storage.owners(Empty {}).await?;
 let repair = storage.unfinishedOwned(Empty {}).await?;
 ```
 
-Settings replaces a document under its expected version.
+Settings applies a change to a stored document under the row's exclusion.
 
 ```rust
 let next = storage.replace_user(ReplaceUser {
@@ -79,7 +79,17 @@ Every operation takes one request object and answers one reply object. A transac
 | Agent records | `save`, `delete` | Write one Agent record or remove it | `{id, profile, default, owner?}`, `{id}` | `{}` | None | `storage` |
 | Settings | `readUser` | One stored document and its version, or none | `{source}` | `{version, document}?` | None | `storage` |
 | Settings | `importUserIfAbsent` | Insert a validated document and its provenance if absent; return the winning row | `{source, document, importedRevision}` | `{version, document}` | None | `storage` |
-| Settings | `replaceUser` | Replace a document under its expected version | `{source, expectedVersion, decision}` | `{version}` | None | `missing`, `conflict`, `overflow`, `rejected`, `storage` |
+| Settings | `changeUser` | Apply the caller's change to a stored document under the row's exclusion | `{source}` + `change` | `{version, document}` | Before the write; the change's future is dropped | `rejected`, `storage` |
+| Settings | `replaceUser` | Replace a document under its expected version (the user path's compare-and-set) | `{source, expectedVersion, decision}` | `{version}` | None | `missing`, `conflict`, `overflow`, `rejected`, `storage` |
+| Provider | `readProviderRecord` | One stored projection of a Provider record (header, all, mutable, one model, selected models) | `{providerId, projection}` | `{record}?` | None | `storage` |
+| Provider | `providerCandidates` | Candidate lookup by criteria | `{criteria}` | `{candidates}` | None | `storage` |
+| Provider | `listProviders` | Provider list with its filter and order | `{filter}` | `{providers}` | None | `storage` |
+| Provider | `queryProviderModels` | One model page with its ordering and limit | `{page}` | `{models, next?}` | None | `storage` |
+| Provider | `providerManagementPage` | One management window | `{page}` | the page | None | `storage` |
+| Provider | `activateSource` | Activate one source revision with its bundle facts | `{revision, baseFacts}` | `{}` | None | `missing`, `conflict`, `storage` |
+| Provider | `adoptProvider` | Adopt one provider's source at a revision | `{providerId, revision, baseFacts}` | `{}` | None | `missing`, `conflict`, `storage` |
+| Provider | `commitProviderEdit` | One edit family under its own precondition, answering the committed projection | `{providerId, edit}` | `{version, projection}` | None | `missing`, `conflict`, `storage` |
+| Provider | `importProviderLegacy` | Import one legacy batch and answer the item results | `{batch}` | `{items}` | None | `storage` |
 | Provider | `readSelection`, `readPreferences` | One stored selection or preference | `{scope}`, `{providerId, modelId}` | the stored value or none | None | `storage` |
 | Provider | `writeSelection` | Write the selected model under the scope's expected version | `{scope, expectedVersion, selection}` | the committed selection and version | None | `conflict`, `storage` |
 | Capacity | `storageReport` | The store's own file bytes, WAL bytes and reclaimable bytes | `{}` | `{databaseBytes, walBytes, reclaimableBytes}` | None | `storage` |
@@ -95,7 +105,7 @@ The file-ownership row operations (`reserveFile`, `commitFile`, `abandonFile`, `
 | `missing` | The document or record does not exist; the caller decides whether to create it |
 | `conflict` | Another writer committed at a different version; re-read and decide |
 | `overflow` | The version or the scope exceeded its bound; the caller reports it as a storage failure |
-| `rejected` | A protected field was changed; the caller keeps the user's document and reports the field |
+| `rejected` | The caller's change refused with its own `code` and `message`, or a protected field was changed; the caller keeps the user's document and acts on that code |
 
 The engine does not answer `not_found`: a missing row is the data owner's business answer, expressed by that owner's operation.
 
@@ -105,6 +115,7 @@ The engine does not answer `not_found`: a missing row is the data owner's busine
 | --- | --- | --- | --- | --- | --- |
 | Open, upgrade, verify | Open the file, take the lease, read and write the format, run the ordered upgrades in one transaction, start the writer and the read pool | Not applicable: assembly admits the daemon once | Not applicable | A failed open leaves the previous format, or the startup note names the newer store | File and lease by SqliteStorage; the process exits |
 | `commitTimelineRound` | Admit the round, encode grouped by Session, commit one transaction per group, answer one outcome per distinct Session | Before the commit; nothing is written | The admitted round completes; the reply may be lost | Admission stops; the admitted round ends before close | Rows by SqliteStorage; publication by the Session store |
+| `changeUser` | Take the source's exclusion, read the current document, call `change`, write the returned document as the next version, release | Before the write: the change's future is dropped, the document is unchanged, `cancelled` | The change's future ends; the same release applies | In-flight changes finish or end `closed`; the generation releases its exclusions | Exclusion by SqliteStorage; the change's future by the calling row |
 | Other writes | One transaction | None after it starts | The transaction completes; the reply may be lost | Admitted writes end before close | SqliteStorage |
 | Reads | One consistent read on a pooled connection | None; the read is bounded | Nothing to release | Pending reads end `closed` | SqliteStorage |
 | `storageReport` | Read the file sizes and the free-page count | None | Nothing to release | Pending calls end `closed` | SqliteStorage |
@@ -123,7 +134,9 @@ Flow tests on the owner:
 
 - Opening a newer format refuses and leaves the file unchanged; an upgrade is one transaction; a second process fails to open while the lease is held.
 - `commitTimelineRound` commits one outcome per distinct Session, keeps the input order and answers an outcome for a failed group without dropping the others.
+- `changeUser` calls the change under the source's exclusion; a change that returns `Rejected` leaves the document and version unchanged; a committed change answers the next version.
 - `replaceUser` on a stale version answers `conflict`; a protected-field change answers `rejected` without writing; `importUserIfAbsent` returns the winning row.
+- Provider records: a projection read returns only its fields; a stale activation or edit answers `conflict`; a commit answers the committed projection; a legacy import answers one item result per entry.
 - `writeSelection` on a stale scope answers `conflict`; `readPreferences` answers none for an absent preference.
 - `storageReport` answers the file, WAL and free-page values; the client method returns the same values.
 - Closing drains the running calls, checkpoints and releases the lease; an offline tool cannot open while the daemon owns it.
@@ -155,8 +168,8 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-1. **Settings (#2017), Provider (#2019), Agent directory (#2020): your group's contract.** The operations in the Settings, Provider and Agent record groups are your persistence contracts, executed by this engine. Your contracts own their request, reply and error shapes; this contract keeps the transactions and does not reinterpret them. A comment on each sub-issue states the split.
-2. **SessionScope (#2025): the Timeline operations have one face.** The engine owns the Timeline operations; the Session-scoped `timelineStore` publishes the same engine per Session. `store.query` and `store.sessionConfig` read the same engine from the process side. The engine has one operation set; SessionScope's contract states which face owns which operation and removes the duplicate name.
+1. **Settings (#2017), Provider (#2019), Agent directory (#2020): these groups are defined here.** The Settings, Provider and Agent record operations and their request, reply and error shapes are the ones above; the engine executes them and adds no business rule. The Settings change and the Provider edit families carry their callers' decisions as data or callbacks; the data owner composes the operations and owns the business meaning. Comments on the three sub-issues state the split.
+2. **SessionScope (#2025): `timelineStore` ownership.** The Session store owns the Timeline operations and the `timelineStore` face; SessionScope binds that face at the Session instance. The face does not carry `createSession`, `releaseSession`, `rollbackSession` or `append`; those belong to the store's creation and commit paths. The process `store.query` and `store.sessionConfig` are the same engine's reads for callers outside a Session.
 
 ## Binding appendix
 

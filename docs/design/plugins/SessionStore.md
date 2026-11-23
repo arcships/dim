@@ -2,7 +2,7 @@
 
 Scope: process. Issue: #2018.
 
-SessionStore owns the stored Session: its rows, its grants, its reply language, its title revision, its worktree records, the exclusion that keeps those records consistent with Session creation, and the Timeline storage engine those rows are read through. This document is the owner's target contract. The current implementation is described in [Session rows §5.2](../resource-faces.md#52-session-rows) and [Native storage format](../appserver/native-storage-format.md). The Session-scoped `timelineStore` face is published by SessionScope and is not covered here; the requirement this contract raises for it is at the end.
+SessionStore owns the stored Session: its rows, its grants, its reply language, its title revision, its worktree records, the exclusion that keeps those records consistent with Session creation, and the Timeline storage engine those rows are read through. This document is the owner's target contract. The current implementation is described in [Session rows §5.2](../resource-faces.md#52-session-rows) and [Native storage format](../appserver/native-storage-format.md). The Session-scoped `timelineStore` face carries this owner's Timeline operations; SessionScope binds that face at the Session instance ([#2093](https://github.com/arcships/dim/pull/2093)).
 
 ## Use and scope: responsibility split
 
@@ -37,7 +37,7 @@ Callers keep:
 | Read a stored Session's configuration without loading the Session | No: the caller has no row access and must not parse a stored record | `sessionConfig` |
 | Read the configuration text a fork copies | No: the text must be copied byte for byte | `sessionConfigText` |
 | List stored Sessions as one page, filtered and ordered by the storage contract | No: the page is a consistent read over the catalog row, the Session row and the title | `catalog` |
-| Read an unloaded Session's history | No: the caller has no Timeline row access | `query` |
+| Read a Session's stored history, loaded or not | No: the caller has no Timeline row access | `query` |
 | Read the Session's grants | No: the caller has no row access | `grants` |
 | Add or remove one grant | No: the upsert rule that keeps a write grant is the owner's invariant | `addGrant`, `removeGrant` |
 | Write the reply language into the stored configuration | No: the caller must not rewrite the stored record | `setLanguage` |
@@ -110,7 +110,7 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `sessionConfig` | A stored Session's decoded configuration | `{id}` | `{config?}` | None | `not_found`, `storage` |
 | `sessionConfigText` | A stored Session's configuration text, byte for byte | `{id}` | `{configText?}` | None | `not_found`, `storage` |
 | `catalog` | One stored Session page | `{request, agent?, version, hosts, closed}` | the stored page | While the page is read | `invalid`, `cancelled`, `storage` |
-| `query` | One consistent history read for an unloaded Session | `{scope, query, page?}` | the query result | While the page is read | `storage`, `cancelled` |
+| `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{scope, query, page?}` | the query result | While the page is read | `storage`, `cancelled` |
 | `grants` | The Session's grant set | `{id}` | `{grants}` | None | `storage` |
 | `addGrant` | Add one grant, never downgrading a write grant | `{id, path, kind, mode}` | `{}` | None | `not_found`, `invalid`, `storage` |
 | `removeGrant` | Remove one grant; an absent grant counts as removed | `{id, path}` | `{}` | None | `storage` |
@@ -200,8 +200,7 @@ Material uncertainty: a process death during the caller's removal step leaves th
 
 ## Requirements raised to mechanism owners
 
-1. **SessionScope (#2025): one spelling for the Timeline reads.** `store.query` and `store.sessionConfig` read the same engine as the Session-scoped `timelineStore`'s `query` and `sessionConfig`. The engine has one operation set; publish it once. The process read must stay reachable for an unloaded Session, so the contract asks SessionScope to state which face owns which operation and to remove the duplicate name. Probe: `store.query` and `timelineStore.query` return the same result for the same scope and through; a caller outside a Session uses the process operation.
-2. **SessionScope (#2025): the `timelineStore` binding.** SessionStore constructs the engine and the Session-scope binding; the binding is assembly infrastructure. The contract assumes SessionScope owns the binding's installation and does not hand the binding to a process caller; a comment on #2025 states the requirement.
+1. **SessionScope (#2025): `timelineStore` ownership aligned.** This owner owns the Timeline operations and the `timelineStore` face; SessionScope binds that face at the Session instance. The face does not carry `createSession`, `releaseSession`, `rollbackSession` or `append`; those belong to the store's own creation and commit paths. The process `store.query` and `store.sessionConfig` are the same engine's reads for callers outside a Session (loaded or not) and keep one implementation. A comment on #2025 records the alignment.
 
 ## Binding appendix
 
