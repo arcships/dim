@@ -1700,10 +1700,11 @@ async fn the_product_build_reports_image_operations_without_an_adapter() {
     for name in ["generate", "edit", "enhance"] {
         let entry = operation(&snapshot, name);
         assert_eq!(entry["available"], false, "{entry}");
-        assert_eq!(entry["reasons"][0]["dimension"], "adapter");
+        let reason = json!({"dimension": "adapter", "detail": "No image adapter in this build"});
+        assert_eq!(entry["reasons"], json!([reason]));
         let unserved = |model_id: &str| {
             json!({"providerId": PROVIDER, "modelId": model_id, "available": false,
-                "reason": {"dimension": "adapter", "detail": "No available adapter serves the model"}})
+                "reason": reason})
         };
         assert_eq!(
             entry["options"],

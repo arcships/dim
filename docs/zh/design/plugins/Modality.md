@@ -166,6 +166,8 @@ sequenceDiagram
 
 图像操作是第一个实现切片，产品构建现在为该切片的一部分内置了适配器：内置 `dim-modality-aimux` 适配器（A.2）经 aimux 服务 `generate`，并在提供方的包读取编辑输入文件时服务 `edit`，而 `enhance` 仍是没有任何构建服务的适配器操作，因此以 `adapter` 原因报告 `unavailable`。可用性是运行时的属性，并按模型回答：安装后 `available` 即为 true，具体服务什么由 `operations` 针对任务所指的模型决定。内置家族名副本为 A.2 列出的内建目录提供方回答图像 `operations`。自建提供方的 UUID 没有专属副本时，仍会解析到家族名副本；其图像模型报 `adapter` 原因是因为该副本的 `operations` 不为它们返回图像操作，而不是没有绑定。已解析的适配器若不为 Provider 列出的任何模型服务，不算缺少适配器，并如实说明：图像操作仍用 `adapter` 维度，报“the adapter serves no image model Provider lists”，其选项是已声明的模型，每个都 `available: false` 并带上没有适配器运行它的原因，因此选项从不声称能运行一个其操作会拒绝的模型。`understand` 为 Session 使用方解析目标（§9.4）。可配置性是设置的属性：只要模型在该操作的选项中（无论是否有适配器服务），`configure` 就接受任何有默认 key 的 A.1 操作的默认值，因此默认值可以在运行时落地之前持久化；保存后的默认值显示 `available: false` 及其原因，本构建不能运行的操作仍保持 `available: false` 及其 `build` 或 `adapter` 原因。主机目标例外：只有在本机能运行时才可配置（A.2.1）。流程测试配置 fixture 适配器服务它们所覆盖的适配器操作，端到端流程则让内置适配器对着桩提供方运行。
 
+当 Modality 无法为任何 Provider 候选模型解析到适配器时，图像任务操作、其已声明的选项以及这些选项中的默认值都报告 `adapter`，详情为 “No image adapter in this build”。
+
 Realtime 选项跟随 Provider 的传输声明，不经解析到的适配器的 `operations` 收窄。因此，不服务 realtime 的提供方专属副本可能让声明过的模型仍出现在选项中，但 `realtime.open` 以 `unavailable` 拒绝；已存在的提供方副本缺少某个操作时，不会重试家族名副本。
 
 `dimcode modality set-default image.generate <provider>/<model>` 和 Web 页调用 `modality.configure`，由它按操作的选项校验模型（A.3）。该操作提供的 Provider 模型即使标为 `available: false` 也可以保存。OCR 宿主目标必须能在本机运行（A.2.1）。随后经所有者写入（Settings CAS）把默认值写入 Modality 自己的 `modality` 设置文档。`model: null` 清除该默认值。回复与 `modality.capabilities` 返回的是同一个快照，含新的 `revision`，客户端无需再读一次。
