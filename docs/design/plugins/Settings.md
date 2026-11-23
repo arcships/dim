@@ -110,7 +110,7 @@ let bytes = storage.read(definitions, cancelled).await?; // FileStorage's operat
 ### Dependencies
 
 - [FileStorage](FileStorage.md): `add_root` for an authorized project, `read` and `update` for a document stored as a file, and `create_directory` for the project's directory under `.dimcode`. Settings passes no path outside an authorized root.
-- The native store ([#2018](https://github.com/arcships/dim/issues/2018)): read a source's user document, import a file's content when the row is absent, and apply a change under the row's exclusion. The requirement is stated in [Requirements raised to mechanism owners](#requirements-raised-to-mechanism-owners).
+- The storage engine ([#2018](https://github.com/arcships/dim/issues/2018)) as the native profile's crate-private implementation: it executes this owner's transactions over the `settings_documents` rows. The rows and their request, reply and error shapes are this contract's ([Native-profile row operations](#native-profile-row-operations)); the engine answers no Settings read or write on its public face.
 - The caller's row: a source id and the registration are bound to the row that registered them; an id from another row is `invalid`.
 
 ### Operations
@@ -136,6 +136,19 @@ Data:
 - `ChangeFn` is `Fn(Option<Document>) -> Result<Document, Rejected>`: it is called once, under the document's exclusion, with the current document, and returns the next document or its own refusal. It must only compute; waiting on another owner or on I/O inside the change holds the document for that whole wait.
 - `Revision` is an opaque value that changes on every committed write. Only the user path carries it, as the draft base the client holds: a business concurrency control between the user's read and write. An owner change carries no revision; the owner's exclusion and any waiting stay inside `change`.
 - `writeOnly` lists the JSON Pointers of members withheld from the agent and holding a value.
+
+### Native-profile row operations
+
+The native profile stores each user document as a `settings_documents` row. These four operations belong to this contract and are crate-private to the storage crate: the engine executes each as one transaction and returns the stored form, and no caller outside Settings calls them. The file profile has no counterpart; it calls FileStorage's `read` and `update` instead.
+
+| Operation | Intent | Request | Reply | Errors |
+| --- | --- | --- | --- | --- |
+| `readUser` | One source's stored user document | `{source}` | `{version, document}` or none | `storage` |
+| `importUserIfAbsent` | Import the validated file content when the row is absent, in one transaction, and return the winning row | `{source, document, importedRevision}` | `{version, document}` | `storage` |
+| `changeUser` | Apply one change under the row's exclusion | `{source, change}` | `{version, document}` | `rejected`, `storage` |
+| `replaceUser` | Replace a user document at an expected version | `{source, expectedVersion, document}` | `{version}` | `conflict`, `missing`, `overflow`, `storage` |
+
+`change` in the public operations is `changeUser` on the native profile and FileStorage's `update` on the file profile; `replace_user` is `replaceUser` and FileStorage's `update`, which compares the revision Settings carries. `importUserIfAbsent` runs on the first read of a source whose file exists and whose row does not; a version is a positive integer that increases on every committed write, and the revision Settings publishes is derived from it.
 
 ### Facts
 
@@ -193,7 +206,7 @@ A fact is published after the commit and never carries a document. A failed fact
 | §4 rule 5 | No Timeline batch. Settings documents never enter the Timeline. |
 | §4 rule 6 | Settings documents never enter model context; the agent path is the `plugin` tool's result, decided by PluginManager. |
 | §4 rule 7 | Callers use these operations; no caller reads a file path, a lock or a stage. |
-| §4 rule 8 | Supported by the native store's operations ([#2018](https://github.com/arcships/dim/issues/2018)); stated below. |
+| §4 rule 8 | The storage engine executes this owner's crate-private row operations ([#2091](https://github.com/arcships/dim/pull/2091)); no new infrastructure. |
 | §4 rule 9 | A revision fact is written only after the commit; no scratch state is persisted. |
 | §7 objects | Only values cross: documents, source ids, project ids, revisions and the `change` callback by reference. No object, handle or path crosses. |
 | §7 no proxy | No operation answers another owner's data: a value is requested from the part that owns it, and workflow definition bytes come from FileStorage for the Workflow plugin. |
@@ -203,14 +216,14 @@ A fact is published after the commit and never carries a document. A failed fact
 | §7 one change | The old `settings`/`settingsService` surfaces and their callers are migrated in one change; PluginManager, SettingsMethods and every source owner appear in the delivery table. |
 | ADR 002 D1 | Process scope; documents and the project table outlive Sessions. |
 | ADR 002 D2 | No wiring plugin; the service is on the owner type. |
-| ADR 002 D3 | Dependencies point to FileStorage and the native store; no plugin depends on Settings' internals. |
+| ADR 002 D3 | Dependencies point to FileStorage and the storage engine; the rows belong to Settings and no plugin depends on Settings' internals. |
 | ADR 002 D4 | Business configuration lives in the owner's named source, read at use time; structural items stay in PluginManager. |
 | ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix. |
 | §7.2 checks | Every caller need lands on one operation; no handle, object or proxy crosses; one face; no Rust-only method on the face; no caller mechanism; one change. |
 
 ## Requirements raised to mechanism owners
 
-- **SessionStore / native store, [#2018](https://github.com/arcships/dim/issues/2018):** the native user-document operations Settings needs — read one source's document, import a file's content when the row is absent, and apply a change under the row's exclusion, returning the committed document and entering the revision. No object or transaction crosses.
+- **Storage engine, [#2018](https://github.com/arcships/dim/issues/2018) and [#2091](https://github.com/arcships/dim/pull/2091):** no requirement. The engine executes this owner's crate-private row operations as transactions; the rows, versions and conflicts are Settings', and the engine publishes none of them under `sqliteStorage`.
 - **Provider, [#2019](https://github.com/arcships/dim/issues/2019):** the model request's User-Agent is read from [ProviderSettings](ProviderSettings.md)'s value instead of being pushed into the process identity; the model-log recorder reads its destination from [ModelLog](ModelLog.md)'s value instead of a process-global setter.
 - **Workflow, [#2033](https://github.com/arcships/dim/issues/2033):** definition files are read and replaced through FileStorage's path operations, with the project resolved from `authorized_projects`; `workflowFiles` is removed with no replacement face on Settings.
 

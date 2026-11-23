@@ -28,21 +28,37 @@ Callers keep:
 The CLI edits the operator's prompts with the revision it read. The revision is the draft's base, a business value the client holds; the daemon compares it and never exposes the owner's internal version.
 
 ```rust
-let snapshot: PromptSetting = client
-    .typed("settings.read", json!({"source": SOURCE}))
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadRequest<'a> {
+    source: &'a str,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateRequest<'a> {
+    source: &'a str,
+    expected_revision: &'a str,
+    document: &'a JsonObject,
+}
+
+let snapshot: SettingsDraft = client
+    .typed("settings.read", serde_json::to_value(ReadRequest { source: SOURCE })?)
     .await?;
 // The user edits one field; the write is the whole document at the revision read.
 client
     .typed(
         "settings.update",
-        json!({
-            "source": SOURCE,
-            "expectedRevision": snapshot.revision,
-            "document": document,
-        }),
+        serde_json::to_value(UpdateRequest {
+            source: SOURCE,
+            expected_revision: &snapshot.revision,
+            document: &document,
+        })?,
     )
     .await?;
 ```
+
+The request is one typed struct, serialized at the client boundary; no request is assembled as an inline JSON literal.
 
 ## Own contract
 

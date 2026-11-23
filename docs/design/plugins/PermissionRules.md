@@ -37,10 +37,20 @@ let decision = decide(&rules.rules, &command);
 The CLI replaces the list with the revision it read.
 
 ```rust
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetRulesRequest<'a> {
+    expected_revision: &'a str,
+    command_rules: &'a [CommandRule],
+}
+
 client
     .typed(
         "permission.set_rules",
-        json!({"expectedRevision": revision, "commandRules": rules}),
+        serde_json::to_value(SetRulesRequest {
+            expected_revision: &revision,
+            command_rules: &rules,
+        })?,
     )
     .await?;
 ```
