@@ -2,7 +2,7 @@
 
 Scope: branch. Issue: #2027.
 
-WaitBranch owns one line's wake-ups: the steers and background-task notices released on the line during an open turn that the model has not read yet, and the one wait a caller may park on them. The `wait` tool that calls this owner is a Session part of #2026's registry group; this document is the branch part's target contract.
+WaitBranch owns one line's wake-ups: the steers and background-task notices released on the line during an open turn that the model has not read yet, and the one wait a caller may park on them. The `wait` tool that calls this owner is a Session part of #2026's registry group; this document is the branch part's target contract. The division is: the Wait document (the tool's owner, #2026) owns the tool declaration, its model-facing texts and the tool-result settlement, and registers no arrival table and no `wait` operation; the arrival table, the single slot and the `wait` operation are this contract's.
 
 ## Use and scope: responsibility split
 
@@ -113,7 +113,7 @@ match outcome {
 
 ## Requirements raised to mechanism owners
 
-- #2026 (`wait` tool): the tool calls `wait` by the calling line id and keeps the model-facing texts and the tool-result settlement; it no longer holds the branch `Wait` object or calls a private method.
+- #2026 (`wait` tool): the tool calls `wait` by the calling line id and keeps the model-facing texts and the tool-result settlement; it no longer holds the branch `Wait` object or calls a private method. The Wait document keeps only the tool; the arrival table and the operation are this contract's, so the two documents do not both define a table or a reply shape.
 - #2025 (Session access): the tool reaches a line's `WaitBranch` by line id through the Session access surface.
 
 ## Binding appendix

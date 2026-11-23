@@ -85,7 +85,7 @@ let AdoptedEntries { entries } = prompt
 | Owner | Operation | Use |
 | --- | --- | --- |
 | PromptHost, InitialPromptConfiguration (#2026, Session) | `load`, `get` | The named source's current entry and the Session's initial targets and model. |
-| PromptGuide (#2026, Session) | `compose`, `changes` | The System over the entries in force, and the signal that the composition moved. |
+| PromptGuide (#2026, Session) | `compose`, `observe` | The System over the entries in force, and the subscription that reports the composition moved. |
 | BranchScope | `timeline`, `dispatcher`, `timelineIdentity`, `branchLifecycle` | The line's facts, their order, its identity and its phase. |
 | SessionScope (#2025, Session) | `reportFault` | A prompt or recovery failure that stops the line's own work. |
 
@@ -160,7 +160,7 @@ No request rebuilds the System from history: the System a line runs with is the 
 
 ## Requirements raised to mechanism owners
 
-- #2026 (PromptGuide): `compose` must answer the System for one line and a base System as data, and `changes` must deliver a value a branch part can watch; the current `compose_system` takes Rust values and the watch is Rust-only.
+- #2026 (PromptGuide): `compose` must answer the System for one line and a base System as data, and `observe` must deliver a callback the branch part can register; the current `compose_system` takes Rust values and the watch is Rust-only.
 - #2026 (PromptRegistry): `promptHost.load` and `initialPromptConfiguration.get` as the target contracts state; Prompt calls them and adds no second registry.
 - #2025 (Session access): the Session language and Agent configuration entries reach `configure` and `adoptedConfiguration` by line id through the Session access surface.
 

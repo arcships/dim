@@ -78,7 +78,7 @@ let Pending { pending } = input_queue
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `submit` | Admit one input into the line, once per submission id | `{input}` | `{inputId, sequence}`; a repeated submission id answers the committed input | The caller cancels before the append; nothing is written | `invalid` (the input fails its own shape or scope), `closed` |
+| `submit` | Admit one input into the line, once per submission id | `{input}` | `{inputId, sequence}`; a repeated submission id answers the committed input | The caller cancels before the append; nothing is written | `invalid` (the input fails its own shape or scope), `line_ended` (the line has ended), `closed` |
 | `withdraw` | Withdraw one held input, optionally replacing it with a checked Steer | `{inputId, reason?, steer?}` | `{status}`: `deleted{sequence}` or `notHeld` | The caller cancels the wait; a committed withdrawal stands and a later call answers `notHeld` | `input_blocked` (a submit check refused the Steer), `invalid` (a malformed Steer candidate), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
 | `pending` | Whether an input is held and unapplied at a cutoff | `{inputId, through?, includeBlockPresence?}` | `{pending}` | The caller cancels the wait for the cutoff; nothing changes | `closed`, `cancelled` |
 
@@ -89,6 +89,7 @@ let Pending { pending } = input_queue
 | Kind | Operation | What the caller does next |
 | --- | --- | --- |
 | `invalid` | `submit`, `withdraw` | Fix the input: a malformed candidate, a scope the line does not accept |
+| `line_ended` | `submit` | The line has ended; read its facts for history or choose an open line |
 | `input_blocked` | `withdraw` | The check's message says why; the withdrawal and the replacement were not written; change the input |
 | `publication_unknown` | `withdraw` | The batch committed but its publication was not confirmed; query the line's facts after recovery instead of retrying the withdrawal |
 | `cancelled` | `withdraw`, `pending` | The wait stopped; a committed withdrawal stands |
@@ -111,7 +112,7 @@ A withdrawal of an input the queue no longer holds is `notHeld`, not an error: t
 
 ## Verification
 
-- `submit` accepts one input per submission id; a repeated id answers the committed input; a new id appends in order.
+- `submit` accepts one input per submission id; a repeated id answers the committed input; a new id appends in order; an ended line answers `line_ended` and writes nothing.
 - `withdraw` of a held input writes `input/deleted`; a `notHeld` decision writes no result and no replacement; a Steer candidate whose check blocks writes nothing and answers `input_blocked`.
 - An accepted Steer's replacement `input/message` precedes the original's `input/deleted` in one batch, and a retry after a lost reply cannot replace the deleted input again.
 - `pending` answers true only for an input held and unapplied at the cutoff; an input the queue does not hold is false; the block-presence answer follows the read contract.

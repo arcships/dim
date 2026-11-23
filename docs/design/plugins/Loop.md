@@ -66,7 +66,7 @@ let lease = agent_loop
 | RequestSettings (#2025) | `settings` | The Session's default model settings before a configuration is adopted. |
 | ContextProjection (#2025) | `renderedStream` | The request's history at the step's committed cutoff. |
 | ContextPreparation | `prepare` | Build the request from the source data and the request-local projection, and publish the handoff facts. |
-| ToolBinding (#2028) | `bind`, `claim`, `transfer`, `retain`, `release` | Pin the request's tool handlers and release them when the request can no longer run. |
+| ToolBinding (#2028) | `bind`, `claim`, `transfer`, `retain_only`, `release` | Pin the request's tool handlers and release them when the request can no longer run. |
 | GuideEntries (#2026) | `compose` | The System the request carries. |
 | Provider (#2019) | — | Not called by Loop; ModelProvider calls `invoke`. |
 | BranchScope | `timeline`, `dispatcher`, `timelineIdentity`, `branchLifecycle` | The line's facts, their order, its identity and its phase. |
@@ -138,7 +138,7 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 
 ## Requirements raised to mechanism owners
 
-- #2028 (ToolBinding): Loop needs `bind`, `claim`, `transfer`, `retain` and `release` as data operations with the request id and the tool definitions; the current `ToolBinding` object methods and the `claim` return an object.
+- #2028 (ToolBinding): Loop needs `bind`, `claim`, `transfer`, `retain_only` and `release` as data operations with the request id and the tool definitions; the current `ToolBinding` object methods and the `claim` return an object.
 - #2026 (GuideEntries): Loop needs `compose` as a data operation returning the System text for one line and a base System; the current `compose_system` takes Rust values.
 - #2025 (Session access): the Session entry `session.turn.get` reaches `state` and `timelineTree.read` by line id; the id-to-instance step is #2025's requirement.
 
