@@ -1,262 +1,172 @@
 # Web
 
-Status: Implemented as a built-in Rust plugin in `dim-app-server`. Overall design: [overview](../overview.md) (Web). Phase: P2. Language: Rust. Scope: [ADR 002](../../adr/002-plugin-scope.md) (Session).
+Scope: Session. Issue: #2033 (this contract). The tool parameters, result formats, address policy, error codes and acceptance list are Appendix A–E below and are unchanged; this part states the owner's shape and the calls it makes. The current shape is the one #2033's scan report describes.
 
-Web is a Session plugin with two tools. `web_fetch` is always declared while the part is Active; `web_search` is offered by a dynamic tool source the part registers with the Session's `toolRegistry`, only while a search service is usable ([tool contributions §7](../../architecture/rust-agent/tool-contributions.md#7-动态工具来源); [session-boundary A.5](../contracts/session-boundary.md#a5-tool-contribution), [ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)). Search goes to a configured built-in search adapter; fetch downloads one public page and returns bounded text. Web holds no state shared across Sessions, writes no Timeline event (every call and result is already a tool call fact) and reads its business configuration from its Settings source `web` at use time, so editing it never reloads anything ([ADR 002 D4](../../adr/002-plugin-scope.md#d4-structural-configuration-and-business-configuration-are-separate)). The offered `web_search` set follows committed writes of that source and the managed account's sign-in state; when managed search first becomes necessary for a Session, Web asks the account owner for one provider-owned observation of its store, so a sign-in or sign-out another process wrote is visible without an account RPC. A branch adopts the set as its tool part, and each request's declaration is fixed when the request is built, so a change reaches the first request built after that adoption (A3).
+Web owns two network call intents — read one public page, search once — the policy they run under, the converted text one Session keeps between page calls, and the rule that decides whether `web_search` is declared. Web provides no service: its public surface is the two tool contributions.
 
-## 1. Structure
+## Use and scope: responsibility split
 
-```mermaid
-flowchart LR
-  subgraph PROC["Process"]
-    Settings["Settings: web business source"]
-    Managed["managedSearch: search"]
-  end
-  subgraph SESS["Session"]
-    Web["Web: web_fetch, web_search source"]:::new
-    ToolRegistry["ToolRegistry"]
-  end
-  subgraph BR["Branch"]
-    Exec["ToolBinding, ToolExecutor, Approval, Permission"]
-  end
-  Web -->|"read source web at use"| Settings
-  Web -->|"default / dim-oauth search"| Managed
-  Web -->|"registers its tools"| ToolRegistry
-  Exec --> ToolRegistry
-  Exec -->|"execute(ToolCall), cancel request"| Web
-  classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
-```
+Web owns:
 
-| Part | Scope | Depends on | Provides |
-| --- | --- | --- | --- |
-| `web` | Process, when a home exists | `settings`, `partRegistry` | Registers the `web` Settings source and the Session part `Web` |
-| `Web` | Session | `settings`, `toolRegistry`, `managedSearch`, the Session config and lifecycle | Registers `web_fetch` and the `web_search` tool source; owns the Session fetch cache; provides no name |
+- **The two calls.** A page read under the address and content policy (Appendix A.3, A.4) and a search under the query rules (A.2), each with its own time limit and cancellation.
+- **The declaration.** `web_fetch` is always declared while the part is Active; `web_search` is offered only while a search service is usable, composed from the `web` Settings source and the account owner's availability subscription (A.1, A.3 of the tool contributions page).
+- **The converted-text cache.** One Session's converted pages, keyed by final URL, bounded by age and bytes, so a later page of the same text needs no second request (A9).
+- **The result text.** Headers, truncation notices, redirect notices and error codes the model acts on (Appendix A.2, A.3, C).
 
-**Contracts depended on:** the implemented [C4 tool binding](../session-typescript.md), [named Settings/source declarations](../appserver/settings-service.md), [managed provider contract](../../../crates/dim-app-server/README.md#managed-provider-contract), and Permission's existing `network` risk. #150 supplies tools, #166/#175 supply Settings, and #177 supplies Settings events. Web consumes the `web` source's change events and the managed account's availability, and no Session broadcast; it does not wait for #168. **Contracts defined here:** the two tools, result formats and the `web` document.
+Callers keep as business:
 
-Web is a built-in process row in the App Server. That row registers the `web` Settings source and the Session part; it adds no Web-specific registry or host port. When `searchService` is absent (default) or `{"kind": "dim-oauth"}`, `web_search` delegates the authenticated relay query to `managedSearch` so OAuth tokens stay inside the Rust managed provider; when `searchService` names an explicit adapter such as `brave`, Web queries that adapter directly. Calls read Settings at use time. The part also subscribes, before its first read, to committed writes of the `web` source and to the managed account's availability, and re-evaluates the `web_search` source after either changes, so the declarations follow without a reload: the branch adopts the offered set as its tool part, and a request declares what the branch had adopted when the request was built (A3, [tool contributions §7](../../architecture/rust-agent/tool-contributions.md#7-动态工具来源)). When managed search first becomes necessary for a Session — its assembly, or a Settings change from an explicit adapter to the default — the part asks the account owner for one provider-owned observation of its store before deciding the declaration, so a sign-in or sign-out another process wrote reaches a new or switched Session without an account RPC; afterwards the provider's watch is the source. Non-fatal configuration diagnostics use existing `ToolResult.structuredContent`.
+- Whether a call may run: Permission and Approval decide, and Web never admits anything itself.
+- What a result means for the conversation; Web returns tool results only.
+- Which tools a Session mounts: `SessionConfig.tools` is SessionScope's record and ToolRegistry's rule.
+- The search service and its key: the operator writes them through `settings.*`; Web reads and never writes them.
 
-The search API key is `searchService.apiKey`, a user-only field in Web's Settings source ([settings-service §1.2](../appserver/settings-service.md#12-decision-secrets-belong-to-their-owner)). On Unix, the file-backed profile writes the user document with mode 0600. The native profile stores it as `user/web` in SQLite; its boundary is the product home, created with mode 0700 for a new directory on Unix (Windows inherits the parent DACL). Existing home permissions are preserved, and the database has no separate 0600 guarantee. `userOnly` restricts writes, not local reads: the field is written through the client method `settings.update`, never by Web, and local clients can read it through `settings.read`; remote and paired clients cannot. Web reads it with the document at each call, never keeps it, and never places it in definitions, results, `structuredContent`, diagnostics, errors or logs.
-
-**Reload.** PluginManager owns the built-in `web` row's on/off state; see §6. Explicit `plugin.reload` returns `not_reloadable`. Web depends on the process service Settings and on the Session's `toolRegistry`, which it registers with, and reads the Session's configuration (its mount list) and lifecycle. A Settings reload reloads its dependent Web parts: ToolRegistry does not depend on Web (session-boundary A.5), so the Session keeps running: Web's registrations are withdrawn while Web reloads and its tools are offered again from the next request once it registers them again, without a Session reload (#241); an in-flight call is settled by ToolExecutor as reloaded. This follows the dependency lifecycle ([ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)). Configuration edits never reload; they change the offered `web_search` set, which the branch adopts, and the first request built after that adoption declares it (A3).
-
-**Node.** Requests leave from the App Server process that hosts the Session, not from the Session's resource node (A2).
-
-## 2. Data and state
-
-```mermaid
-flowchart TB
-  subgraph CFG["Business configuration (Settings source web)"]
-    WebCfg["searchService, allowPrivateHosts, proxy, proxyDns"]
-    Secret["searchService.apiKey (user-only)"]
-  end
-  subgraph MEM["Web memory per Session (not persisted)"]
-    Cache["Fetch cache, bounded (A9)"]
-    Inflight["In-flight calls: abort handle each"]
-  end
-  subgraph TL["Branch Timeline (written by others)"]
-    Calls["step/tool-call ... step/tool-result, approval/*"]
-  end
-  WebCfg -->|"read at call start"| Inflight
-  Secret -->|"read with the document per call"| Inflight
-  Inflight -->|"one ToolResult per call, written by ToolExecutor"| Calls
-```
-
-Web owns no Timeline state and no `StateCell`. The cache starts empty when Web is applied; nothing is rebuilt from the Timeline.
-
-## 3. Flows
-
-### 3.1 A `web_fetch` call
-
-```mermaid
-sequenceDiagram
-  participant L as Loop
-  participant TL as Timeline
-  participant X as ToolExecutor
-  participant A as Approval and Permission
-  participant W as Web handler
-  participant N as Remote site
-  L->>TL: step/tool-call
-  TL-->>X: Dispatcher delivers, X registers batch task and returns
-  X->>TL: append step/tool-start
-  X->>A: admit risk network
-  A-->>X: allow (or ask, deny)
-  X->>W: execute(ToolCall)
-  W->>W: validate URL, select resolution and address policy (A.4)
-  W->>N: GET via validated IP or proxy-resolved hostname (A.4)
-  N-->>W: body up to 5 MiB
-  W-->>X: ToolResult header plus text slice
-  X->>TL: step/tool-completed, then one step/tool-result for the batch
-```
-
-The handler runs on ToolExecutor's task and decides only from its arguments and the configuration read at call start. Longer pages are read with further calls using `start_char`; a cross-host redirect is returned as a notice so the new host gets its own admission (A10).
-
-### 3.2 A `web_search` call
-
-```mermaid
-sequenceDiagram
-  participant X as ToolExecutor
-  participant W as Web handler
-  participant S as Settings
-  participant M as managedSearch
-  participant Q as Search service
-  X->>W: execute(ToolCall: query, filters)
-  W->>S: read searchService
-  alt absent (default) or dim-oauth
-    W->>M: search({query, count})
-    alt signed in and available
-      M->>Q: authenticated POST /web-search
-      Q-->>M: hits
-      M-->>W: hits
-      W-->>X: numbered result list, domain filters applied by Web
-    else not signed in or no managed provider
-      M-->>W: unavailable
-      W-->>X: error search_unavailable
-    end
-  else configured adapter (e.g. brave)
-    W->>Q: query over HTTPS
-    Q-->>W: hits
-    W-->>X: numbered result list, domain filters applied by Web
-  else no usable service
-    W-->>X: error search_unavailable
-  end
-```
-
-While a Session's Web part is Active, `web_search` is declared only while a search service is usable: an adapter configured with its API key, or, for the default (when `searchService` is absent or `{"kind": "dim-oauth"}`) a signed-in Dim account used through `managedSearch`. The part offers the tool as a dynamic source and withdraws it when the configuration or the account makes the service unusable; the change applies to the first request built after the branch adopts the new set, without a reload, and a request built before that adoption keeps the declaration it was built with (A3). A call-time failure of a usable service — network, service error or invalid response — does not withdraw the tool; it returns the call error (Appendix C). A Session whose mount list (`SessionConfig.tools`) does not name `web_search` never declares it.
-
-## 4. Timing and conflicts
-
-```mermaid
-sequenceDiagram
-  participant TL as Timeline
-  participant X as ToolExecutor
-  participant W as Web
-  Note over TL,W: Turn interrupt during a request
-  TL->>X: step/tool-start
-  X->>W: execute
-  TL-->>X: stop/interrupt (seq after tool-start)
-  X->>W: cancel request
-  W-->>X: error result cancelled (socket closed)
-  X->>TL: step/tool-result for the batch
-```
-
-| Scenario | Outcome | Owner |
+| Requirement (caller) | Can callers compose it from the owner's operations without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| Configuration edit during a call | Call continues with values read at its start; next call uses the new values | Web |
-| Service removed or account signed out between calls | The first request built after the branch adopts the withdrawal no longer declares `web_search`; a request built before that adoption keeps the declaration it was built with, and a call from it returns `search_unavailable` | Web |
-| Web or Settings reload mid-call | The call is settled as reloaded; ToolRegistry and Loop keep running, and Web's tools are absent until Web registers them again, then offered from the next request (D3, #241) | ToolExecutor |
-| Process restart mid-call | ToolExecutor settles the committed call as not surviving recovery; Web never repeats a request | ToolExecutor |
-| Compaction after a result | Fetched text survives only through the summary | ContextPreparation |
+| Read one public page as bounded text | No: the address policy, the conversion and the byte limits are the owner's | `web_fetch` tool contribution |
+| Search once, with domain filters | No: the query rules, the service selection and the account fallback are the owner's | `web_search` tool contribution |
+| Continue a long page without fetching it again | No: only the owner keeps the converted text across calls | the owner's cache; `start_char` on the next call |
+| Declare `web_search` only while a service is usable | No: the availability subscription is the account owner's and the declaration is this owner's | the part's tool source, re-evaluated on a committed `web` write and on an availability change |
+| Read the current configuration | No: the source and its defaults are Settings' | Settings' `read` at use |
+| Decide whether a call may run | Yes: Permission and Approval decide | business, in ToolExecutor |
+| Show or judge a result | Yes: the result is text on the call's fact | business |
 
-Full table in Appendix B.
+An operation or parameter exists only where its row says No.
 
-## 5. Context mapping
+## Caller example
 
-| The model sees | Form | Position |
+A tool call is one contribution; the handler receives data and a cancellation and returns the model-visible result. No other owner's object appears.
+
+```rust
+// Registered from the part's apply: a fixed tool.
+tools.register(ctx, ToolContribution {
+    definition: fetch_definition(),          // name, description, schema, risk network
+    handler: Arc::new(WebFetch { settings: settings_id.clone(), cache: cache.clone() }),
+})?;
+// And the dynamic source: one set holding web_search while a search service is usable.
+tools.register_source(ctx, "web", Arc::new(SearchSource { /* ... */ }))?;
+```
+
+```rust
+// One fetch: read the source, apply the policy, convert, answer a slice.
+let document: WebDocument = settings.read(settings_id.clone(), Scope::User, cancelled.clone()).await?.document;
+let page = self.cache.page_or_fetch(&request.url, &document, cancelled).await?;
+Ok(page.slice(request.start_char, request.max_chars))
+```
+
+```rust
+// One search: the account owner's search when the source names no adapter.
+let reply = account.search(SearchRequest { query, count }, cancelled).await?;
+Ok(numbered(&reply.results, &request))
+```
+
+## Own contract
+
+### Dependencies
+
+| Owner | Operation | Use |
 | --- | --- | --- |
-| `web_search`, `web_fetch` name, description, input schema | Tool declarations | Adopted `context/configured.tools` when the Session mounts them: always without a mount list (`SessionConfig.tools`), and those its list names with one. `web_search` only while a search service is usable |
-| Search results, fetched text, errors, redirect notices | `ToolResult.content` (text only) | Tool result position of the call's batch |
+| Settings ([#2017](https://github.com/arcships/dim/issues/2017)) | `register`, `read` | The `web` source: search service, private-host exceptions, proxy, proxy DNS; read at each call |
+| `dimAccount` (DimOAuth, [#2019](https://github.com/arcships/dim/issues/2019), optional) | `availability`, `subscribe`, `search` | The relay's sign-in state, its changes, and the relay search when the source names no adapter |
+| Session registries ([#2026](https://github.com/arcships/dim/issues/2026)) | `toolRegistry.register`, `toolRegistry.register_source` | The fixed `web_fetch` contribution and the dynamic `web_search` source |
 
-- Compaction: declarations survive as configuration; results only through the summary.
-- Child branches inherit results in their ancestor prefix.
-- Non-interactive Sessions see the same declarations for the same configuration and can use them; the tool set stays the same across Sessions (#30).
-- Never visible: `structuredContent`, the service name, configuration, the API key, private-host exceptions, diagnostics.
-- Fetched page text is untrusted third-party content placed in a tool result without instruction framing (A14).
+The account owner is read by its face name when the source names no search adapter. A profile without an account owner declares `web_fetch` only; a profile with one declares `web_search` while that owner reports a usable account.
 
-### 5.1 Model-facing texts
+### Operations
 
-The two declarations are built-in and protocol throughout ([model-facing prompts §4](../model-prompts.md#4-protocol-and-policy)): both schemas, and both descriptions, which state what each call does and returns — "Search the web. Returns numbered titles, URLs and snippets." and "Read a public web page as text. Use start_char to continue at the returned final URL.", the second naming the continuation argument and the final URL the result carries. Both result texts are protocol:
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `web_fetch` | Read one public `http(s)` page as bounded text | `{url, start_char?, max_chars?}` | `ToolResult.content`: the header block and the text slice; `structuredContent` for clients (A.3) | The call stops: the request is aborted and the socket released before the result is written | error codes as `ToolResult.isError` (Appendix C) |
+| `web_search` | Query the configured service | `{query, max_results?, allowed_domains?, blocked_domains?}` | `ToolResult.content`: the numbered result list; `structuredContent` for clients (A.2) | As `web_fetch` | error codes as `ToolResult.isError` (Appendix C) |
+| declaration | Offer `web_search` while a service is usable | — | the tool source's current set and its version | — | — |
 
-| Text | Class |
+The tool error codes are business results the model reads and acts on: `invalid_input`, `blocked_address`, `dns_failed`, `connect_failed`, `timeout`, `http_status`, `too_many_redirects`, `unsupported_content_type`, `search_unavailable`, `search_failed`, `settings_unavailable`, `cancelled` (Appendix C). A failed call changes nothing else and affects no other call.
+
+### Flows
+
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| `web_fetch`, `web_search` | Read the source, run the call under the policy, convert, answer one result | The request is aborted, the socket released, the call answers `cancelled`; a response fully converted before the abort is returned as it is | The part's tracker stops and joins the in-flight call before the part unloads | The part's close aborts in-flight calls; ToolExecutor settles them as reloaded; the next generation registers the tools again | the calling row: the converted text and the socket; ToolExecutor: the call's terminal fact |
+| Declaration | The source offers `web_search` while the account reports a usable service; a committed `web` write or an availability change re-evaluates it | — | The registration goes with the part | Reload withdraws the registrations and the next generation offers the current set | Web: the offer; ToolBinding: which declaration a request adopts (A.1) |
+
+### Errors
+
+The tool result codes are listed above and detailed in Appendix C. Web has no operation-level errors: it provides no service, and every failure is a result the model reads.
+
+## Exceptions with reasons
+
+- Web reads the account owner's availability and follows its changes instead of failing the model's call: the declaration must follow a sign-in another process wrote, and a subscription is the account owner's own value.
+- The converted-text cache is Web's own projection with its own freshness bound (15 minutes, 50 MiB, final URL): pagination is the only reader, and no other owner can answer for a page Web converted.
+- A tool registration is a callback by reference on the mechanism's registration point, which §7 names as not a forwarding facade; Web keeps no second interface beside it.
+- `web_fetch` is declared even when no search service is usable, and stays declared while the page path works: the two tools have independent availability.
+
+## Verification
+
+The acceptance list is Appendix D. It covers the declaration following a service change without a reload, the result formats and domain filters, pagination and the download limit, redirects, the address policy, permission, interrupt settlement, restart settlement, non-interactive Sessions and secret redaction.
+
+## Supersedes
+
+The Chinese mirror `docs/zh/design/plugins/Web.md` describes the pre-contract shape; its target is this document.
+
+None outside this document: the tool parameters, result formats, address policy, error codes and acceptance in Appendix A–E stay in force, and the previous version of this file's structure sections are replaced by the sections above.
+
+## Client-visible changes
+
+None. Both tools keep their names, schemas, descriptions, results and error codes; the search service still follows `settings.read` and the account's availability, and the declaration timing is the one [#1977](https://github.com/arcships/dim/pull/1977) merged.
+
+## Rule check
+
+| Rule | Application |
 | --- | --- |
-| `web_fetch failed: <code>: <message>` and `web_search failed: <code>: <message>` | Protocol: the result format and its codes (Appendix C); the model reads the code and acts on it |
-| The `web_fetch` header's `URL:`, `Title:`, `Content-Type:` and `Characters: <start>-<end> of <total>` lines | Protocol: the result format |
-| `[Truncated: call web_fetch again with start_char=<end> to continue.]` and `Redirected to <url>; call web_fetch with that URL to follow it.` | Protocol: the handles that continue a read; the model passes them back |
-| The search result list, the fetched text slice and the redirect notice's URL | The service's and the page's own content, carried as material |
+| §1 parts and Capabilities | One Session part. It writes no Timeline event and folds no state, so it is not a Capability. |
+| §2 scopes | Session: the cache and the registration live with the Session; nothing is shared across Sessions. |
+| §3 orthogonality | Web reads the source, the account answer and the call's arguments; it returns only its own results. |
+| §4 rule 1 (commands) | No command event: results are written by ToolExecutor as the call's fact. |
+| §4 rule 2 (handover) | The call is ToolExecutor's; Web returns one result per call. |
+| §4 rule 3 (before callbacks) | None registered. |
+| §4 rule 4 (no business meaning in core) | Tool names, schemas and result text are Web's. |
+| §4 rule 5 (batches) | No batches. |
+| §4 rule 6 (context) | Results reach the model only as the call's `ToolResult`. |
+| §4 rule 7 (public events and services) | Settings, the optional account face and the tool registry; no subscription of its own besides the account's availability. |
+| §4 rule 8 (requirements) | None; the account's availability, subscription and search are defined by the account owner's contract. |
+| §4 rule 9 (facts) | Web writes no event; the cache is memory only. |
+| §7 values, ids and callbacks | Arguments and results are data; the tool handler is a callback by reference on the registration point; no object crosses. |
+| §7 no proxy lookup | Web returns its own results; the account's state and search come from the account owner. |
+| §7 one interface | One tool contribution per tool, one dynamic source; no service, no adapter. |
+| §7 cross-language | Both tools are declared with data schemas and their results are data. |
+| §7 one change | Replacing the search face with the account owner's operations happens in the same change that migrates the declaration and the call. |
+| ADR 002 D1 | Session scope: no state is shared across Sessions. |
+| ADR 027 D2 | Web resolves no service by id: Settings and the account owner are process dependencies declared at load, and no registration point is reached by id. |
+| ADR 002 D2 | No wiring plugin: the tools are on the part; the source is the registry's registration point. |
+| ADR 002 D3 | Dependencies point from Web to Settings, the account owner and the registry. |
+| ADR 002 D4 | The `web` document is business configuration read at use; the plugin's on/off state is structural. |
+| ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix below. |
 
-Web writes no marker and contributes no guide entry; its declarations have no policy text.
+## Requirements raised to mechanism owners
 
-## 6. Interfaces (summary)
+None. The account owner's `availability`, `subscribe` and `search` and the tool registry's registration points cover the calls above.
 
-| Interface | Kind | Purpose |
-| --- | --- | --- |
-| `web_search` | Tool offered by Web's dynamic source to `toolRegistry` (Session), risk `network` | Query the configured service; numbered result list |
-| `web_fetch` | Tool registered with `toolRegistry` (Session), risk `network` | Fetch one public `http(s)` URL; bounded text slice with pagination |
-| `web` source | Business configuration in Web's Settings source, read at use | Search service, private-host exceptions, proxy |
+## Binding appendix
 
-No Session methods, `managementMethods` or CLI subcommand: protected client configuration uses the implemented `settings.read`/`settings.update`. No `/settings` UI is assumed. Details in Appendix A.
+The part registers one fixed contribution and one dynamic source on `ToolRegistry`; there is no service name of its own. Appendices A–E are the operation details and stay in force.
 
-### 6.1 Registration and source
+```rust
+/// `SettingsId` is the id `settings.register` answered for the `web` source.
+#[derive(Clone)]
+struct WebFetch { settings: String, cache: Arc<PageCache> }
 
-The process row `web` is registered with the App Server when a home exists. Its apply registers the Settings source `web` (user file `web.json`, no project file) and the Session part `Web` with `partRegistry`. Each Session mounts that part. The part injects `settings`, `toolRegistry` and `managedSearch`, and reads the Session's configuration (its mount list) and lifecycle. Its apply registers cleanup, `web_fetch`, and the `web_search` source; when the configuration needs the managed account, it asks the owner for one provider-owned observation of the account store while assembling the source, then re-evaluates the source on each committed write of the configuration and each account change, observing the account once more when a later configuration starts needing it. The Rust spelling is Appendix G.
+impl ToolHandler for WebFetch {
+    fn execute(&self, call: ToolCall, _context: ToolExecutionContext, cancelled: CancellationToken)
+        -> HostFuture<'_, ToolResult>;
+}
 
-The source schema the row registers, with `userOnly` paths `/searchService`, `/allowPrivateHosts`, `/blockPrivateAddresses` and `/proxyDns`:
-
-```json
-{
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "searchService": {
-      "type": "object",
-      "required": ["kind"],
-      "additionalProperties": false,
-      "properties": {
-        "kind": { "type": "string", "minLength": 1 },
-        "endpoint": { "type": "string", "format": "uri" },
-        "apiKey": { "type": "string", "minLength": 1, "writeOnly": true }
-      }
-    },
-    "allowPrivateHosts": {
-      "type": "array",
-      "items": { "type": "string" },
-      "default": []
-    },
-    "blockPrivateAddresses": { "type": "boolean", "default": false },
-    "proxy": { "type": "string", "format": "uri", "writeOnly": true },
-    "proxyDns": { "type": "boolean", "default": true }
-  }
+/// The dynamic source: `sets()` answers one set with `web_search` while a
+/// search service is usable and no set otherwise.
+impl ToolProvider for SearchSource {
+    fn sets(&self) -> Vec<ToolSet>;
 }
 ```
 
-Execution follows the tool handler with the call's cancellation token. Every call reads the user-scoped `web` source. A read failure, or a stored document that does not deserialize into the web document, fails the call with `settings_unavailable` and opens no connection. Web does not substitute defaults for that document. When an API-key adapter is configured, the key is `searchService.apiKey`. When `searchService` is absent or `{"kind":"dim-oauth"}`, `web_search` calls `managedSearch` and does not read OAuth tokens.
-
-Settings treats `format: "uri"` as an annotation. Web parses `searchService.endpoint` and `proxy` when constructing an HTTP request, rather than revalidating the Settings document. An unparsable endpoint fails `web_search` with `search_unavailable`. An unparsable proxy fails `web_search` with `search_unavailable` or `web_fetch` with `connect_failed`. No connection is attempted, no direct-connection fallback is used, and diagnostics omit configuration values. Web's proxy settings apply to fetches and directly configured search adapters; account-backed search follows the managed provider contract.
-
-The initial source is the user file `web.json`, read at user scope, with no projectFile or implicit user/project merge (A16). Clients write private-host exceptions; Web has no configuration-writing tool. The App Server registers the built-in Web row whenever a product home exists; Web requires no package installation. [PluginManager acceptance item 5](PluginManager.md#appendix-c-acceptance-m1) governs its on/off state: `plugin.disable {"name":"web"}` withdraws its tools from the next request of an open Session; `plugin.enable {"name":"web"}` restores them there and in new Sessions. The state survives a restart. Explicit `plugin.reload` returns `not_reloadable`.
-
-## 7. Security
-
-- Admission: both tools declare `network`; every call passes Approval and Permission (read-only denies, workspace-write asks, FullAccess allows).
-- SSRF: the policy is explicit. With `blockPrivateAddresses` off (default) Web connects to whatever the host can route to, including a local proxy, a TUN device or a Fake-IP answer; with it on, Web resolves once and checks every answer before the request, and pins the first permitted address when it connects directly. A proxy resolves the target in both `proxyDns` modes (A.4). Cross-host redirects need a new call and a new admission (A10).
-- No ambient authority: `GET` only; no cookies, stored site credentials or client certificates; nothing from the Session except the URL the model wrote (A8).
-- API key: read with the document per call; never in definitions, results, `structuredContent`, diagnostics or errors.
-- Exfiltration through URLs is the inherent risk of the `network` category and is controlled by admission.
-- With `proxy`, the target form follows A.4 (`CONNECT` for `https`, absolute-form for `http`); certificate verification, SNI and the `Host` header use the original URL host.
-
-## 8. Rule check
-
-| Rule | How this document complies |
-| --- | --- |
-| Principles §4 rule 1 (commands for others' state) | Web changes no other module's state; tool results are written by ToolExecutor, their owner. |
-| Principles §4 rule 2 (handover) | Not applicable: Web takes over no object; it only runs calls ToolExecutor hands it. |
-| Principles §4 rule 3 (before callbacks only) | No intervention before a write; argument checks are inside the tool handler. |
-| Principles §4 rule 4 (no business meaning in core) | No core change; the tools use the generic tool registration contract. |
-| Principles §4 rule 5 (batch) | Not applicable: Web decides from call arguments and configuration, not from events. |
-| Principles §4 rule 6 (context from handed-over events) | Results reach the model only as `step/tool-result` facts written by ToolExecutor. |
-| Principles §4 rule 7 (public events and services only) | Web uses only `toolRegistry`, `managedSearch`, the Settings business source and its change events. |
-| Principles §4 rule 8 (requirements to mechanism owners) | Reuse implemented C4, `managedSearch` and Settings bindings; adapter API keys live in Web's own user-only field and account OAuth tokens stay in the Rust managed provider. |
-| Principles §4 rule 9 (only facts later decisions use) | Web writes no event; its fetch cache is memory only. |
-| Principles §1 (Capability and App Server boundary) | Web is a built-in Session capability. Its code is the App Server process row `web` and the Session part `Web`. It adds no Web-specific host port. |
-| ADR 002 D1 (scope follows state) | Session scope: Web holds no state shared across Sessions. |
-| ADR 002 D2 (no wiring modules) | No wiring module; search adapters are built in (A1). |
-| ADR 002 D3 (dependencies follow scope) | Settings is a process service; a missing required service fails the Web part's assembly and the Session continues without it. |
-| ADR 002 D4 (structural vs business configuration) | PluginManager owns the built-in row's structural on/off state (§6); the `web` document is business configuration in Web's own Settings source, read at each call. |
-| ADR 002 D5 (language-neutral contracts) | Contracts are neutral; the Rust form is Appendix G. |
-
-## 9. Requirements raised to mechanism owners
-
-None. Tool registration, source declarations, Settings read/write/events already have contracts and implementations; the API key is Web's own field. Web raises no additional core, rutis, loader, lifecycle, optional-dependency or diagnostics-service requirement. A missing required service fails assembly of this row.
+---
 
 ## Appendix A. Interface details
 
@@ -351,13 +261,13 @@ Fake-IP DNS answers are ordinary addresses. With a proxy and `proxyDns: true` th
 
 | Field | Type | Default |
 | --- | --- | --- |
-| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` or absent; user-only | absent (uses `dim-oauth` via `managedSearch` when signed in; otherwise `web_search` is not declared) |
+| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` or absent; user-only | absent (uses `dim-oauth` through the account owner's `search` when signed in; otherwise `web_search` is not declared) |
 | `allowPrivateHosts` | string[]; user-only | `[]` |
 | `blockPrivateAddresses` | boolean; user-only | `false` |
 | `proxy` | string (URL); write-only; absent means the session's own proxy (A.4) | absent |
 | `proxyDns` | boolean; user-only | `true` |
 
-Read at each call and used as delivered: Settings validates the document against the schema Web declares and applies its defaults on write and when reading a persisted file, and Web does not validate it again. Web has no tool that writes configuration, so the document is written only through the client methods (S8b). A change is a data update with notification, never a reload. The row's structural on/off state belongs to PluginManager (§6). Built-in adapter ids are an implementation choice (A13). The API key is `searchService.apiKey` (§1).
+Read at each call and used as delivered: Settings validates the document against the schema Web declares and applies its defaults on write and when reading a persisted file, and Web does not validate it again. Web has no tool that writes configuration, so the document is written only through the client methods (S8b). A change is a data update with notification, never a reload. The row's structural on/off state belongs to PluginManager (PluginManager). Built-in adapter ids are an implementation choice (A13). The API key is `searchService.apiKey` (A.5).
 
 ### A.6 Timeline and capability mechanics
 
@@ -451,25 +361,3 @@ Flow tests through public interfaces: tool calls in a test Session, a local HTTP
 | A14 | No framing text around fetched content | Judgment | Model-visible framing to define |
 | A15 | A configured proxy accepts both forms a target takes: `CONNECT <host>:<port>` for `https`, absolute-form requests for `http` | [ADR 024](../../adr/024-web-fetch-transport.md) | A proxy that accepts only one form cannot serve both schemes |
 | A16 | Initial source is user file `web.json`, read at user scope; no implicit project merge | Maintainer decision | Define project source/merge semantics before using existing projectFile |
-
-## Appendix F. Implementation boundaries
-
-| Question | Current boundary |
-| --- | --- |
-| Initial scope | Tool parameters, the default network policy, the content policy, A1–A14, A15's proxy forms and A16 are maintainer-confirmed. Web is the built-in process row `web` and its Session part. Product installation of optional packages remains PluginManager work. |
-| Configuration diagnostics | Non-fatal configuration diagnostics for UI/persistence use ToolResult.structuredContent; model-actionable information still belongs in content, with no new channel |
-| HTML to text | A scanner, not a browser. A `<` followed later by `>` starts a tag, including a bare `<` in prose. Script, style and navigation are removed by regular expressions before that scan. |
-| Content encoding | `gzip`, `deflate` and `identity` are decoded. `br` and any other encoding fail as `connect_failed`. An incomplete gzip, zlib-wrapped deflate or raw deflate stream fails with `connect_failed`, unless the download limit was already reached, in which case the capped body is returned with `download_limited`. Raw deflate is the fallback for servers that omit the zlib wrapper. |
-| User-Agent | `dim-web/` plus the `dim-app-server` package version |
-| Transport | `reqwest`, HTTP/1 only, redirects off, a 10 s connect deadline, manual gzip/deflate decoding with the 5 MiB ceiling. The address policy runs before the request and pins the first permitted address when it is on ([ADR 024](../../adr/024-web-fetch-transport.md)) |
-
-## Appendix G. Rust binding
-
-The current Rust binding. Tool names and data shapes are unchanged.
-
-| Neutral | Rust |
-| --- | --- |
-| `toolRegistry.register` for `web_fetch` | The Session part injects `Keyed<ToolRegistry>` and calls `tools.register(ctx, ToolContribution {definition, handler})` in its `apply`; the registration is withdrawn when the part unloads |
-| dynamic source for `web_search` | The part calls `tools.registerSource(ctx, "web", provider)`; the provider's `sets()` returns one `ToolSourceSet` (key `web`, a new UUID per set) while a service is usable and none otherwise; after a change it emits `ToolProviderChanged` under `tool_provider_changes(session)` from its own context |
-| account availability | `ManagedSearch` answers the owner's current sign-in availability and its changes in-process; Web subscribes before its first read and, when managed search first becomes necessary for the Session, asks the owner for one provider-owned observation of its account store before deciding the declaration; afterwards the provider's watch is the source |
-| declaration / `execute` | `ToolDefinition` / handler with `CancellationToken`; the disposer aborts in-flight requests ([tool contributions §4](../../architecture/rust-agent/tool-contributions.md)) |

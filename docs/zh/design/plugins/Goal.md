@@ -1,4 +1,5 @@
 # Goal
+> 目标契约以英文文档为准：[`docs/design/plugins/Goal.md`](../../../design/plugins/Goal.md)。本文件描述重构前的形状，其中的调用与接口在新契约落地时删除。
 
 总体设计：[overview §4](../overview.md)。阶段：P2。语言：Rust（[overview 附录 C](../overview.md)）。作用域：Session + 分支（[ADR 002](../../adr/002-plugin-scope.md)）。依赖（[路线图](../../../design/roadmap.md) P5）：C1、C3、C4、C5、S1、S8b（[#118](https://github.com/arcships/dim/issues/118)）。
 

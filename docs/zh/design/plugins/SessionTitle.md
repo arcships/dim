@@ -1,4 +1,5 @@
 # SessionTitle
+> 目标契约以英文文档为准：[`docs/design/plugins/SessionTitle.md`](../../../design/plugins/SessionTitle.md)。本文件描述重构前的形状，其中的调用与接口在新契约落地时删除。
 
 总体设计：[overview](../overview.md)（SessionTitle）。作用域：[ADR 002](../../adr/002-plugin-scope.md)（Session）。
 

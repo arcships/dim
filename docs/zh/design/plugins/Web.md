@@ -1,4 +1,5 @@
 # Web
+> 目标契约以英文文档为准：[`docs/design/plugins/Web.md`](../../../design/plugins/Web.md)。本文件描述重构前的形状，其中的调用与接口在新契约落地时删除。
 
 状态：已实现为 `dim-app-server` 内置 Rust 插件。总体设计：[overview](../overview.md)（Web）。阶段：P2。语言：Rust。作用域：[ADR 002](../../adr/002-plugin-scope.md)（Session）。
 

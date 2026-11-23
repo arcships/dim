@@ -1,274 +1,227 @@
 # Goal
 
-Status: Draft.
-Scope: 既有 Goal Session/branch 部件的目标、命令、续行、模型输入和终止。
-Issue: [#1320](https://github.com/arcships/dim/issues/1320)。
+Scope: branch state with a Session entry. Issue: #2033 (this contract); #1320 (the goal feature). Evaluator judgement is a mode of this owner, described in [Pursuit](Pursuit.md); the state object and its reload mapping are in [Goal-state-read.md](Goal-state-read.md), and the two places where this contract supersedes that document are named below.
 
-[业务状态与重载](Goal-state-read.md)唯一规定完整状态数据、内存与持久化边界、加载映射、原子提交、成本和验收。[读取与输入删除](Goal-property-queries.md)规定旧历史不恢复及输入删除不回滚的边界。本文规定 Goal 的入口、执行规则和模型协议；[Pursuit](Pursuit.md)规定 evaluator 判定方式。当前代码和生成装配图不因设计更新而宣称已实现目标。
+Goal owns the goal of one line: the objective, the judge, the status and the reason it changed, the decisions that follow, and the model-visible texts that state them. A Session part registers the commands; a branch part holds the state. The current shape is the one #2033's scan report describes.
 
-## 1. Structure
+## Use and scope: responsibility split
 
-Goal 属于一条分支。Session 部件注册命令和工具，branch 部件拥有目标、当前执行和异步任务。依赖及作用域遵守 [ADR 002](../../adr/002-plugin-scope.md)、[插件合同](../plugin-contract.md)和 [rutis](../rutis-usage.md)。
+Goal owns:
 
-| 部件 | 依赖和职责 |
-| --- | --- |
-| GoalSession | TreeCommands、ToolRegistry、SessionMethods、GuideEntries、SessionIdentity；注册 goal_update、session.goal 和模型 guide。入口按 Session 与 branch 身份路由本插件拥有的 branch 处理句柄，不持有分支业务状态。 |
-| GoalBranch | Dispatcher、Timeline、TimelineIdentity、BranchLifecycle、SessionLifecycle、TreeCommands、Settings；拥有状态、决定、业务事件和自己的任务。 |
+- **The goal of a line.** One objective, the judge that decides completion, the status (`active`, `paused` with a reason, `completed`, `blocked`, or none) and the moment it last changed. The state belongs to the line and ends with it.
+- **The decisions that follow a fact.** After a turn ends: continue, stop at the optional continuation limit, stop after three turns without progress, or ask for an evaluation. On an interrupt, a failed or cancelled turn, or an unload: pause with the reason. When a child line starts: retire the keys of an inherited goal.
+- **The texts the model reads.** The `dim-goal` marker's command block, state block and continuation, and the guide entry that explains them.
+- **The commands' vocabulary.** `set`, `edit`, `pause`, `resume`, `clear` and the completion report, their parameter rules, and the two entry points that carry them (`session.goal.*` and the `goal_update` tool).
+- **The evaluator line's purpose.** Goal asks TimelineTree to open a child line cut at the turn end and closes it with the operation id it wrote.
 
-分支内写业务状态用声明的 timeline；普通 continuation 和评估分支操作沿用原输入/TreeCommands 服务。没有新公共分支服务、Store 依赖或恢复协调模块。部件在 apply 注册清理及服务，实际消费和任务遵守 activated/closing；关闭完成必要终态后才移除服务。
+Callers keep as business:
 
-maxContinuations 仍是 Settings 的 goal 源中的可选业务字段，范围 1..=1000，缺失表示无限额。每次决定通过 Settings 读取；不增加默认限额、缓存或重载配置机制。
+- Which line a command names; a client that names none means the conversation line.
+- Which command and its parameters; the operator's presentation of the goal.
+- History: a client that shows the goal of an ended line reads that line's facts and folds them itself.
 
-## 2. Data and state
-
-Goal 有两个不同的对象：
-
-- 持久业务状态：一个完整目标、判定方式、active/paused/completed/blocked/none 及原因或说明。每次真实业务变更写一个 goal/state。
-- 本实例执行：次数、轮次、当前输入/任务、评估配对、待执行决定和写入协调；全部在内存。它们不因每个事件到达而保存。
-
-业务事件结构和加载映射见 [状态设计 §2](Goal-state-read.md#2-保存对象)与[§4](Goal-state-read.md#4-get-与冷恢复)。active 是持久记录中的状态，running 是当前实例实际在执行；重载可使最后记录仍为 active、当前状态已经 paused。
-
-| 命令或结果 | 本次有效业务变化 |
-| --- | --- |
-| set | 新目标与 judge，active；开始新执行，次数归零。 |
-| edit | 替换目标，保留有效状态和 judge；不启动暂停中的目标。 |
-| pause | paused，reason=user；停止后续自动推进。 |
-| resume | active，开始新的执行；不复活旧轮次、计数、评估或决定。 |
-| clear | objective=null，state=none；终止当前 Goal。 |
-| goal_update completed / blocked | model judge 下完成/阻塞；evaluator judge 下 completed 只是本次执行的评估请求，状态保持 active。 |
-| evaluator 的有效 done / blocked | 完成/阻塞当前目标。 |
-| 中断、失败、取消、限额、无进展、评估失败、可控卸载 | 结束正在执行的 Goal，写 paused 和原因。 |
-| continuation、普通输入、任务和轮次变化 | 本实例内存变化，不写 Goal 状态事件。 |
-
-Goal 命令的模型状态输入与 trigger 仍紧邻，状态输入在前；结构化业务事件同批置后。状态只在提交成功且按序消费后可见；后一个命令等待先前本插件写入已消费，不能对旧目标组成下一条状态。设置和恢复的 Queue 输入仍驱动第一轮；evaluator 完成申请不产生假的目标状态变更。
-
-## 3. Flows
-
-### 3.1 Set and continue
-
-~~~mermaid
-sequenceDiagram
-    actor U as 用户
-    participant S as Goal Session 入口
-    participant G as Goal branch
-    participant T as Timeline
-    participant L as InputQueue / Loop
-    U->>S: session.goal.set
-    S->>G: 校验并路由到本 Session 的 branch
-    G->>T: append_batch：模型状态输入、trigger、goal/state
-    T-->>G: 提交成功并按序派发
-    G->>G: running，初始化本次执行
-    T-->>L: 采用输入并执行
-    L->>T: turn/end
-    T-->>G: 当前轮次完成
-    G->>G: 检查本实例状态、Settings、进展
-    G->>T: 原 continuation 输入
-    Note right of G: 次数变化只在内存，不写恢复事件
-~~~
-
-### 3.2 Completion through goal_update
-
-工具先校验外部参数，再由 Goal branch 组成目标变化。model judge 下，模型状态输入、completed trigger 和完整 completed 业务事件原子提交。evaluator judge 下只登记本次执行的完成申请；创建评估、等待报告不写恢复快照。只有有效评估结果才决定 completed/blocked，见 [Pursuit](Pursuit.md)。
-
-### 3.3 Interrupt pauses the goal
-
-turn-scope stop/interrupt、执行失败或取消使正在运行的 Goal 停止新的自动决定。Goal 的 owned task 取消并结算自己发起的工作，写 paused 与必要模型状态输入。已经交接的输入和已经开始的模型/工具工作按各自所有者规则结算；Goal 不直接撤回它们。
-
-### 3.4 A new branch clears the inherited goal
-
-子分支和 fork 从本地 branch/start 或 session/forked 开始，不能继承父分支/复制前缀的 Goal 执行或目标。继承 key 仍存在时，沿用原 start clear 退休这些模型可见 key。清理在 publication 后作为 Goal 自己的任务完成；它不是恢复父分支执行。
-
-## 4. Timing and conflicts
-
-### 4.1 Interrupt committed before the continuation (at most one extra turn)
-
-决定只使用已消费事实，写入前重查同一轮次和执行。中断与已经提交的 continuation 交错时，不抹去已提交事实；后续暂停阻止新续行。已经交接的工作允许按原交接规则完成结算，不为了保证零额外调用而改变 InputQueue/Loop。
-
-### 4.2 Reload
-
-加载行为唯一见 [Goal 状态设计](Goal-state-read.md#4-get-与冷恢复)：最后 active 映射为内存 paused，不写回、不读取旧轮次和次数、不补答旧决定、不恢复旧评估。set/resume 才开始新执行。
-
-Session/branch 部件的可控关闭会结束其正在运行的 Goal 并写 paused；进程直接崩溃或存储不可写时无法保证终态提交，由加载映射覆盖这一情况。客户端 detach、重连和查询不关闭原实例。
-
-### 4.3 Other key rows
-
-| 场景 | 结果 |
-| --- | --- |
-| 普通操作员输入 | 仅在本实例内重置 count/idle，使旧延后评估失效；不写归零事件。 |
-| 待消费 Queue/Steer 输入 | 暂不自动续行；不将其列表写进 Goal 状态。 |
-| 有未结束后台任务 | 在本实例等待，取消结束可唤起一次仍有效的决定；重载后不重建这项等待。 |
-| Goal 命令输入被删除 | 仅移除本实例待输入 ID；已提交目标不变，零查询、零补偿写入。 |
-| 重载后到达旧评估报告 | 不在当前执行的配对表中，不能完成或续行目标。 |
-| paused 后 edit | 仍 paused；必须显式 set/resume 才运行。 |
-| clear 后加载 | 没有目标，不读取更早目标复活它。 |
-| 未知或损坏新状态 | 返回错误，不冒用更旧状态。 |
-
-## 5. Context mapping
-
-goal/state 不进入模型上下文。Goal 仍通过采用输入提供模型文本，不能通过请求准备注入内存状态。
-
-| 对象 | 模型含义 |
-| --- | --- |
-| goal:state | 完整目标及这次业务变更时的状态。历史 active 只证明当时开始过执行。 |
-| 新 set/resume trigger | 当前输入中的明确开始/恢复请求。 |
-| 新 continuation | 当前执行驱动下一轮的请求。 |
-| completed/blocked/paused 记录 | 当时已经确认的结束/暂停状态。 |
-| 子分支的 start clear | 继承目标不属于本线，不在本线继续或完成它。 |
-
-guide 和 active 文本不能把历史 active 解释为当前实例的运行授权。当前状态来自 Goal owner；历史页和模型历史保留当时事实。重载只在内存暂停，不补造一条模型上下文输入。
-
-## 6. Interfaces (summary)
-
-公开入口仍为 session.goal.set/edit/pause/resume/clear/get 和工具 goal_update；参数、GoalRead 和命令 sequence 返回保持原接口。[Appendix A](#appendix-a-interface-details)列出合同。无 Goal 数据库或专用查询机制。
-
-## 7. Security
-
-所有入口按 Session 身份及分支校验路由，不能通过参数切换到其他 Session。Goal 不授予执行权限，实际模型/工具仍遵守 Session 的 Permission/Approval。普通用户不能提交任意 raw Goal 块；生产者转义目标和说明。诊断不记录目标正文或凭据。
-
-## 8. Rule check
-
-| 规则 | 本设计 |
-| --- | --- |
-| principles §1 | Goal branch 是 Capability；Session 部件是入口，不把所有部件统称 Capability。 |
-| §4.1、§4.2 | 不写别的所有者的结果，不回收已交接输入；删除按 InputQueue 的事实。 |
-| §4.3、§4.4 | 无 before I/O；核心不解释 Goal。 |
-| §4.5 | 业务状态和必要输入同批提交，Dispatcher 按序消费，任务写前重查。 |
-| §4.6 | 模型内容只经采用输入，不注入内存状态。 |
-| §4.7、§4.8 | 已声明的现有服务，无核心机制新增。 |
-| §4.9 | 业务状态及实际驱动输入持久化，执行进度不落盘。 |
-| ADR 002 D1 | Session 注册工具/方法；目标、执行和任务归 branch。 |
-| ADR 002 D2 | 不增加接线模块或全局隐式资源。 |
-| ADR 002 D3 | 扩展依赖核心，Session 不持有分支业务状态。 |
-| ADR 002 D4 | goal Settings 是业务配置，不触发部件重载。 |
-| ADR 002 D5 | 事件、状态、入口和错误为语言中立合同；Rust 名字在绑定附录。 |
-
-## 9. Requirements raised to mechanism owners
-
-无。Goal branch 使用已有 append_batch、Dispatcher、生命周期及属性查询。完整业务事件是扩展数据，不新增核心事件类型、查询字段或 native 格式版本。
-
-## 10. Implementation
-
-修改对象和验收见[状态设计 §6–§7](Goal-state-read.md#6-成本和修改落点)。保留既有 GoalSession/GoalBranch 装配、Settings、参数校验、文本编码及产品流程；移除运行对象序列化、逐事件 checkpoint、恢复节点、源后缀重放和每输入删除边界。当前实现状态由 issue 和实际代码记录，本文不把旧测试通过等同于新状态机完成。
-
-## Appendix A. Interface details
-
-### A.1 Tool goal_update
-
-Session 的 ToolRegistry 注册 goal_update，risk=session；参数为 status=completed|blocked、summary，summary 长度 1..=2000。调用方分支由 ToolCall 身份确定。返回 ToolResult.content 为 goal_update recorded: completed. 或 goal_update recorded: blocked.；确认提交，不把评估请求误报为目标已完成。取消发生在提交前不写入，提交后事实保留。
-
-### A.2 Session methods
-
-namespace 为 session.goal，mutating 方法 interruption=report、progress=false；get 的 mutating=false。branchId 默认 main。
-
-| 方法 | 参数 | 结果 / 行为 |
+| Requirement (caller) | Can callers compose it from the owner's operations without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| set | sessionId、branchId?、objective、judge? | {sequence}；judge=model（默认）或 evaluator，目标 1..=4000 字符。 |
-| edit | sessionId、branchId?、objective | {sequence}；保留当前有效状态及 judge，不启动暂停目标。 |
-| pause | sessionId、branchId? | {sequence}；用户暂停，Append。 |
-| resume | sessionId、branchId? | {sequence}；Queue，新的执行、次数归零。 |
-| clear | sessionId、branchId? | {sequence}；清除并终止当前执行。 |
-| get | sessionId、branchId? | 原 GoalRead，见 A.3。 |
+| A client submits a goal command for a line | No: the command must reach the line's input owner in order, and the resulting state is the owner's | the Session entry writes one command input to the line |
+| The model reports completion or blockage | No: the report changes the goal, and its line is the call's line | the tool handler writes one command input to that line |
+| A client reads the goal of a line | No: the goal is the line owner's state and nothing else publishes it | `goalLine.read` at the line id |
+| The owner states the state to the model | No: the state block restates the whole goal and the live keys when it changes | the branch owner writes the state record input |
+| A command is retried after a lost reply | No: accepting a command once is the input owner's rule | the submission id on `submit` |
+| A client shows the goal of an ended line | Yes: the line's facts stay readable at its fixed head and the fold is the client's projection | business composes with TimelineTree's `read` |
+| A client reads the conversation line's goal without naming it | Yes: the line record carries the Session's current line | business composes with TimelineTree's `directory` |
+| The owner continues a goal after a turn | No: the decision uses the owner's fold, counters and tasks | branch-internal |
 
-Session 入口校验参数和 Session 身份，Goal branch 决定状态并提交原子批次。sequence 仍是命令 trigger 的位置；结构化业务事件不改变它。没有目标时保持原命令的空目标结果，不凭空创建目标；没有生效变化不写伪造的业务状态。
+An operation or parameter exists only where its row says No.
 
-### A.3 Reading the goal
+## Caller example
 
-返回 {branchId, through, goal}；goal 为 null 或 {objective, status, evaluator}。status 为 {kind:active|completed|blocked|none} 或 {kind:paused,reason}，保持 GoalRead 的既有外部类型。
+`session.goal.set` writes one command input to the named line; the branch owner decides and states the result. No object, no sequence, no wait.
 
-活分支等待本次入口固定位置已消费后返回内存；不因 source_through 或新的持久事件等待。重载后的 active 记录返回有效 paused，reason=interrupted_reload；不能把持久历史页当作当前状态。无活 owner 时读取最后本地业务状态并应用加载映射。普通路径读取一个 Goal 状态对象；没有 goal/state 就没有当前 Goal，删除输入不改变已提交状态。
+```rust
+// The entry checks its own parameters and resolves the line a client left unnamed.
+let line = match command.line {
+    Some(line) => line,
+    None => tree.directory()?.default,      // TimelineTree's shape (#2092)
+};
+let _ = tree.line(LineRequest { line: line.clone() })?;   // unknown_branch for a line that does not exist
+// Goal's own text: the command block carries the operation, the objective and the judge.
+let input = goal_command(&line, &command);
+line_owner::<InputQueue>(&line)?
+    .submit(input, cancelled)
+    .await?;
+// The reply is the input's position; nothing else is returned and nothing is released.
+```
 
-缺失分支、存储失败和未知 schema 仍是错误；取消读取返回 operation_interrupted，不取消已经接受的命令。详细范围见[状态读取](Goal-state-read.md#4-get-与冷恢复)。
+`session.goal.get` reads the line owner's published value; the caller decides what "no owner" means for its screen.
 
-### A.4 Continuation decision
+```rust
+let goal = match line_owner::<GoalLine>(&line) {
+    Ok(owner) => owner.read().await?,
+    Err(NoInstance) => return Err(AgentError::Reloading("Goal".into())),   // service_reloading
+};
+// `goal.objective`, `goal.status`, `goal.evaluator`, `goal.through`; history is read from facts instead.
+```
 
-只在本实例 running 时对新事实做决定；计数、轮次、去重和等待仅存在内存。
+`goal_update` writes a report input to the call's line:
 
-| 条件 | 不满足时 |
+```rust
+let line = execution.line.clone();          // the call's line, a value
+line_owner::<InputQueue>(&line)?
+    .submit(goal_report(&line, status, summary), cancelled)
+    .await?;
+```
+
+## Own contract
+
+### Dependencies
+
+| Owner | Operation | Use |
+| --- | --- | --- |
+| TimelineTree ([#2024](https://github.com/arcships/dim/issues/2024)) | `directory`, `line`, `read`, `create`, `end` | The conversation line; one line's record for the named line; an ended line's facts; opening and closing the evaluator line |
+| The line's input owner ([#2027](https://github.com/arcships/dim/issues/2027)) | `submit` | The command input and the state record input |
+| The line's timeline (branch runtime) | `append` | The business fact recovery reads |
+| Dispatcher, BranchLifecycle, TimelineIdentity (branch runtime) | facts, activation, closing | Folding the line's facts and the branch part's lifetime |
+| SessionScope ([#2025](https://github.com/arcships/dim/issues/2025)) | `phase` | Not ending evaluator lines while the Session is closing |
+| Settings ([#2017](https://github.com/arcships/dim/issues/2017)) | `register`, `read` | The `goal` source's optional `maxContinuations` |
+| Session registries ([#2026](https://github.com/arcships/dim/issues/2026)) | `sessionMethods.register`, `toolRegistry.register`, `guideEntries.register` | The commands, the tool and the guide entry |
+
+The line-id operations that `line_owner` names are the ones the cross-cutting decision puts in TimelineTree's contract ([#2024](https://github.com/arcships/dim/issues/2024)); SessionScope's contract has no such operation.
+
+### Operations
+
+The entry's operations are the five commands, the read, the tool and the guide entry; the branch owner's operation is one read.
+
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `session.goal.set` | Start a new execution of a goal on a line | `{sessionId, branchId?, objective, judge?}` | `{sequence}`: the accepted input's position | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `session.goal.edit` | Replace the objective, keeping status and judge | `{sessionId, branchId?, objective}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `session.goal.pause` / `resume` / `clear` | Pause, resume or clear the goal | `{sessionId, branchId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `session.goal.get` | The goal of a line now | `{sessionId, branchId?}` | `{branchId, through, goal?}`; the goal carries `{objective, status, evaluator}` | The wait for the owner's fold stops | `invalid_params`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `goal_update` | The model reports completion or blockage | `{status, summary}` | text in `ToolResult.content` | Before the input is submitted | the commands' codes, returned as an error result |
+| `goalLine.read` | The line's published goal value | `{}` | `{objective?, status, evaluator, through}` | While the fold reaches the head | `closed` as the service error `{code, message}` |
+
+`invalid_params` covers what Goal itself checks: an objective outside 1..=4000 characters, a summary outside 1..=2000, an unknown judge, an empty `branchId`. `unknown_branch` is TimelineTree's `line` refusal; `branch_ended` is the input owner's refusal; `service_reloading` is the mechanism's answer that the line has no live goal owner, which the client shows as no goal and reads from history instead. Every code above is one the client already receives today.
+
+`goalLine.read` takes no request parameter: the line is the instance the mechanism resolved. Requests, replies and errors are data; `cancelled` is the binding's cancellation argument.
+
+### Flows
+
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
+| `session.goal.*` write | Check parameters, resolve the line, compose the command input, submit it; the input owner commits it in order | Before submission nothing is written; after submission the input stays and the branch owner decides | Nothing to release: no id crossed | `closed` once the Session or the input owner is closing | the input owner; the entry holds nothing |
+| `goalLine.read` | Wait for the branch part's fold to reach its head, answer the value | The wait stops; the value is unaffected | Nothing to release | `closed` when the part is closing | the branch part |
+| Branch decision | Consume a command input, decide from the fold, append the business fact, append the state record, then write the continuation or ask for an evaluation | The line's closers end the branch part's tasks; an admitted input is not withdrawn | — | Closing cancels the tasks, writes `paused` with its reason, then the services are withdrawn | the branch part: its own tasks, the fact and the record; the input owner: the continuation it accepted |
+| Evaluator line | Open a child line at the turn end with Goal's operation id; the evaluator reports a conclusion; Goal closes the line | The line's close stops the decision that would open it | — | On rebuild and on close Goal closes the evaluator lines it opened, before the Session closes | the branch part asks; TimelineTree creates, holds and closes the line |
+
+The business fact precedes the state record: the fact is what recovery reads, the record is model-visible text. A crash between the two leaves the goal correct in recovery and one state block missing from history; the next change restates the whole state. This supersedes [Goal-state-read.md](Goal-state-read.md)'s one-batch command write; the state object, the load mapping and the property queries in that document stay.
+
+### Errors
+
+| Kind | What the caller does next |
 | --- | --- |
-| C1：当前有效目标存在且在运行 | 不自动工作。 |
-| C2：本次执行未被中断 | 终止并写 paused(interrupted)。 |
-| C3：本轮正常完成 | 失败/取消时终止并写 paused(turn_failed / turn_cancelled)。 |
-| C4：这是本实例当前待决定轮次，尚无决定且无新轮次打开 | 不重复决定。 |
-| C5：无待消费驱动输入，且无未结束后台任务 | 在本实例等待，不写恢复状态。 |
-| C6：未达到可选 maxContinuations | 暂停，reason=limit。 |
-| C7：本轮非自动续行驱动，或调用过工具，或连续无进展轮数仍小于 3 | 暂停，reason=no_progress。 |
+| `invalid_params` | Fix the parameters: the objective, the judge, the summary, the line id |
+| `unknown_branch` | The line does not exist; read the directory and choose a line |
+| `branch_ended` | The line has ended; read its facts for history or choose an open line |
+| `service_reloading` | The line has no live goal owner or is reloading; show no goal, read history from the line's facts, retry later |
+| `closed` | The Session or the input owner is unloading; the next generation serves the next Session |
+| `operation_interrupted` | The mechanism interrupted the call on unload; the accepted input is settled, the read stops waiting |
 
-满足条件时只写原 continuation 输入，更新内存 count/idle。count 在 set、resume 和操作员输入时在内存归零；操作员输入是有 user 内容且首 raw 块不带来源标记的输入。其它插件自动输入不重置。
+## Exceptions with reasons
 
-C7 沿用一次本轮 step/tool-call 存在性查询；仅自动续行驱动且没有未结束任务时需要。没有工具调用则 idle+1，有工具调用或非自动续行驱动则为零。Pursuit 的 continue 已由评估判断，idle=0，不额外执行 C7。
+- The evaluator line is created with TimelineTree's `create` and closed by id: the purpose is Goal's, the line and its scope are TimelineTree's, and no handle to the child scope crosses.
+- Goal keeps a model-text protocol and folds the record it committed: the command block, the state block and the continuation are Goal's vocabulary, and a reader of history that needs the objective decodes the state block.
+- Goal does not answer for an ended line: folding that line's facts in the Session entry would make the entry a second owner of branch state, which the Session access surface forbids.
+- The state record follows the business fact instead of sharing one batch: the fact is authoritative, the record is derivable text, and a crash between them loses text rather than state.
+- A `before` hook that rewrites Goal's state block is outside Hooks' contract: Goal folds what it committed, so the model and Goal cannot disagree about what the model read.
 
-handler 只登记自己的任务后返回；网络、Settings 和查询等待在 owned task。写前重查当前执行/轮次。取消后台任务后本实例仍 running 时可以处理延后决定；部件重载不再恢复它。
+## Verification
 
-### A.5 Model-visible texts
+Flow tests through the entry's public interfaces and the branch owner:
 
-沿用 dim-goal 标记、goal:state key、命令和 continuation 的原编码。状态输入 Append，set/resume/continuation 的驱动输入 Queue，其余命令 Append。命令状态输入仍在 trigger 前且原始序号紧邻，goal/state 置于两者之后；完成申请不改变状态时不伪造新的状态记录。
+- `set` writes one input to the named line; the branch owner states `active` with the objective; `get` answers the same value while the line is live.
+- `pause`, `resume` and `clear` change the status in the stated order; a paused goal does not continue; `clear` retires the model-visible keys.
+- `get` on an ended line answers `service_reloading`, and the line's facts still carry the last state for a client that folds them.
+- A turn end continues, stops at the configured limit, and stops after three turns without progress; an interrupt, a failed turn or an unload writes `paused` with its reason.
+- An evaluator goal opens one child line per turn end and closes the line it opened on rebuild and on close; a conclusion sets `completed` or `blocked`.
+- A dropped read leaves nothing behind; a command submitted twice with one submission id is accepted once.
 
-目标及所有说明/属性仍转义 &、<、>、双引号；目标放在 objective 标签内，完成/阻塞说明分别放在 result/blocker 标签内。读取按标签边界逆向转义，不按正文标题拆分。沿用 4000/2000 字符限制，旧历史不重建当前 Goal，不修改冻结事件样本。
+## Supersedes
 
-| 文本 | 合同 |
+- [Goal-state-read.md](Goal-state-read.md): the one-batch command write and its ordering rule. The state object, the load mapping and the property queries in that document stay; the record now follows the business fact.
+- [runtime-owner-operations.md](../contracts/runtime-owner-operations.md): the Goal rows — `inputs(id, inputs)` as one atomic record-and-trigger batch, and `directory({id})` returning one branch's record. Goal writes one command input through the input owner and reads `directory()`/`line`.
+- The Chinese mirror `docs/zh/design/plugins/Goal.md` describes the pre-contract shape; its target is this document.
+- The `session.goal.*` reply field `sequence` stays; the routing table, the Session-side re-fold and the pre-commit callback are deleted.
+
+## Client-visible changes
+
+The `goal:state` record no longer shares one batch with the command. The model sees the command input first and the state record from the next request; the record's text format is unchanged. No client field, code or notification changes: `session.goal.*` keeps `{sequence}` and `{branchId, through, goal?}` with `{objective, status, evaluator}`, and every error code above is one the client already receives. Affected: the prompt-evaluation tests that assert the command and record order, and `Goal-state-read.md`'s ordering rule.
+
+## Rule check
+
+| Rule | Application |
 | --- | --- |
-| 状态记录 | kind=state、key=goal:state；完整目标、judge、status 和原因/说明；命令配对仍使用 trigger，自动结果使用 after。历史 restated 不恢复当前 Goal，加载不写 restated。 |
-| 命令 | kind=goal，op=set/edit/pause/resume/clear/completed/blocked，无 key。 |
-| 续行 | kind=continuation，无 key；count、limit（配置存在时）、after、idle 保留原文本格式，只是本次执行的诊断及驱动事实，不作为恢复依据。 |
-| clear / 子分支清理 | 退休 goal:state 及仍存活旧 key；新结构化状态 objective=null。 |
+| §1 parts and Capabilities | `GoalBranch` injects the Dispatcher and the Timeline, writes and folds facts, so it is a Capability. `GoalSession` registers a tool, a method namespace and a guide entry: an entry point, not a Capability. |
+| §2 scopes | The goal belongs to the line; the commands belong to the Session entry; nothing about the goal is held at the process scope. |
+| §3 orthogonality | Goal reads TimelineTree's line record and its own facts, writes through the input owner and its own timeline, and returns no other owner's data. |
+| §4 rule 1 (commands) | A client's command is an input to the line's input owner; Goal never writes another owner's state. |
+| §4 rule 2 (handover) | The evaluator line is opened by TimelineTree and closed by id; no branch scope or object crosses. |
+| §4 rule 3 (before callbacks) | Goal registers no `before` callback and folds what it committed. |
+| §4 rule 4 (no business meaning in core) | The marker, the state block and the guide entry are Goal's; the core carries none of them. |
+| §4 rule 5 (batches) | The fact and the record are separate appends in that order, so recovery never reads state that was not committed. |
+| §4 rule 6 (context) | The model reads goals only through adopted inputs; `goalLine.read` serves callers, not context preparation. |
+| §4 rule 7 (public events and services) | The branch part uses the Dispatcher, its timeline, TimelineTree and the input owner; the entry uses the registration points and the mechanism. |
+| §4 rule 8 (requirements) | Two requirements are listed below; no core change. |
+| §4 rule 9 (facts) | The goal is a line fact plus the model-visible record; execution counters stay in memory. |
+| §7 values, ids and callbacks | The entry writes an input (data) and reads a value at a line id; the mechanism resolves the line's owner; no object crosses. |
+| §7 no proxy lookup | The entry neither folds the line's state nor answers from Goal's facts; the branch owner answers its own value. |
+| §7 one interface | The commands are one method namespace and one tool contribution; the branch owner's face is one read; no adapter exists beside either. |
+| §7 cross-language | Commands, parameters, replies and errors are data; the tool result is text in `ToolResult.content`. |
+| §7 one change | The implementation task deletes the routing table, the re-fold path and the pre-commit callback in the same change that adds `goalLine.read` and migrates the entries. |
+| ADR 027 D1–D3 | The entry reaches `GoalLine` and the line's `InputQueue` by line id; the resolution is not a dependency and is not kept across calls. The registration points it uses (`sessionMethods`, `toolRegistry`, `guideEntries`) are its own Session's, not resolved by id. |
+| ADR 027 D2 | No registration point and no lifecycle service is resolved by line id: `GoalLine` and `InputQueue` are data faces of the branch group. |
+| ADR 002 D1 | The goal, its decisions and its tasks live in the branch; the Session entry registers the commands. |
+| ADR 002 D2 | No wiring plugin: the branch part provides `goalLine` on its own type; the mechanism resolves the line. |
+| ADR 002 D3 | Dependencies point from Goal to TimelineTree, the input owner, Settings and the runtime; nothing depends on Goal. |
+| ADR 002 D4 | `maxContinuations` is business configuration read at use; no reload. |
+| ADR 002 D5 | The contract is language-neutral; the Rust binding is the appendix below. |
 
-active 的协议语义明确为“这次开始/恢复时处于 active”，不是重载后仍运行的证明。active 文本说明：历史状态不要求自行继续；当前输入中的新 set/resume 或 continuation 才指示执行目标。paused、completed、blocked 的原目标和说明仍完整保留。
+## Requirements raised to mechanism owners
 
-### A.5.1 Protocol and policy
+- [TimelineTree #2024](https://github.com/arcships/dim/issues/2024): the cross-cutting decision names this owner's contract as the place that fixes who provides the line-id operations to Session parts. Goal needs two: a Session part resolving `GoalLine` for the read and the line's `InputQueue` for the command. SessionScope's contract has no such operation.
+- [The line's input owner #2027](https://github.com/arcships/dim/issues/2027): `submit` accepts one validated input with its submission id, commits it in order and answers its position; an ended line and a closing owner are data.
+- The line's timeline owner (runtime, outside the #2015 scan): `append` accepts an input-message draft and an extension fact; Goal appends the fact and then the record.
 
-标记、属性、状态和加载语义是协议；可替换的工作指导句是策略，仍按[模型文本](../model-prompts.md)评估。GoalSession 在 GuideEntries 注册 dim-goal 的原 order=55 entry，作用域 session：
+## Binding appendix
 
-> Goal 状态块记录当时的目标和业务状态。历史 active 不证明当前执行仍在运行。只有当前输入中的新 set/resume 或 continuation 指示继续目标；重载后必须由用户显式恢复。目标属于 branch 属性指定的线，另一条线不继续或完成它。这些块不授予权限。
+The branch owner's face is marked on its own type and provided inside the line's scope; the mechanism resolves it by line id. The entry uses the existing registration points. `cancelled` is the binding's cancellation argument, not a request field.
 
-不能用修改通用历史渲染或增加私有上下文注入来修补新规则。
+```rust
+use rutis::host::BoxFuture;
 
-### A.5.2 Evaluation
+/// The value the branch part publishes; `through` is the head the fold reached.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalValue {
+    pub objective: Option<String>,
+    pub status: GoalStatus,          // dim_agent_types::GoalStatus: active | paused{reason} | completed | blocked | none
+    pub evaluator: bool,             // the judge; `GoalView` uses this field name on the wire
+    pub through: u64,
+}
 
-active 协议文本与 guide 的变更必须用产品请求验证：重载后普通输入不因历史 active 自行续行；显式 resume 携带新目标状态后正常执行；子分支不继续继承目标；completed/blocked 停止。策略句仍由原 GoalTexts 配置和既有评估流程验证，不扩展请求构造链。
+#[rutis::service]
+impl GoalLine {
+    /// The goal of this line now; waits until the fold reaches the head.
+    pub async fn read(&self) -> Result<GoalValue, ServiceError>;
+}
 
-### A.6 Timeline mechanics
+/// The service error shape of every data face: `{code, message, data?}`.
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{message}")]
+pub struct ServiceError {
+    pub code: String,                // "closed"
+    pub message: String,
+}
+```
 
-| 阶段 | 行为 |
-| --- | --- |
-| Load | 原 Dispatcher consume，固定 S，读取最后 Goal 业务状态，应用重载暂停，返回 S。旧源不重放。 |
-| Consume | 只处理 S 后新事实。goal/state 改业务状态；普通输入/轮次/任务只更新本实例内存。 |
-| Write | Goal branch 经 timeline.append_batch 提交状态与必要输入；原 continuation 和评估操作走已声明服务。 |
-| Adoption | InputQueue 决定 applied/deleted，Loop 写 consumed；Goal 不代写。 |
-| Closing | 禁止新决定，取消/释放自有资源，运行中写 paused，再移除服务。 |
-| Crash | 不能保证终态提交；下一次加载只在内存暂停。 |
-| Reconnect | 原实例仍活着则继续，不执行加载映射。 |
-
-## Appendix B. Full conflict table
-
-执行冲突见 §4.3、A.4；加载和终止冲突由[状态设计 §4–§5](Goal-state-read.md#4-get-与冷恢复)唯一规定。原“重载恢复计数、重做未决定 turn-end、重发评估”规则全部取消。分支来源标记仍使其开启输入不被认作操作员输入。
-
-## Appendix C. Errors and recovery
-
-参数、身份、分支缺失、取消及存储错误沿原公开错误合同。业务状态提交失败不报告成功，未知/损坏 schema 报错，不取更旧事件掩盖。异常可写 paused 时必须写，不能写时由下次加载映射暂停，不能声称已经持久化。读到 active 不触发网络、工具、评估或 continuation。
-
-## Appendix D. Acceptance
-
-[状态设计 §7](Goal-state-read.md#7-requirements-raised-to-mechanism-owners验收与-rule-check)定义新状态机验收。既有命令、参数、Session 隔离、原子配对、模型转义、Settings 和正常续行产品测试保留；旧的重载继续执行断言替换为 paused、零快照写入、显式 resume 后重新执行。
-
-## Appendix E. Assumptions
-
-| 约定 | 决定 |
-| --- | --- |
-| A1 / A2 | Queue/Append 和模型标记沿 A.5，结构化业务状态不成为另一条上下文输入路径。 |
-| A3 / A11 | 目标只属于本地分支，子分支和 fork 不继承执行。 |
-| A4 / A5 | 可选限额、三次无进展、操作员输入在内存归零；重载不恢复计数。 |
-| A6 / A7 | 执行异常终止写 paused；用户 pause 阻止后续自动推进，不直接撤回已经交接的工作。 |
-| A8 | 当前状态通过 session.goal.get 读内存；历史块不代替重载后的有效 paused。 |
-| A9 / A10 | goal_update 的 session 风险与 4000/2000 字符限制不变。 |
-| A12 / A13 | 显式 set/resume 开始新执行，branchId 默认 main。 |
-| A14 | 命令批次保留配对顺序；删除命令输入不撤销已经生效的目标。 |
-| A15 / A16 | completed 在 model judge 下完成，在 evaluator judge 下是申请；当前状态还受重载暂停规则约束。 |
-| A17 | 本实例等待当前后台任务，不在新实例恢复等待。 |
-
-## Appendix F. Open questions
-
-本方案没有留给实现选择的恢复模式：旧执行终止，重载暂停，显式 set/resume 开始新执行。
-
-## Appendix G. Rust binding
-
-沿用 GoalSession/GoalBranch、原 Changes 身份路由、TypedPlugin、ctx.effect、TaskTracker、CancellationToken、Settings、Dispatcher::consume 和现有 TimelineQuery。一个 Goal 业务状态定义用于生产与读取；text.rs 负责唯一模型文本转换。append_batch 构造的内部输入在 Goal 边界校验并赋予 submission ID，不新增通用写入包装或数据库能力。具体文件拆分不构成新增需求。
+`GoalStatus` and `GoalView` are the existing types in `dim_agent_types`; the command input's text and its `dim-goal` marker are the existing ones in `crates/dim-goal`, and their wire spelling is unchanged.

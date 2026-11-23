@@ -5,8 +5,7 @@ The [target repository binding](../contracts/resource-owner-operations.md) moves
 Status: Implemented in roadmap item S5b ([#60](https://github.com/arcships/dim/issues/60),
 [#96](https://github.com/arcships/dim/pull/96)), after C6 ([#49](https://github.com/arcships/dim/issues/49),
 [#85](https://github.com/arcships/dim/pull/85)); the implementation follows this design. Review refined when a write
-is admitted and how unload settles it (§6, D14). Requirement: [SessionTitle](../plugins/SessionTitle.md) §2, §4 and
-[A.2](../plugins/SessionTitle.md#a2-depended-on-shapes-owners-define-them). Overview:
+is admitted and how unload settles it (§6, D14). Requirement: [SessionTitle](../plugins/SessionTitle.md#own-contract). Overview:
 [Appendix B.2](../overview.md#b2-app-server-process-plugins), SessionStore and Rpc rows. Scope:
 [ADR 002](../../adr/002-plugin-scope.md) process scope, inside the existing SessionStore plugin, with three Rpc list
 fields. Consumer: SessionTitle.
@@ -69,13 +68,13 @@ protocol version.
 | --- | --- |
 | `revision` | Per-Session counter of committed `setTitle` writes. 0 means never written. Each committed write sets it to `expectedRevision + 1`: a new title, the same text again, a source change or a clear |
 | `title` | `{text, source}` or none |
-| `source` | `auto` (SessionTitle's generation) or `manual` (`session.rename`). SessionStore stores the source it is given and attaches no rule to it. "A manual title always wins" is SessionTitle's rule, enforced through the revision check ([SessionTitle §4](../plugins/SessionTitle.md#4-timing-and-conflicts)) |
+| `source` | `auto` (SessionTitle's generation) or `manual` (`session.rename`). SessionStore stores the source it is given and attaches no rule to it. "A manual title always wins" is SessionTitle's rule, enforced inside `setTitle`'s change callback ([SessionTitle](../plugins/SessionTitle.md#own-contract)) |
 
 - **A clear keeps the counter.** `title: null` leaves the Session's row with no title and the new revision. Were
   the row deleted, the counter would restart at 0, and a generation that read revision 0 before a rename and a clear
   would then commit an automatic title over the user's clear.
 - **Text as given.** SessionStore stores the text it receives. Title rules (trimming, length, a single line) are
-  SessionTitle's ([A.3](../plugins/SessionTitle.md#a3-configuration)): its method validates rename input and
+  SessionTitle's ([SessionTitle](../plugins/SessionTitle.md#own-contract)): its method validates rename input and
   normalizes generated text. The producer guarantees the contract, so SessionStore checks it again nowhere
   (AGENTS.md).
 - **Per Session.** Revisions of different Sessions are independent. A fork starts at 0.
@@ -151,7 +150,7 @@ This settles the boundary that SessionTitle §0 left to S5b.
 | Before the call | The caller's own work. Cancelling it before the call writes nothing |
 | The call | The handover is SessionStore receiving the call: before it returns, `setTitle` admits the write and starts it as SessionStore's own task, or, once SessionStore is closing, fails `storage` without writing. In Rust `set_title` is a plain function that does this and returns a future of the reply. That future only awaits the task, so dropping it detaches the reply, never the write. The named service calls it inside `invoke`, so a JavaScript call is handed over once the host receives it |
 | After the call | SessionStore settles the write itself: it commits and announces, or fails and writes nothing. Dropping the call, unloading the calling row or losing the reply neither cancels nor undoes it. `setTitle` has no cancel action |
-| Lost reply | The caller reads with `read`. It does not repeat the write blindly: a repeat at the old revision fails `conflict`, and one at the new revision would be a second change ([SessionTitle Appendix C](../plugins/SessionTitle.md#appendix-c-errors-and-recovery)) |
+| Lost reply | The caller reads with `read`. It does not repeat the write blindly: a repeat at the old revision fails `conflict`, and one at the new revision would be a second change ([SessionTitle](../plugins/SessionTitle.md#errors)) |
 | SessionStore unload | Its disposer first stops admission: from then on a call fails `storage` at once and writes nothing. It then waits until every admitted write, the one in its turn and those waiting for theirs, has committed and announced or failed. Only then does it close Session files and the Timeline writer, and SqliteStorage, which unloads after SessionStore, closes the connection. The notices follow C6 delivery: once the Session is no longer loaded, nobody listens and they are dropped. Nothing is retried after a reload |
 
 Rejected: a cancel action that works until the transaction starts. It would only move the uncertainty, since a caller
@@ -199,11 +198,11 @@ Protocol v3 `session.summaries` entries gain three fields:
 
 Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 
-| SessionStore | `session.summaries` | `session.rename` ([SessionTitle A.1](../plugins/SessionTitle.md#a1-sessionrename)) |
+| SessionStore | `session.summaries` | `session.rename` ([SessionTitle](../plugins/SessionTitle.md#operations)) |
 | --- | --- | --- |
 | `storage` | The catalog read fails as it does today | `storage_failed` |
 | `not_found` | The Session is not listed | `session_not_found` |
-| `conflict` | — | SessionTitle reads again and retries ([§3.2](../plugins/SessionTitle.md#32-manual-rename)) |
+| `conflict` | — | SessionTitle reads again and retries ([SessionTitle](../plugins/SessionTitle.md#operations)) |
 
 ## 9. Lifecycle
 
@@ -213,7 +212,7 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 | Load, unload, close, restart | Unchanged: the title is stored with the Session's rows, not with its instance. `read` and `setTitle` work on a Session that is not loaded; their notices are dropped, as nobody listens |
 | `session.delete` (S5c) | Removed in S5c's single delete transaction, before the Session record. Afterwards `read` and `setTitle` fail `not_found` |
 | Creation rollback | The same transaction as a delete; it removes a row that a racing write committed |
-| `session.fork` (S5c) | Not copied ([SessionTitle A7](../plugins/SessionTitle.md#appendix-e-assumptions)): the fork starts untitled at revision 0 |
+| `session.fork` (S5c) | Not copied ([SessionTitle](../plugins/SessionTitle.md#exceptions-with-reasons)): the fork starts untitled at revision 0 |
 | SessionStore or SqliteStorage reload | Settles as in §6. Consumers of `sessionMetadata` reload with SessionStore ([ADR 002](../../adr/002-plugin-scope.md) D3), which SessionTitle §1 accepts. SessionStore reloads only with SqliteStorage, which has no dependencies |
 
 ## 10. Timing and conflicts
@@ -227,7 +226,7 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 | `setTitle` and Timeline appends | Independent rows; each uses its own transaction on the one store connection |
 | Notice and list read on one connection | §8: the higher `titleRevision` wins |
 | `setTitle` with no client attached | Committed; the notice is dropped; the next list shows the title |
-| The same text written again | Commits a new revision and announces it ([SessionTitle Appendix B](../plugins/SessionTitle.md#appendix-b-full-conflict-table): a duplicate rename rewrites) |
+| The same text written again | Commits a new revision and announces it ([SessionTitle](../plugins/SessionTitle.md#exceptions-with-reasons): a duplicate rename rewrites) |
 
 ## 11. Storage format
 
@@ -281,7 +280,7 @@ after the upgrade commits (S5a's log line, with the version the store came from)
 | Identity | `dyn HostDispatch` at `host_key("sessionMetadata")`, provided by SessionStore; `register_shared("sessionMetadata")` in App Server's service catalog, beside `sessions` and `settings` |
 | Use | A C4 Session part declares `inject: ['sessionMetadata']` and calls `ctx.use('sessionMetadata')`, the path `settings` takes from a Session part ([settings-owner fixture](../../../runtime/fixtures/settings-owner.ts)). Types are in [npm/plugin.d.ts](../../../npm/plugin.d.ts) |
 | Modes | `read` and `setTitle` are both `async` |
-| Writer | The service carries no caller identity, as for `settings` (AGENTS.md rule 11). SessionTitle is the title's one writer by design ([SessionTitle §2](../plugins/SessionTitle.md#2-data-and-state)); other packages only read |
+| Writer | The service carries no caller identity, as for `settings` (AGENTS.md rule 11). SessionTitle is the title's one writer by design ([SessionTitle](../plugins/SessionTitle.md#own-contract)); other packages only read |
 | Reload | A consuming row reloads with SessionStore. SessionStore reloads only with SqliteStorage, so no directory part that never reloads is needed, unlike `sessions`, whose index reloads with Settings ([sessions D1](sessions-service.md#3-decisions)) |
 | Missing provider | A daemon without a native store has no SessionStore, so a row that injects `sessionMetadata` stays Pending under the existing rules; native Sessions continue |
 

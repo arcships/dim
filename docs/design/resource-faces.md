@@ -609,7 +609,7 @@ The repository and Timeline operations use two names on the daemon that owns the
 and Session-scoped `timelineStore` provides the Timeline operations and completion notifications
 below. Both use the existing state owner; the split follows §9(6), without changing Session
 placement or the storage engine.
-SessionTitle and FileAccess use the process repository operations in the [resource owner contract](contracts/resource-owner-operations.md).
+SessionTitle uses the Session store's `title` and `setTitle` operations, and FileAccess uses the process repository operations in the [resource owner contract](contracts/resource-owner-operations.md) ([SessionTitle](plugins/SessionTitle.md#own-contract)).
 
 | Family | Operations |
 | --- | --- |
