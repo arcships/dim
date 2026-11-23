@@ -18,7 +18,7 @@ The remaining owner, the ChatGPT account, holds:
 Removed with the host binding:
 
 - The `dyn ManagedProvider` object port and the binding slot, generation and validation around it. An external account plugin is a normal process row: it provides its account face and owns its lifecycle, including quiesce before RPC settlement.
-- The account data forwarding: `providers`, `status`, `recover`, `begin_browser`, `complete_browser`, `begin_device`, `attempt_status`, `cancel_attempt`, `logout`, `usage`, `referral`, `reset_batches`, `apply_reset`, `catalog`, `credential`, `recover_rejected`, `finish_rejected`. Callers request the account owner the Provider record names.
+- The account data forwarding: `providers`, `status`, `recover`, `begin_browser`, `complete_browser`, `begin_device`, `attempt_status`, `cancel_attempt`, `logout`, `usage`, `referral`, `reset_batches`, `apply_reset`, `catalog` and `credential`; the old credential-recovery methods are replaced by the account face's `credential` and `rejected`. Callers request the account owner the Provider record names.
 - The `managedSearch` face and its `search`, `usable`, `subscribe_usable` and `refresh_usable` methods. Web reads the Dim account's `availability` and calls its `search`; no host layer returns account data.
 
 Callers keep the same responsibilities as [ManagedAccount](ManagedAccount.md): the model owner selects the account by the record's credential authority, Web owns the search tool and its declaration, and the client owns the login UI.
