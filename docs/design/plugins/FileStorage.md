@@ -10,23 +10,23 @@ FileStorage owns:
 
 - **Roots.** The process's authorized directories, their open handles and their order. A directory is addressable only because FileStorage opened it.
 - **Generations.** One service instance admits calls, owns the descriptors it opened and releases them on close.
-- **Exclusion.** Each file's lock key beside the file. A replacement, removal or update holds the key; another process holds the same key for the same file under every case and Unicode spelling the filesystem equates. FileStorage waits for the key up to its own fixed bound.
+- **Exclusion.** Each file's lock key beside the file. A replacement, removal or update holds the key; another process holds the same key for the same file under every case and Unicode spelling the filesystem equates. FileStorage waits for the key until the caller cancels or the owner closes.
 - **Atomic replacement.** A temporary file in the owner's namespace, flushed and renamed over the target, with the durability answer.
-- **Pinned readers.** A file version pinned for bounded random reads and addressed by a read id.
+- **Pinned readers and document reads.** A whole document is read within the owner's limit in one operation; a pinned version of a larger file is addressed by a read id for bounded pages.
 - **Path validation.** Absolute paths inside a root, one validated component per open, no link followed, the owner's own resource names excluded.
 
 Callers keep:
 
 - Document formats and versions: settings documents, `auth.json`, the plugin envelope, JSONL records.
 - Which root and file a business uses, and the file names.
-- What a `busy` answer means for a flow, and what a business conflict means.
+- What a business conflict means.
 - Permission and approval: FileStorage never decides whether a call may run.
 - Workspace, system and worktree facts: FileAccess owns them; FileStorage answers only whether an absolute path is inside a root.
 - Files a plugin creates and manages itself under a root, such as SQLite's database, the model-log recorder's JSONL and the UI extension cache.
 
 | Requirement (callers) | Compose from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| Read one document: settings, accounts, plugin records, a project's hooks file | Yes: `open_read`, `read_at` to the end, `close_read`; the pin keeps one version | Business composes; each owner keeps one small read helper |
+| Read one document: settings, accounts, plugin records, a project's hooks file | No: composing it from the pin operations makes every caller hold a read id and release it on every error path | `read` |
 | Read a large file in stable pages | No: a pin is the only way to keep one version across pages | `open_read`, `read_at`, `close_read` |
 | Replace a document's bytes atomically | Yes: `write` whose source yields the whole content once | Business composes |
 | Write content that arrives in pieces, including a stream an adapter produces | No: holding it whole is unbounded; the temporary file and the key must stay inside the owner | `write` with a source |
@@ -40,9 +40,8 @@ Callers keep:
 | List one level and remove by a listed native name | No: the name's encoding and the single-component rule are the owner's knowledge | `list`, `remove` |
 | Make a runtime-discovered directory addressable | No: the root set is the owner's state | `add_root` |
 | Hand a root's directory to another module: a process working directory, a path quoted in history, a log directory | No: the root set is the owner's state | `root_path` |
-| Learn whether an optional file exists (a project hooks file, a Settings source) | Yes: `open_read` answers none; `list` answers the parent's entries | Business composes |
+| Learn whether an optional file exists (a project hooks file, a Settings source) | Yes: `read` answers none; `list` answers the parent's entries | Business composes |
 | Decode or encode a document, choose its name and its root | Yes: formats and business paths stay with callers | Business |
-| Decide when to try again after `busy` | Yes: `busy` is a business answer | Business |
 | Append records to a log it owns (the model-log recorder) | Yes: the recorder owns the file; FileStorage supplies only the directory value | Business; the file is the recorder's, as SQLite's database is |
 | Write a UI extension cache and then publish it | Yes: the cache belongs to UiExtensions; FileStorage reads it only on request | Business |
 | Decide whether a read or write is allowed | Yes: Permission and Approval decide | Business |
@@ -51,26 +50,13 @@ An operation or parameter exists only where its row says No.
 
 ## Caller example
 
-Reading one document, the composition every document owner uses:
+Reading one document: the owner opens, pages and releases the read id internally.
 
 ```rust
-async fn read_document(storage: &FileStorage, ctx: &Ctx, path: &str, cancelled: CancelledFn)
-    -> Result<Option<Bytes>, FileError>
-{
-    let Some(file) = storage.open_read(ctx, path.to_owned(), cancelled.clone()).await? else {
-        return Ok(None);
-    };
-    let mut content = Vec::with_capacity(file.size as usize);
-    while (content.len() as u64) < file.size {
-        let page = storage.read_at(ctx, file.read_id.clone(), content.len() as u64, cancelled.clone()).await?;
-        if page.is_empty() {
-            break;
-        }
-        content.extend_from_slice(&page);
-    }
-    storage.close_read(ctx, file.read_id).await?;
-    Ok(Some(Bytes(content)))
-}
+// None when the file is absent; too_large when it is over the document limit.
+let Some(current) = storage.read(path, cancelled).await? else {
+    return Ok(None);
+};
 ```
 
 Settings' compare-and-set: the change runs under the owner's file key, sees the current content and returns the next content or a business refusal.
@@ -105,7 +91,7 @@ let size = storage.import(path, source, Some(MAX_FILE_BYTES), Some(Permissions::
 DimOAuth's reset: copy the current file, then rewrite it under the owner's key.
 
 ```rust
-let current = read_document(&storage, &ctx, &auth_path, cancelled.clone()).await?
+let current = storage.read(auth_path.clone(), cancelled.clone()).await?
     .ok_or(OAuthError::UnsupportedSchema)?;
 // The backup is a business copy; the rewrite starts only after the copy is durable.
 storage.write(backup_path, once(current), Some(Permissions::Preserve), cancelled.clone()).await?;
@@ -155,21 +141,22 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 | --- | --- | --- | --- | --- | --- |
 | `add_root` | Make an existing absolute directory addressable | `{path}` | `{root}`; an existing root answers its id | Before the directory handle is opened | `invalid`, `closed`, `cancelled` |
 | `root_path` | A root's absolute directory for another module | `{root}` | `{path}` | None; the owner completes the read | `invalid`, `closed` |
-| `open_read` | Pin the file's current version for bounded random reads; the id is bound to the caller's row | `{path}` | `{read_id, size}` or none | While the file is opened | `invalid`, `closed`, `cancelled` |
+| `read` | Read a whole document within the owner's limit | `{path}` | `{bytes}` or none | While the file is opened | `invalid`, `too_large`, `closed`, `cancelled` |
+| `open_read` | Pin a large file's current version for bounded random pages; the id is bound to the caller's row | `{path}` | `{read_id, size}` or none | While the file is opened | `invalid`, `closed`, `cancelled` |
 | `read_at` | One bounded page of a pinned version | `{read_id, offset}` | `{bytes}`, empty at or past the end | The caller's token; nothing changes | `invalid`, `closed`, `cancelled` |
 | `close_read` | Release a pin before the row unloads | `{read_id}` | `{}` | None; the owner completes the release | `invalid`, `closed` |
-| `write` | Replace a file's bytes atomically from a source the owner pulls to its end | `{path, source, permissions?}` | `{size}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `busy`, `rejected`, `unsynced`, `closed`, `cancelled` |
-| `import` | Copy a regular host file into a root atomically | `{path, source, max_bytes?, permissions?}` | `{size}` | Before the replacement | `invalid`, `too_large`, `missing_parent`, `busy`, `unsynced`, `closed`, `cancelled` |
-| `update` | Change a file's content while the owner holds the file across the caller's decision | `{path, change, permissions?}` | `{applied}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `too_large`, `busy`, `rejected`, `unsynced`, `closed`, `cancelled` |
+| `write` | Replace a file's bytes atomically from a source the owner pulls to its end | `{path, source, permissions?}` | `{size}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `rejected`, `unsynced`, `closed`, `cancelled` |
+| `import` | Copy a regular host file into a root atomically | `{path, source, max_bytes?, permissions?}` | `{size}` | Before the replacement | `invalid`, `too_large`, `missing_parent`, `unsynced`, `closed`, `cancelled` |
+| `update` | Change a file's content while the owner holds the file across the caller's decision | `{path, change, permissions?}` | `{applied}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `too_large`, `rejected`, `unsynced`, `closed`, `cancelled` |
 | `create_directory` | Make the path an existing directory tree | `{path}` | `{path}` | Between levels; created ancestors stay, a retry is safe | `invalid`, `unsynced`, `closed`, `cancelled` |
 | `list` | One level of a directory | `{path}` | `{entries}` or none when the directory is absent | Before the reply | `invalid`, `closed`, `cancelled` |
-| `remove` | Make a file or a directory tree absent; an absent entry counts as removed | `{path}` or `{parent, name}` | `{}` | Before the entry is unlinked | `invalid`, `busy`, `unsynced`, `closed`, `cancelled` |
+| `remove` | Make a file or a directory tree absent; an absent entry counts as removed | `{path}` or `{parent, name}` | `{}` | Before the entry is unlinked | `invalid`, `unsynced`, `closed`, `cancelled` |
 
 `write`'s `source` is called repeatedly until it returns none: each call yields the next chunk, or a `Rejected` error that ends the write and leaves the target unchanged.
 
 `update`'s `change` is called once while the file's key is held, with the current content or none when the file is absent, and returns the next content or a `Rejected` error. The owner writes the returned content atomically; `applied` is false when that content equals the current content, so a repeated write is idempotent. `change` must only compute: waiting on another owner, on network I/O or on FileStorage itself inside `change` holds the file for that whole wait. §7 allows a callback by reference, and the change is never called inside the Timeline's commit lock.
 
-`permissions` is absent for "keep the existing mode; a new file gets the owner's default"; `private` is owner-only and `read_only` is the read-only attribute used for Session files. `max_bytes` is absent for the owner's limit. A listed name is passed back to `remove` unchanged. FileStorage waits for a busy file up to its own fixed bound and answers `busy` after it; the bound is not a request field, and a caller ends the wait with its cancellation.
+`permissions` is absent for "keep the existing mode; a new file gets the owner's default"; `private` is owner-only and `read_only` is the read-only attribute used for Session files. `max_bytes` is absent for the owner's limit. A listed name is passed back to `remove` unchanged. FileStorage waits for a file's key until the caller cancels or the owner closes; there is no fixed bound, so a caller that must not wait ends the call with its cancellation.
 
 ### Errors
 
@@ -177,11 +164,10 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 | --- | --- |
 | `invalid` | Fix the input: a relative path, a path outside every root, a reserved name, a name that is not one component, a directory where a file is required, a file where a directory is required, a link where a directory is required, an unknown or other-row id |
 | `missing_parent` | Create the parent (`create_directory`) or fix the path |
-| `too_large` | Read it in pages (`open_read`) or write it through `write` |
-| `busy` | Try the same call again later; the input stays valid |
+| `too_large` | Use `open_read` when the caller needs the file in pages, or treat it as not a document |
 | `rejected` | The change or the source refused or failed with its own `code` and `message`; act on that code, for example re-read and retry the business step on `conflict` |
 | `unsynced` | The bytes are in place but durability is unconfirmed; a read sees them and a repeated call confirms the content; do not assume the earlier call failed |
-| `cancelled` | Nothing changed unless the reply says otherwise |
+| `cancelled` | Nothing changed; the call stopped waiting for the key or stopped before the replacement |
 | `closed` | This generation is unloading; call the replacement generation |
 
 ### Flows
@@ -190,6 +176,7 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 | --- | --- | --- | --- | --- | --- |
 | `update` | Parent handle, file key, read the current content within the document limit, call `change`, write the temporary file, flush, rename, sync parent, release key | Before the rename: temporary file removed, target unchanged, key released, `cancelled`. After the rename: success or `unsynced`, the write is not undone | The change callback is revoked; the call ends `cancelled`; the same release applies | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Key and temporary file by FileStorage; the change's future by the calling row |
 | `write` | Parent handle, file key, temporary file, pull the source to its end, flush, rename, sync parent, release key | The pull stops, the temporary file is removed, the target is unchanged, `cancelled` | The source callback is revoked; the pull fails; the temporary file is removed, `cancelled` | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Temporary file and key by FileStorage; the source's future by the calling row |
+| `read` | Open the parent and the file without following links, read to the end within the document limit, release; no id crosses | Before the reply; nothing changes | The call ends `cancelled` | Pending calls end `closed` | Descriptor by FileStorage |
 | `open_read`, `read_at`, `close_read` | Open the parent and the file without following links, pin the descriptor, register the id under the calling row; pages read at offsets from that descriptor | `open_read` before registration leaves nothing; a page ends `cancelled`; the pin stays until close or unload | The row's ids are released; a later page with the id is `invalid` | Every pin is released; later calls are `closed` | Descriptor by FileStorage; the id's lifetime by the calling row |
 | `import` | Open the source without following links, require a regular file within the limit, copy into a temporary file, rename, sync parent | The temporary file is removed, the target is unchanged, the source closes | The call ends `cancelled` | Pending calls end `closed` | Source descriptor and temporary file by FileStorage |
 | `remove` | Parent handle, the entry's key, remove depth first without following links, sync the parent | Before the unlink: nothing removed; a tree can be partly removed, a retry is safe | The call ends `cancelled` | Pending waits end `closed`; the generation releases keys | Entry removal by FileStorage |
@@ -202,6 +189,7 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 - `import` reads a host path outside the roots: the caller names a file the user or model chose (an attachment); the owner checks that the source is a regular file, does not follow a link and enforces the byte limit, while the root constrains only the destination.
 - The account marker `auth.json.lock` stays in its published TypeScript-compatible form: the account file is shared with the TypeScript subscriber, and both sides must lock the same file under the same marker protocol.
 - Files another plugin owns under a root — SQLite's database, the model-log recorder's JSONL, the UI extension cache — are written by their owners, not through FileStorage; FileStorage answers `root_path` or reads such a file when asked. Ownership of a file follows the plugin that creates and manages it, not the root that contains it.
+- `Rejected` carries only `code` and `message`: a callback error must cross languages, so it can come back only as data; the caller keeps its business error type inside its own callback, and FileStorage returns the code and message unchanged.
 - Root ids are values that survive a reload: the root table is append-only, so a root id a caller kept stays valid across generations; the id is not a resource handle and carries no authority.
 
 ## Verification
@@ -210,8 +198,9 @@ Flow tests on the owner:
 
 - `update` calls the change under the key; a change that returns `Rejected` leaves the file unchanged; an identical result reports `applied: false`; a cancel before the rename removes the temporary file; a failed parent sync reports `unsynced`.
 - `write` pulls a multi-chunk source, commits atomically, removes the temporary file when the source fails or is revoked, and leaves the target when cancelled.
+- `read` answers none for an absent file and `too_large` without partial bytes for a file over the document limit.
 - A pin keeps its version while the path is replaced; another row's id is `invalid`; the row's unload releases its ids; the owner's close releases every pin.
-- `import` over `max_bytes` copies nothing; `remove` of a tree with a file another writer holds answers `busy`; a retry after a partial removal finishes; a link is not followed.
+- `import` over `max_bytes` copies nothing; `remove` of a tree with a file another writer holds waits, and cancelling ends the wait with `cancelled`; a retry after a partial removal finishes; a link is not followed.
 - A call in flight when the generation closes ends `closed`; a root id stays valid across a reload.
 
 Material uncertainty: a change that waits on another owner or on I/O holds the file's key for that wait. The contract forbids it; review checks each caller's change.
@@ -240,7 +229,6 @@ Material uncertainty: a change that waits on another owner or on I/O holds the f
 | ADR 002 D4 | Roots are structural: the assembly provides the initial ones and the trusted host adds one at runtime; no business setting is involved. |
 | ADR 002 D5 | The contract is language-neutral: operations, data, callbacks and ids; the Rust binding is the appendix below. |
 
-Pending (see #2015 待决): whether the file tools' per-turn use of this service is a hot-path exception. The operation shapes here do not depend on that decision.
 
 ## Requirements raised to mechanism owners
 
@@ -353,8 +341,6 @@ pub enum FileError {
     MissingParent(String),
     #[error("{path} is {size} bytes, over the document limit")]
     TooLarge { path: String, size: u64 },
-    #[error("{0} is being written by another writer")]
-    Busy(String),
     #[error("{code}: {message}")]
     Rejected { code: String, message: String },
     #[error("{0} is in place but its durability is unconfirmed")]
@@ -374,6 +360,14 @@ impl FileStorage {
     }
 
     pub fn root_path(&self, root: RootId) -> Result<String, FileError> {
+        // ...
+    }
+
+    pub async fn read(
+        &self,
+        path: String,
+        cancelled: CancelledFn,
+    ) -> Result<Option<Bytes>, FileError> {
         // ...
     }
 
