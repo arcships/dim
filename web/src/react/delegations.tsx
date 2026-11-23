@@ -1,25 +1,23 @@
 import { Button, Modal, Popover } from "@heroui/react"
 import { ArrowLeft, ChevronRight, GitFork } from "lucide-react"
-import { useCallback, useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import { ROOT_BRANCH_ID, type Delegation } from "../rpc/protocol"
 import { readBranches, readFinishedDelegations, readPendingDelegations } from "../rpc/read"
 import { appLocale } from "./i18n"
-import { chat, connection, useStoreValue } from "./stores"
-import { Timeline } from "./timeline"
+import { connection, useStoreValue } from "./stores"
 
 const readLocale = () => appLocale.value
-const readPhase = () => connection.phase
 const labels = {
   en: {
     menu: "Delegations", active: "Active", recent: "Recently settled", empty: "No delegations yet.",
     loading: "Loading delegations…", retry: "Retry", back: "Back", close: "Close",
-    task: "Delegated task", member: "Member conversation", readOnly: "Read-only", loadingMember: "Loading member conversation…",
+    task: "Delegated task", member: "Open member conversation",
     starting: "Starting", running: "Running", completed: "Completed", failed: "Failed", cancelled: "Cancelled",
   },
   zh: {
     menu: "委派", active: "进行中", recent: "近期结束", empty: "暂无委派任务。",
     loading: "正在加载委派任务…", retry: "重试", back: "返回", close: "关闭",
-    task: "委派任务", member: "成员会话", readOnly: "只读", loadingMember: "正在加载成员会话…",
+    task: "委派任务", member: "打开成员会话",
     starting: "正在启动", running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消",
   },
 }
@@ -54,10 +52,14 @@ async function readInventory(sessionId: string, cancelled: () => boolean): Promi
   return inventory
 }
 
-export function DelegationsMenu({ sessionId, revision }: { sessionId: string; revision: number }) {
+export function DelegationsMenu({ sessionId, revision, openMember }: { sessionId: string; revision: number; openMember: (id: string, title: string) => void }) {
   const locale = useStoreValue(readLocale)
   const text = locale === "zh-CN" ? labels.zh : labels.en
   const [open, setOpen] = useState(false)
+  function selectMember(id: string, title: string) {
+    setOpen(false)
+    openMember(id, title)
+  }
   const narrow = matchMedia("(max-width: 719px)").matches
   const trigger = <Button size="sm" variant="tertiary"><GitFork size={15} aria-hidden="true" /> {text.menu}</Button>
   if (narrow) return <Modal isOpen={open} onOpenChange={setOpen}>
@@ -66,7 +68,7 @@ export function DelegationsMenu({ sessionId, revision }: { sessionId: string; re
       <Modal.Container placement="bottom">
         <Modal.Dialog className="rw-delegation-dialog" aria-label={text.menu}>
           <Modal.CloseTrigger aria-label={text.close} />
-          {open && <DelegationList sessionId={sessionId} revision={revision} text={text} />}
+          {open && <DelegationList sessionId={sessionId} revision={revision} text={text} openMember={selectMember} />}
         </Modal.Dialog>
       </Modal.Container>
     </Modal.Backdrop>
@@ -76,13 +78,13 @@ export function DelegationsMenu({ sessionId, revision }: { sessionId: string; re
     {trigger}
     <Popover.Content placement="bottom end" className="rw-delegation-dialog">
       <Popover.Dialog aria-label={text.menu}>
-        {open && <DelegationList sessionId={sessionId} revision={revision} text={text} />}
+        {open && <DelegationList sessionId={sessionId} revision={revision} text={text} openMember={selectMember} />}
       </Popover.Dialog>
     </Popover.Content>
   </Popover>
 }
 
-function DelegationList({ sessionId, revision, text }: { sessionId: string; revision: number; text: typeof labels.en }) {
+function DelegationList({ sessionId, revision, text, openMember }: { sessionId: string; revision: number; text: typeof labels.en; openMember: (id: string, title: string) => void }) {
   const [inventory, setInventory] = useState<Inventory>()
   const [retry, setRetry] = useState(0)
   const [selected, setSelected] = useState<Task>()
@@ -99,6 +101,7 @@ function DelegationList({ sessionId, revision, text }: { sessionId: string; revi
   }, [sessionId, revision, retry])
 
   const current = selected && (inventory?.tasks.find(({ id, branchId }) => id === selected.id && branchId === selected.branchId) ?? selected)
+  const memberId = current?.memberId
   if (current) return <section className="rw-delegation-list">
     <Button autoFocus size="sm" variant="tertiary" onPress={() => setSelected(undefined)}><ArrowLeft size={14} aria-hidden="true" /> {text.back}</Button>
     <h2>{current.title || text.task}</h2>
@@ -106,7 +109,9 @@ function DelegationList({ sessionId, revision, text }: { sessionId: string; revi
     {current.prompt && <p className="rw-delegation-text">{current.prompt}</p>}
     {current.reason && <p className="rw-error">{current.reason}</p>}
     {current.result && <p className="rw-delegation-text">{current.result}</p>}
-    {current.memberId && <MemberTranscript sessionId={current.memberId} />}
+    {memberId && <Button size="sm" variant="secondary" onPress={() => openMember(memberId, current.title || text.task)}>
+      {text.member}
+    </Button>}
   </section>
 
   const tasks = inventory?.tasks ?? []
@@ -128,46 +133,5 @@ function DelegationList({ sessionId, revision, text }: { sessionId: string; revi
         </button>
       </li>)}</ul>
     </section>)}
-  </section>
-}
-
-export function MemberConversation({ sessionId, title, close }: { sessionId: string; title: string; close: () => void }) {
-  const locale = useStoreValue(readLocale)
-  const text = locale === "zh-CN" ? labels.zh : labels.en
-  return <Modal isOpen onOpenChange={(open) => { if (!open) close() }}>
-    <Modal.Backdrop>
-      <Modal.Container>
-        <Modal.Dialog className="rw-member-dialog">
-          <Modal.CloseTrigger aria-label={text.close} />
-          <Modal.Header><Modal.Heading>{title}</Modal.Heading></Modal.Header>
-          <MemberTranscript sessionId={sessionId} />
-        </Modal.Dialog>
-      </Modal.Container>
-    </Modal.Backdrop>
-  </Modal>
-}
-
-function MemberTranscript({ sessionId }: { sessionId: string }) {
-  const locale = useStoreValue(readLocale)
-  const text = locale === "zh-CN" ? labels.zh : labels.en
-  const phase = useStoreValue(readPhase)
-  const view = useStoreValue(useCallback(() => {
-    const session = chat.views[sessionId]
-    return session && { branchId: session.defaultBranchId, status: session.status, rows: session.rows, earlier: session.earlier, loading: session.loadingEarlier, error: session.error, historyError: session.historyError }
-  }, [sessionId]))
-  const [slot, setSlot] = useState<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (phase === "connected") chat.open(sessionId)
-  }, [phase, sessionId])
-
-  return <section className="rw-member-transcript" aria-label={text.member}>
-    <p className="rw-muted">{text.member} · {text.readOnly}</p>
-    <div ref={setSlot}>
-      {view === undefined || view.status === "loading" ? <p role="status">{text.loadingMember}</p>
-        : view.status !== "ready" ? <p role="alert">{view.error || text.member}</p>
-          : <Timeline key={sessionId} sessionId={sessionId} rows={view.rows} active slot={slot} earlier={view.earlier}
-            loadingEarlier={view.loading} historyError={view.historyError} loadEarlier={() => chat.loadEarlier(sessionId, view.branchId)}>{null}</Timeline>}
-    </div>
   </section>
 }

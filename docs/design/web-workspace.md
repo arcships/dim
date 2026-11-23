@@ -208,11 +208,11 @@ Show an empty state after a successful inventory with zero requests, and a
 retry action for failed reads. Changes to another Session dismiss the menu.
 
 Selecting a task opens its details. An available native member conversation
-opens read-only with the leader's transcript, scroll position and draft
-preserved. Before delivery and for provider members, show the available task
-details from the leader. Back returns to the task list. Closing the list
-returns focus to the toolbar entry. Closing a member opened from the sidebar
-returns to the sidebar row; on narrow screens it restores the workspace drawer.
+opens in a normal Session tab from either the task details or the sidebar.
+The tab shows the conversation with a read-only label and leaves out the
+composer. The leader's transcript, scroll position, and draft stay available
+in its tab. Before delivery and for provider members, show the available task
+details from the leader. In the task details, Back returns to the task list.
 User-created forks remain independent sidebar Sessions.
 
 The list reads the leader's existing branch directory and the per-branch

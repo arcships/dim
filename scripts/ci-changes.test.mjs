@@ -49,8 +49,13 @@ test('documents that code reads keep their checks',()=>{
 });
 
 test('Web sources that static checks read avoid the heavy xtask build',()=>{
-  for (const file of ['web/src/main.ts','web/src/chat-ui/WebChatTimeline.vue','web/src/rpc/protocol.ts','web/src/a.mjs','web/src/a.js'])
+  for (const file of ['web/src/chat-ui/WebChatTimeline.vue','web/src/rpc/protocol.ts','web/src/a.mjs','web/src/a.js'])
     assert.deepEqual(classify([file]),only('web','static'),file);
+});
+
+test('the React Web entry and its styles select the Web checks',()=>{
+  for (const file of ['web/src/react/main.tsx','web/src/react/workspace.css'])
+    assert.deepEqual(classify([file]),only('web'),file);
 });
 
 test('dependency checks follow Cargo manifests, lockfile and policy files',()=>{

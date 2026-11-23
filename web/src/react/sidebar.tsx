@@ -33,7 +33,7 @@ type DirectoryBranches = {
 type SessionDirectoryProps = DirectoryBranches & {
   workspaces: Workspace[]
   members: ReadonlyMap<string, SessionSummary[]>
-  openMember: (member: SessionSummary, trigger: HTMLButtonElement) => void
+  openMember: (member: SessionSummary) => void
   active: string | undefined
   phase: ConnectionPhase
   loaded: boolean
@@ -166,23 +166,25 @@ function SessionGroup({ workspace, rows, active, searching, phase, expandedSessi
           const rootMenu = root && directory && <BranchActions sessionId={sessionId} line={root} lines={directory.lines}
             defaultBranchId={directory.defaultBranchId} connected={phase === "connected"} useDefault={() => select(sessionId)}
             create={createBranch(sessionId, directory.defaultBranchId)} />
-          return <li key={session.sessionId} className="rw-directory-row">
-            <button className="rw-directory-session" type="button" aria-label={title} aria-description={session.running ? "Running" : undefined}
-              aria-current={active === sessionId && activeBranch === undefined ? "page" : undefined} onClick={() => select(sessionId)}>
-              <Monitor className="rw-session-icon" size={15} aria-hidden="true" />
-              <span className="rw-session-copy"><span>{title}</span>{preview && <small>{preview}</small>}</span>
-              {session.running && <span className="rw-live" aria-hidden="true" />}
-            </button>
-            {(canExpand || !session.running || rootMenu) && <div className="rw-directory-row-actions">
-              {rootMenu}
-              {!session.running && <button type="button" className="rw-sidebar-icon rw-directory-row-action"
-                aria-label={`Archive ${title}`} onClick={() => archiveSession(session.sessionId)}><Archive size={14} aria-hidden="true" /></button>}
-              {canExpand && <button type="button" className="rw-sidebar-icon rw-member-toggle"
-                aria-label={`Branches and members for ${title}`} aria-expanded={childrenOpen} disabled={searching || (phase !== "connected" && !directory && !members.length)}
-                aria-controls={`${listId}-children-${sessionId}`} onClick={() => toggleSession(sessionId)}>
-                <ChevronRight size={14} aria-hidden="true" />
-              </button>}
-            </div>}
+          return <li key={session.sessionId}>
+            <div className="rw-directory-row-main">
+              <button className="rw-directory-session" type="button" aria-label={title} aria-description={session.running ? "Running" : undefined}
+                aria-current={active === sessionId && activeBranch === undefined ? "page" : undefined} onClick={() => select(sessionId)}>
+                <Monitor className="rw-session-icon" size={15} aria-hidden="true" />
+                <span className="rw-session-copy"><span>{title}</span>{preview && <small>{preview}</small>}</span>
+                {session.running && <span className="rw-live" aria-hidden="true" />}
+              </button>
+              {(canExpand || !session.running || rootMenu) && <div className="rw-directory-row-actions">
+                {rootMenu}
+                {!session.running && <button type="button" className="rw-sidebar-icon rw-directory-row-action"
+                  aria-label={`Archive ${title}`} onClick={() => archiveSession(session.sessionId)}><Archive size={14} aria-hidden="true" /></button>}
+                {canExpand && <button type="button" className="rw-sidebar-icon rw-member-toggle"
+                  aria-label={`Branches and members for ${title}`} aria-expanded={childrenOpen} disabled={searching || (phase !== "connected" && !directory && !members.length)}
+                  aria-controls={`${listId}-children-${sessionId}`} onClick={() => toggleSession(sessionId)}>
+                  <ChevronRight size={14} aria-hidden="true" />
+                </button>}
+              </div>}
+            </div>
             {canExpand && <ul className="rw-member-list" id={`${listId}-children-${sessionId}`} hidden={!childrenOpen}>
               {directory && branches.map((line) => {
                 const name = line.purpose || line.id
@@ -205,8 +207,8 @@ function SessionGroup({ workspace, rows, active, searching, phase, expandedSessi
               {members.map((member) => {
                 const memberTitle = titleFor(member)
                 return <li key={member.sessionId}>
-                  <button type="button" className="rw-directory-session rw-directory-member" data-member-id={member.sessionId}
-                    aria-label={memberTitle} aria-description={member.running ? "Running" : undefined} onClick={(event) => openMember(member, event.currentTarget)}>
+                  <button type="button" className="rw-directory-session rw-directory-member rw-native-member" aria-current={active === member.sessionId ? "page" : undefined}
+                    aria-label={memberTitle} aria-description={member.running ? "Running" : undefined} onClick={() => openMember(member)}>
                     <GitFork size={14} aria-hidden="true" />
                     <span className="rw-session-copy"><span>{memberTitle}</span>{member.preview && member.preview !== memberTitle && <small>{member.preview}</small>}</span>
                     {member.running && <span className="rw-live" aria-hidden="true" />}

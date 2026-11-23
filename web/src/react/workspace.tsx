@@ -17,7 +17,7 @@ import { ArchiveSettings } from "./archive-settings"
 import { Composer, type ComposerHandle } from "./composer"
 import { ModelPicker } from "./composer-controls"
 import { DiagnosticsSettings } from "./diagnostics-settings"
-import { DelegationsMenu, MemberConversation } from "./delegations"
+import { DelegationsMenu } from "./delegations"
 import { ExtensionMenu, ExtensionPanel, useExtensionDirectory } from "./extensions"
 import { McpSettings } from "./mcp-settings"
 import { ModalitySettings } from "./modality-settings"
@@ -95,6 +95,7 @@ export function WorkspaceApp() {
   const phase = useStoreValue(readPhase)
   const locale = useStoreValue(readLocale)
   const text = (en: string, zh: string) => locale === "zh-CN" ? zh : en
+  const directoryById = new Map(directory.map((session) => [session.sessionId, session]))
   const workspaces = groupWorkspaces(directory)
   const members = new Map<string, SessionSummary[]>()
   for (const session of directory) {
@@ -145,7 +146,7 @@ export function WorkspaceApp() {
   const attachedBranches = useStoreValue(readAttachedBranches)
   const branchDirectories = new Map([...discoveredBranches, ...attachedBranches])
   const activeBranch = route.kind === "session" ? route.branchId : undefined
-  const [member, setMember] = useState<{ session: SessionSummary; trigger: HTMLButtonElement; fromDrawer: boolean }>()
+  const [openedMembers, setOpenedMembers] = useState<ReadonlyMap<string, { title: string; parentId: string }>>(() => new Map())
   const collapsed = useStoreValue(readSidebarCollapsed)
   const [sidebarWidth, setSidebarWidth] = useState(250)
   const sidebarDrag = useRef<{ x: number; width: number } | undefined>(undefined)
@@ -233,6 +234,15 @@ export function WorkspaceApp() {
     setDrawer(false)
   }
 
+  function openDelegatedMember(id: string, title: string, parentId: string) {
+    const summary = directoryById.get(id)
+    if (summary?.origin !== "internal" || summary.parentSessionId === undefined) {
+      setOpenedMembers((previous) => new Map(previous).set(id, { title, parentId }))
+      void sessions.refresh()
+    }
+    select(id)
+  }
+
   function openBranch(sessionId: string, branchId: string) {
     setExpandedSessions((previous) => previous.has(sessionId) ? previous : new Set([...previous, sessionId]))
     select(sessionId, false, undefined, branchId)
@@ -317,10 +327,11 @@ export function WorkspaceApp() {
     if (settingsOpen) settingsHeading.current?.focus()
   }, [settingsOpen, settingsIndex])
 
-  const selected = directory.find((session) => session.sessionId === active)
+  const selected = active === undefined ? undefined : directoryById.get(active)
+  const selectedTitle = active === undefined ? undefined : selected ? titleFor(selected) : openedMembers.get(active)?.title ?? titleFor(undefined)
   useEffect(() => {
-    document.title = settingsOpen ? `${text("Settings", "设置")} — Dim` : active === undefined ? "Dim" : `${titleFor(selected)} — Dim`
-  }, [active, selected, settingsOpen, locale])
+    document.title = settingsOpen ? `${text("Settings", "设置")} — Dim` : active === undefined ? "Dim" : `${selectedTitle} — Dim`
+  }, [active, selectedTitle, settingsOpen, locale])
 
   if (phase === "unauthenticated" || phase === "version-mismatch") {
     return <main className="rw-entry-error"><h1>Dim</h1><p>{phase === "unauthenticated" ? "Open a fresh dimcode web link to connect." : "The App Server uses an incompatible protocol version."}</p></main>
@@ -354,10 +365,7 @@ export function WorkspaceApp() {
         setNewBranch({ sessionId, branchId, cut })
       }
     },
-    openMember: (session: SessionSummary, trigger: HTMLButtonElement) => {
-      setMember({ session, trigger, fromDrawer: drawer })
-      setDrawer(false)
-    },
+    openMember: (session: SessionSummary) => select(session.sessionId),
   }
   return (
     <div className="rw-app" data-settings={settingsOpen} data-sidebar-collapsed={collapsed} style={{ "--rw-sidebar-width": `${sidebarWidth}px` } as CSSProperties}
@@ -424,7 +432,8 @@ export function WorkspaceApp() {
             }
           }}>
             {tabs.map((id) => {
-              const title = titleFor(directory.find((session) => session.sessionId === id))
+              const summary = directoryById.get(id)
+              const title = summary ? titleFor(summary) : openedMembers.get(id)?.title ?? titleFor(undefined)
               return <div className="rw-tab" key={id} data-active={active === id}>
                 <button id={`session-tab-${id}`} type="button" role="tab" aria-controls={`session-pane-${id}`}
                   aria-selected={active === id} tabIndex={active === id || (active === undefined && id === tabs[0]) ? 0 : -1}
@@ -476,16 +485,23 @@ export function WorkspaceApp() {
             <h1>Page not found</h1>
             <Button variant="secondary" onPress={() => select(undefined)}>Open a new session</Button>
           </section>}
-          {tabs.map((id) => <SessionPane key={id} id={id} active={id === active} branch={id === active ? activeBranch : undefined} connected={phase === "connected"} openSession={select}
-            openBranch={(branchId) => {
-              const current = currentRoute()
-              if (current.kind === "session" && current.id === id) openBranch(id, branchId)
-            }}
-            newSession={() => select(undefined, false, sessions.byId.get(id)?.cwd)}
-            scheduled={() => {
-              const cwd = sessions.byId.get(id)?.cwd
-              openSettingsPath(`/settings/scheduled${cwd === undefined ? "" : `?${new URLSearchParams({ cwd })}`}`)
-            }} />)}
+          {tabs.map((id) => {
+            const summary = directoryById.get(id)
+            const opened = openedMembers.get(id)
+            const memberParentId = summary?.origin === "internal" ? summary.parentSessionId ?? opened?.parentId : opened?.parentId
+            return <SessionPane key={id} id={id} active={id === active} branch={id === active ? activeBranch : undefined}
+              memberParentId={memberParentId} connected={phase === "connected"} openSession={select}
+              openMember={(memberId, title) => openDelegatedMember(memberId, title, id)}
+              openBranch={(branchId) => {
+                const current = currentRoute()
+                if (current.kind === "session" && current.id === id) openBranch(id, branchId)
+              }}
+              newSession={() => select(undefined, false, sessions.byId.get(id)?.cwd)}
+              scheduled={() => {
+                const cwd = sessions.byId.get(id)?.cwd
+                openSettingsPath(`/settings/scheduled${cwd === undefined ? "" : `?${new URLSearchParams({ cwd })}`}`)
+              }} />
+          })}
         </div>
       </main>
       {newBranch && <ConversationActionDialog action={{ kind: "branch", cut: newBranch.cut, text: "" }}
@@ -494,13 +510,7 @@ export function WorkspaceApp() {
           openBranch(newBranch.sessionId, id)
           setNewBranch(undefined)
         }} />}
-      {member && <MemberConversation sessionId={member.session.sessionId} title={titleFor(member.session)} close={() => {
-        setMember(undefined)
-        if (member.fromDrawer && matchMedia("(max-width: 719px)").matches) {
-          setDrawer(true)
-          requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[role="dialog"] [data-member-id="${CSS.escape(member.session.sessionId)}"]`)?.focus())
-        } else requestAnimationFrame(() => member.trigger.focus())
-      }} />}
+
     </div>
   )
 }
@@ -515,12 +525,14 @@ function ParentSessionLink({ id, title, open }: { id: string; title: string; ope
   }}>{text(`Parent · ${title}`, `父会话 · ${title}`)}</a>
 }
 
-function SessionPane({ id, active, branch, connected, openSession, openBranch, newSession, scheduled }: {
+function SessionPane({ id, active, branch, memberParentId, connected, openSession, openMember, openBranch, newSession, scheduled }: {
   id: string
   active: boolean
   branch?: string
+  memberParentId?: string
   connected: boolean
   openSession: (id: string) => void
+  openMember: (id: string, title: string) => void
   openBranch: (id: string) => void
   newSession: () => void
   scheduled: () => void
@@ -530,17 +542,20 @@ function SessionPane({ id, active, branch, connected, openSession, openBranch, n
     return session === undefined ? undefined : { ...session }
   }, [id]))
   const parent = useStoreValue(useCallback(() => {
-    const parentId = sessions.byId.get(id)?.parentSessionId
+    const parentId = memberParentId ?? sessions.byId.get(id)?.parentSessionId
     const parentSession = parentId === undefined ? undefined : sessions.byId.get(parentId)
     return parentId === undefined ? undefined : { id: parentId, title: parentSession ? titleFor(parentSession) : parentId }
-  }, [id]))
+  }, [id, memberParentId]))
   const [centerSlot, setCenterSlot] = useState<HTMLDivElement | null>(null)
   const [visited, setVisited] = useState<ReadonlySet<string>>(new Set())
   const { directory, error: directoryError } = useExtensionDirectory()
   const selected = useStoreValue(readExtensionSelection)
   const width = useStoreValue(readDetailWidth)
   const extensionTrigger = useRef<HTMLButtonElement>(null)
-  const showExtension = active && selected !== undefined
+  const memberReadOnly = memberParentId !== undefined
+  const locale = useStoreValue(readLocale)
+  const textForMember = locale === "zh-CN" ? "只读" : "Read-only"
+  const showExtension = active && selected !== undefined && !memberReadOnly
   const extension = directory?.extensions.find(({ pluginName }) => pluginName === selected?.pluginName)
   const panel = extension?.panels.find(({ id }) => id === selected?.panelId)
   const center = branch ?? view?.defaultBranchId ?? ROOT_BRANCH_ID
@@ -552,9 +567,9 @@ function SessionPane({ id, active, branch, connected, openSession, openBranch, n
     if (!active || !centerExists) return
     chat.ensureLine(id, center)
     setVisited((previous) => previous.has(center) ? previous : new Set([...previous, center]))
-  }, [id, active, center, centerExists])
+  }, [id, active, center, centerExists, view?.defaultBranchId])
 
-  const hasExtensions = directory?.extensions.some(({ panels }) => panels.length > 0) || directory?.errors.length || directoryError || showExtension
+  const hasExtensions = !memberReadOnly && (directory?.extensions.some(({ panels }) => panels.length > 0) || directory?.errors.length || directoryError || showExtension)
   const hasDelegations = view?.methods.includes("session.collaboration.pending") && view.methods.includes("session.collaboration.finished")
   return <div className="rw-session" id={`session-pane-${id}`} role="tabpanel" aria-labelledby={`session-tab-${id}`}
     data-active={active} data-extension={showExtension} inert={!active}
@@ -564,15 +579,16 @@ function SessionPane({ id, active, branch, connected, openSession, openBranch, n
           <div className="rw-conversation">
             <header className="rw-session-heading">
               {centerName && <p className="rw-centered-line" title={centerName}><GitBranch size={15} /> <span>{centerName}</span></p>}
-              {(parent || hasExtensions || hasDelegations) && <div className="rw-conversation-header rw-conversation-tools">
+              {(parent || memberReadOnly || hasExtensions || hasDelegations) && <div className="rw-conversation-header rw-conversation-tools">
                 {parent && <ParentSessionLink {...parent} open={openSession} />}
-                <ExtensionMenu sessionId={id} directory={directory} directoryError={directoryError} connected={connected} active={active} trigger={extensionTrigger}
+                {memberReadOnly && <span className="rw-muted rw-member-readonly">{textForMember}</span>}
+                {hasExtensions && <ExtensionMenu sessionId={id} directory={directory} directoryError={directoryError} connected={connected} active={active} trigger={extensionTrigger}
                   select={(value) => {
                     ui.extension = value
                     ui.detailOpen = true
                     ui.detailFocused = true
-                  }} />
-                {active && hasDelegations && <DelegationsMenu sessionId={id} revision={view.delegationRevision} />}
+                  }} />}
+                {active && hasDelegations && <DelegationsMenu sessionId={id} revision={view.delegationRevision} openMember={openMember} />}
               </div>}
             </header>
             <div className="rw-conversation-slot" ref={setCenterSlot}>
@@ -591,7 +607,7 @@ function SessionPane({ id, active, branch, connected, openSession, openBranch, n
           {[...conversations].map((branchId) => {
             const slot = branchId === center ? centerSlot : null
             return <ConversationSurface key={branchId} slot={slot}>
-              <BranchConversation session={view} branchId={branchId} slot={slot} active={active && branchId === center}
+              <BranchConversation session={view} branchId={branchId} memberReadOnly={memberReadOnly} slot={slot} active={active && branchId === center}
                 connected={connected} openLine={openBranch} openSession={openSession} newSession={newSession} scheduled={scheduled} />
             </ConversationSurface>
           })}
@@ -617,10 +633,11 @@ function ConversationSurface({ slot, children }: { slot: HTMLDivElement | null; 
 
 type ConversationAction = { kind: "fork" | "branch"; cut: number; text: string }
 
-function BranchConversation({ session, branchId, active, slot, connected, openLine, openSession, newSession, scheduled }: {
+function BranchConversation({ session, branchId, active, memberReadOnly, slot, connected, openLine, openSession, newSession, scheduled }: {
   session: SessionView
   branchId: string
   active: boolean
+  memberReadOnly: boolean
   slot: HTMLDivElement | null
   connected: boolean
   openLine: (id: string) => void
@@ -636,7 +653,7 @@ function BranchConversation({ session, branchId, active, slot, connected, openLi
   const readOnly = state === "creation-failed" || state === "ending" || state?.startsWith("ended") === true
   const ready = connected && branch?.status === "ready"
   const pending = session.approvals.some((entry) => entry.branchId === branchId) || session.questions.some((entry) => entry.branchId === branchId)
-  const canCompose = ready && !readOnly && !pending
+  const canCompose = ready && !readOnly && !memberReadOnly && !pending
   const canBranch = canCompose && (branchId === ROOT_BRANCH_ID || branchId === session.defaultBranchId) && connection.supports("session.branch_create")
   const forkCut = branch?.lastTurnEnd
 
@@ -657,17 +674,17 @@ function BranchConversation({ session, branchId, active, slot, connected, openLi
       quote: canCompose ? (text) => composer.current?.quote(text) : undefined,
       branch: canBranch
         ? (row) => setAction({ kind: "branch", cut: row.cut, text: row.text }) : undefined,
-      fork: ready && branchId === ROOT_BRANCH_ID && connection.supports("session.fork") ? (row) => setAction({ kind: "fork", cut: row.cut, text: row.text }) : undefined,
+      fork: ready && !memberReadOnly && branchId === ROOT_BRANCH_ID && connection.supports("session.fork") ? (row) => setAction({ kind: "fork", cut: row.cut, text: row.text }) : undefined,
     }}
     loadEarlier={() => chat.loadEarlier(session.sessionId, branchId)}>
     {(branch === undefined || branch.status === "loading") && <p role="status">Loading conversation…</p>}
     {branch?.status === "failed" && <>
-      <p role="alert">{branch.error}</p>
+      <p className="rw-error" role="alert">{branch.error}</p>
       <Button size="sm" variant="tertiary" onPress={() => isDefault ? chat.retryCentre(session.sessionId) : chat.retryLine(session.sessionId, branchId)}>
         Retry loading line
       </Button>
     </>}
-    <Composer ref={composer} session={session} branchId={branchId} connected={connected} readOnly={readOnly} actions={{
+    {!memberReadOnly && <Composer ref={composer} session={session} branchId={branchId} connected={connected} readOnly={readOnly} actions={{
       newSession, scheduled,
       branch: canBranch ? async (words) => {
         if (branch?.lastTurnEnd === undefined) throw new Error(translate("lines.noFinishedTurn"))
@@ -676,9 +693,9 @@ function BranchConversation({ session, branchId, active, slot, connected, openLi
       fork: forkCut !== undefined && branchId === ROOT_BRANCH_ID && connection.supports("session.fork")
         ? () => setAction({ kind: "fork", cut: forkCut, text: "" })
         : undefined,
-    }} />
+    }} />}
   </Timeline>
-  {active && action && <ConversationActionDialog action={action} close={() => setAction(undefined)} run={perform} />}
+  {active && !memberReadOnly && action && <ConversationActionDialog action={action} close={() => setAction(undefined)} run={perform} />}
   </>
 }
 
