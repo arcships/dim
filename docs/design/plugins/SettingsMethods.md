@@ -19,13 +19,13 @@ Callers keep:
 | Requirement (callers) | Can callers compose it from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
 | A local client reads a document to edit it | No: the client reaches management methods only, and the draft base is [Settings](Settings.md) `read_user` | `settings.read` |
-| A local client writes the draft it edited | No: the write must carry the draft's base revision and report a stale draft | `settings.update` |
+| A local client writes the draft it edited | No: the write must carry the draft's base revision, the client's business concurrency control between the user's read and write, and report a stale draft | `settings.update` |
 | A client discovers every declared source and its schema | Yes, and no client asks: the CLI reads four sources by name | Not an operation; `settings.sources` is deleted |
 | A client lists authorized projects to pass a project scope | Yes, and no client asks: no declared source declares a project file | Not an operation; `settings.projects` is deleted |
 
 ## Caller example
 
-The CLI edits the operator's prompts with the revision it read.
+The CLI edits the operator's prompts with the revision it read. The revision is the draft's base, a business value the client holds; the daemon compares it and never exposes the owner's internal version.
 
 ```rust
 let snapshot: PromptSetting = client

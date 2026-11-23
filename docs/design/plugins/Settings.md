@@ -29,6 +29,7 @@ Callers keep:
 | A source owner changes its own document | No: a read-then-replace makes the caller hold the revision and retry a competing write — the owner's exclusion and revision are its own mechanism | `change` |
 | A source owner reacts to a committed write | Yes: the `settings/<source>` fact carries the revision; read again | Business |
 | A user edits a document from a local client | No: the client needs the current revision and a whole-document replace, and a refused write means the user's draft is stale | `read_user`, `replace_user` through [SettingsMethods](SettingsMethods.md) |
+| A user's write is based on a revision | Yes: the client holds the revision it read; that revision is the client's business concurrency control between the user's read and write, not this owner's version — the owner's exclusion and revision stay inside `change` | Business; `read_user` returns the draft base and `replace_user` compares it |
 | A user edits a Rust-typed source whose rules JSON Schema cannot express | Yes: the source owner's own management namespace performs the write | Business (the source owner's methods) |
 | The agent reads one plugin's configuration | No: hiding `writeOnly` members is this owner's schema rule | `agent_read` |
 | The agent sets one member of another plugin's configuration | No: refusing user-only and `writeOnly` members is this owner's rule, and a whole-document replace would overwrite members the agent did not read | `agent_set` |
@@ -74,21 +75,7 @@ settings
     .await?;
 ```
 
-A local client edits the operator's prompts: the revision the client read is the base of the write.
-
-```rust
-let snapshot = settings
-    .read_user(ReadUser { source: "prompts".into() }, cancelled.clone())
-    .await?;
-// The user edits `snapshot.document`; a stale draft is a business outcome.
-settings
-    .replace_user(ReplaceUser {
-        source: "prompts".into(),
-        expected_revision: snapshot.revision,
-        document: edited,
-    }, cancelled.clone())
-    .await?;
-```
+A local client's edit is [SettingsMethods](SettingsMethods.md)'s caller example: the client keeps the draft revision it read, and only that path carries a revision.
 
 The plugin tool reads a plugin's configuration for the agent, and sets one member.
 
@@ -147,7 +134,7 @@ Data:
 - `Document` is one JSON object; a missing user document reads as its default document.
 - `Scope` is `"user"` or `{"project": ProjectId}`. `ProjectId` is this process's project id; a project id from another process is not accepted.
 - `ChangeFn` is `Fn(Option<Document>) -> Result<Document, Rejected>`: it is called once, under the document's exclusion, with the current document, and returns the next document or its own refusal. It must only compute; waiting on another owner or on I/O inside the change holds the document for that whole wait.
-- `Revision` is an opaque value that changes on every committed write. Only the user path carries a revision.
+- `Revision` is an opaque value that changes on every committed write. Only the user path carries it, as the draft base the client holds: a business concurrency control between the user's read and write. An owner change carries no revision; the owner's exclusion and any waiting stay inside `change`.
 - `writeOnly` lists the JSON Pointers of members withheld from the agent and holding a value.
 
 ### Facts
@@ -186,7 +173,7 @@ A fact is published after the commit and never carries a document. A failed fact
 
 ## Exceptions with reasons
 
-- The user path carries a revision and the owner path does not: the user's write depends on the revision the user read, so the value carries it; an owner change depends only on the current document.
+- The user path carries a draft revision and the owner path does not: the client's business decides whether a write still applies to the document the user read, while an owner change always applies to the current document; the revision is not a version the owner checks on the owner path.
 - A document's revision is a value for consumers of the fact, not a write parameter on the owner path: two owners that must agree on a version read the fact and compare revisions.
 - `unsynced` reports a write that is in place with unconfirmed durability: a later read sees it, and a repeated change is idempotent, so the caller must not assume the first call failed.
 - On the native profile the first read imports the user file into the row when the row is absent: the import is internal state migration, not an operation, and the file stays where it is.
