@@ -10,16 +10,16 @@ FileStorage owns:
 
 - **Roots.** The process's authorized directories, their open handles and their order. A directory is addressable only because FileStorage opened it.
 - **Generations.** One service instance admits calls, owns the descriptors it opened and releases them on close.
-- **Exclusion.** Each file's lock key beside the file. A replacement, removal or write session holds the key; another process holds the same key for the same file under every case and Unicode spelling the filesystem equates.
+- **Exclusion.** Each file's lock key beside the file. A replacement, removal or update holds the key; another process holds the same key for the same file under every case and Unicode spelling the filesystem equates. FileStorage waits for the key up to its own fixed bound.
 - **Atomic replacement.** A temporary file in the owner's namespace, flushed and renamed over the target, with the durability answer.
-- **Pinned readers and write sessions.** A pinned file version for bounded random reads, and a write session under a held key, each addressed by an id.
+- **Pinned readers.** A file version pinned for bounded random reads and addressed by a read id.
 - **Path validation.** Absolute paths inside a root, one validated component per open, no link followed, the owner's own resource names excluded.
 
 Callers keep:
 
 - Document formats and versions: settings documents, `auth.json`, the plugin envelope, JSONL records.
 - Which root and file a business uses, and the file names.
-- What a `busy` or a `conflict` answer means for a flow.
+- What a `busy` answer means for a flow, and what a business conflict means.
 - Permission and approval: FileStorage never decides whether a call may run.
 - Workspace, system and worktree facts: FileAccess owns them; FileStorage answers only whether an absolute path is inside a root.
 - Files a plugin creates and manages itself under a root, such as SQLite's database, the model-log recorder's JSONL and the UI extension cache.
@@ -28,12 +28,12 @@ Callers keep:
 | --- | --- | --- |
 | Read one document: settings, accounts, plugin records, a project's hooks file | Yes: `open_read`, `read_at` to the end, `close_read`; the pin keeps one version | Business composes; each owner keeps one small read helper |
 | Read a large file in stable pages | No: a pin is the only way to keep one version across pages | `open_read`, `read_at`, `close_read` |
-| Replace a document's bytes atomically | Yes: a write session | Business composes |
-| Write content an adapter produces incrementally | No: holding it whole is unbounded and cannot be atomic | `open_write`, `write_chunk`, `commit_write`, `abort_write` |
-| Write only if the file is still the version that was read | No: the owner is the only one that can compare and replace without another writer slipping in | `update` with `expected` |
-| Keep the replaced bytes before a destructive rewrite | No: the copy must be the version replaced under the same exclusion | `update` with `keep_replaced_as` |
+| Replace a document's bytes atomically | Yes: `write` whose source yields the whole content once | Business composes |
+| Write content that arrives in pieces, including a stream an adapter produces | No: holding it whole is unbounded; the temporary file and the key must stay inside the owner | `write` with a source |
+| Read, decide and write back while other processes may replace the file | No: between a read and a write another writer replaces the file, so only the owner can hold the file across the caller's decision | `update` with a change |
+| Keep the replaced bytes before a destructive rewrite | Yes: read the current bytes and `write` a sibling copy; the caller owns the interleaving decision | Business composes; DimOAuth judges the window between the copy and the rewrite |
 | Bring a host file the caller named into a root | No: the source is outside the roots and must be bounded and land atomically | `import` |
-| Keep a document's file owner-only from creation (settings, accounts) | No: the mode is a file attribute the owner applies at creation and replacement | `permissions` on `open_write`, `import` and `update` |
+| Keep a document's file owner-only from creation (settings, accounts) | No: the mode is a file attribute the owner applies at creation and replacement | `permissions` on `write`, `import` and `update` |
 | Write a Session file that `write` and `edit` may not modify | No: the read-only attribute is a file attribute the owner applies | `permissions` |
 | Bound a host file import by the business limit (a Session attachment) | No: the caller's limit must stop the copy before it lands | `import` with `max_bytes` |
 | Make a work directory tree and learn its absolute path | No: per-component link and alias validation is the owner's knowledge | `create_directory` |
@@ -42,12 +42,12 @@ Callers keep:
 | Hand a root's directory to another module: a process working directory, a path quoted in history, a log directory | No: the root set is the owner's state | `root_path` |
 | Learn whether an optional file exists (a project hooks file, a Settings source) | Yes: `open_read` answers none; `list` answers the parent's entries | Business composes |
 | Decode or encode a document, choose its name and its root | Yes: formats and business paths stay with callers | Business |
-| Decide when to try again after `busy` or `conflict` | Yes: both are business answers | Business |
+| Decide when to try again after `busy` | Yes: `busy` is a business answer | Business |
 | Append records to a log it owns (the model-log recorder) | Yes: the recorder owns the file; FileStorage supplies only the directory value | Business; the file is the recorder's, as SQLite's database is |
 | Write a UI extension cache and then publish it | Yes: the cache belongs to UiExtensions; FileStorage reads it only on request | Business |
 | Decide whether a read or write is allowed | Yes: Permission and Approval decide | Business |
 
-An operation or parameter exists only where its row says No. No caller code runs while FileStorage holds a file key: every operation takes data and returns data.
+An operation or parameter exists only where its row says No.
 
 ## Caller example
 
@@ -73,51 +73,57 @@ async fn read_document(storage: &FileStorage, ctx: &Ctx, path: &str, cancelled: 
 }
 ```
 
-Settings' compare-and-set: read, compute the digest of what was read, and write only for that version.
+Settings' compare-and-set: the change runs under the owner's file key, sees the current content and returns the next content or a business refusal.
 
 ```rust
-let current = read_document(&storage, &ctx, &path, cancelled.clone()).await?;
-let expected = match &current {
-    Some(bytes) => Expected::Digest { digest: sha256_hex(&bytes.0) }, // the version that was read
-    None => Expected::Absent,                                          // create only if still absent
-};
-match storage
-    .update(path, expected, Bytes(next), Some(Permissions::Private), None, cancelled)
-    .await
-{
-    Ok(UpdateReply { applied: _ }) => Ok(SettingsSnapshot { revision, document }),
-    Err(FileError::Conflict(_)) => Err(SettingsError::Conflict), // re-read and retry the business step
-    Err(error) => Err(error.into()),
-}
+storage.update(
+    path,
+    Arc::new(move |current: Option<Bytes>| {
+        Box::pin(async move {
+            let current = decode(current.as_ref().map(|bytes| bytes.0.as_slice()))?; // business format
+            if current.revision != expected {
+                return Err(Rejected::new("conflict", "the document changed since it was read"));
+            }
+            let next = check_and_update(current, document)?; // business rules
+            Ok(Bytes(encode(next)?))
+        })
+    }),
+    Some(Permissions::Private),
+    cancelled,
+)
+.await?;
 ```
 
 SessionStore's write of bytes, and of a host path:
 
 ```rust
-// `write_bytes` opens a session, writes the chunks, commits, and aborts on failure.
-let size = write_bytes(&storage, &ctx, path, bytes, Some(Permissions::ReadOnly), cancelled.clone()).await?;
+// `once` is a source that yields the bytes once and then none.
+let size = storage.write(path, once(bytes), Some(Permissions::ReadOnly), cancelled.clone()).await?;
 // A host file the caller named, without reading it first.
 let size = storage.import(path, source, Some(MAX_FILE_BYTES), Some(Permissions::ReadOnly), cancelled).await?;
 ```
 
-`write_bytes` is the caller-side composition of the write session:
+DimOAuth's reset: copy the current file, then rewrite it under the owner's key.
 
 ```rust
-async fn write_bytes(storage: &FileStorage, ctx: &Ctx, path: String, bytes: Vec<u8>,
-                     permissions: Option<Permissions>, cancelled: CancelledFn) -> Result<u64, FileError> {
-    let write = storage.open_write(ctx, path, permissions, cancelled.clone()).await?;
-    let result = async {
-        for chunk in bytes.chunks(MAX_CHUNK) {
-            storage.write_chunk(ctx, write.write_id.clone(), Bytes(chunk.to_vec()), cancelled.clone()).await?;
-        }
-        storage.commit_write(ctx, write.write_id.clone()).await
-    }
-    .await;
-    if result.is_err() {
-        let _ = storage.abort_write(ctx, write.write_id).await;
-    }
-    result
-}
+let current = read_document(&storage, &ctx, &auth_path, cancelled.clone()).await?
+    .ok_or(OAuthError::UnsupportedSchema)?;
+// The backup is a business copy; the rewrite starts only after the copy is durable.
+storage.write(backup_path, once(current), Some(Permissions::Preserve), cancelled.clone()).await?;
+storage.update(
+    auth_path,
+    Arc::new(|current: Option<Bytes>| {
+        Box::pin(async move {
+            let mut document = parse(current.as_ref().map(|bytes| bytes.0.as_slice()))?; // business format
+            document.remove(TOKENS);
+            document.insert(STATE.into(), signed_out());
+            Ok(Bytes(encode(document)?))
+        })
+    }),
+    Some(Permissions::Private),
+    cancelled,
+)
+.await?;
 ```
 
 UiResources' publish, and a later page:
@@ -153,30 +159,28 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 | `open_read` | Pin the file's current version for bounded random reads; the id is bound to the caller's row | `{path}` | `{read_id, size}` or none | While the file is opened | `invalid`, `closed`, `cancelled` |
 | `read_at` | One bounded page of a pinned version | `{read_id, offset}` | `{bytes}`, empty at or past the end | The caller's token; nothing changes | `invalid`, `closed`, `cancelled` |
 | `close_read` | Release a pin before the row unloads | `{read_id}` | `{}` | None; the owner completes the release | `invalid`, `closed` |
-| `open_write` | Begin replacing a file's bytes; the owner holds the target's key and a temporary file for the session | `{path, permissions?}` | `{write_id}` | While the session opens | `invalid`, `missing_parent`, `busy`, `closed`, `cancelled` |
-| `write_chunk` | Append one chunk to the session's temporary file | `{write_id, bytes}` | `{}` | Before the chunk is written | `invalid`, `closed`, `cancelled` |
-| `commit_write` | Publish the session's bytes atomically and release the session | `{write_id}` | `{size}` | Before the rename; the temporary file is removed and the session ends | `invalid`, `unsynced`, `closed`, `cancelled` |
-| `abort_write` | Discard the session's bytes and release it | `{write_id}` | `{}` | None; the owner completes the discard | `invalid`, `closed` |
+| `write` | Replace a file's bytes atomically from a source the owner pulls to its end | `{path, source, permissions?}` | `{size}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `busy`, `rejected`, `unsynced`, `closed`, `cancelled` |
 | `import` | Copy a regular host file into a root atomically | `{path, source, max_bytes?, permissions?}` | `{size}` | Before the replacement | `invalid`, `too_large`, `missing_parent`, `busy`, `unsynced`, `closed`, `cancelled` |
-| `update` | Replace a file's content only if it is still the expected version | `{path, expected, content, permissions?, keep_replaced_as?}` | `{applied}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `too_large`, `busy`, `conflict`, `backup_exists`, `unsynced`, `closed`, `cancelled` |
+| `update` | Change a file's content while the owner holds the file across the caller's decision | `{path, change, permissions?}` | `{applied}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `too_large`, `busy`, `rejected`, `unsynced`, `closed`, `cancelled` |
 | `create_directory` | Make the path an existing directory tree | `{path}` | `{path}` | Between levels; created ancestors stay, a retry is safe | `invalid`, `unsynced`, `closed`, `cancelled` |
 | `list` | One level of a directory | `{path}` | `{entries}` or none when the directory is absent | Before the reply | `invalid`, `closed`, `cancelled` |
 | `remove` | Make a file or a directory tree absent; an absent entry counts as removed | `{path}` or `{parent, name}` | `{}` | Before the entry is unlinked | `invalid`, `busy`, `unsynced`, `closed`, `cancelled` |
 
-`expected` is `{kind: "absent"}` when the file must not exist, or `{kind: "digest", digest}` where `digest` is the lowercase hex SHA-256 of the file bytes the caller read. `update` hashes the current content and replaces it only when the digest matches; otherwise it answers `conflict` and changes nothing. `applied` is false when the new content equals the current content, so a repeated write is idempotent.
+`write`'s `source` is called repeatedly until it returns none: each call yields the next chunk, or a `Rejected` error that ends the write and leaves the target unchanged.
 
-`permissions` is absent for "keep the existing mode; a new file gets the owner's default"; `private` is owner-only and `read_only` is the read-only attribute used for Session files. `max_bytes` is absent for the owner's limit. A listed name is passed back to `remove` unchanged. A write session that is neither committed nor aborted is settled when the calling row unloads or the owner closes.
+`update`'s `change` is called once while the file's key is held, with the current content or none when the file is absent, and returns the next content or a `Rejected` error. The owner writes the returned content atomically; `applied` is false when that content equals the current content, so a repeated write is idempotent. `change` must only compute: waiting on another owner, on network I/O or on FileStorage itself inside `change` holds the file for that whole wait. §7 allows a callback by reference, and the change is never called inside the Timeline's commit lock.
+
+`permissions` is absent for "keep the existing mode; a new file gets the owner's default"; `private` is owner-only and `read_only` is the read-only attribute used for Session files. `max_bytes` is absent for the owner's limit. A listed name is passed back to `remove` unchanged. FileStorage waits for a busy file up to its own fixed bound and answers `busy` after it; the bound is not a request field, and a caller ends the wait with its cancellation.
 
 ### Errors
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | Fix the input: a relative path, a path outside every root, a reserved name, a name that is not one component, a directory where a file is required, a file where a directory is required, a link where a directory is required, an unknown, other-row or ended id |
+| `invalid` | Fix the input: a relative path, a path outside every root, a reserved name, a name that is not one component, a directory where a file is required, a file where a directory is required, a link where a directory is required, an unknown or other-row id |
 | `missing_parent` | Create the parent (`create_directory`) or fix the path |
-| `too_large` | Read it in pages (`open_read`) or write it through a session |
+| `too_large` | Read it in pages (`open_read`) or write it through `write` |
 | `busy` | Try the same call again later; the input stays valid |
-| `conflict` | The file is not the expected version; re-read it and retry the business step |
-| `backup_exists` | The rewrite is refused; the existing copy needs the owner's decision |
+| `rejected` | The change or the source refused or failed with its own `code` and `message`; act on that code, for example re-read and retry the business step on `conflict` |
 | `unsynced` | The bytes are in place but durability is unconfirmed; a read sees them and a repeated call confirms the content; do not assume the earlier call failed |
 | `cancelled` | Nothing changed unless the reply says otherwise |
 | `closed` | This generation is unloading; call the replacement generation |
@@ -185,9 +189,8 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `open_write`, `write_chunk` | Open the parent, hold the file key, create the temporary file; each chunk is appended to it | A cancelled chunk writes nothing; the session stays usable | The row's sessions are aborted: temporary file removed, key released | New calls are refused; every session is aborted; in-flight chunks end `closed` or `cancelled` | Key and temporary file by FileStorage; the id's lifetime by the calling row |
-| `commit_write`, `abort_write` | Commit flushes and renames the temporary file, syncs the parent and releases the key; abort removes the temporary file and releases the key | Commit before the rename discards the session; abort completes | The id is gone; a later call is `invalid` | The session ends as aborted; a commit already past the rename reports success or `unsynced` | Temporary file and key by FileStorage |
-| `update` | Parent handle, file key, hash the current content and compare with `expected`; a mismatch answers `conflict` and changes nothing; a match writes the replaced copy when asked, then the temporary file, flush, rename, sync parent, release key | Before the rename: temporary file removed, target unchanged, key released, `cancelled`. After the rename: success or `unsynced`, the write is not undone | The call ends `cancelled`; the same release applies | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Key and temporary file by FileStorage |
+| `update` | Parent handle, file key, read the current content within the document limit, call `change`, write the temporary file, flush, rename, sync parent, release key | Before the rename: temporary file removed, target unchanged, key released, `cancelled`. After the rename: success or `unsynced`, the write is not undone | The change callback is revoked; the call ends `cancelled`; the same release applies | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Key and temporary file by FileStorage; the change's future by the calling row |
+| `write` | Parent handle, file key, temporary file, pull the source to its end, flush, rename, sync parent, release key | The pull stops, the temporary file is removed, the target is unchanged, `cancelled` | The source callback is revoked; the pull fails; the temporary file is removed, `cancelled` | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Temporary file and key by FileStorage; the source's future by the calling row |
 | `open_read`, `read_at`, `close_read` | Open the parent and the file without following links, pin the descriptor, register the id under the calling row; pages read at offsets from that descriptor | `open_read` before registration leaves nothing; a page ends `cancelled`; the pin stays until close or unload | The row's ids are released; a later page with the id is `invalid` | Every pin is released; later calls are `closed` | Descriptor by FileStorage; the id's lifetime by the calling row |
 | `import` | Open the source without following links, require a regular file within the limit, copy into a temporary file, rename, sync parent | The temporary file is removed, the target is unchanged, the source closes | The call ends `cancelled` | Pending calls end `closed` | Source descriptor and temporary file by FileStorage |
 | `remove` | Parent handle, the entry's key, remove depth first without following links, sync the parent | Before the unlink: nothing removed; a tree can be partly removed, a retry is safe | The call ends `cancelled` | Pending waits end `closed`; the generation releases keys | Entry removal by FileStorage |
@@ -206,11 +209,13 @@ None. FileStorage injects no service and reads no other owner's state. The assem
 
 Flow tests on the owner:
 
-- `update` answers `conflict` without changing the file when the digest does not match, reports `backup_exists` when the replaced copy exists, reports `unsynced` after a failed parent sync, and reports `applied: false` for an identical write.
-- A write session appends chunks, commits atomically, and aborts on request; a failed chunk or a row unload leaves the target unchanged and no temporary file.
-- A pin keeps its version while the path is replaced; another row's id is `invalid`; the row's unload releases its ids; the owner's close releases every pin and aborts every session.
+- `update` calls the change under the key; a change that returns `Rejected` leaves the file unchanged; an identical result reports `applied: false`; a cancel before the rename removes the temporary file; a failed parent sync reports `unsynced`.
+- `write` pulls a multi-chunk source, commits atomically, removes the temporary file when the source fails or is revoked, and leaves the target when cancelled.
+- A pin keeps its version while the path is replaced; another row's id is `invalid`; the row's unload releases its ids; the owner's close releases every pin.
 - `import` over `max_bytes` copies nothing; `remove` of a tree with a file another writer holds answers `busy`; a retry after a partial removal finishes; a link is not followed.
 - A call in flight when the generation closes ends `closed`; a root id stays valid across a reload.
+
+Material uncertainty: a change that waits on another owner or on I/O holds the file's key for that wait. The contract forbids it; review checks each caller's change.
 
 ## Rule check
 
@@ -221,18 +226,20 @@ Flow tests on the owner:
 | §3 orthogonality | No other owner's state is read or changed. A caller that needs a new file operation gets a general operation here or composes one. |
 | §4 rule 1 | No command event: FileStorage writes no Timeline fact. |
 | §4 rule 2 | No handoff: the bytes and the key stay with FileStorage. |
-| §4 rule 3 | No before callback and no commit-lock work; no caller code runs under a file key. |
+| §4 rule 3 | No before callback: the `update` change runs under the file's own key, never inside the Timeline's commit lock. |
 | §4 rule 4 | Core and assembly carry no business meaning; no document format, permission or approval appears in this contract. |
 | §4 rule 5 | No batches. |
 | §4 rule 6 | File content reaches the model only through tool results; the tools own that path, and FileStorage only returns bytes to the owner that asked. |
 | §4 rule 7 | Callers use these operations; no caller reads a descriptor, a key or a generation. |
 | §4 rule 8 | No infrastructure change. The one unmet runtime requirement is [#861](https://github.com/arcships/dim/issues/861), resolving a Session's process-scope service by its resource node; it stays with the runtime and is stated in [resource faces §8](../resource-faces.md#8-requirements-raised-to-mechanism-owners). |
 | §4 rule 9 | No Timeline fact. |
+| §7 callbacks and ids | The write source and the update change cross by reference as §7 allows; the read id crosses and is bound to the calling row. No object or handle crosses. |
+| §7 one change | The implementation task deletes the old surface, adds these operations and migrates every caller in one change. |
 | ADR 002 D1 | Process scope: roots, descriptors, keys and generations outlive Sessions and are shared across them. |
 | ADR 002 D2 | No wiring plugin: the service is on the owner type; no adapter or facade exists beside it. |
 | ADR 002 D3 | Dependencies point from extensions to the core; FileStorage depends on nothing and is a process service they may depend on. |
 | ADR 002 D4 | Roots are structural: the assembly provides the initial ones and the trusted host adds one at runtime; no business setting is involved. |
-| ADR 002 D5 | The contract is language-neutral: operations, data and ids; the Rust binding is the appendix below. |
+| ADR 002 D5 | The contract is language-neutral: operations, data, callbacks and ids; the Rust binding is the appendix below. |
 
 Pending (see #2015 待决): whether the file tools' per-turn use of this service is a hot-path exception. The operation shapes here do not depend on that decision.
 
@@ -242,16 +249,17 @@ None new. [#861](https://github.com/arcships/dim/issues/861) remains the runtime
 
 ## Binding appendix
 
-The service is marked on the owner type; the wire name stays `fsHost`. The `FsHost` wrapper type no longer exists. `caller: &Ctx` in the signatures below is rutis's caller parameter: the dispatch fills it from the calling row, it is not a request field, and no caller sends or names a row.
+The service is marked on the owner type; the wire name stays `fsHost`. The `FsHost` wrapper type no longer exists. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, it is not a request field, and no caller sends or names a row. `CancelledFn` is the binding's cancellation argument, also not a request field.
 
 ```rust
 use crate::host::CancelledFn;
 use dim_agent_runtime::PublicService;
+use rutis::host::BoxFuture;
 use rutis::Ctx;
+use std::sync::Arc;
 
 pub type RootId = String;
 pub type ReadId = String;
-pub type WriteId = String;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -271,19 +279,6 @@ pub enum Permissions {
 pub struct ReadHandle {
     pub read_id: ReadId,
     pub size: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteHandle {
-    pub write_id: WriteId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Expected {
-    Absent,
-    Digest { digest: String },
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -322,6 +317,35 @@ pub enum RemoveTarget {
     Entry { parent: String, name: Name },
 }
 
+/// The caller's own refusal or failure from a source or a change, carried unchanged.
+#[derive(Debug, thiserror::Error)]
+#[error("{code}: {message}")]
+pub struct Rejected {
+    pub code: String,
+    pub message: String,
+}
+
+impl Rejected {
+    pub fn new(code: &str, message: &str) -> Self {
+        Self { code: code.to_owned(), message: message.to_owned() }
+    }
+}
+
+/// A failed callback arrives as the wire's error; the caller reads its message.
+impl From<rutis::host::CallError> for Rejected {
+    fn from(error: rutis::host::CallError) -> Self {
+        Self::new("rejected", error.message())
+    }
+}
+
+/// The next chunk of a write, or none at the end.
+pub type SourceFn =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<Option<Bytes>, Rejected>> + Send + Sync>;
+
+/// The current content (none when absent); the next content or a refusal.
+pub type ChangeFn =
+    Arc<dyn Fn(Option<Bytes>) -> BoxFuture<'static, Result<Bytes, Rejected>> + Send + Sync>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
     #[error("{0}")]
@@ -332,10 +356,8 @@ pub enum FileError {
     TooLarge { path: String, size: u64 },
     #[error("{0} is being written by another writer")]
     Busy(String),
-    #[error("{0} is not the expected version")]
-    Conflict(String),
-    #[error("the replaced copy already exists: {0}")]
-    BackupExists(String),
+    #[error("{code}: {message}")]
+    Rejected { code: String, message: String },
     #[error("{0} is in place but its durability is unconfirmed")]
     Unsynced(String),
     #[error("the call was cancelled")]
@@ -379,36 +401,13 @@ impl FileStorage {
         // ...
     }
 
-    pub async fn open_write(
+    pub async fn write(
         &self,
-        caller: &Ctx,
         path: String,
+        source: SourceFn,
         permissions: Option<Permissions>,
         cancelled: CancelledFn,
-    ) -> Result<WriteHandle, FileError> {
-        // ...
-    }
-
-    pub async fn write_chunk(
-        &self,
-        caller: &Ctx,
-        write_id: WriteId,
-        bytes: Bytes,
-        cancelled: CancelledFn,
-    ) -> Result<(), FileError> {
-        // ...
-    }
-
-    pub async fn commit_write(
-        &self,
-        caller: &Ctx,
-        write_id: WriteId,
-        cancelled: CancelledFn,
     ) -> Result<u64, FileError> {
-        // ...
-    }
-
-    pub async fn abort_write(&self, caller: &Ctx, write_id: WriteId) -> Result<(), FileError> {
         // ...
     }
 
@@ -426,10 +425,8 @@ impl FileStorage {
     pub async fn update(
         &self,
         path: String,
-        expected: Expected,
-        content: Bytes,
+        change: ChangeFn,
         permissions: Option<Permissions>,
-        keep_replaced_as: Option<String>,
         cancelled: CancelledFn,
     ) -> Result<UpdateReply, FileError> {
         // ...
@@ -457,4 +454,4 @@ impl FileStorage {
 }
 ```
 
-`CancelledFn` is the crate's existing cancellation argument ([`host::CancelledFn`](../../../crates/dim-agent-capabilities/src/host.rs)). `Bytes` crosses as base64 text; `Name` as a string or a native-bytes object; `RootId`, `ReadId`, `WriteId` and sizes as strings and numbers. No request or reply contains a closure; `CancelledFn` is the binding's cancellation argument and `caller: &Ctx` is the dispatch's caller argument, neither is a request field.
+`CancelledFn` is the crate's existing cancellation argument ([`host::CancelledFn`](../../../crates/dim-agent-capabilities/src/host.rs)). `Bytes` crosses as base64 text; `Name` as a string or a native-bytes object; `RootId`, `ReadId` and sizes as strings and numbers. Requests carry callbacks by reference only where the operation needs the caller's own step — the write source and the update change; every other argument and reply is data.
