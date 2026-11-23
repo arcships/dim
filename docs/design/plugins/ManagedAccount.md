@@ -51,7 +51,7 @@ Web follows the Dim account's availability:
 
 ```rust
 let AccountAvailability { signed_in, .. } = account.availability(cancelled.clone()).await?;
-let mut changes = account.subscribe(SubscriptionRequest {}, cancelled.clone()).await?;
+let mut changes = account.subscribe(cancelled.clone()).await?;
 while let Some(available) = changes.next().await { /* declare or withdraw web_search */ }
 ```
 
@@ -78,8 +78,8 @@ All operations are marked on the owner type and provided under the owner's face 
 | `availability` | Whether the account is signed in | `{}` | `{signed_in, identity?}` | The caller cancels; no timeout | `cancelled`, `closed`, `failed` |
 | `subscribe` | Follow availability changes | `{}` | `{subscription}` | The subscription ends with the caller's row | `closed` |
 | `catalog` | The models the plan serves | `{}` | `{account, models}` | The caller cancels; a catalog read may wait on the account's own refresh | `unavailable`, `cancelled`, `closed`, `failed` |
-| `credential` | The connection facts for one request | `{provider, model}` | `{protocol, base_url, headers, bearer, generation}`; a read inside the refresh window refreshes first | The caller cancels; a refresh already started finishes under the owner | `not_found`, `account_required`, `cancelled`, `closed`, `failed` |
-| `rejected` | The generation the provider refused; answer the credential to retry with | `{provider, generation}` | A credential; the current generation refreshes once, a superseded generation answers the current credential | The caller cancels; a refresh already started finishes under the owner | `not_found`, `account_required`, `cancelled`, `closed`, `failed` |
+| `credential` | The connection facts for one request | `{provider, model}` | `{protocol, base_url, headers, bearer, generation}`; a read inside the refresh window refreshes first | The caller cancels; a refresh already started finishes under the owner | `not_found`, `account_required`, `unavailable`, `cancelled`, `closed`, `failed` |
+| `rejected` | The generation the provider refused; answer the credential to retry with | `{provider, generation}` | A credential; the current generation refreshes once, a superseded generation answers the current credential | The caller cancels; a refresh already started finishes under the owner | `not_found`, `account_required`, `unavailable`, `cancelled`, `closed`, `failed` |
 | `search` (Dim) | Search through the relay | `{query, count}` | `{results}` | The caller cancels; the provider request is cancelled | `unavailable`, `failed`, `cancelled`, `closed` |
 | `title` (Dim) | Generate a title through the relay | `{provider, text}` | `{title}` | The caller cancels; an HTTP exchange is bounded at 10 s | `unsupported_provider`, `unavailable`, `cancelled`, `closed`, `failed` |
 
@@ -116,7 +116,13 @@ All operations are marked on the owner type and provided under the owner's face 
 
 - The external account plugin's face name is configured by its row because the plugin is built outside this repository; the host records the name in the Provider record's authority.
 
+## Client-visible changes
+
+None. The `account.*`, `account.codex.*`, `account.grok.*` and `account.chatgpt.*` method names, fields, error codes and user-visible behavior are unchanged; handlers call these operations.
+
 ## Rule check
+
+[Design rules §7](https://github.com/arcships/dim/pull/2029) is the rule source.
 
 | Rule | Application |
 | --- | --- |
@@ -147,6 +153,13 @@ Shared request, reply and error types; each owner's `#[rutis::service]` block is
 
 ```rust
 use dim_agent_capabilities::host::CancelledFn;
+use rutis::host::BoxFuture;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountIdentity { pub issuer: String, pub subject: String }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,8 +183,9 @@ pub struct Credential {
     pub generation: u64,
 }
 
+/// The wire code is the variant's snake_case name; `details` carries its data.
 #[derive(thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "code", content = "details", rename_all = "snake_case")]
 pub enum AccountError {
     #[error("{0}")] NotFound(String),
     #[error("sign in to the account")] AccountRequired,
@@ -184,3 +198,9 @@ pub enum AccountError {
 ```
 
 `Subscription` is the owner's replayable watch over availability; it ends when the calling row unloads or the owner closes.
+
+## Supersedes
+
+- `service-faces.md`: the `grokOAuthService` and `openAICodexOAuthService` rows; the `managedSearch` row and §4.6, which the account owners' `search` replaces.
+- `appserver/provider-management.md`: the account rows in §2 and §3.1 that describe the account catalog and status as reported by a host binding.
+- `crates/dim-app-server/README.md`: the managed provider contract's account and lease paragraphs; the account owners answer them directly.

@@ -64,7 +64,13 @@ The file's entries declare both limits; a selection always carries them, so `res
 
 - The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary); `credential` is the only operation that returns it.
 
+## Client-visible changes
+
+None. The profile has no client namespace; `providerService` serves parts and is not a client protocol.
+
 ## Rule check
+
+[Design rules §7](https://github.com/arcships/dim/pull/2029) is the rule source.
 
 | Rule | Application |
 | --- | --- |
@@ -84,6 +90,10 @@ The file's entries declare both limits; a selection always carries them, so `res
 ## Requirements raised to mechanism owners
 
 None. The model file and its validation are this owner's; no other owner's operation is needed.
+
+## Supersedes
+
+- `service-faces.md`: the `modelHost` row and the configured-profile paragraph in §4.10.
 
 ## Binding appendix
 

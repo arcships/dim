@@ -65,7 +65,13 @@ Both faces implement [ManagedAccount](ManagedAccount.md)'s `availability`, `subs
 - The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary); these replies and errors omit it.
 - The legacy `openai-codex` record keeps its legacy fields; the hidden state shared with the ChatGPT account and the migration between the two accounts stay the owners' business and are described in the [Codex sign-in design](../../../crates/dim-oauth/docs/design.md).
 
+## Client-visible changes
+
+None. The `account.codex.*` and `account.grok.*` method names, fields, error codes and user-visible behavior are unchanged; handlers call these operations.
+
 ## Rule check
+
+[Design rules §7](https://github.com/arcships/dim/pull/2029) is the rule source.
 
 | Rule | Application |
 | --- | --- |
@@ -88,6 +94,10 @@ Both faces implement [ManagedAccount](ManagedAccount.md)'s `availability`, `subs
 
 - **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `read` and `update` for the account record.
 - **Others.** None.
+
+## Supersedes
+
+- `service-faces.md`: the `grokOAuthService` and `openAICodexOAuthService` rows.
 
 ## Binding appendix
 

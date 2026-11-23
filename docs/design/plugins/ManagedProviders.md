@@ -72,7 +72,13 @@ The client namespace `account.chatgpt.*` keeps its published methods. The existi
 - The external account plugin's face name comes from its row: the plugin is built outside this repository, so the assembly supplies the name the Provider record's authority uses.
 - The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary); these replies and errors omit it.
 
+## Client-visible changes
+
+None. The `account.chatgpt.*` method names, fields, error codes and user-visible behavior are unchanged; handlers call these operations.
+
 ## Rule check
+
+[Design rules §7](https://github.com/arcships/dim/pull/2029) is the rule source.
 
 | Rule | Application |
 | --- | --- |
@@ -95,6 +101,11 @@ The client namespace `account.chatgpt.*` keeps its published methods. The existi
 
 - **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `read`, `update` and `write` for the ChatGPT account record.
 - **Storage owner ([#2018](https://github.com/arcships/dim/issues/2018)).** Provider reads a Session's creation record through `store.creationRecord` to require an interactive client Session for this provider; the requirement is stated in [Provider](Provider.md)'s requirements.
+
+## Supersedes
+
+- `service-faces.md`: the `managedSearch` row and §4.6.
+- `crates/dim-app-server/README.md`: the managed provider contract, including the binding, its validation and `ManagedSearch`.
 
 ## Binding appendix
 

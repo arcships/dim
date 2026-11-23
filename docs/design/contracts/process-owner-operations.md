@@ -1,12 +1,12 @@
 # Process owner operations
 
-The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelectionHost` and `auxiliaryModel` from the catalog when their consumers move to the owners below.
+The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelectionHost`, `auxiliaryModel`, `modelHost` and `managedSearch` from the catalog. The Provider, account-owner and ModelLog rows below are superseded by [Provider](../plugins/Provider.md), [ManagedAccount](../plugins/ManagedAccount.md) and their per-owner contracts; the other owners' rows stand.
 
 ## Retained operations
 
 | Caller → owner | API to use |
 | --- | --- |
-| Model selection, pickers and auxiliary callers → `providerService` | `resolve`, `selectableModels`, `selectableForModality`, `complete` keep their existing arguments and replies. Provider supplies these operations in the managed profile and ConfiguredModels in the API-key profile. |
+| Model selection, pickers and auxiliary callers → `providerService` | `resolve`, `selectable`, `preferences`, `invoke` as [Provider](../plugins/Provider.md) defines them. Provider supplies these operations in the managed profile and ConfiguredModels in the API-key profile. |
 | Media selection → Modality | `modalityTargets.resolve`. |
 | Management clients → Provider / Grok OAuth / OpenAI Codex OAuth | Existing [Provider management RPCs](../appserver/provider-management.md) and account status, begin, attempt status, cancel and logout RPCs. Codex also handles its browser callback. |
 | Session consumers → Agent directory | [`sessions` operations](../appserver/sessions-service.md). Agent administration and Session creation/fork retain the existing `agent.create/list/close` and `session.create/fork` client RPCs. RPC, Agent configuration, Collaboration and Provider lifecycle consumers use directory-owned admission, generation observation, close and rollback. The directory keeps the Session lease through each admitted operation. |
@@ -14,7 +14,7 @@ The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelection
 | Presence consumers → Connection | `sessionClientsHost.presences`. Connection serves this operation directly and handles broadcast, socket registration, writes, close and detach. |
 | Activity consumers / daemon clients → ServerControl | `processActivity.activated/hold/release`; existing `daemon.ping/shutdown` RPCs. Shutdown settles the initiating reply before transport teardown. |
 | UI clients → UiHost / UiExtensions | Existing `ui.open/attach/replace/status/shutdown/close` RPCs and [extension listing, resources and notices](../client-ui-extensions.md). Transport supplies the authenticated connection identity. UiHost owns attach tokens, generations and disconnect cleanup. |
-| Prompt, scenario and summary evaluation tools → active profile | Use `providerService` for their catalog/selection calls and `modelHost.invoke` for execution. |
+| Prompt, scenario and summary evaluation tools → active profile | Use `providerService` for their catalog/selection calls and `invoke` for execution. |
 | Media execution and realtime → native adapter | Existing native connection binding and credential owner ([#1613](https://github.com/arcships/dim/issues/1613), [#1634](https://github.com/arcships/dim/issues/1634)). |
 | Transport, Web entry and Session subscriptions → Connection | Connection-owned attach, broadcast, close and detach using the authenticated connection identity. |
 
@@ -23,9 +23,9 @@ The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelection
 | Caller → owner | Methods and replies |
 | --- | --- |
 | Permission consumers → Agent directory | `sessions.permission({sessionId,branchId})` and `sessions.permissionDefaults({})` retain the existing policy replies. The first holds the Session lease; the second reads the current default without creating a Session. |
-| Dialogue, summary and suggestion → active invocation owner | `modelHost.invoke(request, mode, consume, cancelled, hooks?) → value`. Full `ModelRequest` with pinned tools, configuration, cached prefix and capability snapshot. Attempt contract below. |
-| Session configuration → `providerService` (managed profile) | `configuration(explicit?, cwd?, preferences) → ModelSelection`; `applyPreferences(current, update) → ModelSelection`. Bind the existing Provider operations. |
-| Session creation/adoption and Collaboration → `providerService` (managed profile) | `prepareStartup(request) → {model, admissionId?}`, `checkStartup(source) → void`, `retainStartup({sessionId, generation, model, admissionId?}) → void`, `releaseStartup({admissionId}) → void`. Reuse the pending startup binding ID. Retain on success for that Session generation; release on failure or caller unload. |
+| Dialogue, summary and suggestion → `providerService` | `invoke(request, mode, consume, admit?, cancelled) → {accepted}`. Full `ModelRequest` with pinned tools, configuration, cached prefix and capability snapshot; retries and credential recovery stay with the owner, see [Provider](../plugins/Provider.md). |
+| Session configuration → `providerService` (managed profile) | `resolve({target?, cwd?}) → ModelSelection`; `preferences({selection, update}) → ModelSelection`, see [Provider](../plugins/Provider.md). |
+| Session creation/adoption and Collaboration → `providerService` (managed profile) | `prepare_startup(request) → ModelSelection`, `retain_startup({session, model})`, `release_startup({model})`. The source is bound to the calling row until a Session retains it; a missed release settles with the row, a retained source with the Session, see [Provider](../plugins/Provider.md). |
 | Session creation / worktree management → ManagedWorktrees | `create({source, base?, branch?}) → CreatedWorktreeReply`, `discard(created) → void`, `list({}) → WorktreeView[]`, `pruneSelection({olderThanMs?, keep?, force}) → PruneSelection`, `remove({taskId, force}) → boolean`. Bind the existing operations. Failed Session creation discards the created worktree on its node. |
 | PluginManager → UiExtensions | `plugins({}) → string[]`, `refusal({plugin}) → string or null`, `register({plugin, name, package?}) → void`, `withdraw({plugin}) → void`. Bind the existing catalog methods. |
 
@@ -57,4 +57,4 @@ The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelection
 | `hooks?` | `prepare(protocol or null) → ModelConfig or null` runs once after resolution. `beforeAttempt() → admitted or {rejected: message}` checks the summary budget before each attempt. `waiting(progress or null)` reports the existing retry schedule. |
 | Completion | Cancellation or driver shutdown releases a suspended consumer and joins accepted work. Invalid wire input returns `invalid_request`. Consumer exceptions remain consumer errors. |
 
-The full-request consumer injects only `modelHost`. The managed profile registers Provider at that name; the API-key profile registers ConfiguredModels; standalone local configuration registers the local host. Each profile registers exactly one dispatcher at `modelHost`. Aimux relinquishes the catalog name and supplies the existing native driver. The selected owner resolves the request, invokes its driver, and settles credential recovery with the account owner. The local host uses its local connection. The caller receives output or a host error. Aimux owns its native driver, pool and unload signal.
+The full-request consumer injects only `providerService`. The managed profile registers Provider at that name; the API-key profile registers ConfiguredModels; standalone local configuration registers the local host. Each profile registers exactly one dispatcher at `providerService`. Aimux supplies the native driver and owns its pool and unload signal without a catalog name. The selected owner resolves the credential with the account owner, invokes its driver and settles the retries; the caller receives output or a typed error.

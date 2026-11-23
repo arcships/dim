@@ -1,6 +1,6 @@
 # AuxiliaryModel
 
-Status: implemented (S4 native operation and named binding). Roadmap item S4 ([#53](https://github.com/arcships/dim/issues/53)).
+Status: implemented (S4 native operation and named binding); the `auxiliaryModel` face is superseded by `providerService.invoke` ([Provider](../plugins/Provider.md)). Roadmap item S4 ([#53](https://github.com/arcships/dim/issues/53)).
 Overview: [Appendix B.2 Provider row](../overview.md#b2-app-server-process-plugins). Scope:
 [ADR 002](../../adr/002-plugin-scope.md) (process, provided by Provider and, in the
 model-config profile, by ConfiguredModels).
@@ -69,82 +69,19 @@ tracking own an in-flight call. ConfiguredModels has no admission and tracks no 
 
 ## 4. Interfaces
 
+The `auxiliaryModel` face is deleted. See [Provider](../plugins/Provider.md) for `providerService.invoke`; the headings below stay because source comments link them.
+
 ### 4.1 Language-neutral (ADR 002 D5)
 
-`auxiliaryModel`, process scope, no instance key, provided by the profile's owner of
-model selection (Provider in the product profile, ConfiguredModels in the model-config
-profile).
-
-| Method | Mode | Request | Reply |
-| --- | --- | --- | --- |
-| `complete` | async | `{model: {providerId, modelId}, request: {system?: string, messages: Message[], maxOutputTokens?: u32}}` | `{text, stopReason: "end_turn" \| "max_tokens" \| "stop_sequence", usage?: {promptTokens, completionTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens?, cost?, currency?}}` |
-
-- `model` is required. The caller resolves it from its own configuration; Provider does not
-  fall back to another model.
-- `messages` use the existing serializable `Message` type (dim-agent-types), for example
-  `[{role: "user", content: "…"}]`. No tools are offered; thinking output is dropped; only
-  text blocks form `text`.
-- `stopReason` has three values. The Rust `ModelStopReason` also has `ToolUse`; since no tool
-  is offered, a tool stop is a provider defect and the call fails with `failed`.
-- `maxOutputTokens` caps the reply; the default and the cap are the model's adopted output
-  allowance (Provider's derivation from the declared window and maximum, so the input budget
-  is at least half the window), not the declared maximum itself.
-- Non-streaming: the consumer needs the whole text.
-- Cancellation: the consumer drops the call (or sends the bridge protocol's cancel request).
-  The service has no timeout of its own; the budget is the consumer's.
-- Errors are data `{code, message}`: `invalid_request`, `model_unavailable`, `failed`,
-  `cancelled` (§6).
+Superseded: there is no `auxiliaryModel` service. A caller runs `providerService.invoke(request, Mode::Once, consume, None, cancelled)` and collects the text in its consumer.
 
 ### 4.2 Rust binding
 
-In `dim-agent-capabilities::host`, next to `ModelSelectionHost`:
-
-```rust
-pub struct AuxiliaryRequest { pub system: Option<String>, pub messages: Vec<Message>,
-                              pub max_output_tokens: Option<u32> }
-pub struct AuxiliaryReply { pub text: String, pub stop_reason: ModelStopReason,
-                            pub usage: Option<Usage> }
-pub enum AuxiliaryErrorCode { InvalidRequest, ModelUnavailable, Failed, Cancelled }
-pub struct AuxiliaryError { pub code: AuxiliaryErrorCode, pub message: String }
-pub trait CompleteAuxiliary: Send + Sync + 'static {
-    fn complete(&self, model: ModelId, request: AuxiliaryRequest, cancel: CancellationToken)
-        -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
-}
-pub struct AuxiliaryModel(pub Arc<dyn CompleteAuxiliary>);
-```
-
-`auxiliary_model::provide` publishes one `AuxiliaryModel` at the Rust type key and
-`host_key("auxiliaryModel")`. Each owner's `apply` calls it with its own `CompleteAuxiliary`
-implementation; its `Deps` gain `Arc<ModelHost>`.
+Superseded: `AuxiliaryModel`, `AuxiliaryRequest`, `AuxiliaryReply` and `CompleteAuxiliary` are deleted. The request is a `ModelRequest`; the reply is the caller's collected text and stop reason.
 
 ### 4.3 Named binding
 
-The [target process binding](../contracts/process-owner-operations.md) moves callers of `auxiliaryModel.complete` to `providerService.complete` with the same request and stream. Retire the former catalog entry with its consumers. The binding below is the pre-migration name.
-
-The same owner-provided operation implements `HostDispatch` at
-`host_key("auxiliaryModel")` through that shared `provide`; the process catalog registers
-that shared name. An ordinary C4 row injects `auxiliaryModel` and calls
-`complete({model, request})`; Rust SessionTitle names the same `auxiliaryModel` service
-through its `AuxiliaryModel` binding and calls the owner directly without serialization.
-The SDK declares it as `AuxiliaryModel` in
-[`dimcode/plugin`](../../../npm/plugin.d.ts). This is the existing operation's binding,
-not another plugin or a second model runner.
-
-The call takes one data object with `model` and `request`. Decode the native request once
-at this boundary; unknown fields, invalid message data and invalid argument shapes reject
-with `invalid_request`. Optional `system` and `maxOutputTokens` may be absent or null.
-The reply uses the native `AuxiliaryReply` serialization, with camelCase fields and snake_case
-stop reasons; absent usage is omitted. Errors reject with an Error carrying the existing
-`code` and `message`, without a new reply envelope. Provider's calls use its admission,
-task tracking and cleanup; ConfiguredModels lives for the process and has no admission, so
-a call ends with its own result or the caller's cancellation. Credentials and connection
-handles stay with the owner.
-
-An optional second argument, `cancelled: () => Promise<void>`, uses the existing C5 function
-reference mechanism to bind the native cancellation token. Resolving or rejecting the returned
-Promise (including loss of its language runtime) cancels the original operation and waits for it to settle
-before returning. Consumers resolve it on their timeout or closing; stopping an await alone is
-not cancellation. No new bridge protocol or detached cancellation task is needed.
+Superseded: the `auxiliaryModel` name leaves the catalog. The replacement operations are in [Provider](../plugins/Provider.md); the account credential they use is in [ManagedAccount](../plugins/ManagedAccount.md).
 
 ## 5. Flow
 

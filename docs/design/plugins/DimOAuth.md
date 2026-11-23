@@ -38,7 +38,7 @@ Web declares its search tool only while the relay account is signed in:
 ```rust
 let AccountAvailability { signed_in, .. } = dim_account.availability(cancelled.clone()).await?;
 if signed_in {
-    let mut changes = dim_account.subscribe(SubscriptionRequest {}, cancelled.clone()).await?;
+    let mut changes = dim_account.subscribe(cancelled.clone()).await?;
     // declare web_search; withdraw it when changes report signed_out
 }
 ```
@@ -71,8 +71,8 @@ Face `dimAccount`, marked on `DimOAuth`. The operations are [ManagedAccount](Man
 | --- | --- | --- |
 | `availability`, `subscribe` | `{}` → `{signed_in, identity?}`; the identity is the grant's issuer and subject, never a token | `cancelled`, `closed`, `failed` |
 | `catalog` | `{}` → `{account, models}`; the models are the relay's, each with its declared capabilities | `unavailable`, `cancelled`, `closed`, `failed` |
-| `credential` | `{provider, model}` → `{protocol, base_url, headers, bearer, generation}`; `provider` must be one of the relay's; a read inside the 30-second window refreshes first | `not_found`, `account_required`, `cancelled`, `closed`, `failed` |
-| `rejected` | `{provider, generation}` → a credential; the current generation refreshes once under the account lock, a superseded generation answers the current credential; a rejected refresh or a rejected recovered generation follows the sign-out rule | `not_found`, `account_required`, `cancelled`, `closed`, `failed` |
+| `credential` | `{provider, model}` → `{protocol, base_url, headers, bearer, generation}`; `provider` must be one of the relay's; a read inside the 30-second window refreshes first | `not_found`, `account_required`, `unavailable`, `cancelled`, `closed`, `failed` |
+| `rejected` | `{provider, generation}` → a credential; the current generation refreshes once under the account lock, a superseded generation answers the current credential; a rejected refresh or a rejected recovered generation follows the sign-out rule | `not_found`, `account_required`, `unavailable`, `cancelled`, `closed`, `failed` |
 | `search` | `{query, count}` → `{results: [{title, url, snippet, publishedAt?}]}` | `unavailable`, `failed`, `cancelled`, `closed` |
 | `title` | `{provider, text}` → `{title}`; `provider` must be the relay's | `unsupported_provider`, `unavailable`, `cancelled`, `closed`, `failed` |
 
@@ -92,7 +92,13 @@ The `account.*` namespace keeps its published methods; handlers call the same ow
 - The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary); DimOAuth's replies and errors omit it.
 - The account file is shared with the TypeScript subscriber under the published `auth.json.lock` marker protocol; FileStorage's contract records the marker exception, and DimOAuth keeps the file format.
 
+## Client-visible changes
+
+None. The `account.*` method names, fields, error codes and user-visible behavior are unchanged; handlers call these operations.
+
 ## Rule check
+
+[Design rules §7](https://github.com/arcships/dim/pull/2029) is the rule source.
 
 | Rule | Application |
 | --- | --- |
@@ -115,6 +121,12 @@ The `account.*` namespace keeps its published methods; handlers call the same ow
 
 - **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `read`, `update` and `write` for `auth.json` and its backup; the `auth.json.lock` marker exception is already recorded there.
 - **Settings, storage, session directory.** None.
+
+## Supersedes
+
+- `service-faces.md`: the `managedSearch` row and §4.6, whose `search` this owner answers.
+- `crates/dim-app-server/README.md`: the managed provider contract's search paragraph; the account owner answers it directly.
+- `plugins/SessionTitle.md` §3.3's `sessionTitleGenerator` name: the title operation is `dimAccount.title`.
 
 ## Binding appendix
 

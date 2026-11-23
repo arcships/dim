@@ -93,7 +93,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
 | `sessionFiles` | `sessionFiles.put/import/read/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFiles` 是进程内绑定。 |
 | `commandRules` | `commandRules.read` | Session 命令规则读取，按 [命令规则](appserver/permission-command-rules.md#41-language-neutral-adr-002-d5) §4.1。 |
-| `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
+| 账户面（`dimAccount`、`codexAccount`、`grokAccount`、`chatgptAccount`） | `credential`、`rejected`、`availability`、`subscribe`、`catalog`；Dim 另有 `search`、`title` | 按 [ManagedAccount](plugins/ManagedAccount.md) 与各所有者契约；凭据由账户所有者持有。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
 | `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
 | `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
@@ -111,7 +111,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | --- | --- | --- |
 | `agentIndex` | `sessions` | 目录查询走 `sessions` |
 | `settingsService` | `settings` | GoalBranch 的取消契约见 §4.1。 |
-| `modelHost` | `modelHost` | 完整模型请求直接调用所选配置的执行入口；辅助请求使用 `providerService.complete`。 |
+| `providerService` | `providerService` | 完整请求与辅助请求都调 `invoke`，见 [Provider](plugins/Provider.md)。 |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
 | `sessionStore` | `store`、`sessionFiles`、`timelineStore` | 标题与 worktree 关联直接调 store |
 | `treeCommands`、`timelineTreeControl` | `timelineTree` | 分支操作直接调用 Session 的树；不保留别名 |
@@ -188,21 +188,17 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 ### 3.6 入口、凭据与宿主资源
 
-按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。`skillsCatalog` 的插件内容操作见 [Skills owner 契约](../architecture/rust-agent/plugins/Skills.md#plugin-content-data-face)。
+按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。账户面与 `providerService` 已按 [ManagedAccount](plugins/ManagedAccount.md) 与 [Provider](plugins/Provider.md) 改为数据面，不再列在本表；`skillsCatalog` 的插件内容操作见 [Skills owner 契约](../architecture/rust-agent/plugins/Skills.md#plugin-content-data-face)。
 
 | 名字 | scope | provider | reason |
 | --- | --- | --- | --- |
 | `serverControl` | process | ServerControl | control |
 | `connectionHub` | process | Connection | control |
-| `grokOAuthService` | process | GrokOAuth | secret |
-| `openAICodexOAuthService` | process | OpenAICodexOAuth | secret |
 | `uiHost` | process | UiHost | control |
 | `uiExtensions` | process | UiExtensions | control |
 | `mentionIndex` | process | WorkspaceToolsOwner | host-resource |
 | `mcpService` | process | Mcp | host-resource |
 | `hooksService` | process | HooksSettings | host-resource |
-| `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |
-| `providerConnectionResolver` | process | Provider | host-resource |
 | `timelineFactory` | session | SessionScope | control |
 
 ## 4. 批次契约（#1292）
@@ -218,9 +214,9 @@ PromptSettings 的三个只读端口按 [prompt overrides §3.1](appserver/promp
 
 迁移前 `GoalBranch` 继续用类型化调用，读取随 branch stop token 取消。设置 owner 在 #1292 的批次内确定如何将调用方取消传递给读取操作，并验证 `settings.read` 的 `SettingsResult<T>` 信封和现有错误语义。Goal 切到同一数据契约的 Rust 绑定时，覆盖分支停止中断设置读取的流程。
 
-### 4.2 `modelHost`：保留完整模型请求
+### 4.2 `modelHost`：已由 `providerService.invoke` 取代
 
-迁移前 `PromptSuggestion` 继续用类型化调用。模型 owner 在 #1292 的批次内定义能承载完整 `ModelRequest` 的公开操作，保留当轮 provider、model、system、tools、config、cached prefix、流式回复与取消。精简请求迁往 `providerService.complete`，随后移除 `auxiliaryModel`。PromptSuggestion 切到同一数据契约的 Rust 绑定时，覆盖 tools、config 和缓存前缀。
+`providerService.invoke` 承载完整 `ModelRequest`、失败链、重试与凭据恢复；见 [Provider](plugins/Provider.md)。`modelHost`、`auxiliaryModel` 与 `providerConnectionResolver` 的旧面删除。
 
 ### 4.3 `scheduleJobs`
 
@@ -254,19 +250,9 @@ workflowRuns.call(RunRequest)
 
 进程内绑定和 wire 的行为一致性由 `session_files_flow.rs` 与 `attachments_flow.rs` 验证。
 
-### 4.6 `managedSearch`
+### 4.6 `managedSearch`：已由账户所有者的 `search` 取代
 
-`managedSearch` 只公开搜索操作：
-
-```text
-managedSearch.search {query, count}
-  -> {results: [{title, url, snippet, publishedAt?}]}
-  -> error {code: unavailable | search_failed, message}
-```
-
-- 取消是协议动作（调用方丢弃调用或发 bridge cancel），不是请求字段。
-- `ManagedProviders` 在 owner 内处理登录、凭据和租约。搜索调用迁到 `managedSearch` 后，批次按 §2.6 收敛旧登记（[#1398](https://github.com/arcships/dim/pull/1398)）。
-- Web 的搜索使用 `managedSearch`；进程内绑定直接调用同一类型化操作，wire 在边界解码与编码。绑定与 wire 共用取消行为，丢弃调用取消本次搜索，不取消调用方的父 token。Web 的 settings 仍走 `settings`。
+搜索是 DimOAuth 的 `search({query, count}) -> {results}`，Web 直接调用账户面；见 [ManagedAccount](plugins/ManagedAccount.md) 与 [DimOAuth](plugins/DimOAuth.md)。`managedSearch` 与 `usable`、`subscribe_usable`、`refresh_usable` 删除。
 
 ### 4.7 `wakeups`
 
@@ -361,15 +347,14 @@ toolchainSourceHost.list({}) -> {toolchains: [{bin, root}]}          # sync
   -> error {code: failed, message}
 promptSuggestionSettingsHost.read({}) -> {enabled, maxChars}
   -> error {code: failed, message}
-providerService.selectableModels({}) -> {models: [ModelCapabilitySnapshot]}
-providerService.selectableForModality({}) -> {models: [ModalityModelSnapshot]}
-providerService.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
-  -> error {code: cancelled | owner_closed | invalid_request | model_unavailable | failed, message}
+providerService.resolve({target?, cwd?}) -> ModelSelection
+providerService.selectable({use}) -> {models, default?}
+  -> error {code: invalid | not_found | unavailable | auth_required | cancelled | closed | failed, message}
 ```
 
 - 每个 operation 只收一个请求对象；没有输入的写 `{}`（`provider-management.md` §3.6 的形状），多一个参数或未知字段都是 `invalid_request`。
 - 取消是协议动作：调用方丢弃等待，或被取消的绑定调用不再进入 owner；owner 自己的生命周期仍然约束它启动的 worker。
-- 回复就是 owner 的类型：`ExecutionSettings`、`PromptSuggestionSettings`、`ModelCapabilitySnapshot`、`ModalityModelSnapshot`、`ModelSelection` 都是 serde camelCase 数据。`InstalledToolchain` 的 `PathBuf` 换成 UTF-8 字符串（`{bin, root}`）：某个 runtime 的目录不是 UTF-8 时只跳过那一项，其余照常给子进程用；`cwd` 的请求方向同理，`ModelSelectionRequest::at` 是 Rust 调用方换字段的唯一一处。
+- 回复就是 owner 的类型：`ExecutionSettings`、`PromptSuggestionSettings`、`ModelCapabilitySnapshot`、`ModalityModelSnapshot`、`ModelSelection` 都是 serde camelCase 数据，形状与 [Provider](plugins/Provider.md) 的操作一致。`InstalledToolchain` 的 `PathBuf` 换成 UTF-8 字符串（`{bin, root}`）：某个 runtime 的目录不是 UTF-8 时只跳过那一项，其余照常给子进程用。
 - 提供方仍是原来的部件（App Server 的 `ExecutionSettings`、`ToolchainSource`、`PromptSuggestionSettings`、`Provider`，以及 aimux 的 `ConfiguredModels`）：`provide` 一次给出类型键上的绑定和 `host_key(name)` 上的 face；没有适配层，也没有第二份业务逻辑。
 - 测试：`host_port_faces.rs` 比对 Rust binding 与 wire 的结果、请求形状、错误与取消；`provider_flow.rs` 等既有流程验证真实 owner 的读取。
 

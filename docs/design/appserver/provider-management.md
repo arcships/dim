@@ -3,7 +3,7 @@
 Status: **Implemented**. Process-owned Provider management for
 [#329](https://github.com/arcships/dim/issues/329).
 [中文](../../zh/design/appserver/provider-management.md).
-The [S4 auxiliaryModel](auxiliary-model.md) contract remains unchanged.
+The S4 `auxiliaryModel` face is replaced by `providerService.invoke` ([Provider](../plugins/Provider.md)); [auxiliary-model.md](auxiliary-model.md) records the old shape.
 
 ## 1. Scope
 
@@ -45,11 +45,11 @@ with its existing owner; management never writes another owner's state.
 | --- | --- |
 | `managementMethods`, process, namespace `provider` | Local v3 Desktop/CLI and trusted process callers; §3 extends this existing namespace |
 | Provider module boundary `stored_selection` (Rust) | Native data-boundary consumers such as Migration; §3.7 adds one pure function over an admitted record, not an RPC, host port or management method |
-| Provider host port `SelectableModelsHost` (core `dim-agent-capabilities`), provided by the profile's model owner (Provider, or the configured model file) | In-process owners that route by model capability (Modality) and the `agent` tool's `models` action; §3.6 adds two reads, not a management method or RPC method |
-| Provider host port `ModalityConnectionHost` (core `dim-agent-capabilities`), provided by the profile's model owner | Modality's process adapters for image generation, editing and enhancement; §3.6 defines one per-call resolution, not a management method or RPC method |
+| `providerService.selectable` (owner contract [Provider](../plugins/Provider.md)) | In-process owners that route by model capability (Modality) and the `agent` tool's `models` action; one read with a `use` parameter, not a management method or RPC method |
+| `providerService.media_route` and the credential owner's `credential` (owner contracts [Provider](../plugins/Provider.md), [ManagedAccount](../plugins/ManagedAccount.md)) | Modality's process adapters for image generation, editing and enhancement; the adapter reads the route and the credential value for one call |
 | Account namespaces | Account owners provide login, usage and logout. The [ChatGPT plan provider](chatgpt-plan.md) owns `account.chatgpt`. |
-| `ProviderConnectionResolver`, `ModelSelectionHost` | Provider implements catalog/route decisions through existing types; no new core port |
-| `auxiliaryModel.complete` | Existing caller-selected S4 contract, unchanged |
+| Model selection and credentials | `providerService.resolve` and the account owners' `credential`; the old host ports are deleted ([Provider](../plugins/Provider.md)) |
+| `auxiliaryModel.complete` | Deleted: the caller uses `providerService.invoke` with `Mode::Once` ([Provider](../plugins/Provider.md)) |
 | `provider` Settings source, user scope (`provider.json`) | The Provider part registers it; it holds `userAgent`, the User-Agent override (§2, Model request identity), so a user's choice is a declared, validated document rather than a request-local input |
 | Native CLI Provider flows | Migrate discovery, create, update and disconnect together with the new owner methods |
 
@@ -1003,232 +1003,7 @@ Aimux applies it at its [HTTP send boundary](../../../crates/dim-agent-aimux/REA
 
 ### 3.6 Selectable models for process owners
 
-The [target process binding](../contracts/process-owner-operations.md) moves `modelSelectionHost.resolve`, both `selectableModelsHost` reads and `auxiliaryModel.complete` to the data face `providerService` on the configured profile. Consumers switch their injection and retain the operation arguments, results and credential ownership. The separate binding names below describe the pre-migration catalog.
-
-A process owner that routes work by model capability cannot keep its own copy of
-the availability rules of the models it routes to. The port below has one provider
-per profile — Provider in the product profile, the configured model profile
-(`dim-agent-aimux`) from its model file — and each provider owns
-side-effect-free reads of the models it would serve, with the identifiers and
-declared capabilities a routing decision needs. This section defines the port and
-Provider's rules; the configured profile's rule is that page's. The read is a
-process host port, not a management method: it is not on the `provider` namespace,
-is not served over RPC, and does not change `provider.catalog`.
-
-**Why a port rather than a method on `ProviderService`.** A consumer plugin lives
-in its own crate, and `xtask check` rejects a dependency on `dim-app-server`, the
-composition layer, so the consumer cannot name `ProviderService`. The port and its
-data type live in `dim-agent-capabilities`, which Provider and the consumer both
-depend on; registering it as a process name lets a consumer name the port and
-the catalog resolve it, and the dependency points from the extension to the core,
-as [ADR 002 D3](../../adr/002-plugin-scope.md) requires. Each provider keeps its
-implementation, its catalog and its rules.
-
-**Contract (language-neutral).** A process host port, no instance key, provided
-by Provider in the product profile and by the configured model profile from its
-model file: operation `selectableModels`, asynchronous, request `{}`, reply
-`{models: ModelCapabilitySnapshot[]}`. The element is the existing
-`ModelCapabilitySnapshot` — `{target: {providerId, modelId}, capabilities:
-ModelCapabilities, reasoning?, serviceTier?}` — not a new model type: it already
-carries the model and provider identifiers and the declared capabilities, and it
-is the descriptor execution adopts. A selectable model always declares both
-limits (§3.5), so the existing `capability_snapshot` conversion always succeeds.
-Abandoning the call cancels its owner read; dropping the reply is not a successful
-read. Errors use the public codes stated below.
-
-**Second operation: `selectableForModality`.** The same port carries one more
-process read, for non-conversational uses (Modality §9.2): operation
-`selectableForModality`, asynchronous, request `{}`, reply
-`{models: ModalityModelSnapshot[]}` with each element
-`{target: {providerId, modelId}, operations: string[]}`. `operations` holds the
-`<category>.<operation>` ids the model's catalog entry declares, in that entry's
-order; a model that declares none is omitted. An entry declares its operations
-in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
-included, is the whole answer. An entry with no list is recognized as an image
-model, because relay and account catalogs list such models without media
-metadata: its id is `arcship-image`, a known ID in the `gpt-image-2` or
-`grok-imagine-image` family, or names `seedream`, or its `type` is
-`image`/`image-generation` with image or no stated output, or `imageGeneration`
-is true, or its only output is `image`. Such a model declares
-`image.generate`, and `image.edit` too when it also reads images or is a known
-model; a `type` of `image-edit` declares `image.edit` alone, and
-`imageGeneration: false` recognizes nothing. The connection rule below reads
-the same declaration. The read applies the same provider, account, model,
-route, credential and status rules as `selectableModels`, without its
-text-modality, chat-kind and declared-text-limit requirements: a model without
-a `text` modality, a non-chat model and a model with `limits_undeclared`
-remain candidates when they declare a modality operation, while an unavailable
-status, a disabled Provider or model, a missing route, a signed-out account and
-a missing static credential still exclude them. It carries no reason field: the
-consumer derives availability from the options and explains a persisted
-default that is no longer selectable from its own snapshot.
-
-**Rules Provider applies.** Candidates are persisted model targets queried by
-provider enablement, credential configuration and model status. Each candidate
-is read through the exact-target catalog read, with account availability checked
-by its owner. Bundled substitution, descriptor overrides, user models, routes
-and disables are projected for that target using the execution rules. A model is
-included only when the existing
-`ProviderCatalog::selectable` accepts it: `unavailableReason` is absent and its ID
-is not in `disabledModelIds`. That reason already covers every exclusion: a model
-with `ModelStatus::Unavailable`, a model that declares no `text` modality, a
-non-chat model on a driver other than `new-api-router`, a disabled Provider
-record, a model with no route, a signed-out account, a missing static credential,
-and an undeclared limit (`limits_undeclared`). The read adds no second predicate:
-it reads the one selection already applies. The modality read is that same rule
-minus the three requirements above, and both catalog builders derive an entry's
-conversational and modality reasons from one classification of the entry, so a
-new exclusion reason states its class once and the two reads cannot drift apart.
-A model appears only if `select`, `configuration`, `apply_preferences`, the
-per-request check and `auxiliaryModel` accept it at the same read. Execution
-remains authoritative: a later write can make a model unselectable, and the
-consumer passes the ID back to Provider, which re-checks.
-
-**Rules the configured profile applies.** Its candidates are every provider and
-model entry of the model file, ordered by provider and then model id. The file
-requires both limits, so each entry is returned with them; it declares no other
-capability, so entries carry the text defaults. That profile has no account,
-route, disable or preference input, and the read adds no such test: the file's
-validation and its rule are its own page's
-([aimux](../../../crates/dim-agent-aimux/README.md)).
-
-This read is not [#560](https://github.com/arcships/dim/issues/560)'s validation
-contract. That contract (§3.7) takes an admitted persisted static record and an explicit
-model ID and answers whether that selection can execute; this read takes no input and
-enumerates what is available now. Both are defined on the same catalog and selectability
-predicate, so they cannot disagree about a model.
-
-**Snapshot and consistency.** One call enumerates persisted target IDs, then
-reads each target separately. Each target record read has its own committed
-snapshot. A concurrent `provider.*` write can be visible for some targets and not
-others, including targets of the same provider; a deleted target is omitted.
-The reply has no aggregate version or retained cache. The next call reads the
-current state. It makes no live request: it never refreshes or lists a provider
-endpoint, and it writes no record, selection or preference. It uses the same
-account-status read as `provider.catalog`. The reply is derived; a consumer must
-not persist it or treat it as an adopted snapshot. Adoption stays with model
-selection, which resolves a configuration once.
-
-**Errors.** The public face and its Rust binding return `cancelled` when the caller
-cancels, `owner_closed` while Provider unloads, and `failed` when Provider storage
-cannot be read. A provider whose own record or account status cannot be
-read is omitted, as default resolution omits it; it never hides the others and the
-read returns no per-provider error list. A caller that needs a provider's
-diagnostic uses `provider.list` or `provider.management`.
-
-**Consumers.** Modality computes each operation's options and its automatic
-default from these reads. For a category an adapter serves, the candidates are
-both reads deduplicated, the execution-selectable models first and the modality
-read's after, each in its read's order, and an operation keeps those a collected
-adapter serves for it; a media model execution rejects therefore stays an option
-where an adapter serves it, and a selectable model that declares no operation
-stays one too. An operation no adapter serves takes the modality read's models
-whose entry declares that operation id, and `image.understand` takes the
-selectable models with `vision`. It reports "no adapter for the configured
-model" when the configured model is absent. It does not call `provider.catalog`
-and keeps no availability predicate of its own. The reply carries IDs and
-capabilities only, not a display name: a client that renders an option joins the
-ID with the model list of `provider.catalog` or `provider.management`, and
-Modality copies no name.
-Provider gains no per-consumer key, setting or filter: the read has no input, so a
-caller that wants one provider filters the reply. Collaboration's `agent` tool
-reads the same reply for its `models` action and hands the IDs to the leader's
-model, and keeps no rule of its own either
-([Collaboration](../plugins/Collaboration.md#7-the-models-a-member-can-run)).
-
-**What does not change.** `provider.catalog`, `provider.management`,
-`provider.select`, model selection, adoption, preferences and their errors; the
-client protocol and `PROTOCOL_VERSION`; persistence and its format; Timeline,
-Dispatcher, callbacks, Session and branch parts; and the driver, route and
-non-chat rules. The read adds no state, cache, notification, crate or module.
-
-**Rust binding.** The binding calls the typed operation directly, without JSON
-or a bridge task. It takes a `CancellationToken`; cancelling it returns
-`ModelPortError::Cancelled`. Each call owns a child token that is cancelled when
-the call completes or is abandoned, without cancelling the caller's token. The
-operation maps the owner's `HostError` into the public `ModelPortError` codes;
-the dispatcher invokes that same operation and encodes its reply or error.
-
-The port is `SelectableModelsHost` in
-`crates/dim-agent-capabilities/src/host.rs` beside `ModelSelectionHost`. Its two
-reads are the operations §3.6 states: the port type holds the owner's closures,
-its dispatcher writes the wire shape, and a Rust reader calls the same
-operations through the binding. Provider provides it with
-`provide_selectable_models` in `ProviderPlugin::apply`, and the configured model
-profile (`dim-agent-aimux`) provides it from the entries of its model file, so
-both deployments answer the same reads; that profile declares no modality
-operation, so its `selectableForModality` read answers none
-([aimux](../../../crates/dim-agent-aimux/README.md)). The catalog registers the
-name shared ([service faces §4.10](../service-faces.md#410-宿主读取端口与-provider-选择)).
-
-The owner implementations are `ProviderService::selectable_models` and
-`ProviderService::selectable_modality_models`; `ProductResolver` delegates to
-both. A consumer that needs the read declares
-`Keyed<SelectableModelsHost>` in its `Deps` and gates on it (Modality). A consumer
-that must load without Provider reads the name when it is provided and gates
-nothing (Collaboration's `models` action); it takes a snapshot at load, so a
-Provider reload does not reload it. No consumer reads `ProviderService` directly.
-A non-Rust consumer calls `selectableModelsHost` by name, with the operations §3.6
-states; the face delegates to the same owner read, so a consumer of either language
-gets the models execution would.
-
-**Connection contract.** Provider resolves one non-conversational connection for a trusted
-in-process adapter. This is a native port beside `ProviderConnectionResolver`, not a
-management method or a named data face. It accepts a model identity and operation and
-returns one connection with its protocol, model and realtime declaration. The resolved
-connection includes credential material and remains in process for that adapter call.
-
-Both native connection ports use the same owner resolution: static or managed record
-read, catalog selection and credential lease. One modality call resolves once; its route
-facts and credential come from that resolution. The chat path's temporary startup
-connection and adopted capability snapshot do not apply. The owner does not add an HTTP
-executor to this port; media protocol and transport behavior remain with the existing
-adapters. A cross-language operation contract is tracked in [#1613](https://github.com/arcships/dim/issues/1613).
-
-**Rules.** It applies exactly the rules of the `selectableForModality` read —
-provider, account, model, route, credential and status — and additionally
-requires the model's catalog entry to declare `operation`, as the read above
-derives it. A model that fails any of these is refused
-before any network call: the availability cases with the reason execution reports
-for that model, and an undeclared operation as an invalid request that names it.
-The read and the connection cannot disagree, because they share the catalog and
-its selection predicate. The managed account's credential lease reads the same
-rule: it refuses only a reason that excludes every use, so a media model the
-catalog marks as non-chat still leases for this call. That boundary rule reads
-the stored reason together with the entry's status: an `unavailable` status
-excludes every use whatever reason was stored, so a record an older projection
-wrote for such a model is listed by neither read and leases nothing.
-
-**Realtime declaration.** An entry that serves a realtime operation declares the
-transport it speaks in `metadata.raw.realtime: {protocol, path}`. Provider parses
-it into `RealtimeDeclaration` and carries it on the connection reply as
-`realtime`; an entry that declares none replies `null`, and the configured model
-profile replies `null` for every target, because a model file has no catalog
-entry. The operation is still declared in `metadata.raw.modalityCapabilities`
-with every other one, so a model that lists `realtime.voice` without a transport
-resolves a connection whose `realtime` is `null`: Modality refuses that model's
-`open` before any network call instead of guessing a URL. `protocol` is the
-adapter's name for the wire protocol it accepts, and `path` is appended to the
-route's base URL by that adapter.
-
-**Credential rule and lifetime.** The connection lives for that one call. Provider
-never persists it, never returns it to a client and never writes it to a task
-record, result, diagnostic or error. Its `Debug` prints the model, the route, the
-base URL, header names and whether a credential is present, and never a header
-value, bearer or key; `ModelConnection` implements no `Debug`, so no other
-connection formats one. A managed connection retains its recovery handle for
-trusted in-process use,
-but the in-tree media adapters do not invoke managed credential recovery. A media rejection is returned to the caller; automatic
-refresh and retry are not provided by this port. The chat recovery path is
-separate and does not establish a retry guarantee for non-conversational calls.
-
-**Rust binding.** `ModalityConnectionHost` holds `Arc<dyn ResolveModalityConnection>`.
-`resolve_for_modality(target, cancel)` returns `ModalityConnection { resolved, protocol,
-model, realtime }`; `resolved` is `ResolvedModelConnection`, including its recovery
-handle where applicable. `ProviderPlugin::apply` provides the typed port. The configured
-model profile provides the same trait and refuses every operation because its entries
-have no modality declaration. The catalog name has no dispatcher. A caller passes its
-`CancellationToken` through the existing native resolution.
+The selectable-model reads and the non-conversational connection port are replaced by the owner contracts: `providerService.selectable({use})` for the models execution would serve and the current default, and `providerService.media_route` plus the credential owner's `credential` for one media call. See [Provider](../plugins/Provider.md) and [ManagedAccount](../plugins/ManagedAccount.md) for the operations, errors, cancellation and the bearer's boundary. The `SelectableModelsHost`, `ModalityConnectionHost`, `ModelSelectionHost` and `ProviderConnectionResolver` types are deleted.
 
 ### 3.7 Offline validation of a stored selection
 
@@ -1336,54 +1111,7 @@ pub fn stored_selection(
 
 ### 3.8 Media execution for adapters
 
-Provider resolves a model's connection for one non-conversational call, and Modality passes it to
-its adapter for that call ([Modality A.2](../plugins/Modality.md#a2-adapters-and-ocr)). That
-connection is not a public contract and is not exposed as a data face.
-
-**Why the connection cannot be a face.** Its reply carries credential material for one call, and
-`ResolvedModelConnection` is resolved for one final request and never serialized
-(`dim-agent-capabilities` `host.rs`).
-[Service faces §2.2](../service-faces.md#22-migration-marker) keeps secret values with the owner
-and exposes operations that use them, so the only shape that could cross is an operation — the
-request executed on the adapter's behalf — not the connection.
-
-**Decision: no such operation now.** The connection is Provider's private typed binding, not a
-public service: what it returns is credential material for one call, so it neither becomes a data
-face nor stays a catalog name. [Service faces §2.6](../service-faces.md#26-migration-rule) already
-says a name whose role is a typed binding leaves the catalog. Media adapters execute in-process
-(`dim-modality-aimux`) through this native path. No media operation, signing,
-retry, redirect, upload, download or streaming behavior changes.
-
-**Why a `modalityRequest` executor is a different contract.** It would be a new HTTP executor, not
-an existing operation serialized, and it cannot preserve what the native path does today
-([#1613](https://github.com/arcships/dim/issues/1613)):
-
-| Existing behavior | What an operation must match |
-| --- | --- |
-| One resolution per adapter call | Resolve once per call and reuse that one resolution for the call's retries; a cache that answers a later call would report a configuration the adapter never resolved, so later calls resolve again |
-| Streaming downloads to files with a 2 GiB limit (`dim-modality-aimux`) | Stream to a file; never buffer a whole reply into base64 |
-| WebSocket realtime open/send/receive/close | A connection-scoped protocol, not one request and reply |
-| Vendor route and credential routing, including the fal image routes and query parameters | The same route selection and credential handling the catalog declares |
-| Redirects and per-vendor error mapping | The same rules the connection query applies now |
-| Cancellation and release at every step | Cancels owner work; dropping the call settles it and keeps the caller's token |
-
-The `modalityRequest` operation proposed in an earlier revision of [#1399](https://github.com/arcships/dim/pull/1399) also accepted
-Bedrock routes without SigV4 signing, while every bundled media adapter refuses a Bedrock
-connection. Media support on Bedrock would be a new feature, not a serialization of an existing
-one.
-
-**Acceptance, if the operation is built later.** The maintainer confirms the operation's shape,
-ownership and coverage before implementation; existing media operations and their limits are
-preserved or a scope change is stated; one resolution per call lifetime with no mixed snapshots;
-Rust and an actual foreign-runtime flow exercise the same request, reply, cancellation and error
-contract; tests cover the affected flow boundaries, including credential confinement, vendor
-routes, query parameters, redirects, download streaming and realtime cleanup; file transfer
-agrees with [#1564](https://github.com/arcships/dim/issues/1564) and its active changes rather than
-adding a second upload implementation.
-
-**Consumer consequence.** Provider exposes no media-execution operation, so a foreign-language
-adapter serves no media operation. Modality states that in its own document;
-this page defines nothing about how an adapter declares or runs its work.
+The media connection is no longer a port handed to an adapter. The adapter resolves `providerService.media_route({target, operation})`, reads the credential from the owner the route names, and sends one call; the account owner's `credential` returns a value with the grant generation. See [Provider](../plugins/Provider.md) and [ManagedAccount](../plugins/ManagedAccount.md).
 
 ## 4. Client integration
 
