@@ -38,11 +38,11 @@ An operation exists only where its row says No.
 Agents creates a worktree, writes the Session, and settles the worktree when the Session creation fails.
 
 ```rust
-let created = worktrees.create(Create { source, base, branch }, cancelled.clone()).await?;
+let created = worktrees.create(CreateWorktree { source, base, branch }, cancelled.clone()).await?;
 match store.create(session_request(&created), cancelled.clone()).await {
     Ok(()) => (),
     Err(error) => {
-        worktrees.discard(Discard { task_id: created.task_id }, CancellationToken::new()).await?;
+        worktrees.discard(DiscardWorktree { task_id: created.task_id }).await?;
         return Err(error);
     }
 }
@@ -51,9 +51,9 @@ match store.create(session_request(&created), cancelled.clone()).await {
 The CLI previews a prune and removes the confirmed ids.
 
 ```rust
-let preview = worktrees.prune_selection(Prune { older_than_ms: Some(age), keep: None, force }).await?;
+let preview = worktrees.prune_selection(PruneSelection { older_than_ms: Some(age), keep: None, force }).await?;
 for candidate in confirmed(&preview) {
-    worktrees.remove(Remove { task_id: candidate.task_id, force }).await?;
+    worktrees.remove(RemoveWorktree { task_id: candidate.task_id, force }).await?;
 }
 ```
 
@@ -69,9 +69,9 @@ for candidate in confirmed(&preview) {
 | --- | --- | --- | --- | --- | --- |
 | `create` | Allocate a task id and make a Git worktree and branch for a Session creation | `{source, base?, branch?}` | `{taskId, repository, root, subtree, branch, base}` | Between Git calls and before the branch is created; a cancelled creation removes its empty task directory | `unavailable`, `invalid`, `branch_exists`, `git`, `interrupted` |
 | `discard` | Settle a created worktree that the Session creation did not adopt | `{taskId}` | `{}` | Not cancellable: the cleanup runs to its end | `unknown_preparation`, `in_use`, `git` |
-| `list` | Managed worktrees with Git state and Session use | `{}` | `{worktrees}` | While the views are built | `unavailable`, `storage` |
-| `pruneSelection` | Candidates a prune would delete and the kept ones with reasons | `{olderThanMs? , keep?, force}` | `{candidates, kept}` | While the selection is built | `invalid`, `unavailable`, `storage` |
-| `remove` | Remove one managed worktree, or an unregistered directory, with its record | `{taskId, force}` | `{removed}` | Before the Git removal; after it starts the removal completes or reports `git` | `invalid`, `not_found`, `in_use`, `git`, `storage` |
+| `list` | Managed worktrees with Git state and Session use | `{}` | `{worktrees}` | While the views are built | `unavailable`, `closed`, `storage` |
+| `pruneSelection` | Candidates a prune would delete and the kept ones with reasons | `{olderThanMs?, keep?, force}` | `{candidates, kept}` | While the selection is built | `invalid`, `unavailable`, `closed`, `storage` |
+| `remove` | Remove one managed worktree, or an unregistered directory, with its record | `{taskId, force}` | `{removed}` | Before the Git removal; after it starts the removal completes or reports `git` | `invalid`, `not_found`, `in_use`, `git`, `closed`, `storage` |
 
 `create` returns a value; `discard` and `remove` take the task id. No object crosses. The preparation table is the owner's generation state: a reload drops it, and `discard` for a task id the generation did not create answers `unknown_preparation`; the directory is then an unregistered directory that `remove` handles.
 
@@ -108,7 +108,16 @@ A process death between `create` and `store.create` leaves an unregistered direc
 - A branch is kept when `remove` deletes a worktree: committed content must not disappear with the directory.
 - `discard` is not cancellable: a cancelled Session creation still has to settle what the owner made.
 - Unregistered directories are never pruned: the owner has no record to age, so only an explicit `remove` by task id deletes them.
+- A branch outlives a creation that was never adopted: a process death between `create` and `store.create`, or a `discard` that ended before the branch deletion, leaves the branch. `remove` on an unregistered directory deletes the directory only; the operator deletes the leftover branch with Git, and `list` names the task id the branch was made for.
 - Git is the owner's process resource: the owner starts each call, bounds it (10s read, 30s write) and reaps it on cancellation.
+
+## Client-visible changes
+
+None. `worktree.list`, `worktree.remove` and `worktree.prune` keep their request, reply and error shapes; the redesign changes the plugin surface and the owner name only.
+
+## Supersedes
+
+- [Managed worktrees](../worktree-management.md) §3–§5: creation, the directory records and associations, and the list/remove/prune composition under the store's removal operation.
 
 ## Verification
 
@@ -160,7 +169,7 @@ use rutis::Ctx;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Created {
+pub struct CreatedWorktree {
     pub task_id: String,
     pub repository: String,
     pub root: String,
@@ -171,37 +180,46 @@ pub struct Created {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Discard {
+pub struct DiscardWorktree {
     pub task_id: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Remove {
+pub struct RemoveWorktree {
     pub task_id: String,
     pub force: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum WorktreeError {
-    #[error("{0}")]
-    Unavailable(String),
-    #[error("{0}")]
-    Invalid(String),
-    #[error("{0}")]
-    BranchExists(String),
-    #[error("{0}")]
-    NotFound(String),
-    #[error("{0}")]
-    InUse(String),
-    #[error("{0}")]
-    Git(String),
-    #[error("{0}")]
-    Interrupted(String),
-    #[error("{0}")]
-    UnknownPreparation(String),
-    #[error("{0}")]
-    Storage(String),
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateWorktree {
+    pub source: String,
+    pub base: Option<String>,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PruneSelection {
+    pub older_than_ms: Option<u64>,
+    pub keep: Option<usize>,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveWorktreeReply {
+    pub removed: bool,
+}
+
+/// The wire error: `{code, message}`, with `code` one of the kinds in the error table.
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{code}: {message}")]
+pub struct WorktreeError {
+    pub code: String,
+    pub message: String,
 }
 
 impl PublicService for ManagedWorktrees {}
@@ -211,17 +229,16 @@ impl ManagedWorktrees {
     pub async fn create(
         &self,
         caller: &Ctx,
-        request: Create,
+        request: CreateWorktree,
         cancelled: CancelledFn,
-    ) -> Result<Created, WorktreeError> {
+    ) -> Result<CreatedWorktree, WorktreeError> {
         // ...
     }
 
     pub async fn discard(
         &self,
         caller: &Ctx,
-        request: Discard,
-        cancelled: CancelledFn,
+        request: DiscardWorktree,
     ) -> Result<(), WorktreeError> {
         // ...
     }
@@ -229,9 +246,9 @@ impl ManagedWorktrees {
     pub async fn remove(
         &self,
         caller: &Ctx,
-        request: Remove,
+        request: RemoveWorktree,
         cancelled: CancelledFn,
-    ) -> Result<Removed, WorktreeError> {
+    ) -> Result<RemoveWorktreeReply, WorktreeError> {
         // ...
     }
 }

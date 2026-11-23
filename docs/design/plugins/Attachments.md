@@ -9,7 +9,7 @@ The cross-module design is [file transfer](../research/file-transfer.md).
 
 | Part | Scope | Consumes | Provides |
 | --- | --- | --- | --- |
-| Attachments | Session | Session identity; [`sessionFiles`](../appserver/session-files.md#9-interface); `sessionMethods` | `attachment.put`, `attachment.import`, `attachment.read` |
+| Attachments | Session | Session identity; [`sessionFiles`](SessionFiles.md); `sessionMethods` | `attachment.put`, `attachment.import`, `attachment.read` |
 
 The profile installs Attachments where SessionStore and local execution are
 available. Each method uses its own Session identity. Rpc authorizes and holds the
@@ -57,7 +57,7 @@ file scope under [Session files §11](../appserver/session-files.md#11-security)
 
 ## 4. Timing and conflicts
 
-`put` and `import` use drain interruption. Cancellation before the owner's commit
+The operation shapes are [SessionFiles](SessionFiles.md). `put` and `import` use drain interruption. Cancellation before the owner's commit
 cleans pending storage; after commit the stored result stands. Losing a client
 connection does not revoke committed ownership. Retrying an import creates a new
 file. `read` reports interruption and has no durable mutation.

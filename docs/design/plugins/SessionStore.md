@@ -54,7 +54,7 @@ Agents creates a Session; admission, protocol checks and the worktree creation h
 
 ```rust
 // `prepared` is the value ManagedWorktrees.create returned.
-store.create(Create {
+store.create(CreateSession {
     id, config, agent_id, protocol_version, leader: None, origin, worktree: prepared,
 }, cancelled).await?;
 ```
@@ -67,8 +67,8 @@ let text: TextFn = Arc::new(move |source: String| {
     let next = strip_initial_title(&source); // lifecycle owner's decision
     Box::pin(async move { Ok(next) })
 });
-store.fork(Fork { source, id: fork, at }, text, cancelled).await?;
-let removed = store.delete(Delete { id }, cancelled).await?;
+store.fork(ForkSession { source, id: fork, at }, text, cancelled).await?;
+let removed = store.delete(DeleteSession { id }, cancelled).await?;
 ```
 
 SessionTitle decides the next title from the current one; the owner serializes the decision and announces the committed revision.
@@ -96,7 +96,7 @@ store.removeWorktree(Directory { repository, root }, remove, cancelled.clone()).
 
 ### Dependencies
 
-The engine's crate-private operations for every row read and write and for the Timeline batches; `sqliteStorage` is not a service face. The file owner `sessionFiles` for the Session file steps a delete releases. Neither dependency crosses back into SessionStore. The assembly provides both; deployment chooses the instance.
+The engine's crate-private transaction operations for every row read and write and for the Timeline batches; the engine's public face is the capacity read. The file owner `sessionFiles` for the Session file steps a delete releases. Neither dependency crosses back into SessionStore. The assembly provides both; deployment chooses the instance.
 
 ### Operations
 
@@ -104,26 +104,26 @@ Every operation takes one request object and answers one reply object. Writes ar
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `create` | Write one admitted Session and its optional worktree association | `{id, config, agentId, protocolVersion, leader?, origin, worktree?}` | `{}` | Before the transaction starts; a dropped future does not undo a commit | `invalid`, `workspace_missing`, `storage` |
-| `delete` | Remove a closed Session's output, visible rows and Timeline rows | `{id}` | `{hadRows}` | Before the first step; after the first commit the steps run to their end | `storage` |
-| `fork` | Copy a source's rows at a cut, with the target text decided from the source text under the fork's exclusion | `{source, id, at}` + `text` | `{}` | Before the first transaction; the callback's future is dropped | `invalid`, `rejected`, `storage` |
-| `creationRecord` | One Session's origin and leader link | `{id}` | `{origin, leader?}` | None | `not_found`, `storage` |
-| `owner` | The Agent that owns a stored Session | `{id}` | `{agentId?}` | None | `storage` |
-| `hasRecords` | Whether an id has any stored row | `{id}` | `{exists}` | None | `storage` |
-| `sessionConfig` | A stored Session's decoded configuration | `{id}` | `{config?}` | None | `not_found`, `storage` |
-| `catalog` | One stored Session page | `{request, agent?, version, hosts, closed}` | the stored page | While the page is read | `invalid`, `cancelled`, `storage` |
-| `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{scope, query, page?}` | the query result | While the page is read | `storage`, `cancelled` |
-| `grants` | The Session's grant set | `{id}` | `{grants}` | None | `storage` |
-| `addGrant` | Add one grant, never downgrading a write grant | `{id, path, kind, mode}` | `{}` | None | `not_found`, `invalid`, `storage` |
-| `removeGrant` | Remove one grant; an absent grant counts as removed | `{id, path}` | `{}` | None | `storage` |
-| `setLanguage` | Write the reply language into the stored configuration | `{id, language?}` | `{}` | None | `not_found`, `invalid`, `storage` |
-| `title` | The title, its source and its committed revision | `{id}` | `{revision, title?: {text, source}}` | None | `not_found`, `storage` |
-| `setTitle` | Commit the title the caller's change returns and announce it; the owner serializes writes | `{id}` + `change` | `{revision}` | The reply may be dropped; the admitted write is not cancelled | `not_found`, `rejected`, `storage` |
-| `associateWorktree` | Record a verified directory and the Session's subtree in one commit | `{id, repository, root, subtree}` | `{}` | None | `not_found`, `invalid`, `storage` |
-| `worktrees` | Recorded directories, with their last use when known | `{}` | `{directories}` | None | `storage` |
-| `worktreeUsages` | The Session associations of one recorded directory | `{repository, root}` | `{usages}` | None | `invalid`, `storage` |
-| `sessionsUnder` | Stored Sessions whose workspace is a root or lies under it | `{root}` | `{sessionIds}` | None | `invalid`, `storage` |
-| `removeWorktree` | Remove one recorded directory under the Session exclusion, with the caller's own removal step | `{repository, root}` + `remove` | `{removed}` | The caller's step ends; the record stays | `invalid`, `in_use`, `rejected`, `storage` |
+| `create` | Write one admitted Session and its optional worktree association | `{id, config, agentId, protocolVersion, leader?, origin, worktree?}` | `{}` | Before the transaction starts; a dropped future does not undo a commit | `invalid`, `workspace_missing`, `closed`, `storage` |
+| `delete` | Remove a closed Session's output, visible rows and Timeline rows | `{id}` | `{hadRows}` | Before the first step; after the first commit the steps run to their end | `invalid`, `closed`, `storage` |
+| `fork` | Copy a source's rows at a cut, with the target text decided from the source text under the fork's exclusion | `{source, id, at}` + `text` | `{}` | Before the first transaction; the callback's future is dropped | `invalid`, `rejected`, `closed`, `storage` |
+| `creationRecord` | One Session's origin and leader link | `{id}` | `{origin, leader?}` | None | `not_found`, `closed`, `storage` |
+| `owner` | The Agent that owns a stored Session | `{id}` | `{agentId?}` | None | `closed`, `storage` |
+| `hasRecords` | Whether an id has any stored row | `{id}` | `{exists}` | None | `closed`, `storage` |
+| `sessionConfig` | A stored Session's decoded configuration | `{id}` | `{config?}` | None | `not_found`, `closed`, `storage` |
+| `catalog` | One stored Session page | `{request, agent?, version, hosts, closed}` | the stored page | While the page is read | `invalid`, `cancelled`, `closed`, `storage` |
+| `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{scope, query, page?}` | the query result | While the page is read | `storage`, `cancelled`, `closed` |
+| `grants` | The Session's grant set | `{id}` | `{grants}` | None | `closed`, `storage` |
+| `addGrant` | Add one grant, never downgrading a write grant | `{id, path, kind, mode}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
+| `removeGrant` | Remove one grant; an absent grant counts as removed | `{id, path}` | `{}` | None | `closed`, `storage` |
+| `setLanguage` | Write the reply language into the stored configuration | `{id, language?}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
+| `title` | The title, its source and its committed revision | `{id}` | `{revision, title?: {text, source}}` | None | `not_found`, `closed`, `storage` |
+| `setTitle` | Commit the title the caller's change returns and announce it; the owner serializes writes | `{id}` + `change` | `{revision}` | The reply may be dropped; the admitted write is not cancelled | `not_found`, `rejected`, `closed`, `storage` |
+| `associateWorktree` | Record a verified directory and the Session's subtree in one commit | `{id, repository, root, subtree}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
+| `worktrees` | Recorded directories, with their last use when known | `{}` | `{directories}` | None | `closed`, `storage` |
+| `worktreeUsages` | The Session associations of one recorded directory | `{repository, root}` | `{usages}` | None | `invalid`, `closed`, `storage` |
+| `sessionsUnder` | Stored Sessions whose workspace is a root or lies under it | `{root}` | `{sessionIds}` | None | `invalid`, `closed`, `storage` |
+| `removeWorktree` | Remove one recorded directory under the Session exclusion, with the caller's own removal step | `{repository, root}` + `remove` | `{removed}` | The caller's step ends; the record stays | `invalid`, `in_use`, `rejected`, `closed`, `storage` |
 
 `worktree` in `create` and `associateWorktree` is `{repository, root, subtree}`: absolute UTF-8 paths, `subtree` inside `root`. The caller passes paths it already resolved; the owner re-checks that each is absolute, UTF-8 and, for an association, that the root still is a directory.
 
@@ -140,18 +140,20 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `closed` | This generation is unloading; call the replacement generation |
 | `storage` | The store failed; the caller reports the failure and keeps the Session or worktree for a retry |
 
+When a change, text or removal callback refuses, the operation carries the callback's own `code` and `message` unchanged in `rejected`.
+
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `create` | Validate the id and the workspace, take the exclusion, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller keeps the id it supplied and decides whether to publish or delete the Session | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
+| `create` | Validate the id, take the exclusion, validate the workspace, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller keeps the id it supplied and decides whether to publish or delete the Session | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
 | `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove visible and Timeline rows, schedule the file sweep | Before the first commit: every row stays. After: the steps run to their end | The work continues under the owner's task; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
 | `fork` | Take the exclusion, read the source text, call `text`, copy in bounded transactions with the returned text, write the target row, commit | Before the first copy; a refused text step copies nothing | The copy continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
 | `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
-| `catalog`, `query` | One consistent read under the caller's token | The read stops; no partial page | Nothing to release | Pending reads end `cancelled` | SessionStore |
+| `catalog`, `query` | One consistent read under the caller's token | The read stops; no partial page | Nothing to release | Pending reads end `cancelled`; a new call ends `closed` | SessionStore |
 | `addGrant`, `removeGrant`, `setLanguage`, `associateWorktree` | One write transaction | None after it starts | The write completes; the reply may be lost | Admitted writes end before close | SessionStore |
 | `setTitle` | Admit the write behind earlier admitted writes, read the current title, call `change` under the serialization, write the returned title as revision + 1, commit, announce, answer the revision | Dropping the reply never cancels the admitted write; a change that refuses leaves the title unchanged | The change callback is revoked before it returns; the admitted write fails and the title stays | Close stops admission, waits for every admitted write | SessionStore; the change computes only |
-| `removeWorktree` | Validate the paths, take the exclusion, check associations and stored workspaces, call `remove`, delete the record on success, release | The removal step ends `cancelled`; the record stays | The callback ends; the record stays; the exclusion releases | New calls are refused `closed`; an in-flight removal ends, and the record stays unless the step succeeded | Directory by the caller; record by SessionStore |
+| `removeWorktree` | Validate the paths, take the exclusion, check associations and stored workspaces, call `remove`, delete the record on success, release | The removal step refuses with its own code (for example `cancelled`); the record stays | The callback ends; the record stays; the exclusion releases | New calls are refused `closed`; an in-flight removal ends, and the record stays unless the step succeeded | Directory by the caller; record by SessionStore |
 
 ## Exceptions with reasons
 
@@ -160,6 +162,18 @@ Every operation takes one request object and answers one reply object. Writes ar
 - `setTitle` runs the caller's change under the owner's serialization: the change only computes the next title from the current title and revision, and returns its own refusal; the reply may be lost, so the caller re-reads rather than assumes failure.
 - `removeWorktree` runs ManagedWorktrees' removal step under the Session exclusion: the directory is that owner's resource, and the checks and the record deletion cannot interleave with a Session creation that would point into the removed root. The caller must not call SessionStore operations from the step; a failed or cancelled step keeps the record, and a row unload or owner close keeps it too.
 - `owner` answers the Agent id for a delete notice; the Agent directory's own records are not returned here.
+
+## Client-visible changes
+
+None. The client methods (`session.rename`, `sessions.list`, `session.delete`, `session.fork`) keep their request and reply shapes; the redesign changes the plugin surface only.
+
+## Supersedes
+
+- [Resource faces §5 and §5.2](../resource-faces.md): the `store`/`timelineStore` split, the Session row operations, the Rust `Store` binding and the metadata and association rows.
+- [Service faces §3.3 and §3.4](../service-faces.md): the `sessionStore` row and the `store` and `timelineStore` rows.
+- [Resource owner operations](../contracts/resource-owner-operations.md): the `SessionStore → sqliteStorage` rows and the Session row paragraphs.
+- [Session title metadata](../appserver/session-title-metadata.md): the `readMetadata` and `setTitle` shapes.
+- [SessionTitle](SessionTitle.md): the paragraph that writes a title under an expected revision.
 
 ## Verification
 
@@ -202,7 +216,9 @@ Material uncertainty: a process death during the caller's removal step leaves th
 
 ## Requirements raised to mechanism owners
 
-1. **SessionScope (#2025): `timelineStore` ownership aligned.** This owner owns the Timeline operations and the `timelineStore` face; SessionScope binds that face at the Session instance. The face does not carry `createSession`, `releaseSession`, `rollbackSession` or `append`; those belong to the store's own creation and commit paths. The process `store.query` and `store.sessionConfig` are the same engine's reads for callers outside a Session (loaded or not) and keep one implementation. A comment on #2025 records the alignment.
+1. **SessionTitle (#2033): the title write is a change callback.** `store.setTitle(id, change)` receives the current title, its source and revision, and returns the next title or its own refusal; the owner serializes the write and announces the commit. The revision-checked `{expectedRevision, title}` shape in SessionTitle.md and session-title-metadata.md is superseded; the manual-title rule moves into the change. A comment on #2033 states the requirement.
+
+2. **SessionScope (#2025): `timelineStore` ownership aligned.** This owner owns the Timeline operations and the `timelineStore` face; SessionScope binds that face at the Session instance. The face does not carry `createSession`, `releaseSession`, `rollbackSession` or `append`; those belong to the store's own creation and commit paths. The process `store.query` and `store.sessionConfig` are the same engine's reads for callers outside a Session (loaded or not) and keep one implementation. A comment on #2025 records the alignment.
 
 ## Binding appendix
 
@@ -211,6 +227,7 @@ The service is marked on the `SessionStore` type; the wire name stays `store`. `
 ```rust
 use dim_agent_capabilities::host::CancelledFn;
 use dim_agent_runtime::{PublicService, SessionConfig};
+use std::future::Future;
 use dim_agent_types::grant::{GrantKind, GrantMode, SessionGrant};
 use rutis::Ctx;
 
@@ -243,14 +260,58 @@ pub struct TitleState {
     pub title: Option<Title>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSession {
+    pub id: String,
+    pub config: SessionConfig,
+    pub agent_id: String,
+    pub protocol_version: u32,
+    pub leader: Option<String>,
+    pub origin: dim_agent_types::SessionOrigin,
+    pub worktree: Option<Worktree>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteSession {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSessionReply {
+    pub had_rows: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForkSession {
+    pub source: String,
+    pub id: String,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetTitle {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleReply {
+    pub revision: u64,
+}
+
 /// The caller's fork decision: the source's exact configuration text in, the target's text or its own refusal out.
 pub type TextFn = Arc<
-    dyn Fn(String) -> rutis::host::BoxFuture<'static, Result<String, Rejected>> + Send + Sync,
+    dyn Fn(String) -> rutis::host::BoxFuture<'static, Result<String, StoreRejected>> + Send + Sync,
 >;
 
 /// The caller's decision: the current title and revision in, the next title (none clears) or its own refusal out.
 pub type ChangeFn = Arc<
-    dyn Fn(TitleState) -> rutis::host::BoxFuture<'static, Result<Option<Title>, Rejected>>
+    dyn Fn(TitleState) -> rutis::host::BoxFuture<'static, Result<Option<Title>, StoreRejected>>
         + Send
         + Sync,
 >;
@@ -271,14 +332,23 @@ pub struct Directory {
 /// The caller's own refusal or failure, carried unchanged.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
 #[error("{code}: {message}")]
-pub struct Rejected {
+pub struct StoreRejected {
     pub code: String,
     pub message: String,
 }
 
+impl From<rutis::host::CallError> for StoreRejected {
+    fn from(error: rutis::host::CallError) -> Self {
+        Self {
+            code: error.code().unwrap_or_else(|| "rejected".into()),
+            message: error.message().to_owned(),
+        }
+    }
+}
+
 /// The caller's own removal step: it removes the checked directory and reports success, or refuses with its own code and message.
 pub type RemoveFn = Arc<
-    dyn Fn(String) -> rutis::host::BoxFuture<'static, Result<(), Rejected>> + Send + Sync,
+    dyn Fn(String) -> rutis::host::BoxFuture<'static, Result<(), StoreRejected>> + Send + Sync,
 >;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -296,24 +366,13 @@ pub struct DirectoryRecord {
     pub last_used_at_ms: Option<i64>,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum StoreError {
-    #[error("{0}")]
-    Invalid(String),
-    #[error("the Session workspace no longer exists: {0}")]
-    WorkspaceMissing(String),
-    #[error("no stored Session {0}")]
-    NotFound(String),
-    #[error("{0} is in use")]
-    InUse(String),
-    #[error("{code}: {message}")]
-    Rejected { code: String, message: String },
-    #[error("the call was cancelled")]
-    Cancelled,
-    #[error("the store is unloading")]
-    Closed,
-    #[error("{0}")]
-    Storage(String),
+/// The wire error: `{code, message}`, with `code` one of the kinds in the error table.
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{code}: {message}")]
+pub struct StoreError {
+    pub code: String,
+    pub message: String,
 }
 
 impl PublicService for SessionStore {}
@@ -323,7 +382,7 @@ impl SessionStore {
     pub async fn create(
         &self,
         caller: &Ctx,
-        request: Create,
+        request: CreateSession,
         cancelled: CancelledFn,
     ) -> Result<(), StoreError> {
         // ...
@@ -332,30 +391,30 @@ impl SessionStore {
     pub async fn delete(
         &self,
         caller: &Ctx,
-        request: Delete,
+        request: DeleteSession,
         cancelled: CancelledFn,
-    ) -> Result<DeleteReply, StoreError> {
+    ) -> Result<DeleteSessionReply, StoreError> {
         // ...
     }
 
     pub async fn fork(
         &self,
         caller: &Ctx,
-        request: Fork,
+        request: ForkSession,
         text: TextFn,
         cancelled: CancelledFn,
     ) -> Result<(), StoreError> {
         // ...
     }
 
-    pub async fn set_title(
+    /// Admits the write under the owner's serialization and returns the wait future; dropping it never cancels the admitted write.
+    pub fn set_title(
         &self,
         caller: &Ctx,
         request: SetTitle,
         change: ChangeFn,
-        cancelled: CancelledFn,
-    ) -> Result<TitleReply, StoreError> {
-        // ...
+    ) -> impl Future<Output = Result<TitleReply, StoreError>> + Send + 'static {
+        // admits the write, starts the owner's task, returns the wait
     }
 
     pub async fn remove_worktree(

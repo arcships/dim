@@ -583,10 +583,9 @@ grant, and tool approval still follows the preset
 
 ### 4.6 Session files and exec output
 
-`sessionFiles.put` uses `createDirectory` and `replace` with `permissions: "privateReadOnly"` to
-store the file on the resource node. It returns a node path and owns the rows under the
-[Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
-and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
+Session files are [SessionFiles](plugins/SessionFiles.md): the file id, the page read, the import
+reply and the ownership rows are defined there. Exec output ownership is ADR 013; the tool that
+produces a path registers it through `sessionFiles.register`.
 
 ### 4.7 Errors
 
@@ -604,18 +603,18 @@ code the operation already uses, so one code vocabulary serves the local and the
 
 ## 5. `store` and `timelineStore`
 
-The repository and Timeline operations use two names on the daemon that owns the state: process
-`store` provides the repository operations (§5.2), retaining its existing Timeline `query`,
-and Session-scoped `timelineStore` provides the Timeline operations and completion notifications
-below. Both use the existing state owner; the split follows §9(6), without changing Session
-placement or the storage engine.
-SessionTitle and FileAccess use the process repository operations in the [resource owner contract](contracts/resource-owner-operations.md).
+The repository and Timeline operations are the Session store's, defined in
+[the SessionStore contract](plugins/SessionStore.md): process `store` provides the repository
+operations and the Timeline reads for callers outside a Session, and Session-scoped
+`timelineStore` is the same owner's Timeline face, bound at the Session instance by SessionScope.
+`createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and
+commit paths, not operations of that face.
 
 | Family | Operations |
 | --- | --- |
-| Timeline (`timelineStore`) | `createSession`, `sessionConfig`, `releaseSession`, `rollbackSession`, `append` (sync), `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot` |
+| Timeline (`timelineStore`) | `sessionConfig`, `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot` |
 | Timeline completion (`timelineStore`) | `commits`, `closeCommits`; notifications `{subscriptionId, batchId, branchId, through, result}` |
-| Session rows (`store`) | The repository operations listed in §5.2 |
+| Session rows (`store`) | The repository operations in [SessionStore](plugins/SessionStore.md) |
 | Worktree association (`store`) | `associateWorktree`; [service faces](service-faces.md) §4.8 |
 
 ### 5.1 Ordered admission and durable completion
@@ -668,15 +667,13 @@ it does not introduce a separate wire operation or replace an override with fall
 operation, without repeated remote probes. `trace` takes the same position and returns `{trace}`.
 `query` takes the scope, query and optional page described in §5.2 and keeps that canonical reply.
 
-`createSession {sessionId,config}`, `releaseSession {sessionId}`, `rollbackSession {sessionId}`
-and `saveSnapshot {sessionId,branchId,snapshot}` return `{}`. `sessionConfig {sessionId}` returns
+`saveSnapshot {sessionId,branchId,snapshot}` returns `{}`. `sessionConfig {sessionId}` returns
 `{config}`. `latestSnapshot {sessionId,branchId,through,interpreter}` returns `{snapshot}`.
-These are storage lifecycle steps. `createSession` prepares the backend record; it does not
-initialize or publish an Agent Session. `rollbackSession` undoes a successfully prepared creation
-whose initialization failed, after its producers have stopped; it is not the general deletion
-workflow. `releaseSession` drains accepted backend writes and releases their resources without
-closing the Agent Session or its admission. App Server creation/deletion retain the repository
-and lifecycle obligations in §5.2.
+`createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and
+commit steps, not operations of the `timelineStore` face: the Session store prepares the backend
+record, rolls back a prepared creation, releases a Session's writes and admits batches inside its
+own operations ([SessionStore](plugins/SessionStore.md)). App Server creation/deletion retain the
+repository and lifecycle obligations the contract states.
 
 Snapshots retain their canonical fields (`sequence`, `event_id`, `interpreter`, `state`), optional
 acceleration semantics and owner validation. Domain errors preserve `{code,message}` using
@@ -709,135 +706,10 @@ with the existing ordering and draining.
 
 ### 5.2 Session rows
 
-The process `store` face exposes the existing Session repository operations below.
-Every method is asynchronous. Paths are the caller's already resolved absolute strings;
-`config` is the existing SessionConfig data and `configText` retains its exact stored bytes.
-The operations keep the owner transactions and existing existence checks; they do not
-resolve paths, decide permission or create a second Session lifecycle.
-
-| Operation | Request | Reply |
-| --- | --- | --- |
-| `addGrant` | `{sessionId,path,kind,mode}` | `{}` |
-| `removeGrant` | `{sessionId,path}` | `{}` |
-| `grants` | `{sessionId}` | `{grants:[{path,kind,mode}]}` |
-| `setSessionLanguage` | `{sessionId,language}` | `{}` |
-| `creationRecord` | `{sessionId}` | `{origin,leaderSessionId}` |
-| `owner` | `{sessionId}` | `{agentId}` |
-| `hasRecords` | `{sessionId}` | `{exists}` |
-| `createOwnedSession` | `{sessionId,config,agentId,protocolVersion,leaderSessionId,origin,worktree}` | `{}` |
-| `sessionConfig` | `{sessionId}` | `{config}` |
-| `sessionConfigText` | `{sessionId}` | `{configText}` |
-| `fork` | `{sourceSessionId,sessionId,at,configText}` | `{}` |
-| `delete` | `{sessionId}` | `{removed}` |
-| `worktreeDirectories` | `{}` | `{directories:[{repository,root,lastUsedAtMs}]}` |
-| `sessionsUnderWorkspace` | `{root}` | `{sessionIds}` |
-| `worktreeUsages` | `{repository,root}` | `{usages:[{sessionId,subtree}]}` |
-| `removeWorktreeDirectory` | `{repository,root}` | `{removed}` |
-| `removeWorktree` | `{repository,root}`, asynchronous removal callback | `{removed}` |
-| `removeUnregisteredDirectory` | `{root}`, asynchronous removal callback | `{removed}` |
-| `catalog` | `{request,agent?,version,hosts,closed}` | existing catalog page |
-| `query` | `{scope,query,page?}` | `{result,next}` |
-
-These are repository steps, not the client lifecycle workflows `sessions.delete` and
-`session.fork`. Trusted plugins may address any Session id; the process face does not apply
-per-caller Session ownership or grant scoping. The lifecycle owner remains responsible for:
-
-- `createOwnedSession`: reserve the creation/admission identity, select a supported protocol,
-  validate the configuration and apply that protocol's live feature restrictions before
-  persisting it, then initialize/publish the Session or roll the preparation back.
-- `delete`: close the Session and settle its producers before removing its rows and output.
-  This operation neither closes a live Session nor removes its Agent admission slot.
-- `fork`: validate the source collaboration role, published main cut, atomic/context boundary
-  and rest point; supply the source's stored configuration text with `initialTitle` removed,
-  then initialize the fork under the source Agent/protocol. The repository copies the supplied
-  text without applying live protocol exclusions or rebuilding the configuration.
-
-`createOwnedSession`, `fork` and `delete` reject Session ids that are not a single normal path
-component with `invalid`, before acquiring ownership or touching rows or output paths. These
-checks are shared with the native Session admission/deletion boundary.
-
-Grant kind is `file` or `dir`, mode is `read` or `write`; adding read never downgrades
-an existing write grant. `language` is a ReplyLanguage code or null to clear it.
-`origin` is the existing Session origin. `leaderSessionId`, `agentId`, `config` and
-`configText` are null when the corresponding optional owner value is absent;
-`creationRecord` and language writes still reject a missing Session. `worktree`
-is null or `{repository,root,subtree}`. Session creation retains the atomic
-owner/configuration/worktree publication. `lastUsedAtMs` is null for legacy directory
-records without an association timestamp.
-
-`removeWorktree` holds the owner exclusion for its usage checks and for registering the
-resolved root as being removed, then releases it and awaits the callback, which receives
-the checked root path; the exclusion is taken again only to delete the directory row after
-the callback returns. No SQL or Timeline commit lock is held while awaiting it. The
-registration ends in the removal's own task, so dropping the caller stops neither the
-deletion nor the registration. While it runs, `createOwnedSession`, `fork`,
-`store.associateWorktree`, `removeWorktreeDirectory`, `removeWorktree` and
-`removeUnregisteredDirectory` are refused with `invalid` for a path at, under or above the
-registered one, and proceed for unrelated paths. The callback may refuse with `invalid`,
-`cancelled` or `storage`; unexpected callback or transport failures are `storage`. A
-callback failure leaves the directory row in place and no registration. The registration
-is the only record of the removal: there is no separate check/remove lease, and a Session
-creation on a directory being removed is refused instead of waiting for it.
-`removeWorktreeDirectory` is the existing database-only candidate cleanup, with its
-existing association checks and the same refusal for a path being removed.
-
-`removeUnregisteredDirectory` takes `{root}` and the same asynchronous removal callback.
-It is the unregistered removal of
-[worktree management §5](worktree-management.md#5-列出删除与清理): the root is absolute
-without relative components, and the operation holds the owner exclusion for its
-directory-record and workspace checks and for registering the resolved root, then awaits
-the callback, which re-checks the unregistered filesystem facts before it deletes
-anything. A callback failure is `invalid`, `cancelled` or `storage` as above. The
-registration keeps the root refused to the operations above until the same removal task
-clears it, and the deletion itself has no time limit: it covers a recursive `--force`
-deletion of any size. Dropping the caller stops neither the deletion nor the registration.
-
-`catalog` takes the existing Session catalog request and the calling Agent owner's
-loaded/closed snapshots. Its result is the stored catalog page: sequence comes from the
-database and `closed` is false on each returned row. The Agent lifecycle owner enriches that
-page with live sequence and closed state for client responses; `store.catalog` does not read
-or reproduce AgentIndex. Its pagination and filtering remain the storage catalog contract. `query` takes the existing fixed read scope: `{key:{sessionId,
-branchId},through,segments:[{branchId,from,through,storedThrough,tail}]}`. Its query,
-page, result and immutable tail events retain the Timeline query contract. Neither
-operation adds a preliminary query or rereads the caller's snapshots.
-
-Refusals are `{code,message}`: `invalid`, `closed`, `cancelled` or `storage`, preserving
-the owner message. Existing absence behavior is retained: `addGrant` on an unknown Session
-fails `storage` (foreign-key refusal), `removeGrant` succeeds without a matching row, and
-`setSessionLanguage` fails `closed`. Unsupported protocol versions retain the native database
-`storage` refusal; the lifecycle owner validates versions before preparation. These methods expose storage operations to trusted plugins, not
-new external client entry points. Session files use `sessionFiles`. Metadata consumers call `store.readMetadata` and `store.setTitle`; FileAccess calls `store.associateWorktree`. Retire the catalog entries `sessionMetadata` and `worktreeAssociations` when migrating their callers.
-
-The Rust `Store` binding exposes only these repository operations and directly returns
-the same owner's operation futures. Its typed key and dispatcher share one binding;
-`SessionStore` remains the native bootstrap/implementation owner, not the public `store`
-type. Title reads use `store.readMetadata`. Native shared result types
-and filesystem paths retain their existing lossless Rust representation; only the wire
-boundary serializes paths as data. The existing asynchronous removal callback keeps its
-original path argument and ownership exclusion.
-
-
-- `store.associateWorktree {sessionId, repository, root, subtree}` writes the worktree directory
-  record and the Session usage association as one commit and answers `{}` after it, so the reply is the
-  acknowledgement the file facts owner waits for before publishing a confirmed root (§4.2.1). Its
-  deduplication, its place in Session deletion and its format decision belong to
-  [worktree access §4](worktree-access.md#4-持久使用关联与清理边界) and the storage owner; the
-  directory identity is Session memory and is not stored by this operation.
-- `fork` and `delete` keep their accepted storage contract: the visibility switch is one
-  transaction, and the copy or removal around it is written in bounded chunks so one large
-  Session cannot hold the writer for every other Session
-  ([deletion and fork](appserver/session-deletion-and-fork.md),
-  [timeline storage](../architecture/rust-agent/timeline-storage.md) §3). This face does not
-  restate those steps; it exposes them as one operation each.
-- The Session-row operations are the repository operations of
-  [#1298](https://github.com/arcships/dim/issues/1298); that issue's list and field sets are the
-  contract, and this document does not pre-empt them.
-- Both SQLite and PostgreSQL implement the same face. Which engine answers is configuration of
-  the state owner, not a difference the caller sees; a Session whose state is unreachable is a
-  failed call, and the Session layer's own rule decides whether it stops
-  ([#1298](https://github.com/arcships/dim/issues/1298)).
-- One Session has one writer, and the store face carries no lease, takeover or second-writer
-  operation: that rule belongs to the Session owner, above the store.
+Superseded by [the SessionStore contract](plugins/SessionStore.md). The Session repository
+operations, the title and association operations, the worktree removal and the error kinds are
+defined there; the Rust `Store` binding type no longer exists and the service is marked on the
+store owner.
 
 ## 6. Provider, binding, and the owners that use each operation
 
@@ -936,9 +808,11 @@ No other requirement is raised:
    the text is the file operation's own (line numbers, previews, image blocks). A command returns
    records, and the control side composes the tool result, because the task identity, the
    background policy and the output-path registration are its.
-6. **Repository face names.** `store` names the Session-row repository operations, and
-   `timelineStore` names the Timeline operations and completion notifications. Both delegate
-   to the same state owner (#1298); the naming split changes neither placement nor ordering.
+6. **Repository face names.** `store` names the Session-row repository operations and the
+   Timeline reads for callers outside a Session; `timelineStore` is the same owner's Timeline
+   face bound at the Session instance by SessionScope. One owner, two scope bindings
+   ([SessionStore](plugins/SessionStore.md)); `createSession`, `releaseSession`,
+   `rollbackSession` and `append` are the owner's own steps.
 7. **Root identity form.** The Session passes the opaque `rootIdentity` back to the provider.
    The provider owns its platform form and comparison.
 8. **Retained task records.** Settlement is explicit (§3.8). If a long-lived local provider wants a

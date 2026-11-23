@@ -410,43 +410,13 @@ like `session_file_owners`, so output stays readable after the source is deleted
 
 ### 9.1 Language-neutral (ADR 002 D5)
 
-`sessionFiles`, process scope, no instance key, provided by SessionStore.
-
-| Method | Mode | Request | Reply |
-| --- | --- | --- | --- |
-| `put` | async | `{sessionId: string, name: string, content: string}`, where `content` is the bytes in base64 | `{fileId: string, path: string, bytes: u64}` |
-| `import` | async | `{sessionId: string, name: string, source: string}`; authorized absolute local source path | `{fileId: string, path: string, bytes: u64}` |
-| `read` | async | `{sessionId: string, fileId: string, offset: u64}` | `{data: string, eof: bool}`; base64 of at most 64 KiB, `eof` exactly when empty |
-| `register` | async | `{sessionId: string, path: string}` (ADR 013) | `{}`; a missing Session is `not_found` |
-| `owns` | async | `{sessionId: string, path: string}` | `{owned: bool}` |
-| `owned_paths` | async | `{sessionId: string}` | `{paths: string[]}`, a Session file's directory and each output path |
-
-`sessionFiles` is a data face: its catalog entry is shared and SessionStore publishes
-the same `SessionFiles` binding at its Rust type key and `host_key("sessionFiles")`.
-Native calls invoke the owner directly; wire calls decode and invoke the same operations.
-
-`import` applies the same Session, name, 16 MiB, pending/owned transaction,
-permissions and cancellation rules as `put`. FileStorage pins the source while
-copying with a 64 KiB buffer; source growth or truncation fails before publication.
-The caller authorizes source-path access. `read` resolves only immutable files
-owned by the supplied Session, returning `not_found` for a foreign file ID.
-Offsets at or beyond EOF return an empty chunk. Dropping a wire call cancels it.
-
-- `path` is absolute on the Session's resource node, the way `read` resolves it for the Session.
-  `bytes` is the stored length.
-- `register`, `owns` and `owned_paths` are ADR 013's ownership interface. `register` resolves the
-  path and records it before the caller hands it to the model; `owns` answers from both ownership
-  tables, and ADR 014 reads it as the session-owned fact for writes.
-- Cancellation is a protocol action: the caller drops the call or sends the bridge's cancel
-  request. It takes effect up to txn 2. After that the file is committed and the reply stands.
-- Errors are data, `{code, message}` (§10).
-- SessionStore offers no operation that changes, renames or removes one file. Sharing and
-  release happen only inside S5c's fork and delete transactions, which are SessionStore's own
-  Rust steps, not service methods.
+Superseded by [the SessionFiles contract](../plugins/SessionFiles.md). The operations, the
+offset paging, the import reply, the output-path registration and the file removal are defined
+there; this document keeps the storage layout, the flows and the error codes above.
 
 ### 9.2 How Attachments uses it
 
-Attachments ([A.2](../plugins/Attachments.md#a2-attachmentput)) declares `S:SessionIdentity` and
+Attachments ([A.2](../plugins/Attachments.md#a2-attachmentput)) declares its Session identity and
 the process service `sessionFiles` in its `Deps`: an enclosing-scope dependency on a core part
 (D3). A SessionStore reload reloads Attachments, which its rule check already accepts. For
 `attachment.put` it calls `put(sessionId = its own Session, name, content = the text's UTF-8

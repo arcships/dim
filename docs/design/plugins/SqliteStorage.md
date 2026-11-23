@@ -12,7 +12,7 @@ SqliteStorage owns:
 - **The format.** The version row, the schema, the ordered upgrades and the refusal of an unsupported format.
 - **The connections.** One writer connection with its queue, a read pool, the WAL checkpoint and the close drain.
 - **Transactions and reads.** One commit or one consistent read per call; the engine does not interpret the rows. These operations are the engine's private implementation for the data owners; they are not a service face.
-- **Offline operations.** Backup, restore and vacuum, each holding the same lease and refusing while a daemon owns the store.
+- **Offline operations.** Backup and vacuum hold the same lease and refuse while a daemon owns the store; restore writes a new destination that must not exist yet, and its exclusion is that destination rule.
 - **The capacity value.** Database bytes, WAL bytes and reclaimable bytes, read through `storageReport`.
 
 The rows belong to their data owners, and their operations live on those owners' faces: the Session rows and the Timeline batches to [SessionStore](SessionStore.md), the Agent records to Agents and Collaboration ([#2098](https://github.com/arcships/dim/pull/2098)), the Settings documents to Settings ([#2094](https://github.com/arcships/dim/pull/2094)), the Provider records to Provider ([#2096](https://github.com/arcships/dim/pull/2096)). The engine executes each owner's transactions and returns the stored form; it answers no business read or write on its public face and is not in the catalog for those rows.
@@ -26,7 +26,8 @@ Callers keep:
 | Requirement (public callers) | Compose from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
 | Report the store's own bytes | No: only the process holding the file knows them | `storageReport` |
-| Back up, restore or vacuum the store while no daemon owns it | No: the operation needs the file lease and the format check | `backup`, `restore`, `vacuum` |
+| Back up or vacuum the store while no daemon owns it | No: the operation needs the file lease and the format check | `backup`, `vacuum` |
+| Restore an archive into a new store | No: the destination rule and the format check are the owner's | `restore` |
 | Bind the daemon's endpoints after the database lock is held | No operation: the dependency orders loading | the `sqliteStorage` key in `injects` |
 
 The transaction operations the data owners use are not on this face: Settings, Provider, Agents, Collaboration and SessionStore call them as crate-private operations of the engine, and each owner's contract owns the request, reply and error shapes. A caller that needs different data asks the row's owner, not the engine.
@@ -56,9 +57,9 @@ None. The assembly provides the store; deployment chooses its instance. Offline 
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `storageReport` | The store's own file bytes, WAL bytes and reclaimable bytes | `{}` | `{databaseBytes, walBytes, reclaimableBytes}` | None | `storage` |
+| `storageReport` | The store's own file bytes, WAL bytes and reclaimable bytes | `{}` | `{databaseBytes, walBytes, reclaimableBytes}` | None | `closed`, `storage` |
 | `backup` | Copy a closed store and its sidecar files into an archive | the database path and the destination | `{}` | None; the tool runs alone | `owned`, `storage` |
-| `restore` | Replace a store from an archive produced by `backup` | the archive and the destination | `{}` | None; the tool runs alone | `owned`, `format`, `storage` |
+| `restore` | Write a store from an archive produced by `backup` into a destination that does not exist | the archive and the destination | `{}` | None; the tool runs alone | `format`, `storage` |
 | `vacuum` | Remove the content rows no stored reference reaches and reclaim the file's free pages | the database path | the removed rows, content bytes and sizes | None; the tool runs alone | `owned`, `format`, `storage` |
 
 `storage.report` is the client method registered through `managementMethods`; the registration point calls `storageReport` and is not a second operation. The transaction operations the data owners use are private to the storage crate and are listed in their owners' contracts.
@@ -79,13 +80,14 @@ The engine answers no business error: a missing row, a stale version or a refuse
 | --- | --- | --- | --- | --- | --- |
 | Open, upgrade, verify | Open the file, take the lease, read and write the format, run the ordered upgrades in one transaction, start the writer and the read pool | Not applicable: assembly admits the daemon once | Not applicable | A failed open leaves the previous format, or the startup note names the newer store | File and lease by SqliteStorage; the process exits |
 | `storageReport` | Read the file sizes and the free-page count | None | Nothing to release | Pending calls end `closed` | SqliteStorage |
-| `backup`, `restore`, `vacuum` | Take the same lease, operate on the file, release | Not applicable; the tool runs alone | Not applicable | Refused while a daemon holds the lease | The offline tool and SqliteStorage share the lease |
+| `backup`, `vacuum` | Take the same lease, operate on the file, release | Not applicable; the tool runs alone | Not applicable | Refused while a daemon holds the lease | The offline tool and SqliteStorage share the lease |
+| `restore` | Require a destination that does not exist, write the archive there, verify the format | Not applicable; the tool runs alone | Not applicable | A destination a daemon owns is refused by the non-existence rule | The offline tool |
 | Close | Refuse new work, wait for the running calls, close the readers, checkpoint, close the writer, release the lease | Not applicable | In-flight calls finish | The next process opens after the lease is free | SqliteStorage |
 | Private transactions | The data owner's call runs on the writer or a pooled reader, under the open store's drain | The owner's operation decides its own cancellation | The writer completes or rolls back the transaction | The admitted calls end before close | SqliteStorage; the owner's contract owns the operation |
 
 ## Exceptions with reasons
 
-- Offline tools (`dim-migration`, backup, restore, vacuum) open the file under the same lease and write rows in the published format: an import or a repair runs while no daemon may own the store, and the format is the contract both sides implement. The lease is the exclusion; the format version is the gate.
+- Offline tools (`dim-migration`, backup, restore, vacuum) write the published format while no daemon owns the store: backup, migration and vacuum take the same lease; restore writes a destination that must not exist. The format version is the gate for every one.
 - `storageReport` is a client method and a service operation: the management method is a registration point (ADR 002), and the service operation is the same read for plugins.
 - The data owners' transaction operations are crate-private: each owner's contract defines its request, reply and errors, and the engine executes them without interpreting the rows. Publishing them again under `sqliteStorage` would answer the owners' business on the engine's face.
 
@@ -96,8 +98,19 @@ Flow tests on the owner:
 - Opening a newer format refuses and leaves the file unchanged; an upgrade is one transaction; a second process fails to open while the lease is held.
 - `storageReport` answers the file, WAL and free-page values; the client method returns the same values.
 - Closing drains the running owner calls, checkpoints and releases the lease; an offline tool cannot open while the daemon owns it.
-- A backup round-trips through restore; vacuum refuses a store a daemon owns and a store whose format differs.
+- A backup round-trips through restore; restore refuses an existing destination; vacuum refuses a store a daemon owns and a store whose format differs.
 - The data owners' transactions are tested by their owners' flow tests; the engine's tests cover their commit, rollback and drain, not their business answers.
+
+## Client-visible changes
+
+None. The `storage.report` client method keeps its request, reply and error shapes; the offline CLI commands are unchanged.
+
+## Supersedes
+
+- [Resource owner operations](../contracts/resource-owner-operations.md): the Native storage section — the `SessionStore → sqliteStorage` rows, the Settings and Provider storage tables and the `sqliteStorage` public face.
+- [Resource faces §5](../resource-faces.md): the `sqliteStorage` paragraph of the `store`/`timelineStore` section.
+- [Service faces §3.4](../service-faces.md): the `sqliteStorage` row.
+- [Native storage format](../appserver/native-storage-format.md): the paragraphs that describe the public storage face.
 
 ## Rule check
 
@@ -145,15 +158,18 @@ pub struct Capacity {
     pub reclaimable_bytes: u64,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum StorageError {
-    #[error("{0}")]
-    Storage(String),
-    #[error("another process owns the database")]
-    Owned,
-    #[error("{0}")]
-    Format(String),
+/// The wire error: `{code, message}`, with `code` one of `storage`, `owned` or `format` for the offline functions.
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{code}: {message}")]
+pub struct StorageError {
+    pub code: String,
+    pub message: String,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Empty {}
 
 impl PublicService for SqliteStorage {}
 

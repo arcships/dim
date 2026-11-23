@@ -2,13 +2,13 @@
 
 Scope: process. Issue: #2018.
 
-SessionFiles owns the bytes of Session files and the ownership rows that make a path or a file id belong to a Session. This document is the owner's target contract. The current implementation is described in [Session files](../appserver/session-files.md). The engine's row operations this owner uses are private to the storage crate; the Session store uses this owner when a delete releases files.
+SessionFiles owns the bytes of Session files and the ownership rows that make a path or a file id belong to a Session. This document is the owner's target contract. The current implementation is described in [Session files](../appserver/session-files.md); the interface there is superseded by this contract. The engine's row operations this owner uses are private to the storage crate; the Session store uses this owner when a delete releases files.
 
 ## Use and scope: responsibility split
 
 SessionFiles owns:
 
-- **The file namespace.** One immutable file per `fileId` under `<db>.session-files/<fileId>/<name>`, written through FileStorage.
+- **The file namespace.** One file per `fileId` under `<db>.session-files/<fileId>/<name>`, written through FileStorage.
 - **The write generation.** One generation per store generation. A write reserves its name, the bytes land, and the ownership row commits only in the same generation that reserved it.
 - **The sweep.** Removes files no row owns, rows pending under a dead generation, and directory entries with no row.
 - **Ownership rows.** Which Session owns a Session file and which Session owns a registered output path.
@@ -18,38 +18,40 @@ Callers keep:
 
 - **The purpose of the file.** An attachment, an image sent to a model, a tool result, an event payload, a command output path.
 - **The name** the caller gives a stored file, within the owner's component rule.
+- **The output roots.** WorkspaceTools owns `command-output/<session>/…`; HostPlatform owns `.dim/exec/<session>/<branch>/…`. The caller decides which root a path belongs to and passes a resolved absolute path; the owner records it.
 - **The model's content rules.** Image budgets, request materialization and what reaches the model stay with the model provider.
 - **The tool result.** What a registration means for the user stays with the tool.
-- **The output directory.** WorkspaceTools owns the output path and its policy.
 
 | Requirement (callers) | Compose from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| Store produced bytes under a new file id for a Session | No: the reservation, the file write and the ownership commit are one ordered protocol; a caller composing them would drive a half transaction | `put` |
+| Store produced bytes under a new file id for a Session; an event body names the path a read tool opens | No: the reservation, the file write and the ownership commit are one ordered protocol, and the path is the owner's layout | `put` |
 | Import a host file the user or model named as a Session file | No: the source is outside the file namespace and the size limit must stop the copy before it lands | `import` |
-| Replace the bytes of an existing Session file under the same id and path | No: the id, the path and the ownership row are the owner's; a replace must keep the read tool's path valid | `write` |
-| Read a Session file for a model request or a UI | No: the caller cannot read the owner's directory or the file id's row | `read` |
-| Record a command output path as owned by the Session | No: ownership is the owner's row and the path must stay inside the Session's output directory | `register` |
+| Replace an existing Session file's bytes under the same id and path; an MCP result file is rewritten | No: the id, the path and the ownership row are the owner's; a replace must keep the read tool's path valid | `write` |
+| Read a Session file in bounded pages for a model request, an attachment read or a web download | No: the caller cannot read the owner's directory or the file id's row | `read` |
+| Record a command output path as owned by the Session | No: ownership is the owner's row | `register` |
 | Answer whether a path or file id belongs to the Session | No: the answer composes two ownership tables and the file directory mapping | `owns` |
-| Remove a Session file and its ownership row | No: the directory entry and the row are the owner's | `remove` |
+| Remove an MCP result file and its ownership row | No: the directory entry and the row are the owner's | `remove` |
 | List every path the Session owns, for deletion or for a grant | No: the caller has no row access | `ownedPaths` |
 
 An operation exists only where its row says No.
 
 ## Caller example
 
-WorkspaceTools registers a command output path.
+WorkspaceTools registers a command output path it owns the root of.
 
 ```rust
-files.register(Register { session_id, path }, cancelled).await?;
+files.register(Register { session_id, path }).await?;
 ```
 
-ImageUnderstanding and the model provider read a file for one request.
+Attachments reads one 64 KiB page and stops at the end of the file.
 
 ```rust
-let stored = files.read(ReadFile { session_id, file_id }, cancelled.clone()).await?;
+let page = files.read(ReadFile { session_id, file_id, offset }, cancelled.clone()).await?;
+// `page.data` is the next page in base64; `page.eof` is true exactly when the page is empty.
+if page.eof { /* the end of the file */ }
 ```
 
-Attachments import a host file the user chose.
+Attachments imports a host file the user chose; the reply carries the path the tool result names.
 
 ```rust
 let stored = files.import(Import { session_id, name, source }, cancelled).await?;
@@ -59,30 +61,30 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 
 ### Dependencies
 
-`fsHost` for the owner's directory, file creation, atomic replacement, import, listing and removal; the operations used are the ones in [FileStorage's contract](FileStorage.md). The engine's file-ownership rows are private to the storage crate and are not a service. The owner does not depend on `store`: the store depends on this owner when a delete releases files.
+`fsHost` for the owner's directory, file creation, atomic replacement, import, listing and removal; the operations used are the ones in [FileStorage's contract](https://github.com/arcships/dim/pull/2080). The engine's file-ownership rows are private to the storage crate and are not a service. The owner does not depend on `store`: the store depends on this owner when a delete releases files.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `put` | Store bytes under a new file id and commit ownership | `{sessionId, name, bytes}` | `{fileId, path, size}` | While the bytes land; a cancelled put leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `import` | Copy a regular host file into the Session namespace and commit ownership | `{sessionId, name, source}` | `{fileId, size}` | Before the replacement; a cancelled import leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, bytes}` | `{fileId, path, size}` | Before the replacement; the old bytes stay | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `read` | Read one Session file whole, within the owner's limit | `{sessionId, fileId}` | `{bytes}` | While the file is read; nothing changes | `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `remove` | Remove one Session file and its ownership row; a file the Session does not own answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal | `not_found`, `node_unavailable`, `storage` |
-| `register` | Record an output path as owned by the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `storage` |
-| `owns` | Whether a path or file id belongs to the Session | `{sessionId, path}` | `{owned}` | While the path is resolved | `node_unavailable`, `cancelled`, `storage` |
-| `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `node_unavailable`, `storage` |
+| `put` | Store bytes under a new file id and commit ownership | `{sessionId, name, content}`, `content` is base64 | `{fileId, path, bytes}` | While the bytes land; a cancelled put leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `import` | Copy a regular host file into the Session namespace and commit ownership | `{sessionId, name, source}` | `{fileId, path, bytes}` | Before the replacement; a cancelled import leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, content}`, `content` is base64 | `{fileId, path, bytes}` | Before the replacement; the old bytes stay | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `read` | One page of a Session file, at most 64 KiB | `{sessionId, fileId, offset}` | `{data, eof}`, `data` is base64 and `eof` is true exactly when it is empty | While the page is read; nothing changes | `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `register` | Record a caller-owned output path for the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `storage` |
+| `owns` | Whether a path or file id belongs to the Session | `{sessionId, path}` | `{owned}` | While the path is resolved | `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal | `storage` |
+| `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `storage` |
 
-`bytes` is the file content as data; the owner's limit is 16 MiB. `read` answers the whole file within that limit: the limit is the owner's, so callers do not page. A `fileId` outside the Session, or a name that is not one component, is `invalid`.
+`path` is absolute on the Session's resource node; `bytes` is the stored length. `offset` at or beyond the end answers an empty `data` with `eof`. A `fileId` outside the Session, or a name that is not one component, is `not_found` for reads and writes and `invalid` for a name `put` or `import` receives.
 
 ### Errors
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | Fix the input: a name that is not one component, a relative or non-file import source, a path outside the Session's output directory |
+| `invalid` | Fix the input: a name that is not one component, a relative or non-UTF-8 path, an import source that is not a regular file |
 | `too_large` | Treat the file as not storable; store a smaller representation or refuse the attachment |
-| `not_found` | The Session has no such file, or the Session no longer exists; the caller refuses the request |
+| `not_found` | The Session has no such file, the file belongs to another Session, or the Session no longer exists; the caller refuses the request |
 | `node_unavailable` | The Session's resource node cannot be reached; retry later or report the node as unavailable |
 | `cancelled` | Nothing was committed; the caller stops |
 | `closed` | This generation is unloading; call the replacement generation |
@@ -95,10 +97,10 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `put` | Reserve the file under the generation, write the bytes through FileStorage, commit the ownership row while the generation and the Session still exist | The reservation and the written bytes are abandoned; the sweep removes them; no owned row | The write completes under the owner's task, or the reservation expires with the generation; the sweep removes unowned bytes | Admission stops; admitted writes finish; a new generation sweeps the old one's pending rows | FileSystem by FileStorage; rows and sweep by SessionFiles |
 | `import` | Open the source, check size, copy through FileStorage into a temporary file, commit ownership | The temporary file is removed; no owned row | The copy completes or is abandoned; the sweep removes what no row owns | As `put` | Source and temporary file by FileStorage; rows by SessionFiles |
 | `write` | Resolve the file id, write the new bytes through FileStorage under the same path, keep the row | Before the replacement: the old bytes stay | The write completes or is abandoned | As `put` | File and path by FileStorage; row by SessionFiles |
-| `read` | Resolve the file id under the generation's directory, read the bytes within the limit | The read stops; nothing changes | The read stops | Pending reads end `closed` | FileStorage |
-| `remove` | Resolve the file id, remove the directory entry through FileStorage, delete the row | None | The call ends | Rows stay for the next generation | File and row by SessionFiles |
-| `register` | Check the Session and the output directory, insert the ownership row | None | The row stays; a later Session delete removes it | Rows stay for the next generation | SessionFiles |
-| `owns` | Resolve the path, check the output row, else map the file directory and the file id row | The resolution stops | Nothing to release | Pending calls end `closed` | SessionFiles |
+| `read` | Resolve the file id, read one page at the offset; an offset at or past the end is an empty page | The page stops; nothing changes | The read stops | Pending reads end `closed` | FileStorage |
+| `remove` | Resolve the file id; an absent or foreign id answers success; remove the directory entry through FileStorage, delete the row | None | The call ends | Rows stay for the next generation | File and row by SessionFiles |
+| `register` | Check the Session, record the path the caller resolved | None | The row stays; a later Session delete removes it | Rows stay for the next generation | SessionFiles |
+| `owns` | Resolve the path against the owner's directory, check the output row, else the file id row | The resolution stops | Nothing to release | Pending calls end `closed` | SessionFiles |
 | `ownedPaths` | Read both ownership rows, map file ids to the directory | None | Nothing to release | Rows stay | SessionFiles |
 
 A Session delete releases this owner's rows before the sweep runs; the sweep deletes bytes no row owns. Files another Session owns are never removed by one Session's delete.
@@ -107,19 +109,31 @@ A Session delete releases this owner's rows before the sweep runs; the sweep del
 
 - The file directory is below the database directory: a Session's files are removed with the store that owns their rows, and the delete's last-owner guard is scoped to one database (ADR 013).
 - The generation is the store's generation: a stale writer cannot commit into a Session that a newer store generation created.
-- `read` answers the whole file within the owner's 16 MiB limit instead of paging: every caller needs the whole file, and a page protocol would push the read id's lifetime to callers.
+- `read` pages by offset instead of opening a read id: the callers (Attachments' `attachment.read`, the web download, image materialization) already page by offset, and a read id would put its release on every error path.
+- `register` records a path the caller resolved and owns the root of: WorkspaceTools and HostPlatform have two different output roots, and the owner cannot decide which root a path belongs to without depending on both.
+- `write` and `remove` serve MCP result files ([#2022](https://github.com/arcships/dim/pull/2101)): a result file is rewritten as the child reports progress and removed when the child's result is discarded.
 - The ownership rows live in the engine's database but belong to this owner: the engine executes the transaction, SessionFiles decides when it commits.
+
+## Client-visible changes
+
+None. `read` keeps the offset page and the 64 KiB bound; `put` and `import` keep `{fileId, path, bytes}`; the error codes and the `attachment.read` reply are unchanged. `write` and `remove` are new plugin operations, not client protocol methods.
+
+## Supersedes
+
+- [Session files §9.1](../appserver/session-files.md#91-language-neutral-adr-002-d5): the operation table, the paging note, the register root rule and the paragraph that says SessionStore offers no operation that changes or removes one file.
+- [Service faces §3.2](../service-faces.md): the `sessionFiles` row.
+- [Resource faces §4.6](../resource-faces.md): the Session files paragraph.
 
 ## Verification
 
 Flow tests on the owner:
 
-- `put` reserves, writes and commits; a cancelled put leaves no owned row and the sweep removes the bytes; a second put with the same name gets a new file id.
-- `import` refuses a directory, a non-regular file and a source over the limit without landing anything.
+- `put` reserves, writes and commits; a cancelled put leaves no owned row and the sweep removes the bytes; a second put with the same name gets a new file id; the reply names the path and the stored length.
+- `import` refuses a directory, a non-regular file and a source over the limit without landing anything; the reply names the path.
+- `read` pages by offset; the last page has `eof`; an offset past the end is an empty page; a foreign file id answers `not_found`.
 - `write` keeps the file id and path and replaces the bytes; an unknown id answers `not_found`; the old bytes survive a cancelled write.
-- `remove` answers success for a file the Session does not own, deletes the file and the row for an owned one, and never removes another Session's file.
-- `read` answers `not_found` for another Session's file id and for an unknown id; a file over the limit is never stored.
-- `register` refuses a path outside the output directory; `owns` answers true for a registered output and for a Session file path, and false for another Session's file.
+- `remove` answers success for an absent or foreign file, deletes the file and the row for an owned one.
+- `register` records a path without judging its root; a missing Session answers `not_found`; `owns` answers true for a registered output and for a Session file path, and false for another Session's file.
 - A Session delete releases the rows; the sweep removes the bytes; a file still owned by another Session survives.
 - A generation close stops admission; a new generation sweeps pending rows and directory entries without rows.
 
@@ -139,7 +153,7 @@ Flow tests on the owner:
 | §4 rule 7 | Callers use these operations; no caller reads a generation or a directory entry. |
 | §4 rule 8 | No infrastructure change; requirements below. |
 | §4 rule 9 | No Timeline fact. |
-| §7.2 ids and values | File ids, names and bytes cross as data; a `fileId` is the resource id. |
+| §7.2 ids and values | File ids, paths and bytes cross as data; a `fileId` is the resource id; pages are offset reads. |
 | §7.2 one public face | The service is marked on the file owner's type under the existing `sessionFiles` name; the `SessionFiles` wrapper type and the `SessionFilesService` trait do not exist beside it. |
 | §7.2 caller mechanisms | The reservation, the generation and the sweep stay inside the owner; callers handle the business errors only. |
 | ADR 002 D1 | Process scope: the namespace and the rows outlive Sessions. |
@@ -155,43 +169,127 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on the file owner's type; the wire name stays `sessionFiles`. The `SessionFiles` wrapper and `SessionFilesService` no longer exist. `CancelledFn` is the binding's cancellation argument.
+The service is marked on the file owner's type; the wire name stays `sessionFiles`. The `SessionFiles` wrapper and `SessionFilesService` no longer exist. `CancelledFn` is the binding's cancellation argument; operations that do not wait take none.
 
 ```rust
 use dim_agent_capabilities::host::CancelledFn;
 use dim_agent_runtime::PublicService;
 use rutis::Ctx;
+use std::sync::Arc;
+
+/// A caller's own refusal or failure; the wire carries its `code` and `message` unchanged.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
+#[error("{code}: {message}")]
+pub struct FileRejected {
+    pub code: String,
+    pub message: String,
+}
+
+impl From<rutis::host::CallError> for FileRejected {
+    fn from(error: rutis::host::CallError) -> Self {
+        Self {
+            code: error.code().unwrap_or_else(|| "rejected".into()),
+            message: error.message().to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Put {
+    pub session_id: String,
+    pub name: String,
+    /// base64
+    pub content: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Import {
+    pub session_id: String,
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteFile {
+    pub session_id: String,
+    pub file_id: String,
+    /// base64
+    pub content: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadFile {
+    pub session_id: String,
+    pub file_id: String,
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoveFile {
+    pub session_id: String,
+    pub file_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Register {
+    pub session_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Owns {
+    pub session_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OfSession {
+    pub session_id: String,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredFile {
     pub file_id: String,
     pub path: String,
-    pub size: u64,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FileBytes {
-    pub bytes: String, // base64 text
+pub struct Page {
+    /// base64, at most 64 KiB
+    pub data: String,
+    pub eof: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum SessionFileError {
-    #[error("{0}")]
-    Invalid(String),
-    #[error("{0} is over the Session file limit")]
-    TooLarge(String),
-    #[error("no such file: {0}")]
-    NotFound(String),
-    #[error("the resource node is unavailable: {0}")]
-    NodeUnavailable(String),
-    #[error("the call was cancelled")]
-    Cancelled,
-    #[error("the file service is unloading")]
-    Closed,
-    #[error("{0}")]
-    Storage(String),
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Owned {
+    pub owned: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Paths {
+    pub paths: Vec<String>,
+}
+
+/// The wire error: `{code, message}`.
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{code}: {message}")]
+pub struct SessionFileError {
+    pub code: String,
+    pub message: String,
 }
 
 impl PublicService for SessionFiles {}
@@ -230,16 +328,7 @@ impl SessionFiles {
         caller: &Ctx,
         request: ReadFile,
         cancelled: CancelledFn,
-    ) -> Result<FileBytes, SessionFileError> {
-        // ...
-    }
-
-    pub async fn remove(
-        &self,
-        caller: &Ctx,
-        request: RemoveFile,
-        cancelled: CancelledFn,
-    ) -> Result<(), SessionFileError> {
+    ) -> Result<Page, SessionFileError> {
         // ...
     }
 
@@ -247,7 +336,6 @@ impl SessionFiles {
         &self,
         caller: &Ctx,
         request: Register,
-        cancelled: CancelledFn,
     ) -> Result<(), SessionFileError> {
         // ...
     }
@@ -261,11 +349,18 @@ impl SessionFiles {
         // ...
     }
 
+    pub async fn remove(
+        &self,
+        caller: &Ctx,
+        request: RemoveFile,
+    ) -> Result<(), SessionFileError> {
+        // ...
+    }
+
     pub async fn owned_paths(
         &self,
         caller: &Ctx,
         request: OfSession,
-        cancelled: CancelledFn,
     ) -> Result<Paths, SessionFileError> {
         // ...
     }
