@@ -178,7 +178,7 @@ A loop is a Scheduler record whose rounds are ordinary queued inputs of one bran
 
 - A launch target's Session belongs to Agents; the Scheduler record owns the stop time and retention. The record is the settlement: `stop` at the deadline, `delete` at retention, and a disabled row's existing launch is stopped at the next load.
 - The `schedule.*` namespace and the `wakeup`/`loop` tools are registration points, not facades: they map client or model arguments to the owner's operations, and the operations keep the business meaning.
-- `session.wakeup.*`, `schedule.watch`, the `loops` and `wakeups` catalog names, and the `source: "Scheduler"` Session notices are removed: no client ships for the first three, and the Scheduler writes no notification. The `wakeup` tool gains `list` and `cancel`; `session.loop.*` stays because CLI, ACP and web call it.
+- `session.wakeup.*` and `schedule.watch` are removed because no client ships; the `loops` and `wakeups` catalog names are removed because no cross-language caller exists; the `source: "Scheduler"` notices are removed because the Scheduler writes no notification. The `wakeup` tool gains `list` and `cancel`; `session.loop.*` stays because CLI, ACP and web call it.
 
 ## Verification
 
