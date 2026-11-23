@@ -43,7 +43,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [RemoteGateway](RemoteGateway.md) | remote entry, devices | — | — | P3 |
 | [Modality](Modality.md) | tasks, realtime connections | — | — | P3 |
 | [light-ocr](LightOcr.md) | optional plugin: the `ocrHelper` description and the out-of-process helper, supplying Modality's `local/pp-ocr` target | — | — | P3; [#1158](https://github.com/arcships/dim/issues/1158) |
-| [Skills](Skills.md) (installation) | existing SkillsCatalog: preview of a local or Git source, selective installation into the user root, update and confirmed removal of loose Skills | — (discovery, enablement and the `skill` tool already belong to the Skills capability) | — | #740 |
+| [Skills](Skills.md) | `SkillsCatalog`: source preview, install/update/remove, enablement and content | `Skills`: view, `SkillContent` instances, `skill` tool and `skills` check; `SkillContentInstances` template | `SkillsBranch`: `skillsBranch.list` and Prompt adoption | #740, #2022 |
 | [PluginManager](PluginManager.md) | plugin configuration (`plugins.json`), install, loader rows of plugin code, content registration | `PluginTools` (`plugin` tool) | — | M1 |
 | [MCP](Mcp.md) | `Mcp`: MCP configuration and content, connection definitions, OAuth credentials and client operations | `McpSession`: connection generations, tools and views; `TemporaryMcp`: temporary bindings | — | #2022 |
 | [RuntimeManager](RuntimeManager.md) | the Node and Python runtimes of plugin code: pinned download, verification, start; `runtime.*` | — | — | M1 (#476) |
@@ -52,6 +52,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, MCP, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, MCP (`McpSession`, temporary bindings), Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
-| Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, MCP, Hooks (`HooksSettings`), RuntimeManager, RemoteGateway, Skills (`SkillsCatalog`), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks (`HooksSession`), MCP (`McpSession`, temporary bindings), Skills (`Skills`, content instances), PluginManager (`PluginTools`), Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
+| Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks (`HooksBranch`), Skills (`SkillsBranch`), Prompt, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |

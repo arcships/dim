@@ -149,6 +149,10 @@ The `SkillsCatalog`'s management methods are registered through #2095; the `skil
 - `skills.install`'s token is a value with an expiry; it is not a handle and carries no authority.
 - The `skills.*` methods are management methods (#2095), not a second `skillsCatalog` face.
 
+### Client-visible changes
+
+None. `skills.*` keep their client-visible behavior; `skills.install/update/remove` already never cancel after acceptance and settle or restore; `SkillsCatalogBinding` and `ConfigureControl` were plugin-facing; the `Skills` view and `skillsBranch.list` keep their values.
+
 ### Rule check
 
 | Rule | Application |
@@ -189,20 +193,26 @@ The `SkillsCatalog`'s management methods are registered through #2095; the `skil
 ```rust
 #[rutis::service(name = "skillsCatalog")]
 impl SkillsCatalog {
-    pub async fn register(&self, ctx: &Ctx, plugin: String, dir: String, document: SkillDocument, cancelled: CancelledFn) -> Result<SkillIssues, SkillContentError>;
-    pub async fn withdraw(&self, ctx: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), SkillContentError>;
+    pub async fn register(&self, caller: &Ctx, plugin: String, dir: String, document: SkillDocument, cancelled: CancelledFn) -> Result<SkillIssues, SkillContentError>;
+    pub async fn withdraw(&self, caller: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), SkillContentError>;
     pub fn plugins(&self) -> Vec<String>;
     pub fn issues(&self, plugin: &str) -> SkillIssues;
 }
 ```
 
-`SkillsBranch`'s list is a data face; the request is empty and the reply is the current `SessionSkills` value. The install and management operations are the typed requests and replies in `skills/catalog.rs`; the install token and installation id are values.
+`SkillDocument` and `SkillIssues` are the types in `skills/catalog.rs`; `SkillContentError` and `SkillListError` are `#[serde(rename_all = "snake_case")]` enums serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error table. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field. `skillsBranch.list` takes `caller: &Ctx` and returns the current `SessionSkills` value.
+
+`SkillsBranch`'s list is a data face; the request is empty and the reply is the current `SessionSkills` value. A branch part may call any data face of the branch group with `line_owner::<T>(line)`, except registration and lifecycle services (ADR 027); `SkillsBranch` calls the Prompt owner that way. The install and management operations are the typed requests and replies in `skills/catalog.rs`; the install token and installation id are values.
 
 
 Scope: process.
 Issue: [#740](https://github.com/arcships/dim/issues/740).
 Rules: [design rules](../../architecture/rust-agent/principles.md), [ADR 002](../../adr/002-plugin-scope.md).
 
+
+## Supersedes
+
+Replaces the old Skills.md §2 public operations and errors, §3-§8 and the installation API; the `skillsCatalog` and `skillsBranch` rows in [service-faces.md](../service-faces.md); the Skills rows in [resource-owner-operations.md](../contracts/resource-owner-operations.md) and [session-boundary.md](../contracts/session-boundary.md); `SkillsCatalogBinding`, `ConfigureControl` and the public Rust-only management methods. Keeps the source/revision format, install/update/remove behavior and `/skill:` input. Rules: [§7 所有者与操作](https://github.com/arcships/dim/pull/2029). Dependencies are defined by [FileStorage #2080](https://github.com/arcships/dim/pull/2080), [Settings #2094](https://github.com/arcships/dim/pull/2094), [SessionScope #2093](https://github.com/arcships/dim/pull/2093) and the Session registries #2103; Prompt is #2102; HostPlatform is pending #2032.
 
 ## Installation format and behavior
 ### 2.1 Source and revision

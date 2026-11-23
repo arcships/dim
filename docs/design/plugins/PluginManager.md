@@ -114,6 +114,10 @@ if let Some(reason) = refusal {
 - The `plugin.*` methods are management methods (#2095), not a second `pluginService` face.
 - The package's code rows are loaded by rutis-loader; `PluginManager` does not hold a row handle. The loader returns row values/status.
 
+### Client-visible changes
+
+None. `plugin.*` and the `plugin` tool keep their commands, results and errors; the `Manager` handoff was a Session-part implementation detail.
+
 ### Rule check
 
 | Rule | Application |
@@ -160,8 +164,12 @@ tool_registry.register(
 );
 ```
 
-`manager` is the process owner's operation/callback, not the `Manager` object. The request, reply and error types are the typed structures in `plugin_manager.rs` and the management module. The `PluginTools` `manager` field is deleted; the install/update/remove result values remain.
+`manager` is the process owner's operation/callback, not the `Manager` object. The request, reply and error types are the typed structures in `plugin_manager.rs` and the management module; `PluginError` is a `#[serde(rename_all = "snake_case")]` enum serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error table. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field. The `PluginTools` `manager` field is deleted; the install/update/remove result values remain.
 
+
+## Supersedes
+
+Replaces the old PluginManager.md §0/§1/§3-§5/§8/§9/Appendix, the `PluginTools` `Manager` handoff and the content-registration interfaces; the `plugin.*` rows in [service-faces.md](../service-faces.md); the PluginManager rows in [resource-owner-operations.md](../contracts/resource-owner-operations.md) and [session-boundary.md](../contracts/session-boundary.md). Keeps the manifest, `plugins.json`, default configuration and command protocol. Rules: [§7 所有者与操作](https://github.com/arcships/dim/pull/2029). FileStorage is #2080; ManagementMethods is #2095; the Session tool registry is #2103; PluginFiles, RuntimeManager and HostPlatform are pending #2016/#2019/#2032.
 
 ## 2. Data
 ### 2.1 The plugin directory and its manifest

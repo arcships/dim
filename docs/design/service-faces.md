@@ -155,7 +155,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | `mcpSession` | `state()`、`refresh()`、`widget(published)`、`call(server, tool, arguments)` | 连接代次、已发布工具、发现与重连 |
 | `backgroundExec` | `output(taskId)`、`outputPage(taskId, cursor, limit)`、`wait(taskId, timeoutMs)`、`stop(taskId)` | 任务表、活进程、输出采集与唤醒 |
 
-形状与错误由所有者文档定义：[MCP Apps](appserver/mcp-apps.md#44-the-mcpsession-data-face)（`mcpSession`）和
+形状与错误由所有者文档定义：[Mcp contract](plugins/Mcp.md#target-contract)（`mcpSession`）和
 [WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md#data-face)（`backgroundExec`）。
 `backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`backgroundExec.stop` 是 kill。
 这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
@@ -188,7 +188,7 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 ### 3.6 入口、凭据与宿主资源
 
-按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。`skillsCatalog` 的插件内容操作见 [Skills owner 契约](../architecture/rust-agent/plugins/Skills.md#plugin-content-data-face)。
+按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。`skillsCatalog` 的插件内容操作见 [Skills owner 契约](plugins/Skills.md#target-contract)。
 
 | 名字 | scope | provider | reason |
 | --- | --- | --- | --- |
@@ -375,16 +375,16 @@ providerService.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
 
 ### Skills Session 列表
 
-`skillsBranch` 的 `list({})` 与 Session 内部视图的边界由 [Skills owner](../architecture/rust-agent/plugins/Skills.md#data-face) 定义。Rust binding 与 wire 使用同一 owner；`SessionSkills` 保留为 Session 实例内的私有类型 key，不再有目录名字。
+`skillsBranch` 的 `list({})` 与 Session 内部视图的边界由 [Skills owner](plugins/Skills.md#target-contract) 定义。Rust binding 与 wire 使用同一 owner；`SessionSkills` 保留为 Session 实例内的私有类型 key，不再有目录名字。
 
 ### MCP 插件内容
 
-`mcpService` 的四个既有插件文档操作与取消、错误、私有资源边界由 [MCP owner](appserver/mcp-management.md#81-plugin-content-data-face) 定义。
+`mcpService` 的四个既有插件文档操作与取消、错误、私有资源边界由 [MCP owner](plugins/Mcp.md#target-contract) 定义。
 
 ### 4.11 `hooksService`
 
 插件内容登记、撤回、列表和拒绝原因读取使用同一个 Hooks owner；原生与跨语言绑定保持其持久化、
-启用及已接纳工作结算语义。操作与错误由 [Hooks A.2.1](plugins/Hooks.md#a21-plugin-content-data-face) 定义。
+启用及已接纳工作结算语义。操作与错误由 [Hooks owner](plugins/Hooks.md#target-contract) 定义。
 
 ## 5. 验证
 

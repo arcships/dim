@@ -4,6 +4,10 @@ Scope: process and Session. Issue: #2022.
 
 `Mcp` owns the process's MCP configuration, content, connection definitions and OAuth credentials. `McpSession` owns one Session's MCP connection generations and tool source. `TemporaryMcp` owns the client-supplied temporary bindings of one Session. `McpPublication` and `McpAuth` are private parts of `Mcp`; neither has a public surface. The current implementation is described in [mcp-management](../appserver/mcp-management.md), [mcp-apps](../appserver/mcp-apps.md), [mcp-oauth](../appserver/mcp-oauth.md) and [TemporaryMcp](TemporaryMcp.md).
 
+## Supersedes
+
+Replaces the public-surface sections of [mcp-management.md](../appserver/mcp-management.md) §8 (`mcpService` content face and the `mcp.*` connection/lease decisions), [mcp-apps.md](../appserver/mcp-apps.md) §4.4 (`mcpSession`), [mcp-oauth.md](../appserver/mcp-oauth.md) (credential operations) and [TemporaryMcp.md](TemporaryMcp.md) (temporary bindings); the MCP rows in [service-faces.md](../service-faces.md), [resource-owner-operations.md](../contracts/resource-owner-operations.md) and [session-boundary.md](../contracts/session-boundary.md); and the old `McpServiceBinding`, `McpConnection`, `McpOwner`, `McpPublication` connection table and `mcpSession.subscribe`. Rules: [§7 所有者与操作](https://github.com/arcships/dim/pull/2029). Dependencies are defined by [FileStorage #2080](https://github.com/arcships/dim/pull/2080), [Settings #2094](https://github.com/arcships/dim/pull/2094), [SessionScope #2093](https://github.com/arcships/dim/pull/2093), [Connection/ManagementMethods #2095](https://github.com/arcships/dim/pull/2095) and the Session registries #2103/#2102/#2100; HostPlatform, SessionFiles and SessionStore are pending #2032/#2018.
+
 ## Use and scope: responsibility split
 
 `Mcp` owns:
@@ -118,7 +122,7 @@ let binding = temporary.attach(ctx, server, cancelled).await?;
 | `mcp.move` | Move an entry in its source | `{id, before?}` | `{}` | Accepted write is not cancelled | `invalid`, `missing`, `conflict`, `closed` |
 | `mcp.import.preview` | Parse an import payload without writing | `{document, project?}` | `{entries, invalid}` | Read can be cancelled | `invalid`, `closed`, `cancelled` |
 | `mcp.import.apply` | Write the selected imported entries | `{document, selection, project?}` | `{applied, invalid}` | Accepted write is not cancelled | `invalid`, `conflict`, `closed` |
-| `mcp.test` | Probe one server definition with a disposable connection | `{config, timeout?}` | `{status, latency, tools, reason}` | Timeout stops the probe; the owner settles the probe | `invalid`, `timeout`, `refused`, `closed` |
+| `mcp.test` | Probe one server definition with a disposable connection | `{config, timeout?}` | `{status, latency, tools, reason}` | Cancel or timeout stops the probe; the owner settles it | `invalid`, `timeout`, `refused`, `cancelled`, `closed` |
 | `mcp.inspect` | The connection states reported by Sessions | `{}` | `{sessions: [{sessionId, entries}]}` | None | `closed` |
 | `mcp.disconnect` | Ask every Session to close one source or server | `{source?, server?}` | `{}` | None; the command is a value | `closed` |
 | `mcp.auth.start` | Start an OAuth flow | `{id, project?}` | `{authUrl?}` | Flow can be cancelled | `missing`, `unsupported`, `refused`, `closed`, `cancelled` |
@@ -128,8 +132,8 @@ let binding = temporary.attach(ctx, server, cancelled).await?;
 | `mcpSession.state` | The Session's MCP view | `{}` | `{servers, error?}` | None; the value is read | `closed` |
 | `mcpSession.refresh` | Ask the owner to rediscover the enabled entries | `{}` | `{}` | None; the signal is a value | `closed` |
 | `mcpSession.widget` | The view for one published tool | `{publishedTool}` | `{view}` or absent | The client dropping the call cancels the read | `absent`, `unsupported`, `not_callable`, `unknown_server`, `unavailable`, `refused`, `unknown`, `closed` |
-| `mcpSession.call` | One MCP Apps call | `{server, tool, args}` | `{result}` | The client dropping the call cancels the resource read | `unknown_server`, `unavailable`, `refused`, `unknown`, `closed` |
-| `session.mcp_temporary.attach` | Mount a client temporary binding | `{server}` | `{binding, tools}` | The caller dropping the call shuts the half-made binding | `invalid`, `mount_failed`, `closed` |
+| `mcpSession.call` | One MCP Apps call | `{server, tool, args}` | `{result}` | The client dropping the call cancels the resource read | `unknown_server`, `unavailable`, `refused`, `unknown`, `cancelled`, `closed` |
+| `session.mcp_temporary.attach` | Mount a client temporary binding | `{server}` | `{binding, tools}` | The caller dropping the call shuts the half-made binding | `invalid`, `mount_failed`, `cancelled`, `closed` |
 | `session.mcp_temporary.renew` | Extend the binding lease | `{binding}` | `{}` | None | `invalid`, `missing`, `closed` |
 | `session.mcp_temporary.detach` | Remove the binding and its children | `{binding}` | `{}` | None; the owner completes the removal | `missing`, `closed` |
 
@@ -161,6 +165,10 @@ The internal `McpSession` connection operations (`open`, `tools`, `observe`, `cl
 | `mcp.test` | `Mcp` opens a disposable connection, probes, lists tools, closes it | The timeout or cancel closes the probe | The probe is closed with the owner | The owner closes every probe | Probe by `Mcp` |
 | `mcp.auth.start/complete` | `Mcp` starts the flow, stores the pending state, completes and writes the credential | The flow cancels; the pending state is removed | The flow ends with the owner | Pending flows are dropped on reload; credentials stay | Flow and credential by `Mcp`/`McpAuth` |
 | `TemporaryMcp.attach` | The Session mounts the child, registers tools, returns the binding id and lease | A dropped attach unmounts the child | The binding's children close; tools are withdrawn | New binds refused; every child unmounts | Child by `TemporaryMcp`; lease by the binding |
+
+## Client-visible changes
+
+`mcp.inspect` returns the connection states reported by `McpSession` parts instead of reading `McpPublication`. The client field `sessions` and the per-entry shape stay the same; the change is where the value comes from, and the local MCP management client and the App Server `session.mcp` path need only refresh after the next report. `mcp.disconnect` publishes the same command and returns; `mcpSession.state/refresh/widget/call` keep their request and reply shapes. The removed `mcpSession.subscribe` is Rust-only and never crossed the client protocol. No client error code, field name or notification changes.
 
 ## Exceptions with reasons
 
@@ -211,24 +219,24 @@ The internal `McpSession` connection operations (`open`, `tools`, `observe`, `cl
 `mcpService` is on `Mcp`; `mcpSession` on `McpSession`; `session.mcp_temporary` on `TemporaryMcp`. `McpServiceBinding`, `McpConnection`, `McpOwner` and `McpPublication` do not exist. The management methods are registered through #2095.
 
 ```rust
-#[rutis::service(name = "mcpService")]
-impl Mcp {
-    pub async fn register(&self, ctx: &Ctx, plugin: String, dir: String, document: McpDocument, cancelled: CancelledFn) -> Result<Option<Refusal>, McpContentError>;
-    pub async fn withdraw(&self, ctx: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), McpContentError>;
-    pub fn plugins(&self) -> Vec<String>;
-    pub fn refusal(&self, plugin: &str) -> Option<Refusal>;
-}
-```
-
-`McpSession`'s data face:
-
-```rust
 #[rutis::service(name = "mcpSession")]
 impl McpSession {
     pub fn state(&self) -> McpSessionState;
     pub fn refresh(&self) -> Result<(), McpSessionError>;
-    pub async fn widget(&self, ctx: &Ctx, published_tool: PublishedTool) -> Result<Option<McpView>, McpAppError>;
-    pub async fn call(&self, ctx: &Ctx, server: String, tool: String, args: Value) -> Result<Value, McpAppError>;
+    pub async fn widget(&self, caller: &Ctx, published_tool: PublishedTool, cancelled: CancelledFn) -> Result<Option<McpView>, McpAppError>;
+    pub async fn call(&self, caller: &Ctx, server: String, tool: String, args: serde_json::Value, cancelled: CancelledFn) -> Result<serde_json::Value, McpAppError>;
+}
+```
+
+`session.mcp_temporary.attach/renew/detach` are `SessionMethods` registrations; `attach` takes `caller: &Ctx` and the binding id is bound to the caller's Session row. `McpDocument`, `McpRefusal`, `PublishedTool`, `McpView`, `McpSessionState` and the request/reply structures are the types in `mcp/management.rs`, `mcp/session.rs` and `mcp/temporary.rs`; `McpContentError`, `McpSessionError`, `McpAppError` and `McpTemporaryError` are `#[serde(rename_all = "snake_case")]` enums serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error tables. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field.
+
+```rust
+#[rutis::service(name = "mcpService")]
+impl Mcp {
+    pub async fn register(&self, caller: &Ctx, plugin: String, dir: String, document: McpDocument, cancelled: CancelledFn) -> Result<Option<McpRefusal>, McpContentError>;
+    pub async fn withdraw(&self, caller: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), McpContentError>;
+    pub fn plugins(&self) -> Vec<String>;
+    pub fn refusal(&self, plugin: &str) -> Option<McpRefusal>;
 }
 ```
 

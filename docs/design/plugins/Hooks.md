@@ -136,6 +136,10 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 - `HooksBranch` writes observations through `Branch.input`; it does not write the Timeline directly.
 - The `hooks.*` methods are management methods (#2095), not a second `hooksService` face.
 
+### Client-visible changes
+
+None. `hooks.*` and the six hook points keep their client-visible behavior; `hooksService.sources` is a plugin-facing owner operation, `HookSourcesHost` was agent-crate-private, and `Permission.advise`/`Approval.decide` are #2028's contract names.
+
 ### Rule check
 
 | Rule | Application |
@@ -171,18 +175,20 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 
 ### Binding appendix
 
-`hooksService` is on `HooksSettings`; the `hooks.*` methods are registered through #2095. `HooksRuntime` is `pub(crate)`.
+`hooksService` is on `HooksSettings`; the `hooks.*` methods are registered through #2095. `HooksRuntime` is `pub(crate)`. A branch part may call any data face of the branch group with `line_owner::<T>(line)`, except registration and lifecycle services (ADR 027); `HooksBranch` calls Permission and Approval that way.
 
 ```rust
 #[rutis::service(name = "hooksService")]
 impl HooksSettings {
-    pub async fn register(&self, ctx: &Ctx, plugin: String, dir: String, document: HooksDocument, cancelled: CancelledFn) -> Result<Option<Refusal>, HooksContentError>;
-    pub async fn withdraw(&self, ctx: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), HooksContentError>;
+    pub async fn register(&self, caller: &Ctx, plugin: String, dir: String, document: HooksDocument, cancelled: CancelledFn) -> Result<Option<HooksRefusal>, HooksContentError>;
+    pub async fn withdraw(&self, caller: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), HooksContentError>;
     pub fn plugins(&self) -> Vec<String>;
-    pub fn refusal(&self, plugin: &str) -> Option<Refusal>;
-    pub async fn sources(&self, cwd: String, cancelled: CancelledFn) -> Result<HookSources, HookSourceError>;
+    pub fn refusal(&self, plugin: &str) -> Option<HooksRefusal>;
+    pub async fn sources(&self, caller: &Ctx, cwd: String, cancelled: CancelledFn) -> Result<HookSources, HookSourceError>;
 }
 ```
+
+`HooksDocument`, `HooksRefusal`, `HookSources` and `HookSourceError` are the types in `hooks_settings.rs` and `hooks/sources.rs`; `HooksContentError` and `HookSourceError` are `#[serde(rename_all = "snake_case")]` enums serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error table. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field.
 
 The Session and branch parts keep their internal types; `hooksService.sources`' request and reply are `{cwd}` and `HookSources`.
 
@@ -201,6 +207,10 @@ Hooks never hooks infrastructure. The withdrawn design ([#21](https://github.com
 
 `UserPromptSubmit` is not a Timeline hook point: Session input is not necessarily the user's (Goal, Scheduler, Collaboration, ShellInput and Hooks itself write inputs), so the command runs only where operator input enters, before anything is written. Commands run through HostPlatform (the Session's resource node); a hook command waits only in Hooks' own tasks or in the caller's own task (Permission's admission decision runs in ToolExecutor's per-call admission task; a submit check runs in the Rpc call), never in a Dispatcher handler or under the commit lock. Contracts are given in neutral form ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding is Appendix H.
 
+
+## Supersedes
+
+Replaces the old Hooks.md Structure, Flows, Rule check, Requirements, Appendix A.2.1/A.6/A.7/H and Owner check (deleted); the `hooksService` rows in [service-faces.md](../service-faces.md); the Hooks rows in [resource-owner-operations.md](../contracts/resource-owner-operations.md), [runtime-owner-operations.md](../contracts/runtime-owner-operations.md) and [session-boundary.md](../contracts/session-boundary.md); the `HookSourcesHost` port and the two-reader design. Rules: [§7 所有者与操作](https://github.com/arcships/dim/pull/2029). Dependencies are defined by [FileStorage #2080](https://github.com/arcships/dim/pull/2080), [Settings #2094](https://github.com/arcships/dim/pull/2094), [SessionScope #2093](https://github.com/arcships/dim/pull/2093) and the branch contracts #2102/#2100; HostPlatform is pending #2032.
 
 ## 5. Context mapping
 
