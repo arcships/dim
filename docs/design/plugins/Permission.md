@@ -75,7 +75,7 @@ let next = permission.update(UpdateRequest {
 | --- | --- |
 | `S:SessionScope` (Session, [#2093](https://github.com/arcships/dim/pull/2093)) | The creation record's permission preset and working directory. |
 | `S:PermissionRules` (Session, [#2094](https://github.com/arcships/dim/pull/2094)) | `permissionRules.rules` answers the user's command rules at decision time. |
-| `S:FileAccessFacts` (Session owner, [#2025](https://github.com/arcships/dim/issues/2025)) | Resolve the call's target and answer the workspace, system, owned and grant facts; the caller resolves the service at the Session instance, so no Session id is a request field. |
+| `S:FileAccessFacts` (Session owner, [#2025](https://github.com/arcships/dim/issues/2025)) | `check({access, mode, path})` resolves the call's target and answers the workspace, system, owned and grant facts. |
 | `B:Timeline`, `B:Dispatcher` | Fold `permission/changed`; commit an update. |
 
 The file-access facts operation that resolves the target is not defined yet; it is stated in Requirements.
