@@ -2,7 +2,7 @@
 
 Status: Draft. Issues: [#1295](https://github.com/arcships/dim/issues/1295) (`execHost`),
 [#1296](https://github.com/arcships/dim/issues/1296) (leaf identity and lifecycle),
-[#1297](https://github.com/arcships/dim/issues/1297) (`fsHost`),
+[#1297](https://github.com/arcships/dim/issues/1297) (file tools), [#2016](https://github.com/arcships/dim/issues/2016) (`fsHost`),
 [#1298](https://github.com/arcships/dim/issues/1298) (`store`); parent
 [#1292](https://github.com/arcships/dim/issues/1292). Policy: [service faces](service-faces.md).
 Background: [remote plugins §3–§4](research/remote-plugins.md).
@@ -16,10 +16,12 @@ Resource and state operations use these public data faces:
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
-| `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
+| `fsHost` | the [FileStorage contract](../plugins/FileStorage.md) operations: `read`, `write`, `import`, `update`, `createDirectory`, `list`, `remove` | the file-storage owner | #2016 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
 
+
+The tool family (`resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`) is the file-tools owner's operations and is not part of `fsHost`; [#1297](https://github.com/arcships/dim/issues/1297) tracks that design. `fsHost` is the storage face of the [FileStorage contract](../plugins/FileStorage.md).
 
 ```text
  control node                                        resource leaf (mounted per #1296)
@@ -42,7 +44,7 @@ SQLite or PostgreSQL. Whether a face is reachable over a link is decided by depl
 classification on the name.
 
 The public contract and migration rules are in [service faces](service-faces.md) §2.
-For these resource faces, §6 maps `hostPlatform`, `fileStorage`, `sqliteStorage` and `timelineStore`
+For these resource faces, §6 maps `hostPlatform`, `fsHost`, `sqliteStorage` and `timelineStore`
 to their public operations and Rust bindings.
 
 What stays on the control side, in every case: Session and branch scope, admission
@@ -60,7 +62,7 @@ whether a call may run, or consults who is calling.
    each; a traversal is one call, not one call per file.
 3. **Paths are node paths.** A request carries a node-absolute resolved path; a reply returns
    node-absolute resolved paths only. A relative path in a request is `invalid`, with one
-   exception: **`fsHost.resolve` is the resolution entry point**, so it accepts the path as the
+   exception: **the file-tools face's `resolve` is the resolution entry point**, so it accepts the path as the
    model gave it — relative to the `cwd` the caller passes, starting with `~`, containing `..`,
    following symlinks — because only the node can resolve it. `cwd`, `workspace` and the
    confirmed roots it is given are node-absolute. Every other operation, `execHost.start` and
@@ -104,7 +106,7 @@ whether a call may run, or consults who is calling.
 ### 3.2 `start` and `wait`
 
 `start` accepts only `{taskId, command, cwd, workspace, roots}`. `cwd` is a resolved working
-directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
+directory — the control side obtains it from the file-tools face's `resolve`, which is also what triggers
 [worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
 known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
 `roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute.
@@ -341,6 +343,10 @@ client reads and writes them through the node's own management methods, not thro
 
 ## 4. `fsHost`
 
+The storage family in §4.1 and the error table in §4.7 are superseded by the [FileStorage
+contract](../plugins/FileStorage.md). The tool-family subsections (§4.2–§4.5) belong to the
+file-tools owner ([#1297](https://github.com/arcships/dim/issues/1297)) and are not part of `fsHost`.
+
 ### 4.1 Methods
 
 Tool family — the file tools' operations, one call each:
@@ -355,49 +361,9 @@ Tool family — the file tools' operations, one call each:
 | `grep` | async | `{pattern, path, include?, outputMode?, lineNumbers?, limit?, multiline?, literal?, timeoutMs?}` | `{result: ToolResult}` |
 | `mentions` | async | `{path, query, limit?}` | `{candidates}` |
 
-Storage family — the raw operations the other file owners use. They take absolute paths and no
-tool semantics: no line numbers, no images, no effects.
-
-| Method | Mode | Request | Reply |
-| --- | --- | --- | --- |
-| `stat` | async | `{path}` | `{kind: "file" \| "directory" \| "missing" \| "other", size?}` |
-| `readBytes` | async | `{path, limit, leaseId?}` | `{bytes, size}` |
-| `openRead` | async | `{path}` | `{readId, size}` |
-| `readAt` | async | `{readId, offset, limit}` | `{bytes}` |
-| `closeRead` | async | `{readId}` | `{}` |
-| `lock` | async | `{path}` | `{leaseId}` |
-| `unlock` | async | `{leaseId}` | `{}` |
-| `backup` | async | `{leaseId, suffix, permissions?}` | `{}` |
-| `createDirectory` | async | `{path}` | `{}` |
-| `replace` | async | `{path, bytes, permissions?, leaseId?}` | `{}` |
-| `list` | async | `{path}` | `{entries: [{name, kind}]}` |
-| `remove` | async | `{path}` / `{parent, name}` | `{}` |
-
-A listed name passes unchanged to `remove({parent, name})`: a Unicode string, `{Unix: number[]}` for native bytes, or `{Windows: number[]}` for native UTF-16 code units. The owner checks that the name is a single component.
-
-- `readBytes` is the bounded read: `limit` is required, a larger file is `too_large` without
-  partial bytes, and `bytes` is base64. `size` is the file's length, so a caller can tell "done"
-  from "cut".
-- `readBytes` and `replace` accept a `leaseId`: they then read or write through that lease, so a
-  read-modify-write keeps one lock from read to replace. `backup` writes the lease's current bytes
-  to a durable sibling named `<name>.<suffix>`. `unlock` releases the lease; ending the caller's
-  connection releases every lease it held. `permissions` is data — `"private"` (owner-only, 0600
-  on Unix) or `"preserve"` (the existing file's mode) — because the provider's own permission type
-  is an OS object and does not cross; absent means `"preserve"`, as today. `replace` also accepts
-  `"privateReadOnly"` for a newly written Session file (Unix mode `0400`, Windows read-only
-  attribute).
-- `openRead` pins a file for several bounded random reads (`readAt`) and is closed by `closeRead`
-  or the caller's connection. `readAt` retains the existing 64 KiB maximum per
-  call; a larger requested limit is clamped, zero or an offset at/past the pinned
-  length returns empty bytes. UI resource streaming uses these bounded reads. Plugin-file
-  uploads and work directories stay with the host-local
-  [PluginFiles service](../../crates/dim-app-server/README.md#trusted-plugin-storage).
-- `stat` is one path, never a traversal: existence and kind for configuration discovery (a
-  project rule file, a hooks file). It is not a `stat`/`open` primitive API; traversals stay
-  `glob`, `grep` and `mentions`.
-- `createDirectory` creates one directory with the existing rules (mode 0700, an existing one
-  counts as created, the parent must exist), `list` and `remove` serve the Session-file sweep, and
-  `replace` without a lease is the atomic whole-file write.
+Storage family — the raw operations the other file owners use: [FileStorage
+contract](../plugins/FileStorage.md) § Own contract. The owner's face is `read`, `write`, `import`,
+`update`, `createDirectory`, `list` and `remove`.
 
 Only `resolve` takes an unresolved `path`; every other operation takes the node-absolute `path`
 its caller holds (§2 rule 3). `resolve` is what the file facts owner and process preparation
@@ -455,7 +421,7 @@ moves the Git probe away from the Session that has to persist the result.
 
 | Concern | Owner |
 | --- | --- |
-| Git probe, repository identity, fixed-prefix mapping, root directory identity | `fsHost.resolve`, on the node holding the files |
+| Git probe, repository identity, fixed-prefix mapping, root directory identity | the file-tools face's `resolve`, on the node holding the files |
 | Session view: confirmed roots with their identities, in-flight recognitions, "already known" answers, branch-independent cache | the file facts Session part — ADR 014's `fileAccessFacts` service — on the control node (worktree access §3) |
 | Worktree directory record and Session usage association, deduplicated and written atomically | `store.associateWorktree`, provided by SessionStore (worktree access §4, R2) |
 | Publishing the expanded range, and its revalidation | the Session part, after the store acknowledges (§4.2.2) |
@@ -550,7 +516,7 @@ or changed one:
 - The control side records the returned binding in `FileReads` for the branch; that record stays
   branch memory on the control node and is not reconstructed from the node.
 - `write` and `edit` are admitted before they run, so their `path` is the resolved path `resolve`
-  returned. `ToolHost.resolve_write` asks `fsHost.resolve` for a remote Session instead of
+  returned. `ToolHost.resolve_write` asks the file-tools face's `resolve` for a remote Session instead of
   resolving locally; the resolved call is what approval and execution receive, as today.
 
 ### 4.4 `glob`, `grep` and `mentions`
@@ -583,24 +549,17 @@ grant, and tool approval still follows the preset
 
 ### 4.6 Session files and exec output
 
-`sessionFiles.put` uses `createDirectory` and `replace` with `permissions: "privateReadOnly"` to
+`sessionFiles.put` uses `createDirectory` and `write` with `permissions: "privateReadOnly"` to
 store the file on the resource node. It returns a node path and owns the rows under the
 [Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
 and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 
 ### 4.7 Errors
 
-| Code | When |
-| --- | --- |
-| `node_unavailable` | The provider is not connected. Only this call fails |
-| `invalid` | A relative path, an unbounded request, an id the provider does not hold |
-| `not_found` | A storage operation on a missing path where one is required |
-| `too_large` | A bounded read whose file exceeds `limit`; no partial bytes |
-| `locked` | A `lock` whose lease is held by another call; the retry policy is the caller's |
-| `cancelled` | The call was cancelled before it changed anything |
-
-Operation refusals are not in this table: they arrive as the tool result's own `isError` with the
-code the operation already uses, so one code vocabulary serves the local and the remote path.
+The storage face's error kinds are defined by the [FileStorage
+contract](../plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own
+`isError` with the code the operation already uses, so one code vocabulary serves the local and the
+remote path.
 
 ## 5. `store` and `timelineStore`
 
@@ -844,7 +803,7 @@ original path argument and ownership exclusion.
 | Old name | Face | What the name is now |
 | --- | --- | --- |
 | `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
-| `fileStorage` | `fsHost` | The provider and its binding: roots, leases, generations and one validated path component per open are its internals |
+| `fileStorage` | `fsHost` | The [FileStorage contract](../plugins/FileStorage.md): roots, keys and generations are internals; the face is the contract's operations |
 | `sqliteStorage` | `sqliteStorage.storageReport({})` | SQLite file, WAL and reclaimable bytes ([native storage](appserver/native-storage-format.md)). Session repository operations belong to `store`. |
 | `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
 
@@ -859,13 +818,13 @@ The owners that read node files or start node processes, and the operations they
 | Owner | Operations |
 | --- | --- |
 | WorkspaceTools file tools | `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions` |
-| SessionStore Session files and command output | `createDirectory`, `replace`, `list`, `remove`, `execHost.removeOutputDirectory` |
-| Settings sources and their CAS writes | `readBytes`, `stat`, `lock`, `readBytes {leaseId}`, `replace {leaseId}`, `unlock` |
-| MCP auth store, managed OAuth and OAuth token stores | `readBytes`, `lock`, `readBytes {leaseId}`, `backup`, `replace {leaseId}`, `unlock` |
-| Hooks project file (`.dimcode/hooks.json`) | `stat`, `readBytes` |
-| PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
-| UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
-| Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
+| SessionStore Session files and command output | `createDirectory`, `write`, `import`, `list`, `remove`, `execHost.removeOutputDirectory` |
+| Settings sources and their CAS writes | `read`, `update`, `createDirectory`, `write` |
+| MCP auth store, managed OAuth and OAuth token stores | `read`, `update`, `write` |
+| Hooks project file (`.dimcode/hooks.json`) | `read` |
+| PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `read` |
+| UI extension resources | `read` with `offset` and `length` |
+| Migration ledger and snapshots | `createDirectory`, `write`, `update`, `read`, `list`, `remove` |
 | Hooks configuration commands | `execHost.configured` |
 | Worktree association | `store.associateWorktree` |
 
@@ -881,7 +840,7 @@ The owners that read node files or start node processes, and the operations they
 | §4 rule 5 | No batch semantics change: `append` admits one atomic batch, and the completion notification carries the same commit and publish boundary the callback does today |
 | §4 rule 6 | File content and command output reach the model only through tool results, as they do today |
 | §4 rule 7 | Consumers use the faces; they read no provider internals, and the providers use only their own host facilities |
-| §4 rule 8 | The faces add no Timeline, Dispatcher or event-format change. One runtime requirement is unmet: [#861](https://github.com/arcships/dim/issues/861), per-call resolution of a Session's process-scope service by its resource node. It is the dim runtime's, solved with rutis's current capability; no requirement is raised to rutis ([overview §6.3](overview.md#63-multiple-nodes), [principles §4 rule 8](../architecture/rust-agent/principles.md)) |
+| §4 rule 8 | The faces add no Timeline, Dispatcher or event-format change, and raise no runtime requirement. |
 | §4 rule 9 | No new Timeline fact: `exec/started` and `exec/ended` already exist, and the faces write none |
 | ADR 002 D2 | No wiring plugin: each face is its provider's own service |
 | ADR 002 D3 | Dependencies follow scope: `execHost` and `fsHost` are process names a leaf can provide; `store` is provided where the Session state is |
@@ -898,14 +857,9 @@ The owners that read node files or start node processes, and the operations they
 
 ## 8. Requirements raised to mechanism owners
 
-One runtime requirement, already raised: [#861](https://github.com/arcships/dim/issues/861), the
-host side resolving a Session's process-scope service per call by the Session's resource node.
-[Overview §6.3](overview.md#63-multiple-nodes) states it as a runtime requirement and explicitly
-raises nothing to rutis; this design likewise solves it with rutis's current capability, and an
-implementer must not use a gated dependency, which would park a consumer while a leaf is offline
-instead of failing one call with `node_unavailable`.
-
-No other requirement is raised:
+No runtime requirement is raised. The faces use rutis's current capability, and an implementer
+must not use a gated dependency, which would park a consumer while a leaf is offline instead of
+failing one call with `node_unavailable`.
 
 - The `timelineStore` face keeps the existing Timeline admission and publish ordering; the only change is
   that completion is delivered as a notification on the face instead of a Rust callback, which is
@@ -953,10 +907,10 @@ are the PTY primitives the shell already has; `info`, `confined` and `configured
 and starts the platform already performs, including the configuration command Hooks runs.
 `removeOutputDirectory` carries the existing HostPlatform cleanup across the face. Paging by a
 registered output path reuses `output` after the provider releases its task record.
-`fsHost` adds no primitive file API and no per-file traversal: its storage family is the reads and
-leases the node's storage already offers, needed because a path's facts and its bytes cannot be
-read on a machine that does not hold the file; `resolve` is where resolution and the worktree
-probe belong. `store` publishes the repository operations the state owner already has;
+`fsHost` adds no primitive file API and no per-file traversal: its reads, writes and updates are
+the reads and locks the node's storage already offers, needed because a path's facts and its bytes
+cannot be read on a machine that does not hold the file; the file-tools face's `resolve` is where
+resolution and the worktree probe belong. `store` publishes the repository operations the state owner already has;
 `timelineStore` publishes its Timeline operations and completion notifications. StorageMethods reads database and WAL sizes through the native binding of `sqliteStorage.storageReport({})`; plugins can dispatch the same operation. SQLite owns the connections and SQL. `TimelineStore` is the native binding of `timelineStore`.
 Admission stays synchronous and completion keeps the callback's ordering as a notification.
 

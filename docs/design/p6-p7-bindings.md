@@ -152,9 +152,10 @@ also an authorized FileStorage root. Directory creation ensures only the two
 fixed project ancestors, without creating siblings or replacing non-directories.
 
 These are new binding authorization checks, not existing FileStorage guarantees.
-FileStorage has `register_root` and `root_path`, not a path-to-index lookup. Use
-the project indices Settings already owns and package indices from trusted
-assembly; expose neither root lookup nor registration. Reserved resources,
+Root registration and root paths are host values under the [FileStorage
+contract](plugins/FileStorage.md), not a path-to-index lookup. Use the
+project indices Settings already owns and package indices from trusted assembly;
+the workflow binding exposes neither root lookup nor registration. Reserved resources,
 symlinks, generation validity and mutation locking remain FileStorage's checks.
 Root registration stays with the trusted host. Selectors and internal indices
 are not persisted definition identities.

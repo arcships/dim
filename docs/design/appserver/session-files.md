@@ -20,7 +20,7 @@ history quotes it and history never changes.
   rows instead of copying bytes. Deleting a Session removes its rows.
 - **Removal.** A background sweep removes files whose last owner row is gone, and anything in the
   directory that no row records.
-- **FileStorage.** S5a adds one operation, `create_directory`. Sharing needs no link operation.
+- **FileStorage.** The storage operations are defined by the [FileStorage contract](../plugins/FileStorage.md); the Session-file layout uses `create_directory`, `write`, `import`, `list` and `remove`. Sharing needs no link operation.
 - **Format.** The native store moves to version 15, with two new tables. A v13 store is upgraded
   in place at startup.
 - **Interface.** Attachments reaches the store through the process service `sessionFiles`.
@@ -46,7 +46,7 @@ No Timeline event, no new plugin, no change to the runtime, rutis or the Session
  +------------------------------------------------|-------------------------+
                                                   v
  Resource node (P1/P2: the control node)    FileStorage: create_directory,
-                                            replace, list, remove
+                                            write, import, list, remove
  Session scope
    Attachments (Deps: SessionIdentity, sessionFiles) -- put(own sessionId, name, text)
 ```
@@ -183,7 +183,7 @@ Rejected alternatives:
    |            |   (file_id, node, writer = G) ->|                          |
    |            | create_directory(<sf>) ------------------------------------->| parent synced
    |            | create_directory(<sf>/<id>) -------------------------------->| parent synced
-   |            | replace(<sf>/<id>/<name>, content, read-only) -------------->| file and parent synced
+   |            | write(<sf>/<id>/<name>, content, read-only) ---------------->| file and parent synced
    |            | cancelled? -> abandon           |                          |
    |            | txn 2: S exists, row still G?   |                          |
    |            |   insert owner (S, id);         |                          |
@@ -192,7 +192,7 @@ Rejected alternatives:
 ```
 
 The reply is sent only after the file and its directory entries are synced and txn 2 has
-committed (`synchronous=FULL`). Windows has no directory sync. As for `replace`, durability
+committed (`synchronous=FULL`). Windows has no directory sync. As for `write`, durability
 there rests on the file sync and NTFS metadata journaling.
 
 **Abandon.** Txn 1 is followed by a failure, a cancellation (checked right before txn 2), or
@@ -275,9 +275,9 @@ safe because FileStorage removal can be retried.
 
 ## 6. Deletion, crash recovery and serialization
 
-**Order against Session close and leases.** S5c closes the Session first, then commits its
-delete transaction, then SessionStore sweeps. No FileStorage lease outlives a put: `replace`
-holds its lease only while it writes. The sweep never removes a pending file of the live
+**Order against Session close and keys.** S5c closes the Session first, then commits its
+delete transaction, then SessionStore sweeps. No FileStorage key outlives a put: `write`
+holds its key only while it writes. The sweep never removes a pending file of the live
 generation. A deletion therefore never meets `Locked` or `DirectoryNotEmpty` because of a put.
 If it meets them because of something outside SessionStore, the row stays and the next sweep
 retries.
@@ -309,30 +309,12 @@ creates the fork. SQLite orders those transactions, so no in-memory lock is need
 
 ## 7. FileStorage additions
 
-**`create_directory` is the only addition.** Sharing is by rows (§4), so FileStorage needs no
-link or reference-count operation. Removal, listing and durable writes already exist: S6's
-`remove` and `list`, and `replace` with its permissions parameter. The S6 review agreed to add
-`create_directory` in S5a.
-
-`create_directory(path, cancel) -> ()`: makes `path`, below an authorized root, an existing
-business directory.
-
-| Rule | Content |
-| --- | --- |
-| Parent | Every component but the last is opened as `open_directory` opens it: an existing directory reached without following links, never the reserved directory. A missing parent fails `Io` `NotFound`; there is no recursive creation, and callers create each level in order |
-| Reserved names | `path` already rejects the reserved prefix `.dim-file-storage-` and `auth.json.lock` by name (`InvalidPath`) |
-| Aliases | Aliases are checked the way `lock` checks them, before anything is created. The parent's reserved directory is ensured first, so any spelling the filesystem equates with it already exists. Then the key for `auth.json.lock` is ensured in that reserved directory and the key for the last component is opened if it exists; if they are the same file, the name is an alias of the account marker and the call fails `InvalidPath` |
-| Create | An absent last component is created relative to the held parent handle: Unix `mkdirat` with mode `0700`; Windows `NtCreateFile` with `FILE_CREATE` and `FILE_DIRECTORY_FILE`, inheriting the parent's DACL |
-| Present | An existing directory is opened as `open_directory` opens it, so an alias of the reserved directory fails `InvalidPath`. An existing business directory counts as created, just as S6's `remove` counts an absent entry as removed. Any other existing entry (file, link, reparse point, special file) fails `Io` and is left untouched; links are never followed |
-| Durability | In both the created and the present case the parent is synced before the call returns, so a retry after `Unsynced` confirms durability. A sync failure returns `Unsynced` (the directory exists and is visible, durability unconfirmed); its message is generalized from "file replaced" to cover directories. Windows has no directory sync, as for `replace` |
-| Roots | A root itself cannot be named: `path` requires a relative name |
-| Cancellation | Checked up to the creation, which is the commit boundary. Once created, the sync result is reported |
-| Errors | `InvalidPath`, `Io` (`NotFound` parent, an existing non-directory entry, other I/O), `Unsynced`, `Closed`, `Cancelled`, `Worker` |
-
-The alias check never creates a key for the new directory's name, so a put leaves no key behind
-in `<db>.session-files/.dim-file-storage-locks`, which is never removed (Design changes, D1). The
-operation lives inside FileStorage's own module, beside `list` and `remove`, and holds the same
-generation admission. FileStorage's plugin page documents it.
+The storage operations the Session-file layout uses are defined by the [FileStorage
+contract](../plugins/FileStorage.md): one recursive `create_directory` for `<db>.session-files` and
+the file's directory, `write` with the read-only attribute for the put and for an import from a
+host path (`import`), and `list` and `remove` for the sweep. FileStorage needs no link,
+reference-count or lease operation for Session files; the put holds no FileStorage key after it
+returns.
 
 ## 8. Storage format
 
@@ -477,14 +459,14 @@ Limits, and who owns them:
 
 | Limit | Owner | Reason |
 | --- | --- | --- |
-| One file at most 16 MiB | SessionStore | A put is one message, and `replace` holds the content in memory; the bound caps one call's memory |
-| `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json` or `auth.json.lock` in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. `auth.json` would switch `replace` to FileStorage's account-marker protocol |
+| One file at most 16 MiB | SessionStore | A put is one message, and `write` holds the content in memory; the bound caps one call's memory |
+| `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json` or `auth.json.lock` in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. `auth.json` would switch `write` to FileStorage's account-marker protocol |
 | Content rules (non-empty text, 10 MiB, default `paste.txt`) | Each consumer (Attachments A.2) | Business rules of the feature |
 | No per-Session count or total quota | None | Disk use ends with Session deletion and cleanup (S5c); a quota would need a business owner, and none exists |
 
 **Immutability.** A path names the same bytes for the file's whole life, which ends only when
 the sweep removes an unowned file. The file is written once, read-only: Unix mode `0400`,
-Windows read-only attribute, through `replace`'s permissions parameter. WorkspaceTools' `write`
+Windows read-only attribute, through `write`'s permissions parameter. WorkspaceTools' `write`
 and `edit` therefore fail with `permission_denied`: their commit step opens the target for
 writing, and on Windows also checks the read-only attribute, before replacing it. This is a
 guard, not isolation. A daemon running as root on Unix is not stopped by the mode, a shell
