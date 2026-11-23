@@ -8,6 +8,15 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Plugin | Process part | Session part | Branch part | Phase / issue |
 | --- | --- | --- | --- | --- |
+| [Settings](Settings.md) (owner contract) | sources, documents, revisions, change application, authorized projects and the change facts behind `settings` | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [SettingsMethods](SettingsMethods.md) (owner contract) | the local client's `settings.*` methods | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [PromptSettings](PromptSettings.md) (owner contract) | the `prompts` source and the base, summary and Skills texts behind `promptSettings` | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [ExecutionSettings](ExecutionSettings.md) (owner contract) | the `execution` source and its switches behind `executionSettings` | the `settings` tool ([AgentSettings](AgentSettings.md)) | the execution snapshot ([EnvironmentSettings](EnvironmentSettings.md)) | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [PromptSuggestionSettings](PromptSuggestionSettings.md) (owner contract) | the `prompt-suggestion` source and its value behind `promptSuggestionSettings` | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [ProviderSettings](ProviderSettings.md) (owner contract) | the `provider` source and the User-Agent value behind `providerSettings` | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [ModelLog](ModelLog.md) (owner contract) | the `model-log` source and the recording destination behind `modelLog` | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [PermissionRules](PermissionRules.md) (owner contract) | the `permission` source, its rules value behind `permissionRules` and the `permission.*` methods | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
+| [CollaborationModelPolicy](CollaborationModelPolicy.md) (owner contract) | the `collaboration` source, its policy value behind `collaborationPolicy` and the `collaboration.*` methods | — | — | [#2017](https://github.com/arcships/dim/issues/2017) |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
