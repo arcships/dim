@@ -8,6 +8,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Plugin | Process part | Session part | Branch part | Phase / issue |
 | --- | --- | --- | --- | --- |
+| [FileStorage](FileStorage.md) (owner contract) | roots, byte storage, exclusion and pinned readers behind the `fsHost` operations | — | — | [#2016](https://github.com/arcships/dim/issues/2016) |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
