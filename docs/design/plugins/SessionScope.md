@@ -14,7 +14,7 @@ SessionScope owns:
 - **Activity leases.** An accepted piece of work holds a lease so an idle release does not end the Session first. Every lease is bound to the calling row and the owner settles it at the row's unload, so no caller frees anything on an error path. `withHold` holds one for the extent of the caller's callback; `hold` answers an id for work that outlives the call. A lease reports nothing and cancels nothing.
 - **The failure record.** The first fault that stopped the Session; a storage failure supersedes an earlier non-storage fault and the first storage failure wins. `reportFault` writes, `failure` reads, `observeFault` subscribes.
 - **Content instances.** Session-owned content mounted from a definition — a Skill's content, an MCP connection — inside this Session's subtree, addressed by instance id. The owner admits only groups whose configured parent is the Session group.
-- **Line addresses.** The instance of each line this Session opened, so a Session part reaches that line's owners by line id. The owner answers the address; the write and the read are those owners' operations.
+- **Line-addressed calls.** A Session part acts on one line by line id: it names a branch-scope operation from the catalog and this owner runs it at the instance the runtime built for that line, answering that owner's reply and errors unchanged. This owner adds no operation of its own to the line; the two families that use the call are writing an input to the line's input owner and reading the value a line owner publishes.
 - **The branch's runtime context.** One construction per branch id, handed to the branch tree, which owns and settles the context (see Exceptions with reasons).
 
 Callers keep as business:
@@ -37,7 +37,7 @@ Callers keep as business:
 | Record a fault: Prompt on a prompt or recovery failure | No | `reportFault` |
 | Read the current fault | No | `failure` |
 | Subscribe to later faults: a part in another language | No: a subscription is the owner's, not a poll loop in the caller | `observeFault` |
-| Act on one line's owner by line id: write an input to that line (a Session method steering a member), read the value that line's owner publishes (a tool reading its own line's binding) | No: the id-to-instance step is the mechanism's; composing it makes every Session part carry the loader's instance table | `lineInstance`; the write is the line's input owner's operation, the read is the publishing owner's |
+| Act on one line's owner by line id: write an input (`inputQueue.submit`), withdraw one (`inputQueue.withdraw`), read usage (`contextUsage.read`), read the adopted configuration (`prompt.adoptedConfiguration`), read pending approvals (`approval.pending`) | No: a part of another language cannot address a line's instance, and making every part carry the loader's instance table would put the mechanism's index in every owner | `lineOwner.call` with the branch-scope operation's catalog name and request; that owner answers with its own reply and errors |
 | Mount and retire Session content: Skills' content instances, MCP's connections | No: the Session's anchor and the group admission are the owner's knowledge | `mount`, `unmount` |
 | Open a branch's runtime context: TimelineTree | No: only the runtime constructs a branch's context, in its own subtree | `openBranch` |
 
@@ -122,7 +122,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | `config` | The Session's creation record | `{}` | `SessionConfig` | None; the owner completes the read | None |
 | `identity` | Who this Session is | `{}` | `{sessionId, restored}` | None | None |
 | `phase` | The phase now | `{}` | `{phase}`: `loading`, `active`, `closing`, `closed` | None | None |
-| `lineInstance` | The instance of a line this Session opened, for a Session part reaching that line's owners | `{line}` | `{instanceId}` | None | `unknown`, `closed` |
+| `lineOwner.call` | Run one catalog branch-scope operation at a line's instance | `{line, operation, request}` | the operation's own reply, unchanged | The caller's cancel is passed to the operation; a dropped call ends the wait | `ended`, `unknown`, `closed`, and the called operation's own errors unchanged |
 | `activated` | Wait until the Session is published or starts closing | `{}` | `{active}`: true only when published and not closing | The caller drops the call; the owner's close ends the wait with `active: false` | None |
 | `closing` | Wait until the Session starts closing | `{}` | `{}` | The caller drops the call | None |
 | `withHold` | Run the caller's work under a lease for the extent of the call | `{work}` | `{}` | The caller's cancel drops the work; the owner releases the lease and answers `cancelled` | `cancelled`, `closed` |
@@ -141,9 +141,10 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 
 | Kind | Operation | What the caller does next |
 | --- | --- | --- |
-| `closed` | `withHold`, `hold`, `observeFault`, `release`, `mount`, `unmount`, `openBranch` | The Session is closing or unloading; stop starting work; a later generation serves the next Session |
+| `closed` | `lineOwner.call`, `withHold`, `hold`, `observeFault`, `release`, `mount`, `unmount`, `openBranch` | The Session is closing or unloading; stop starting work; a later generation serves the next Session |
 | `cancelled` | `withHold` | The caller's cancel stopped the work before it finished; the lease is released and nothing else changed |
-| `unknown` | `lineInstance` | The id names no open line of this Session; the line ended or never existed; the caller stops acting on it |
+| `ended` | `lineOwner.call` | The line has ended; stop acting on it and read the directory for the line in force |
+| `unknown` | `lineOwner.call` | No live line of this Session has the id; read the directory and act on the right line |
 | `invalid` | `release`, `unmount`, `mount` | Fix the id or the definition: an id of another row or Session, a group outside this Session's subtree, an unknown definition |
 | `not_ready` | `mount` | Act on the reported row and state: the definition's rows did not activate; the instance was shut down and nothing is left to release |
 | `cleanup` | `mount`, `unmount` | The instance is unreachable but its shutdown failed; the Session will report it as a fault; treat the content as unavailable |
@@ -155,7 +156,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 
 | Operation | Normal path | Caller cancels or unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- |
-| `lineInstance` | The owner answers the instance it mounted for the line | Nothing to release: the instance belongs to the Session subtree | After the Session's close the line answers nothing; the generation answers `closed` | SessionScope; the line's owners live in that instance |
+| `lineOwner.call` | The owner resolves the line to the instance the runtime built, runs the named operation there, and answers that operation's reply and errors | A dropped call ends the wait; the operation's own cancellation applies to its work | A closing Session answers `closed`; a line whose context closed answers `ended` | SessionScope for the addressing; the called owner for the operation |
 | `withHold` | The owner takes a lease, calls the work, and releases the lease when the work returns | The dropped call stops the work; the owner releases the lease and answers `cancelled` | An in-flight call ends `closed`; a lease never delays a close | SessionScope; the work's own cleanup by the calling row |
 | `hold` | The owner checks the phase, increments the hold count and registers the lease under the calling row | The row's unload releases every lease the row still holds | No new lease is issued once an idle release is decided; an existing lease never delays a close | SessionScope |
 | `observeFault` | The owner registers a listener under the calling row, calls it once with the fault in force (none included), then on every later report | The row's unload stops the listener and drops the registration | The listener stays until the generation unloads; a report after close is ignored | SessionScope; the listener's work by the calling row |
@@ -167,7 +168,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 ## Exceptions with reasons
 
 - `openBranch` hands out the branch's runtime context: an id would put branch runtime state behind a second set of operations owned by SessionScope, while ADR 002 D1 gives the branch's directory and close to TimelineTree, and the branch's whole capability machine runs behind that context. The joint design is [lifecycle.md §1](../../architecture/rust-agent/lifecycle.md): the owner creates the context inside the Session subtree after the branch scope loads; TimelineTree holds it, hands it to the branch's parts and closes it; the Session unloads only after its branches close; a failed construction reports `cause` before `cleanup` and settles both before the branch is visible; a Session scope never reloads, so the context never outlives its generation.
-- `lineInstance` answers an address, not a proxy: a Session part that steers a member writes an input by calling that line's input owner at the returned instance, and a part that reads a line's published value calls the publishing owner there. SessionScope forwards neither the write nor the read; the instance is the mechanism's record of what it mounted, not the branch directory's.
+- `lineOwner.call` runs another owner's operation and is not a proxy with business logic: `operation` is a branch-scope catalog name, the reply and the errors are that owner's unchanged, and this owner keeps only the line index the runtime builds when it constructs a context. An instance id cannot be the reply because a part of another language cannot address an instance by id; letting each part hold the index instead would put the loader's table in every owner.
 - The Session-scoped `timelineStore` binding is assembly infrastructure: the store owns the engine and the operations, SessionScope installs the binding and states the spelling, and a process caller uses `store` (§2018's requirement).
 - `config` is the persisted record's serde form: `interactive` is omitted when true because only the native store writes that form. A caller that decodes the value must treat absence as true; the live reply language is `sessionLanguage`, not this record.
 - The failure record keeps only the first fault, and a storage failure supersedes a non-storage one: work that fails after the Session already stopped learns the original cause, not its own.
@@ -216,7 +217,8 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 
 ## Requirements raised to mechanism owners
 
-- [#2024](https://github.com/arcships/dim/issues/2024): the id-to-instance step is the mechanism's — the runtime mounts a branch instance and SessionScope answers `lineInstance` from that record. Two things must hold for the surface: a line's instance stays addressable while the line is open, and a part of another language can address a service at that instance, not only a Rust part through a typed key. TimelineTree supplies the line id and the line's state, never the address.
+- [#2024](https://github.com/arcships/dim/issues/2024): the two contracts agree on `lineOwner.call` and its resolution; nothing further is required from TimelineTree. The line index is built by this owner when it constructs a line's context and dropped when that context closes.
+- The runtime's `Session` facade stops forwarding line operations: `end_branch`, `set_default_branch`, `branch`, `branches`, `directory`, `default_and_directory`, `ended_head`, `sequence`, `batch_end` and `query` are TimelineTree's, and the Session access surface must not restate them.
 - [#2018](https://github.com/arcships/dim/issues/2018): the Session store owns the Timeline engine and constructs the Session-scope binding; SessionScope installs it. The Session face publishes the per-line reads and the completion subscriptions; `query` and `sessionConfig` stay on `store`; `createSession`, `releaseSession`, `rollbackSession` and `append` are not on the Session face.
 
 ## Binding appendix
@@ -251,9 +253,25 @@ pub struct ActivatedReply {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LineInstance {
-    pub instance_id: u64,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LineOwnerCall {
+    pub line: String,
+    /// A branch-scope operation's catalog name, for example `inputQueue.submit`.
+    pub operation: String,
+    pub request: serde_json::Value,
+}
+
+/// The called owner's error, unchanged, or the addressing's own refusal.
+#[derive(Debug, thiserror::Error)]
+pub enum LineOwnerError {
+    #[error("the line has ended")]
+    Ended,
+    #[error("no live line has this id")]
+    Unknown,
+    #[error("the Session is closing")]
+    Closed,
+    #[error("the line owner answered an error")]
+    Owner(serde_json::Value),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -328,6 +346,8 @@ pub enum SessionScopeError {
     Build(String),
     #[error("{0}")]
     Unknown(String),
+    #[error("{0}")]
+    Ended(String),
 }
 
 impl PublicService for SessionScope {}
@@ -337,7 +357,6 @@ impl SessionScope {
     pub fn config(&self) -> SessionConfig { /* ... */ }
     pub fn identity(&self) -> Identity { /* ... */ }
     pub fn phase(&self) -> PhaseReply { /* ... */ }
-    pub fn line_instance(&self, line: String) -> Result<LineInstance, SessionScopeError> { /* ... */ }
     pub async fn activated(&self) -> ActivatedReply { /* ... */ }
     pub async fn closing(&self) { /* ... */ }
     pub async fn with_hold(
@@ -358,6 +377,20 @@ impl SessionScope {
         request: OpenBranchRequest,
         cancelled: dim_agent_capabilities::host::CancelledFn,
     ) -> Result<Arc<TimelineContext>, SessionScopeError> { /* ... */ }
+}
+```
+
+```rust
+impl PublicService for LineOwner {}
+
+/// The same owner's second name: the Session access surface's line-addressed call.
+#[rutis::service(name = "lineOwner")]
+impl LineOwner {
+    pub async fn call(
+        &self,
+        request: LineOwnerCall,
+        cancelled: dim_agent_capabilities::host::CancelledFn,
+    ) -> Result<serde_json::Value, LineOwnerError> { /* ... */ }
 }
 ```
 
