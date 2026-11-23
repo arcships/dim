@@ -99,7 +99,7 @@ let binding = temporary.attach(ctx, server, cancelled).await?;
 
 ### Dependencies
 
-`Mcp` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`), FileStorage (`read` for `.mcp.json` through the project root), and the management-methods and connection mechanisms of #2095. `McpSession` uses SessionScope (`mount`, `unmount`, `withHold`, `activated`, `closing`, `config`, `identity`), `toolRegistry` and `sessionFiles` (#2026/#2018), and `Mcp`'s values and registry operations. `TemporaryMcp` uses SessionScope, `sessionMethods` (#2026), `toolRegistry` and the `Mcp` definition values. `McpAuth` is a private process service of `Mcp`; the child rows that need a credential receive the service name and the entry id, not the credential value.
+`Mcp` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`), FileStorage (`read` for `.mcp.json` through the project root), and the management-methods and connection mechanisms of #2095. `McpSession` uses SessionScope (`mount`, `unmount`, `withHold`, `activated`, `closing`, `config`, `identity`), `toolRegistry` and `sessionFiles` (#2026/#2018), and `Mcp`'s values and registry operations. The `McpServer` child's process uses HostPlatform (#2032), whose target contract is pending; the requirement is recorded on #2032 and no interface is defined here. `TemporaryMcp` uses SessionScope, `sessionMethods` (#2026), `toolRegistry` and the `Mcp` definition values. `McpAuth` is a private process service of `Mcp`; the child rows that need a credential receive the service name and the entry id, not the credential value.
 
 ### Operations
 
@@ -202,6 +202,7 @@ The internal `McpSession` connection operations (`open`, `tools`, `observe`, `cl
 - #2026: `toolRegistry.register` must accept a Session-owned tool source with a handler that holds a connection id; `sessionMethods.register` must accept `session.mcp_temporary.*`.
 - #2093: `SessionScope.mount`/`unmount` must accept the `mcp-server` group and a definition value; `withHold`, `activated` and `closing` are used as defined.
 - #2095: `ManagementMethods.register` must host the `mcp.*` namespace; `Connection` calls `mcpSession.state/refresh/widget/call`.
+- #2032: HostPlatform's target contract is pending; the `McpServer` child uses its process operations; the requirement comment records the intent and no interface is defined here.
 - #2080: FileStorage `read` for `.mcp.json` under the project root; no new operation.
 - #2094: Settings `register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`; no new operation.
 

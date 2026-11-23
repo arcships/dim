@@ -85,7 +85,7 @@ if list.generation != seen {
 
 #### Dependencies
 
-`SkillsCatalog` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`), FileStorage (`root_path`, `write`, `remove`, `list` for install files), HostPlatform (the source fetch and the user home), and the management-methods mechanism of #2095. `Skills` uses SessionScope (`mount`, `unmount`, `config`, `identity`, `activated`, `closing`), `ToolRegistry`, `PromptRegistry` and `SubmitChecks` (#2026), and the SkillsCatalog's private `query`/`catalog_changed` operations. `SkillsBranch` uses the branch's Prompt owner and the Session's published value. `SkillContent` is mounted through SessionScope; `SkillContentInstances` is its group template.
+`SkillsCatalog` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`), FileStorage (`root_path`, `write`, `remove`, `list` for install files), and the management-methods mechanism of #2095. HostPlatform (#2032) has no target contract; the source-fetch and user-home dependency is recorded on #2032 and no interface is defined here. `Skills` uses SessionScope (`mount`, `unmount`, `config`, `identity`, `activated`, `closing`), `ToolRegistry`, `PromptRegistry` and `SubmitChecks` (#2026), and the SkillsCatalog's private `query`/`catalog_changed` operations. `SkillsBranch` uses the branch's Prompt owner and the Session's published value. `SkillContent` is mounted through SessionScope; `SkillContentInstances` is its group template.
 
 #### Operations
 
@@ -178,7 +178,7 @@ The `SkillsCatalog`'s management methods are registered through #2095; the `skil
 - #2080: FileStorage `root_path`, `write`, `remove` and `list` for the install files under the user root; no new operation.
 - #2026: `ToolRegistry.register` must accept the `skill` tool source; `PromptRegistry.register` must accept the Skills prompt source; `SubmitChecks.register` must accept the `skills` check.
 - #2027: the Prompt owner's configure operation must replace `ConfigureControl`; the branch passes the current `SessionSkills` value.
-- #2032: HostPlatform must provide the user home value and the source fetch command (git/HTTP) with cancellation.
+- #2032: HostPlatform's target contract is pending; the requirement comment records the intent (user home value and source fetch with cancellation); no interface is defined here.
 - #2093: SessionScope `mount`/`unmount` with the `skill-content` group and the `config`/`identity`/`activated`/`closing` values.
 - #2094: Settings `skills`/`skills-projects` sources and `SkillSettingsHost`; the existing operations cover the read and write.
 

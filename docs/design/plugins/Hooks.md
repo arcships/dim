@@ -41,8 +41,8 @@ Callers keep:
 | A hook point reads the current sources | No: the project file read and the source merge are the owner's knowledge | `sources(cwd)` |
 | The Session runs a hook command | No: the process, timeout and settlement are the Session's resource | `HooksSession`'s runner; the command is private |
 | Operator input is checked before it is written | No: the check must run before the entry writes, and the entry owner provides the registration point | `submitChecks.register("hooks")`; the check returns a value |
-| A tool call gets hook advice | No: Permission owns the admission; Hooks contributes through its advisor registration | `Permission.registerAdvice`; the advisor returns deny/ask/allow |
-| Hooks answers an approval | No: Approval owns the question and the decision | `Approval.respond` |
+| A tool call gets hook advice | No: Permission owns the admission; Hooks contributes through its advisor registration | `Permission.advise`; the advisor returns deny/ask/allow |
+| Hooks answers an approval | No: Approval owns the question and the decision | `Approval.decide` |
 | Hook context or diagnostics reaches the branch | No: branch input is the branch owner's entry | `Branch.input` with source `hooks` |
 
 ### Caller example
@@ -72,8 +72,8 @@ submit_checks.register(ctx, "hooks", move |input, cancelled| {
 `HooksBranch` registers advice, answers an approval and writes an observation:
 
 ```rust
-permission.register_advice(ctx, "hooks", move |call, cancelled| advise(hook_sources(), call, cancelled));
-approval.respond(approval_id, decision);
+permission.advise(ctx, "hooks", move |call, cancelled| advise(hook_sources(), call, cancelled));
+approval.decide(approval_id, decision);
 branch.input(source, HookInput::observation(text));
 ```
 
@@ -81,7 +81,7 @@ branch.input(source, HookInput::observation(text));
 
 #### Dependencies
 
-`HooksSettings` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`) and FileStorage (`read` for `.dimcode/hooks.json`). `HooksSession` uses SessionScope (`config`, `identity`, `activated`, `closing`, `withHold`), the agent-crate `HookSourcesHost` binding, `submitChecks` and HostPlatform (`spawn`, `wait`, `kill`, `settle`). `HooksBranch` uses the branch's `HooksRuntime`, `Permission.registerAdvice`, `Approval.respond`, `Branch.input`, and the public events it folds. `HooksRuntime` is not a public service; the Session and branch parts are the same feature.
+`HooksSettings` uses Settings (`register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`) and FileStorage (`read` for `.dimcode/hooks.json`). `HooksSession` uses SessionScope (`config`, `identity`, `activated`, `closing`, `withHold`), the agent-crate `HookSourcesHost` binding and `submitChecks`. HostPlatform (#2032) has no target contract; the command-execution dependency is recorded on #2032 and no interface is defined here. `HooksBranch` uses the branch's `HooksRuntime`, `Permission.advise`, `Approval.decide`, `Branch.input`, and the public events it folds. `HooksRuntime` is not a public service; the Session and branch parts are the same feature.
 
 #### Operations
 
@@ -125,7 +125,7 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 | Command | Build the payload, spawn through HostPlatform, write stdin, wait with the handler timeout, settle the process tree | The cancel kills the process tree and settles it | The Session's row unload cancels its commands | Pending commands end `closed`; every process is settled | Command process by `HooksSession`; the work's future by the calling row |
 | Submit check | Read the sources, run the `UserPromptSubmit` handler, return context or block | The entry's cancel stops the check | The check registration is withdrawn with the Session row | The entry does not write after a closed check | Check by `HooksSession`; input write by the entry owner |
 | Advice | Read the sources, run the `PreToolUse` handler, return deny/ask/allow | The admission's cancel stops the advisor | The advisor registration is withdrawn with the branch | Permission's admission sees the failure mapping | Advice by `HooksBranch`; admission by Permission |
-| Approval answer | Run the `PermissionRequest` handler, call `Approval.respond` | The live answer's cancel ends the answer | The branch row unload drops the answer | Approval's own errors | Approval by Approval; answer by `HooksBranch` |
+| Approval answer | Run the `PermissionRequest` handler, call `Approval.decide` | The live answer's cancel ends the answer | The branch row unload drops the answer | Approval's own errors | Approval by Approval; answer by `HooksBranch` |
 | Observation | Write `Branch.input` with source `hooks` | The branch close stops the write | The branch row unload ends writes | The branch's input entry decides | Input by the branch owner; the hook result by `HooksBranch` |
 
 ### Exceptions with reasons
@@ -164,8 +164,8 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 ### Requirements raised to mechanism owners
 
 - #2026: `submitChecks.register` must accept the `hooks` check with a value result; the operator-input entries must call it before writing.
-- #2027/#2028: `Permission.registerAdvice` must give the advisor the call source and the admission decision; `Approval.respond` must accept a decision; `Branch.input` must accept `hooks` observations.
-- #2032: HostPlatform `spawn`, `wait`, `kill`, `settle` must carry stdin, a handler timeout and tree cancellation for hook commands.
+- #2027/#2028: `Permission.advise` registers the advisor with the call source and the admission decision; `Approval.decide` accepts a decision; `Branch.input` must accept `hooks` observations.
+- #2032: HostPlatform's target contract is pending; the requirement comment records the intent (command execution with stdin, handler timeout and tree cancellation); no interface is defined here.
 - #2094: Settings `register`, `read`, `change`, `authorize_project`, `authorized_projects`, `declared_sources`; no new operation.
 - #2080: FileStorage `read` for `.dimcode/hooks.json`; no new operation.
 - #2093: SessionScope `config`, `identity`, `activated`, `closing`, `withHold`; no new operation.

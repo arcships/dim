@@ -16,7 +16,7 @@ The owners are `PluginManager` (process) and `PluginTools` (Session). `Owners` a
 - **Package operations.** `plugin.list`, `plugin.install`, `plugin.enable`, `plugin.disable`, `plugin.reload`, `plugin.update`, `plugin.remove`.
 - **Content registration.** The manifest's MCP, Hooks and Skills content is given to those owners; the UI content is given to `UiExtensions`. The refusal is a value from the content owner and is kept for the package.
 - **Code rows.** The plugin code rows it creates, turns on, replaces and removes through rutis-loader; the loader is a separate owner and its data face is not part of this contract.
-- **Runtime acquisition.** The Node and Python runtimes a plugin declares are requested from `RuntimeManager`; the package record does not own the runtime.
+- **Runtime acquisition.** The Node and Python runtimes a plugin declares are requested from `RuntimeManager`; the runtime operations are pending #2019's contract; the package record does not own the runtime.
 
 `PluginTools` owns:
 
@@ -67,7 +67,7 @@ if let Some(reason) = refusal {
 
 #### Dependencies
 
-`PluginManager` uses FileStorage or PluginFiles for `plugins.json` and the package files (#2080/#2016), `RuntimeManager` for the npm/Python runtime (#2019), rutis-loader for the code rows (out of scope), MCP/Hooks/Skills/UiExtensions for content, and the management-methods mechanism of #2095. `PluginTools` uses `ToolRegistry` (#2026) and the process owner's operation or callback.
+`PluginManager` uses FileStorage's defined operations for a record document (#2080); `PluginFiles` (#2016), `RuntimeManager` (#2019) and HostPlatform (#2032) have no target contracts. Their operations are to be defined by their contracts; the #2022 requirement comments record the intent only; no interface is invented here. rutis-loader owns the code rows (out of scope); MCP/Hooks/Skills/UiExtensions own content; #2095 owns management methods. `PluginTools` uses `ToolRegistry` (#2026) and the process owner's operation or callback.
 
 #### Operations
 
@@ -140,11 +140,11 @@ if let Some(reason) = refusal {
 
 ### Requirements raised to mechanism owners
 
-- #2016: `PluginFiles` must provide the package file reads/writes and the `plugins.json` record operations the owner uses; if the record stays a FileStorage `update`, the FileStorage contract covers it.
-- #2019: `RuntimeManager` must provide the npm/Python runtime install/start/settle operations the package declares; the plugin manager records the requirement.
+- #2016: `PluginFiles` has no target contract; the requirement comment records the intent (package files and `plugins.json` record), not an interface; the interface is to be defined by #2016.
+- #2019: `RuntimeManager` has no target contract; the requirement comment records the intent (runtime install/start/settle), not an interface.
 - #2026: `ToolRegistry.register` must accept the `plugin` tool source with a process operation/callback.
 - #2027: the `plugin` tool's call is an ordinary tool call; Permission decides it; no plugin-specific approval is added.
-- #2032: HostPlatform must provide the git source fetch with cancellation; npm is RuntimeManager's.
+- #2032: HostPlatform has no target contract; the requirement comment records the intent (git source fetch with cancellation), not an interface; npm is RuntimeManager's.
 - #2095: `ManagementMethods.register` must host the `plugin.*` namespace; the local client and the `dimcode plugin` commands use it.
 
 ### Binding appendix
