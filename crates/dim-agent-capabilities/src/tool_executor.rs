@@ -3,7 +3,7 @@ pub mod read;
 use crate::{
     approval::{AdmitCall, Approval},
     host::*,
-    tool_binding::ToolBinding,
+    tool_binding::{BindingError, ToolBinding},
     tool_registry::{ToolClaim, ToolConcurrency, ToolContribution},
 };
 use dim_agent_runtime::{
@@ -206,7 +206,7 @@ impl ToolExecutor {
     /// The declarations the request pinned, for a program that may only see
     /// the tools its own request declared.
     pub fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
-        self.binding.definitions(request_id)
+        self.binding.definitions(request_id).map_err(refusal)
     }
     /// Opens the child-call gate for the current top-level batch. A gate
     /// exists only while its context matches the current batch; a closed or
@@ -694,7 +694,7 @@ async fn admit(
     let tool = match binding.handler(&context.request_id, &call.name) {
         Ok(tool) => tool,
         // An unknown tool is denied here, without an approval question.
-        Err(message) => return Err(HostError::failed(message)),
+        Err(error) => return Err(HostError::failed(refusal(error))),
     };
     let claim = binding.take_claim(&context.request_id, &call.id);
     let risk = tool.handler.risk(&call).or(tool.definition.risk.as_deref());
@@ -721,6 +721,20 @@ async fn admit(
         )
         .await?;
     Ok(Admitted { tool, claim, call })
+}
+
+/// The model-facing text of a call its request's binding refuses. An unknown
+/// tool is the model's to correct; a missing binding is this runtime's defect,
+/// logged with its request id, and the model reads only that the call did not
+/// run.
+fn refusal(error: BindingError) -> String {
+    match error {
+        BindingError::UnknownTool(_) => error.to_string(),
+        BindingError::NoActiveBinding(_) => {
+            tracing::error!(%error, "a tool call reached ToolExecutor without its request's binding");
+            "Tool was not executed: its request has no tool binding".into()
+        }
+    }
 }
 
 /// Runs an admitted call through its handler.

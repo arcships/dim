@@ -51,6 +51,20 @@ struct State {
     snapshots: HashMap<String, Snapshot>,
 }
 
+/// Why a request's pinned tools cannot be read or moved.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BindingError {
+    /// The request holds no snapshot: it was never bound, or it was already
+    /// released. Loop and ToolExecutor reach only bound requests, so for them
+    /// this is a defect.
+    #[error("request {0} has no active tool binding")]
+    NoActiveBinding(String),
+    /// The request's snapshot has no tool of this name: the call names a tool
+    /// its request did not declare.
+    #[error("Unknown tool: {0}")]
+    UnknownTool(String),
+}
+
 pub struct ToolBinding {
     registry: Arc<ToolRegistry>,
     state: Mutex<State>,
@@ -177,27 +191,31 @@ impl ToolBinding {
 
     /// The tool a call of `request_id` runs: its definition (for admission)
     /// and its handler, from the request's snapshot only.
-    pub fn handler(&self, request_id: &str, name: &str) -> Result<Arc<ToolContribution>, String> {
+    pub fn handler(
+        &self,
+        request_id: &str,
+        name: &str,
+    ) -> Result<Arc<ToolContribution>, BindingError> {
         let state = self.state.lock().unwrap();
         let snapshot = state
             .snapshots
             .get(request_id)
-            .ok_or_else(|| format!("request {request_id} has no active tool binding"))?;
+            .ok_or_else(|| BindingError::NoActiveBinding(request_id.to_owned()))?;
         snapshot
             .tools
             .get(name)
             .cloned()
-            .ok_or_else(|| format!("Unknown tool: {name}"))
+            .ok_or_else(|| BindingError::UnknownTool(name.to_owned()))
     }
 
     /// Every declaration the request pinned, sorted by name, from the
     /// request's snapshot only.
-    pub fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
+    pub fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, BindingError> {
         let state = self.state.lock().unwrap();
         let snapshot = state
             .snapshots
             .get(request_id)
-            .ok_or_else(|| format!("request {request_id} has no active tool binding"))?;
+            .ok_or_else(|| BindingError::NoActiveBinding(request_id.to_owned()))?;
         let mut definitions = snapshot
             .tools
             .values()
@@ -208,12 +226,12 @@ impl ToolBinding {
     }
 
     /// Moves a request's snapshot to its budget recovery request.
-    pub fn transfer(&self, from: &str, to: &str) -> Result<(), String> {
+    pub fn transfer(&self, from: &str, to: &str) -> Result<(), BindingError> {
         let mut state = self.state.lock().unwrap();
         let snapshot = state
             .snapshots
             .remove(from)
-            .ok_or_else(|| format!("request {from} has no active tool binding"))?;
+            .ok_or_else(|| BindingError::NoActiveBinding(from.to_owned()))?;
         state.snapshots.insert(to.to_owned(), snapshot);
         Ok(())
     }

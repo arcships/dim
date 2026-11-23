@@ -1211,7 +1211,7 @@ impl AgentLoop {
                     owner
                         .binding
                         .transfer(&source.request_id, &request_id)
-                        .map_err(AgentError::InvalidInput)?;
+                        .map_err(|error| AgentError::fault("Loop", error.to_string()))?;
                     source.turn_id = turn_id.clone();
                     source.request_id = request_id.clone();
                     return Ok((source, None));

@@ -5104,6 +5104,122 @@ async fn tool_result_estimates(with_image: bool) -> Vec<f64> {
     estimates
 }
 
+/// Holds its first reply until released, then proposes one `echo` call;
+/// later replies echo.
+struct HeldToolCall {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+    first: AtomicBool,
+}
+impl ModelDriver for HeldToolCall {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        if self.first.swap(false, Ordering::SeqCst) {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.release.notified().await;
+                let call = ToolCall {
+                    id: "held-call".into(),
+                    name: "echo".into(),
+                    input: serde_json::json!({"text": "held"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                };
+                Ok(Box::pin(futures_util::stream::iter([
+                    Ok(ModelChunk::MessageStart {
+                        message_id: "held".into(),
+                    }),
+                    Ok(ModelChunk::ToolStart {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                    }),
+                    Ok(ModelChunk::ToolUse(call)),
+                    Ok(ModelChunk::MessageStop {
+                        message_id: "held".into(),
+                        reason: ModelStopReason::ToolUse,
+                    }),
+                ])) as ModelStream)
+            })
+        } else {
+            EchoModel.invoke(request, connection, cancel)
+        }
+    }
+}
+
+/// ToolBinding reloads while the model streams a request it bound: its
+/// consumers reload with it, so the call is never admitted against the new
+/// generation, which holds no snapshot for the request. The call settles as
+/// a reload settlement, and no internal request id reaches the model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_whose_binding_reloaded_settles_as_a_reload_without_internal_text() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let builder = builder(
+            Arc::new(HeldToolCall {
+                entered: entered.clone(),
+                release: release.clone(),
+                first: AtomicBool::new(true),
+            }),
+            Arc::new(MockTools),
+        );
+        let agent = MinimalHost::start(&builder).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default())
+            .await
+            .unwrap();
+        session
+            .submit("go".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        entered.notified().await;
+        let binding = session
+            .branch_diagnostics("main")
+            .unwrap()
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "ToolBinding")
+            .unwrap()
+            .id;
+        agent.root().view(binding).unwrap().restart().await.unwrap();
+        release.notify_one();
+        session.idle("main").await.unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let result = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::ToolResult(data) => data
+                    .results
+                    .iter()
+                    .find(|item| item.call_id == "held-call")
+                    .map(|item| item.result.clone()),
+                _ => None,
+            })
+            .expect("the held call settles");
+        assert_eq!(
+            result.content,
+            ToolContent::Text(format!("Tool was not executed: {CAPABILITY_RELOADING}")),
+            "model-facing text of a call whose binding reloaded"
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TurnEnd(TurnEndData {
+                outcome: TurnOutcome::Failed { error },
+                ..
+            }) if error == CAPABILITY_RELOADING
+        )));
+        assert!(session.failure().is_none());
+        agent.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn a_tool_result_image_counts_as_one_image_in_the_estimate() {
     let with = tool_result_estimates(true).await;
