@@ -24,7 +24,7 @@ Callers keep: nothing — the tool is the model's entrance. The Session owns the
 | Read what a line did, continuing where the last read stopped | No: the continuation is the calling line's cursor, owned by BranchLine; the page boundaries and the rendering are the tool's | `branchLine.state`, `timelineTree.read` |
 | End the calling tool line with its last word | No: the end and the last word are one settled operation | `timelineTree.end` |
 | Learn what the calling line may do | No: role and parent are BranchLine's fold | `branchLine.state` |
-| Check that a target belongs to the pair before messaging or reading it | No: the record's parent and source decide it | `timelineTree.directory` with `{line}` |
+| Check that a target belongs to the pair before messaging or reading it | No: the record's parent and source decide it | `timelineTree.line` with `{line}` |
 
 ## Caller example
 
@@ -70,8 +70,8 @@ let page = tree.read(ReadLines {
 | Service | Purpose |
 | --- | --- |
 | `S:ToolRegistry` | Register the `branch` tool, until this part unloads. |
-| `S:TimelineTree` | Create, end, read and look up a line. |
-| `B:BranchLine` (by line id) | The calling line's role, end state and cursors. |
+| `S:TimelineTree` | `create`, `end`, `read` and `line`. |
+| `line_owner::<BranchLine>` | The calling line's role, end state and cursors. |
 
 ### Operations
 
@@ -91,24 +91,41 @@ Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A 
 
 ### Errors
 
+Every kind the owners answer maps onto one code here; a refusal writes nothing.
+
 | Code | What the model does next |
 | --- | --- |
 | `branch_not_opener` | Only the root and the conversation line open lines; move the conversation or ask one of those |
 | `branch_limit_reached` | End an open tool line first |
 | `branch_not_kin` | Address the line it was cut from, or a line it opened |
 | `branch_not_tool_line` | A plugin line follows its creator's protocol; a plugin line reads only the line it was cut from |
-| `branch_ended` | Read the line instead |
+| `branch_ended` | The target ended (TimelineTree's `branch_ended` or the calling line's own end): read the line instead |
 | `branch_cannot_end` | Only a tool line ends itself, and not while its chain holds the conversation line |
+| `invalid_cut` | This request's own start cannot be a cut; report it, do not retry |
+| `beyond_head` | The target's head moved below `after`; read the record again |
+| `not_batch_boundary` | Pick the head from `line` again; the page must start at a batch boundary |
+| `continuation_without_cutoff` | Send `after` with the target's record; a bare continuation needs the original cutoff |
+| `final_undelivered` | The line ended; the last word is still owed, and the tree retries it; report the end as accepted |
+| `closed` | The Session is closing; stop |
 | `invalid` | Fix the action's fields |
 
 ### Flows
 
 | Action | Normal path | Caller cancels | Session closes | Settled by |
 | --- | --- | --- | --- | --- |
-| `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | The creation is cancelled and rolled back by the tree | Refused `branch_ended`/`closed` | TimelineTree |
+| `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes and the caller sees `cancelled` from its own tool call | Refused `branch_ended`/`closed` | TimelineTree |
 | `message` | Check the pair, write into the target's queue, answer the target id | The write is one commit; a cancelled call writes nothing | Refused `closed` | The target line's input owner |
 | `read` | Resolve the target record, the cursor and the head, read one page, render items | Nothing to release | Refused `closed` | TimelineTree, BranchLine |
-| `end` | Check that the caller is a tool line, end with the last word | The end settles even if the call stops watching | Refused `closed` | TimelineTree |
+| `end` | Check that the caller is a tool line, end with the last word | The end settles even if the call stops watching | Refused `closed` | TimelineTree; a message still owed answers `final_undelivered` and is retried |
+
+## Supersedes
+
+- The `branch` tool's description in [timeline branches §11](../../design/timeline-branches.md#11-the-branch-tool) as far as it names `TreeCommands` for a message and a page: the tool calls `timelineTree` and `line_owner`, as below.
+- The `TreeCommands` references in the [BranchTool plugin page](../../architecture/rust-agent/plugins/BranchTool.md).
+
+## Client-visible changes
+
+None: the tool's action menu, fields, result shape and refusal codes are unchanged.
 
 ## Exceptions with reasons
 
@@ -139,19 +156,19 @@ Flow tests on the tool:
 | §4 rule 5 | It reads whole batches through the tree's read. |
 | §4 rule 6 | The page is the tool result, the only text the model reads. |
 | §4 rule 7 | It uses the owners' operations; it holds no scope, node or queue. |
-| §4 rule 8 | One requirement is raised with TimelineTree's: addressing a line's owners by line id. |
+| §4 rule 8 | One requirement is raised with TimelineTree's: resolving a line id to a branch-scope service. |
 | §4 rule 9 | It writes no fact. |
-| §7 callbacks and ids | One request object in, one page out; the line id is a value; no handle, and the target's write is the target owner's operation. |
-| §7 one change | The implementation deletes `open_tool_line` and the `TreeCommands` calls beside it and migrates the tool in the same change. |
+| §7 | Every argument and reply is data and a line is an id; no object or handle crosses, except the owner's internal weak handle. Deleting the old surface and migrating every caller is one change. The owner answers its own state and facts, never another owner's record. |
 | ADR 002 D1 | Session scope: one registration for every line. |
 | ADR 002 D2 | No wiring plugin: the tool belongs to the TimelineTree plugin's feature. |
 | ADR 002 D3 | Depends only on the registry, the tree and BranchLine. |
 | ADR 002 D4 | The profile decides whether the tool is installed. |
 | ADR 002 D5 | The tool's request and reply are data; the Rust binding is the appendix. |
+| ADR 027 | The tool reaches BranchLine and a target's input owner with `line_owner::<T>(line)`. |
 
 ## Requirements raised to mechanism owners
 
-The same one as TimelineTree's: a Session part reaches a line's input owner and BranchLine by line id, which needs the mechanism's addressing (#2025 owns the surface).
+The same one as TimelineTree's: a Session part reaches a line's input owner and BranchLine with `line_owner::<T>(line)`, which needs the mechanism's resolution ([SessionScope](https://github.com/arcships/dim/pull/2093) owns the surface).
 
 ## Binding appendix
 

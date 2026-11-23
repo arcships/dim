@@ -34,7 +34,7 @@ None: no caller holds TreeTimeline. The tree's own directory is the only reader 
 | --- | --- |
 | `B:Dispatcher` | The line's committed facts, in order. |
 | `B:Timeline` / `B:TimelineIdentity` | Creation and end settlement location and this line's id. |
-| `S:TimelineTree` | The owner's internal handover for creation, end and turn end. |
+| `S:TreeHandle` | The owner's weak handle to TimelineTree: the internal handover for creation, end and turn end. Weak because the tree holds this line's scope and the scope holds this part. |
 
 ### Operations
 
@@ -51,6 +51,14 @@ None reach a caller. A routing failure is recorded on the tree's cleanup list an
 | A child is created on this line | The subscription hands the fact to the tree; the tree reserves the child and later builds it | Reservations this line opened and never received are cancelled; their waiters are settled | The tree's close cancels every reservation before the scopes close | TreeTimeline releases reservations; TimelineTree settles the children |
 | This line committed its end | A tool end waits for the turn end; any other end settles at once | The end is already the tree's; the scope closes after its last write | An end in flight finishes before the generation's close | TimelineTree |
 | This line ended a turn | The tree publishes the sequence for this line's children | Nothing held | Nothing held | TimelineTree |
+
+## Supersedes
+
+- The `TreeTimeline` dependency on `S:TreeCommands` in [timeline branches §5](../../design/timeline-branches.md#5-parts): the service is the owner's weak `S:TreeHandle`.
+
+## Client-visible changes
+
+None: the part has no public face.
 
 ## Exceptions with reasons
 
@@ -69,7 +77,7 @@ Flow tests on the owner:
 
 | Rule | Application |
 | --- | --- |
-| §1 parts and Capabilities | TreeTimeline is one branch part and not a Capability: it holds no folded state and writes no fact. |
+| §1 parts and Capabilities | TreeTimeline is one branch part and a Capability: it consumes the line's committed facts and drives the tree's writes; it holds no state of its own and writes no fact. |
 | §2 scopes | Branch scope for the subscription and the unload; the reservation table is the Session's. |
 | §3 orthogonality | It routes facts and touches no other owner's state. |
 | §4 rule 1 | No command; it reacts to committed facts. |
@@ -81,7 +89,7 @@ Flow tests on the owner:
 | §4 rule 7 | It uses the owner's internal handover, not a public service. |
 | §4 rule 8 | No infrastructure change. |
 | §4 rule 9 | It acts after the fact's batch commits, as the dispatcher delivers it. |
-| §7 callbacks and ids | Nothing crosses an owner boundary; no id or callback is public. |
+| §7 | Every argument and reply is data and a line is an id; no object or handle crosses, except the owner's internal weak handle. Deleting the old surface and migrating every caller is one change. The owner answers its own state and facts, never another owner's record. |
 | ADR 002 D1 | Branch scope: the subscription lives with the line. |
 | ADR 002 D2 | No wiring plugin: the part belongs to the TimelineTree plugin. |
 | ADR 002 D3 | Depends only on branch services and the tree. |

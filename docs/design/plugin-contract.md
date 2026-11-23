@@ -59,7 +59,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- |
 | Process (root) | Host start | Host shutdown | — (process parts provide their own) |
 | Agent (`agent`) | Agents creates an Agent | Agent close, host shutdown | Host-internal |
-| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionIdentity`, `sessionLifecycle`, `treeCommands` |
+| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionIdentity`, `sessionLifecycle`; a Session's line directory is the [TimelineTree](plugins/TimelineTree.md) part |
 | Branch (`branch`) | TimelineTree creates a branch | The branch ends, or its Session closes | `timeline`, `dispatcher`, `branchLifecycle`, `timelineIdentity` |
 
 Visibility follows the tree, as in [principles §2](../architecture/rust-agent/principles.md):
@@ -67,7 +67,7 @@ Visibility follows the tree, as in [principles §2](../architecture/rust-agent/p
 | Direction | How |
 | --- | --- |
 | Up (an enclosing instance, the process) | Inject the service by name |
-| Down (Session to branch) | `treeCommands`: input by branch id, branch creation. Never by injecting a branch service |
+| Down (Session to branch) | `line_owner::<T>(line)`: resolve the line to the branch scope's service and call that owner's own operation ([ADR 027](../adr/027-cross-scope-access-by-id.md)); registration points and the lifecycle services stay out ([TimelineTree](plugins/TimelineTree.md)) |
 | Sideways (sibling branches, other Sessions) | Not visible. Go through a common ancestor's business service, such as `sessions` |
 
 The scope roots, the facades and their publication rules are mechanisms. Each Session and branch is
@@ -114,7 +114,7 @@ R4). This table says what each name Dim defines is for.
 | `workflowFiles` | process | App Server | yes | Marked `#[rutis::service]` |
 | `eventHub` | process | EventHub | designed, not implemented | A producer declares a source and publishes an event; EventHub delivers it to the Sessions subscribed, through Agents' `sessions` ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
-| `treeCommands` | `session` | TimelineTree | yes | `input` by branch id, `create`, `list`, `info` |
+| `timelineTree` | `session` | TimelineTree | yes | the line directory and lifecycle: `create`, `end`, `set_default`, `directory`, `line`, `read` ([TimelineTree](plugins/TimelineTree.md)) |
 | `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload. `reportFault` reports a fault, `failure` reads it and `observeFault` subscribes. The calling row releases its subscription with `release(id)` or on unload. |
 | `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |
@@ -138,8 +138,9 @@ ToolRegistry or PromptRegistry, or on the method table of its scope, `sessionMet
 `managementMethods` (process, served to protected-local v3 only), which Rpc reads per call. Each contribution follows its owner's data-face contract and registration lifetime.
 
 Two mechanism contracts tie the facades to core parts: a branch is published only with a `LoopState`
-provider, and a Session only with a `TimelineTreeControl` provider. Loop and TimelineTree are therefore
-core parts, written in Rust. This design does not change that.
+provider, and a Session only with the line directory's owner. Loop and TimelineTree are therefore
+core parts, written in Rust; the Session assembly reaches the latter through a crate-private
+lifecycle entry, not through a catalog name ([TimelineTree](plugins/TimelineTree.md)).
 
 ## 5. Events
 

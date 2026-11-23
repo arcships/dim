@@ -1,6 +1,6 @@
 # Branch TypeScript binding
 
-The [target Session tree binding](contracts/runtime-owner-operations.md) moves calls from `treeCommands` to `timelineTree` with the same arguments and replies. The catalog entry and consumer injections change together. References to `treeCommands` below describe the pre-migration binding.
+The Session tree's contract is [TimelineTree](plugins/TimelineTree.md): `timelineTree` with `create`, `end`, `set_default`, `directory`, `line` and `read`; no `treeCommands`, `TreeCommands` or `TimelineTreeControl` exists. A part acts on a line's own owners with `line_owner::<T>(line)` ([ADR 027](https://github.com/arcships/dim/pull/2029)). References below to `treeCommands` describe the pre-redesign binding only.
 
 Status: implemented for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
 [#4](https://github.com/arcships/dim/issues/4), on rutis 0.16.0 `build::Exports`
@@ -32,9 +32,9 @@ ordered consumption.
 | --- | --- |
 | Branch instance and typed keys | The `branch` group instance, nested in its Session's; the catalog keys each name for it (`Names`) |
 | Ordered consumption, handler failures, committed reads | Branch `Dispatcher` (over its `Timeline`) |
-| Input validation and commitment | `Branch::input`, reached by branch id through Session `TreeCommands` |
+| Input validation and commitment | The line's own input owner, reached with `line_owner::<InputQueue>(line)` |
 | Event writes, including extension events | Branch `Timeline` |
-| Branch directory and creation | Session `TreeCommands` / `TimelineTree` |
+| Line directory, creation and end | Session `timelineTree` ([TimelineTree](plugins/TimelineTree.md)) |
 | Activation and closing | `BranchLifecycle` |
 | Branch identity | `TimelineIdentity` |
 
@@ -48,7 +48,7 @@ every instance of that group; a row gets the nearest enclosing instance. Its met
 
 | Name | Group | Rust type | Methods used by parts |
 | --- | --- | --- | --- |
-| `treeCommands` | `session` | `TreeCommands` | `list()`, `info(id)`, `input(id, input)`, `create(parent, at, options, cancelled)`, `end(id, source)`, `page(id, after, limit)` |
+| `timelineTree` | `session` | `TimelineTree` | `create(request, cancelled)`, `end(request)`, `set_default(line, source)`, `directory()`, `line(id)`, `read(request)` |
 | `dispatcher` | `branch` | `Dispatcher` | `consume(name, keys, rebuild, handler)`, `listen(name, keys, handler)`, `committed()`, `notify()`, `sequence()`, `changed()` |
 | `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()`. `registerOpening` registers work that branch opening waits for. |
 | `timeline` | `branch` | `Timeline` | `append({type, name, data, tags?})` → the committed event; `query(query)` (the one bounded read, `include_publishing` for the branch's not-yet-published facts), `ancestors()`, `sequence()`, `committed()`, `hasPending()` |
@@ -57,9 +57,9 @@ every instance of that group; a row gets the nearest enclosing instance. Its met
 The data methods were added for this purpose; the existing ones that return handles or take Rust
 closures stay as they are for Rust callers:
 
-- `TreeCommands::info`, `input`, `create`, `end` and `page` address branches by id and return
-  data: `TimelineInfo` (with `source`, and answered for an ended line as well), the committed
-  `AgentEvent`, the new branch's id, and one page of an open or ended line's committed batches.
+- `timelineTree`'s operations address lines by id and return data: a record per line (with
+  `source`, and answered for an ended line as well), the new line's id, and one bounded read of an
+  open or ended line's facts at a cutoff.
   `create` takes the caller's cancellation explicitly (§Cancellation); `end` is
   [timeline branches](timeline-branches.md#10-ending-a-line).
 - `Dispatcher::listen` is `subscribe` in data form. Its `&Ctx` parameter is the calling row's
@@ -81,7 +81,7 @@ closures stay as they are for Rust callers:
   and a core domain decodes only through its typed contract, so a malformed core event is rejected
   before anything is appended. Which owner writes which event is the event's contract, followed by
   review as for native capabilities, not a check of the export (time bus §2, AGENTS.md rule 11):
-  a part asks another owner through its command, such as input through `treeCommands.input`.
+  a part asks another owner through its own operation, such as input through `line_owner::<InputQueue>(line)?.submit`.
 
   C5 first left `Timeline` unexported because the generator cannot filter a type's methods and no
   part needed to write then (#196); the reads moved to `Dispatcher`. Extension events are the first
@@ -148,7 +148,7 @@ same-module snapshots, online metadata, disablement and Pending apply unchanged.
 5. Input written from a handler is committed to the Timeline tail and consumed later; its reply
    proves commitment, not dispatch or adoption.
 6. One branch never receives another branch's Dispatcher. Cross-branch communication is input by
-   id through `treeCommands`, asynchronous.
+   line id through `line_owner::<InputQueue>(line)`, asynchronous.
 
 ## Open
 
@@ -168,7 +168,7 @@ same-module snapshots, online metadata, disablement and Pending apply unchanged.
 
 - In two Sessions sharing the runtime, each `main` part reads its own identity, follows
   `input/message`, `turn/start` and `turn/end` in commit order, and writes one marked input to its
-  branch through `treeCommands.input`. Later turn ends do not write again.
+  branch through `line_owner::<InputQueue>(line)?.submit`. Later turn ends do not write again.
 - A child in the first Session uses its own Dispatcher, identity and local fold. It writes its own
   marker despite inheriting its parent's prefix, without writing another marker to the parent.
 - After a restart, each restored Session's part rebuilds from committed history through a nonzero
