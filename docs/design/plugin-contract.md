@@ -206,8 +206,8 @@ Public bus events:
 | `settings/projects` | App Server Settings | `{root, cwd}` | A project root was authorized |
 | `skills/catalog` | SkillsCatalog | catalog version | The Skill catalog advanced |
 | `agent/session-restored`, `agent/unloaded-session-deleted` | Agents | ids | Host-internal, consumed by Collaboration and Provider; [Session loading](appserver/session-deletion-and-fork.md#65-opening-the-fork) |
-| `agent/session-deleted` | Agents | `{agentId, sessionId}` | A successful delete removed the Session's rows, loaded or unloaded; host-internal, consumed by EventHub ([EventHub §3.4](plugins/EventHub.md#34-delete-a-subscribed-session)) |
-| `eventhub/ready` | EventHub | none | The `eventHub` service is provided in this generation; producers declare on it ([EventHub §2.1](plugins/EventHub.md#21-the-catalog-of-sources-and-types)) |
+| `agent/session-deleted` | Agents | `{agentId, sessionId}` | A successful delete removed the Session's rows, loaded or unloaded; host-internal, consumed by EventHub ([EventHub](plugins/EventHub.md)) |
+| `eventhub/ready` | EventHub | none | The `eventHub` service is provided in this generation; producers declare on it ([EventHub](plugins/EventHub.md)) |
 
 *Today:* the events are implemented as listed, and TypeScript rows listen to them directly.
 

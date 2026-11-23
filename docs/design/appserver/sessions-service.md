@@ -316,7 +316,7 @@ recovery from it:
 | The branch Timeline ([core/timeline.rs](../../../crates/dim-agent-runtime/src/core/timeline.rs)), through `Session::input` and `Session::lookup` (`sessions.input`, `sessions.lookup`, Rpc's `session.submit` and `session.input_lookup`) | — | Accepts each id once per branch; `accepted`, `unknown` or `ambiguous` for lookup |
 | Goal parts ([crates/dim-goal](../../../crates/dim-goal)) | `goal:<uuid>`, through `TreeCommands::input` | Nothing |
 | Workflow ([engine.ts](../../../runtime/plugins/workflow/engine.ts)) | `workflow:<uuid>` for each stage input and report, stored in its run file before the write | A retry, by the same or a replacement generation, resubmits the same id and settles from the reply |
-| Scheduler ([A.5](../plugins/Scheduler.md#a5-timeline-and-capability-mechanics), [A.6](../plugins/Scheduler.md#a6-run-outcome-delivery); runtime in draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>`, one per delivery | An uncertain reply is settled by lookup (A.6); a window is never written twice |
+| Scheduler ([Scheduler](../plugins/Scheduler.md)) | `scheduler:<run_id>`, one per delivery | An uncertain reply is settled by the read-only lookup; a window is never written twice |
 | `dimcode` and the Rust TUI ([#312](https://github.com/arcships/dim/pull/312)) | A new UUID for each submit | Nothing yet: an uncertain submit is reported to the user, not looked up |
 | S5c fork ([§6.6](session-deletion-and-fork.md#66-identity-provenance-and-paths)) | Copies it with the event | — (lookup on the fork finds copied inputs) |
 | InputQueue, Loop, the history projection, Goal's fold, the model | — | Never read it |
@@ -501,7 +501,7 @@ An `inputId` the branch does not hold answers `false`; that covers both an id th
 
 `{sessionId}` → `{defaultBranchId}`; errors `rejected`, `session_closed`, `reloading`, `failed`.
 
-The read answers the line the Session's conversation is on: the tree's current default, read from its owner (`TreeCommands::default_branch`) after the Session is acquired, so an idle-unloaded Session is restored for the answer as for §6.10. It reads no history page and writes no event. It exists for the request-side defaults that name no line: a management `schedule.save` that records the default branch for a new job ([Scheduler §2.1](plugins/Scheduler.md#21-the-two-targets)), and the `loops`, `wakeups` and EventHub faces when a request omits a branch ([timeline branches §20.22](../timeline-branches.md#20-acceptance)). A caller resolves it once per request.
+The read answers the line the Session's conversation is on: the tree's current default, read from its owner (`TreeCommands::default_branch`) after the Session is acquired, so an idle-unloaded Session is restored for the answer as for §6.10. It reads no history page and writes no event. It exists for the request-side defaults that name no line: a management `schedule.save` that records the default branch for a new job ([Scheduler](plugins/Scheduler.md)), and the `loops`, `wakeups` and EventHub faces when a request omits a branch ([timeline branches §20.22](../timeline-branches.md#20-acceptance)). A caller resolves it once per request.
 
 ## 7. Sequence
 

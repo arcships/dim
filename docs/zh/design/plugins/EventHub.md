@@ -1,5 +1,7 @@
 # EventHub
 
+> 目标契约见 [EventHub](../../../design/plugins/EventHub.md)（英文）；本文是旧设计，不再作为契约。
+
 状态：草案。总体设计：[overview §3](../overview.md#3-基于现有机制的集成)。规则：[设计规则](../../../architecture/rust-agent/principles.md) §1 与 §4、[ADR 002](../../adr/002-plugin-scope.md)、[插件契约](../plugin-contract.md)，后者由 [ADR 006](../../adr/006-plugin-contract.md) 定义。作用域：进程与 Session。语言：Rust。English: [English](../../../design/plugins/EventHub.md)。
 
 EventHub 把事件从插件和其他生产方交给应该看到它们的 Session。生产方发布一条有类型的轻量事件：一条 IM 消息、一条 SaaS 或 CI 通知、一个定时器、另一个 agent 的消息。Session 订阅事件类型，模型经工具订阅，客户端经管理方法订阅；EventHub 把每条匹配的事件作为一条普通分支输入投递给它，模式沿用已有的 `queue`、`steer` 或 `append`，见 `crates/dim-agent-types/src/events.rs:7`。每次发布都返回一份回执，说明什么到达了哪条分支、什么没有到达以及原因。

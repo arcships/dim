@@ -486,7 +486,7 @@ optional account feature must not prevent identity or usage from loading.
 | Plugins | List, enable/disable, installation/update/removal and the owner's typed settings surfaces |
 | Skills | Manage already installed skills: search, inspect details, enable/disable and reload discovery; choose user scope or an existing workspace without entering filesystem paths. Source installation and plugin-package controls are not part of this page |
 | Permissions | Process isolation and user-scope command-rule management (exact/prefix allow/deny; project scope, patterns and per-rule ask are rejected, [§10.1](appserver/permission-command-rules.md#101-legacy-rule-kinds)), with confirmation for privilege increases. The isolation card follows [the CLI isolation choices](cli-commands.md#process-isolation-settings), reads `host.execution.backend` and shows the owner's reason when the host has none; the browser never infers the platform |
-| Scheduled tasks | List, create/edit, pause/resume, run now, recent runs and confirmed deletion through the [Scheduler management contract](plugins/Scheduler.md#a3-management-methods); no raw Settings document access |
+| Scheduled tasks | List, create/edit, pause/resume, run now, recent runs and confirmed deletion through the [Scheduler](plugins/Scheduler.md); no raw Settings document access |
 | Archived sessions | The browser-local hidden list only: search and workspace filter over it, restore/open, and confirmed deletion of one row or all of them (§4.4) |
 | Diagnostics | Safe version, protocol, connection and metadata with refresh, the model-request recording switch, and the start-up rule for process logs instead of a log-mode control ([logging controls](#diagnostics-the-legacy-logging-controls)) |
 

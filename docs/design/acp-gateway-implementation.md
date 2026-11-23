@@ -295,7 +295,7 @@ Gateway 每十秒续租；native 重连后用相同 bindingId 幂等恢复资源
 | `/compact` | 调用 `session.context.compact`，由原生所有者决定执行中请求的排队/合并。等待原生结果；已有 compaction activity 唯一显示 completed/skipped/cancelled/failed，RPC 回复不重复打印终态。`session/cancel` 使用既有 main stop；取消完成返回 ACP cancelled。不能把命令文本作为普通聊天提交。 |
 | `/usage` | 捕获当前已采用模型的 providerId，仅向该账户按需读取 `account.status`、`account.usage`。未登录给出该 provider 的登录提示；空报告或读取失败明确报告不可用/错误，不借用另一账户。展示 plan 名称/状态、credits 剩余及用量、每个窗口的时长/used/total/reset，以及 feature 自有单位。缺失值省略、零值保留、显式 unlimited 不按零总额显示耗尽。不生成费用、百分比或原始账户 payload；与 `usage_update` 的 Session 上下文占用完全分开。 |
 | `/goal` | 裸命令通过 `session.goal.get` 显示当前目标和状态。支持 `set OBJECTIVE`、`edit OBJECTIVE`、`pause`、`resume`、`clear`；普通 OBJECTIVE 按 CLI 规则在 active/paused 时 edit，否则 set。`pause now` 等仍是 CLI 的普通目标文本，空 set/edit 是用法错误。变更后再次 get，展示 owner 已生效状态；不是从历史自行折叠，也不把 set/resume 的操作确认冒充目标执行完成。合同见 [Goal Appendix A](plugins/Goal.md#appendix-a-interface-details)。 |
-| `/loop` | 裸命令列出主线原生 loops；PROMPT 开始 self-paced，INTERVAL PROMPT 开始固定间隔，解析遵循 [Scheduler §12.6](plugins/Scheduler.md#126-interfaces)。`stop ID` 仅接受当前分支列表中的 ID；`stop` 只在恰好一个 running/waiting loop 时选择它，多个时列出 ID 请用户明确选择，没有时提示无活跃 loop，不发起 stop。结果保留原生 ID，以 stop 回复中的最新状态为准：stopped/expired 按终态展示，即使 `settled: false`；仅当返回非终态且 `settled: false` 时提示仍在结算。不用预查询的旧状态推断 stop 结果。 |
+| `/loop` | 裸命令列出主线原生 loops；PROMPT 开始 self-paced，INTERVAL PROMPT 开始固定间隔，解析遵循 [Scheduler](plugins/Scheduler.md)。`stop ID` 仅接受当前分支列表中的 ID；`stop` 只在恰好一个 running/waiting loop 时选择它，多个时列出 ID 请用户明确选择，没有时提示无活跃 loop，不发起 stop。结果保留原生 ID，以 stop 回复中的最新状态为准：stopped/expired 按终态展示，即使 `settled: false`；仅当返回非终态且 `settled: false` 时提示仍在结算。不用预查询的旧状态推断 stop 结果。 |
 
 ```text
 /loop stop

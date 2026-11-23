@@ -88,9 +88,9 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 | 名字 | 目标 | 备注 |
 | --- | --- | --- |
-| `scheduleJobs` | `scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md#a2-tool-schedule) 的 flat `JobRequest`/`JobReply`，与 `wakeups` 同一批次（[#1396](https://github.com/arcships/dim/pull/1396)）。 |
-| `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
-| `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
+| `scheduleJobs` | 八个作业操作 | 按 [Scheduler](plugins/Scheduler.md) 的作业操作；`call` 动作菜单不再存在。 |
+| `wakeups` | 进程内操作 | 移出 catalog；Session 部件调用 Scheduler 的 wakeup 操作，见 [Scheduler](plugins/Scheduler.md)。 |
+| `loops` | 进程内操作 | 移出 catalog；Session 部件调用 Scheduler 的 loop 操作，见 [Scheduler](plugins/Scheduler.md)。 |
 | `sessionFiles` | `sessionFiles.put/import/read/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFiles` 是进程内绑定。 |
 | `commandRules` | `commandRules.read` | Session 命令规则读取，按 [命令规则](appserver/permission-command-rules.md#41-language-neutral-adr-002-d5) §4.1。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
@@ -224,6 +224,8 @@ PromptSettings 的三个只读端口按 [prompt overrides §3.1](appserver/promp
 
 ### 4.3 `scheduleJobs`
 
+> 已由 [Scheduler](plugins/Scheduler.md) 取代：八个作业操作，没有 `call` 动作菜单；下面的块是旧形状。
+
 按 [Scheduler](plugins/Scheduler.md) 已接受的形状，不在这里重定义：
 
 ```text
@@ -270,6 +272,8 @@ managedSearch.search {query, count}
 
 ### 4.7 `wakeups`
 
+> 已由 [Scheduler](plugins/Scheduler.md) 取代：wakeup 操作在进程内，不是 catalog 名字。
+
 与 `scheduleJobs` 同批迁移。按 Scheduler §10.2 的方法表：
 
 ```text
@@ -284,6 +288,8 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 `Wakeup` 持久化字段继续使用 snake_case，数据面用上面的 wire 字段。测试覆盖 create、list、cancel 和 loopback。
 
 ### 4.7b `loops`
+
+> 已由 [Scheduler](plugins/Scheduler.md) 取代：loop 操作在进程内，不是 catalog 名字。
 
 与 `wakeups` 同一做法：注册为 shared，在 `host_key("loops")` 提供 dispatcher，原生 `Loops` 在类型键继续提供。按 Scheduler §12.6：
 
@@ -324,6 +330,8 @@ store.associateWorktree {sessionId, repository, root, subtree} -> {}
 ### 4.9 旧主机端口：`credentialVariablesHost` 等六个
 
 六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 手写 `HostDispatch`，因为 owner 的错误是带动态 `code` 的 struct，生成面会把 `code` 写成类型名。
+
+> `eventSubscriptions` 面已由 [EventHub](plugins/EventHub.md) 取代：四个操作在同一个 `eventHub` 面上。
 
 ```text
 credentialVariablesHost.variables() -> {variables: [string]}

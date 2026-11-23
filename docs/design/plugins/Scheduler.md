@@ -118,21 +118,21 @@ The job operations are the `scheduleJobs` data face; the `schedule` tool and the
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `list` | The jobs as stored now | `{}` | `{jobs}` | None | none |
-| `get` | One job | `{jobId}` | `{job}` | None | `not_found` |
-| `create` | Add one job | `{job}` | `{job}` | None; accepted work completes | `invalid`, `conflict`, `storage`, `unsynced`, `closed` |
-| `update` | Replace one job's fields | `{jobId, job}` | `{job}` | None; accepted work completes | `invalid`, `not_found`, `conflict`, `storage`, `unsynced`, `closed` |
-| `delete` | Remove one job | `{jobId}` | `{}` | None; accepted work completes | `not_found`, `conflict`, `storage`, `unsynced`, `closed` |
-| `setEnabled` | Enable or disable one job | `{jobId, enabled}` | `{job}` | None | `not_found`, `conflict`, `storage`, `unsynced`, `closed` |
-| `runNow` | Accept one window now | `{jobId}` | `{run}` | None; the window settles | `invalid`, `not_found`, `closed` |
-| `history` | One job's delivery records | `{jobId, limit?}` | `{runs}` | None | `invalid`, `not_found` |
-| `createWakeup` | Record one one-shot input | `{sessionId, branchId?, at, prompt}` | `{wakeupId}` | None; the record write completes | `invalid`, `storage`, `closed` |
-| `listWakeups` | One Session branch's wakeups | `{sessionId, branchId?}` | `{wakeups}` | None | `invalid`, `storage`, `closed` |
+| `list` | The jobs as stored now | `{}` | `{jobs}` | None | `invalid`, `storage`, `closed` |
+| `get` | One job | `{jobId}` | `{job}` | None | `invalid`, `not_found`, `storage`, `closed` |
+| `create` | Add one job | `{job}` | `{job}` | None; the write completes before the reply | `invalid`, `conflict`, `storage`, `unsynced`, `closed` |
+| `update` | Replace one job's fields | `{jobId, job}` | `{job}` | None; the write completes before the reply | `invalid`, `not_found`, `conflict`, `storage`, `unsynced`, `closed` |
+| `delete` | Remove one job | `{jobId}` | `{}` | None; the write completes before the reply | `not_found`, `conflict`, `storage`, `unsynced`, `closed` |
+| `setEnabled` | Enable or disable one job | `{jobId, enabled}` | `{job}` | None; the write completes before the reply | `not_found`, `conflict`, `storage`, `unsynced`, `closed` |
+| `runNow` | Accept one window now | `{jobId}` | `{run}` | None; the window settles | `invalid`, `not_found`, `storage`, `unsynced`, `closed` |
+| `history` | One job's delivery records | `{jobId, limit?}` | `{runs}` | None | `invalid`, `not_found`, `storage`, `closed` |
+| `createWakeup` | Record one one-shot input | `{sessionId, branchId?, at, prompt}` | `{wakeupId}` | None; the record write completes | `invalid`, `session_closed`, `service_reloading`, `service_unavailable`, `storage`, `closed` |
+| `listWakeups` | One Session branch's wakeups | `{sessionId, branchId?}` | `{wakeups}` | None | `invalid`, `session_closed`, `service_reloading`, `service_unavailable`, `storage`, `closed` |
 | `cancelWakeup` | Settle a scheduled wakeup | `{sessionId, wakeupId}` | `{state?}` | None; the cancel settles the record | `wakeup_not_found`, `invalid`, `storage`, `closed` |
-| `startLoop` | Record a loop and its first due time | `{sessionId, branchId?, prompt, everySeconds?, firstDelaySeconds?}` | `{loop}` | None | `invalid`, `loop_limit`, `loop_invalid`, `storage`, `closed` |
+| `startLoop` | Record a loop and its first due time | `{sessionId, branchId?, prompt, everySeconds?, firstDelaySeconds?}` | `{loop}` | None | `invalid`, `session_closed`, `service_reloading`, `service_unavailable`, `loop_limit`, `loop_invalid`, `storage`, `closed` |
 | `nextLoop` | Arm the following round | `{sessionId, loopId, delaySeconds}` | `{loop}` | None | `loop_not_found`, `loop_invalid`, `storage`, `closed` |
 | `stopLoop` | End a loop | `{sessionId, loopId}` | `{loop, settled}` | None | `loop_not_found`, `storage`, `closed` |
-| `listLoops` | One Session branch's loops | `{sessionId, branchId?}` | `{loops}` | None | `invalid`, `storage`, `closed` |
+| `listLoops` | One Session branch's loops | `{sessionId, branchId?}` | `{loops}` | None | `invalid`, `session_closed`, `service_reloading`, `service_unavailable`, `storage`, `closed` |
 
 A job's target is data: `{type: "session", sessionId, branchId, inputMode?}` or `{type: "launch", cwd, agentId?, policy?, maxRunMinutes?}`. Only a management create or update may set a launch target; the tool's create and update set the calling Session and branch. A job stores its revision; an update reads the stored job under the Settings change and replaces the fields the caller sent. The job's submission ids are `scheduler:<runId>`, `wakeup:<wakeupId>` and `loop:<loopId>:<round>`.
 
@@ -150,6 +150,8 @@ The `scheduleJobs` face has these eight operations and no `call` action menu. Th
 | `wakeup_not_found` | No such wakeup of the calling Session; list first |
 | `loop_not_found` | No such loop of the calling Session; list first |
 | `loop_limit` / `loop_invalid` | Remove a live loop, or fix the prompt, delay or cadence |
+| `session_closed` | The Session or its default branch cannot be read; fix the target or stop |
+| `service_reloading` / `service_unavailable` | The Sessions face is reloading or unavailable; retry when it is active |
 
 The delivery's target-gone errors are not job-operation errors: a delivery that answers `session_closed`, `branch_missing` or `branch_ended` settles `failed`, disables a session-target job, cancels a wakeup and stops a loop.
 
@@ -158,15 +160,17 @@ The delivery's target-gone errors are not job-operation errors: a delivery that 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | Job write | The Settings change reads the document, applies the caller's fields, checks the target and the job revision, writes and publishes the fact | Before the write; the change is dropped | The call ends; an accepted write completes | In-flight changes settle; the next generation reads the document at its next tick | Settings holds the document; Scheduler owns the job semantics |
-| Job window | The timer reads the document, selects due jobs, records `delivering`, writes one input, settles the record, disables a gone target | The timer stops on unload; the record settles at the next load | — | In-flight deliveries finish; `delivering` records settle by `lookup` at the next start | Scheduler for the record; the target branch for the input |
+| Job window | The timer reads the document, selects due jobs, records `delivering`, writes one input, settles the record, disables a gone target | The timer stops on unload; the record settles at the next load | — | In-flight deliveries finish; `delivering` records settle by the read-only `lookup` at the next start | Scheduler for the record; the target branch for the input |
 | `runNow` | Record a window and deliver it like a due window | The timer stops; the record settles later | — | As a window | Scheduler |
 | Launch window | `sessions.launch` with the stored policy, record the Session and stop time, write the input, stop at the deadline, delete at retention | The launch stops at its own deadline; a cancel does not stop the Session | The record keeps the deadline; the next generation's recovery stops the Session | New launches stop while the row is disabled; the next load stops an overdue Session | Agents owns the Session; Scheduler owns the deadline and the record |
-| Wakeup fire | The pass reads the file, takes `scheduled` records inside the grace, writes one input, settles `fired` | A cancel that settles first prevents the input; one after the input reports `fired` | The record stays; the next load re-evaluates | In-flight writes settle; the next pass reads the file | Scheduler |
+| Wakeup fire | The pass reads the file, takes `scheduled` records inside the grace, writes one input, settles `fired` | A cancel that settles first prevents the input; one after the input reports `fired` | The record stays; the next load re-evaluates | In-flight writes settle; the next pass reads the file and a past record is settled by the read-only `lookup` | Scheduler |
 | Wakeup cancel | Settle `cancelled` after the record write | — | — | — | Scheduler |
 | Wakeup expiry | A record past the grace is `expired` unless its submission id is found; a gone target is `cancelled` | — | — | The next load settles it | Scheduler |
-| Loop round | The pass reads the file, writes one queued input, advances the round or leaves the loop `waiting` | A stop settles the record; a pending round is not written | The record stays; the next load re-evaluates | In-flight writes settle; the next pass reads the file | Scheduler |
+| Loop round | The pass reads the file, writes one queued input, advances the round or leaves the loop `waiting` | A stop settles the record; a pending round is not written | The record stays; the next load re-evaluates | In-flight writes settle; the next pass reads the file and a pending round is settled by the read-only `lookup` | Scheduler |
 | Loop stop | Settle `stopped`; a terminal record is returned unchanged | — | — | — | Scheduler |
 | Retention | Terminal records older than seven days are removed in the pass's write | — | — | The next load prunes | Scheduler |
+
+Recovery is read-only. A `delivering` record is settled by `sessions.lookup {sessionId, branchId, submissionId}`, never by repeating the input. The lookup answers `accepted` with the input's id and sequence, `unknown` when the branch never took that submission, or `reloading`/`transport` when the answer is not definite. Scheduler never re-submits the same id to find out: a repeated input could create one when the original never committed. `accepted` settles `delivered`; `unknown` settles `lost`, or `failed` for a launch record whose Session was never created; `session_closed`, `branch_missing` or `branch_ended` settles the record and disables or cancels the target; `reloading` and `transport` keep the record for the next lookup within the bound. The lookup acquires the target Session: a cold Session is restored by Agents, and the delivery's `processActivity` hold covers that restore and the lookup. Admission: the hold is taken before the record's external effect and released after the terminal record; a row unload does not release it, and the next generation reconstructs it from the `delivering` records before its first window; `activated` gates the first pass. Scheduler never holds a Session handle across the lookup or the delivery.
 
 A delivery or a job write takes a `processActivity` hold from before its external effect to its terminal record; a row unload does not release accepted work early. A disabled row starts no new windows, and its `delivering` records settle at the next load by `lookup` with the same submission id. A launch target started while the row was active is stopped at the next load if its deadline passed; the row does not start a new launch while disabled.
 
@@ -179,6 +183,20 @@ A loop is a Scheduler record whose rounds are ordinary queued inputs of one bran
 - A launch target's Session belongs to Agents; the Scheduler record owns the stop time and retention. The record is the settlement: `stop` at the deadline, `delete` at retention, and a disabled row's existing launch is stopped at the next load.
 - The `schedule.*` namespace and the `wakeup`/`loop` tools are registration points, not facades: they map client or model arguments to the owner's operations, and the operations keep the business meaning.
 - `session.wakeup.*` and `schedule.watch` are removed because no client ships; the `loops` and `wakeups` catalog names are removed because no cross-language caller exists; the `source: "Scheduler"` notices are removed because the Scheduler writes no notification. The `wakeup` tool gains `list` and `cancel`; `session.loop.*` stays because CLI, ACP and web call it.
+
+## Supersedes
+
+- `docs/design/plugins/Scheduler.md` sections 1–12 and Appendices A–G (the old feature design) are replaced by this contract.
+- `docs/design/service-faces.md` §3.2's `scheduleJobs`, `wakeups` and `loops` rows, and §4.3/§4.7/§4.7b: the eight job operations on `scheduleJobs`; the wakeup and loop operations are in-process and have no catalog name.
+- `docs/design/contracts/session-boundary.md`'s Session namespace list: `session.wakeup` is removed; `session.loop` is the Scheduler entry; the `schedule.watch` progress sentence is removed.
+- The Scheduler paragraphs in `docs/design/overview.md`, `docs/design/cli-commands.md`, `docs/design/appserver/sessions-service.md`, `docs/design/appserver/management-methods.md`, `docs/design/p6-p7-bindings.md`, `docs/design/web-workspace.md` and `docs/design/process-typescript.md`.
+- The `scheduleJobs`, `wakeups` and `loops` catalog and README rows.
+
+## Client-visible changes
+
+- `session.wakeup.*` and `schedule.watch` are removed; no shipped client called them. The `schedule.*` methods except `watch`, `session.loop.*`, the `schedule` tool and the `loop` tool keep their wire names and shapes.
+- The `wakeup` tool gains `list` and `cancel`; its model-visible description changes accordingly, and the flow test asserting the tool declaration is updated in the same change. The published `schedule`/`loop` descriptions and the EventHub A.4/A.6 texts are unchanged.
+- The `source: "Scheduler"` Session notices are removed; no shipped client consumed them.
 
 ## Verification
 
@@ -232,7 +250,7 @@ The job operations are marked on the `Scheduler` owner type under the wire name 
 
 ```rust
 use dim_agent_runtime::PublicService;
-use rutis::host::BoxFuture;
+use dim_agent_types::{InputMode, PermissionPreset};
 
 pub type JobId = String;
 pub type WakeupId = String;
@@ -249,7 +267,22 @@ pub struct Job {
     pub target: Target,
     pub enabled: bool,
     pub revision: u64,
-    pub created_by: Origin,
+    pub created_by: JobOrigin,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "form", rename_all = "camelCase")]
+pub enum Schedule {
+    Cron { cron: String, tz: Option<String> },
+    Every { every_minutes: u32 },
+    At { at: String },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum JobOrigin {
+    Tool { session_id: String, branch_id: String },
+    User,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -259,10 +292,180 @@ pub enum Target {
     Launch { cwd: String, agent_id: Option<String>, policy: Option<PermissionPreset>, max_run_minutes: Option<u32> },
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    pub run_id: RunId,
+    pub job_id: JobId,
+    pub state: String,
+    pub session_id: Option<String>,
+    pub branch_id: Option<String>,
+    pub input_event_id: Option<String>,
+    pub submission_id: String,
+    pub deadline_at: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: String,
+    pub ended_at: Option<String>,
+}
+
+pub type Jobs = Vec<Job>;
+pub type Runs = Vec<Run>;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetJob {
+    pub job_id: JobId,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateJob {
+    pub job: Job,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateJob {
+    pub job_id: JobId,
+    pub job: Job,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteJob {
+    pub job_id: JobId,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetEnabled {
+    pub job_id: JobId,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunNow {
+    pub job_id: JobId,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryJobs {
+    pub job_id: JobId,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Wakeup {
+    pub wakeup_id: WakeupId,
+    pub at: String,
+    pub prompt: String,
+    pub state: WakeupState,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeupState {
+    Scheduled,
+    Fired,
+    Cancelled,
+    Expired,
+}
+
+pub type Wakeups = Vec<Wakeup>;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWakeup {
+    pub session_id: String,
+    pub branch_id: Option<String>,
+    pub at: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWakeups {
+    pub session_id: String,
+    pub branch_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelWakeup {
+    pub session_id: String,
+    pub wakeup_id: WakeupId,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Loop {
+    pub loop_id: LoopId,
+    pub prompt: String,
+    pub cadence: Cadence,
+    pub state: LoopState,
+    pub round: u64,
+    pub next_at: Option<String>,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopState {
+    Running,
+    Waiting,
+    Stopped,
+    Expired,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Cadence {
+    SelfPaced,
+    Every { every_seconds: u64, anchor: String },
+}
+
+pub type Loops = Vec<Loop>;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartLoop {
+    pub session_id: String,
+    pub branch_id: Option<String>,
+    pub prompt: String,
+    pub every_seconds: Option<u64>,
+    pub first_delay_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextLoop {
+    pub session_id: String,
+    pub loop_id: LoopId,
+    pub delay_seconds: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopLoop {
+    pub session_id: String,
+    pub loop_id: LoopId,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListLoops {
+    pub session_id: String,
+    pub branch_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
+#[serde(rename_all = "camelCase")]
 #[error("{code}: {message}")]
 pub struct SchedulerError {
-    pub code: &'static str,
+    pub code: String,
     pub message: String,
 }
 
@@ -274,7 +477,8 @@ impl Scheduler {
     pub async fn update(&self, request: UpdateJob) -> Result<Job, SchedulerError>;
     pub async fn delete(&self, request: DeleteJob) -> Result<(), SchedulerError>;
     pub async fn set_enabled(&self, request: SetEnabled) -> Result<Job, SchedulerError>;
-    pub async fn run_now(&self, request: RunNow) -> Result<Run, SchedulerError>;
+    // The request is received before the future is returned; a dropped reply does not stop the accepted window.
+    pub fn run_now(&self, request: RunNow) -> impl std::future::Future<Output = Result<Run, SchedulerError>> + Send + '_;
     pub async fn history(&self, request: HistoryJobs) -> Result<Runs, SchedulerError>;
 }
 

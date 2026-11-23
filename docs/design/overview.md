@@ -148,7 +148,7 @@ Every contract the designs define or use is a named service (ADR 002 D5): servic
 | `managementMethods` | process | — | same | [methods A.1](contracts/session-boundary.md#a1-method-contributions) |
 | `toolRegistry` | Session | — | `register(ToolDeclaration, execute): async`, where `execute(ToolCall, cancelled): async -> ToolResult` is the registering part's function | [methods A.5](contracts/session-boundary.md#a5-tool-contribution) |
 | `sessions` | process | — | `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle`, `delete` | [session access A.1](contracts/session-access.md#a1-the-sessions-service) |
-| `scheduleJobs` (optional package, [#317](https://github.com/arcships/dim/pull/317)) | process | — | Session-to-process job operations for the `schedule` tool | [Scheduler](plugins/Scheduler.md) |
+| `scheduleJobs` (Scheduler) | process | — | the eight job operations for the `schedule` tool | [Scheduler](plugins/Scheduler.md) |
 | `workflowRuns` (optional package) | process | — | Session-to-process run operations for the `workflow` tool | [Workflow](plugins/Workflow.md) |
 
 The runtime's existing typed services (Timeline, Dispatcher, ToolHost and others) stay as they are. [#4](https://github.com/arcships/dim/issues/4) is partially delivered: [C4 Session](session-typescript.md) and [C5 branch](branch-typescript.md) bindings expose their documented contract families by name. Additional typed services still need their owners' explicit bindings; rutis itself already calls across languages.
@@ -266,7 +266,7 @@ sequenceDiagram
 
 ### 5.5 Scheduled run through Agents
 
-[Scheduler](plugins/Scheduler.md) defines its own design status; its optional package and its public-flow verification are implemented ([#317](https://github.com/arcships/dim/pull/317)), and installation remains explicit under its §1.3. The diagram shows the delivery flow its design defines. S2, Settings and pluginFiles' [public composition](process-typescript.md#52-public-pluginfiles-binding) are available.
+[Scheduler](plugins/Scheduler.md) defines its own design status; its installation follows the Scheduler contract. The diagram shows the delivery flow its design defines. S2, Settings and pluginFiles' [public composition](process-typescript.md#52-public-pluginfiles-binding) are available.
 
 ```mermaid
 sequenceDiagram
@@ -287,7 +287,7 @@ sequenceDiagram
   end
 ```
 
-The delivery writes one input to the target branch and reads nothing afterwards ([Scheduler §3.1](plugins/Scheduler.md#31-a-due-window), [A.5](plugins/Scheduler.md#a5-timeline-and-capability-mechanics)). A launch target is started first, recorded with its stop time, and stopped at it ([§3.2](plugins/Scheduler.md#32-completion-and-timeout)). The delivery record is the outcome, and no report is written. The target branch consumes the input normally before its text enters model context.
+The delivery writes one input to the target branch and reads nothing afterwards; a launch target is started first, recorded with its stop time, and stopped at it ([Scheduler](plugins/Scheduler.md)). The delivery record is the outcome, and no report is written. The target branch consumes the input normally before its text enters model context.
 
 ### 5.6 Collaboration delegation to an external agent
 
@@ -405,7 +405,7 @@ The HostPlatform exec-shell change recorded in ADR 002 (business configuration r
 | MCP stdio isolation | Open: whether MCP stdio processes are isolated by default |
 | Remote access trade-offs | Open: authentication, disconnection and TLS deployment, related to [#5](https://github.com/arcships/dim/issues/5) ([RemoteGateway](plugins/RemoteGateway.md)) |
 | TypeScript Session parts | C4 tools, Session methods/events and C5 published branch contracts are delivered ([C4](session-typescript.md), [C5](branch-typescript.md)). Provider's named [auxiliaryModel](appserver/auxiliary-model.md#43-named-binding) is available to SessionTitle; Scheduler/Workflow's process/package/management bindings and readiness follow their owner documents (§1.3). Other service families follow their owners' published bindings. |
-| Scheduled run outcome routing | Specified in [Scheduler A.6](plugins/Scheduler.md#a6-run-outcome-delivery): the run owner persists history and reports through existing Session input. Design readiness follows Scheduler's owner document; the optional package and its public-flow verification are implemented ([#317](https://github.com/arcships/dim/pull/317)). |
+| Scheduled run outcome routing | Specified in [Scheduler](plugins/Scheduler.md): the run owner persists history and reports through existing Session input. Design readiness follows Scheduler's owner document; the implementation follows the Scheduler contract. |
 | Scheduled task liveness | Decided: the daemon must be alive ([Scheduler](plugins/Scheduler.md)) |
 | FullAccess and new categories | Decided: allowed automatically (constraint 7) |
 | External agent permissions | Proposed (#145): an external member's asks use Collaboration's member-approval route; the leader's model decides with a Collaboration tool under the leader's Approval and Permission ([ExternalAgent §3.2](plugins/ExternalAgent.md#32-permission-asks)) |
@@ -558,7 +558,7 @@ One row per requirement to the runtime or rutis; changes to other plugins are in
 | **Withdrawn (rutis is an external dependency).** Unload of a Session-scoped method provider waits for its `drain` calls | rutis lifecycle | To be opened | Rpc | [session boundary §9](contracts/session-boundary.md#9-requirements-raised-to-mechanism-owners) |
 | Timeline carries event types the core does not define | Runtime | [#2](https://github.com/arcships/dim/issues/2) | No current consumer (the Questions redesign defines no events) | [Questions §9](plugins/Questions.md#9-requirements-raised-to-mechanism-owners) |
 | **Withdrawn (rutis is an external dependency).** Services imported over a rutis link stay registered while the link is down and each call fails with `node_unavailable` (processes on the node are ended by that node's own HostPlatform) | rutis | [#5](https://github.com/arcships/dim/issues/5) | ExternalAgent, Modality, ShellInput, Hooks, Attachments, Workflow, Scheduler, PluginManager, RemoteGateway | [ExternalAgent §9](plugins/ExternalAgent.md#9-requirements-raised-to-mechanism-owners) |
-| **Withdrawn (Notifications withdrawn).** Named process events for scheduled results | — | — | Scheduler uses its own run records and existing Session input | [Scheduler A.6](plugins/Scheduler.md#a6-run-outcome-delivery) |
+| **Withdrawn (Notifications withdrawn).** Named process events for scheduled results | — | — | Scheduler uses its own run records and existing Session input | [Scheduler](plugins/Scheduler.md) |
 | **Withdrawn (rutis is an external dependency).** A provider sends requests back to the caller within one call (call-scoped requests) | rutis | To be opened | RemoteGateway | [RemoteGateway §9](plugins/RemoteGateway.md#91-call-scoped-requests-from-provider-to-caller) |
 | Session broadcast notice record `{source, kind, data}` emitted by owners of process-level state after a committed change | Runtime (Session broadcast) | [#49](https://github.com/arcships/dim/issues/49) (C6, implemented: [notices](appserver/session-notices.md)) | SessionTitle | [SessionTitle §9](plugins/SessionTitle.md#9-requirements-raised-to-mechanism-owners) |
 | **Withdrawn (rutis is an external dependency).** Typed operations on the loader editable layer | rutis-loader | [#3](https://github.com/arcships/dim/issues/3) | PluginManager | [PluginManager §9](plugins/PluginManager.md#9-requirements-raised-to-mechanism-owners) |

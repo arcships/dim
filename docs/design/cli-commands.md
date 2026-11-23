@@ -690,7 +690,7 @@ the run status and context usage, with the place on its right:
 ## Loop
 
 `/loop` runs a prompt on a rhythm and reads the loops Scheduler keeps. The record, the rounds and the
-cadences belong to [Scheduler §12](plugins/Scheduler.md#12-loop); this section owns what the native
+cadences belong to [Scheduler](plugins/Scheduler.md); this section owns what the native
 clients do with them. The command is listed in the palette beside `/goal`.
 
 | Form | Call |
@@ -1309,7 +1309,7 @@ plugin's source offers neither, and its detail names the plugin.
 Scheduler (#815): the `/scheduled` panel, `/schedule` its alias in both modes, and `dimcode
 scheduled list|enable ID|disable ID|edit ID|set ID PATH|add PATH|remove ID|run ID|history ID`
 over `schedule.list`, `schedule.save`, `schedule.delete`, `schedule.set_enabled`,
-`schedule.run_now` and `schedule.history` ([Scheduler §A.3](plugins/Scheduler.md#a3-management-methods)).
+`schedule.run_now` and `schedule.history` ([Scheduler](plugins/Scheduler.md)).
 Every job is an entry: its name is the label, and its schedule, next window, last delivery, target
 and disabled reason are its detail. The target line says where the job delivers — `Delivers to
 Session {session} branch {branch} ({mode}).` for a session target, or `Launches a new Session in
@@ -1861,7 +1861,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode hooks edit` | Open the user's hook document in `$VISUAL`, `$EDITOR` or the platform default, and write it over `hooks.save` with the revision `hooks.catalog` reported; an interactive edit needs a terminal. |
 | `dimcode hooks set PATH` | Write the user's hook document from `PATH`, or from stdin for `-`, with the revision read immediately before the write; unchanged text writes nothing. |
 | `/hooks` | Open the Hooks panel of the Session's workspace ([management surfaces](#management-surfaces)): a source per entry, the project's toggle and the user document's edit. |
-| `dimcode scheduled list` | List the jobs the Scheduler holds over `schedule.list` ([Scheduler](plugins/Scheduler.md#a3-management-methods)): each job's id, name, schedule, state, next window, last delivery and target, then the jobs whose schedule the owner cannot use. |
+| `dimcode scheduled list` | List the jobs the Scheduler holds over `schedule.list` ([Scheduler](plugins/Scheduler.md)): each job's id, name, schedule, state, next window, last delivery and target, then the jobs whose schedule the owner cannot use. |
 | `dimcode scheduled enable\|disable ID` | Enable or pause one job over `schedule.set_enabled`, then report the jobs again. |
 | `dimcode scheduled edit ID` | Open one job's document in `$VISUAL`, `$EDITOR` or the platform default, and write it over `schedule.save` with the revision the listing reported; an interactive edit needs a terminal. |
 | `dimcode scheduled set ID PATH` | Write one job's document from `PATH`, or from stdin for `-`, with the revision read immediately before the write; unchanged text writes nothing. |

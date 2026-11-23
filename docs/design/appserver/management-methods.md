@@ -231,7 +231,7 @@ namespace and it was withdrawn; an owner that never registered answers
 
 | Case | Native process owner | TypeScript process owner ([process rows](../process-typescript.md)) | Shipped configuration today |
 | --- | --- | --- | --- |
-| Pending on a dependency whose row is Failed, Unresolved or Disabled | No. A required host row that fails during startup fails startup (`lib.rs`, required failures); after startup only `RunningServer::restart` can fail one, it has no caller in this repository, and its allow-list (`Rpc`, `Connection`, `Transport`, `Agents`, `Mcp`) holds no provider of an owner dependency | Yes, through the embedding input: an extension row's failure is its own diagnostic and does not fail startup (process rows §2.1), so an owner that injects another process row's service stays Pending when that row fails | None. `dimcode` configures no process rows; the planned Scheduler and Workflow owners inject only `sessions`, `settings`, `pluginFiles` and, respectively, `managementMethods` ([Scheduler §1](../plugins/Scheduler.md#1-structure)) and `workflowFiles` ([Workflow §1.3](../plugins/Workflow.md#13-concrete-package-rows)), all provided by required host rows that cannot be restarted (process rows §5.1) |
+| Pending on a dependency whose row is Failed, Unresolved or Disabled | No. A required host row that fails during startup fails startup (`lib.rs`, required failures); after startup only `RunningServer::restart` can fail one, it has no caller in this repository, and its allow-list (`Rpc`, `Connection`, `Transport`, `Agents`, `Mcp`) holds no provider of an owner dependency | Yes, through the embedding input: an extension row's failure is its own diagnostic and does not fail startup (process rows §2.1), so an owner that injects another process row's service stays Pending when that row fails | None. `dimcode` configures no process rows; the planned Scheduler and Workflow owners inject only `sessions`, `settings`, `pluginFiles` and, respectively, `managementMethods` ([Scheduler](../plugins/Scheduler.md)) and `workflowFiles` ([Workflow §1.3](../plugins/Workflow.md#13-concrete-package-rows)), all provided by required host rows that cannot be restarted (process rows §5.1) |
 | Pending on a service no row provides | No: assembly wires every native dependency | Yes, once the owner has registered and reloads; before that its names are `unknown_method`, as process rows acceptance 2 asserts | None, as above |
 | Node runtime lost after startup | — | Yes: when the Node process exits, rutis-bridge 0.16.0 `watch_exit` (`runtime/plugin.rs`) records `RuntimeState::Down` and withdraws the runtime service, but the local runtime wrapper has already returned `Effect::Done` (`runtime/local.rs`), so its row stays `Running(Active)` while every owner on that runtime goes back to `Running(Pending)`. A probe with the real Workflow row from [#306](https://github.com/arcships/dim/pull/306) and `kill -KILL` on the runtime confirmed it ([review](https://github.com/arcships/dim/pull/247#discussion_r4344393184)) | Reachable by an explicitly installed optional package such as Workflow (#306, open); not by `dimcode`'s default configuration. Accepted, see below |
 | Disposed itself, row Inactive | No owner disposes itself | Yes: a JavaScript row whose plugin ends disposes its fiber (rutis-bridge `on_row_ended`, called from rutis-loader `runtime.rs`), and the process loader has no editable layer, so `SelfDisposed` carries the edit error | None, as above |
@@ -363,11 +363,8 @@ item is one committed runtime change, and it is answered only when a later
 `runtime.watch` on the same connection takes over (`{}`) or its generation
 unloads (`operation_interrupted`)
 ([RuntimeManager §10](../plugins/RuntimeManager.md#10-client-change-notices)).
-`schedule.watch` declares `progress`: its call stays open while the
-connection watches, each item is one change, and it is answered only when a
-later `schedule.watch` on the same connection takes over (`{}`) or its
-generation unloads (`operation_interrupted`)
-([Scheduler §11.2](../plugins/Scheduler.md#112-jobs-and-runs)).
+The `schedule.watch` progress is removed with the Scheduler contract; the
+`schedule.*` methods except `watch` keep their names ([Scheduler](../plugins/Scheduler.md)).
 Connection-bound notifications are the contract's `callChannel.notify`
 and `closed` ([A.2](../contracts/session-boundary.md#a2-call-channel)): a
 notification is written to the calling connection only, through the reply and

@@ -499,7 +499,7 @@ nothing else, so a producer cannot create or remove another Session's subscripti
 The injected name gates the row: it starts once EventHub provides the service and
 unloads with it. It declares at `apply`, and again when a publish answers `unknown_source`.
 `declare` names the source, its guide (the text the model reads for its marker) and its
-types ([EventHub §2.1](design/plugins/EventHub.md#21-the-catalog-of-sources-and-types)).
+types ([EventHub](design/plugins/EventHub.md)).
 `publish` answers one receipt per target branch: `delivered` carries the `inputId` and
 `sequence`, `gone` a branch that takes no more input, and `failed` a `code` that says
 whether the write is in doubt — `transport` means the `sessions` call failed or its reply

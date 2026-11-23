@@ -1,5 +1,7 @@
 # Scheduler
 
+> 目标契约见 [Scheduler](../../../design/plugins/Scheduler.md)（英文）；本文是旧设计，不再作为契约。
+
 状态：设计已批准。总体设计：[overview §4](../overview.md#4-插件目录)；作用域：[ADR 002](../../adr/002-plugin-scope.md)(进程 + Session)。阶段：P2。语言：Rust，原生，无 Node 依赖([overview 附录 C](../overview.md#附录-c-实现语言))。TypeScript 包已随迁移移除；[附录 G](#附录-g-rust-绑定) 是 Rust 绑定。
 
 **任务即一次投递。** 任务命名一个目标，并在每个到期窗口把保存的提示词作为一条普通分支输入写到该目标。目标默认是保存该任务的 Session 与分支，或者该任务启动的新 Session——后者只有管理客户端能选。Scheduler 不读 Timeline，也不保留运行结果：它只记录投递了什么、失败了什么，别的什么都不记。进程部分拥有任务、定时器与投递记录；Session 部分提供 `schedule` 工具与 `session.wakeup` 方法。
