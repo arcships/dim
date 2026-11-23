@@ -11,7 +11,7 @@ SessionScope owns:
 - **The creation record.** The Session's mount list, working directory, model selection, system prompt, permission preset, collaboration role, interactive flag, language seed and initial title, fixed when the Session is built. The record never changes while the Session runs.
 - **Identity.** The Session id and whether the Session was restored from the store.
 - **The phase.** Loading, Active, Closing, Closed, monotonic and never replaced by an earlier phase. `activated` and `closing` are the waits on the two transitions.
-- **Activity leases.** An accepted piece of work holds a lease so an idle release does not end the Session first. A lease is an id bound to the calling row: the row's unload releases every lease it still holds, and `release` ends one earlier. A lease reports nothing and cancels nothing.
+- **Activity leases.** An accepted piece of work holds a lease so an idle release does not end the Session first. Every lease is bound to the calling row and the owner settles it at the row's unload, so no caller frees anything on an error path. `withHold` holds one for the extent of the caller's callback; `hold` answers an id for work that outlives the call. A lease reports nothing and cancels nothing.
 - **The failure record.** The first fault that stopped the Session; a storage failure supersedes an earlier non-storage fault and the first storage failure wins. `reportFault` writes, `failure` reads, `observeFault` subscribes.
 - **Content instances.** Session-owned content mounted from a definition — a Skill's content, an MCP connection — inside this Session's subtree, addressed by instance id. The owner admits only groups whose configured parent is the Session group.
 - **The branch's runtime context.** One construction per branch id, handed to the branch tree, which owns and settles the context (see Exceptions with reasons).
@@ -19,7 +19,7 @@ SessionScope owns:
 Callers keep as business:
 
 - When their background work may start and must stop: BranchLine, Skills, ShellInput and FileAccess wait on the phase.
-- Which work counts as accepted and therefore holds a lease: ShellInput's command, BackgroundExec's task, Report's draft, Collaboration's member.
+- Which work counts as accepted: the extent of ShellInput's command, the lifetime of BackgroundExec's task, Report's draft and Collaboration's member.
 - What a fault means for their work; the failure record says only that the Session stopped.
 - Which definitions to mount and when to retire them.
 - Which branches exist, their ids and their ancestors: TimelineTree owns the branch directory (#2024).
@@ -30,8 +30,9 @@ Callers keep as business:
 | Read identity: Attachments' ownership check, Permission and tool-source attribution, the store key | No | `identity` |
 | Wait for publication or for close to start: BranchLine's writer, Skills' replacement, ShellInput's refusal, FileAccess' gate | No: polling a value makes every caller write the wait | `activated`, `closing` |
 | Read the phase now: Goal's state read, MCP's admission, ShellInput's refusal | No | `phase` |
-| Keep accepted work from being ended by an idle release | No: the idle-release decision is the owner's, and composing it makes the caller hold a counter or a token across every error path | `hold` |
-| End a lease early, after the work's last fact | No: the id is bound to the calling row and only the owner releases it | `release` |
+| Run accepted work under a hold for the extent of the call: ShellInput's command | No: the idle-release decision is the owner's, and composing it makes the caller hold a counter or a token across every error path | `withHold` |
+| Hold across work that outlives the call: BackgroundExec's task, Report's draft, Collaboration's member | No: a callback would have to stay pending for the whole task, and a tool that answers a task id returns before the command ends | `hold`, settled at the row's unload |
+| End a hold early, after the work's last fact, so an idle release may happen sooner | No: the id is bound to the calling row and only the owner releases it | `release` |
 | Record a fault: Prompt on a prompt or recovery failure | No | `reportFault` |
 | Read the current fault | No | `failure` |
 | Subscribe to later faults: a part in another language | No: a subscription is the owner's, not a poll loop in the caller | `observeFault` |
@@ -55,25 +56,42 @@ let mounted = scope
         instance_data: value,
     })
     .await?;
+// The instance is the Session's: its close shuts the content down. Retiring it earlier
+// keeps an obsolete definition from staying published.
 scope.unmount(UnmountRequest { instance_id: mounted.instance_id }).await?;
 ```
 
 ShellInput refuses after closing starts and holds the Session while a command runs:
 
 ```rust
+// ShellInput: the hold covers the command; the owner releases it when the call returns,
+// and the row's unload releases it if the caller never returns.
 scope.phase()?; // closing or closed -> RpcError::closed()
+scope
+    .with_hold(
+        WithHoldRequest { work: Arc::new(move || Box::pin(run_command(cancel.clone()))) },
+        cancel.clone(),
+    )
+    .await?;
+```
+
+BackgroundExec's task outlives the call, so the part takes an id; the owner settles it at
+the row's unload, and the part releases it when the task ends only so an idle release may
+happen sooner:
+
+```rust
+// The id belongs to this part's row; a lost id is settled by the owner.
 let lease = scope.hold().await?.lease_id;
-run_command(lease.clone(), cancel.clone()).await?;
-scope.release(ReleaseRequest { lease_id: lease }).await?;
+self.leases.lock().unwrap().insert(task_id, lease);
 ```
 
 A part in another language subscribes to the fault record:
 
 ```ts
+// The subscription belongs to this row: its unload releases it, and release ends it earlier.
 const { leaseId } = await sessionScope.observeFault(async fault => {
   if (fault?.storage) record(fault.storage)
 })
-await sessionScope.release({ leaseId })
 ```
 
 TimelineTree opens a branch after admitting it:
@@ -102,7 +120,8 @@ SessionScope injects nothing. The assembly gives the owner its creation record a
 | `phase` | The phase now | `{}` | `{phase}`: `loading`, `active`, `closing`, `closed` | None | None |
 | `activated` | Wait until the Session is published or starts closing | `{}` | `{active}`: true only when published and not closing | The caller drops the call; the owner's close ends the wait with `active: false` | None |
 | `closing` | Wait until the Session starts closing | `{}` | `{}` | The caller drops the call | None |
-| `hold` | Keep an idle release from ending this Session | `{}` | `{leaseId}` | None; the call does not wait | `closed` |
+| `withHold` | Run the caller's work under a lease for the extent of the call | `{work}` | `{}` | The caller's cancel drops the work; the owner releases the lease and answers `cancelled` | `cancelled`, `closed` |
+| `hold` | Keep an idle release from ending this Session for work that outlives the call | `{}` | `{leaseId}` | None; the call does not wait | `closed` |
 | `observeFault` | Receive the current fault and later reports until released or the row unloads | `{listener}` | `{leaseId}` | None; the call does not wait | `closed` |
 | `release` | End a lease or a subscription before the row unloads | `{leaseId}` | `{released}`: false when the id was already released | None | `invalid` when the id belongs to another row; `closed` |
 | `reportFault` | Record the fault that stopped the Session | `{fault}` | `{}` | None | None |
@@ -111,13 +130,14 @@ SessionScope injects nothing. The assembly gives the owner its creation record a
 | `unmount` | Retire a content instance this Session owns | `{instanceId}` | `{}` | None; the owner completes the release | `invalid` when the id belongs to another Session; `cleanup`; `closed` |
 | `openBranch` | Construct a branch's runtime context for the branch tree | `{branchId, ancestors}` | the branch's runtime context (see Exceptions) | The caller drops the call; a construction the caller abandoned is shut down before the branch becomes visible | `closed`, `build` |
 
-`listener` is a callback by reference: it runs outside the owner's locks and outside the Timeline's commit lock. A lease id is an owner-issued token; it carries no authority and is valid only for the calling row.
+`listener` and `work` are callbacks by reference: they run outside the owner's locks and outside the Timeline's commit lock. `work` returns nothing; its failure and its cleanup stay with the caller. A lease id is an owner-issued token bound to the calling row; it carries no authority, the owner settles it at the row's unload, and a caller never has to free it on an error path.
 
 ### Errors
 
 | Kind | Operation | What the caller does next |
 | --- | --- | --- |
-| `closed` | `hold`, `observeFault`, `release`, `mount`, `unmount`, `openBranch` | The Session is closing or unloading; stop starting work; a later generation serves the next Session |
+| `closed` | `withHold`, `hold`, `observeFault`, `release`, `mount`, `unmount`, `openBranch` | The Session is closing or unloading; stop starting work; a later generation serves the next Session |
+| `cancelled` | `withHold` | The caller's cancel stopped the work before it finished; the lease is released and nothing else changed |
 | `invalid` | `release`, `unmount`, `mount` | Fix the id or the definition: an id of another row or Session, a group outside this Session's subtree, an unknown definition |
 | `not_ready` | `mount` | Act on the reported row and state: the definition's rows did not activate; the instance was shut down and nothing is left to release |
 | `cleanup` | `mount`, `unmount` | The instance is unreachable but its shutdown failed; the Session will report it as a fault; treat the content as unavailable |
@@ -129,6 +149,7 @@ SessionScope injects nothing. The assembly gives the owner its creation record a
 
 | Operation | Normal path | Caller cancels or unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- |
+| `withHold` | The owner takes a lease, calls the work, and releases the lease when the work returns | The dropped call stops the work; the owner releases the lease and answers `cancelled` | An in-flight call ends `closed`; a lease never delays a close | SessionScope; the work's own cleanup by the calling row |
 | `hold` | The owner checks the phase, increments the hold count and registers the lease under the calling row | The row's unload releases every lease the row still holds | No new lease is issued once an idle release is decided; an existing lease never delays a close | SessionScope |
 | `observeFault` | The owner registers a listener under the calling row, calls it once with the fault in force (none included), then on every later report | The row's unload stops the listener and drops the registration | The listener stays until the generation unloads; a report after close is ignored | SessionScope; the listener's work by the calling row |
 | `release` | The owner removes the lease or subscription and disposes it | A dropped call leaves the lease in place; the row's unload settles it | An id of an unloaded generation is `closed` | SessionScope |
@@ -142,11 +163,14 @@ SessionScope injects nothing. The assembly gives the owner its creation record a
 - `config` is the persisted record's serde form: `interactive` is omitted when true because only the native store writes that form. A caller that decodes the value must treat absence as true; the live reply language is `sessionLanguage`, not this record.
 - The failure record keeps only the first fault, and a storage failure supersedes a non-storage one: work that fails after the Session already stopped learns the original cause, not its own.
 - `identity` carries no version: the id and the restored flag are fixed at creation.
-- A lease is a value, not a handle: it names nothing the caller can use except in `release`, and the owner releases every lease at the row's unload, so a caller that loses the id leaks nothing.
+- `withHold` cannot replace `hold`: a tool that answers a task id returns before the command ends, and a member, a draft or a background task outlives many calls, so a callback kept pending for the whole work would make the tool wait for its own task. Long-running commands are fine with the callback: `withHold` awaits the work, and a client in another language passes the callback by reference while the row stays the settlement owner.
+- A lease is a value, not a handle: it names nothing the caller can use except in `release`, and the owner releases every lease at the row's unload, so a caller that loses the id leaks nothing. `release` only lets an idle release happen sooner.
+- Content instance ids are the Session's, not the caller's: the Session's close shuts down every instance it mounted, so a part that never unmounts leaves obsolete content published until the Session ends, without breaking the owner.
 
 ## Verification
 
-- `hold` answers `closed` once an idle release is decided; a lease taken before it keeps the Session loaded until released, and never refuses a close.
+- `withHold` releases its lease when the work returns, and answers `cancelled` with the lease released when the caller cancels; the work's error path needs no release.
+- `hold` answers `closed` once an idle release is decided; a lease taken before it keeps the Session loaded until released, and never refuses a close; a lost id is settled at the row's unload.
 - `observeFault` delivers the fault in force and later reports; `release` answers `released: true` then `false`; another row's id is `invalid`; the row's unload stops delivery.
 - `reportFault` keeps the first fault; a storage fault after a non-storage one wins; a non-storage fault after a storage one loses.
 - `mount` answers `invalid` for a group outside the Session's subtree, `not_ready` for a definition whose row failed (and leaves no instance), and shuts down an abandoned mount; `unmount` answers `cleanup` when the shutdown fails and `invalid` for another Session's id.
@@ -170,7 +194,7 @@ SessionScope injects nothing. The assembly gives the owner its creation record a
 | §4 rule 7 | Callers use these operations; no caller reads the hold count, the fault slot or an instance's fiber. |
 | §4 rule 8 | No infrastructure change. SessionScope is the runtime's Session part and its shape is the runtime's decision; the operations above are the data face those decisions already require. |
 | §4 rule 9 | No Timeline fact: the phase and the fault record are runtime state, read live and never persisted as events. |
-| §7 values, ids and objects | The record, identity, phase and fault are values; leases and instance ids are ids bound to the calling row; the one object is `openBranch`, with the joint design above. |
+| §7 values, ids and objects | The record, identity, phase and fault are values; `withHold` takes the caller's work as a callback; a lease id and a content instance id are the owner's, bound to the calling row and settled at its unload; the one object is `openBranch`, with the joint design above. |
 | §7 no proxy lookup | The owner returns only its own state; the Agent's configuration and the Skills and Collaboration factory texts leave this face. |
 | §7 one interface | One name, `sessionScope`, on the owner type; the Rust binding and the wire call the same methods; no facade or wrapper type. |
 | §7 cross-language | Every operation is data, a callback by reference or an id; no method exists only for Rust. |
@@ -264,6 +288,16 @@ pub struct OpenBranchRequest {
 pub type FaultListener =
     Arc<dyn Fn(Option<SessionFault>) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
 
+/// The caller's accepted work; its error and cleanup stay with the caller.
+pub type WorkFn =
+    Arc<dyn Fn() -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WithHoldRequest {
+    pub work: WorkFn,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SessionScopeError {
     #[error("{0}")]
@@ -287,6 +321,11 @@ impl SessionScope {
     pub fn phase(&self) -> PhaseReply { /* ... */ }
     pub async fn activated(&self) -> ActivatedReply { /* ... */ }
     pub async fn closing(&self) { /* ... */ }
+    pub async fn with_hold(
+        &self,
+        request: WithHoldRequest,
+        cancelled: dim_agent_capabilities::host::CancelledFn,
+    ) -> Result<(), SessionScopeError> { /* ... */ }
     pub async fn hold(&self) -> Result<LeaseReply, SessionScopeError> { /* ... */ }
     pub async fn observe_fault(&self, listener: FaultListener) -> Result<LeaseReply, SessionScopeError> { /* ... */ }
     pub async fn report_fault(&self, fault: SessionFault) { /* ... */ }
