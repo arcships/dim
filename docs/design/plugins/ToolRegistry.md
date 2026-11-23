@@ -11,7 +11,7 @@ ToolRegistry owns:
 - **The host tool table.** The tools the host offers this Session, read once from the host tools owner when the registry applies.
 - **Registrations.** One tool or one dynamic source per registering row, with its declaration, its execute callback, its optional claim callback and its versions; a registration ends when its row unloads.
 - **Generations.** A source publishes complete sets under never-reused version ids; the registry adopts, rejects and withdraws whole sets, and keeps the versions a live adoption names.
-- **Adoption.** The generation one request's prefix runs: the declarations it declares and the source versions it names. An adoption is an id bound to the adopting row.
+- **Adoption.** The generation one request's prefix runs: the declarations it declares and the source versions it names. An adoption is an id bound to the adopting row, and the adopting row is ToolBinding's: the branch's request record calls `adopt` and keeps the id.
 - **The claim before the fact.** The pre-publish registration a call needs, keyed by `(request, call)`, routed to the contributor that claimed it, released when the request abandons the call or the row unloads.
 - **The mount list.** `SessionConfig.tools` decides which host and registered tools are declared, fixed at creation.
 - **The source status view.** Each source key's adopted version or rejection, published as a value and a subscription.
@@ -27,17 +27,19 @@ Callers keep:
 | --- | --- | --- |
 | A part publishes one tool for its row's lifetime | No: the registration's lifetime, the name and declaration checks and the host-name reservation are the owner's | `register` |
 | A dynamic source publishes a complete set under a new version | No: version uniqueness, whole-set validation and atomic replacement are the owner's | `register_source` |
-| A request prefix fixes the generation it runs | No: resolving versions, checking every declared tool has a handler, and keeping the generation alive until release are the owner's | `adopt`, `release` |
-| The branch executes one call of a request | No: the tool's owner runs it and the handler never leaves the registry; a caller holding the handler would carry the contributor's object | `run` |
-| The branch resolves a write target before approval | No: only the owner knows which generation the request adopted and which handler answers | `resolve_write` |
-| The branch orders a call within its batch | No: the class is a property of the adopted handler | `ordering` |
-| A call needs a registration before `step/tool-call` and none if it never dispatches | No: the claim must exist before the fact and be released on every abandon path; composing it makes each caller hold the contributor's entry | `claim`, `release_claims` |
+| ToolBinding fixes the generation a request prefix runs | No: resolving versions, checking every declared tool has a handler, and keeping the generation alive until release are the owner's | `adopt`, `release` |
+| ToolExecutor executes one call of a request | No: the tool's owner runs it and the handler never leaves the registry; a caller holding the handler would carry the contributor's object | `run` |
+| ToolExecutor resolves a write target before approval | No: only the owner knows which generation the request adopted and which handler answers | `resolve_write` |
+| ToolExecutor orders a call within its batch | No: the class is a property of the adopted handler | `ordering` |
+| ToolBinding registers a request's calls before `step/tool-call` and releases the ones that never dispatch | No: the claim must exist before the fact and be released on every abandon path; composing it makes each caller hold the contributor's entry | `claim`, `release_claims` |
 | A context fingerprint reads the current declarations and versions | No: both are the owner's state | `declarations` |
 | A management view observes adopted and rejected versions | No: the status is the owner's | `sources`, `observe_sources` |
 | Which tools a request declares | Yes: the adopted configuration is a value; the branch passes its source versions to `adopt` | Business |
 | Approve, deny or cancel a call | Yes: ToolExecutor, Permission and Approval decide | Business |
 
 An operation or parameter exists only where the row says No.
+
+The registry keeps the Session's resolvable generations; ToolBinding keeps one line's request record and its claims. `adopt`, `release`, `claim` and `release_claims` are called only by ToolBinding: Loop calls ToolBinding's `bind`, `claim` and `transfer`, and ToolBinding settles the record and its claims from the line's `step/tool-result` and `turn/end` facts. `run`, `resolve_write` and `ordering` are ToolExecutor's; `declarations` is Loop's and the fingerprint's.
 
 ## Caller example
 
@@ -51,7 +53,7 @@ registry.register(RegisterTool {
 }).await?;
 ```
 
-The branch fixes a request's generation and runs one of its calls:
+ToolBinding fixes a request's generation; ToolExecutor runs one of its calls:
 
 ```rust
 // Sources are the configuration's versions; the owner resolves them and checks every declared tool.
@@ -68,7 +70,7 @@ let result = registry.run(RunCall {
 // A refusal or a bad call is a ToolResult; only the kinds below reach this caller.
 ```
 
-Before the call is published, Loop claims it and ToolExecutor releases nothing on the normal path:
+Before the call is published, ToolBinding claims it for Loop's request; ToolBinding releases the claims the request never dispatched at the request's terminal fact:
 
 ```rust
 let claimed = registry.claim(ClaimCalls { request: request_id.clone(), calls: calls.clone() }).await?;
@@ -100,13 +102,13 @@ The registry provides `toolRegistry` on its owner type and nothing else; `toolSo
 | --- | --- | --- | --- | --- | --- |
 | `register` | Publish one tool for the calling row's lifetime | `{declaration, execute, claim?}` | `{}` | None; the owner completes it | `invalid`, `closed` |
 | `register_source` | Publish a dynamic source the calling row owns | `{name, source}` | `{}` | None | `invalid`, `closed` |
-| `adopt` | Fix the generation a request prefix runs | `{tools, sources}` | `{adoption}` | None; the owner completes it | `invalid`, `unavailable`, `closed` |
-| `release` | Stop keeping an adoption's versions before the row unloads | `{adoption}` | `{released}` | None | `invalid`, `closed` |
+| `adopt` | Fix the generation a request prefix runs (ToolBinding) | `{tools, sources}` | `{adoption}` | None; the owner completes it | `invalid`, `unavailable`, `closed` |
+| `release` | Stop keeping an adoption's versions before the row unloads (ToolBinding) | `{adoption}` | `{released}` | None | `invalid`, `closed` |
 | `run` | Run one call of an adopted generation | `{adoption, call, caller}` | `{result}` | The caller's token stops the call; the tool's own settlement stays with its contributor | `invalid`, `unavailable`, `cancelled`, `closed` |
 | `resolve_write` | Resolve a write's target without effects, before admission | `{adoption, call}` | `{call}` | The caller's token stops the resolution | `invalid`, `unavailable`, `cancelled`, `closed` |
 | `ordering` | The class deciding whether the call shares its step | `{adoption, call}` | `{class: "concurrent" \| "exclusive"}` | None | `invalid`, `unavailable`, `closed` |
-| `claim` | Make the calls' pre-publish registrations exist before `step/tool-call` | `{request, calls}` | `{claimed: [callId]}` | None; the owner completes it | `invalid`, `closed` |
-| `release_claims` | Drop the claims a request never dispatched | `{request, calls}` | `{}` | None | `invalid`, `closed` |
+| `claim` | Make the calls' pre-publish registrations exist before `step/tool-call` (ToolBinding) | `{request, calls}` | `{claimed: [callId]}` | None; the owner completes it | `invalid`, `closed` |
+| `release_claims` | Drop the claims a request never dispatched (ToolBinding) | `{request, calls}` | `{}` | None | `invalid`, `closed` |
 | `declarations` | The current declarations and source versions | `{}` | `{tools, sources}` | None | None |
 | `sources` | Each source key's adopted version or rejection | `{}` | `{sources}` | None | None |
 | `observe_sources` | The status now and on each change until the row unloads | `{listener}` | `{}` | The row's unload ends the subscription | `closed` |
