@@ -4,7 +4,7 @@ Scope: process and Session. Issue: [#1319](https://github.com/arcships/dim/issue
 
 Report owns the drafts behind `/report` and the error-only report a client opens when no Session can be read. This document is the owner's target contract; the client interaction and the evidence rules below are the same design, restated in the contract's shape. The TimelineTree, SessionScope, ManagementMethods and SessionMethods owners are separate; their operations are dependencies.
 
-## 1. Use and scope: responsibility split
+## Use and scope: responsibility split
 
 Report owns:
 
@@ -47,7 +47,7 @@ save(report.archive); // the client saves after the connection may close
 ```
 
 Home's error-only flow uses the same three calls in the process namespace with `error` present.
-## 2. Client interaction
+## Client interaction
 
 In both TUI modes, `/report` opens a report for the current Session, including while a turn is running. It needs no captured error. Users can report an unsatisfactory answer or a repeating turn without waiting for a failure or stopping the turn. The dialog keeps the Session selected when it opened, including when preparing again after expiry. Returning to the composer and running `/report` again selects the Session shown at that time.
 
@@ -83,7 +83,7 @@ The error-only overlay uses `Report this error`. The Session overlay shows when 
 
 The overlay follows the TUI's focus and list conventions. Up and Down move between controls, and Tab and Shift+Tab cycle focus. Enter activates the focused control. Esc closes a picker first, cancels generation while busy, or closes the report. Focus starts on Model. The TUI shortens the error and report title to fit the overlay and keeps the focused action visible. The result lists the archive contents and shows the saved path so users can inspect the files with their own tools. Place `/report` immediately before `/exit` in both curated menus with the description `report the current session`, following the existing exact-name, Enter and Tab behavior. The CLI command owner owns the menu (§7). [TUI design](Tui.md), [command menu contract](../cli-commands.md#command-menu).
 
-## 3. Evidence and redaction
+## Evidence and redaction
 
 For a report about the Session, the admitted Session is the entire client-supplied reference. The Report part captures recent activity from its main branch at the published head. Error actions can supply a typed Timeline failure reference with an observed-error fallback, or an observed error alone. A typed reference contains the branch and committed sequence in the admitted Session. An observed error contains a registered client operation, a stable error code if present, the observation time and the client version. The client keeps the displayed message for the dialog. The report projects a stable operation summary and registered error code from that input. Unknown codes collapse to a generic failure for that operation. The request has no field for that message, since an error string can contain a credential, provider response or file path.
 
@@ -102,7 +102,7 @@ The Timeline read is branch-local and bounded by 32 candidate events ending at t
 
 Diagnostics never include message bodies, raw logs, workspace files, tool input or output, or raw model requests. Their fields come from typed sources or fixed renderings, and correlation IDs come from verified metadata. With redaction on, remove correlation IDs and do not select conversation text. Only an explicit local plan with redaction off may add a recent excerpt to the Session report. Do not collect hidden reasoning, tool calls or results, attachments, instructions, or full history for the excerpt. User and assistant text can itself contain sensitive details; the user should inspect the ZIP before attaching it. Options maps recognized omit or keep instructions to field directives and shows unsupported instructions in the dialog. A keep directive cannot override redaction. The generation result cannot add new evidence.
 
-## 4. Own contract
+## Own contract
 
 ### Dependencies
 
@@ -142,19 +142,20 @@ The draft is keyed by the calling connection and the part instance; a missing, e
 | `generate` | Consume the plan atomically, render or run the one-shot model call, return the archive | The named plan stops; late output is discarded; the evidence stays | The draft and its work are discarded | Accepted work settles; late output is discarded | Report |
 | `cancel` | Stop the named generation or drop the draft | — | — | — | Report |
 
-### Exceptions with reasons
+
+## Exceptions with reasons
 
 - The process namespace accepts no Session or branch id: an error-only report must work when Session admission failed, so the part has no Session to name.
 - The archive is returned in the `generate` reply: the client must be able to save after the connection closes, and a second download resource would be another owner's store.
 - Evidence is read at the published cutoff and rendered later: the snapshot is a projection Report owns, so a later turn cannot change a reviewed plan.
 
-## 5. Generation
+## Generation
 
 Local generation renders a template from the approved snapshot and uses zero model calls. The optional short-lived report Agent performs one isolated drafting operation using only the reviewed material. Its input is the fixed system instruction, filtered snapshot and resolved redaction directives. It has no inherited Session, tools, workspace, credentials or publishing access. The Provider owner resolves and authenticates the request. The report plan shows the exact prompt material, the chosen provider/model, output limit and an estimate when the necessary price and token count are available. A plan cannot silently fall back to a different connection, model or request payload.
 
 The Agent's operation uses the one-shot auxiliary model boundary, with the single-attempt policy requested in §7. It does not create a general-purpose chat Session. The model proposes the title template, body section order and evidence selections and omissions using a bounded schema of known fields. Report validates the selection and renders the actual text from approved values. Invalid output fails generation and offers the local template. Neither path includes reproduction steps unless approved evidence establishes them.
 
-## 6. Preview and sharing
+## Preview and sharing
 
 Build `report.md` and versioned `diagnostics.json` from the same approved content used for the report. The `Dim` line names the daemon build's display label and protocol version, and a `Client` line names the reporting client's label when it differs from the daemon's: a CLI talking to a daemon of another build is exactly what a report must reveal. Error reports use diagnostics v1 (`{version: 1, evidence, unavailable}`), with `evidence.capturedError` and any referenced failure evidence. Reports on the current Session use diagnostics v2 (`{version: 2, evidence, unavailable}`), with `evidence.process` and, when included, `evidence.timeline` containing `recent` records and `truncated`. The generated title is `Session report`. The ZIP contains exactly those two files. Return the two UTF-8 file contents and the base64-encoded ZIP in the direct reply so clients can save after the connection closes. Cap the ZIP at 64 KiB before encoding. The TUI exposes share actions after the ZIP has been saved and the user can open it. It leaves the saved path in the transcript when the dialog closes. Clients with inline previews display the body and both file contents before exposing share actions and treat them as data when rendering them.
 
@@ -168,7 +169,7 @@ After a successful save, both TUI modes show a hint below the saved path. Users 
 
 The client keeps the completed preview and bytes when a share action fails. The plugin cannot publish an issue or upload an archive. The browser flow is sufficient without an authenticated `gh`. [GitHub's attachment flow](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files).
 
-## 7. Requirements raised to mechanism owners
+## Requirements raised to mechanism owners
 
 | Owner | Required operation or value | Why the caller cannot compose it |
 | --- | --- | --- |
@@ -178,7 +179,7 @@ The client keeps the completed preview and bytes when a share action fails. The 
 | Provider ([#2019](https://github.com/arcships/dim/issues/2019)) | A one-shot completion with a caller-selected no-retry policy and the exact prepared material | Model-assisted generation is outside this contract until the owner offers that operation; the local template stays the default |
 | Web entry (App Server, this block) | Admit the process `report.*` namespace on the authenticated local Web entry | The error-only entry is served to the web client; the admission list is the entry's |
 
-## 8. Rule check
+## Rule check
 
 | Rule | Application |
 | --- | --- |
@@ -195,7 +196,7 @@ The client keeps the completed preview and bytes when a share action fails. The 
 | ADR 002 D2 | The feature owns the report work and state; its parts register their own methods. |
 | ADR 002 D4 and D5 | Per-report options live in the draft; the RPC contract is language-neutral. |
 
-## 9. Verification
+## Verification
 
 - Exercise `/report` in both TUI modes with an error-free Session, during a running turn, and after switching from a Session with an earlier error. Verify that the report stays bound to the Session selected when it opened and that a fresh command targets the newly shown Session. Cover Home with and without a failed conversation open.
 - Generate a ZIP from a Session with successful and repeated activity. Verify the excerpt comes from the main branch at the captured head, excludes later activity, respects the window and record bounds, and supports an empty excerpt. Verify both archive versions through their corresponding prepare inputs.
@@ -205,11 +206,11 @@ The client keeps the completed preview and bytes when a share action fails. The 
 - Generate a report on a daemon and confirm its `Dim` line carries the same label the binary prints, and that a client whose `clientVersion` names another build adds one `Client` line, in the body and in `evidence.process.clientVersion`. `crates/dim-report/tests/report_flow.rs` covers this at RPC level; `crates/dimcode/tests/cli_flow/report.rs` covers the product daemon and binary.
 - Save a report ZIP on a client connected to another host and exercise the GitHub draft and Discord flows without `gh`. Verify explicit sharing follows review or local save and that a failed share leaves the saved bytes available.
 
-## 10. Ablation
+## Ablation
 
 The Session namespace serves current-Session reports through the existing prepare method. The process entry is needed for a conversation-open error that fails Session admission and uses the same flow with fewer evidence sources. The plan ID ties a paid request to the exact preview the user confirmed. The bounded ZIP in the generation reply lets the client save without a second download resource or archive store. An isolated one-shot model operation supplies drafting and redaction without a general-purpose report Session.
 
-## 11. Binding appendix
+## Binding appendix
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

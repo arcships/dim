@@ -24,7 +24,7 @@ Callers keep:
 | --- | --- | --- |
 | A process part must wait for the host to open before starting work | Yes: `activated` composes | `activated` |
 | A part must stop when the daemon starts closing | Yes: `closing` composes | `closing` |
-| A holder must stop a graceful close while its accepted work runs | No: only the owner sees every hold and can decide the intent | `hold`, `release` |
+| A holder must stop a graceful close while its accepted work runs | No: only the owner sees every hold and can decide the intent; the work can outlive the call that started it, so no callback-scoped operation fits | `hold`, `release` |
 | The idle-close decision needs to know whether accepted work is held | Yes: `holds` composes | `holds` |
 | A client asks the daemon to shut down | No: one intent, one mode and one force flag are the owner's state | `shutdown` |
 | A listener exit must end the daemon | No: the first fault is the owner's state | `fault` |
@@ -80,7 +80,9 @@ None. The owner injects no service.
 | `shutdown` | Ask the process to close | `{mode: graceful \| forced}` | `{}` accepted | None; the close cannot be cancelled | `conflict` |
 | `fault` | A listener exited; end the process | `{listener, message}` | `{}` | None | none |
 
-A hold is released by the calling row's unload as well as by `release`: an id that outlives its row is released when the row unloads, and the reply to a later `release` is `false`. A row that crashes without unloading keeps its hold until the process ends, and the close is forced.
+`hold` and `release` are not a `withHold(work)` callback. The accepted work outlives the call that started it: a Workflow run spans several calls and several Sessions, and a Scheduler delivery settles after the launching call returned. No single function represents that work, and a callback form would make the owner keep the caller's future alive across those calls. The id lets the caller's business object own the hold while the owner only tracks it.
+
+The pair is one id's acquire and release, not a multi-step session: `release` is idempotent, a lost id never corrupts owner state and only keeps a graceful close waiting, and the row's unload releases it. A hold released by the row's unload answers `false` to a later `release`. A row that crashes without unloading keeps its hold until the process ends, and `shutdown(forced)` proceeds without it.
 
 `shutdown` does not run the sequence. It records the intent; `closing` resolves for every waiter; the assembly settles Agents, drains Rpc, closes connections and answers the initiating client. A second `shutdown` with any mode is `conflict`.
 
@@ -107,6 +109,7 @@ No other error exists: the owner has no "not found", "invalid input" or "too lar
 ## Exceptions with reasons
 
 - `processActivity` is the single published name for a merged owner: the publication gate, the holds and the shutdown intent share one plugin and one lifecycle, and `serverControl` had no method of its own. Keeping the name avoids a wire rename for Workflow and Scheduler.
+- `hold`/`release` are two calls rather than `withHold(work)`: the accepted work outlives the call (a Workflow run, a Scheduler delivery), so no callback represents it. Settlement: the calling row's unload releases its holds; the owner refuses new holds once closing starts and waits for the released ones; a lost owner keeps the close graceful until the process ends, and a forced close does not wait.
 
 ## Rule check
 

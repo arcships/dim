@@ -44,8 +44,8 @@ let opened = ui_host.open(OpenRequest {
     kind: "tui".into(),
     peer,
     address,
-    replace,
-    expected_generation,
+    replace, // the interface the client confirmed replacing; expected_generation is optional
+    expected_generation: None,
 }).await?;
 // The reply carries the one-time token the leaf passes to `attach`.
 ```
@@ -79,6 +79,8 @@ Connection's `attached` and `write`; the process root for mounting a leaf sessio
 
 `open` and `attach` require that `connection_id` views `session_id`; the owner asks Connection rather than reading its attachments.
 
+`expected_generation` is the generation the client read from `status` when it asked the user to confirm a replacement. It is a business version, not an owner-internal revision: the owner cannot decide it, because a client that saw interface A may have confirmed replacing A, and replacing whatever is current instead would close an interface the user never saw. The claim is atomic in `open`/`replace`; the attach token authorizes the leaf's attach and is a different value.
+
 ### Errors
 
 | Kind | What the caller does next |
@@ -104,6 +106,7 @@ Connection's `attached` and `write`; the process root for mounting a leaf sessio
 
 - `open` takes the leaf's waiting address as a string: the leaf chose it and the daemon dials it; no file or socket handle crosses.
 - The twenty-second start window is the owner's state: a leaf that does not attach is closed as `close` would.
+- `expected_generation` stays a request field: it is the version the client observed and confirmed, so the owner cannot choose it; a stale client is refused with `ui_generation` instead of silently replacing a newer interface.
 
 ## Rule check
 

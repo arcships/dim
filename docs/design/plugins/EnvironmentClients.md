@@ -4,7 +4,23 @@ Status: Draft. Parent: [agent environment awareness](../agent-environment.md). I
 
 EnvironmentClients tells the model which client connections are attached to its Session. It is a read projection of the App Server's connection and UI registries; it owns no connection state. The snapshot is appended directly to the branch input. It is not a Prompt source and has no version, keyed state or compaction replay.
 
-## 1. Decisions
+## Use and scope: responsibility split
+
+EnvironmentClientsBranch is a pure consumer with no public face. It owns the model-facing snapshot — the `<dim-state>` body, its bounds, its escaping and the decision to append — and nothing else. Connection owns live connections; UiHost owns interface registrations; the branch only reads the presence value and folds it into its own branch input.
+
+- **Responsibilities.** Build one snapshot at branch open and one per observed change; compare it with the last appended body; append an `input/message` with one Append-mode Raw block. No Prompt source, no version, no replay.
+- **Left with callers.** Which clients exist and what they are: `connection.presences` is a value; the branch decides how to render it.
+- **Not owned.** No connection, no registration, no presence state. The branch does not poll and does not read either registry.
+
+| Requirement (callers) | Can callers compose it from existing operations without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| The model must know which clients are attached to its Session | Yes: the branch reads `connection.presences` and writes its own input | Business composes the value |
+| The snapshot must refresh when a client attaches or leaves | Yes: the process event `ClientsChanged` wakes the branch, which re-reads the value | Business composes the event and the read |
+| A repeated body must not append twice | Yes: the branch compares with the last appended body | Business |
+
+No operation or parameter exists for this owner: every row composes.
+
+## Decisions
 
 - One snapshot at branch open, and one snapshot per observed connection change.
 - The snapshot is an `input/message` event with an Append-mode Raw block and no key.
@@ -15,7 +31,7 @@ EnvironmentClients tells the model which client connections are attached to its 
 - Only the matching Session receives the snapshot; no broadcast.
 - The shared `dim-state` guide entry is registered by `PromptGuide` ([Prompt](Prompt.md#4-the-built-in-entries-and-their-writers)); this part does not register a second entry.
 
-## 2. Snapshot body
+## Snapshot body
 
 No connection:
 
@@ -50,7 +66,7 @@ Rules:
 - The body states connections; it does not claim how many people are present.
 - No ids, device names, entry names, attach times or departure history.
 
-## 3. Data
+## Data
 
 The App Server stores, per connection:
 
@@ -74,7 +90,7 @@ connection.presences {sessionId} -> {presences: [ClientPresence]}
 
 A UI leaf takes the label of the connection that hosts it; without one, only the channel is present.
 
-## 4. Channels
+## Channels
 
 | Channel | Source |
 | --- | --- |
@@ -90,7 +106,7 @@ A UI leaf and its own protocol connection produce one `tui` entry, never an addi
 
 An ACP gateway is one connection. Several logical clients behind the gateway are not distinguished; the label, if any, is the gateway's.
 
-## 5. Trigger and append
+## Trigger and append
 
 ### Branch open
 
@@ -115,7 +131,7 @@ No polling or broadcast. The snapshot uses the existing `input/message` event; n
 
 A change that arrives during a turn is appended when it arrives. The input-ordering consequence is tracked separately; this design does not work around it.
 
-## 6. Plugin structure
+## Plugin structure
 
 - `ConnectionPlugin` provides `SessionClientsHost`.
 - `ConnectionPlugin` emits `ClientsChanged` on attach, detach, UI attach/close/replace and connection finish.
@@ -123,14 +139,14 @@ A change that arrives during a turn is appended when it arrives. The input-order
 - There is no Session part for this projection.
 - No new process plugin.
 
-## 7. Privacy
+## Privacy
 
 - The model sees channel and an optional claimed label only.
 - No client id, device id, token, entry name or connection id.
 - A label is untrusted text: escaped and bounded.
 - Presence grants no permission and changes no approval.
 
-## 8. Errors and absence
+## Errors and absence
 
 | Situation | Result |
 | --- | --- |
@@ -143,7 +159,7 @@ A change that arrives during a turn is appended when it arrives. The input-order
 
 The in-memory presence read is infallible; it returns an empty list for an unknown Session.
 
-## 9. Dependencies
+## Dependencies
 
 | Dependency | Purpose |
 | --- | --- |
@@ -156,11 +172,11 @@ The process `connection` face answers `presences` with the request and reply def
 
 No Prompt registry, no configure control, no version.
 
-### Requirements raised to mechanism owners
+## Requirements raised to mechanism owners
 
 None to the runtime or rutis.
 
-## 10. Rule check
+## Rule check
 
 | Rule | How this design complies |
 | --- | --- |
@@ -180,7 +196,7 @@ None to the runtime or rutis.
 | ADR 002 D4 | No new configuration. |
 | ADR 002 D5 | The body is data; Rust is a binding. |
 
-## 11. Verification
+## Verification
 
 | Scenario | Expected |
 | --- | --- |
@@ -196,7 +212,7 @@ None to the runtime or rutis.
 | Remote connection | Not reported |
 | Compaction | The snapshot may be removed; no replay |
 
-## 12. Open decisions
+## Open decisions
 
 1. Whether the body lists every connection or caps a long list.
 2. Whether a claimed label is shown by default or only when the client opts in.
