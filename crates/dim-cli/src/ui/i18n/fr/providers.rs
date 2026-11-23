@@ -1,5 +1,25 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "Forfait ChatGPT utilisé",
+        "This sign-in method will be removed in a future version." => {
+            "Cette méthode de connexion sera supprimée dans une prochaine version."
+        }
+        "Switch to ChatGPT" => "Passer à ChatGPT",
+        "Manage usage" => "Gérer l’utilisation",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "OpenAI traite les instructions, les fichiers sélectionnés et les résultats des outils."
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "Dim enregistre votre connexion à ChatGPT sur cet ordinateur."
+        }
+        "Switch account" => "Changer de compte",
+        "Continue with ChatGPT" => "Continuer avec ChatGPT",
+        "Add ChatGPT account" => "Ajouter un compte ChatGPT",
+        "Waiting for authorization in your browser" => {
+            "En attente de votre autorisation dans le navigateur"
+        }
+        "{name} (Legacy)" => "{name} (ancien)",
+        "Legacy" => "Ancien",
         "Refresh model list" => "Actualiser la liste des modèles",
         "Model list refreshed" => "Liste des modèles actualisée",
         "Model list refresh failed: {reason}" => "Échec de l’actualisation des modèles : {reason}",

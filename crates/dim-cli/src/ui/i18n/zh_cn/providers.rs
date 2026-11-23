@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "正在使用 ChatGPT 套餐",
+        "This sign-in method will be removed in a future version." => {
+            "此登录方式将在未来版本中下线。"
+        }
+        "Switch to ChatGPT" => "切换到 ChatGPT",
+        "Manage usage" => "管理用量",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "OpenAI 会处理提示词、选定的文件和工具执行结果。"
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "Dim 会将你的 ChatGPT 连接保存在这台电脑上。"
+        }
+        "Switch account" => "切换账号",
+        "Continue with ChatGPT" => "使用 ChatGPT 继续",
+        "Add ChatGPT account" => "添加 ChatGPT 账号",
+        "Waiting for authorization in your browser" => "正在等待你在浏览器中授权",
+        "{name} (Legacy)" => "{name}（旧版）",
+        "Legacy" => "旧版",
         "Refresh model list" => "刷新模型列表",
         "Model list refreshed" => "模型列表已刷新",
         "Model list refresh failed: {reason}" => "刷新模型列表失败：{reason}",

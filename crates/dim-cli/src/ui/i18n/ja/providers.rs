@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "ChatGPT プランを使用中",
+        "This sign-in method will be removed in a future version." => {
+            "このサインイン方法は今後のバージョンで廃止されます。"
+        }
+        "Switch to ChatGPT" => "ChatGPT に切り替え",
+        "Manage usage" => "使用量を管理",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "OpenAI はプロンプト、選択したファイル、ツールの実行結果を処理します。"
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "Dim は ChatGPT との接続情報をこのコンピューターに保存します。"
+        }
+        "Switch account" => "アカウントを切り替え",
+        "Continue with ChatGPT" => "ChatGPT で続行",
+        "Add ChatGPT account" => "ChatGPT アカウントを追加",
+        "Waiting for authorization in your browser" => "ブラウザーでの認証を待っています",
+        "{name} (Legacy)" => "{name}（旧方式）",
+        "Legacy" => "旧方式",
         "Refresh model list" => "モデル一覧を更新",
         "Model list refreshed" => "モデル一覧を更新しました",
         "Model list refresh failed: {reason}" => "モデル一覧を更新できませんでした: {reason}",

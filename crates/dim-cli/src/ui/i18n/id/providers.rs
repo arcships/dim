@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "Menggunakan paket ChatGPT",
+        "This sign-in method will be removed in a future version." => {
+            "Metode masuk ini akan dihapus pada versi mendatang."
+        }
+        "Switch to ChatGPT" => "Beralih ke ChatGPT",
+        "Manage usage" => "Kelola penggunaan",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "OpenAI memproses perintah, berkas yang dipilih, dan hasil alat."
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "Dim menyimpan koneksi ChatGPT Anda di komputer ini."
+        }
+        "Switch account" => "Ganti akun",
+        "Continue with ChatGPT" => "Lanjutkan dengan ChatGPT",
+        "Add ChatGPT account" => "Tambahkan akun ChatGPT",
+        "Waiting for authorization in your browser" => "Menunggu otorisasi di browser Anda",
+        "{name} (Legacy)" => "{name} (lama)",
+        "Legacy" => "Lama",
         "Refresh model list" => "Segarkan daftar model",
         "Model list refreshed" => "Daftar model disegarkan",
         "Model list refresh failed: {reason}" => "Gagal menyegarkan daftar model: {reason}",
