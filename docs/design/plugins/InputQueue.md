@@ -36,7 +36,7 @@ An operation exists only where the row says No.
 The operator entry validates the content, then asks for the conditional withdrawal and replacement; the queue runs the submit checks before admitting it:
 
 ```rust
-let answer = input_queue
+let answer = line_owner::<InputQueue>(line)?
     .withdraw(
         WithdrawRequest {
             input_id,
@@ -78,7 +78,7 @@ let Pending { pending } = input_queue
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `submit` | Admit one input into the line, once per submission id | `{input}` | `{inputId, sequence}`; a repeated submission id answers the committed input | The caller cancels before the append; nothing is written | `invalid` (the input fails its own shape or scope), `line_ended` (the line has ended), `closed` |
+| `submit` | Admit one input into the line, once per submission id | `{input}` | `{inputId, sequence}`; a repeated submission id answers the committed input | The caller cancels before the append; nothing is written | `invalid` (the input fails its own shape or scope), `line_ended` (the line has ended), `cancelled`, `closed` |
 | `withdraw` | Withdraw one held input, optionally replacing it with a checked Steer | `{inputId, reason?, steer?}` | `{status}`: `deleted{sequence}` or `notHeld` | The caller cancels the wait; a committed withdrawal stands and a later call answers `notHeld` | `input_blocked` (a submit check refused the Steer), `invalid` (a malformed Steer candidate), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
 | `pending` | Whether an input is held and unapplied at a cutoff | `{inputId, through?, includeBlockPresence?}` | `{pending}` | The caller cancels the wait for the cutoff; nothing changes | `closed`, `cancelled` |
 
@@ -92,7 +92,7 @@ let Pending { pending } = input_queue
 | `line_ended` | `submit` | The line has ended; read its facts for history or choose an open line |
 | `input_blocked` | `withdraw` | The check's message says why; the withdrawal and the replacement were not written; change the input |
 | `publication_unknown` | `withdraw` | The batch committed but its publication was not confirmed; query the line's facts after recovery instead of retrying the withdrawal |
-| `cancelled` | `withdraw`, `pending` | The wait stopped; a committed withdrawal stands |
+| `cancelled` | `submit`, `withdraw`, `pending` | Nothing was written by the cancelled call; a committed withdrawal stands |
 | `closed` | all | The line is closing; stop writing inputs to it |
 
 A withdrawal of an input the queue no longer holds is `notHeld`, not an error: the caller's next step is the same, and a `notHeld` decision writes no result and no replacement.
@@ -109,6 +109,13 @@ A withdrawal of an input the queue no longer holds is `notHeld`, not an error: t
 
 - `withdraw` runs the operator's submit checks itself: the checks are registered on the Session, but only the queue knows whether the input is still held and only the queue can make the replacement atomic, so a Session entry composing the two would race a second withdrawal.
 - A Steer candidate carries the operator's content and the checks' blocks as data: the candidate is never an adopted input and never enters model context, so it crosses with the command that decides it.
+
+## Supersedes
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `inputQueue` rows and the `timelineTree.input` row that names the queue's input entry.
+- `docs/design/service-faces.md` sections 3.4 and 3.5: the `inputQueue` row and the statement that `inputQueue.withdraw` only withdraws while Steer goes through the Session entry's checks.
+- `docs/design/contracts/session-access.md` section 2's pending derivation, section A.4's checks-before-the-call text and the Rust binding row that names `withdraw_checked`.
+- `docs/design/timeline-branches.md` section 6: the message path written through `TreeCommands.input`.
 
 ## Verification
 
@@ -145,7 +152,7 @@ A withdrawal of an input the queue no longer holds is `notHeld`, not an error: t
 
 - #2026 (SubmitChecks): `check` must accept `{entry, branchId, user, mode}` and answer proceed with blocks and warnings or a block, with the caller's cancellation; InputQueue calls it for an operator Steer.
 - #2026 (InputMethods): `session.input.pending` and `session.input.withdraw` become callers of `pending` and `withdraw` by line id; the Session entry keeps the operator's content validation and the client's reply shape.
-- #2025 (Session access): a Session part writes an input to a line and reads its pending state by line id through the Session access surface.
+- #2025 (Session access): a Session part calls `line_owner::<InputQueue>(line)?.submit/withdraw/pending`; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
 
 ## Binding appendix
 
@@ -204,7 +211,7 @@ pub struct Pending {
 }
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum InputQueueError {
     #[error("invalid: {message}")]
     Invalid { message: String },

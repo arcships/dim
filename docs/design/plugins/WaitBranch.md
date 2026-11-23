@@ -32,7 +32,7 @@ An operation exists only where the row says No.
 The `wait` tool, on the calling line, passes the line id, the optional task and its own cancellation:
 
 ```rust
-let outcome = wait_branch
+let outcome = line_owner::<WaitBranch>(line)?
     .wait(
         WaitRequest { task_id, timeout_ms },
         cancel.clone(),
@@ -81,6 +81,10 @@ match outcome {
 - A reload ends an accepted wait with an error rather than replaying an arrival: a cancelled background task emits no wake, and an arrival from the previous generation is not a wake the model can still act on.
 - The wait's timeout belongs to the call, not to the owner: the owner has no policy on how long a caller may park, and the tool is the one place a model-facing bound is stated.
 
+## Supersedes
+
+- [Wait](https://github.com/arcships/dim/pull/2103) (#2103): the branch arrival table and its `wait` operation; the tool declaration, its texts and the tool-result settlement remain that document's.
+
 ## Verification
 
 - A Steer or a tagged notice released during an open turn ends a wait; an input the model read first does not end a later wait; the input that opened the turn never ends one.
@@ -114,7 +118,7 @@ match outcome {
 ## Requirements raised to mechanism owners
 
 - #2026 (`wait` tool): the tool calls `wait` by the calling line id and keeps the model-facing texts and the tool-result settlement; it no longer holds the branch `Wait` object or calls a private method. The Wait document keeps only the tool; the arrival table and the operation are this contract's, so the two documents do not both define a table or a reply shape.
-- #2025 (Session access): the tool reaches a line's `WaitBranch` by line id through the Session access surface.
+- #2025 (Session access): the tool calls `line_owner::<WaitBranch>(line)?.wait(..)`; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
 
 ## Binding appendix
 
@@ -134,7 +138,7 @@ pub struct WaitRequest {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "reason", rename_all = "camelCase")]
+#[serde(tag = "reason", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum WaitOutcome {
     Notification { task_ids: Vec<String>, waited_ms: u64 },
     UserSteer { waited_ms: u64 },
@@ -144,7 +148,7 @@ pub enum WaitOutcome {
 }
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum WaitError {
     #[error("wait is already running in this session.")]
     AlreadyWaiting,

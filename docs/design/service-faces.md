@@ -146,7 +146,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 [InputQueue](../architecture/rust-agent/plugins/InputQueue.md#data-face)、
 [Wait](../architecture/rust-agent/plugins/Wait.md#data-face) 与
 [toolHost](../architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)。
-`inputQueue.withdraw` 只做普通撤回；Steer 必须走 `session.input.withdraw` 的校验与提交检查入口。
+`inputQueue.withdraw` 接受可选的 Steer 候选并在队列内运行 submit checks；见 [InputQueue](../plugins/InputQueue.md)。
 
 `mcpSession` 与 `backgroundExec` 的数据面以 id 加操作暴露：
 
@@ -170,15 +170,15 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `agentLoop` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
-| `loopState` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
-| `prompt` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
-| `contextPreparation` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
-| `contextUsage` | branch | ContextUsage | hot-path | 本地请求计数器、请求引用与按序统计；`session.context.usage` 是 App Server RPC。按 #1292 确认是否需要独立插件操作。 |
+| `agentLoop` | branch | Loop | hot-path | 目标契约：[Loop](../plugins/Loop.md) |
+| `loopState` | branch | Loop | hot-path | 并入 [Loop](../plugins/Loop.md) 的 `state`/`observe` |
+| `prompt` | branch | Prompt | hot-path | 目标契约：[Prompt adoption](../plugins/PromptAdoption.md) |
+| `contextPreparation` | branch | ContextPreparation | hot-path | 目标契约：[ContextPreparation](../plugins/ContextPreparation.md) |
+| `contextUsage` | branch | ContextUsage | hot-path | 目标契约：[ContextUsage](../plugins/ContextUsage.md)；`session.context.usage` 是 App Server RPC。 |
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
-| `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
-| `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
+| `configurationPublisher` | branch | ContextPreparation | hot-path | 并入 [Prompt adoption](../plugins/PromptAdoption.md) 的 `configure` |
+| `configureControl` | branch | Prompt | hot-path | 并入 [Prompt adoption](../plugins/PromptAdoption.md) 的 `configure` |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
@@ -317,7 +317,7 @@ store.associateWorktree {sessionId, repository, root, subtree} -> {}
 
 - `agentConfig` 在 runtime 的 catalog 注册 shared instance；`SessionScope` 已经提供值，`get` 返回同一个快照。 配置快照直接使用所有者的数据定义，接收端允许未知字段；公开类型名称的迁移见[插件配置类型兼容性说明](../release/README.md#plugin-configuration-type-compatibility)。
 - `skillsConfig`、`collaborationConfig` 的注册从 typed 改成 shared instance；值仍由 `install_with_config` 的 `session_value` 提供。
-- `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 通过 `PromptSourcesBranch::language()` 读同一个 cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
+- `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 的分支部件通过 PromptHost 读取所检查的源，不再转交 Session 的 cell；见 [PromptSourcesBranch](../plugins/PromptSourcesBranch.md)。
 - FileAccess 通过 `store.associateWorktree` 调用 SessionStore；Rust 与跨语言调用共享同一写入操作。迁移调用方时移除 `worktreeAssociations`。路径校验和原子关联由 SessionStore 负责。
 - 测试：`crates/dim-agent-capabilities/tests/legacy_session_faces.rs` 与 `crates/dim-app-server/tests/legacy_session_faces.rs` 比较 typed binding 与 wire 的同一操作。
 

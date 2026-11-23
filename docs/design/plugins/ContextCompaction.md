@@ -18,14 +18,12 @@ are decided by running the evaluation (§13.4). §14 maps the compaction-quality
 turns verbatim. The replaced range is normally everything since the previous compaction point,
 together with the previous replacement. From then on, the branch advances on the new result.
 
-Compaction is part of how the Loop controls the context window. It is a Loop step, like a
-model call or a tool batch, and it is not tied to a turn. While a compaction step runs, the
-Loop does not advance to its next step. Otherwise the context could overflow during
+Compaction is how a line keeps its context window. The command and the step are ContextPreparation's ([ContextPreparation](ContextPreparation.md)); the Loop starts no request while a step runs, so its steps stay consistent with the replacement. Otherwise the context could overflow during
 compaction, and new events would be decided on the old context, inconsistent with the
 replacement.
 
-Automatic compaction already runs inside a request's preparation (`context/prepare` →
-compaction → `model/call`), and the Loop waits for that request's terminal
+Automatic compaction runs inside a request's preparation (`context/prepare` →
+compaction → `model/call`); the manual command is `contextPreparation.compact`
 ([context_policy.rs](../../../crates/dim-agent-capabilities/src/context_policy.rs)). It runs in
 every profile that installs it through `defaults::install_compaction`
 ([cli.rs](../../../crates/dim-app-server/src/cli.rs)): the product profile and the `--models`
@@ -43,10 +41,8 @@ F1 separates three layers (§2.2) and adds:
    `{retain_from, replacement: Message[], strategy, …}`, where `retain_from` is the id of the first
    Timeline event kept verbatim. There is one replay rule for every strategy: everything before
    `retain_from` is replaced by `replacement`.
-4. **One compaction path.** ContextPolicy's compaction step is one function. Automatic
-   compaction calls it during preparation, and the Loop's manual step calls it too.
-5. **Manual compaction as a Loop step.** `session.context.compact` writes the command
-   `context/compact`, and the Loop schedules a compaction step:
+4. **One compaction path.** ContextPolicy's compaction step is one function, run by ContextPreparation for both the automatic threshold and the manual command.
+5. **Manual compaction as ContextPreparation's operation.** `session.context.compact` calls `contextPreparation.compact`, which writes the command `context/compact` and runs the step:
    - Inside a turn, the step runs at the next step boundary, before the next request is
      prepared.
    - With no turn running, the step runs at once and writes only its compaction facts.
@@ -68,8 +64,7 @@ unreleased.
 - **Not inside Provider.** The capability snapshot travels on the `ModelRequest`. Credentials are
   resolved by `ProviderConnectionResolver`, as ModelProvider resolves them for every turn.
   Execution is `ModelHost`.
-- **No second state machine.** The Loop sequences every step. ContextPreparation runs the
-  compaction function only inside a request preparation the Loop has already handed to it.
+- **No second state machine.** ContextPreparation runs the compaction function for its own preparation and for the manual command; the Loop keeps turn and request order and starts no request while a step runs.
 
 ## 2. Structure
 
@@ -110,8 +105,7 @@ provider must not depend on `TreeCommands`, which the branch tree provides.
 
 ### 2.1 Where the manual step lives
 
-The Loop runs the manual compaction step itself, in a tracked task, by calling
-`ContextPolicy::compact_step`. It does not drive ContextPreparation through an event. The reasons:
+The manual command and the step are ContextPreparation's; see [ContextPreparation](ContextPreparation.md). This section's earlier account of the Loop holding the step is superseded. The reasons it gave:
 
 - **The Loop already holds what the step needs.** Its `Deps` already inject `Timeline`,
   `HistoryRenderer` and `ContextModelHost`

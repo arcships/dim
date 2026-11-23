@@ -39,8 +39,7 @@ Collaboration stops the member's turn that consumed the request's input; the ans
 
 ```rust
 let Some(_) = agent_loop
-    .stop_turn(StopTurn { turn_id: turn, reason: INTERRUPTED.into() })
-    .await?
+    .stop_turn(StopTurn { turn_id: turn, reason: INTERRUPTED.into() })?
 else {
     return Ok(()); // the turn already ended; nothing was written
 };
@@ -49,9 +48,9 @@ else {
 A client reads the phase, then follows changes for the rest of its connection:
 
 ```rust
-let RunState { phase, turn_id } = agent_loop.state().await?;
-let lease = agent_loop
-    .observe(Observe { listener: Arc::new(move |state| show(&state)) })
+let RunState { phase, turn_id } = agent_loop.state()?;
+agent_loop
+    .observe(&ctx, Arc::new(move |state| show(&state)))
     .await?;
 ```
 
@@ -78,7 +77,7 @@ The exact names above are the siblings' contracts; Loop calls those operations, 
 | --- | --- | --- | --- | --- | --- |
 | `stopTurn` | Stop one turn if it is still the open one | `{turnId, reason}` | `{sequence?}`: absent when the turn already ended or the id is not the open turn | None; the check and the commit are one lock section | `closed` |
 | `state` | The phase and the open turn now | `{}` | `{phase: idle\|running\|stopping, turnId?}` | None | `closed` |
-| `observe` | The current state, then every change, until the row unloads | `{listener}` | `{leaseId}` | The row's unload ends the subscription; the owner settles the id | `closed` |
+| `observe` | The current state, then every change, until the row unloads | the listener argument | `{}` | The row's unload ends the subscription; nothing is released by the caller | `closed` |
 
 `listener` is a callback by reference: it runs outside Loop's turn lock and outside the Timeline's commit lock. A lease id is bound to the calling row; the owner drops it at the row's unload, so a caller that loses the id leaks nothing.
 
@@ -104,6 +103,12 @@ The request pipeline's own tasks and cancellation are Loop's: handlers register 
 ## Exceptions with reasons
 
 None. Every cross-owner call lands on an operation above or on a sibling's operation named in Dependencies.
+
+## Supersedes
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `agentLoop` rows (`compact`, `stopTurn`, `state`, `observe`) and the compaction row that assigns the manual command to `agentLoop`.
+- `docs/design/service-faces.md` section 3.5: the `agentLoop` and `loopState` rows.
+- [ContextCompaction](ContextCompaction.md) section 1 items 4-5, section 1.1 and section 2.1: the manual compaction command and step are ContextPreparation's, and the Loop only starts no request while a step runs.
 
 ## Verification
 
@@ -139,7 +144,7 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 
 - #2028 (ToolBinding): Loop needs `bind`, `claim`, `transfer`, `retain_only` and `release` as data operations with the request id and the tool definitions; the current `ToolBinding` object methods and the `claim` return an object.
 - #2026 (GuideEntries): Loop needs `compose` as a data operation returning the System text for one line and a base System; the current `compose_system` takes Rust values.
-- #2025 (Session access): the Session entry `session.turn.get` reaches `state` and `timelineTree.read` by line id; the id-to-instance step is #2025's requirement.
+- #2025 (Session access): the Session entry `session.turn.get` reaches `line_owner::<Loop>(line)?.state()` and `timelineTree.read` by line id; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
 
 ## Binding appendix
 
@@ -151,7 +156,7 @@ use dim_agent_runtime::PublicService;
 use rutis::Ctx;
 use std::sync::Arc;
 
-pub type Listener = Arc<dyn Fn(RunState) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
+pub type RunStateListener = Arc<dyn Fn(RunState) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -183,23 +188,17 @@ pub struct Stopped {
     pub sequence: Option<u64>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Observe {
-    #[serde(skip)]
-    pub listener: Listener,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Lease {
-    pub lease_id: String,
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum LoopError {
+    #[error("closed")]
+    Closed,
 }
 
 #[rutis::service]
 impl Loop {
-    pub async fn stop_turn(&self, request: StopTurn) -> Result<Stopped, LoopError> { /* .. */ }
-    pub fn state(&self) -> RunState { /* .. */ }
-    pub async fn observe(&self, request: Observe) -> Result<Lease, LoopError> { /* .. */ }
+    pub fn stop_turn(&self, request: StopTurn) -> Result<Stopped, LoopError> { /* .. */ }
+    pub fn state(&self) -> Result<RunState, LoopError> { /* .. */ }
+    pub async fn observe(&self, caller: &Ctx, listener: RunStateListener) -> Result<(), LoopError> { /* .. */ }
 }
 ```

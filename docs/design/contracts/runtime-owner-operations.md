@@ -21,14 +21,14 @@
 | Goal → timelineTree | `inputs(id, inputs) → committed events`. One validated atomic batch for the Goal record and trigger. |
 | Branch-detail RPC → timelineTree | `display(id) → {entry,purpose?,cutMessages?,end?}`. |
 | History RPC and line-read tools → timelineTree | `batchEnd(id, sequence) → void`, `pageEnd(id, after, limit, through) → sequence`, and `page` at the same cutoff. Preserve complete batches and the fixed head of ended lines. |
-| Context RPC → target branch | `agentLoop.compact` and `contextUsage.read`. |
+| Context RPC → target branch | `contextPreparation.compact` and `contextUsage.read`; the owner contracts are [ContextPreparation](../plugins/ContextPreparation.md) and [ContextUsage](../plugins/ContextUsage.md). |
 | Goal and Shell admission → timelineTree | `directory({id})` returns the matching directory entry or the unknown-branch error using a single-branch lookup. Goal reads ended history through `query`; writes retain the ended/unknown errors. |
-| InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch. |
+| InputQueue and Collaboration approvals → target branch | `inputQueue.submit`, `inputQueue.withdraw` (the queue runs the submit checks for a Steer), and `approval.pending/decide` on the selected branch; see [InputQueue](../plugins/InputQueue.md). |
 | PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report also uses `timelineTree.query` at the selected head for evidence. |
 | Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |
 | Fault producers and Session observers → `sessionLifecycle` | `reportFault(error) → void`, `failure({}) → SessionFault or null`, `observeFault(listener) → id`, `release(id) → boolean`. The listener receives the current failure (initially null) and subsequent reports. Caller unload releases the observation. The first fault wins until a storage failure supersedes it; the first storage failure wins. |
 | Check providers and input admission → SubmitChecks | `register(name, check) → void`; `check({entry, branchId, user?, mode}, cancelled) → proceed{blocks, warnings} or block{message}`. Run in name order through the first block. Interrupted checks write nothing. |
-| Compaction, stop and activity callers → `agentLoop` | `agentLoop.compact({}) → sequence`, `stopTurn({turnId, reason}) → sequence or null`; `agentLoop.state({}) → {phase, turnId?}`, `observe(listener)` delivers that snapshot. |
+| Compaction → `contextPreparation`; stop and activity callers → `agentLoop` | `contextPreparation.compact(..)`; `agentLoop.stopTurn/state/observe`; see [Loop](../plugins/Loop.md) and [ContextPreparation](../plugins/ContextPreparation.md). |
 
 ### Calls from a Session to a selected branch
 
@@ -43,9 +43,9 @@ own methods.
 
 | Session caller | Target operation |
 | --- | --- |
-| Context RPC / PromptSuggestion | `contextUsage.read`. The `compactAndWait` variant runs the existing compact RPC handler: it calls `agentLoop.compact` and waits for the compaction fact matching that command sequence and returns the existing completed/skipped/failed reply. The committed sequence watch and bounded query run inside the selected branch for that wait. |
+| Context RPC / PromptSuggestion | `contextUsage.read`; Context RPC's `compactAndWait` is `contextPreparation.compact`, which answers the outcome itself. |
 | Session language / Agent configuration / Report | `prompt.configure` or `prompt.adoptedConfiguration` with the existing source, model and outcome records. |
-| InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
+| InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the queue runs the submit checks for a Steer. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
 
 For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
 and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in
@@ -58,8 +58,8 @@ substitutes a newer head.
 
 | Caller → owner | New API |
 | --- | --- |
-| ToolBinding, Session language and Agent configuration → `prompt` | `prompt.initialCompletion({}) → void or opening error`; `prompt.configure({sources, model?}) → unchanged, adopted or superseded`. |
-| Prompt and guide adoption → `contextPreparation` | `contextPreparation.publish({adopted, changes, model?, toolAdoption?, inputs}) → sequence or null`; `awaitPublished({sequence}) → sequence`. Publication commits adoption atomically. |
+| ToolBinding, Session language and Agent configuration → `prompt` | `prompt.configure({sources, model?, tools?}) → unchanged, adopted or superseded`; the opening adoption is internal. See [Prompt adoption](../plugins/PromptAdoption.md). |
+| Prompt and guide adoption → `prompt` | publication is `prompt.configure`; see [Prompt adoption](../plugins/PromptAdoption.md). |
 | File read/edit/write tools → branch FileReads | `binding({path}) → TextFileBinding or null`, `writeBinding({path}) → absent, compacted or bound`, `record({path, binding, established}) → void`. The original read supplies the established sequence; file I/O stays on the file node. |
 
 ### Model preparation, history and tools

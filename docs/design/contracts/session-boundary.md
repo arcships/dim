@@ -14,7 +14,7 @@ This contract defines three registration services in the language-neutral form o
 
 Proposed (P3, with RemoteGateway; not implemented): Rpc decides what a connection is served from its `ConnectionEntry {name, deviceId}`: a local connection gets Session and management methods, a connection with a `deviceId` (a paired device through RemoteGateway) never gets management methods, and an exported rutis link gets management methods only when exported. Today Rpc serves every connection by the existing transport profile rules (A.3). There is no port and no Management plugin. Providers are optional plugins installed only when enabled. Rpc reads `managementMethods` on each call and depends on no provider, so a provider that is disabled, Pending, Failed or reloading affects only its own namespace (§3.2). The method tables and ToolRegistry do not depend on the parts that register with them; those parts depend on them. A tool registered later is offered from the next request, and a withdrawn one is no longer offered, without a Session reload (A.5).
 
-Acting on a tool call or an input before it is committed is not a service of this contract. Approval and the Session input path are unchanged; InputQueue's withdrawal is its owner's change ([overview Appendix B](../overview.md#appendix-b-supplements-to-existing-plugins)).
+Acting on a tool call or an input before it is committed is not a service of this contract. Approval and the Session input path are unchanged; the withdrawal operation is [InputQueue](../plugins/InputQueue.md)'s.
 
 ## 1. Structure
 

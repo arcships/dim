@@ -64,7 +64,9 @@ context_preparation
 The operator asks for a manual compaction; the reply is the step's outcome and the caller's cancel stops only the wait:
 
 ```rust
-let outcome = context_preparation.compact(CompactionRequest { manual: true }, cancel.clone()).await?;
+let outcome = line_owner::<ContextPreparation>(line)?
+    .compact(CompactionRequest { manual: true }, cancel.clone())
+    .await?;
 match outcome {
     CompactionOutcome::Completed { sequence } => reply_done(sequence),
     CompactionOutcome::Skipped { reason } => reply_skipped(reason),
@@ -91,7 +93,7 @@ match outcome {
 | --- | --- | --- | --- | --- | --- |
 | `prepare` | Admit a step's request, project the history at its fixed cutoff, build the request and publish the handoff facts | `{source}` | `{}` once `context/prepare` and the request are committed | The caller's cancel before admission writes nothing; after admission the owner settles the request | `invalid` (malformed source data), `cancelled`, `closed` |
 | `validate` | Confirm the final request fits the budget, reusing the estimate when it still matches | `{request}` | `{}` | The caller's cancel stops the check; nothing changes | `over_budget` (the request is too large; the caller fails the turn or recovers), `invalid` (missing or foreign capability snapshot), `cancelled`, `closed` |
-| `compact` | Run one manual compaction step and answer its outcome | `{manual: true}` | `{outcome}`: `completed{sequence}`, `skipped{reason}` or `failed{reason}` | The caller's cancel stops the wait, not the committed step; a later call joins the same step | `cancelled` (the wait stopped), `closed` |
+| `compact` | Run one manual compaction step and answer its outcome | `{manual: true}` | `{outcome}`: `completed{sequence}`, `skipped{reason}` or `failed{reason}` | The command is written before the first await; the caller's cancel or a dropped wait stops only the wait, and a later call joins the committed step | `cancelled` (the wait stopped; the step continues), `closed` |
 
 `prepare` writes `context/prepare` and then `model/call`, or `model-output-end` with the failure when the host or the budget refuses. The projection is read inside the call and never persisted; the request is the durable form, and no prepared object crosses. `validate`'s reuse is expressed by the request data and the preparation's own record, never by object identity.
 
@@ -118,6 +120,13 @@ match outcome {
 ## Exceptions with reasons
 
 - The threshold compaction runs inside `prepare`, not as a separate operation: an over-threshold request must either fit after the step or fail as that request, and a caller composing the two calls would have to hold the request and the slot across them.
+
+## Supersedes
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `contextPreparation` `publish`/`awaitPublished` row and the `agentLoop.compact` row; the Loop and ContextPreparation host-port rows keep their owners (#2025) and this contract's callers.
+- `docs/design/service-faces.md` section 3.5: the `contextPreparation` and `configurationPublisher` rows.
+- [ContextCompaction](ContextCompaction.md) section 1 items 4-5, section 1.1 and section 2.1: `ContextPolicy` stays the compaction function, while the command and the step are this owner's.
+- [Prompt](Prompt.md) section 6.3: the published System is Prompt adoption's, and ContextPreparation reads the adopted fact.
 
 ## Verification
 
@@ -156,7 +165,7 @@ match outcome {
 - #2025 (ContextProjection): `renderedStream` is called inside `prepare` at the source's cutoff, so the ContextProjection document's caller is ContextPreparation, not Loop; the operation answers the branch's own projection to the branch part.
 - #2025 (ContextFacts, SummaryStrategy): the counting and summary operations above replace `contextModelHost` and `compactionStrategyHost`; this contract uses only those operations.
 - #2026 (GuideEntries): `register` must accept a line-scoped entry and withdraw it with the part.
-- #2025 (Session access): the client's `session.context.compact` reaches `compact` by line id through the Session access surface.
+- #2025 (Session access): the client's `session.context.compact` reaches `line_owner::<ContextPreparation>(line)?.compact(..)` by line id; ADR 027's id-to-instance step resolves the branch group's data face.
 
 ## Binding appendix
 
@@ -195,7 +204,7 @@ pub enum CompactionOutcome {
 }
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum PreparationError {
     #[error("invalid: {message}")]
     Invalid { message: String },

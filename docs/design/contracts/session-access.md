@@ -344,7 +344,7 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | Result fact | `input/deleted { input_id }`, written only by InputQueue, only when it consumes an `input/withdraw` while it holds that input unapplied |
 | Held | InputQueue holds an input from its `input/message` until it writes `input/applied` or `input/deleted` for it. |
 | No effect | Unknown id, input already applied, or already deleted: InputQueue writes no result fact or replacement input and no failure event exists; the caller's reply is `notHeld` |
-| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), only a `deleted` reply also carries `steer: {inputId, sequence}` for the committed replacement, and with it `warnings?: [{check, message}]` for the submit checks' work that did not happen (Hooks A.6.2), absent when there is none. The warnings describe the replacement this call wrote, so they appear only with its receipt: a reply that wrote no replacement carries neither |
+| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods` that calls the branch's withdrawal operation; the queue runs the submit checks), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), only a `deleted` reply also carries `steer: {inputId, sequence}` for the committed replacement, and with it `warnings?: [{check, message}]` for the submit checks' work that did not happen (Hooks A.6.2), absent when there is none. The warnings describe the replacement this call wrote, so they appear only with its receipt: a reply that wrote no replacement carries neither |
 | Process and branch-part path | `sessions.withdraw` for process callers, InputQueue's branch withdrawal service for branch parts: by the `input_id` returned when the caller wrote the input |
 | Write path | The service appends `input/withdraw`, then replies with InputQueue's decision for that command. InputQueue's recheck uses only its own decision state (held set), never a lock on another owner's facts |
 | Withdraw and re-submit as Steer | InputQueue accepts the replacement only when it accepts withdrawal of the old held input. The replacement Steer `input/message` and the old input's `input/deleted` commit in one atomic result batch, with `input/deleted` last. A `notHeld` decision creates no replacement |
@@ -362,9 +362,10 @@ the message. If application wins, the original is consumed normally and no
 replacement is created. Other held inputs and explicit new submissions, including
 identical text, remain independent.
 
-InputMethods runs the existing validation and submission checks before admitting
-a Steer command. A blocked check writes neither a command nor a replacement and
-leaves a still-held input retryable. Passing the checks is not a reservation:
+InputQueue runs the existing submission checks before admitting a Steer command,
+after InputMethods validates the operator's content. A blocked check writes
+neither a command nor a replacement and leaves a still-held input retryable. See
+[InputQueue](../plugins/InputQueue.md). Passing the checks is not a reservation:
 InputQueue must still decide when it consumes the command. Two callers may both
 pass their checks, but cannot both replace the same original input.
 
@@ -528,7 +529,7 @@ while the first write is still unpublished.
 | `input` | `Session::input(InputMessageData, branch)` (existing; returns the committed input for an id the branch already holds); a key is `InputBlock::Raw { key: Some(name), retire }` |
 | `lookup` | `Session::lookup(branch, submission_id)`, shared with `session.input_lookup`: a query of the branch's committed input identities; waits for the found input's publication |
 | `history` | `Session::sequence(branch)`, failing `future_sequence` below `at_least`, then `AgentIndex::history_page(id, branch, after, limit, through)` |
-| `withdraw` | `Session::service::<InputQueue>(branch)` then `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`. The data face permits only plain withdrawal and returns `Deleted { sequence }` or `NotHeld`. `InputMethods` uses the Rust-only `withdraw_checked` for an already checked Steer candidate, retains its committed event, and confirms publication before returning the receipt (A.4). |
+| `withdraw` | `line_owner::<InputQueue>(line)?.withdraw(WithdrawRequest { input_id, reason, steer }) -> Result<Withdrawal, InputQueueError>`; the queue runs the submit checks for a Steer and returns `Deleted { sequence }` or `NotHeld`. See [InputQueue](../plugins/InputQueue.md) (A.4). |
 | `pending` | Capture `Session::publication(branch).sequence()`, wait through it with `Session::dispatch_watch(branch)` while observing publication closure, then `Session::service::<InputQueue>(branch)` and `InputQueue::pending(input_id) -> bool`: the branch's queue answers §2's rule; an id it does not hold is `false` |
 | `stop`, `idle` | `Session::stop`, `Session::idle` (existing) |
 | `delete` | `AgentIndex::delete(id)` (S5c, crate-internal): admission gate, close, `SessionStore::delete_session`, forget |

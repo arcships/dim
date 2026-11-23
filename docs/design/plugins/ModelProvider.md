@@ -37,14 +37,14 @@ A Session method answers the active output of an open turn:
 
 ```rust
 let Progress { request_id, text_characters, thinking_characters, .. } =
-    model_provider.progress().await?;
+    model_provider.progress()?;
 ```
 
 A client subscribes to progress for the rest of its connection:
 
 ```rust
-let lease = model_provider
-    .observe(Observe { listener: Arc::new(move |progress| notice(progress)) })
+model_provider
+    .observe(&ctx, Arc::new(move |progress| notice(progress)))
     .await?;
 ```
 
@@ -66,7 +66,7 @@ let lease = model_provider
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `progress` | The active request's output so far | `{}` | `{requestId?, textCharacters, thinkingCharacters, textPartId?, thinkingPartId?, thinkingStartedAt?, retry?}` | None | `closed` |
-| `observe` | The current progress, then every change, until the row unloads | `{listener}` | `{leaseId}` | The row's unload ends the subscription; the owner settles the id | `closed` |
+| `observe` | The current progress, then every change, until the row unloads | the listener argument | `{}` | The row's unload ends the subscription; nothing is released by the caller | `closed` |
 
 The reply is a value: no block, stream or request object crosses. `listener` is a callback by reference, called outside the owner's locks and outside the Timeline's commit lock.
 
@@ -87,10 +87,18 @@ The reply is a value: no block, stream or request object crosses. `listener` is 
 
 The owner writes no fact before the batch that carries it commits, and a failed output closes every started call with an error result in the same batch as the terminal, so no call of a failed output reaches a tool.
 
+## Client-visible changes
+
+The `session.model.progress` notice keeps its field names and gains three additive fields: `requestId`, `textCharacters` and `thinkingCharacters`. The additions let `session.turn.get` read the active output from the owner instead of folding `step/text` and `step/thinking` facts; a client that ignores unknown fields is unaffected. No other client-visible behavior changes: `session.turn.get` and the model-visible texts keep their shapes.
+
 ## Exceptions with reasons
 
 - The failure chain and its retry display are Provider's execution data but the terminal fact is ModelProvider's: the fact is the branch's durable record of the call, and Provider has no Timeline.
 - A terminal fact for a reload-settled call carries no Provider failure: no provider call ran, so the owner does not invent one.
+
+## Supersedes
+
+None: the contract adds the owner's first public read and keeps the provider and Timeline contracts as they are.
 
 ## Verification
 
@@ -126,6 +134,7 @@ The owner writes no fact before the batch that carries it commits, and a failed 
 
 - #2019 (Provider): `invoke` must accept the branch consumer callback, the failure chain and the image-adapted request, as the Provider contract states; ModelProvider adds nothing to that request beyond durable image bytes.
 - #2018 (SessionFiles): `read` must answer one file-backed image's bytes for the Session named in the request metadata, within the owner's limit.
+- #2025 (Session access): `session.turn.get` reads `line_owner::<ModelProvider>(line)?.progress()`; ADR 027's id-to-instance step resolves the branch group's data face.
 
 ## Binding appendix
 
@@ -136,7 +145,7 @@ use dim_agent_runtime::PublicService;
 use rutis::Ctx;
 use std::sync::Arc;
 
-pub type Listener = Arc<dyn Fn(Progress) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
+pub type ProgressListener = Arc<dyn Fn(Progress) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,21 +171,8 @@ pub struct RetryProgress {
     pub next_attempt_after_ms: u64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Observe {
-    #[serde(skip)]
-    pub listener: Listener,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Lease {
-    pub lease_id: String,
-}
-
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum ProgressError {
     #[error("closed")]
     Closed,
@@ -185,6 +181,6 @@ pub enum ProgressError {
 #[rutis::service]
 impl ModelProvider {
     pub fn progress(&self) -> Result<Progress, ProgressError> { /* .. */ }
-    pub async fn observe(&self, request: Observe) -> Result<Lease, ProgressError> { /* .. */ }
+    pub async fn observe(&self, caller: &Ctx, listener: ProgressListener) -> Result<(), ProgressError> { /* .. */ }
 }
 ```

@@ -40,7 +40,7 @@ An operation exists only where the row says No.
 The Session language update adopts the language source on the conversation line and on every loaded line:
 
 ```rust
-let outcome = prompt
+let outcome = line_owner::<Prompt>(line)?
     .configure(
         ConfigureRequest {
             sources: Some(vec![(target, Some(entry))]),
@@ -67,7 +67,7 @@ prompt
 A Session method reads the adopted configuration:
 
 ```rust
-let Adopted { settings } = prompt.adoptedConfiguration().await?;
+let Adopted { settings } = line_owner::<Prompt>(line)?.adoptedConfiguration()?;
 ```
 
 The source poller compares only what it checked:
@@ -93,7 +93,7 @@ let AdoptedEntries { entries } = prompt
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `configure` | Adopt source values, a model and a tool set as one configuration | `{sources?, model?, tools?}` | `{outcome}`: `unchanged`, `adopted{sequence}` or `superseded` | The caller cancels before the batch commits; a committed adoption is not revoked, and a pending one that a newer adoption overtakes answers `superseded` | `invalid_scope` (an entry outside the line's ancestry, or a System entry not branch-scoped), `invalid_model` (a model without the snapshot the tools need), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
+| `configure` | Adopt source values, a model and a tool set as one configuration | `{sources?, model?, tools?}` | `{outcome}`: `unchanged`, `adopted{sequence}` or `superseded` | The caller cancels before the batch commits; a committed adoption is not revoked, and a pending one that a newer adoption overtakes answers `superseded` | `invalid_scope` (an entry outside the line's ancestry, or a System entry not branch-scoped), `invalid_model` (a model without the snapshot the tools need), `source_failed` (a named source could not be loaded), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
 | `adoptedConfiguration` | The adopted settings and their revision | `{}` | `{settings?}` | None | `closed` |
 | `adoptedEntries` | The effective entries for the named targets | `{targets?}` | `{entries}` | None | `closed` |
 
@@ -105,6 +105,7 @@ let AdoptedEntries { entries } = prompt
 | --- | --- | --- |
 | `invalid_scope` | `configure` | Fix the request: a scope outside the line's ancestry, or a System entry that is not branch-scoped |
 | `invalid_model` | `configure` | Adopt a model first, then the tool set |
+| `source_failed` | `configure` | The named source could not be loaded; fix or retry the source, then adopt again |
 | `publication_unknown` | `configure` | The batch committed but publication was not confirmed; query the line's facts after recovery instead of retrying blindly |
 | `cancelled` | `configure` | Nothing was committed by the cancelled call; a committed adoption is never revoked |
 | `closed` | all | The line is closing; the next generation serves a reloaded line |
@@ -125,6 +126,12 @@ No request rebuilds the System from history: the System a line runs with is the 
 - A guide adoption records the settings unchanged: a marker's writer loading must not make the line adopt a new model or tool set, so the adoption carries the adopted settings forward.
 - A closing line publishes no guide change: its writers withdraw because it is shutting down, and a configuration recorded then would carry a System the line never ran with.
 - The publication answer can be `publication_unknown`: the batch committed and publication confirmation is a separate read, and pretending either outcome would be wrong.
+
+## Supersedes
+
+- `docs/design/contracts/runtime-owner-operations.md`: the `prompt` rows (`configure`, `adoptedConfiguration`, `initialCompletion`) and the `contextPreparation.publish` row.
+- `docs/design/service-faces.md` section 3.5: the `prompt` and `configureControl` rows.
+- The former one-file guide and publisher design in [Prompt](Prompt.md); the guide is PromptGuide's (#2103) and the adoption is this contract's.
 
 ## Verification
 
@@ -162,7 +169,7 @@ No request rebuilds the System from history: the System a line runs with is the 
 
 - #2026 (PromptGuide): `compose` must answer the System for one line and a base System as data, and `observe` must deliver a callback the branch part can register; the current `compose_system` takes Rust values and the watch is Rust-only.
 - #2026 (PromptRegistry): `promptHost.load` and `initialPromptConfiguration.get` as the target contracts state; Prompt calls them and adds no second registry.
-- #2025 (Session access): the Session language and Agent configuration entries reach `configure` and `adoptedConfiguration` by line id through the Session access surface.
+- #2025 (Session access): the Session language and Agent configuration entries reach `line_owner::<Prompt>(line)?.configure(..)` and `line_owner::<Prompt>(line)?.adoptedConfiguration()` by line id; ADR 027's id-to-instance step resolves the branch group's data face.
 
 ## Binding appendix
 
@@ -221,12 +228,14 @@ pub struct AdoptedEntries {
 }
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum PromptError {
     #[error("invalid scope: {message}")]
     InvalidScope { message: String },
     #[error("invalid model: {message}")]
     InvalidModel { message: String },
+    #[error("source {source} failed: {message}")]
+    SourceFailed { source: String, message: String },
     #[error("publication unknown")]
     PublicationUnknown,
     #[error("cancelled")]

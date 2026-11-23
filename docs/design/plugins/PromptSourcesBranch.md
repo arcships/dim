@@ -79,6 +79,11 @@ The task runs outside the owner's locks; the part registers it in `apply` and ca
 - The part polls instead of subscribing: prompt sources are files, environment values and a date, with no publication of their own; the interval is the only way to observe a change, and the current design keeps it.
 - The comparison reads Prompt's effective entries rather than a snapshot of the whole projection: the part needs only the targets it checks, and the whole projection would duplicate Prompt's state.
 
+## Supersedes
+
+- [PromptSources](PromptSources.md): the PromptSourcesBranch section and its `PromptSourcesBranch::language` cell forwarding.
+- `docs/design/service-faces.md`: the `promptSourcesBranch` catalog row and the section 4.8 statement that the branch re-exposes the Session language cell.
+
 ## Verification
 
 - A change in AGENTS.md or the environment is adopted at the next check and appears in the line's System; an unreadable project file keeps the adopted version.

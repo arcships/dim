@@ -35,7 +35,7 @@ An operation exists only where the row says No.
 A Session method reads the current numbers:
 
 ```rust
-let usage = context_usage.read(ReadUsage { through: None }, cancelled).await?;
+let usage = line_owner::<ContextUsage>(line)?.read(ReadUsage { through: None }, cancelled).await?;
 // usage: {through, contextWindow, outputTokens, thresholdTokens, estimatedInputTokens, baselineSource}
 ```
 
@@ -98,6 +98,11 @@ A missing predecessor makes the numbers unavailable rather than recounting histo
 - The provider baseline keeps one `Weak` reference to the verified request inside the owner: it is optional evidence, and losing it loses the fast path, never a saved number.
 - A saved result and its position are one record: a separate per-source tree or a copy of the request body would duplicate what the facts already hold.
 
+## Supersedes
+
+- `docs/design/service-faces.md` section 3.5: the `contextUsage` row.
+- The former `ContextUsage.md` statement that `contextUsage` is an `internal(hot-path)` interface using local request references; the three operations above replace it.
+
 ## Verification
 
 - `read` answers the current totals, `not_configured` without a model and `not_ready` before the first real request; an unsupported counter answers `unsupported`.
@@ -133,6 +138,7 @@ A missing predecessor makes the numbers unavailable rather than recounting histo
 
 - #2026 (ToolRegistry): `definitions` and `toolSourcesView.get` must answer the current declarations and their identity as data; ContextUsage reads them when the adopted configuration names no tools.
 - #2025 (ContextFacts): `contributions` and `estimate` must accept the model selection as data, as the target contract states.
+- #2025 (Session access): the Session methods read `line_owner::<ContextUsage>(line)?.read(..)`; ADR 027's id-to-instance step resolves the branch group's data face.
 
 ## Binding appendix
 
@@ -189,7 +195,7 @@ pub struct ConfirmRequest {
 }
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum UsageError {
     #[error("not configured")]
     NotConfigured,

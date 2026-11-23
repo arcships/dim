@@ -131,7 +131,7 @@ Ended display details read purpose/source and end data at their recorded positio
 
 ## 6. Messages between lines
 
-A message is an `input/message` on the receiver's Timeline, written through `TreeCommands.input`. No new input path is added. A message carries one raw block, marked by its producer and without a key, and the mode of [InputQueue](../architecture/rust-agent/plugins/InputQueue.md):
+A message is an `input/message` on the receiver's Timeline, written through the receiver line's `inputQueue.submit` ([InputQueue](plugins/InputQueue.md)). No new input path is added. A message carries one raw block, marked by its producer and without a key, and the mode of [InputQueue](../architecture/rust-agent/plugins/InputQueue.md):
 
 | Mode | Effect on the receiver | When to use it |
 | --- | --- | --- |
