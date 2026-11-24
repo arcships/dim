@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust Alpha 发布</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1f1d1a; --muted: #6b665e; --line: #e4e0d8;
+    --card: #ffffff; --code-bg: #f3f1ec; --accent: #b4532a; --warn-bg: #fff4e5; --warn-line: #f0b46a;
+    --ok-bg: #eef7ee; --ok-line: #8cc58c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161513; --fg: #ece9e3; --muted: #a29d94; --line: #2f2c28;
+      --card: #1d1c19; --code-bg: #24221f; --accent: #e88a5d; --warn-bg: #2d2418; --warn-line: #8a6431;
+      --ok-bg: #1a261a; --ok-line: #4d7a4d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161513; --fg: #ece9e3; --muted: #a29d94; --line: #2f2c28;
+    --card: #1d1c19; --code-bg: #24221f; --accent: #e88a5d; --warn-bg: #2d2418; --warn-line: #8a6431;
+    --ok-bg: #1a261a; --ok-line: #4d7a4d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Segoe UI", sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 40px 16px 80px; }
+  h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 44px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 15px; margin: 22px 0 6px; }
+  p, li { color: var(--fg); }
+  .lede { color: var(--muted); margin: 0 0 24px; }
+  a { color: var(--accent); }
+  code { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 8px 0 14px; }
+  pre code { background: none; padding: 0; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  .note { border-left: 3px solid var(--warn-line); background: var(--warn-bg); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; }
+  .ok { border-left: 3px solid var(--ok-line); background: var(--ok-bg); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; }
+  ol.steps { counter-reset: step; list-style: none; padding: 0; }
+  ol.steps > li { counter-increment: step; position: relative; padding-left: 40px; margin: 0 0 26px; }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: 0;
+    width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--bg);
+    font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center;
+  }
+  ol.steps > li > strong:first-child { display: block; margin-bottom: 2px; }
+  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0 4px; font-size: 13px; }
+  .flow span { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+  .flow i { color: var(--muted); font-style: normal; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Rust 版 dimcode 发布 alpha</h1>
+  <p class="lede">正式版和 beta 是 npm 包 <code>dimcode</code>（命令 <code>dim</code>），alpha 是单独的包 <code>dimcode-alpha</code>（命令 <code>dima</code>）。两个包可以同时装，互不覆盖；每个通道只在自己内部升级。</p>
+  <p>让 agent 代办时，CI 发版和版本 PR 使用 <a href="../../.agents/skills/dim-release/SKILL.md"><code>dim-release</code></a>；<a href="../../skills/dim-alpha-release/SKILL.md"><code>dim-alpha-release</code></a>负责选择 alpha 路径，只有明确选择本机 Mac 时才执行本机发布命令。用法与版本字段见<a href="README.md#release-skills">发布文档</a>。</p>
+
+  <h2>让 agent 准备版本或发版</h2>
+  <p>可以直接使用下面的请求。若 agent 没有列出对应 skill，让它读取上面链接指向的仓库 <code>SKILL.md</code> 即可。</p>
+<pre><code>使用 $dim-release，准备下一个 alpha 的版本 PR。
+查询所有相关 npm 包和远端 tag，选择未使用的版本，同步版本字段并验证。
+只开 PR，不合并、不打 tag、不触发构建、不发布。
+
+使用 $dim-release，为 main 上已通过 CI 的发版提交构建 GitHub prerelease 草稿。
+检查产物后停在草稿，不公开 Release，不发布 npm。
+
+使用 $dim-release，把现有 GitHub prerelease vX.Y.Z-alpha.N 发布到 npm。
+沿用原始产物，通过配置好的 OIDC 工作流发布，不重新构建。
+
+使用 $dim-alpha-release，仅在本机 Mac 做 dry run，允许编译和校验。
+不发布 npm，不创建 GitHub tag 或 Release。</code></pre>
+  <p>准备一次发布时，先把统一版本号提交到 <code>Cargo.toml</code>、<code>Cargo.lock</code>、npm 外壳和 runtime 元数据，合入 <code>main</code> 后从 <code>main</code> dispatch <code>release.yml</code>：预检把取到的号与 <code>main</code> 该提交里已提交的版本比对，不相等就在构建前拒绝，并提示合并 release PR、或用 <code>-f tag=vVERSION</code> 走恢复路径。完整字段见<a href="README.md#version-preparation">版本准备</a>。本机脚本则临时改版本、结束时还原，两条路径不能混用。</p>
+
+  <h2>通道规则</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>版本号</th><th>npm dist-tag</th><th>安装 / 升级</th><th>当前用途</th></tr>
+    <tr><td><code>X.Y.Z</code></td><td><code>latest</code></td><td><code>npm i -g dimcode</code></td><td>TS 版正式</td></tr>
+    <tr><td><code>X.Y.Z-beta.N</code></td><td><code>beta</code></td><td><code>npm i -g dimcode@beta</code></td><td>TS 版 beta</td></tr>
+    <tr><td><code>X.Y.Z-alpha.N</code></td><td>CI 入口：<code>latest</code> / <code>alpha</code></td><td><code>npm i -g dimcode-alpha</code> 或 <code>npm i -g dimcode-alpha@alpha</code>，命令 <code>dima</code></td><td>Rust nightly，仍是预发布版本</td></tr>
+  </table>
+  </div>
+  <p><code>scripts/publish-npm.mjs</code> 按版本号自动选 dist-tag 和外壳包：alpha 发 <code>dimcode-alpha</code>，只带 <code>dima</code> 命令；其他预发布标识（例如 <code>rc</code>）直接拒绝。平台包 <code>dimcode-&lt;平台&gt;</code> 和 <code>dimcode-web</code> 两边共用，外壳包锁定精确版本。alpha 构建默认使用独立的数据目录 <code>~/.dimcode-alpha</code>，不读写 <code>dim</code> 的 <code>~/.dimcode</code>。</p>
+
+  <div class="note">
+    <strong>alpha 版本号必须低于 npm 上最新的 beta。</strong>
+    已装的 TS 版 beta 会自动升级到所有预发布版本里最高的那个，不区分 alpha 和 beta。所以只要 alpha 版本号高过最新 beta，beta 用户就会被拉到 Rust 版。
+    <code>publish-alpha.mjs</code>（编译前）和 <code>publish-npm.mjs</code>（写入 npm 前）都会检查这一点，不满足就停下。
+    Rust 版从 <code>0.1.0-alpha.0</code> 起步，远低于 TS 版的 <code>0.5.x</code>，所以目前不受影响。
+  </div>
+
+  <h3>beta 要不要重新发布？</h3>
+  <div class="ok">
+    不用。TS 版的发布脚本一直用版本号里的预发布标识作 dist-tag，现有的 <code>0.5.20-beta.0</code> 已经在 <code>beta</code> 上。<code>latest</code> 和 <code>beta</code> 都不受 alpha 发布影响。
+  </div>
+  <p>只有想去掉上面那条「alpha 必须低于 beta」的限制时，才需要在 TS 仓库改 <code>packages/cli/src/core/upgrade/update-version.ts</code>，让预发布轨道只选同一标识的版本，然后发一版 beta。这个改动只对升级到新 beta 的用户生效，没升级的老版本仍按旧逻辑选。</p>
+
+  <h2>GitHub 托管 runner 构建和发布</h2>
+  <p>手动从 <code>main</code> 准备下一个 GitHub alpha。预检读取入口两标签，并校验 Web、六平台 tarball 的完整性、源提交、账号构建以及入口的精确依赖；只有 Git tag 或 Web 源提交匹配不够。若选定的 main SHA 已有完整 nightly，普通构建请求会停止并提示，不会直接宣称跳过成功。否则它自动取号，由 GitHub 托管 runner 按目标系统和架构构建六个平台，并在 Ubuntu 构建 Web，把原始压缩包、清单和校验和上传到 prerelease 草稿。</p>
+  <pre><code>gh workflow run release.yml --ref main</code></pre>
+  <p>若已授权标签修复、镜像同步和安装验收，可加 <code>-f repair_nightly=true</code>：完整 nightly 会复用而不重建，通过验收后才报告无需构建。新构建仍须检查附件并在 GitHub 发布 prerelease，然后用它的真实 tag 运行 npm 工作流。GitHub 托管 runner 通过 OIDC 发布 Release 附件，验证完整性和来源后让入口 <code>latest</code> / <code>alpha</code> 同指新 nightly；平台包和 Web 仍只更新 <code>alpha</code>。不会发布 <code>dimcode</code> 或改动其任何标签。验收使用全新 prefix/cache 分别安装默认入口和 <code>@alpha</code>，在官方源及同步后的阿里镜像上核对包版本和 <code>dima --version</code>；镜像滞后也算失败。见<a href="README.md#alpha-npm-publication">发布配置与重试说明</a>。</p>
+  <pre><code>gh workflow run npm-publish.yml --ref main -f release_tag=vX.Y.Z-alpha.N -f publish=true</code></pre>
+  <p>纯标签恢复可用 <code>npm-publish.yml --ref main -f source_commit=FULL_MAIN_SHA -f publish=true</code>，只接受本次 dispatch 的 main SHA 且要求已有完整 nightly；不支持任意旧祖先提交。旧版本有已发布 GitHub Release 时仍可用 <code>release_tag</code> 重试，但不得回退标签；没有 Release 的旧 nightly 需要新 main 构建。入口 trusted publisher 要单独允许 <code>npm dist-tag</code>；从 <code>release.yml</code> 复用恢复流程还需以该调用工作流配置第二个 tag-only trusted publisher。首次运行前确认权限和 <code>NPM_ALPHA_PUBLISH_ENABLED=true</code>。</p>
+
+  <h2>本机替代方案：一条命令 build + 发布</h2>
+  <p>和 TS 版的 <code>bun publish:bin</code> 一样，在本机 Mac 上一次完成编译、打包和发布。这条替代路线仅发布 <code>alpha</code>，不对齐入口 <code>latest</code>、不同步镜像，也不提供 CI 的双入口验收；需要双标签 nightly 时使用上面的 CI 路线：</p>
+<pre><code>npm login --registry https://registry.npmjs.org   # 第一次
+node scripts/publish-alpha.mjs                       # 自动取下一个 alpha
+node scripts/publish-alpha.mjs 0.1.0-alpha.3         # 指定版本
+node scripts/publish-alpha.mjs --dry-run             # 只编译和校验，不发布
+node scripts/publish-alpha.mjs --platform darwin-arm64  # 只发指定平台（可重复），主包只引用这些平台</code></pre>
+  <div class="flow">
+    <span>选版本</span><i>→</i><span>临时改版本号</span><i>→</i><span>编译 6 个平台</span><i>→</i><span>打包校验</span><i>→</i><span>发布 npm @alpha</span><i>→</i><span>清理</span>
+  </div>
+  <ol class="steps">
+    <li>
+      <strong>选版本</strong>
+      没指定版本时，取 npm 上最高的 alpha 加 1。比较范围包括 <code>dimcode-alpha</code>、<code>dimcode-web</code>、6 个平台包和旧的 <code>dimcode</code>，所以发到一半失败的版本号不会被重复使用。一个 alpha 都没有时，用 <code>&lt;Cargo 版本&gt;-alpha.0</code>。
+      以下情况直接拒绝：版本已经在 npm 上、alpha 高过最新 beta、工作区有未提交改动（<code>--dry-run</code> 除外）、磁盘剩余不足 8 GiB。
+    </li>
+    <li>
+      <strong>临时改版本号</strong>
+      编译前一次改齐 <code>Cargo.toml</code>、<code>Cargo.lock</code>、<code>npm/package.json</code>（含 6 个 optionalDependencies）、<code>runtime/package.json</code>、<code>runtime/package-lock.json</code>，结束时（不论成功失败）全部还原。不提交，仓库里的版本号保持不变；包里记录的源提交就是当前 <code>HEAD</code>。构建时设置 <code>DIM_RELEASE_BUILD=1</code>，所以发布出来的二进制报的正是这里设的版本；没有这个标记的构建（例如直接 <code>cargo build</code>）是源码构建，报的是最后一个已合并 release PR 提交的版本，再带上这个构建所在提交的短哈希，形如 <code>0.1.0-alpha.24-source+02ebd4a1</code>；拿不到 git 时退回 <code>&lt;version&gt;-source</code>。这个后缀只用于显示，渠道、默认 home 和安装包版本都不会读到它。
+    </li>
+    <li>
+      <strong>编译 6 个平台</strong>
+      macOS 两个架构用 cargo；Linux（glibc 2.28）和 Windows 用 <code>cargo-zigbuild</code> 交叉编译。需要先装好 <code>cargo install --locked cargo-zigbuild</code> 和 zig。
+      注意：Windows 本地用的是 <code>*-windows-gnu</code> / <code>gnullvm</code> 工具链，CI 正式版用的是 MSVC。
+    </li>
+    <li>
+      <strong>打包校验</strong>
+      复用 CI 同一套脚本 <code>stage-plugins.mjs</code>、<code>stage-release.mjs</code>、<code>pack-release.mjs</code>、<code>collect-release.mjs</code>，生成 6 个平台包、<code>dimcode-web</code> 和 <code>dimcode-alpha</code> 包，并校验版本、源提交和 sha256。默认插件只 stage 一次（<code>--portable</code> 会在安装前拒绝 lock 里带 <code>os</code>、<code>cpu</code> 或 <code>libc</code> 的插件包），每个平台包都带同一份 <code>default-plugins.json</code> 和 <code>plugins/</code>。
+    </li>
+    <li>
+      <strong>发布 npm</strong>
+      <code>publish-npm.mjs --publish-local</code> 先发 6 个平台包和 Web，最后发 <code>dimcode-alpha</code>，全部打 <code>alpha</code> tag，然后打印 dist-tags。开了 2FA 的话每个包都会提示输入 OTP。
+      <code>--publish-local</code> 只接受 alpha；本仓库尚未配置 Rust beta 和正式版的 CI 发布。
+    </li>
+    <li>
+      <strong>清理</strong>
+      见下一节。
+    </li>
+  </ol>
+
+  <h2>磁盘清理</h2>
+  <p>一次 release 编译每个目标要占几个 GB，6 个目标同时留着会把磁盘占满，所以脚本同一时间只保留一个目标的缓存：</p>
+  <ul>
+    <li>每个平台打完包就删除 <code>target/&lt;triple&gt;</code>。代价是下次发版要从头编译。</li>
+    <li>中间产物用完即删（<code>stage/</code>、<code>platforms/</code>、原生包）。</li>
+    <li>启动时删除所有 <code>staging/alpha-*</code>；结束时（不论成功失败）删除本次的 <code>staging/alpha-版本号</code> 和各目标的 <code>target/&lt;triple&gt;</code>，<code>staging/</code> 空了也一并删掉。只有 <code>--dry-run</code> 保留打好的包供检查。</li>
+  </ul>
+  <p>每次运行结束（不论成功还是失败），只要本机装了 mbx，就会自动执行一次 <code>mbx gc</code>。<code>target/</code> 由 mbx 管理时，它会按 mbx 自己的预算回收共享编译缓存和长期不用的 target，清理失败也不影响发布结果。脚本本身不会去删开发用的 <code>target/debug</code>、<code>target/release</code>。</p>
+
+  <div class="note">
+    <strong>账号插件：</strong>默认打出来的 alpha 不带 Dim 账号，只支持 API key。要带账号，运行前设置 <code>DIM_OAUTH_CLIENT_ID_CN</code> 和 <code>DIM_OAUTH_CLIENT_ID_GLOBAL</code>（不要提交到仓库）。
+  </div>
+
+  <h2>本机发布后验证</h2>
+<pre><code>npm view dimcode-alpha dist-tags
+npm i -g dimcode-alpha@alpha &amp;&amp; dima --version
+git status # 应该是干净的</code></pre>
+  <p>应看到 <code>dimcode-alpha</code> 的 <code>alpha</code> 指向新版本，<code>dimcode</code> 的 dist-tag 没有变化，<code>dim</code> 仍是原来的版本。以前装过 <code>dimcode@alpha</code> 的用户不会再收到 alpha 升级，需要手动装一次 <code>dimcode-alpha@alpha</code>。</p>
+
+  <h2>本机命令出错时</h2>
+  <ul>
+    <li><strong>任何一步失败：</strong>修好后原样重跑同一条命令。重跑会从头编译，并取下一个版本号；发到一半的那个版本号作废，不会再用。</li>
+    <li><strong>alpha 版本号高过 beta 被拦：</strong>显式指定一个更低的版本。不要去改这条检查。</li>
+    <li><strong>某个平台编译失败：</strong>修好后重跑。没加 <code>--platform</code> 时，6 个平台包缺一个都不发。</li>
+  </ul>
+  <p>CI 重试遵循 <a href="../../.agents/skills/dim-release/SKILL.md">dim-release</a>：源码不变时重试同一 tag 和原始 Release 包；源码变化才使用新版本。不要把本机命令“重新选下一版”的恢复方式套到 CI 发布。</p>
+  <p>完整的发布约束见 <a href="README.md">docs/release/README.md</a> 和 <a href="../../.agents/skills/dim-release/SKILL.md">dim-release skill</a>。</p>
+</main>
+</body>
+</html>
