@@ -126,11 +126,11 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 | `unknown_method` | `call` | `unknown_method` | No registered namespace holds the name, the name is outside the grammar, the owning namespace's provider does not declare it, or the row that registered its withdrawn namespace is disabled or absent. Check the name and the namespace's declarations; an absent row is a configuration problem |
 | `reloading` | `call` | `service_reloading` | The registering row is starting or reloading, its copy in this Session is Active because a child plugin reloads, or the row has no copy in this Session because its part is between generations; retry after it is Active and registered the namespace again |
 | `unavailable` | `call` | `service_unavailable` | The registering row failed or cannot run. Retrying fails the same way until that row is fixed or restarted |
-| `interrupted` | `call` | `operation_interrupted` | The provider's generation or the admitting Rpc load unloaded while the call ran; the call may have committed, so read the current state before retrying |
-| `closed` | `register` | `session_closed` (Session table) | The table is closing; register again in the replacement generation: the next Session for a Session table, the next process for the process table |
+| `interrupted` | `call` | `operation_interrupted` | A `report` call's provider generation or admitting Rpc load unloaded while it ran; the call may have committed, so read the current state before retrying. A `drain` call answers with its own result instead |
+| `closed` | `register` | — | The table is closing; register again in the replacement generation: the next Session for a Session table, the next process for the process table |
 | `closed` | `call`, `methods` | `session_closed` (Session table) | The table is closing; call the replacement generation: the next Session for a Session table, the next process for the process table |
 
-`invalid` and `duplicate` answer a registration only, so no client sees them. `closed` is one kind for both tables: the Session table's `closed` reaches a client as `session_closed`, and the process table has no client code of its own.
+`invalid`, `duplicate` and a registration's `closed` answer a registration only, so no client sees them. For `call` and `methods`, `closed` is one kind for both tables: the Session table's reaches a client as `session_closed`, and the process table has no client code of its own.
 
 ### Flows
 
@@ -142,7 +142,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 
 ## Exceptions with reasons
 
-- The call's connection crosses this owner twice: Rpc passes the admission's `CallSite` to `call`, and the table hands the handler the `Caller` it builds from it. No id alone can address a native row's connection, and a handler needs it to notify and to observe its close. [A.2](../contracts/session-boundary.md#a2-call-channel) fixes the behaviour and the binding below the two types: Rpc builds the site for one call and drops it when the call settles; the table binds the site to the serving generation's declared notifications; the handler may keep the `Caller` after the reply, it answers `undeclared`, `gone` or `too_large` per A.2, its `closed` resolves when the connection closes or the admitting Rpc load unloads, and neither type keeps a strong reference to the connection. A handler of another language receives `{connectionId, callId}` instead, because `callChannel` addresses the call by those ids.
+- The call's connection crosses this owner twice: Rpc passes the admission's `CallSite` to `call`, and the table hands the handler the `Caller` it builds from it. No id alone can address a native row's connection, and a handler needs it to notify and to observe its close. [A.2](../contracts/session-boundary.md#a2-call-channel) fixes the behaviour, and the [binding appendix below](#binding-appendix) states the two types: Rpc builds the site for one call and drops it when the call settles; the table binds the site to the serving generation's declared notifications; the handler may keep the `Caller` after the reply, it answers `undeclared`, `gone` or `too_large` per A.2, its `closed` resolves when the connection closes or the admitting Rpc load unloads, and neither type keeps a strong reference to the connection. A handler of another language receives `{connectionId, callId}` instead, because `callChannel` addresses the call by those ids.
 
 ## Verification
 
@@ -172,7 +172,7 @@ Flow tests on the owner:
 | §4 rule 7 | Callers use `register`, `call` and `methods`; no caller sees the registered namespaces, a provider or a channel through the owner. Rpc calls the operations and passes the call's site; a handler receives the `Caller`, the stated exception. |
 | §4 rule 8 | The only infrastructure request is `loaderRows`, a dim-owned process face for one loader row, raised below with its five fields; nothing else changes. |
 | §4 rule 9 | No Timeline fact. |
-| §7 values, ids and callbacks | The caller is data on the wire and A.2's `Caller` for a native handler — the one exception, stated with its shared design; the call callback, `cancelled` and the progress sink cross by reference; a registration lives with its row. |
+| §7 values, ids and callbacks | The caller is data on the wire, and the stated site and `Caller` are the two objects this contract hands out, each with its shared design; the call callback, `cancelled` and the progress sink cross by reference; a registration lives with its row. |
 | §7 no proxy | The table answers its own registrations; `loaderRows` is the runtime's read, raised below. |
 | §7 one interface | One name, `sessionMethods`, on the owner type; `register` and `methods` are its wire operations, `call` is its in-process operation, and the Rust binding and the wire call the same functions. |
 | §7 cross-language | `register` crosses as data plus the caller's callback through the table's dispatch, `methods` as data; `call` stays in process because it takes the admission's site, an object the wire cannot carry; `cancelled` and the progress sink are closures the binding already serves. The site's type is below. |
@@ -201,7 +201,7 @@ Flow tests on the owner:
 - [session boundary A.1](../contracts/session-boundary.md#a1-method-contributions): the `MethodTable`/`MethodProvider`/`Accepted` shapes and the Session table's `owner`/`provider`/`holds`/`listed` readers are replaced by `register`, `call` and `methods`; `Caller`, `CallSite` and `Callers` stay the binding's, stated below and in A.2; the `MethodCall`, `MethodReply` and `MethodError` shapes of A.1's interface block are defined in `crate::methods` as stated here, and A.1 links to them.
 - [session boundary Appendix F](../contracts/session-boundary.md#appendix-f-rust-binding): its method-table paragraphs — `Handler`, `MethodProvider`, `Check`, `Owner`, `MethodTable`, the `SessionMethods` deref, the `MethodCall`/`Origin` block and the foreign `register` decode — are the binding below; Appendix F links here and keeps only what CallChannel and ToolRegistry bind.
 
-No client-visible method, error kind or application code changes: a handler's `code` is the client's `appError` today and stays so, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Two request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`; and the owner fields a handler sends beside its `code` and `message` now reach the client, where today the reply's `{code, message}` shape drops them.
+No client-visible method, error kind or application code changes: a handler's `code` is the client's `appError` today and stays so, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Two request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`; and the owner fields a native handler attaches to its failure now reach the client, where today the `{code, message}` decode rejects a foreign reply that carries them.
 
 ## Binding appendix
 
@@ -214,8 +214,9 @@ use rutis::host::{BoxFuture, CallError};
 use tokio_util::sync::CancellationToken;
 
 /// One declared method of a namespace. A declaration from another language
-/// carries `name`, `mutating`, `interruption`, `progress` and its
-/// `notifications`; the listing another language reads is `{name, mutating}`.
+/// carries `name`, `mutating`, `interruption`, `progress`, its `notifications`
+/// and an ignored `reply`; the listing another language reads is
+/// `{name, mutating}`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MethodDecl {
@@ -298,7 +299,7 @@ impl Caller {
 }
 
 /// A connection as the `methods` module uses it: its id, a write to it and its
-///close signal. Rpc implements it; `Caller` and `CallSite` hold it through an
+/// close signal. Rpc implements it; `Caller` and `CallSite` hold it through an
 /// `Arc` that keeps no strong reference to the connection.
 pub trait CallerConnection: Send + Sync + 'static {
     fn id(&self) -> &str;
