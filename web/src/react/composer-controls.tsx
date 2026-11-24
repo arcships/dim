@@ -10,7 +10,7 @@ const presets: PermissionPreset[] = ["read-only", "workspace-write", "full-acces
 
 export type PickerHandle = { open: () => void }
 
-export function ModelPicker({ model, disabled, choose, follow, label = "Choose model", placeholder = "Default model", ref }: {
+export function ModelPicker({ model, disabled, choose, follow, label = translate("composer.command.models"), placeholder = translate("composer.notConfigured"), ref }: {
   model: ModelId | undefined
   disabled: boolean
   choose: (value: ModelId) => void | Promise<void>
@@ -63,14 +63,14 @@ export function ModelPicker({ model, disabled, choose, follow, label = "Choose m
     <Popover.Content placement="top start" className="rw-controls-menu">
       <Popover.Dialog aria-label={label}>
         <label className="rw-model-search">
-          <span>Search models</span>
+          <span>{translate("composer.searchModels")}</span>
           <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        {follow && <Button size="sm" variant="tertiary" onPress={() => { follow(); setOpen(false) }}>Follow workspace default</Button>}
+        {follow && <Button size="sm" variant="tertiary" onPress={() => { follow(); setOpen(false) }}>{translate("composer.followDefaults")}</Button>}
         {(catalog.error || error) && <p className="rw-error" role="alert">{error || catalog.error}</p>}
-        {catalog.error && <Button size="sm" variant="tertiary" onPress={() => { void models.load({ query: query.trim() }) }}>Retry model search</Button>}
-        {catalog.loading && <p className="rw-muted" role="status">Loading models…</p>}
-        {catalog.providers?.length === 0 && !catalog.loading && <p className="rw-muted">No matching models</p>}
+        {catalog.error && <Button size="sm" variant="tertiary" onPress={() => { void models.load({ query: query.trim() }) }}>{translate("composer.modelRetry")}</Button>}
+        {catalog.loading && <p className="rw-muted" role="status">{translate("composer.modelLoading")}</p>}
+        {catalog.providers?.length === 0 && !catalog.loading && <p className="rw-muted">{translate("composer.noMatches")}</p>}
         <div className="rw-control-options">
           {catalog.providers?.map((provider) => <div key={provider.providerId} className="rw-model-provider">
             <h3>{provider.name}</h3>
@@ -83,7 +83,7 @@ export function ModelPicker({ model, disabled, choose, follow, label = "Choose m
             })}
           </div>)}
         </div>
-        {catalog.next && <Button size="sm" variant="tertiary" isDisabled={catalog.loading} onPress={() => { void models.loadMore() }}>Load more models</Button>}
+        {catalog.next && <Button size="sm" variant="tertiary" isDisabled={catalog.loading} onPress={() => { void models.loadMore() }}>{translate("composer.loadMoreModels")}</Button>}
       </Popover.Dialog>
     </Popover.Content>
   </Popover>

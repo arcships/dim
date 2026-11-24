@@ -9,12 +9,13 @@ import type { ConnectionPhase } from "../rpc/client"
 import type { Workspace } from "../stores/sessions"
 import { useUiStore } from "../stores/ui"
 import { useStoreValue } from "./stores"
+import { translate } from "./i18n"
 
 const ui = useUiStore()
 const readSort = () => ui.sidebarSortBy
 
 export function titleFor(session: SessionSummary | undefined): string {
-  return session?.title ?? session?.preview ?? "Untitled session"
+  return session?.title ?? session?.preview ?? translate("sidebar.untitledSession")
 }
 
 export type BranchDirectory = { lines: readonly LineView[]; defaultBranchId: string }
@@ -81,33 +82,33 @@ export function SessionDirectory({ workspaces, members, openMember, active, phas
     <div className="rw-directory-controls">
       <label className="rw-directory-search">
         <Search size={15} aria-hidden="true" />
-        <input type="search" aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <input type="search" aria-label={translate("sidebar.searchPlaceholder")} placeholder={translate("sidebar.searchPlaceholder")} value={query} onChange={(event) => setQuery(event.target.value)} />
       </label>
       <Popover>
-        <Button className="rw-sidebar-icon" variant="tertiary" isIconOnly aria-label="Session sort and filters"><ArrowDownUp size={15} aria-hidden="true" /></Button>
+        <Button className="rw-sidebar-icon" variant="tertiary" isIconOnly aria-label={translate("sidebar.sortFilters")}><ArrowDownUp size={15} aria-hidden="true" /></Button>
         <Popover.Content placement="bottom end" className="rw-directory-filter">
-          <Popover.Dialog aria-label="Session sort and filters">
+          <Popover.Dialog aria-label={translate("sidebar.sortFilters")}>
             <fieldset>
-              <legend>Sort by</legend>
-              <label><input type="radio" name="workspace-sort" checked={sort === "recentActive"} onChange={() => { ui.sidebarSortBy = "recentActive" }} /> Recent activity</label>
-              <label><input type="radio" name="workspace-sort" checked={sort === "recentCreated"} onChange={() => { ui.sidebarSortBy = "recentCreated" }} /> Recently created</label>
+              <legend>{translate("sidebar.sort")}</legend>
+              <label><input type="radio" name="workspace-sort" checked={sort === "recentActive"} onChange={() => { ui.sidebarSortBy = "recentActive" }} /> {translate("sidebar.recentActive")}</label>
+              <label><input type="radio" name="workspace-sort" checked={sort === "recentCreated"} onChange={() => { ui.sidebarSortBy = "recentCreated" }} /> {translate("sidebar.recentCreated")}</label>
             </fieldset>
-            <label><input type="checkbox" checked={runningOnly} onChange={(event) => setRunningOnly(event.target.checked)} /> Running only</label>
+            <label><input type="checkbox" checked={runningOnly} onChange={(event) => setRunningOnly(event.target.checked)} /> {translate("sidebar.runningOnly")}</label>
           </Popover.Dialog>
         </Popover.Content>
       </Popover>
     </div>
     <div className="rw-workspaces">
-      {phase !== "connected" && <p className="rw-muted" role="status">{phase === "reconnecting" ? "Reconnecting…" : "Connecting…"}</p>}
+      {phase !== "connected" && <p className="rw-muted" role="status">{translate(phase === "reconnecting" ? "connection.reconnecting" : "connection.connecting")}</p>}
       {error && <p className="rw-error" role="alert">{error}</p>}
-      {loaded && visible.length === 0 && <p className="rw-directory-empty">{search || runningOnly ? "No matching sessions" : "No sessions yet"}</p>}
+      {loaded && visible.length === 0 && <p className="rw-directory-empty">{translate(search || runningOnly ? "sidebar.noMatches" : "sidebar.noWorkspaces")}</p>}
       {visible.map(({ workspace, rows }) => <SessionGroup key={workspace.cwd} workspace={workspace} rows={rows} active={active}
         searching={search !== ""} phase={phase} {...branchProps} openMember={openMember}
         select={select} newSession={newSession} archiveSession={archiveSession} />)}
     </div>
     <footer className="rw-directory-footer">
       <button type="button" className="rw-sidebar-action" onClick={openArchive}>
-        <Archive size={15} aria-hidden="true" /> Archived sessions
+        <Archive size={15} aria-hidden="true" /> {translate("sidebar.archived")}
       </button>
       <button type="button" className="rw-sidebar-action" onClick={openSettings}>
         <Settings size={15} aria-hidden="true" /> {settingsLabel}
@@ -146,7 +147,7 @@ function SessionGroup({ workspace, rows, active, searching, phase, expandedSessi
         <span>{workspace.name}</span>
         {activeWork && <span className="rw-live" role="img" aria-label="Running session" />}
       </button>
-      <button type="button" className="rw-sidebar-icon" aria-label={`New session in ${workspace.name}`}
+      <button type="button" className="rw-sidebar-icon" aria-label={translate("sidebar.newInWorkspace", { name: workspace.name })}
         onClick={() => newSession(workspace.cwd)}><Plus size={15} aria-hidden="true" /></button>
       {!open && <button type="button" className="rw-group-count" aria-label={`Expand ${workspace.name}, ${rows.length} sessions`}
         aria-controls={listId} aria-expanded={false} onClick={() => ui.toggleWorkspace(workspace.cwd)}>{rows.length}</button>}
@@ -176,7 +177,7 @@ function SessionGroup({ workspace, rows, active, searching, phase, expandedSessi
               {(canExpand || !session.running || rootMenu) && <div className="rw-directory-row-actions">
                 {rootMenu}
                 {!session.running && <button type="button" className="rw-sidebar-icon rw-directory-row-action"
-                  aria-label={`Archive ${title}`} onClick={() => archiveSession(session.sessionId)}><Archive size={14} aria-hidden="true" /></button>}
+                  aria-label={translate("sidebar.archiveSession", { name: title })} onClick={() => archiveSession(session.sessionId)}><Archive size={14} aria-hidden="true" /></button>}
                 {canExpand && <button type="button" className="rw-sidebar-icon rw-member-toggle"
                   aria-label={`Branches and members for ${title}`} aria-expanded={childrenOpen} disabled={searching || (phase !== "connected" && !directory && !members.length)}
                   aria-controls={`${listId}-children-${sessionId}`} onClick={() => toggleSession(sessionId)}>
@@ -220,7 +221,7 @@ function SessionGroup({ workspace, rows, active, searching, phase, expandedSessi
         })}
         {!searching && rows.length > initialRows && <li>
           <button type="button" className="rw-sidebar-action rw-directory-more"
-            onClick={() => setLimit(hasMore ? limit + additionalRows : initialRows)}>{hasMore ? "Show older sessions" : "Show fewer sessions"}</button>
+            onClick={() => setLimit(hasMore ? limit + additionalRows : initialRows)}>{translate(hasMore ? "sidebar.showMore" : "sidebar.showLess")}</button>
         </li>}
         </ul>
       </div>

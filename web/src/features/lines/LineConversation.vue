@@ -54,8 +54,8 @@ const stopping = computed(() => branch.value?.stopping ?? false)
 
 watch(() => [props.sessionId, props.branchId], () => chat.ensureLine(props.sessionId, props.branchId), { immediate: true })
 
-function send(text: string, attachments: DraftAttachments, mode: SubmitMode): Promise<void> {
-  return chat.submit(props.sessionId, props.branchId, text, attachments, mode)
+async function send(text: string, attachments: DraftAttachments, mode: SubmitMode): Promise<void> {
+  await chat.submit(props.sessionId, props.branchId, text, attachments, mode)
 }
 
 /** Withdraws one held message of this line, so the composer can recall it into the draft; a message the run already adopted stays out. */

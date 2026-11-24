@@ -114,6 +114,7 @@ export function WorkspaceApp() {
   const settingsReturn = useRef(workspaceReturnPath())
   const settingsHeading = useRef<HTMLElement>(null)
   const settingsOpen = route.kind === "settings"
+  const [compactSettings, setCompactSettings] = useState(() => matchMedia("(max-width: 719px)").matches)
   const settingsIndex = route.kind === "settings" && route.page === "index"
   const settingsPage = route.kind === "settings" ? (route.page === "index" ? "appearance" : route.page) : undefined
   const settingsDirty = useRef(false)
@@ -225,7 +226,10 @@ export function WorkspaceApp() {
 
   useEffect(() => {
     const compact = matchMedia("(max-width: 719px)")
-    const closeOnDesktop = (event: MediaQueryListEvent) => { if (!event.matches) setDrawer(false) }
+    const closeOnDesktop = (event: MediaQueryListEvent) => {
+      setCompactSettings(event.matches)
+      if (!event.matches) setDrawer(false)
+    }
     compact.addEventListener("change", closeOnDesktop)
     return () => compact.removeEventListener("change", closeOnDesktop)
   }, [])
@@ -274,7 +278,7 @@ export function WorkspaceApp() {
 
   function archiveSession(id: string) {
     if (!archive.archive(id)) {
-      setArchiveError("This browser cannot store the archive list.")
+      setArchiveError(translate("sidebar.archiveFailed"))
       return
     }
     setArchiveError("")
@@ -437,7 +441,7 @@ export function WorkspaceApp() {
             </header>
             <nav className="rw-settings-nav" aria-label={text("Settings", "设置")}>
               {settingsPages.map(({ id, en, zh }) => <a key={id} href={`/settings/${id}`}
-                aria-current={route.page === id ? "page" : undefined} onClick={(event) => {
+                aria-current={settingsPage === id && !(compactSettings && settingsIndex) ? "page" : undefined} onClick={(event) => {
                   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
                   event.preventDefault()
                   openSettings(id)
@@ -723,41 +727,54 @@ function NewSession({ workspaces, preferredWorkspace, enabled, onCreated }: {
   enabled: boolean
   onCreated: (id: string) => void
 }) {
-  const [cwd, setCwd] = useState(preferredWorkspace ?? "")
+  const [cwd, setCwd] = useState(preferredWorkspace ?? workspaces[0])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [modelChoice] = useState(() => useNewSessionModel(useModels().preview))
   const model = useStoreValue(useCallback(() => modelChoice.model, [modelChoice]))
   const resolution = useStoreValue(useCallback(() => modelChoice.resolution, [modelChoice]))
-  const directory = cwd.trim() || workspaces[0] || ""
+  const directory = cwd?.trim() ?? ""
+  const absolute = /^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(directory)
+  const invalid = directory !== "" && !absolute
+  const firstWorkspace = workspaces[0]
+  useEffect(() => {
+    if (firstWorkspace !== undefined) setCwd((current) => current ?? firstWorkspace)
+  }, [firstWorkspace])
 
   useEffect(() => {
     if (!enabled || !connection.supports("session.model.preview")) return
+    if (!absolute) { void modelChoice.refresh(""); return }
     const timer = setTimeout(() => { void modelChoice.refresh(directory) }, 180)
     return () => clearTimeout(timer)
-  }, [directory, enabled, modelChoice])
+  }, [directory, absolute, enabled, modelChoice])
 
-  async function create(event: FormEvent) {
+  async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (busy || !enabled || !directory) return
+    if (busy || !enabled || !absolute) return
+    const form = event.currentTarget
     setBusy(true)
     setError("")
-    try { onCreated(await sessions.create(directory, modelChoice.override)) }
+    try {
+      const id = await sessions.create(directory, modelChoice.override)
+      if (form.isConnected) onCreated(id)
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     finally { setBusy(false) }
   }
 
   return <section className="rw-new">
-    <h1>New session</h1>
+    <h1>{translate("sidebar.newSession")}</h1>
     <form onSubmit={(event) => { void create(event) }}>
-      <label htmlFor="rw-workspace">Workspace</label>
-      <input id="rw-workspace" autoComplete="off" list="rw-workspaces" value={cwd} placeholder={workspaces[0] ?? "Absolute workspace path"} onChange={(event) => setCwd(event.target.value)} />
+      <label htmlFor="rw-workspace">{translate("new.workspace")}</label>
+      <input id="rw-workspace" required disabled={busy} autoComplete="off" list="rw-workspaces" value={cwd ?? ""} placeholder={translate("new.path")} onChange={(event) => setCwd(event.target.value)}
+        aria-invalid={invalid || undefined} aria-describedby={invalid ? "rw-workspace-error" : undefined} />
+      {invalid && <p id="rw-workspace-error" className="rw-error">{translate("newThread.workspaceRequired")}</p>}
       <datalist id="rw-workspaces">{workspaces.map((path) => <option key={path} value={path} />)}</datalist>
       {connection.supports("provider.models.query") && <ModelPicker model={model} disabled={!enabled || busy}
         choose={modelChoice.choose} follow={modelChoice.follow} />}
       {resolution.state === "failed" && <p className="rw-muted">{resolution.message}</p>}
       {error && <p className="rw-error" role="alert">{error}</p>}
-      <Button type="submit" variant="primary" isDisabled={!enabled || !directory} isPending={busy}>Create session</Button>
+      <Button type="submit" variant="primary" isDisabled={!enabled || !absolute} isPending={busy}>{translate("new.create")}</Button>
     </form>
   </section>
 }

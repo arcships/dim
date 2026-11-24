@@ -1,13 +1,13 @@
 import { FieldSelect } from "./field-select"
 import { Button } from "@heroui/react"
-import { Moon, Sun } from "lucide-react"
+import { Monitor, Moon, Sun } from "lucide-react"
 import { appLocale } from "./i18n"
 import { useComposerStore } from "../stores/composer"
 import { appearance, useStoreValue } from "./stores"
 
 const composer = useComposerStore()
 const readPreferences = () => ({
-  theme: appearance.resolvedTheme,
+  theme: appearance.theme,
   fontSize: appearance.fontSize,
   language: appearance.language,
   locale: appLocale.value,
@@ -15,6 +15,7 @@ const readPreferences = () => ({
   sendMode: composer.sendMode,
 })
 const themes = [
+  { value: "system", Icon: Monitor, en: "System", zh: "跟随系统" },
   { value: "light", Icon: Sun, en: "Light", zh: "浅色" },
   { value: "dark", Icon: Moon, en: "Dark", zh: "深色" },
 ] as const

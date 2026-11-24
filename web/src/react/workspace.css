@@ -238,6 +238,8 @@ button:disabled { cursor: default; }
 .rw-conversation-action label { display: grid; gap: .35rem; }
 .rw-conversation-action textarea { min-height: 5rem; padding: .55rem; border: 1px solid var(--rw-line); border-radius: .5rem; }
 .rw-markdown :where(a) { color: var(--primary-ink); text-decoration: underline; }
+.rw-copy-path { color: var(--primary-ink); overflow-wrap: anywhere; text-align: start; }
+.rw-copy-path small { display: inline-flex; align-items: baseline; gap: .15rem; }
 .rw-markdown :where(pre), .rw-tool pre, .rw-prompt pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 17rem; overflow: auto; padding: .6rem; border-radius: .45rem; background: var(--rw-app); }
 .rw-attachment { max-inline-size: 100%; max-block-size: 28rem; border-radius: .6rem; }
 .rw-reasoning > summary, .rw-execution > summary, .rw-tool > summary {
@@ -342,8 +344,8 @@ button:disabled { cursor: default; }
 .rw-command-palette li > span { min-width: 0; overflow-wrap: anywhere; color: var(--rw-muted); }
 .rw-command-palette small { display: block; padding: .25rem .45rem 0; color: var(--rw-muted); }
 .rw-command-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 8rem; overflow: auto; padding-block: .35rem; }
-.rw-composer-bar { justify-content: flex-end; gap: .35rem; }
-.rw-composer-bar > button[type="submit"] { flex: none; border-radius: 50%; }
+.rw-composer-bar, .rw-send-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .35rem; }
+.rw-send-actions > button[type="submit"] { flex: none; border-radius: 999px; }
 .rw-model { margin-inline-end: auto; color: var(--rw-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rw-model span { overflow: hidden; text-overflow: ellipsis; }
 .rw-controls-menu { width: min(23rem, calc(100vw - 1.5rem)); }

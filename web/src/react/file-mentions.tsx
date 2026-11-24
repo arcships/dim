@@ -4,13 +4,12 @@ import { mentionTrigger, type FileMention, type MentionTrigger } from "../mentio
 import type { FileCandidate } from "../rpc/protocol"
 import { chat } from "./stores"
 
-export function useFileMentions(sessionId: string, enabled: boolean, replace: (text: string) => void) {
+export function useFileMentions(sessionId: string, enabled: boolean, replace: (text: string, mention?: FileMention) => void) {
   const [trigger, setTrigger] = useState<MentionTrigger>()
   const [dismissed, setDismissed] = useState<string>()
   const [options, setOptions] = useState<FileCandidate[]>([])
   const [active, setActive] = useState(0)
   const [error, setError] = useState("")
-  const [mentions, setMentions] = useState<FileMention[]>([])
   const [caret, setCaret] = useState<{ field: HTMLTextAreaElement; position: number }>()
   const listId = useId()
   const key = trigger && `${trigger.start}:${trigger.query}`
@@ -55,8 +54,8 @@ export function useFileMentions(sessionId: string, enabled: boolean, replace: (t
     if (!trigger) return
     const label = `@${candidate.relativePath}`
     const inserted = candidate.dir ? `${label}/` : `${label} `
-    replace(field.value.slice(0, trigger.start) + inserted + field.value.slice(field.selectionStart))
-    if (!candidate.dir) setMentions((previous) => [...previous.filter((item) => item.label !== label), { label, path: candidate.absolutePath }])
+    replace(field.value.slice(0, trigger.start) + inserted + field.value.slice(field.selectionStart),
+      candidate.dir ? undefined : { label, path: candidate.absolutePath })
     setCaret({ field, position: trigger.start + inserted.length })
   }
 
@@ -78,9 +77,8 @@ export function useFileMentions(sessionId: string, enabled: boolean, replace: (t
   }
 
   return {
-    mentions, listId, activeId, options, active, open, error, update, choose, keyDown,
+    listId, activeId, options, active, open, error, update, choose, keyDown,
     blur: () => { setTrigger(undefined); setDismissed(undefined) },
-    clear: () => { setMentions([]); setTrigger(undefined); setDismissed(undefined) },
   }
 }
 

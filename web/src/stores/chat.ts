@@ -7,7 +7,7 @@ import { Lines, type LineView } from "../lines"
 import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
 import { readLoops as readLoopsReply, readStartedLoop, type Loop } from "../loop"
-import { readUploadedImage } from "../rpc/read"
+import { readSubmit, readUploadedImage } from "../rpc/read"
 import { ROOT_BRANCH_ID, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type PermissionState, type QueuedInput, type QuestionAnswer, type SessionEvent, type SubmitMode, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
 import { ProtocolError, readAdoptedConfiguration, type AdoptedConfiguration, readAttached, readBranches, readBranchDetail, readDefaultBranch, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readSessionSkills, readWithdrawResult } from "../rpc/read"
@@ -930,7 +930,7 @@ export const useChatStore = defineStore("chat", () => {
     })
   }
 
-  async function submit(sessionId: string, branchId: string, text: string, attachments: DraftAttachments = { images: [], pastes: [] }, mode: SubmitMode = "queue"): Promise<void> {
+  async function submit(sessionId: string, branchId: string, text: string, attachments: DraftAttachments = { images: [], pastes: [] }, mode: SubmitMode = "queue"): Promise<string> {
     let body = text
     const total = attachments.pastes.length + attachments.images.length
     let completed = 0
@@ -971,7 +971,8 @@ export const useChatStore = defineStore("chat", () => {
     const params: Record<string, unknown> = { sessionId, branchId, submissionId: crypto.randomUUID(), mode }
     if (!content.some((block) => block.type === "image")) params.text = body
     else params.user = { content }
-    await client().call("session.submit", params, readAck)
+    const { event } = await client().call("session.submit", params, readSubmit)
+    return event.id
   }
 
   async function stop(sessionId: string, branchId: string): Promise<void> {

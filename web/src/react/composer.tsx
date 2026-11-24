@@ -1,11 +1,12 @@
 import { Button } from "@heroui/react"
-import { ArrowUp, CornerDownRight, Hourglass, Paperclip, Square, X, Zap } from "lucide-react"
+import { ArrowUp, Paperclip, Square, X } from "lucide-react"
 import { useCallback, useEffect, useId, useImperativeHandle, useRef, useState, type FormEvent, type Ref } from "react"
 import { alwaysCommand, fileGrant } from "../approvals"
 import { quoteInto } from "../features/chat/quote"
 import { moveImageOffsets, restoreQueuedContent, type RecalledImage } from "../features/chat/recall"
 import { translate } from "./i18n"
-import { linkMentions } from "../mentions"
+import { linkMentions, type FileMention } from "../mentions"
+import { emptyDraft, useComposerDraft } from "./composer-draft"
 import { type ApprovalRequest, type AskQuestion, type MemberApprovalDescriptor, type PendingQuestion, type QueuedInput, type QuestionAnswer, type SubmitMode } from "../rpc/protocol"
 import { SKILL_TOKEN_PREFIX, skillSegments } from "../skill-token"
 import type { SessionView } from "../stores/chat"
@@ -36,17 +37,13 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
   }
   ref?: Ref<ComposerHandle>
 }) {
-  const [draft, setDraft] = useState("")
-  const [files, setFiles] = useState<File[]>([])
-  const [pastes, setPastes] = useState<string[]>([])
-  const [restored, setRestored] = useState<RecalledImage[]>([])
-  const [uploadProgress, setUploadProgress] = useState<number>()
-  const [busy, setBusy] = useState(false)
+  const [{ draft, files, pastes, restored, mentions: fileMentions, literalSlash, uploadProgress, busy, failure }, store] = useComposerDraft(session.sessionId, branchId)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
+  const [destination, setDestination] = useState<{ mode: SubmitMode; id: string }>()
+  const run = useRef(0)
   const [focused, setFocused] = useState(false)
   const [composing, setComposing] = useState(false)
-  const [literalSlash, setLiteralSlash] = useState(false)
   const [selectedCommand, setSelectedCommand] = useState(0)
   const [skills, setSkills] = useState<readonly SkillChoice[]>([])
   const commandId = useId()
@@ -55,9 +52,13 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
   const highlights = useRef<HTMLDivElement>(null)
   const modelPicker = useRef<PickerHandle>(null)
   const permissionPicker = useRef<PickerHandle>(null)
-  const working = useRef(false)
-  const recallBatch = useRef(0)
   const branch = branchId === session.defaultBranchId ? session : session.branches[branchId]
+  useEffect(() => {
+    if (!branch?.running) {
+      run.current++
+      setDestination(undefined)
+    }
+  }, [branch?.running])
   const enabled = connected && session.status === "ready" && branch?.status === "ready"
   const sendMode = useStoreValue(readSendMode)
   const alternate = sendMode === "steer" ? "queue" : "steer"
@@ -108,36 +109,37 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
   const activeCommand = Math.min(selectedCommand, choices.length - 1)
   const skillHighlight = skillSegments(draft)
 
-  function updateDraft(text: string) {
-    if (restored.length > 0) {
-      const positions = moveImageOffsets(draft, text, restored)
-      setRestored(restored.map((image, index) => ({ ...image, at: positions[index]! })))
-    }
-    setDraft(text)
+  function updateDraft(text: string, mention?: FileMention) {
+    const positions = restored.length ? moveImageOffsets(draft, text, restored) : []
+    store.write({ draft: text, restored: restored.map((image, index) => ({ ...image, at: positions[index]! })),
+      literalSlash: literalSlash && text.startsWith("/"),
+      mentions: mention ? [...fileMentions.filter(({ label }) => label !== mention.label), mention] : fileMentions })
   }
-  const mentions = useFileMentions(session.sessionId, enabled && !readOnly && !prompt && session.methods.includes("session.files.search"), updateDraft)
+  const mentions = useFileMentions(session.sessionId, enabled && !readOnly && !busy && !prompt && session.methods.includes("session.files.search"), updateDraft)
 
   useImperativeHandle(ref, () => ({
     quote(text) {
-      if (working.current) return
-      setDraft((current) => quoteInto(current, text))
+      const current = store.read()
+      if (current.busy) return
+      store.write({ draft: quoteInto(current.draft, text) })
       messageField.current?.focus()
     },
-  }), [])
+  }), [store])
 
   async function operate(action: () => Promise<void>) {
-    if (working.current) return
-    working.current = true
-    setBusy(true)
+    if (store.read().busy) return
+    store.write({ busy: true, failure: "" })
     setError("")
     setNotice("")
+    setDestination(undefined)
     try {
       await action()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      const message = cause instanceof Error ? cause.message : String(cause)
+      store.write({ failure: message })
+      setError(message)
     } finally {
-      working.current = false
-      setBusy(false)
+      store.write({ busy: false, uploadProgress: undefined })
     }
   }
 
@@ -166,7 +168,6 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
       }
     }
     updateDraft("")
-    setLiteralSlash(false)
   }
 
   function selectCommand(choice: CommandChoice, complete: boolean) {
@@ -183,11 +184,6 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
 
   function handleCommand(): boolean {
     if (literalSlash || composing) return false
-    const choice = choices[activeCommand]
-    if (choice) {
-      selectCommand(choice, false)
-      return true
-    }
     const match = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i.exec(draft)
     if (!match) return false
     const input = match[1]!.toLowerCase()
@@ -212,27 +208,25 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
     let body = ""
     const placements = [...images].sort((a, b) => a.at - b.at || b.batch - a.batch).map((image) => {
       const offset = Math.max(cursor, Math.min(image.at, text.length))
-      body += linkMentions(text.slice(cursor, offset), mentions.mentions)
+      body += linkMentions(text.slice(cursor, offset), fileMentions)
       cursor = offset
       return { ...image, at: body.length }
     })
-    body += linkMentions(text.slice(cursor), mentions.mentions)
-    try {
-      await chat.submit(session.sessionId, branchId, body, { images: files, pastes, restored: placements, onProgress: setUploadProgress }, mode)
-    } finally {
-      setUploadProgress(undefined)
-    }
-    setDraft("")
-    setLiteralSlash(false)
-    setFiles([])
-    setPastes([])
-    setRestored([])
-    mentions.clear()
+    body += linkMentions(text.slice(cursor), fileMentions)
+    const id = await chat.submit(session.sessionId, branchId, body, { images: files, pastes, restored: placements,
+      onProgress: (uploadProgress) => store.write({ uploadProgress }) }, mode)
+    store.write({ ...emptyDraft, busy: true })
+    mentions.blur()
+    return id
   }
 
   function submit(mode: SubmitMode) {
-    if (enabled && !prompt && !readOnly && hasDraft && !composing && !handleCommand()) {
-      void operate(() => submitDraft(draft, restored, mode))
+    if (enabled && !prompt && !readOnly && hasDraft && !store.read().busy && !composing && !handleCommand()) {
+      const origin = branch?.running ? run.current : undefined
+      void operate(async () => {
+        const id = await submitDraft(draft, restored, mode)
+        if (id !== undefined && origin === run.current) setDestination({ id, mode })
+      })
     }
   }
 
@@ -247,22 +241,25 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
   function sendNow() {
     if (!canSendNow || handleCommand()) return
     void operate(async () => {
-      const batch = ++recallBatch.current
+      const batch = restored.reduce((latest, image) => Math.max(latest, image.batch), 0) + 1
       let next = { draft, images: restored, next: 0 }
       for (const input of queued) {
         try {
           const result = await chat.withdrawInput(session.sessionId, branchId, input.id, undefined)
-          if (result.status === "deleted") next = restoreQueuedContent(next.draft, next.images, input.content, next.next, batch)
+          if (result.status === "deleted") {
+            next = restoreQueuedContent(next.draft, next.images, input.content, next.next, batch)
+            store.write({ draft: next.draft, restored: next.images })
+          }
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : String(cause))
         }
+        if (!messageField.current?.isConnected) throw new Error(translate("composer.sendNowMoved"))
       }
-      setDraft(next.draft)
-      setRestored(next.images)
       try { await chat.stop(session.sessionId, branchId) }
       catch (cause) {
         throw new Error(translate("composer.sendNowFailed", { error: cause instanceof Error ? cause.message : String(cause) }))
       }
+      if (!messageField.current?.isConnected) throw new Error(translate("composer.sendNowMoved"))
       await submitDraft(next.draft, next.images, "queue")
     })
   }
@@ -277,12 +274,14 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
         {index === 0 && branch?.running && <Button size="sm" variant="secondary" isDisabled={!canWithdraw || busy}
           onPress={() => withdraw(input, true)}>{translate("queue.steer")}</Button>}
         <Button size="sm" variant="tertiary" isDisabled={!canWithdraw || busy}
-          aria-label={`Remove queued message ${index + 1}`} onPress={() => withdraw(input, false)}>{translate("queue.remove")}</Button>
+          aria-label={translate("queue.removeNumber", { number: index + 1 })} onPress={() => withdraw(input, false)}>{translate("queue.remove")}</Button>
       </li>)}
     </ul>}
     {branch?.error && <p className="rw-error" role="alert">{branch.error}</p>}
-    {error && <p className="rw-error" role="alert">{error}</p>}
+    {(error || failure) && <p className="rw-error" role="alert">{error || failure}</p>}
     {notice && <p className="rw-command-result" role="status">{notice}</p>}
+    {branch?.running && destination && !(destination.mode === "queue" && queued.some(({ id }) => id === destination.id)) &&
+      <p className="rw-muted" role="status">{translate(destination.mode === "steer" ? "composer.sentIntoRun" : "composer.heldForNextTurn")}</p>}
     {approval && <Approval key={approval.requestId} request={approval} sessionId={session.sessionId} enabled={enabled} />}
     {!approval && questions.map((question) => <Question key={`${question.requestId}:${question.callId}`} question={question} sessionId={session.sessionId} enabled={enabled} />)}
     {readOnly && !prompt && <p className="rw-notice">This line has ended.</p>}
@@ -291,11 +290,11 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
     }} onDrop={(event) => {
       if (!hasAttachment || !event.dataTransfer.types.includes("Files")) return
       event.preventDefault()
-      if (!enabled || working.current) return
+      if (!enabled || store.read().busy) return
       const dropped = Array.from(event.dataTransfer.files)
       const images = dropped.filter((file) => file.type.startsWith("image/"))
       if (images.length !== dropped.length) setError(translate("composer.onlyImages"))
-      if (images.length > 0) setFiles((previous) => [...previous, ...images])
+      if (images.length > 0) store.write({ files: [...files, ...images] })
     }} onSubmit={(event: FormEvent) => {
       event.preventDefault()
       submit(branch?.running ? sendMode : "queue")
@@ -309,8 +308,8 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
       </div>
       <textarea
         ref={messageField}
-        aria-label="Message"
-        placeholder="Ask Dim…"
+        aria-label={translate("chat.composer")}
+        placeholder={translate("composer.sendMessage")}
         value={draft}
         rows={2}
         disabled={!enabled}
@@ -328,15 +327,14 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
         onChange={(event) => {
           updateDraft(event.currentTarget.value)
           setSelectedCommand(0)
-          if (!event.currentTarget.value.startsWith("/")) setLiteralSlash(false)
           mentions.update(event.currentTarget)
         }}
         onPaste={(event) => {
-          if (!hasAttachment) return
+          if (!hasAttachment || store.read().busy) return
           const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"))
           if (images.length > 0) {
             event.preventDefault()
-            setFiles((previous) => [...previous, ...images])
+            store.write({ files: [...files, ...images] })
             return
           }
           const text = event.clipboardData.getData("text/plain")
@@ -344,7 +342,7 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
           if (bytes <= inlinePasteBytes) return
           event.preventDefault()
           if (bytes > maximumPasteBytes) setError(translate("composer.pasteTooLarge"))
-          else setPastes((previous) => [...previous, text])
+          else store.write({ pastes: [...pastes, text] })
         }}
         onKeyDown={(event) => {
           if (busy || composing || event.nativeEvent.isComposing || event.keyCode === 229) return
@@ -352,22 +350,25 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
           if (event.key === "Escape" && draft.startsWith("/") && !literalSlash) {
             event.preventDefault()
             event.stopPropagation()
-            setLiteralSlash(true)
+            store.write({ literalSlash: true })
             return
           }
-          if (choices.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+          if (menuOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
             event.preventDefault()
             setSelectedCommand((activeCommand + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % choices.length)
             return
           }
-          if (choices.length && event.key === "Tab" && !event.shiftKey) {
+          if (menuOpen && event.key === "Tab" && !event.shiftKey) {
             event.preventDefault()
             selectCommand(choices[activeCommand]!, true)
             return
           }
           if (event.key !== "Enter" || event.shiftKey || event.altKey) return
           event.preventDefault()
-          if (handleCommand()) return
+          if (menuOpen) {
+            selectCommand(choices[activeCommand]!, false)
+            return
+          }
           if (branch?.running && (event.metaKey || event.ctrlKey)) sendNow()
           else event.currentTarget.form?.requestSubmit()
         }}
@@ -376,26 +377,26 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
       <FileMentions state={mentions} field={messageField.current} />
       {(files.length > 0 || pastes.length > 0 || restored.length > 0) && <ul className="rw-files">{files.map((file, index) => <li key={`${file.name}:${index}`}>
         {file.name}<Button size="sm" variant="tertiary" isIconOnly isDisabled={busy}
-          aria-label={`Remove ${file.name}`} onPress={() => setFiles((previous) => previous.filter((_, i) => i !== index))}><X size={13} /></Button>
+          aria-label={`Remove ${file.name}`} onPress={() => store.write({ files: files.filter((_, i) => i !== index) })}><X size={13} /></Button>
       </li>)}
         {pastes.map((text, index) => <li key={`paste:${index}`}>
           {translate("composer.pastedText", { lines: text.split("\n").length })}
           <Button size="sm" variant="tertiary" isIconOnly isDisabled={busy} aria-label={`Remove pasted text ${index + 1}`}
-            onPress={() => setPastes((previous) => previous.filter((_, i) => i !== index))}><X size={13} /></Button>
+            onPress={() => store.write({ pastes: pastes.filter((_, i) => i !== index) })}><X size={13} /></Button>
         </li>)}
         {restored.map((image, index) => <li key={`${image.image.source.fileId}:${index}`}>
           Restored image <Button size="sm" variant="tertiary" isIconOnly aria-label={`Remove restored image ${index + 1}`} isDisabled={busy}
-            onPress={() => setRestored((previous) => previous.filter((_, i) => i !== index))}><X size={13} /></Button>
+            onPress={() => store.write({ restored: restored.filter((_, i) => i !== index) })}><X size={13} /></Button>
         </li>)}
       </ul>}
       {uploadProgress !== undefined && <progress className="rw-upload-progress" aria-label="Uploading attachments" max={100} value={uploadProgress} />}
       <div className="rw-composer-bar">
         {hasAttachment && <>
           <input ref={picker} type="file" accept="image/*" multiple hidden onChange={(event) => {
-            setFiles((previous) => [...previous, ...Array.from(event.target.files ?? [])])
+            if (!store.read().busy) store.write({ files: [...files, ...Array.from(event.target.files ?? [])] })
             event.target.value = ""
           }} />
-          <Button size="sm" variant="tertiary" isIconOnly aria-label="Attach images" isDisabled={!enabled || busy} onPress={() => picker.current?.click()}><Paperclip size={17} /></Button>
+          <Button size="sm" variant="tertiary" isIconOnly aria-label={translate("composer.attachImages")} isDisabled={!enabled || busy} onPress={() => picker.current?.click()}><Paperclip size={17} /></Button>
         </>}
         {permission !== undefined &&
           <PermissionPicker ref={permissionPicker} policy={permission} disabled={!enabled} choose={async (preset) => {
@@ -404,15 +405,17 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
         {canChooseModel
           ? <ModelPicker ref={modelPicker} model={branch?.model} disabled={!enabled} choose={(model) => chat.setModel(session.sessionId, model, branchId)} />
           : branch?.model && <span className="rw-model">{branch.model.modelId}</span>}
-        {branch?.running && <Button size="sm" variant="tertiary" isIconOnly aria-label="Stop response" isDisabled={!enabled || branch.stopping || busy}
-          onPress={() => { void operate(() => chat.stop(session.sessionId, branchId)) }}><Square size={15} /></Button>}
-        {branch?.running && <Button size="sm" variant="tertiary" isIconOnly aria-label="Interrupt and send now"
-          isDisabled={!canSendNow} onPress={sendNow}><Zap size={16} /></Button>}
-        {branch?.running && <Button size="sm" variant="tertiary" isIconOnly
-          aria-label={alternate === "queue" ? "Queue message" : "Steer message"} isDisabled={!enabled || busy || !hasDraft}
-          onPress={() => submit(alternate)}>{alternate === "queue" ? <Hourglass size={16} /> : <CornerDownRight size={16} />}</Button>}
-        <Button type="submit" size="sm" variant="primary" isIconOnly aria-label={branch?.running ? (sendMode === "queue" ? "Queue message" : "Steer message") : "Send message"}
-          isDisabled={!enabled || !hasDraft} isPending={busy}><ArrowUp size={19} /></Button>
+        <div className="rw-send-actions">
+          {branch?.running && <>
+            <Button size="sm" variant="tertiary" isDisabled={!enabled || branch.stopping || busy}
+              onPress={() => { void operate(() => chat.stop(session.sessionId, branchId)) }}><Square size={13} />{translate("composer.stopResponse")}</Button>
+            <Button size="sm" variant="tertiary" isDisabled={!canSendNow} onPress={sendNow}>{translate("composer.interruptSend")}</Button>
+            <Button size="sm" variant="secondary" isDisabled={!enabled || busy || !hasDraft}
+              onPress={() => submit(alternate)}>{translate(`composer.${alternate}`)}</Button>
+          </>}
+          <Button type="submit" size="sm" variant="primary" isIconOnly={!branch?.running} aria-label={branch?.running ? undefined : translate("composer.send")}
+            isDisabled={!enabled || !hasDraft} isPending={busy}>{branch?.running ? translate(`composer.${sendMode}`) : <ArrowUp size={19} />}</Button>
+        </div>
       </div>
     </form>
   </>

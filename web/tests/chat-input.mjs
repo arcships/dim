@@ -49,6 +49,13 @@ const { default: AppearanceSettings } = await import("../src/features/settings/A
 const { useChatStore } = await import("../src/stores/chat.ts")
 const { readNotification } = await import("../src/rpc/read.ts")
 const { RpcError } = await import("../src/rpc/client.ts")
+function submitConnection(calls) {
+  return { supports: () => false, client: { async call(method, params, read) {
+    assert.equal(method, "session.submit")
+    calls.push({ method, params })
+    return read({ event: { id: `input-${calls.length}`, sequence: calls.length, create_at: 1, type: "input", name: "message", data: { user: params.user } } })
+  } } }
+}
 const node = (type, text = "") => ({
   type, text, children: [], props: {}, parent: undefined, style: {}, value: "",
   /** An element in no document has no layout: a browser reports nothing for it, and so does this. */
@@ -490,9 +497,7 @@ test("files picked with overlapping names keep their own paths in the submitted 
 
 test("image submission uploads the File before sending only its durable reference", async t => {
   const calls = [], uploads = []
-  globalThis.chatInputStores = { connection: { client: { async call(method, params, read) {
-    calls.push({ method, params }); return read({})
-  } } } }
+  globalThis.chatInputStores = { connection: submitConnection(calls) }
   const previousFetch = globalThis.fetch
   const previousXHR = globalThis.XMLHttpRequest
   t.after(() => { globalThis.fetch = previousFetch; globalThis.XMLHttpRequest = previousXHR })
@@ -1195,7 +1200,7 @@ test("a recalled mixed message reaches session.submit with its images where they
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const before = storedImage("stored-before")
   const held = [heldInput("mixed", "before ", before, " after"), heldInput("second", "next message")]
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
@@ -1216,7 +1221,7 @@ test("a recalled image keeps the place an edit moved it to after a failed stop",
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const picture = storedImage("stored-1")
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
   let stops = 0
@@ -1244,7 +1249,7 @@ test("a draft typed while a recalled image is being accepted stays out of the me
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const picture = storedImage("stored-1")
   let release
   const gate = new Promise((resolve) => { release = resolve })
@@ -1275,7 +1280,7 @@ test("a message recalled after a failed stop moves the image already in the draf
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const first = storedImage("stored-first"), second = storedImage("stored-second")
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
   let stops = 0
@@ -1312,7 +1317,7 @@ test("a message recalled after a failed stop goes ahead of an image at the start
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const picture = storedImage("stored-1")
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
   let stops = 0
@@ -1345,7 +1350,7 @@ test("two image-only messages recalled in one gesture keep the queue order", asy
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
   const pictures = [storedImage("stored-first"), storedImage("stored-second")]
   const held = [heldInput("first", pictures[0]), heldInput("second", pictures[1])]
@@ -1360,7 +1365,7 @@ test("an image-only message stays ahead of the message recalled after it", async
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
   const picture = storedImage("stored-first")
   const held = [heldInput("image", picture), heldInput("text", "more")]
@@ -1375,7 +1380,7 @@ test("an image-only message recalled after a failed stop goes ahead of the image
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const old = storedImage("stored-old"), next = storedImage("stored-next")
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
   let stops = 0
@@ -1406,7 +1411,7 @@ test("a recalled image still splits the message when an inserted @ file is linke
   const chat = useChatStore()
   t.after(() => chat.$dispose())
   const calls = []
-  const connection = { supports: () => false, client: { async call(method, params, read) { calls.push({ method, params }); return read({}) } } }
+  const connection = submitConnection(calls)
   const picture = storedImage("stored-1")
   const send = (value, attachments, mode) => chat.submit("session", "main", value, attachments, mode)
   let stops = 0

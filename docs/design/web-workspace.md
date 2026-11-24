@@ -271,7 +271,7 @@ Session List                        Conversation
 | Points | A user message's cut is its sequence minus one; a line's end is its newest `turn-end`. `session.branch_create` remains the validator; its refusal is shown in the dialog or line view |
 | Switching | The Session URL accepts a `branch` query for an explicit selection without changing the default. Without that query, it opens the default reported by `session.branches`. Continue from here calls `session.branch_set_default` and opens the default conversation. The client reads the new default's window before switching the transcript and its actions together; a failed read reports the failure instead of showing the outgoing transcript. Only the root and default can open a line. |
 | Errors | `branch_missing`, `branch_ended`, `input_blocked`, an invalid cut and a disabled Branch tool are shown at the action that raised them. An ended branch is read-only. |
-| State | Previously viewed branches retain drafts, scroll positions, and disclosures within the current Session view. The directory is read on reload and reconnect; branch history is read when opened. |
+| State | Each Session and branch keeps its unsent draft, including attachments and file mentions, in this browser tab's memory across navigation. Reloading the page discards drafts. Previously viewed branches retain scroll positions and disclosures within the current Session view. The directory is read on reload and reconnect; branch history is read when opened. |
 
 
 #### State outside the window
@@ -984,8 +984,8 @@ left hidden.
 closed under its turn. Delete is offered only while the connection serves `session.delete`, as today, and is disabled
 while the row reports `running`; `requireInactive` covers the gap between that read and the call. The confirmation
 names the target set: one row's preview for a single delete; the count and up to three previews for the bulk action.
-Targets are the rows this page resolved from the current listing, never the stored marker list, so an unavailable id
-is not sent and no Session the page does not show is named.
+Targets are the visible, non-running rows matching the search and workspace filters, never the stored marker list.
+The bulk control shows the eligible count; a single eligible row has its own Delete button.
 
 The bulk action deletes its targets one call at a time and continues after a failure, because each delete settles its
 own Session:
@@ -1097,8 +1097,7 @@ a lightly shaded rounded row with its available actions beside the preview.
 ├──────────────────────────────────────────────────────────┤
 │ Held for the next turn                                   │
 │ and then commit                [model]                   │
-│                               [Queue] [⚡] [↑ Send]       │
-│                         alternate ^ Ctrl+Enter sends now │
+│        [Stop response] [Interrupt & send] [Queue] [Steer] │
 └──────────────────────────────────────────────────────────┘
 ```
 

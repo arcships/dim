@@ -96,9 +96,9 @@ const sessionCommands = computed(() => {
  * composer names: a centre that moved while the gesture was out keeps the
  * draft rather than writing it into the new conversation (design §14).
  */
-function send(text: string, attachments: DraftAttachments, mode: SubmitMode, branchId = centred.value): Promise<void> {
-  if (branchId !== centred.value) return Promise.reject(new Error(t("composer.sendNowMoved")))
-  return chat.submit(props.sessionId, branchId, text, attachments, mode)
+async function send(text: string, attachments: DraftAttachments, mode: SubmitMode, branchId = centred.value): Promise<void> {
+  if (branchId !== centred.value) throw new Error(t("composer.sendNowMoved"))
+  await chat.submit(props.sessionId, branchId, text, attachments, mode)
 }
 
 function stop(branchId = centred.value): Promise<void> {

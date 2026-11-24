@@ -1,14 +1,17 @@
 import { Button, Popover } from "@heroui/react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { ArrowDown, Check, ChevronRight, Copy, GitBranch, GitFork, List, Quote } from "lucide-react"
-import { lazy, Suspense, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { Streamdown } from "streamdown"
+import { lazy, Suspense, type ComponentProps, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { defaultComponents, defaultRehypePlugins, Streamdown } from "streamdown"
+import type { Root } from "hast"
+import { visit } from "unist-util-visit"
 import { copyText } from "../clipboard"
 import { markdownLinkPath } from "../features/chat/markdown-links"
 import { resolveToolDisplay } from "../features/chat/tool-display"
 import type { TranslationKey } from "../i18n/en"
 import type { TimelineRow } from "../projection"
 import { skillSegments } from "../skill-token"
+import { translate } from "./i18n"
 
 const ToolDiff = lazy(() => import("./tool-diff"))
 
@@ -354,15 +357,32 @@ function Image({ sessionId, fileId }: { sessionId: string; fileId: string }) {
   return <img className="rw-attachment" alt="Conversation attachment" loading="lazy" src={`/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`} />
 }
 
+const copyPathFragment = "#user-content-dim-copy-workspace-path"
+const markdownPlugins = [() => (tree: Root) => {
+  visit(tree, "element", (node) => {
+    if (node.tagName !== "a" || typeof node.properties.href !== "string" || node.properties.href.startsWith("//")) return
+    const path = markdownLinkPath(node.properties.href)
+    if (!path) return
+    node.properties.href = copyPathFragment
+    node.properties.title = path
+  })
+}, ...Object.values(defaultRehypePlugins)]
+
+function MarkdownLink(props: ComponentProps<typeof defaultComponents.a>) {
+  const path = props.href === copyPathFragment ? props.title : undefined
+  const [feedback, setFeedback] = useState<"chat.pathCopied" | "chat.copyFailed">()
+  if (path === undefined) return <defaultComponents.a {...props} />
+  return <><button type="button" className="rw-copy-path" title={path} onClick={() => {
+    void copyText(path).then(() => setFeedback("chat.pathCopied"), () => setFeedback("chat.copyFailed"))
+  }}>{props.children} <small><Copy size={12} aria-hidden="true" /> {translate("chat.copyPath")}</small></button>
+    <span role="status">{feedback && ` · ${translate(feedback)}`}</span></>
+}
+
+const markdownComponents = { a: MarkdownLink }
+
 function Markdown({ text, streaming = false }: { text: string; streaming?: boolean }) {
-  return <div className="rw-markdown" onClick={(event) => {
-    if (!(event.target instanceof Element)) return
-    const path = markdownLinkPath(event.target.closest("a[href]")?.getAttribute("href") ?? "")
-    if (path === undefined) return
-    event.preventDefault()
-    void copyText(path).catch(() => {})
-  }}>
-    <Streamdown isAnimating={streaming} controls={false}>{text}</Streamdown>
+  return <div className="rw-markdown">
+    <Streamdown components={markdownComponents} rehypePlugins={markdownPlugins} isAnimating={streaming} controls={false}>{text}</Streamdown>
   </div>
 }
 
