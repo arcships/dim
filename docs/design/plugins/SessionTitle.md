@@ -39,7 +39,7 @@ only outcome and duration.
 | Observation | Read the Session id, the creation configuration and closing from SessionScope's `identity`, `config` and `closing` ([#2093](https://github.com/arcships/dim/pull/2093), target, pending; [plugin contract](../plugin-contract.md#9-requirements-raised-to-mechanism-owners) R2), then the records on its Session's `session/{sessionId}` channel. C4 broadcast #180 is delivered; #63/#168 are closed. |
 | Timeline reads | Use the Session’s branch query facade on `main`, with a fixed published cutoff. Read only the adopted input identity, its user content or Goal objective, and the adopted model fields (§0.1). |
 | Configuration | Existing named Settings and row source declaration, user scope only (A.3/A12). Read settings.read({source:"session-title",scope:"user"}) at each decision and use its validated/defaulted document directly. |
-| Metadata/notice | The process `store` face provides `title` and `setTitle(id, change)`; `setTitle` commits the title the change returns and answers the revision, with errors `rejected`/`not_found`/`storage` ([SessionStore](SessionStore.md)); the v3 list fields are `title`/`titleSource`/`titleRevision`. After each commit SessionStore calls `session_broadcast::notify`, and Rpc forwards the record to attached v3 clients as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). |
+| Metadata/notice | The process `store` face provides `title` and `setTitle(id, change)`; `setTitle` commits the title the change returns and answers the revision, with errors `rejected`/`not_found`/`closed`/`storage` ([SessionStore](SessionStore.md)); the v3 list fields are `title`/`titleSource`/`titleRevision`. After each commit SessionStore calls `session_broadcast::notify`, and Rpc forwards the record to attached v3 clients as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). |
 | Auxiliary request | The profile's model-selection owner implements AuxiliaryModel and its named `auxiliaryModel.complete` HostDispatch/catalog binding: Provider in the product profile, ConfiguredModels in the model-config profile. Inject it through ordinary C4 dependencies; credentials stay with that owner ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). |
 | Policies | A1–A12 define the first implementation. Appendix D requires public-flow acceptance; documentation CI alone is not runtime acceptance. |
 
@@ -84,7 +84,7 @@ The fixed snapshot ends at returned T, not necessarily at N. Its first adopted e
 supplies text. With model=null, the latest ContextConfiguredData.settings in that snapshot supplies
 providerId/modelId; without an adopted model, generation uses the excerpt fallback in §3.3 instead of the profile's current default.
 
-The sequence diagrams in this appendix predate the `setTitle` change callback and show `setTitle(expected revision, title)`; the target call is `setTitle(id, change)` ([SessionStore](SessionStore.md)).
+The sequence diagrams show the change callback: `setTitle(id, change)`; the owner serializes the writes and answers the new revision ([SessionStore](SessionStore.md)).
 
 Cancellation before setTitle handover stops work without writing. The handover is the setTitle call
 itself: from then on SessionStore settles its own atomic operation, and a lost reply does not authorize
@@ -147,7 +147,7 @@ flowchart TB
   CC -->|"Session model"| MEM
   CONF --> MEM
   CFG --> MEM
-  MEM -->|"setTitle, expected revision"| MD
+  MEM -->|"setTitle(id, change)"| MD
   classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
 ```
 
@@ -174,7 +174,7 @@ sequenceDiagram
   ST->>Queries: select first adopted eligible id, its text and model at fixed T >= N
   ST->>Gen: generate from adopted input
   Gen-->>ST: title or excerpt fallback
-  ST->>Meta: setTitle(expected r, auto)
+  ST->>Meta: setTitle(id, change auto)
   Meta-->>SB: title notice
 ```
 
@@ -192,8 +192,8 @@ sequenceDiagram
   CLI->>Rpc: session.rename sessionId, title
   Rpc->>ST: resolve Session, sessionMethods call
   ST->>Meta: metadata, revision r
-  ST->>Meta: setTitle(expected r, manual)
-  Meta-->>ST: revision r+1
+  ST->>Meta: setTitle(id, change manual)
+  Meta-->>ST: revision + 1
   Note over Meta: title notice on the Session broadcast
   ST-->>Rpc: title, titleSource manual, revision
 ```
@@ -256,7 +256,7 @@ sequenceDiagram
   Note over ST: apply, Session published
   ST->>Meta: metadata: revision 0?
   ST->>ST: rename's text rule, then maxLength
-  ST->>Meta: setTitle(expected 0, manual)
+  ST->>Meta: setTitle(id, change manual)
   Meta-->>ST: revision 1
   Note over Meta: title notice on the Session broadcast
 ```
@@ -281,10 +281,10 @@ sequenceDiagram
   participant R as rename
   participant Meta as SessionStore metadata
   G->>Meta: metadata, revision r, no title
-  R->>Meta: setTitle(expected r, manual)
-  Meta-->>R: r+1
-  G->>Meta: setTitle(expected r, auto)
-  Meta-->>G: conflict
+  R->>Meta: setTitle(id, change manual)
+  Meta-->>R: revision + 1
+  G->>Meta: setTitle(id, change auto)
+  Meta-->>G: rejected
   Note over G: automatic title discarded
 ```
 
@@ -449,6 +449,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | Settings read fails | Automatic: no write, diagnostic, failure counted; rename: `storage_failed`. No fallback document |
 | `setTitle` `rejected` on automatic write | Discarded (diagnostic) |
 | `setTitle` `storage` | Automatic: failure counted; rename: `storage_failed` |
+| `setTitle` `closed` | Rename: `service_reloading`; the attempt is retried on the replacement generation. Automatic: the attempt ends |
 | Unknown Session on rename | `session_not_found` |
 | SessionTitle reloading | Before handover: service_reloading, no rename. After handover/lost reply: read metadata; do not infer no commit or repeat the write |
 | Cancellation | Before handover abort the auxiliary call and discard; after store admission, S5b owns the atomic outcome |

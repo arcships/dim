@@ -176,6 +176,7 @@ None. The client methods (`session.rename`, `sessions.list`, `session.delete`, `
 - [Service faces §3.3 and §3.4](../service-faces.md): the `sessionStore` row and the `store` and `timelineStore` rows.
 - [Resource owner operations](../contracts/resource-owner-operations.md): the `SessionStore → sqliteStorage` rows and the Session row paragraphs.
 - [Session title metadata](../appserver/session-title-metadata.md): the `title` and `setTitle(id, change)` shapes.
+- [Resource faces §4.2 and §5](../resource-faces.md), [service faces §4.8](../service-faces.md), [worktree access §4](../worktree-access.md): the `associateWorktree` request uses `{id, repository, root, subtree}`.
 - [SessionTitle](SessionTitle.md): the paragraph that writes a title under an expected revision.
 
 ## Verification
@@ -225,7 +226,7 @@ Material uncertainty: a process death during the caller's removal step leaves th
 
 ## Binding appendix
 
-The service is marked on the `SessionStore` type; the wire name stays `store`. `Store` the wrapper, `SessionMetadata` and `WorktreeAssociations` no longer exist. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, so no caller sends or names a row. `CancelledFn` is the binding's cancellation argument.
+The `store` face is one hand-written `HostDispatch` on `SessionStore`; the wire name stays `store`. `setTitle` is admitted in `invoke` before its reply future is returned, so a wire caller that drops the reply still commits. `Store` the wrapper, `SessionMetadata` and `WorktreeAssociations` no longer exist. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, so no caller sends or names a row. `CancelledFn` is the binding's cancellation argument.
 
 ```rust
 use dim_agent_capabilities::host::CancelledFn;

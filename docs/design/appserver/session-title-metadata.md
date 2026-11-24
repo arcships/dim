@@ -131,13 +131,13 @@ adds no asynchronous wrapper before handover, cancellation point, read, or secon
                            +-- BEGIN IMMEDIATE ---------------------------> revision of S
                            |                                                 no Session: not_found, rollback
                            |                                                 change refuses: rejected, rollback
-                           |                                                 write r+1 and T
+                           |                                                 write the next revision and T
                            +-- COMMIT ------------------------------------> committed, or storage
                            |  committed only:
                            |    notify(S, {SessionStore, title,
-                           |      {title, titleSource, titleRevision: r+1}}) -------------------> Notice
+                           |      {title, titleSource, titleRevision: next}}) ------------------> Notice
                            |  end its turn
- <---- {revision: r+1} ----+
+ <---- {revision: next} ---+
 ```
 
 `notify` runs after the commit and before the next write takes its turn, so the notices of one Session reach its

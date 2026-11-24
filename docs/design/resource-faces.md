@@ -467,7 +467,7 @@ The order is fixed, and the Session part is the only participant that both waits
    `recognize` only when its own view does not already cover the path.
 2. The node answers the resolution, the node facts, and either a `worktree` candidate or a
    `discoveryError`.
-3. A candidate goes to `store.associateWorktree {sessionId, repository, root, subtree}`. That
+3. A candidate goes to `store.associateWorktree {id, repository, root, subtree}`. That
    operation writes the directory record and the usage association together and answers `{}` only
    after both commit, deduplicated by repository and root and by Session and directory. A failed
    write is a `discoveryError` for the caller: the range is not published, and the user can still
@@ -697,8 +697,8 @@ read-only access.
 
 Superseded by [the SessionStore contract](plugins/SessionStore.md). The Session repository
 operations, the title and association operations, the worktree removal and the error kinds are
-defined there; the Rust `Store` binding type no longer exists and the service is marked on the
-store owner.
+defined there; the Rust `Store` binding type no longer exists and the face is the owner's
+hand-written `HostDispatch`.
 
 ## 6. Provider, binding, and the owners that use each operation
 

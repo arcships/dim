@@ -310,7 +310,7 @@ skillsConfig.get() -> {instructions?}
   -- Skills 的 factory 文本；null 表示内置
 collaborationConfig.get() -> {leaderDescription?, memberDescription?}
   -- Collaboration 的 factory 文本；null 表示内置
-store.associateWorktree {sessionId, repository, root, subtree} -> {}
+store.associateWorktree {id, repository, root, subtree} -> {}
   -> error {code: failed, message}
   -- 路径按 §1 是 UTF-8 字符串；一次写入仍由 SessionStore 的原子事务保证
 ```
