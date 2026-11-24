@@ -46,7 +46,7 @@ No Timeline event, no new plugin, no change to the runtime, rutis or the Session
  +------------------------------------------------|-------------------------+
                                                   v
  Resource node (P1/P2: the control node)    FileStorage: create_directory,
-                                            replace, list, remove
+                                            write, import, list, remove
  Session scope
    Attachments (Deps: SessionIdentity, sessionFiles) -- put(own sessionId, name, text)
 ```
@@ -183,7 +183,7 @@ Rejected alternatives:
    |            |   (file_id, node, writer = G) ->|                          |
    |            | create_directory(<sf>) ------------------------------------->| parent synced
    |            | create_directory(<sf>/<id>) -------------------------------->| parent synced
-   |            | replace(<sf>/<id>/<name>, content, read-only) -------------->| file and parent synced
+   |            | write(<sf>/<id>/<name>, content, read-only) ---------------->| file and parent synced
    |            | cancelled? -> abandon           |                          |
    |            | txn 2: S exists, row still G?   |                          |
    |            |   insert owner (S, id);         |                          |
@@ -192,7 +192,7 @@ Rejected alternatives:
 ```
 
 The reply is sent only after the file and its directory entries are synced and txn 2 has
-committed (`synchronous=FULL`). Windows has no directory sync. As for `replace`, durability
+committed (`synchronous=FULL`). Windows has no directory sync. As for `write`, durability
 there rests on the file sync and NTFS metadata journaling.
 
 **Abandon.** Txn 1 is followed by a failure, a cancellation (checked right before txn 2), or
@@ -247,7 +247,7 @@ also removes the Session's command output on the node first
    2 remove: for each row on node N with writer IS NULL and no owner:
                FileStorage(N).remove(<sf>/<file_id>)          absent counts as removed
                  ok                -> txn: delete the row if it is still unowned
-                 Locked, I/O error -> keep the row, record a diagnostic; the next sweep retries
+                 cancelled, unsynced, io -> keep the row, record a diagnostic; the next sweep retries
                  node unavailable  -> stop; the next sweep retries
    3 list:   FileStorage(N).list(<sf>), then read the rows for those names
                every entry with no row -> FileStorage(N).remove(<sf>/<name>)
@@ -275,11 +275,11 @@ safe because FileStorage removal can be retried.
 
 ## 6. Deletion, crash recovery and serialization
 
-**Order against Session close and leases.** S5c closes the Session first, then commits its
-delete transaction, then SessionStore sweeps. No FileStorage lease outlives a put: `replace`
-holds its lease only while it writes. The sweep never removes a pending file of the live
-generation. A deletion therefore never meets `Locked` or `DirectoryNotEmpty` because of a put.
-If it meets them because of something outside SessionStore, the row stays and the next sweep
+**Order against Session close and keys.** S5c closes the Session first, then commits its
+delete transaction, then SessionStore sweeps. No FileStorage key outlives a put: `write`
+holds its key only while it writes. The sweep never removes a pending file of the live
+generation. A deletion therefore never waits on a key or meets a non-empty directory because of a
+put. If it does because of something outside SessionStore, the row stays and the next sweep
 retries.
 
 **Serializing put against delete and fork.** All three decide at a write transaction of the one
@@ -454,14 +454,14 @@ Limits, and who owns them:
 
 | Limit | Owner | Reason |
 | --- | --- | --- |
-| One file at most 16 MiB | SessionStore | A put is one message, and `replace` holds the content in memory; the bound caps one call's memory |
-| `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json` or `auth.json.lock` in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. `auth.json` would switch `replace` to FileStorage's account-marker protocol |
+| One file at most 16 MiB | SessionStore | A put is one message, and FileStorage streams its bytes; the bound caps one call's memory |
+| `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json` or `auth.json.lock` in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. `auth.json` would switch `write` to FileStorage's credential marker |
 | Content rules (non-empty text, 10 MiB, default `paste.txt`) | Each consumer (Attachments A.2) | Business rules of the feature |
 | No per-Session count or total quota | None | Disk use ends with Session deletion and cleanup (S5c); a quota would need a business owner, and none exists |
 
 **Immutability.** A path names the same bytes for the file's whole life, which ends only when
 the sweep removes an unowned file. The file is written once, read-only: Unix mode `0400`,
-Windows read-only attribute, through `replace`'s permissions parameter. WorkspaceTools' `write`
+Windows read-only attribute, through `write`'s permissions parameter. WorkspaceTools' `write`
 and `edit` therefore fail with `permission_denied`: their commit step opens the target for
 writing, and on Windows also checks the read-only attribute, before replacing it. This is a
 guard, not isolation. A daemon running as root on Unix is not stopped by the mode, a shell
@@ -616,7 +616,7 @@ Rejected alternatives:
 | FileStorage reloads during a put | `node_unavailable` or `storage`; abandoned and swept | SessionStore |
 | SessionStore reloads during a put | Cancelled before txn 2 (abandoned), or already committed; Attachments reloads with it | SessionStore unload |
 | Process restart | Leftovers are swept on the first put or after the next delete | Sweep |
-| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. `Locked` leaves it for the next sweep | FileStorage, sweep |
+| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. A `cancelled`, `unsynced` or `io` removal leaves it for the next sweep | FileStorage, sweep |
 | `read` after the last owner is deleted | File not found; no surviving Session quotes the path | — |
 
 ## 13. Changes to other documents
@@ -682,11 +682,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
    schema with every business row unchanged, then reopens as v15. The upgrading open reports
    the upgrade, which the §8 log line comes from; the reopen does not. The branch-only v14 and unknown
    schemas are refused and preserved.
-8. FileStorage flow: `create_directory` creates the tree with `0700` and syncs the parent; an existing
-   directory succeeds; a link at any level fails `invalid`. Reserved names, a case alias of the
-   reserved directory, and a case alias of `auth.json.lock` (on a case-insensitive filesystem)
-   fail `InvalidPath` and create nothing. An existing file or link is refused and untouched.
-   Cancellation before creation creates nothing.
+8. FileStorage flow: the `create_directory` and `write` steps of §5.1 pass the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md)'s verification, including the reserved names and their case aliases; a cancelled put creates nothing.
 9. Read admission, through a Session's tool path: after `put`, the Session's `read` of the
    returned path, under the product default `workspace-write` and under `read-only`, returns
    the content; the branch writes no `approval/request`, and its permission state (version and
@@ -714,7 +710,7 @@ only S5a.
 
 | # | Change | Why |
 | --- | --- | --- |
-| D1 | The account marker's key handling is defined by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md); `create_directory` creates no key for the new name (§7) | A key file named after a directory that is never removed would stay for good. The contract's marker and private key keep the same alias check without leaving a key for the directory name |
+| D1 | The credential markers' key handling is defined by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md); `create_directory` creates no key for the new name (§7) | A key file named after a directory that is never removed would stay for good. The contract's marker and private key keep the same alias check without leaving a key for the directory name |
 | D2 | Before P3, a put reads no resource node. The Session's existence is decided by txn 1, after the FileStorage lookup, so an unknown Session gets `node_unavailable` while FileStorage is not active (§5.1) | `SessionConfig.resourceNode` does not exist yet, so a read before txn 1 would only repeat txn 1's check. P3 adds the node read before the lookup |
 | D3 | Every put schedules a sweep until one sweep of the generation has completed on its node, instead of only the first put (§5.4) | A first sweep stopped by an unavailable node would otherwise wait for an abandon or a release to retry; a completed sweep ends the extra requests |
 

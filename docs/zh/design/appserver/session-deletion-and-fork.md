@@ -68,7 +68,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
   | delete(S) ->|                              |                     |                          |
   |             | 1 取得 S 的准入门            |                     |                          |
   |             | 2 已加载？close() ---------->| 结算已接受的工作，写终态事实，
-  |             |                              | 释放进程、租约、成员请求；
+  |             |                              | 释放进程、键与 claim、成员请求；
   |             |<-------------- 已关闭 -------|                     |                          |
   |             | delete_session(S) ------------------------------->|                          |
   |             |                              |  3 移除 command-output/S，同步父目录 --------->|
@@ -128,10 +128,10 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | `session_protocol_version` | 仅在 Session 由比连接更新的协议版本创建时出现；删除不会回复它 | 本方法移除该行 |
 | `session_active`（-32000） | 设了 `requireInactive`，且 S 或它会一并移除的某个 Session 处于使用中（§3.2 第 1 步） | 不变：什么都不移除，也不关闭任何东西。消息说明原因：回合正在运行、后台任务持有它，或有几个请求与订阅在用它。失败或正在关闭的线不是原因：它不让 Session 处于使用中 |
 | `product_integration_pending` | 该配置不提供 Session 执行 | 不变 |
-| `-32603` "Session operation failed" | 第 3 步失败（`Locked`、`DirectoryNotEmpty`、`Unsynced`、I/O、节点不可用）或第 4 步失败（SQLite） | 若第 2 步关闭了 S，S 已关闭但未删除，与 `session.close` 之后相同：行还在，本进程内不再列出、不再加载，关闭结束的关系也不恢复。重启后它照常加载，命令输出可能已部分移除。没有加载的 Session 不变。重试 |
+| `-32603` "Session operation failed" | 第 3 步失败（`cancelled`、`unsynced`、`io`、节点不可用）或第 4 步失败（SQLite） | 若第 2 步关闭了 S，S 已关闭但未删除，与 `session.close` 之后相同：行还在，本进程内不再列出、不再加载，关闭结束的关系也不恢复。重启后它照常加载，命令输出可能已部分移除。没有加载的 Session 不变。重试 |
 | 没有回复 | 回复之前连接或 Rpc 已结束 | 两种状态之一。重试 |
 
-第 3 步的 `Locked` 和 `DirectoryNotEmpty` 只会来自已关闭 Session 之外的写入方，例如比 shell 活得更久的 PowerShell 子进程，或打开着文件的其他进程。删除失败，等它们退出后重试。
+第 3 步被持有的键只来自已关闭 Session 之外的写入方，例如比 shell 活得更久的 PowerShell 子进程，或打开着文件的其他进程。移除会等待该键；取消删除则等待以 `cancelled` 结束。`unsynced` 或 `io` 失败让删除失败并重试。
 
 ## 4. 崩溃收敛
 
@@ -362,7 +362,7 @@ S5c 中被否决：在 S 的分叉都删除之前保留 S 的命令输出。ADR 
 | 删除成员 | leader 对它的请求像如今一样以成员已关闭结算 |
 | 对同一源的两次分叉 | 两个独立的 Session，各自拥有共享的文件 |
 
-**S6 评审意见。** "SessionStore 要先关闭 Session、放掉租约"：第 2 步在任何移除之前。"`attachment.put` 与删除竞争时要预期 `Locked` 或 `DirectoryNotEmpty`"：写入的目录不属于任何 Session（S5a），删除从不移除它，S5a 的清扫只移除无所有者且不在写入中的文件，因此两者都不会碰到写入的租约。命令输出的移除只会因已关闭 Session 之外的写入方遇到 `Locked` 或 `DirectoryNotEmpty`，这时删除失败并重试（§3.5）。"需要把 put 和 delete 串行化"：存储的写事务给它们排序（S5a §6），不另加内存锁。
+**S6 评审意见。** "SessionStore 要先关闭 Session、放掉键与 claim"：第 2 步在任何移除之前。"`attachment.put` 与删除竞争时要预期 `cancelled`、`unsynced` 或 `io`"：写入的目录不属于任何 Session（S5a），删除从不移除它，S5a 的清扫只移除无所有者且不在写入中的文件，因此两者都不会碰到写入的键。命令输出的移除会等待已关闭 Session 之外的写入方持有的键；取消删除时等待以 `cancelled` 结束，`unsynced` 或 `io` 失败则重试（§3.5）。"需要把 put 和 delete 串行化"：存储的写事务给它们排序（S5a §6），不另加内存锁。
 
 ## 8. 存储格式
 
@@ -411,7 +411,7 @@ S5c 与 S5a 一样只实现控制节点。在控制节点上，FileStorage 正�
 | [AcpGateway](../plugins/AcpGateway.md)、[RemoteGateway](../plugins/RemoteGateway.md) | 原文说分叉时重置预设，#26 已改为：预设随事实一起复制 |
 | [文档索引](../../../INDEX.md) | 链接到本页 |
 | [Session 文件](session-files.md) | §5.3 和 §12 原说节点离线时删除照样提交。这对其中的 Session 文件步骤成立；整个删除还会先在节点上移除命令输出（§11）。§5.2、§5.4 和 §6 不变，就是本页执行的步骤；§5.4 注明移除现在会同步 |
-| [FileStorage](../../../architecture/rust-agent/plugins/FileStorage.md) | 移除会同步被移除条目的父目录（§14） |
+| [FileStorage](../../../architecture/rust-agent/plugins/FileStorage.md) | 本行由 FileStorage 契约取代（§14）。 |
 | [单树装配](../../../architecture/rust-agent/single-tree.md) | `Agents` 重载一行：重载结算只停止重载中的 Session 所领导的成员（#127） |
 | [Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-字段) | 状态说明：分叉复制存储的 `SessionConfig` 文本，`interactive` 的省略规则随之保留 |
 

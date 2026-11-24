@@ -36,7 +36,7 @@ SessionStore 为 Session 保存不可变文件。调用方为某个 Session 交�
  +------------------------------------------------|-------------------------+
                                                   v
  资源节点（P1/P2 即控制节点）               FileStorage: create_directory,
-                                            replace, list, remove
+                                            write, import, list, remove
  Session 作用域
    Attachments（Deps: SessionIdentity, sessionFiles）-- put(自身 sessionId, name, text)
 ```
@@ -132,7 +132,7 @@ SELECT :fork, file_id FROM session_file_owners WHERE session_id = :source
    |            |   (file_id, node, writer = G) ->|                          |
    |            | create_directory(<sf>) ------------------------------------->| 同步父目录
    |            | create_directory(<sf>/<id>) -------------------------------->| 同步父目录
-   |            | replace(<sf>/<id>/<name>, content, 只读) ------------------->| 同步文件与父目录
+   |            | write(<sf>/<id>/<name>, content, 只读) --------------------->| 同步文件与父目录
    |            | 已取消？-> 放弃                 |                          |
    |            | txn 2：S 存在且行仍为 G？       |                          |
    |            |   插入所有者 (S, id)；          |                          |
@@ -140,7 +140,7 @@ SELECT :fork, file_id FROM session_file_owners WHERE session_id = :source
    |<-----------| {fileId, path, bytes}           |                          |
 ```
 
-文件及其目录项同步完成、txn 2 提交（`synchronous=FULL`）之后才回复。Windows 没有目录同步；与 `replace` 一样，那里的持久性依靠文件同步和 NTFS 元数据日志。
+文件及其目录项同步完成、txn 2 提交（`synchronous=FULL`）之后才回复。Windows 没有目录同步；与 `write` 一样，那里的持久性依靠文件同步和 NTFS 元数据日志。
 
 **放弃。** txn 1 之后发生失败、取消（紧挨 txn 2 之前检查），或 txn 2 发现 Session 已不存在、自己的行已不再以 G 处于 pending 时，SessionStore 执行 `UPDATE session_files SET writer = NULL WHERE file_id = ? AND writer = G`。文件变为无主，并安排一次清扫。如果这条更新也失败，该行以 G 保持 pending，由下一个代次清扫。
 
@@ -178,7 +178,7 @@ put 作为 SessionStore 自己的任务运行：调用方不再等待就会取�
    2 移除：对节点 N 上 writer IS NULL 且无所有者的每一行：
              FileStorage(N).remove(<sf>/<file_id>)          不存在即视为已删除
                成功              -> txn：若该行仍无主，删除它
-               Locked、I/O 错误  -> 保留该行，记录诊断；下次清扫重试
+               cancelled、unsynced、io -> 保留该行，记录诊断；下次清扫重试
                节点不可用        -> 停止；下次清扫重试
    3 列目录：FileStorage(N).list(<sf>)，再读取这些名字对应的行
              没有行的每个条目 -> FileStorage(N).remove(<sf>/<name>)
@@ -197,7 +197,7 @@ put 作为 SessionStore 自己的任务运行：调用方不再等待就会取�
 
 ## 6. 删除、崩溃恢复与串行化
 
-**与 Session 关闭和租约的顺序。** S5c 先关闭 Session，再提交删除事务，然后 SessionStore 清扫。FileStorage 租约不会比一次写入活得更久：`replace` 只在写入期间持有租约。清扫从不移除当前代次的 pending 文件。因此删除不会因为写入而遇到 `Locked` 或 `DirectoryNotEmpty`；如果因为 SessionStore 以外的原因遇到，该行保留，下次清扫重试。
+**与 Session 关闭和键的顺序。** S5c 先关闭 Session，再提交删除事务，然后 SessionStore 清扫。FileStorage 键不会比一次写入活得更久：`write` 只在写入期间持有键。清扫从不移除当前代次的 pending 文件。因此删除不会因为写入而等待键或遇到非空目录；如果因为 SessionStore 以外的原因遇到，该行保留，下次清扫重试。
 
 **写入与删除、分叉的串行化。** 三者都在同一个原生存储连接的写事务上做决定：txn 2 检查 Session 是否仍存在；S5c 的删除同时删除所有者行和 Session 行；分叉在创建它的事务里复制所有者行。SQLite 给这些事务排序，所以不需要内存锁：
 
@@ -325,12 +325,12 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
 
 | 限制 | 归属 | 原因 |
 | --- | --- | --- |
-| 单个文件至多 16 MiB | SessionStore | 一次写入是一条消息，`replace` 把内容放在内存里；这个上限约束单次调用的内存 |
-| `name`：`[A-Za-z0-9._-]{1,64}`，不以点开头，不论大小写都不是 `auth.json` 或 `auth.json.lock`，并且节点的 FileStorage 接受它作为一个路径组成部分（Windows 设备名） | SessionStore | 文件名会成为 SessionStore 目录下的路径组成部分。`auth.json` 会让 `replace` 改走 FileStorage 的账户标记协议 |
+| 单个文件至多 16 MiB | SessionStore | 一次写入是一条消息，FileStorage 流式写入；这个上限约束单次调用的内存 |
+| `name`：`[A-Za-z0-9._-]{1,64}`，不以点开头，不论大小写都不是 `auth.json` 或 `auth.json.lock`，并且节点的 FileStorage 接受它作为一个路径组成部分（Windows 设备名） | SessionStore | 文件名会成为 SessionStore 目录下的路径组成部分。`auth.json` 会让 `write` 改走 FileStorage 的凭据 marker |
 | 内容规则（非空文本、10 MiB、默认 `paste.txt`） | 各使用方（Attachments A.2） | 功能的业务规则 |
 | 不设每个 Session 的数量或总量配额 | 无 | 磁盘占用随 Session 删除和清理（S5c）结束；配额需要一个业务所有者，目前没有 |
 
-**不可变性。** 在文件存续期间，路径始终指向同样的字节；文件只在清扫移除无主文件时结束。文件只写一次，并且只读：Unix 模式 `0400`，Windows 只读属性，通过 `replace` 的权限参数设置。因此 WorkspaceTools 的 `write` 和 `edit` 会以 `permission_denied` 失败：它们的提交步骤在替换前先以写方式打开目标，Windows 上还会检查只读属性。这是一道防护，不是隔离：以 root 运行的守护进程在 Unix 上不受模式限制，shell 命令仍可以修改文件，FileStorage 也只是可信的宿主存储边界，不隔离同一用户的进程。移动数据库目录会破坏历史中的绝对路径，就像移动工作区会破坏指向其中的路径一样。
+**不可变性。** 在文件存续期间，路径始终指向同样的字节；文件只在清扫移除无主文件时结束。文件只写一次，并且只读：Unix 模式 `0400`，Windows 只读属性，通过 `write` 的权限参数设置。因此 WorkspaceTools 的 `write` 和 `edit` 会以 `permission_denied` 失败：它们的提交步骤在替换前先以写方式打开目标，Windows 上还会检查只读属性。这是一道防护，不是隔离：以 root 运行的守护进程在 Unix 上不受模式限制，shell 命令仍可以修改文件，FileStorage 也只是可信的宿主存储边界，不隔离同一用户的进程。移动数据库目录会破坏历史中的绝对路径，就像移动工作区会破坏指向其中的路径一样。
 
 ## 11. 安全
 
@@ -415,7 +415,7 @@ SessionStore 从两张所有权表回答"S 拥有哪些文件"（ADR 013）：Se
 | 写入期间 FileStorage 重载 | `node_unavailable` 或 `storage`；放弃并清扫 | SessionStore |
 | 写入期间 SessionStore 重载 | 在 txn 2 之前取消（放弃），或已提交；Attachments 随之重载 | SessionStore 卸载 |
 | 进程重启 | 遗留物在第一次写入时或下一次删除之后被清扫 | 清扫 |
-| SessionStore 以外的东西写入 Session 文件目录 | 顶层条目由清扫的第 3 步移除；某个文件目录内的条目在该文件无主时随目录移除。遇到 `Locked` 则留给下次清扫 | FileStorage、清扫 |
+| SessionStore 以外的东西写入 Session 文件目录 | 顶层条目由清扫的第 3 步移除；某个文件目录内的条目在该文件无主时随目录移除。遇到 `cancelled`、`unsynced` 或 `io` 则留给下次清扫 | FileStorage、清扫 |
 | 最后一个所有者删除后 `read` | 文件不存在；没有存活的 Session 引用该路径 | — |
 
 ## 13. 对其他文档的修改
@@ -470,7 +470,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 5. FileStorage 未激活：`node_unavailable`；什么都不写；SessionStore 和 Attachments 保持加载。
 6. 在 txn 2 之前取消：不拥有任何文件；目录被清扫。文件名无效（包括 `AUTH.JSON`）或内容超过 16 MiB：`invalid` 或 `too_large`；什么都不写。
 7. 空库建为 v15。一次性 v13 库原地升级为精确的 v15 结构，所有业务行不变，再次打开时为 v15。执行升级的那次打开报告升级，§8 的日志行由此而来；再次打开不报告。分支专用 v14 和未知结构被拒绝并保留。
-8. FileStorage 流程：`create_directory` 创建整棵树（`0700`）并同步父目录；已存在的目录成功；任一层是链接则以 `invalid` 失败。保留名、保留目录的大小写别名，以及（在大小写不敏感的文件系统上）`auth.json.lock` 的大小写别名，都以 `InvalidPath` 失败且不创建任何东西。已存在的文件或链接被拒绝且不改动。创建前取消则什么都不创建。
+8. FileStorage 流程：§5.1 的 `create_directory` 与 `write` 步骤通过 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 的验收，包括保留名及其大小写别名；取消的写入什么都不创建。
 9. 读取准入，经由 Session 的工具路径：`put` 之后，在产品默认的 `workspace-write` 和 `read-only` 下，该 Session 对返回路径的 `read` 返回内容；分支不写 `approval/request`，它的权限状态（版本和策略）不变。拒绝读取另一个 Session 的文件或数据库目录属于 §11.1 事实之外读取询问的验收：两者都不在该 Session 的事实中。
 
 测试：第 1、3（未知 Session）、5、6（名字、大小、已取消的调用）、4、9 项是经由 `sessionFiles` 的流程测试，位于 [session_files_flow.rs](../../../../crates/dim-app-server/tests/session_files_flow.rs)；第 2 项，以及写入与 txn 2 之间的第 3、6 项，在 [files/tests.rs](../../../../crates/dim-app-server/src/storage/files/tests.rs) 中运行 S5c 的分叉步骤和该处的钩子；第 7 项是 [storage_flow.rs](../../../../crates/dim-app-server/tests/storage_flow.rs) 中的 `a_v13_store_upgrades_in_place_once`、`the_daemon_reports_a_v13_upgrade_on_stderr_once` 和拒绝用例；第 8 项是 [file_storage_flow.rs](../../../../crates/dim-agent-capabilities/tests/file_storage_flow.rs) 中的 `directory_creation_stays_inside_the_authorized_root`。
@@ -483,7 +483,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 
 | # | 变更 | 原因 |
 | --- | --- | --- |
-| D1 | 账户标记的锁键处理由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 定义；`create_directory` 不为新名字创建锁键（§7） | 永远不会被删除的目录若留下以它命名的锁键文件，就会一直留着。契约的标记与私有锁键保留同样的别名检查，又不为目录名留下锁键 |
+| D1 | 凭据 marker 的锁键处理由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 定义；`create_directory` 不为新名字创建锁键（§7） | 永远不会被删除的目录若留下以它命名的锁键文件，就会一直留着。契约的标记与私有锁键保留同样的别名检查，又不为目录名留下锁键 |
 | D2 | P3 之前，put 不读取资源节点。Session 是否存在由 txn 1 判定，它在 FileStorage 查找之后，所以 FileStorage 未激活时，未知 Session 得到 `node_unavailable`（§5.1） | `SessionConfig.resourceNode` 还不存在，txn 1 之前的读取只会重复 txn 1 的检查。P3 在查找之前加入节点读取 |
 | D3 | 在本代次的一次清扫在该节点上完成之前，每次 put 都安排清扫，而不只是第一次 put（§5.4） | 否则因节点不可用而中止的第一次清扫，要等到放弃或释放才会重试；完成一次清扫后便不再多发请求 |
 

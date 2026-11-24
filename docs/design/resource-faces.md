@@ -63,7 +63,7 @@ whether a call may run, or consults who is calling.
    each; a traversal is one call, not one call per file.
 3. **Paths are node paths.** A request carries a node-absolute resolved path; a reply returns
    node-absolute resolved paths only. A relative path in a request is `invalid`, with one
-   exception: **`fsHost.resolve` is the resolution entry point**, so it accepts the path as the
+   exception: **the file-tools face's `resolve` is the resolution entry point**, so it accepts the path as the
    model gave it — relative to the `cwd` the caller passes, starting with `~`, containing `..`,
    following symlinks — because only the node can resolve it. `cwd`, `workspace` and the
    confirmed roots it is given are node-absolute. Every other operation, `execHost.start` and
@@ -107,7 +107,7 @@ whether a call may run, or consults who is calling.
 ### 3.2 `start` and `wait`
 
 `start` accepts only `{taskId, command, cwd, workspace, roots}`. `cwd` is a resolved working
-directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
+directory — the control side obtains it from the file-tools face's `resolve`, which is also what triggers
 [worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
 known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
 `roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute.
@@ -421,7 +421,7 @@ moves the Git probe away from the Session that has to persist the result.
 
 | Concern | Owner |
 | --- | --- |
-| Git probe, repository identity, fixed-prefix mapping, root directory identity | `fsHost.resolve`, on the node holding the files |
+| Git probe, repository identity, fixed-prefix mapping, root directory identity | the file-tools face's `resolve`, on the node holding the files |
 | Session view: confirmed roots with their identities, in-flight recognitions, "already known" answers, branch-independent cache | the file facts Session part — ADR 014's `fileAccessFacts` service — on the control node (worktree access §3) |
 | Worktree directory record and Session usage association, deduplicated and written atomically | `store.associateWorktree`, provided by SessionStore (worktree access §4, R2) |
 | Publishing the expanded range, and its revalidation | the Session part, after the store acknowledges (§4.2.2) |
@@ -516,7 +516,7 @@ or changed one:
 - The control side records the returned binding in `FileReads` for the branch; that record stays
   branch memory on the control node and is not reconstructed from the node.
 - `write` and `edit` are admitted before they run, so their `path` is the resolved path `resolve`
-  returned. `ToolHost.resolve_write` asks `fsHost.resolve` for a remote Session instead of
+  returned. `ToolHost.resolve_write` asks the file-tools face's `resolve` for a remote Session instead of
   resolving locally; the resolved call is what approval and execution receive, as today.
 
 ### 4.4 `glob`, `grep` and `mentions`

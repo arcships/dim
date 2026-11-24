@@ -210,12 +210,13 @@ Every step tolerates an absent target, so a delete can be retried after any fail
 | `session_protocol_version` | Only for a Session recorded by a *newer* protocol version than the connection speaks; a delete never answers it | Removed from this method |
 | `session_active` (-32000) | `requireInactive` and S, or a Session the delete would remove with it, is in use (§3.2 step 1) | Unchanged: nothing is removed and nothing is closed. The message says why: a turn is running, a background task holds it, or how many requests and subscriptions use it. A line that failed or is closing is not a reason: it keeps no Session |
 | `product_integration_pending` | The profile does not serve Session execution | Unchanged |
-| `-32603` "Session operation failed" | Step 3 failed (`Locked`, `DirectoryNotEmpty`, `Unsynced`, I/O, node unavailable) or step 4 failed (SQLite) | If step 2 closed S, S is closed but not deleted, as after `session.close`: its rows remain, it is neither listed nor loaded again in this process, and the relations its close ended stay ended. After a restart it loads, possibly with part of its command output gone. A Session that was not loaded is unchanged. Retry |
+| `-32603` "Session operation failed" | Step 3 failed (`cancelled`, `unsynced`, `io`, node unavailable) or step 4 failed (SQLite) | If step 2 closed S, S is closed but not deleted, as after `session.close`: its rows remain, it is neither listed nor loaded again in this process, and the relations its close ended stay ended. After a restart it loads, possibly with part of its command output gone. A Session that was not loaded is unchanged. Retry |
 | No reply | The connection or Rpc ended before the reply | Either state. Retry |
 
-`Locked` and `DirectoryNotEmpty` in step 3 come only from writers outside the closed Session, such as a PowerShell
-child that outlived its shell or another process holding a file open. The delete fails and is retried once they are
-gone.
+A held key in step 3 comes only from a writer outside the closed Session, such as a PowerShell
+child that outlived its shell or another process holding a file open. The removal waits for the
+key; cancelling the delete ends that wait with `cancelled`. An `unsynced` or `io` failure leaves
+the delete failed and retried.
 
 ## 4. Crash convergence
 
@@ -563,11 +564,12 @@ delete against loading.
 | Delete of a member | The leader's requests to it settle as member closed, as today |
 | Two forks of one source | Independent Sessions, each owning the shared files |
 
-**S6 review notes.** "SessionStore must close the Session and release its leases first": step 2 comes before any
-removal. "`attachment.put` racing a delete should expect `Locked` or `DirectoryNotEmpty`": a put's directory belongs
+**S6 review notes.** "SessionStore must close the Session and release its keys and claims first": step 2 comes before any
+removal. "`attachment.put` racing a delete should expect `cancelled`, `unsynced` or `io`": a put's directory belongs
 to no Session (S5a), the delete never removes it, and S5a's sweep removes only unowned, non-pending files, so neither
-meets a put's lease. The command output removal meets `Locked` or `DirectoryNotEmpty` only from a writer outside the
-closed Session; the delete then fails and is retried (§3.5). "Put and delete must be serialized": the store's write
+meets a put's key. The command output removal waits for a key held by a writer outside the
+closed Session; cancelling the delete ends the wait with `cancelled`, and an `unsynced` or `io` failure is retried
+(§3.5). "Put and delete must be serialized": the store's write
 transactions order them (S5a §6); no in-memory lock is added.
 
 ## 8. Storage format

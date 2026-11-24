@@ -36,7 +36,7 @@ flow, and the gaps rmcp leaves, three of them MUSTs of the specification (Append
 | [rmcp pin](../../../crates/dim-app-server/Cargo.toml), feature `auth` (`src/transport/auth.rs`) | The `auth` module covers metadata discovery, DCR and CIMD client selection, PKCE and `state`, code exchange with `resource` and `iss`, and refresh with rotation. The `CredentialStore` and `StateStore` traits are pluggable. It shares the reqwest 0.13 already used by the transport | The protocol engine; gaps in Appendix A |
 | Claude Code (`/mcp`, `claude mcp login`, [docs](https://code.claude.com/docs/en/mcp)) | The `oauth` object in `.mcp.json`: `clientId`, `callbackPort`, `authServerMetadataUrl`, `scopes`. Redirect `http://localhost:PORT/callback`; a switch to `127.0.0.1` broke servers that match the registered URI exactly and was reverted. Paste the callback URL when the redirect fails. The client secret is kept out of config. Refresh, then retry once, on `401` | The `oauth` field names and types, the redirect form, the paste fallback, the secret outside config |
 | MCP TypeScript and Python SDKs (`OAuthClientProvider`, `TokenStorage`) | Storage and redirect handling are injected by the host. Credentials carry an issuer stamp and are discarded on mismatch. `invalid_client` clears the registration and `invalid_grant` clears the tokens | Owner-supplied storage, issuer binding, clearing rules |
-| Dim account login (`account.login.browser.begin/complete`, `managed_oauth.rs`, `dim-cli/src/login.rs`) | The daemon returns `{attemptId, authorizationUrl, expiresAt}`. The client sends back the pasted callback URL, read with hidden input. Tokens live in `auth.json` under the home root, through FileStorage's `claim`/`update` with atomic 0600 replace | The attempt shape, paste input, the storage pattern |
+| Dim account login (`account.login.browser.begin/complete`, `managed_oauth.rs`, `dim-cli/src/login.rs`) | The daemon returns `{attemptId, authorizationUrl, expiresAt}`. The client sends back the pasted callback URL, read with hidden input. Tokens live in `auth.json` under the home root, through FileStorage's `claim`/`update_claimed` with atomic 0600 replace | The attempt shape, paste input, the storage pattern |
 
 ## 3. Structure
 
@@ -89,17 +89,8 @@ source or the Session (§10 D8).
 - **Self-contained.** The record carries the token and revocation endpoints and the client's
   authentication method, so refresh and sign-out need no new discovery. A record is written when
   an attempt completes, with its client and tokens; an abandoned attempt leaves nothing.
-- **Write path.** A write runs FileStorage's `update` on the file key: the change re-reads the
-  file, replaces only its own key's record, and the owner atomically replaces the file with mode
-  0600. On Windows the file keeps the
-  FileStorage DACL handling. A replace that is in place but whose sync failed counts as written:
-  readers already see it, and a crash that loses it ends like the kill in §7.
-- **Token requests hold the lock.** A code exchange, refresh or revocation holds that lock from
-  the re-read through the request to the replace, as the managed OAuth host does. Two daemons
-  can share a home (for example `--product-home` with different `--database` paths), and the
-  lock stops both from redeeming one rotating refresh token. Token requests for different servers
-  therefore wait on each other, each bounded by its 30 s timeout; they are rare. Discovery and
-  registration run outside the lock.
+- **Write path.** A write claims the file's marker with `claim(path)`, then runs one `update_claimed`: the change re-reads the file and replaces only its own key's record, and the owner atomically replaces the file with mode 0600 under the held marker. The claim is released after the write. On Windows the file keeps the FileStorage DACL handling. A replace that is in place but whose sync failed counts as written: readers already see it, and a crash that loses it ends like the kill in §7.
+- **Token requests hold the claim.** A code exchange, refresh or revocation claims the marker before the re-read and holds it through the request to the write-back, as the managed OAuth host does. Two daemons can share a home (for example `--product-home` with different `--database` paths), and the marker stops both from redeeming one rotating refresh token. Token requests for different servers therefore wait on each other, each bounded by its 30 s timeout; they are rare. Discovery and registration run outside the claim.
 - **Settled once sent.** A token request that has been sent is received and persisted on
   `McpAuth`'s own task, whoever is waiting for it, so neither the caller's departure nor an unload
   loses a rotated refresh token or a redeemed code. Mcp's unload waits for it. A code exchange
@@ -118,11 +109,11 @@ source or the Session (§10 D8).
 | --- | --- | --- |
 | Challenge | Per key: the last `WWW-Authenticate` (`resource_metadata`, `scope`, `error`) seen by any connection | Until authorization succeeds, sign-out or Mcp reload |
 | Attempt | `attemptId`, key, PKCE verifier, `state`, expected `issuer`, metadata, client, redirect URI, scopes, `expiresAt` | At most one per key; ends on complete, expiry (10 min), sign-out or a new start for the same key (§7) |
-| Attempts lock | One in-process async lock over every key's attempt and completed sign-outs: the single order of attempt state (§7). Its holders never wait for the store lock or a network request | Mcp generation |
-| Store lock and change watch | One in-process async lock in front of the FileStorage lock, which admits or fails at once, so a lock held by another process is retried, as the managed OAuth host does; plus a watch per key, notified on every change to the key's record with whether it holds tokens: Sessions waiting in `auth_required` retry on any change, and ready Sessions react when the tokens are gone | Mcp generation |
+| Attempts lock | One in-process async lock over every key's attempt and completed sign-outs: the single order of attempt state (§7). Its holders never wait for the store claim or a network request | Mcp generation |
+| Store claim and change watch | One in-process async lock in front of FileStorage's `claim`/`update_claimed`: it admits one local token request or write per key at a time, and the marker excludes other daemons; a marker another daemon holds is waited for, not failed; plus a watch per key, notified on every change to the key's record with whether it holds tokens: Sessions waiting in `auth_required` retry on any change, and ready Sessions react when the tokens are gone | Mcp generation |
 
 The PKCE verifier and `state` are never persisted. A daemon restart abandons pending attempts.
-There is no record cache: each request reads the file without the lock, which is safe because
+There is no record cache: each request reads the file without the claim, which is safe because
 writes are atomic replaces, and sees a refresh made by another daemon on the same home.
 
 ### 4.3 Configuration (`mcp` business source)
@@ -304,13 +295,13 @@ be retried:
    |                      |                      |                              |
    |-- lease(K) -------------------------------->|                              |
    |                      |                      | 30 s or more left:           |
-   |                      |                      | reply; else lock store,      |
+   |                      |                      | reply; else claim store,     |
    |                      |                      | re-check, refresh            |
    |                      |-- lease(K) --------->|                              |
-   |                      |                      | (waits for the lock)         |
+   |                      |                      | (waits for the claim)        |
    |                      |                      |-- refresh, resource -------->|
    |                      |                      |<-- access, rotated refresh --|
-   |                      |                      | persist, unlock              |
+   |                      |                      | persist, release             |
    |<-- lease r2 --------------------------------|                              |
    |                      |<-- lease r2 ---------|                              |
    | MCP: 401 on r2       |                      |                              |
@@ -332,7 +323,7 @@ be retried:
   record still holds `rN`; otherwise another Session has already refreshed. The request is retried once. A rejected request was not processed by the
   server, so retrying it repeats no effect.
 - **Single flight.** One refresh runs per key at a time across all Sessions: a waiter that gets
-  the lock re-reads the record and finds the new token.
+  the claim re-reads the record and finds the new token.
 - **Rotation.** A new refresh token replaces the old one. If none is returned, the old one is
   kept. The new record is persisted before any lease uses the new access token.
 - **Reauthorization.** `invalid_grant`, `invalid_client`, a token without a refresh token that
@@ -406,7 +397,7 @@ in another daemon sharing the home after a sign-out is a later sign-in.
 when it completes, `cancel` to close its named current attempt, `complete` to validate a callback,
 and the exchange for both currency checks.
 The exchange holds it from its final check until its outcome is published. Its holders never
-wait for the store lock or a network request, so waiting for it takes at most one local store
+wait for the store claim or a network request, so waiting for it takes at most one local store
 write, never a token request or a refresh. Every `start` and `logout` is therefore ordered either
 before an exchange's final check, which then finds its attempt superseded, or after its
 publication: a newer attempt that completes later replaces the stored credential, and a
@@ -417,7 +408,7 @@ after a newer `start` has returned.
   publication under way holds the attempts lock, so the new attempt becomes current after it. If
   a sign-out completed after `start` read the record, `start` answers `mcp_auth_attempt_closed`
   instead, because its attempt may reuse a client that the sign-out deleted.
-- **`logout`** closes the current attempt when it is accepted, before it waits for the store lock.
+- **`logout`** closes the current attempt when it is accepted, before it waits for the store claim.
   It closes the attempt again once it has deleted the record, which ends an attempt started in
   the meantime.
 - **`cancel`** closes only the named current attempt. It leaves an existing grant intact and
@@ -426,7 +417,7 @@ after a newer `start` has returned.
   closed without undoing the published grant.
 - **`complete`** ends the attempt when its exchange settles, except after a transport error
   (§5.4). An authorization server error in the callback, or expiry, ends it too.
-- **The exchange** checks that its attempt is still current twice: after it takes the store lock,
+- **The exchange** checks that its attempt is still current twice: after it takes the store claim,
   before it sends the token request, and when the response is in, before it writes the store.
   From the second check it holds the attempts lock until its outcome is published: the record
   written, the challenge and missing scopes cleared and the Sessions woken; after
@@ -434,14 +425,14 @@ after a newer `start` has returned.
   - Superseded before the request: the code is never sent.
   - Superseded while the request was out: the request is still settled (§4.1). Tokens it
     obtained are revoked (RFC 7009, best effort, the refresh token first) and discarded. The
-    revocation runs while the store lock is still held, so it precedes any later token request.
+    revocation runs while the store claim is still held, so it precedes any later token request.
     Nothing is written to the store, whatever the response, and no Session is woken.
   - Either way `complete` answers `mcp_auth_attempt_closed`.
   - Current at the final check: the outcome is published before any later `start` or `logout`
     takes effect. The code is spent, so the attempt ends even if the record cannot be written;
     the tokens are then revoked once the attempts lock is released.
-- **A refresh** needs no such check. It re-reads the record under the store lock, so it sees any
-  sign-in or sign-out that held the lock before it, and one that holds the lock after it
+- **A refresh** needs no such check. It re-reads the record under the store claim, so it sees any
+  sign-in or sign-out that held the claim before it, and one that holds the claim after it
   replaces or deletes its result.
 
 | Race | Outcome |
@@ -449,10 +440,10 @@ after a newer `start` has returned.
 | Two `start` calls for one key | The later to return replaces the earlier; completing the earlier is `mcp_auth_attempt_closed` |
 | `start` while a `complete` is under way | Until the old exchange's final check, the new attempt supersedes it: a code not yet sent is never sent, tokens already obtained are revoked and discarded, and `complete` answers `mcp_auth_attempt_closed`. After that check, `start` becomes current only once the old exchange has written its record and woken the Sessions; completing the new attempt replaces that record |
 | Two `complete` calls for one attempt | One exchange at a time: the second answers `mcp_auth_attempt_closed` at once. After a transport error the attempt is pending again |
-| `logout` while an attempt is pending or under way | The attempt closes when `logout` is accepted. An exchange still waiting for the store lock sends nothing; one whose request is out discards its tokens; one past its final check publishes first, and `logout` is accepted after it. `logout` then deletes the record and revokes its tokens |
+| `logout` while an attempt is pending or under way | The attempt closes when `logout` is accepted. An exchange still waiting for the store claim sends nothing; one whose request is out discards its tokens; one past its final check publishes first, and `logout` is accepted after it. `logout` then deletes the record and revokes its tokens |
 | `start` while `logout` runs | If the sign-out completes before `start` returns, `start` answers `mcp_auth_attempt_closed`; an attempt `start` made current before then closes when the sign-out completes |
-| `complete` while a refresh runs | Both hold the store lock in turn: a refresh after `complete` finds fresh tokens and does nothing; `complete` after a refresh replaces the tokens |
-| `logout` while a refresh runs | `logout` takes the store lock after it; the refreshed tokens are revoked and deleted. A refresh after `logout` finds no record |
+| `complete` while a refresh runs | Both hold the store claim in turn: a refresh after `complete` finds fresh tokens and does nothing; `complete` after a refresh replaces the tokens |
+| `logout` while a refresh runs | `logout` takes the store claim after it; the refreshed tokens are revoked and deleted. A refresh after `logout` finds no record |
 | Two Sessions get `401` together | One refresh (§5.6); both retry with the new lease |
 | Entry URL edited | New key, so the new generation starts `absent` and becomes `required` on its first `401`; the old record is inert |
 | Entry disabled or removed during an attempt | The attempt may still complete and persist; nothing connects until the entry is enabled |
@@ -542,7 +533,7 @@ callback URLs or authorization server `error_description` text from an unvalidat
 | D6 | The callback always returns through `mcp.auth.complete {attemptId, callbackUrl}`; the CLI captures it with a loopback listener, or the user pastes it | A loopback listener in the daemon is a new external entry inside a business owner and is unreachable over SSH anyway; one long call with progress would hold an RPC open for minutes and still need a listener; the device flow is not in the MCP specification |
 | D7 | Four methods, all `report`; explicit cancellation closes a pending attempt without undoing a published grant; no attempt-status polling | `drain` would hold Mcp's unload behind authorization-server calls and break the uniform `mcp.*` rule. Leaving the UI must not cancel a submitted exchange, but an explicit cancel must prevent a still-pending attempt from later publishing. Polling has nothing to poll, because no background party completes an attempt |
 | D8 | Credential key = server `id` + canonical URL, process-wide; the record binds `resource` and `issuer` | A URL-only key allows one account per server; `(source, id)` lets a token follow a name to a new URL; per-Session keys contradict process ownership (ADR 002 D1) |
-| D9 | Store `mcp-oauth.json` under the home root through FileStorage, atomic 0600 replace, versioned; token requests hold the store lock and settle once sent. S8b adds no credential service, so nothing migrates: tokens are owner state that each refresh rewrites, and every owner handles its own secrets ([settings-service §1.2](settings-service.md#12-decision-secrets-belong-to-their-owner)); every other OAuth holder follows the same rule | The Settings rows in SQLite hold business documents, not secrets; `pluginFiles` is FileStorage's bridge API for non-Rust plugins, while a Rust owner uses FileStorage directly, as the managed OAuth host does; an OS keychain needs a host-wide secret-store decision that covers every OAuth owner; waiting for S8b blocks on an API that cannot hold rotating secrets |
+| D9 | Store `mcp-oauth.json` under the home root through FileStorage, atomic 0600 replace, versioned; token requests hold the file's published marker claim and settle once sent. S8b adds no credential service, so nothing migrates: tokens are owner state that each refresh rewrites, and every owner handles its own secrets ([settings-service §1.2](settings-service.md#12-decision-secrets-belong-to-their-owner)); every other OAuth holder follows the same rule | The Settings rows in SQLite hold business documents, not secrets; `pluginFiles` is FileStorage's bridge API for non-Rust plugins, while a Rust owner uses FileStorage directly, as the managed OAuth host does; an OS keychain needs a host-wide secret-store decision that covers every OAuth owner; waiting for S8b blocks on an API that cannot hold rotating secrets |
 | D10 | Refresh on use with a 30 s margin, plus refresh and one retry on `401`; single flight per key; persist rotation before use | Background refresh timers wake the daemon for idle servers and rotate tokens nobody uses |
 | D11 | Step-up is user-initiated: the call fails with fixed text, and the next sign-in requests the union | Automatic re-authorization from a tool call needs a browser in the middle of a turn |
 | D12 | Sign-out revokes (RFC 7009, best effort) then deletes the whole record; `mcp.remove` leaves credentials | Deleting on `mcp.remove` cannot know whether another source's entry with the same key still uses them |
@@ -550,7 +541,7 @@ callback URLs or authorization server `error_description` text from an unvalidat
 | D14 | `start` requires an enabled entry; sign-out is always allowed; one key is shared across sources | Sign-in on a disabled project entry would contact a URL from project files before the user enabled it (ADR 003 D3) |
 | D15 | An entry with static credentials never uses OAuth; OAuth needs `https` or loopback `http` | Falling back to OAuth after a static credential fails mixes two credential sources; a bearer token over cleartext can be stolen |
 | D16 | Require same-origin PRM: the `resource_metadata` URL must be same-origin, and `resource` may be the server URL or a parent path on the same origin | RFC 9728 does not require a same-origin metadata URL; accepting another origin would let any `401` point discovery at another host. RFC 9728 asks for an identical `resource`; requiring it would mean replacing rmcp's validation, while the parent-path rule keeps the token audience inside the server's origin |
-| D17 | Attempt currency (§7): the `attemptId` identifies an attempt, and only the key's current attempt redeems its code, checked after the store lock and again after the token response. One attempts lock orders every change of attempt state; the exchange holds it from the second check until its outcome is published, so a later `start` or sign-out takes effect after the publication. Sign-out closes attempts when it is accepted and when it completes; a `start` prepared before a completed sign-out is refused. A superseded request already sent is settled, and its tokens are revoked best effort under the store lock and discarded. Holding the store lock orders the revocation before a newer attempt's exchange: a server that revokes a whole session then refuses the newer code at sign-in, instead of leaving a stored credential that is already dead | Checking only before the request lets a response still in flight overwrite a newer attempt. Ending the attempt before the store write and publishing after it lets a newer `start` return while the write is pending, so a superseded attempt stores and wakes after the newer one is current. Writing first and rolling back when superseded lets lock-free readers use the tokens in between, and a failed rollback leaves them stored. Cancelling a request in flight breaks "settled once sent" (§4.1): a redeemed code would leave live tokens nobody knows about. Storing them and leaving cleanup to a later sign-out undoes a sign-out the user has already completed. Discarding without revocation leaves the tokens valid at the authorization server until they expire. Taking the store lock in `start` would queue each sign-in behind refreshes of up to 30 s. A generation counter per attempt would duplicate the `attemptId` |
+| D17 | Attempt currency (§7): the `attemptId` identifies an attempt, and only the key's current attempt redeems its code, checked after the store claim and again after the token response. One attempts lock orders every change of attempt state; the exchange holds it from the second check until its outcome is published, so a later `start` or sign-out takes effect after the publication. Sign-out closes attempts when it is accepted and when it completes; a `start` prepared before a completed sign-out is refused. A superseded request already sent is settled, and its tokens are revoked best effort under the store claim and discarded. Holding the store claim orders the revocation before a newer attempt's exchange: a server that revokes a whole session then refuses the newer code at sign-in, instead of leaving a stored credential that is already dead | Checking only before the request lets a response still in flight overwrite a newer attempt. Ending the attempt before the store write and publishing after it lets a newer `start` return while the write is pending, so a superseded attempt stores and wakes after the newer one is current. Writing first and rolling back when superseded lets lock-free readers use the tokens in between, and a failed rollback leaves them stored. Cancelling a request in flight breaks "settled once sent" (§4.1): a redeemed code would leave live tokens nobody knows about. Storing them and leaving cleanup to a later sign-out undoes a sign-out the user has already completed. Discarding without revocation leaves the tokens valid at the authorization server until they expire. Taking the store claim in `start` would queue each sign-in behind refreshes of up to 30 s. A generation counter per attempt would duplicate the `attemptId` |
 | D18 | The OAuth HTTP client is built by the first operation that contacts an authorization server and kept for the Mcp generation. A build failure surfaces from that operation as `mcp_auth_unavailable`; Mcp's assembly succeeds | Building it at assembly allocates TLS and resolver state for entries that never sign in. A global HTTP service or a completed-request cache would own another part's resources and still need the same policy and budget at the point of use |
 
 ## 11. Security
@@ -693,7 +684,7 @@ no second HTTP stack. The `xtask check` dependency rules are re-run with the cha
 | `configure_client` and `register_client` (DCR); CIMD is not used (§5.3) | Does not persist `client_secret` | The record keeps it and re-applies it per operation |
 | `get_authorization_url` (PKCE `S256`, `state`, `resource`; verifier, `state` and expected issuer kept in Mcp's in-memory `StateStore`) | Its own selection unions previously requested, challenged and PRM scopes, and falls back to the authorization server's `scopes_supported` when that is empty | Passes the scopes chosen per §5.5 |
 | Nothing | `AuthorizationCallback::from_redirect_url` ignores `error` and does not compare the redirect URI; `exchange_code_for_token_with_issuer` logs the code at `debug` | Mcp parses and validates the callback, `iss` included, and sends the code exchange itself (§5.4) |
-| Nothing (`refresh_token` is not used, D1) | `refresh_token` takes `resource` from in-memory discovery state or the base URL and reports `invalid_client` only as text | Mcp's own refresh request under the store lock, with re-check and rotation (§5.6) |
+| Nothing (`refresh_token` is not used, D1) | `refresh_token` takes `resource` from in-memory discovery state or the base URL and reports `invalid_client` only as text | Mcp's own refresh request under the store claim, with re-check and rotation (§5.6) |
 | `StreamableHttpClientTransport` | Its worker waits for the first message without observing cancellation, so closing a transport that never sent one does not finish | The handshake is polled once before cancellation is honored |
 | `StreamableHttpError::AuthRequired` and `InsufficientScope` | Any `403` that carries `WWW-Authenticate` is `InsufficientScope` | Mcp reads `error="insufficient_scope"` |
 | Nothing | No RFC 7009 revocation | One request per token in `mcp.auth.logout` |
@@ -719,7 +710,9 @@ tests, using an isolated home:
    is persisted, and the old one is never sent again. A refresh in flight when Mcp unloads is
    still persisted.
 4. **Shared refresh.** Two Sessions get `401` at the same time: the authorization server sees
-   exactly one refresh, and both requests succeed on retry.
+   exactly one refresh, and both requests succeed on retry. A second daemon on the same home
+   waits for the `mcp-oauth.json.lock` marker and adopts the rotated record instead of refreshing
+   again.
 5. **Reauthorization.** A `401` after refresh, or `invalid_grant`, gives `expired` and
    `auth_required`. A new sign-in recovers both Sessions.
 6. **Sign-out.** `logout` sends revocation, deletes the record and replies `revoked: true`. The
@@ -743,10 +736,10 @@ tests, using an isolated home:
 13. **Superseded attempts.** Each race is held open at the mock authorization server, or at the
     store write through the `testing` feature's hook, because FileStorage cannot be paused from
     outside:
-    - While a refresh holds the store lock, a sign-out closes the pending attempt and its
+    - While a refresh holds the store claim, a sign-out closes the pending attempt and its
       callback is refused. The code is never sent, nothing is stored, and the Sessions require
       sign-in.
-    - A newer `start` supersedes an attempt whose exchange waits for the lock; its code is never
+    - A newer `start` supersedes an attempt whose exchange waits for the claim; its code is never
       sent. A second callback for that attempt is refused while it waits.
     - A newer `start` supersedes an attempt whose token request is out; the tokens are revoked
       and never stored or used.
