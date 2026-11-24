@@ -498,7 +498,7 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 
 ## 附录 D. 验收
 
-1. Session 级方法经其指定的 Session 分发。该 Session 从没有命名空间持有过的名称返回 `unknown_method`；命名空间已撤回时，注册它的部件正在启动或重载则返回 `service_reloading`，该部件处于 Failed 或 Unresolved 则返回 `service_unavailable`；Rpc 从不点名提供方。与内建方法重叠或位于保留根之内的 Session 命名空间在注册时被拒绝，位于管理命名空间之内的 Session 命名空间从收不到该管理命名空间持有的名称。
+1. Session 级方法经其指定的 Session 分发。该 Session 从没有命名空间持有过的名称返回 `unknown_method`，注册它的行已禁用或不存在的名称同样返回 `unknown_method`；命名空间已撤回时，注册它的部件正在启动、重载或在本 Session 中没有副本则返回 `service_reloading`，该部件处于 Failed 或 Unresolved 则返回 `service_unavailable`；Rpc 从不点名提供方。与内建方法重叠或位于保留根之内的 Session 命名空间在注册时被拒绝，位于管理命名空间之内的 Session 命名空间从收不到该管理命名空间持有的名称。
 2. 管理方法在本地入口上可达，在 RemoteGateway 上返回 `unknown_method`，只在导出时经链接可达。`shell.*` Session 方法与所有 Session 方法一样可在 RemoteGateway 上调用。
 3. 每个迁移后的管理方法的录制记录与迁移前的记录一致，且 v3 本地 profile 的 `hello.features` 不变。
 4. 在 RemoteGateway 测试入口上，`session.permission.update` 与 `session.exec.stop` 成功。

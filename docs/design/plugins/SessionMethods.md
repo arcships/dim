@@ -2,7 +2,7 @@
 
 Scope: session. Issue: #2026.
 
-SessionMethods owns a Session's method table: the namespaces its parts register, who answers a name now, and the admission of one call. The call data both method tables serve — `MethodCall`, `MethodReply`, the handler's own error and the table's error kinds — has one definition, in the `methods` module of `dim-agent-capabilities`; this contract states it. ManagementMethods (#2021) is the process table; Rpc, the registering parts and `session.methods` are callers. The current implementation is in `crates/dim-agent-capabilities/src/methods.rs` and is described in the [SessionMethods plugin page](../../architecture/rust-agent/plugins/SessionMethods.md).
+SessionMethods owns a Session's method table: the namespaces its parts register, who answers a name now, and the admission of one call. The call data both method tables serve — `MethodCall`, `MethodReply`, the handler's own error and the table's error kinds — has one definition, in the `methods` module of `dim-agent-capabilities`; this contract states it. ManagementMethods (#2021) is the process table; Rpc, the registering parts, WebEntry's upload entry and `session.methods` are callers. The current implementation is in `crates/dim-agent-capabilities/src/methods.rs` and is described in the [SessionMethods plugin page](../../architecture/rust-agent/plugins/SessionMethods.md).
 
 ## Use and scope: responsibility split
 
@@ -109,7 +109,7 @@ The process table (#2021) serves the same `MethodCall`, `MethodReply` and `Metho
 | `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}` | `cancelled` settles when the admitting Rpc load unloads; the table then interrupts the call: `report` answers `interrupted` and settles, `drain` replies with its own result. The provider's generation unload interrupts the same way. A caller that stops waiting drops the future and the accepted call continues; a disconnect cancels nothing. The progress sink is a binding parameter too | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `closed` |
 | `methods` | The declarations registered now | `{}` | `{methods}` | None | `closed` |
 
-`register`'s declarations follow A.1: at least one method; each name inside the namespace and unique; each declared notification inside the namespace, unique across the set, never a method's name and never a built-in notification's name. A declaration that breaks them is `invalid`.
+`register`'s declarations follow A.1: at least one method; each name inside the namespace and unique; each declared notification inside the namespace, unique across the set and never a method's name. A declaration that breaks them is `invalid`; so is one the host refuses, including a declared notification that takes a built-in notification's name.
 
 `register` is data plus the caller's function on the wire, `methods` is data, and `call` is the owner's in-process operation. In Rust each reply is a `Result`: `register` is `Result<(), MethodError>`, `call` is `Result<MethodReply, MethodError>`, and `methods` is `Result<Vec<MethodDecl>, MethodError>`. `{}` is the empty reply, `{methods}` the declaration vector, and `{reply}` the `MethodReply`. Rpc wraps a `MethodError` in its envelope; `MethodReply`'s own error is the handler's data and is not a table failure.
 
@@ -127,7 +127,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 | `reloading` | `call` | `service_reloading` | The registering row is starting or reloading, its copy in this Session is Active because a child plugin reloads, or the row has no copy in this Session because its part is between generations; retry after it is Active and registered the namespace again |
 | `unavailable` | `call` | `service_unavailable` | The registering row failed or cannot run. Retrying fails the same way until that row is fixed or restarted |
 | `interrupted` | `call` | `operation_interrupted` | A `report` call's provider generation or admitting Rpc load unloaded while it ran; the call may have committed, so read the current state before retrying. A `drain` call answers with its own result instead |
-| `closed` | `register` | — | The table is closing; register again in the replacement generation: the next Session for a Session table, the next process for the process table |
+| `closed` | `register` | — | The table is closing. The registration fails with the part that made it; the replacement part registers in the next generation: the next Session for a Session table, the next process for the process table |
 | `closed` | `call`, `methods` | `session_closed` (Session table) | The table is closing; call the replacement generation: the next Session for a Session table, the next process for the process table |
 
 `invalid`, `duplicate` and a registration's `closed` answer a registration only, so no client sees them. For `call` and `methods`, `closed` is one kind for both tables: the Session table's reaches a client as `session_closed`, and the process table has no client code of its own.
@@ -201,7 +201,11 @@ Flow tests on the owner:
 - [session boundary A.1](../contracts/session-boundary.md#a1-method-contributions): the `MethodTable`/`MethodProvider`/`Accepted` shapes and the Session table's `owner`/`provider`/`holds`/`listed` readers are replaced by `register`, `call` and `methods`; `Caller`, `CallSite` and `Callers` stay the binding's, stated below and in A.2; the `MethodCall`, `MethodReply` and `MethodError` shapes of A.1's interface block are defined in `crate::methods` as stated here, and A.1 links to them.
 - [session boundary Appendix F](../contracts/session-boundary.md#appendix-f-rust-binding): its method-table paragraphs — `Handler`, `MethodProvider`, `Check`, `Owner`, `MethodTable`, the `SessionMethods` deref, the `MethodCall`/`Origin` block and the foreign `register` decode — are the binding below; Appendix F links here and keeps only what CallChannel and ToolRegistry bind.
 
-No client-visible method, error kind or application code changes: a handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. A native handler's failure that carried no application code now carries `appError: "failed"`. Three request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`; its handler's owner fields now reach the client, where today the `{code, message}` decode rejects a reply that carries them; and a declaration may carry a `reply` field, accepted and ignored.
+No method changes. A handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Four client-visible changes, all in failures:
+
+- A withdrawn Session namespace whose registering row is absent from the loader answers `unknown_method`; today `session_provider` falls through to `service_reloading` (`crates/dim-app-server/src/methods.rs:240-252`), which retrying could not fix. A disabled row already answers `unknown_method`.
+- A handler's failure without an application code, and a failed or malformed foreign reply, carry `appError: "failed"`; today the binding failure is `-32603` "Method binding failed" with no `appError` (`crates/dim-agent-capabilities/src/methods.rs:905-918`).
+- Three request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`; its handler's owner fields now reach the client, where today the `{code, message}` decode rejects a reply that carries them; and a declaration may carry a `reply` field, accepted and ignored.
 
 ## Binding appendix
 
@@ -522,7 +526,7 @@ impl SessionMethods {
         &self,
         method: String,
         params: serde_json::Value,
-        caller: Option<CallSite>,
+        site: Option<CallSite>,
         cancelled: CancelledFn,
         progress: impl Fn(serde_json::Value) + Send + Sync + 'static,
     ) -> Result<MethodReply, MethodError> { /* ... */ }
@@ -544,4 +548,4 @@ impl HostDispatch for SessionMethods {
 }
 ```
 
-`register` and `methods` are the wire face, both through the dispatch above: it decodes the declarations and the caller's function for the bridge's calling row, and answers `methods` as data. `call` is the owner's in-process operation: it takes the admission's site, the cancellation and the progress sink, so none of them crosses a wire. `MethodCall` carries A.2's `Caller` to a native handler and `{connectionId, callId}` to a handler of another language. `MethodReply::Value` wraps `ValueReply::Value` so the wire keeps its `kind` tag; `MethodReply::Error` is the handler's `{code, message, ...owner fields}` unchanged, and `From<MethodCallbackError>` produces it. `MethodError` serializes with `#[serde(tag = "code", rename_all = "snake_case")]`, so each variant's wire code is its snake-case name; Rpc chooses the client's `appError` and JSON-RPC code from the variant. A handler's failure carries its own `code`, which becomes the client's `appError`.
+`register` and `methods` are the wire face, both through the dispatch above: it decodes the declarations and the caller's function for the bridge's calling row, and answers `methods` as data. `call` is the owner's in-process operation: it takes the admission's site, the cancellation and the progress sink, so none of them crosses a wire. `MethodCall` carries A.2's `Caller` to a native handler and `{connectionId, callId}` to a handler of another language. `MethodReply::Value` wraps `ValueReply::Value` so the wire keeps its `kind` tag; `MethodReply::Error` is the handler's `{code, message, ...owner fields}` unchanged, and `From<MethodCallbackError>` produces it. `MethodError` serializes with `#[serde(tag = "code", rename_all = "snake_case")]`, so each variant's kind is its snake-case name; the dispatch hands that kind to the bridge as the error's code, and Rpc maps the kind to the client's `appError` and JSON-RPC code. A handler's failure carries its own `code`, which becomes the client's `appError`.
