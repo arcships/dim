@@ -165,7 +165,7 @@ Flow tests on the owner:
 | ADR 002 D3 | Depends on Permission (branch) and the branch infrastructure. |
 | ADR 002 D4 | No configuration. |
 | ADR 002 D5 | Language-neutral operations and data. |
-| ADR 027 D3 | Applicable: Collaboration reaches a member line's `pending`/`decide` with `line_owner::<Approval>(line)`; the face is resolvable by line id and is not a registration point. |
+| ADR 027 | Applies: Collaboration reaches a member line's `pending`/`decide` with `line_owner::<Approval>(line)` ([D1–D3](https://github.com/arcships/dim/pull/2029); the mechanism is [#2127](https://github.com/arcships/dim/issues/2127)). |
 
 ## Requirements raised to mechanism owners
 
