@@ -67,7 +67,7 @@ let slot: Result<ToolResult, ServiceError> = quota
 
 | Owner | Operation | Use |
 | --- | --- | --- |
-| Session access ([#2025](https://github.com/arcships/dim/issues/2025), target, pending [#2093](https://github.com/arcships/dim/pull/2093)) | the line's owner by line id | The entry reaches `CodeModeLine`; the run reaches the line's ToolExecutor |
+| The id routing mechanism ([#2127](https://github.com/arcships/dim/issues/2127)) | `line_owner::<T>(line)` | The entry reaches `CodeModeLine`; the run reaches the line's ToolExecutor; #2024's contract states the line-id operations it serves ([target, pending #2092](https://github.com/arcships/dim/pull/2092)) |
 | ToolExecutor ([#2028](https://github.com/arcships/dim/issues/2028), target, pending [#2100](https://github.com/arcships/dim/pull/2100)) | `open {parentCallId, context}` → `{gateId}`; `invoke {gateId, call}` → `{result}`; `close {gateId}` → `{effects}` | Child calls, admission, child facts; the run closes the gate to word its result, and the owner closes it again at parent settlement with the effects merged once |
 | ToolBinding ([#2028](https://github.com/arcships/dim/issues/2028), target, pending [#2100](https://github.com/arcships/dim/pull/2100)) | `adopted {requestId}` → `{adoption, tools}` | The request's pinned declarations for `tools.list`, `tools.describe`, `tools.call` |
 | Session registries ([#2026](https://github.com/arcships/dim/issues/2026), target, pending [#2103](https://github.com/arcships/dim/pull/2103)) | `toolRegistry.register` | The `codemode` contribution |
@@ -78,8 +78,8 @@ let slot: Result<ToolResult, ServiceError> = quota
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `codemode` | The model submits one program | `{code}` | the program's returned value as JSON text, or a terminal failure text, with the confirmed effects | The program is interrupted: a synchronous loop stops, a pending child is cancelled and new children are refused | `invalid_input` when the arguments or the code size are refused, returned as an error result |
-| `codeModeLine.run` | Run one program on this line | `{outerCallId, code, context}` | `ToolResult` | Interrupts the program and closes the gate; committed children settle through ToolExecutor | `invalid`, `closed`, `cancelled` as the service error `{code, message}`; a failed program is the result's text |
-| `codeMode.with_slot` | Run one program inside a process slot | `{work}` as a direct callback parameter, plus `caller: &Ctx` | `{}` | The work is cancelled and joined; the slot is released | `closed` as the service error `{code, message}`; a cancelled work is the callback's own result |
+| `codeModeLine.run` | Run one program on this line | `{outerCallId, code, context}` | `ToolResult` | Interrupts the program and closes the gate; committed children settle through ToolExecutor | `invalid`, `closed`, `cancelled` as the service error `{code, message}`; a failed program is the result's text. The child gate's `interrupted`, `no_batch` and `gate_closed` are ToolExecutor's kinds, listed below for the program's handling, not this operation's errors |
+| `codeMode.with_slot` | Run one program inside a process slot | `{work}` as a direct callback parameter, plus `caller: &Ctx` | the work's reply `T` | The work is cancelled and joined; the slot is released | `closed` as the service error `{code, message}`; a cancelled work is the callback's own result |
 
 The program's own failure is a result, not an operation error: the reply carries the failure text, the warning that child calls may have completed, and the confirmed effects. `invalid` is a code body over the limit; `closed` is the owner unloading; `cancelled` is the caller's cancellation before or during the run. All three are the service error `{code, message}`; the child invocation's `gate_closed`/`interrupted`/`no_batch` are ToolExecutor's errors, which the run turns into a program failure or a cancellation.
 
@@ -99,8 +99,10 @@ The program's memory is bounded by QuickJS's own limit, its time by the wall-clo
 | --- | --- |
 | `invalid` | Fix the program: it exceeds the code byte limit |
 | `closed` | The line's run owner, the executor or the process quota is unloading; the next generation serves the next call |
-| `interrupted` | The turn was interrupted before the gate existed; the run answers a cancellation result |
-| `gate_closed` | The parent call settled or the batch was interrupted before the run closed the gate; the program's next child call fails and the run ends with the effects the parent already carries |
+| `interrupted` (ToolExecutor's `open`) | The turn was interrupted before the gate existed; the run answers a cancellation result |
+| `no_batch` (ToolExecutor's `open`) | The outer call is not in the current batch; a caller bug: the run answers a failure result naming it |
+| `gate_closed` (ToolExecutor's `invoke`/`close`) | The parent call settled or the batch was interrupted before the run closed the gate; the program's next child call fails and the run ends with the effects the parent already carries |
+| `closed` (ToolExecutor) | The executor is unloading; the run answers a cancellation result |
 | `cancelled` | The call stopped where the caller cancelled; committed children are reported in the effects |
 | a failed program (a result, not an error) | The model reads the failure text and the warning; it checks the effects before retrying |
 
@@ -176,14 +178,14 @@ The process part provides `codeMode`; the branch part provides `codeModeLine`; t
 ```rust
 use rutis::host::BoxFuture;
 
-#[rutis::service]
+#[rutis::service(name = "codeMode")]
 impl ProgramSlots {
     /// Run `work` while holding one process program slot; `caller` binds the
     /// slot to the calling row, so the owner releases it at that row's unload.
-    pub async fn with_slot<T>(
+    pub async fn with_slot<T: Send>(
         &self,
         caller: &Ctx,
-        work: ChangeFn<T>,
+        work: WorkFn<T>,
         cancelled: CancelledFn,
     ) -> Result<T, ServiceError>;
 }
@@ -203,6 +205,23 @@ pub struct RunProgram {
     pub outer_call_id: String,
     pub code: String,
     pub context: ToolExecutionContext,
+}
+
+/// The quota's work callback: it gets the caller's cancellation and answers the
+/// work's own reply or a service error that keeps the caller's code.
+pub type WorkFn<T> = Arc<
+    dyn Fn(CancelledFn) -> BoxFuture<'static, Result<T, ServiceError>> + Send + Sync,
+>;
+
+#[rutis::service(name = "codeModeLine")]
+impl CodeModeLine {
+    /// Run one program in this line's scope; the gate is ToolExecutor's.
+    pub async fn run(
+        &self,
+        caller: &Ctx,
+        request: RunProgram,
+        cancelled: CancelledFn,
+    ) -> Result<ToolResult, RunError>;
 }
 
 /// `RunError` is the same `{code, message}` shape: `invalid`, `closed`, `cancelled`.

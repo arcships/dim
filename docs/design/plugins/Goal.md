@@ -43,7 +43,7 @@ let line = match command.line {
     Some(line) => line,
     None => tree.directory()?.default,      // TimelineTree's shape (#2092)
 };
-let _ = tree.line(line.clone())?;   // the tree's `unknown` kind; the method answers `unknown_branch`
+let _ = tree.line(line.clone())?;   // the tree's `unknown` kind; the method answers session_invalid_input
 // Goal's own text: the command block carries the operation, the objective and the judge.
 let input = goal_command(&line, &command);
 line_owner::<InputQueue>(&line)?
@@ -93,14 +93,14 @@ The entry's operations are the five commands, the read, the tool and the guide e
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `session.goal.set` | Start a new execution of a goal on a line | `{sessionId, branchId?, objective, judge?, submissionId?}` | `{sequence}`: the committed command input's sequence, as today | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
-| `session.goal.edit` | Replace the objective, keeping status and judge | `{sessionId, branchId?, objective, submissionId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
-| `session.goal.pause` / `resume` / `clear` | Pause, resume or clear the goal | `{sessionId, branchId?, submissionId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
-| `session.goal.get` | The goal of a line now | `{sessionId, branchId?}` | `{branchId, through, goal?}`; the goal carries `{objective, status, evaluator}` | The wait for the owner's fold stops | `invalid_params`, `service_reloading` (also for an ended line), `closed`, `operation_interrupted` |
+| `session.goal.set` | Start a new execution of a goal on a line | `{sessionId, branchId?, objective, judge?, submissionId?}` | `{sequence}`: the committed command input's sequence, as today | Before the input is submitted | `invalid_params`, `session_invalid_input` (no such line), `branch_ended`, `service_reloading`, `session_closed`, `operation_interrupted` |
+| `session.goal.edit` | Replace the objective, keeping status and judge | `{sessionId, branchId?, objective, submissionId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `session_invalid_input` (no such line), `branch_ended`, `service_reloading`, `session_closed`, `operation_interrupted` |
+| `session.goal.pause` / `resume` / `clear` | Pause, resume or clear the goal | `{sessionId, branchId?, submissionId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `session_invalid_input` (no such line), `branch_ended`, `service_reloading`, `session_closed`, `operation_interrupted` |
+| `session.goal.get` | The goal of a line now | `{sessionId, branchId?}` | `{branchId, through, goal?}`; the goal carries `{objective, status, evaluator}` | The wait for the owner's fold stops | `invalid_params`, `session_invalid_input` (no such line), `service_reloading` (also for an ended line), `session_closed`, `operation_interrupted` |
 | `goal_update` | The model reports completion or blockage | `{status, summary}` | text in `ToolResult.content` | Before the input is submitted | the commands' codes, returned as an error result |
-| `goalLine.read` | The line's published goal value | `{}` | `{objective?, status, evaluator, through}` | The wait stops; the value is unaffected | `closed` |
+| `goalLine.read` | The line's published goal value | `{}` | `{objective?, status, evaluator, through}` | The wait stops; the value is unaffected | `closed` (the service's `{code, message}`) |
 
-`invalid_params` covers what Goal itself checks: an objective outside 1..=4000 characters, a summary outside 1..=2000, an unknown judge, an empty `branchId`. `unknown_branch` is TimelineTree's `line` refusal (`unknown` in the tree's vocabulary, mapped to the published code); `branch_ended` is the input owner's refusal; `service_reloading` is the mechanism's answer that the line has no live goal owner, which the client shows as no goal and reads from history instead. Every code above is one the client already receives today.
+`invalid_params` is Goal's own parameter check: an objective outside 1..=4000 characters, a summary outside 1..=2000, an unknown judge, an empty `branchId`. `session_invalid_input` is the published code for TimelineTree's `unknown` kind and for `AgentError::InvalidInput`, and `session_closed` for `AgentError::Closed` (`crates/dim-agent-capabilities/src/methods.rs:137-154`); `branch_ended` is the ended-line refusal today, and the input owner's contract names it `line_ended` (target, pending [#2102](https://github.com/arcships/dim/pull/2102)), which lands as a client-visible code when that owner ships; `service_reloading` is the mechanism's answer that the line has no live goal owner, which the client shows as no goal and reads from history instead. Every code above is one a client receives today.
 
 `goalLine.read` takes no request parameter: the line is the instance the mechanism resolved. Requests, replies and errors are data; `cancelled` is the binding's cancellation argument.
 
@@ -120,11 +120,11 @@ The business fact precedes the state record: the fact is what recovery reads, th
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid_params` | Fix the parameters: the objective, the judge, the summary, the line id |
-| `unknown_branch` | The line does not exist; read the directory and choose a line |
+| `invalid_params` | Fix the parameters: the objective, the judge, the summary, the line id; retry with the fix |
+| `session_invalid_input` | The named line does not exist; read the directory and choose a line, then retry |
 | `branch_ended` | The line has ended; read its facts for history or choose an open line |
 | `service_reloading` | The line has no live goal owner or is reloading; show no goal, read history from the line's facts, retry later |
-| `closed` | The Session or the input owner is unloading; the next generation serves the next Session |
+| `session_closed` | The Session or the input owner is unloading; the next generation serves the next Session |
 | `operation_interrupted` | The mechanism interrupted the call on unload; the accepted input is settled, the read stops waiting |
 
 ## Exceptions with reasons
@@ -196,61 +196,61 @@ Flow tests through the entry's public interfaces and the branch owner:
 - The id routing mechanism is [#2127](https://github.com/arcships/dim/issues/2127); the `line_owner` requirement lands there, and #2024's contract states the line-id operations it serves ([target, pending #2092](https://github.com/arcships/dim/pull/2092)).
 
 
-## 兼容锚点（Compatibility anchors）
+## Compatibility anchors
 
-以下标题只为保留其他文档与代码注释里的旧锚点；每一节的正文都已并入上面的契约。
+These headings exist only so the links in other documents and code comments resolve; their content is in the sections above.
 
-### 2. 数据与状态
+### 2. Data and state
 
-目标属于一行；状态对象与加载映射见 [Goal-state-read.md](Goal-state-read.md)，本契约的 [Own contract](#own-contract) 规定写入顺序。
+The goal belongs to a line; the state object and its load mapping are in [Goal-state-read.md](Goal-state-read.md), and [Own contract](#own-contract) states the write order.
 
-### 3.4 新分支清除继承的目标
+### 3.4 A new branch clears the inherited goal
 
-子行开始时不继承目标，见 [Own contract](#own-contract) 的 decisions 与 [Exceptions with reasons](#exceptions-with-reasons)。
+A child line starts with no goal; see the decisions in [Own contract](#own-contract) and [Exceptions with reasons](#exceptions-with-reasons).
 
-### 5. 上下文映射
+### 5. Context mapping
 
-模型只经采用输入看到目标文本；见 [Own contract](#own-contract) 与 [Client-visible changes](#client-visible-changes)。
+The model reads goals only through adopted inputs; see [Own contract](#own-contract) and [Client-visible changes](#client-visible-changes).
 
-### 10. 实现
+### 10. Implementation
 
-实现顺序与删除清单见 #2033 的交付评论。
+The implementation order and the deletion list are in #2033's delivery comment.
 
-### A.2 Session 方法
+### A.2 Session methods
 
-`session.goal.*` 的参数、回复与错误见 [Own contract](#own-contract)。
+The `session.goal.*` parameters, replies and errors are in [Own contract](#own-contract).
 
-### A.3 读取目标
+### A.3 Reading the goal
 
-读目标见 [Own contract](#own-contract) 的 `session.goal.get` 与 `goalLine.read`；结束行不再回答。
+See `session.goal.get` and `goalLine.read` in [Own contract](#own-contract); an ended line no longer answers.
 
-### A.4 续跑决策
+### A.4 Continuation decision
 
-续跑、上限与无进展见 [Own contract](#own-contract) 的 decisions。
+Continuation, the limit and no-progress are in [Own contract](#own-contract).
 
-### A.5 模型可见文本
+### A.5 Model-visible texts
 
-标记、状态块、命令块与续行仍是 Goal 的模型协议；文本格式不变，记录顺序见 [Client-visible changes](#client-visible-changes)。
+The marker, the state block, the command block and the continuation remain Goal's model protocol; the text format is unchanged, and the record's order is in [Client-visible changes](#client-visible-changes).
 
-### A.5.1 协议与策略
+### A.5.1 Protocol and policy
 
-guide 条目见 [Own contract](#own-contract)；策略句仍归 Goal。
+The guide entry is in [Own contract](#own-contract); the policy sentences stay Goal's.
 
-### A.5.2 评估
+### A.5.2 Evaluation
 
-评估分支与结论见 [Own contract](#own-contract) 的 flows 与 [Exceptions with reasons](#exceptions-with-reasons)。
+The evaluator line and its conclusion are in [Own contract](#own-contract) and [Exceptions with reasons](#exceptions-with-reasons).
 
-### 附录 B 完整冲突表
+### Appendix A. Interface details
 
-冲突与终止见 [Own contract](#own-contract) 的 Flows。
+The command and read details are in [Own contract](#own-contract).
 
-### 附录 C 错误与恢复
+### Appendix B. Full conflict table
 
-错误码见 [Own contract](#own-contract) 的 Errors。
+Conflicts and termination are in [Own contract](#own-contract)'s Flows.
 
-### 附录 E 假设
+### Appendix E. Assumptions
 
-参数上限见 [Use and scope: responsibility split](#use-and-scope-responsibility-split)。
+The parameter limits are in [Use and scope: responsibility split](#use-and-scope-responsibility-split).
 
 ## Binding appendix
 

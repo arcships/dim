@@ -1,8 +1,8 @@
 # SessionTitle
 
-Scope: Session. Issue: #2033 (this contract). The generation policy, the operator's text rules and the acceptance list are the ones in the previous version of this document; this contract states the owner's shape and the calls it makes.
+Scope: Session. Issue: #2033 (this contract). The generation policy, the operator's text rules and the acceptance list are restated below and in [Verification](#verification); this contract states the owner's shape and the calls it makes.
 
-SessionTitle owns a Session's title policy: when a title is generated, what text is acceptable, when the operator's text replaces it, and the title a Session's creation requests. The title value itself belongs to SessionStore, which serializes the writes and announces each commit. The current shape is the one #2033's scan report describes.
+SessionTitle owns a Session's title policy: when a title is generated, what text is acceptable, when the operator's text replaces it, and the title a Session's creation requests. The title value itself belongs to SessionStore, which serializes the writes and announces each commit. The current shape is the one #2033's scan report describes. The generation policy, the instruction text and the 2000-code-point excerpt are unchanged from the pre-contract document and are restated here: one instruction, one user message carrying the first adopted input's text, the first line normalized (quotes and trailing punctuation removed, whitespace collapsed), cut to `maxLength`, then the excerpt fallback.
 
 ## Use and scope: responsibility split
 
@@ -10,7 +10,7 @@ SessionTitle owns:
 
 - **The moment of generation.** The first adopted input on the Session's conversation line — an operator input with user content, or Goal's applied objective — triggers one attempt; a Session that already has a title never generates one.
 - **The text rules.** The instruction sent to the model, the 2000-code-point excerpt, the output normalization (one line, no quoting, collapsed whitespace) and the length bound from the `session-title` source (`maxLength` 10..=200, default 80).
-- **The routing.** An explicit model from the source, otherwise the account owner's title operation when the adopted provider belongs to it, otherwise the adopted model, otherwise the excerpt fallback; one 30 s budget across the paths; three failed attempts end the attempts for this generation. The acceptance list is the previous version's Appendix D and is unchanged.
+- **The routing.** An explicit model from the source, otherwise the account owner's title operation when the adopted provider belongs to it, otherwise the adopted model, otherwise the excerpt fallback; one 30 s budget across the paths; three failed attempts end the attempts for this generation. Acceptance (unchanged from the pre-contract document): the first adopted input titles while its turn runs; an interrupt or failed turn still titles; member and non-interactive Sessions get none; a rename during generation wins; a titled Session is never regenerated; a cleared title regenerates from the first adopted input; reload before the store handover writes nothing; missing or invalid settings yield the defaults or fail without rewriting; a first input withdrawn before adoption never titles; a Goal-first Session titles from the objective alone; an absent or withdrawn account owner leaves generation and rename available.
 - **The manual rename.** `session.rename`'s parameter rules and the text it accepts or clears.
 - **The requested initial title.** The title a launch carried is written once, as the first manual title, after the Session is published.
 
@@ -205,6 +205,10 @@ None. `session.rename` keeps its parameters, its `{title, titleSource, revision}
 
 These headings exist only so the links in other documents and code comments resolve; their content is in the sections above.
 
+### 0.1 Fields read for one title attempt
+
+One attempt reads four fields at a fixed cutoff: the triggering input's id, its `data.user` text or Goal's `<objective>` in `data.blocks`, the first adopted input's id, and the adopted model from `context/configured`; the read shape is in [Own contract](#own-contract).
+
 ### 2. Data and state
 
 The title value and its revision are SessionStore's; the policy is in [Own contract](#own-contract).
@@ -251,7 +255,7 @@ See the error table in [Own contract](#own-contract).
 
 ### Appendix D. Acceptance
 
-The previous version's acceptance list stays in force; see [Verification](#verification).
+The acceptance items are in [Own contract](#own-contract)'s routing paragraph.
 
 ### Appendix E. Assumptions
 
