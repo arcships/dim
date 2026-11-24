@@ -117,7 +117,6 @@ Endings without a code, reported as a failed result:
 | The page's cutoff is inside an atomic batch | `read` | Start at the record's head, which ends a batch |
 | A continuation arrived without its `after` | `read` | Resend `after` with the current record |
 | The tool's own start is not a usable cut | `create` | Report it; do not retry |
-| The parent or the target is not a line of this Session | `create`, `message`, `read` | Report `branch_not_kin` at the pair check; never retry the same call |
 | The tree answers `branch_target_protected` (a cascade is ending the target) | `end` | Read the line and report the state; do not retry the same end |
 | `SessionClosing` or a closing Session | all | Stop; nothing more happens in this generation |
 | An admitted creation cancelled by its caller | `create` | The line publishes without a waiter and the call has no result |
@@ -126,14 +125,14 @@ Endings without a code, reported as a failed result:
 
 | Action | Normal path | Caller cancels | Session closes | Settled by |
 | --- | --- | --- | --- | --- |
-| `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes, the call has no result, and the caller sees `cancelled` from its own tool call | `branch_ended` when the parent ended; a failed result without a code when the Session is closing | TimelineTree |
-| `message` | Check the pair, write into the target's queue, answer the target id | The write is one commit; a cancelled call writes nothing | A failed result without a code | The target line's input owner |
+| `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes and the call has no result, because the call itself was cancelled | `branch_ended` when the parent ended; a failed result without a code when the Session is closing | TimelineTree |
+| `message` | Check the pair, write into the target's queue — the target's input owner refuses with `branch_ended` once its record is `ending` or `ended` — answer the target id | The write is one commit; a cancelled call writes nothing | A failed result without a code | The target line's input owner |
 | `read` | Resolve the target record, the cursor and the head, read one page, render items | Nothing to release | A failed result without a code | TimelineTree, BranchLine |
 | `end` | Check that the caller is a tool line and that its own end is not yet recorded, then call the tree's `end` with the last word; a line that already recorded its own end answers `branch_ended` and an owed last word is delivered by restore | The end settles even if the call stops watching | A failed result without a code | TimelineTree |
 
 ## Supersedes
 
-- [Timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)'s **Read** paragraph, which now points at this page's contract.
+- [Timeline branches §6](../../../design/timeline-branches.md#6-messages-between-lines)'s **Read** paragraph, whose read path now points at this page's contract.
 
 ## Client-visible changes
 
@@ -195,12 +194,12 @@ No service and no wire name. The request is the tool's input object; the refusal
 | `S:ToolRegistry` | Register `branch`, until this part unloads. |
 | `S:TreeCommands` | Create a child, write and read a line, and end a line, per call. |
 
-## Events and lifetime
+### Events and lifetime
 
 No events of its own: the tree writes `branch/create`, `branch/start` and
 `branch/end`; a call writes its result, and `message` and `end` write their
-inputs through the target line's input owner, and `end` carries the final message on
-`branch/end` ([the contract](#own-contract)). The input is one
+inputs through `TreeCommands.input` today; an end's final message rides on
+`branch/end` and the tree delivers it ([the contract](#own-contract)). The input is one
 action-based object, `{action, prompt?, at?, to?, content?, mode?, branch?,
 after?, limit?}`, with `action` required and no other properties; risk stays
 `session`, and Approval admits each call like any tool
@@ -225,7 +224,7 @@ shares the rule). The target is the line the caller was cut from or a line the c
 line, which BranchLine retains from live results and otherwise reads for that
 specific target from its own `step/tool-use` and `step/tool-result` (design [§6](../../../design/timeline-branches.md#6-messages-between-lines)).
 
-## Tests
+### Tests
 
 [flows.rs](../../../../crates/dim-agent-capabilities/tests/flows.rs):
 `branch_tool_reuses_capabilities_without_replaying_ancestor_inputs`;

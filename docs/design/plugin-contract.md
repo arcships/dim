@@ -114,7 +114,7 @@ R4). This table says what each name Dim defines is for.
 | `workflowFiles` | process | App Server | yes | Marked `#[rutis::service]` |
 | `eventHub` | process | EventHub | designed, not implemented | A producer declares a source and publishes an event; EventHub delivers it to the Sessions subscribed, through Agents' `sessions` ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
-| `timelineTree` | `session` | TimelineTree | yes | 见 [TimelineTree 契约](../architecture/rust-agent/plugins/TimelineTree.md#own-contract) |
+| `timelineTree` | `session` | TimelineTree | designed, not implemented (today: `treeCommands`) | 见 [TimelineTree 契约](../architecture/rust-agent/plugins/TimelineTree.md#own-contract) |
 | `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload. `reportFault` reports a fault, `failure` reads it and `observeFault` subscribes. The calling row releases its subscription with `release(id)` or on unload. |
 | `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |
@@ -140,7 +140,8 @@ ToolRegistry or PromptRegistry, or on the method table of its scope, `sessionMet
 Two mechanism contracts tie the facades to core parts: a branch is published only with a `LoopState`
 provider, and a Session only with the line directory's owner. Loop and TimelineTree are therefore
 core parts, written in Rust; the Session assembly reaches the latter through a crate-private
-lifecycle entry, not through a catalog name ([TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md)).
+lifecycle entry, not through a catalog name. Today that gate is the catalog name `TimelineTreeControl`;
+the target contract states the tree's lifecycle entry ([TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md#own-contract)).
 
 ## 5. Events
 

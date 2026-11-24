@@ -18,7 +18,7 @@ BranchLine owns:
 - **The parent block.** The head and cursor the line has reported to itself about the line it was cut from, and whether a block is currently held and undelivered.
 - **Its turn and notices.** The state of its current turn, and the idle notice it steers into its opener. The roster and the ended notice are written when this line is the opener of a line that ended: the opener's own BranchLine writes them on the opener's own line.
 - **The status note.** One keyed block when the line becomes, or stops being, the conversation line, with the text this owner writes after TimelineTree records the transition.
-- **The model-facing markers.** `<dim-branch-lines>`, `<dim-branch-message>`, `<dim-branch-idle>` and `<dim-branch-ended>`, and the guide entries for them, until this part unloads.
+- **The model-facing markers.** `<dim-branch-lines>`, `<dim-branch-idle>` and `<dim-branch-ended>`, and the guide entries of all four markers, until this part unloads. `<dim-branch-message>`'s text shape and guide entry are this owner's; the block itself is written by BranchTool for a message and by TimelineTree for an end's final message.
 
 Callers keep: which lines they message or read (BranchTool's kin rules), what a message says, how a page is rendered, and every decision about the caller's own work.
 
@@ -70,7 +70,7 @@ let after = line.cursor.unwrap_or(cut);
 | --- | --- | --- | --- | --- | --- |
 | `view` | One line's role, parent, end state and the read cursor for the target the caller asks about | `{target?}` (the operation runs on the line's own BranchLine) | `{role, parent?, ending, cursor?, blocked?}` | None: a read of the owner's folded state | `unknown` (the line has no directory record yet), `closed` |
 
-`cursor` is the `nextCursor` of this line's latest successful read of the named target; it is absent when the target is omitted or this line never read it. `blocked` reports the held parent block: its target and the head it reported. The reply is a value, not a subscription: BranchTool reads it once per call, and the owner keeps it current from its own facts.
+`cursor` is the `nextCursor` of this line's latest successful read of the named target: retained from live results, and rebuilt on load from this line's own `step/tool-use` and `step/tool-result` for that target when the line has read it. It is absent when the target is omitted or this line never read it. `blocked` reports the held parent block: its target and the head it reported. The reply is a value, not a subscription: BranchTool reads it once per call, and the owner keeps it current from its own facts.
 
 ### Errors
 
@@ -106,11 +106,11 @@ Flow tests on the owner:
 
 ## Supersedes
 
-- [Timeline branches](../../../design/timeline-branches.md): §5's BranchLine row and its "BranchLine injects …" sentence, and §7.1's write paragraph, each now a pointer to this contract.
+- [Timeline branches](../../../design/timeline-branches.md): §5's BranchLine row and its "BranchLine injects …" sentence, and §7.1.1's parent-block write paragraph, each now points here.
 
 ## Client-visible changes
 
-The `branchLine` face keeps its wire name and its scope but replaces its three operations (`resolved`, `ending`, `cursor`) with one `view` that takes `{target?}` and answers `{role, parent?, ending, cursor?, blocked?}`. No first-party client or TypeScript part calls them today, so no shipped caller changes; a foreign part that bound one of the three must move to `view`, and its caller gets the same facts in one reply.
+The `branchLine` face keeps its wire name and its scope but replaces its three operations (`resolved`, `ending`, `cursor`) with one `view` that takes `{target?}` and answers `{role, parent?, ending, cursor?, blocked?}`. The generated `npm/branch-services.d.ts` loses the three and gains `view`, and the runtime fixture `runtime/fixtures/branch-part.ts`, which calls them today, moves to `view` in the same change. No RPC client calls this face; a foreign part that bound one of the three must move to `view`, and its caller gets the same facts in one reply.
 
 ## Rule check
 
@@ -236,8 +236,9 @@ are unchanged. See [service faces](../../../design/service-faces.md).
 ### Events and lifetime
 
 Consumes `branch/create`, `branch/create-failed`, `branch/ended`, `branch/end`,
-`input/message`, `input/consumed`, `input/deleted`, `turn/end`, `step/tool-use` and
-`step/tool-result`. It writes only `input/message`, through the tree's input path.
+`input/message`, `input/applied`, `input/consumed`, `input/deleted`, `turn/start`,
+`turn/end`, `stop/interrupt`, `step/tool-use` and `step/tool-result`. It writes only
+`input/message`, through the tree's input path.
 
 - **Status note.** On a line that is not the root, one keyed Append under `branch:line` when the
   line becomes the default branch or stops being it, read in commit order from the queue the tree

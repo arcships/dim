@@ -197,8 +197,8 @@ owner changes its own document.
 **M4 TimelineTree: published branch-chain queries for Session parts.**
 
 - **Problem.** A Session tool needs the calling branch's inherited, published history, not just its own line (§3).
-- **Existing mechanisms, and why they fail.** `treeCommands.query` reads only one line; `Branch::query` supports inheritance but obtaining a branch through the Rust-only `get` method bypasses the data face. Reassembling ancestry in the consumer would duplicate the owner's range and continuation rules.
-- **Needed capability.** Extend the existing `treeCommands.query` operation with published chain scope, using the shared property-query shape. TimelineTree owns the range, ancestor cuts, ended-line reads and continuation, as specified on its [owner page](../../architecture/rust-agent/plugins/TimelineTree.md). The tool consumes this operation, not a branch handle or storage internals.
+- **Existing mechanisms, and why they fail.** Today's `treeCommands.query` reads only one line; `Branch::query` supports inheritance but obtaining a branch through the Rust-only `get` method bypasses the data face. Reassembling ancestry in the consumer would duplicate the owner's range and continuation rules.
+- **Needed capability.** The tree's `read` with the chain scope (`scope: Chain`) and a `fields` selection, which gives a line and its ancestors as one cut. TimelineTree owns the range, ancestor cuts, ended-line reads and continuation, as specified on its [owner page](../../architecture/rust-agent/plugins/TimelineTree.md). The tool consumes this operation, not a branch handle or storage internals.
 - **Ordering impact.** Read-only, fixed published cutoff; no change to sequences, batches, interruption, reload or event formats. Own-line queries retain their existing behavior.
 - **Owner and issue.** TimelineTree, [#1624](https://github.com/arcships/dim/issues/1624).
 
@@ -241,7 +241,7 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 | §4.4 No business meaning in core | No core change: the tool is registered through `toolRegistry`, and the image routing rule — pixels, a reference or a placeholder — stays in ModelProvider as Attachments already owns it. |
 | §4.5 Atomic batches | The design writes no event itself; Loop's ordinary tool-call batch covers the call and its result. |
 | §4.6 Context only from handed-off events | The answer reaches the model only as a tool result; no injection during request preparation. |
-| §4.7 Public events and services only | The part uses `toolRegistry`, `treeCommands.query` with published chain scope (§5 M4) to resolve a reference, the declared `auxiliaryModel` host, `sessionFiles` to read stored image bytes, `guideEntries` for its input-guide entry, Provider's `modelSelectionHost` read for the serving route's protocol, and Modality's M1 read. |
+| §4.7 Public events and services only | The part uses `toolRegistry`, the tree's `read` with the chain scope (§5 M4) to resolve a reference, the declared `auxiliaryModel` host, `sessionFiles` to read stored image bytes, `guideEntries` for its input-guide entry, Provider's `modelSelectionHost` read for the serving route's protocol, and Modality's M1 read. |
 | §4.8 Requirements to mechanism owners | §5, M1–M4. The existing TimelineTree query gains published chain scope; no new runtime or rutis mechanism. |
 | §4.9 Only facts later decisions use enter the Timeline | Only the ordinary tool facts enter; the digest index is derived and discarded. |
 | §1 Capability and App Server boundary | A Session Capability in its own crate; the App Server only installs it. |
