@@ -555,7 +555,7 @@ and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 
 ### 4.7 Errors
 
-This section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own `isError` with the code the operation already uses.
+This section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own `isError` with the code the operation already uses. The file-tools face ([#1297](https://github.com/arcships/dim/issues/1297)) keeps `node_unavailable` for a call whose node cannot be reached; FileStorage's error table has no such kind because the node binding answers it.
 
 ## 5. `store` and `timelineStore`
 

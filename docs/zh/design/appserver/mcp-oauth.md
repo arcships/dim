@@ -460,7 +460,7 @@ Mcp 自己检查 `error` 参数，因为 rmcp 把任何带该请求头的 `403` 
 | D9 | 存储为 home 根目录下的 `mcp-oauth.json`，经 FileStorage 原子替换为 0600，带版本；令牌请求持有该文件发布的 marker claim，发出即结算。S8b 不提供凭据服务，因此没有东西需要迁移：令牌是所有者状态，每次刷新都会重写，每个所有者自己处理密钥（[settings-service §1.2](settings-service.md#12-决定密钥归其所有者)）；其他 OAuth 持有方照此办理 | SQLite 中的 Settings 行存放业务文档，不放密钥；`pluginFiles` 是 FileStorage 给非 Rust 插件的桥接 API，Rust 所有者直接用 FileStorage，托管 OAuth 宿主就是这样；OS 钥匙串需要一个覆盖所有 OAuth 所有者的宿主级密钥存储决定；等待 S8b 会卡在一个无法保存轮换密钥的 API 上 |
 | D10 | 使用时刷新，余量 30 秒；`401` 时刷新并重试一次；每个 key 单飞；轮换在使用前持久化 | 后台刷新定时器会为空闲服务器唤醒守护进程，并轮换没人用的令牌 |
 | D11 | 提升授权由用户发起：调用以固定文本失败，下一次登录请求并集 | 从工具调用自动重新授权，需要在一轮中途打开浏览器 |
-| D12 | 登出先撤销（RFC 7009，尽力而为），再移除该 key 的条目；文件和其他 key 的条目保留；`mcp.remove` 不动凭据 | 在 `mcp.remove` 时删除，无法知道另一来源中同 key 的条目是否仍在使用；持有 claim 时删除文件无法表达，且空文件合法 |
+| D12 | 登出先撤销（RFC 7009，尽力而为），再移除该 key 的条目；文件和其他 key 的条目保留；`mcp.remove` 不动凭据 | 在 `mcp.remove` 时删除，无法知道另一来源中同 key 的条目是否仍在使用；持有 claim 时删除文件无法表达，且空的 `credentials` 数组合法 |
 | D13 | `session.mcp` 增加会自行消除的 `auth_required`；目录增加 `auth` | 复用 `failed` 会要求登录后手动刷新，CLI 也无从据以行动 |
 | D14 | `start` 要求条目已启用；登出总是允许；一个 key 在各来源之间共享 | 在禁用的项目条目上登录，会在用户启用之前访问项目文件中的 URL（ADR 003 D3） |
 | D15 | 带静态凭据的条目从不使用 OAuth；OAuth 需要 `https` 或回环 `http` | 静态凭据失败后退回 OAuth 会混用两种凭据来源；明文传输的 bearer 令牌可能被窃取 |
