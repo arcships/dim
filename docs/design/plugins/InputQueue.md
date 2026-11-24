@@ -25,8 +25,8 @@ Callers keep as business:
 | --- | --- | --- |
 | The operator entry writes a withdrawal, optionally replacing the input with a Steer | No: the checks, the conditional decision and the atomic replacement are the queue's; two calls would let a second withdrawal replace the deleted input | `withdraw` |
 | A plugin or another owner writes an input to the line by line id | No: the submission admission, the order and the turn decision are the owner's | `submit` |
-| A Session method answers whether an input is still pending | No: membership at a cutoff and the block-presence answer are the queue's folded state | `pending` |
-| A client learns how many inputs wait | Yes: `pending` for the ids it knows, and the history read for their modes | Business |
+| A caller answers whether an input is still pending | No: membership at a published cutoff is the queue's folded state | `pending` |
+| A client reads a line's pending inputs as a page | Not this owner: the page read is `session.input.pending` on TimelineTree (#2103); this owner answers one input's membership | TimelineTree's page read |
 | A client withdraws an input it wrote | Yes: `withdraw` without a Steer candidate | Business |
 
 An operation exists only where the row says No.
@@ -38,7 +38,7 @@ The operator entry validates the content, then asks for the conditional withdraw
 ```rust
 let answer = line_owner::<InputQueue>(line)?
     .withdraw(
-        WithdrawRequest {
+        WithdrawInput {
             input_id,
             reason,
             steer: Some(candidate),
@@ -53,7 +53,7 @@ A plugin submits an input into a line it does not own:
 
 ```rust
 let InputRef { input_id, sequence } = input_queue
-    .submit(SubmitRequest { input }, cancel.clone())
+    .submit(input, cancel.clone())
     .await?;
 ```
 
@@ -61,7 +61,7 @@ A Session method reads whether an input is still pending at a cutoff:
 
 ```rust
 let Pending { pending } = input_queue
-    .pending(PendingRequest { input_id, through: Some(head), include_block_presence: false }, cancel)
+    .pending(PendingRequest { input_id, published_cutoff: Some(head) }, cancel)
     .await?;
 ```
 
@@ -79,10 +79,10 @@ let Pending { pending } = input_queue
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `submit` | Admit one input into the line, once per submission id | `{input}` | `{inputId, sequence}`; a repeated submission id answers the committed input | The caller cancels before the append; nothing is written | `invalid` (the input fails its own shape or scope), `line_ended` (the line has ended), `cancelled`, `closed` |
-| `withdraw` | Withdraw one held input, optionally replacing it with a checked Steer | `{inputId, reason?, steer?}` | `{status}`: `deleted{sequence}` or `notHeld` | The caller cancels the wait; a committed withdrawal stands and a later call answers `notHeld` | `input_blocked` (a submit check refused the Steer), `invalid` (a malformed Steer candidate), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
-| `pending` | Whether an input is held and unapplied at a cutoff | `{inputId, through?, includeBlockPresence?}` | `{pending}` | The caller cancels the wait for the cutoff; nothing changes | `closed`, `cancelled` |
+| `withdraw` | Withdraw one held input, optionally replacing it with a Steer | `{inputId, reason?, steer?}` | `{status}`: `deleted{sequence}` or `notHeld` | The caller cancels the wait; a committed withdrawal stands and a later call answers `notHeld` | `input_blocked` (a submit check refused the Steer), `invalid` (a malformed Steer candidate), `interrupted` (committed but publication unconfirmed), `cancelled`, `closed` |
+| `pending` | Whether one input is held and unapplied at a published cutoff | `{inputId, publishedCutoff?}` | `{pending}` | The caller cancels the wait for the cutoff; nothing changes | `closed`, `cancelled` |
 
-`submit` accepts an input whose submission id is new; the same id answers the input already committed, so a retry is safe. A Steer candidate in `withdraw` runs the registered checks in name order; the first block answers `input_blocked` and writes nothing, and the accepted candidate's blocks are appended to the operator's content before the replacement is written.
+`submit` accepts an input whose submission id is new; the same id answers the input already committed, so a retry is safe. A Steer candidate in `withdraw` runs the registered checks in name order; the first block answers `input_blocked` and writes nothing, and the accepted candidate's blocks are appended to the operator's content before the replacement is written. `pending` answers one input's membership; the Session's page read stays on TimelineTree and does not call this operation.
 
 ### Errors
 
@@ -91,7 +91,7 @@ let Pending { pending } = input_queue
 | `invalid` | `submit`, `withdraw` | Fix the input: a malformed candidate, a scope the line does not accept |
 | `line_ended` | `submit` | The line has ended; read its facts for history or choose an open line |
 | `input_blocked` | `withdraw` | The check's message says why; the withdrawal and the replacement were not written; change the input |
-| `publication_unknown` | `withdraw` | The batch committed but its publication was not confirmed; query the line's facts after recovery instead of retrying the withdrawal |
+| `interrupted` | `withdraw` | The batch committed but its publication was not confirmed; query the line's facts after recovery instead of retrying the withdrawal |
 | `cancelled` | `submit`, `withdraw`, `pending` | Nothing was written by the cancelled call; a committed withdrawal stands |
 | `closed` | all | The line is closing; stop writing inputs to it |
 
@@ -103,7 +103,7 @@ A withdrawal of an input the queue no longer holds is `notHeld`, not an error: t
 | --- | --- | --- | --- | --- |
 | `submit` | Admit the submission id, append the input through the line's entry, answer the committed id and sequence | Before the append: nothing is written | New submissions are refused; a committed input stays for the next generation | InputQueue: the append and its admission |
 | `withdraw` | Admit the command, run the Steer's checks if any, decide against the held input, write the withdrawal command and the atomic result, answer after publication | The wait stops; a committed withdrawal and its replacement stand | An owed result is settled by the generation's recovery; a later generation answers from the facts | InputQueue: the decision and the result batch; SubmitChecks: a check's own work |
-| `pending` | Read the current members at the cutoff, after the queue dispatched to it; answer the membership and the block presence | The wait stops | Pending reads end `closed`; the next generation rebuilds membership from the facts | InputQueue |
+| `pending` | Read the input's membership at the published cutoff, after the queue dispatched to it | The wait stops | Pending reads end `closed`; the next generation rebuilds membership from the facts | InputQueue |
 
 ## Exceptions with reasons
 
@@ -122,7 +122,7 @@ A withdrawal of an input the queue no longer holds is `notHeld`, not an error: t
 - `submit` accepts one input per submission id; a repeated id answers the committed input; a new id appends in order; an ended line answers `line_ended` and writes nothing.
 - `withdraw` of a held input writes `input/deleted`; a `notHeld` decision writes no result and no replacement; a Steer candidate whose check blocks writes nothing and answers `input_blocked`.
 - An accepted Steer's replacement `input/message` precedes the original's `input/deleted` in one batch, and a retry after a lost reply cannot replace the deleted input again.
-- `pending` answers true only for an input held and unapplied at the cutoff; an input the queue does not hold is false; the block-presence answer follows the read contract.
+- `pending` answers true only for an input held and unapplied at the published cutoff; an input the queue does not hold is false. The page read of `session.input.pending` stays on TimelineTree.
 - A reload rebuilds membership from the facts without reading input bodies; an owed accepted withdrawal is settled from its command.
 - A call in flight when the line closes ends `closed`; a committed withdrawal keeps its result.
 
@@ -151,7 +151,7 @@ A withdrawal of an input the queue no longer holds is `notHeld`, not an error: t
 ## Requirements raised to mechanism owners
 
 - #2026 (SubmitChecks): `check` must accept `{entry, branchId, user, mode}` and answer proceed with blocks and warnings or a block, with the caller's cancellation; InputQueue calls it for an operator Steer.
-- #2026 (InputMethods): `session.input.pending` and `session.input.withdraw` become callers of `pending` and `withdraw` by line id; the Session entry keeps the operator's content validation and the client's reply shape.
+- #2026 (InputMethods): `session.input.withdraw` calls `withdraw` by line id; `session.input.pending` keeps its page read on TimelineTree and does not call `pending`. The Session entry keeps the operator's content validation and the client's reply shape.
 - #2025 (Session access): a Session part calls `line_owner::<InputQueue>(line)?.submit/withdraw/pending`; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
 
 ## Binding appendix
@@ -160,15 +160,7 @@ The service is marked on the `InputQueue` type; the wire name stays `inputQueue`
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_runtime::PublicService;
 use dim_agent_types::InputMessageData;
-use rutis::Ctx;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SubmitRequest {
-    pub input: InputMessageData,
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -179,7 +171,7 @@ pub struct InputRef {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WithdrawRequest {
+pub struct WithdrawInput {
     pub input_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -199,9 +191,7 @@ pub enum Withdrawal {
 pub struct PendingRequest {
     pub input_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub through: Option<u64>,
-    #[serde(default)]
-    pub include_block_presence: bool,
+    pub published_cutoff: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -210,15 +200,17 @@ pub struct Pending {
     pub pending: bool,
 }
 
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum InputQueueError {
     #[error("invalid: {message}")]
     Invalid { message: String },
     #[error("input blocked: {message}")]
     InputBlocked { message: String },
-    #[error("publication unknown")]
-    PublicationUnknown,
+    #[error("line ended")]
+    LineEnded,
+    #[error("publication unconfirmed")]
+    Interrupted,
     #[error("cancelled")]
     Cancelled,
     #[error("closed")]
@@ -227,8 +219,8 @@ pub enum InputQueueError {
 
 #[rutis::service]
 impl InputQueue {
-    pub async fn submit(&self, request: SubmitRequest, cancelled: CancelledFn) -> Result<InputRef, InputQueueError> { /* .. */ }
-    pub async fn withdraw(&self, request: WithdrawRequest, cancelled: CancelledFn) -> Result<Withdrawal, InputQueueError> { /* .. */ }
+    pub async fn submit(&self, input: InputMessageData, cancelled: CancelledFn) -> Result<InputRef, InputQueueError> { /* .. */ }
+    pub async fn withdraw(&self, input: WithdrawInput, cancelled: CancelledFn) -> Result<Withdrawal, InputQueueError> { /* .. */ }
     pub async fn pending(&self, request: PendingRequest, cancelled: CancelledFn) -> Result<Pending, InputQueueError> { /* .. */ }
 }
 ```

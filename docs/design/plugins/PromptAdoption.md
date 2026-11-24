@@ -37,18 +37,11 @@ An operation exists only where the row says No.
 
 ## Caller example
 
-The Session language update adopts the language source on the conversation line and on every loaded line:
+The Session language update adopts the language source at the version the language owner returned, on the conversation line and on every loaded line:
 
 ```rust
 let outcome = line_owner::<Prompt>(line)?
-    .configure(
-        ConfigureRequest {
-            sources: Some(vec![(target, Some(entry))]),
-            model: None,
-            tools: None,
-        },
-        cancel.clone(),
-    )
+    .configure(ConfigureRequest::LanguageUpdate { version }, cancel.clone())
     .await?;
 // Unchanged | Adopted { sequence } | Superseded
 ```
@@ -57,25 +50,21 @@ ToolBinding adopts the registry's current set on its own line:
 
 ```rust
 prompt
-    .configure(
-        ConfigureRequest { sources: None, model: None, tools: Some(tool_set) },
-        cancel.clone(),
-    )
+    .configure(ConfigureRequest::Tools(tool_set), cancel.clone())
     .await?;
 ```
 
 A Session method reads the adopted configuration:
 
 ```rust
-let Adopted { settings } = line_owner::<Prompt>(line)?.adoptedConfiguration()?;
+let Adopted { settings, through } = line_owner::<Prompt>(line)?.adoptedConfiguration()?;
 ```
 
 The source poller compares only what it checked:
 
 ```rust
 let AdoptedEntries { entries } = prompt
-    .adoptedEntries(AdoptedEntriesRequest { targets: checked.clone() })
-    .await?;
+    .adopted_entries(AdoptedEntriesRequest { targets: checked.clone() })?;
 ```
 
 ## Own contract
@@ -84,7 +73,7 @@ let AdoptedEntries { entries } = prompt
 
 | Owner | Operation | Use |
 | --- | --- | --- |
-| PromptHost, InitialPromptConfiguration (#2026, Session) | `load`, `get` | The named source's current entry and the Session's initial targets and model. |
+| PromptSources (#2026, Session) | `initial`, `load` | The Session's initial targets and model, and one source's current entry for a target. |
 | PromptGuide (#2026, Session) | `compose`, `observe` | The System over the entries in force, and the subscription that reports the composition moved. |
 | BranchScope | `timeline`, `dispatcher`, `timelineIdentity`, `branchLifecycle` | The line's facts, their order, its identity and its phase. |
 | SessionScope (#2025, Session) | `reportFault` | A prompt or recovery failure that stops the line's own work. |
@@ -93,11 +82,11 @@ let AdoptedEntries { entries } = prompt
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `configure` | Adopt source values, a model and a tool set as one configuration | `{sources?, model?, tools?}` | `{outcome}`: `unchanged`, `adopted{sequence}` or `superseded` | The caller cancels before the batch commits; a committed adoption is not revoked, and a pending one that a newer adoption overtakes answers `superseded` | `invalid_scope` (an entry outside the line's ancestry, or a System entry not branch-scoped), `invalid_model` (a model without the snapshot the tools need), `source_failed` (a named source could not be loaded), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
-| `adoptedConfiguration` | The adopted settings and their revision | `{}` | `{settings?}` | None | `closed` |
+| `configure` | Adopt source values, a model and a tool set as one configuration | `{initial | loaded | languageUpdate | tools}` | `{outcome}`: `unchanged`, `adopted{sequence}` or `superseded` | The caller cancels before the batch commits; a committed adoption is not revoked, and a pending one that a newer adoption overtakes answers `superseded` | `invalid_scope` (an entry outside the line's ancestry, or a System entry not branch-scoped), `invalid_model` (a model without the snapshot the tools need), `source_failed` (a named source could not be loaded), `publication_unknown` (committed but publication unconfirmed), `cancelled`, `closed` |
+| `adoptedConfiguration` | The adopted settings and the cutoff they were committed at | `{}` | `{settings?, through}` | None | `closed` |
 | `adoptedEntries` | The effective entries for the named targets | `{targets?}` | `{entries}` | None | `closed` |
 
-`configure` with no source values, no model and no tools is `unchanged`. A tool-only adoption without a model configuration is `invalid_model`: the tool part is written into the configuration the line already adopted. `adoptedEntries` with no targets answers every effective entry; a target with no entry is absent.
+`ConfigureRequest::Initial` carries the Session's initial targets and model; the owner loads each target through PromptSources and adopts the result. `Loaded` carries the entries the caller loaded; `LanguageUpdate` adopts the Session language entry at the given version. A tool-only adoption without a model configuration is `invalid_model`: the tool part is written into the configuration the line already adopted. `adoptedEntries` with no targets answers every effective entry; a target with no entry is absent; the caller compares an entry's `version` with the one it loaded.
 
 ### Errors
 
@@ -105,7 +94,7 @@ let AdoptedEntries { entries } = prompt
 | --- | --- | --- |
 | `invalid_scope` | `configure` | Fix the request: a scope outside the line's ancestry, or a System entry that is not branch-scoped |
 | `invalid_model` | `configure` | Adopt a model first, then the tool set |
-| `source_failed` | `configure` | The named source could not be loaded; fix or retry the source, then adopt again |
+| `source_failed` | `configure` (`Initial`) | A named initial source could not be loaded; fix or retry the source, then adopt again |
 | `publication_unknown` | `configure` | The batch committed but publication was not confirmed; query the line's facts after recovery instead of retrying blindly |
 | `cancelled` | `configure` | Nothing was committed by the cancelled call; a committed adoption is never revoked |
 | `closed` | all | The line is closing; the next generation serves a reloaded line |
@@ -129,7 +118,7 @@ No request rebuilds the System from history: the System a line runs with is the 
 
 ## Supersedes
 
-- `docs/design/contracts/runtime-owner-operations.md`: the `prompt` rows (`configure`, `adoptedConfiguration`, `initialCompletion`) and the `contextPreparation.publish` row.
+- `docs/design/contracts/runtime-owner-operations.md`: the `prompt` rows (`configure`, `adoptedConfiguration`) and the `contextPreparation.publish` row.
 - `docs/design/service-faces.md` section 3.5: the `prompt` and `configureControl` rows.
 - The former one-file guide and publisher design in [Prompt](Prompt.md); the guide is PromptGuide's (#2103) and the adoption is this contract's.
 
@@ -168,7 +157,7 @@ No request rebuilds the System from history: the System a line runs with is the 
 ## Requirements raised to mechanism owners
 
 - #2026 (PromptGuide): `compose` must answer the System for one line and a base System as data, and `observe` must deliver a callback the branch part can register; the current `compose_system` takes Rust values and the watch is Rust-only.
-- #2026 (PromptRegistry): `promptHost.load` and `initialPromptConfiguration.get` as the target contracts state; Prompt calls them and adds no second registry.
+- #2026 (PromptSources): `initial` and `load` as the target contract states; `configure`'s `Initial` loads through them, and the branch part loads for its periodic checks.
 - #2025 (Session access): the Session language and Agent configuration entries reach `line_owner::<Prompt>(line)?.configure(..)` and `line_owner::<Prompt>(line)?.adoptedConfiguration()` by line id; ADR 027's id-to-instance step resolves the branch group's data face.
 
 ## Binding appendix
@@ -177,19 +166,16 @@ The service is marked on the `Prompt` type; the wire name stays `prompt`.
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_runtime::PublicService;
-use dim_agent_types::{ModelConfiguration, PromptEntry, PromptSourceTarget};
-use rutis::Ctx;
+use dim_agent_runtime::PromptSourceTarget;
+use dim_agent_types::{ModelConfiguration, PromptEntry};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigureRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sources: Option<Vec<(PromptSourceTarget, Option<PromptEntry>)>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<dim_agent_types::ModelSelection>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<ToolSetAdoption>,
+#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
+pub enum ConfigureRequest {
+    Initial(dim_agent_runtime::ConfigureUpdate),
+    Loaded { sources: Vec<PromptEntry> },
+    LanguageUpdate { version: u64 },
+    Tools(ToolSetAdoption),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -212,6 +198,7 @@ pub enum ConfigureOutcome {
 pub struct Adopted {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<ModelConfiguration>,
+    pub through: u64,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -227,15 +214,15 @@ pub struct AdoptedEntries {
     pub entries: Vec<(PromptSourceTarget, PromptEntry)>,
 }
 
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum PromptError {
     #[error("invalid scope: {message}")]
     InvalidScope { message: String },
     #[error("invalid model: {message}")]
     InvalidModel { message: String },
-    #[error("source {source} failed: {message}")]
-    SourceFailed { source: String, message: String },
+    #[error("source {name} failed: {message}")]
+    SourceFailed { name: String, message: String },
     #[error("publication unknown")]
     PublicationUnknown,
     #[error("cancelled")]

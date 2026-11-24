@@ -14,35 +14,37 @@ PromptSourcesBranch owns:
 
 Callers keep as business:
 
-- The source texts and which sources are checked: PromptSources and PromptHost.
+- The source texts and which sources are checked: PromptSources.
 - The adoption, the System and the configuration facts: Prompt.
-- The reply language's live value: the Session's language owner; the language source reads it through PromptHost.
+- The reply language's live value: the Session's language owner; the language source reads it through PromptSources.
 - The polling interval: the assembly's factory configuration.
 
 | Requirement (caller) | Can callers compose it from the operations below without breaking PromptSourcesBranch's invariants? | Handling |
 | --- | --- | --- |
-| A line keeps its guide and environment entries current without a request rebuilding them | Not a caller requirement: the part is the reader itself | No operation; the part is the caller of Prompt and PromptHost |
+| A line keeps its guide and environment entries current without a request rebuilding them | Not a caller requirement: the part is the reader itself | No operation; the part is the caller of Prompt and PromptSources |
 | A client forces a refresh | Yes: Prompt's `configure` with the loaded values | Business composition by the client's own entry |
 
 The part has no public operation: it holds a task and a generation, not state another owner asks for. Removing the check from a profile removes the part; no caller substitutes for it.
 
 ## Caller example
 
-The part's own loop, after the change; only Prompt's operation and PromptHost's load appear:
+The part's own loop, after the change; only PromptSources' load and Prompt's operations appear:
 
 ```rust
 let AdoptedEntries { entries } = prompt
-    .adoptedEntries(AdoptedEntriesRequest { targets: checked.clone() })
-    .await?;
+    .adopted_entries(AdoptedEntriesRequest { targets: checked.clone() })?;
 let mut changed = Vec::new();
 for target in checked {
-    let current = prompt_host.load(target.clone(), cancelled.child_token()).await?;
-    if current != entries.get(&target) {
-        changed.push((target, current));
+    let LoadReply { entry } = prompt_sources
+        .load(target.source.clone(), target.scope, cancelled.clone())
+        .await?;
+    let adopted = entries.iter().find(|entry| entry.source == target.source && entry.scope == target.scope);
+    if entry.as_ref().map(|entry| &entry.version) != adopted.map(|entry| &entry.version) {
+        changed.extend(entry);
     }
 }
 if !changed.is_empty() {
-    prompt.configure(ConfigureRequest { sources: Some(changed), model: None, tools: None }, cancelled).await?;
+    prompt.configure(ConfigureRequest::Loaded { sources: changed }, cancelled).await?;
 }
 ```
 
@@ -52,7 +54,7 @@ if !changed.is_empty() {
 
 | Owner | Operation | Use |
 | --- | --- | --- |
-| PromptHost (#2026, Session) | `load` | One checked source's current entry for a target. |
+| PromptSources (#2026, Session) | `load` | One checked source's current entry for a target. |
 | Prompt | `adoptedEntries`, `configure` | The effective entries and the adoption of the differences. |
 | BranchScope | `branchLifecycle` | Activation before the first check and the closing gate. |
 
@@ -115,7 +117,7 @@ The task runs outside the owner's locks; the part registers it in `apply` and ca
 
 ## Requirements raised to mechanism owners
 
-- #2026 (PromptSources, PromptHost): the checked sources, their texts and the reply language's live value; the part loads them through `promptHost.load` and adds no second source path.
+- #2026 (PromptSources): the checked sources, their texts and the reply language's live value; the part loads them through `promptSources.load` and adds no second source path.
 - #2026 (Session language): the live language value is read by the language source through PromptHost; the branch part no longer re-exposes a Session cell.
 
 ## Binding appendix

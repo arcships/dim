@@ -63,8 +63,8 @@ agent_loop
 | Owner | Operation | Use |
 | --- | --- | --- |
 | RequestSettings (#2025) | `settings` | The Session's default model settings before a configuration is adopted. |
-| ContextPreparation | `prepare` | Build the request at the source's cutoff, project the history there and publish the handoff facts. |
-| ToolBinding (#2028) | `bind`, `claim`, `transfer`, `retain_only`, `release` | Pin the request's tool handlers and release them when the request can no longer run. |
+| ContextPreparation | `prepare` | Build the request at the source's cutoff from the projection and publish the handoff facts. |
+| ToolBinding (#2028) | `bind`, `adopted`, `claim`, `transfer` | Pin the request's tool generation, read its declarations, register the calls' claims and move the record to a retry; settlement follows the line's facts. |
 | GuideEntries (#2026) | `compose` | The System the request carries. |
 | Provider (#2019) | — | Not called by Loop; ModelProvider calls `invoke`. |
 | BranchScope | `timeline`, `dispatcher`, `timelineIdentity`, `branchLifecycle` | The line's facts, their order, its identity and its phase. |
@@ -96,7 +96,7 @@ The exact names above are the siblings' contracts; Loop calls those operations, 
 | `stopTurn` | Take the turn lock, check the id is the open turn and not ending, append `stop/interrupt` under the same lock, answer its sequence | No wait to cancel; a dropped call leaves the committed interrupt | An interrupt before close settles the open turn as cancelled; a turn without one is settled by the close | Loop |
 | `state` | Read the folded phase and open turn | Nothing to release | `closed` | Loop |
 | `observe` | Register the listener under the calling row, call it once, then on each change | The row's unload drops the listener | The generation stops calling and releases every listener | Loop; the listener's own work by the calling row |
-| internal turn pipeline | A driving input opens `turn/start`; the step reads the adopted configuration or `requestSettings`, `guideEntries.compose` and ToolBinding's definitions, calls `contextPreparation.prepare` with the cutoff, then follows `model/call`, the model facts and `step/tool-call` to the turn's single end | A stop cancels the step's task; the turn ends cancelled after the settlements Loop owes | A reload settles open turns, in-flight requests and undispatched calls as cancelled; no external effect is repeated | Loop; the request's external effect by Provider |
+| internal turn pipeline | A driving input opens `turn/start`; the step reads the adopted configuration or `requestSettings`, `guideEntries.compose`, binds the tool generation and reads its declarations, writes `context/prepare`, calls `contextPreparation.prepare` with the source and projection, then follows `model/call`, the model facts and `step/tool-call` to the turn's single end | A stop cancels the step's task; the turn ends cancelled after the settlements Loop owes | A reload settles open turns, in-flight requests and undispatched calls as cancelled; no external effect is repeated | Loop; the request's external effect by Provider |
 
 The request pipeline's own tasks and cancellation are Loop's: handlers register tasks and return, and cleanup cancels and joins them before the generation unloads.
 
@@ -106,7 +106,7 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 
 ## Supersedes
 
-- `docs/design/contracts/runtime-owner-operations.md`: the `agentLoop` rows (`compact`, `stopTurn`, `state`, `observe`) and the compaction row that assigns the manual command to `agentLoop`.
+- `docs/design/contracts/runtime-owner-operations.md`: the `agentLoop` rows (`compact`, `stopTurn`, `state`, `observe`); the compaction row now points at ContextPreparation.
 - `docs/design/service-faces.md` section 3.5: the `agentLoop` and `loopState` rows.
 - [ContextCompaction](ContextCompaction.md) section 1 items 4-5, section 1.1 and section 2.1: the manual compaction command and step are ContextPreparation's, and the Loop only starts no request while a step runs.
 
@@ -142,7 +142,7 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 
 ## Requirements raised to mechanism owners
 
-- #2028 (ToolBinding): Loop needs `bind`, `claim`, `transfer`, `retain_only` and `release` as data operations with the request id and the tool definitions; the current `ToolBinding` object methods and the `claim` return an object.
+- #2028 (ToolBinding): Loop needs `bind`, `adopted`, `claim` and `transfer` as data operations; settlement follows `step/tool-result` and `turn/end`, so the Loop calls no release or retain operation.
 - #2026 (GuideEntries): Loop needs `compose` as a data operation returning the System text for one line and a base System; the current `compose_system` takes Rust values.
 - #2025 (Session access): the Session entry `session.turn.get` reaches `line_owner::<Loop>(line)?.state()` and `timelineTree.read` by line id; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
 
@@ -151,7 +151,6 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 The service is marked on the `Loop` type; the wire name stays `agentLoop`.
 
 ```rust
-use dim_agent_runtime::PublicService;
 use rutis::Ctx;
 use std::sync::Arc;
 
@@ -187,7 +186,7 @@ pub struct Stopped {
     pub sequence: Option<u64>,
 }
 
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum LoopError {
     #[error("closed")]

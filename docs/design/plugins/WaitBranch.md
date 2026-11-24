@@ -32,19 +32,16 @@ An operation exists only where the row says No.
 The `wait` tool, on the calling line, passes the line id, the optional task and its own cancellation:
 
 ```rust
-let outcome = line_owner::<WaitBranch>(line)?
-    .wait(
-        WaitRequest { task_id, timeout_ms },
-        cancel.clone(),
-    )
+let WaitReply { reason, task_ids, waited_ms } = line_owner::<WaitBranch>(line)?
+    .wait(WaitRequest { task_id, timeout_ms }, cancel.clone())
     .await?;
-match outcome {
-    WaitOutcome::Notification { task_ids, .. } => text(&task_ids),
-    WaitOutcome::UserSteer { .. } => "wait ended: steer".into(),
-    WaitOutcome::AlreadyNotified { task_ids, .. } => already(&task_ids),
-    WaitOutcome::Timeout { .. } => "wait ended: timeout".into(),
-    WaitOutcome::Interrupted { .. } => "wait ended: interrupted".into(),
-}
+let text = match reason {
+    Reason::Notification => format!("wait ended: notification ({})", task_ids.join(", ")),
+    Reason::UserSteer => "wait ended: steer".into(),
+    Reason::AlreadyNotified => already(&task_ids),
+    Reason::Timeout => "wait ended: timeout".into(),
+    Reason::Interrupted => "wait ended: interrupted".into(),
+};
 ```
 
 ## Own contract
@@ -59,9 +56,9 @@ match outcome {
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `wait` | Wait for the next matching arrival, a Steer, the timeout or the caller's cancellation | `{taskId?, timeoutMs}` | `{reason, taskIds?, waitedMs}`: `notification`, `user_steer`, `already_notified`, `timeout` or `interrupted` | The caller's cancel ends the wait as `interrupted` and releases the slot; a dropped native future releases it too | `already_waiting` (another wait holds the line's slot), `closed` |
+| `wait` | Wait for the next matching arrival, a Steer, the timeout or the caller's cancellation | `{taskId?, timeoutMs}` | `WaitReply {reason, taskIds, waitedMs}`: `notification`, `user_steer`, `already_notified`, `timeout` or `interrupted` | The caller's cancel ends the wait as `interrupted` and releases the slot; a dropped native future releases it too | `already_waiting` (another wait holds the line's slot), `closed` |
 
-`timeoutMs` is this wait's bound, from 1 to the tool's cap; the owner does not limit task execution. A wait that ends because the model already read the task's notice answers `already_notified` with the task ids instead of waiting for a notice that will not come again. A reload ends an accepted wait with `closed`; the tool maps that to the existing reload settlement, and the turn fails without a continuation.
+`timeoutMs` is this wait's bound, from 1 to 300,000; the owner does not limit task execution. A wait that ends because the model already read the task's notice answers `already_notified` with the task ids instead of waiting for a notice that will not come again. A reload ends an accepted wait with `closed`; the tool maps that to the existing reload settlement, and the turn fails without a continuation.
 
 ### Errors
 
@@ -76,7 +73,11 @@ match outcome {
 | --- | --- | --- | --- | --- |
 | `wait` | Admit under the slot, register the call in the generation's tracker, wait for an arrival, the timeout or cancellation, release the slot, answer | The cancellation ends the wait as `interrupted`; the slot is released before the tracking token | Admission stops; active calls end `closed` and the generation waits for their slots; a new generation starts with no old arrivals | WaitBranch: the slot and the arrival set; the tool: the result text and the tool-result fact |
 
-## Exceptions with reasons
+## Client-visible changes
+
+The `wait` data face takes one request object instead of positional arguments: `wait({taskId?, timeoutMs}, cancelled)` replaces `wait(taskId, timeoutMs, cancelled)` in the generated TypeScript declarations. The reply is `WaitReply {reason, taskIds, waitedMs}` with the existing reason values, and the error codes stay `already_waiting` and `closed`; a caller migrates by passing the two fields as one object.
+
+
 
 - A reload ends an accepted wait with an error rather than replaying an arrival: a cancelled background task emits no wake, and an arrival from the previous generation is not a wake the model can still act on.
 - The wait's timeout belongs to the call, not to the owner: the owner has no policy on how long a caller may park, and the tool is the one place a model-facing bound is stated.
@@ -126,10 +127,8 @@ The service is marked on the `WaitBranch` type; the wire name stays `wait`.
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_runtime::PublicService;
-use rutis::Ctx;
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WaitRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,17 +136,26 @@ pub struct WaitRequest {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "reason", rename_all = "snake_case", rename_all_fields = "camelCase")]
-pub enum WaitOutcome {
-    Notification { task_ids: Vec<String>, waited_ms: u64 },
-    UserSteer { waited_ms: u64 },
-    AlreadyNotified { task_ids: Vec<String>, waited_ms: u64 },
-    Timeout { waited_ms: u64 },
-    Interrupted { waited_ms: u64 },
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reason {
+    Notification,
+    UserSteer,
+    AlreadyNotified,
+    Timeout,
+    Interrupted,
 }
 
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitReply {
+    pub reason: Reason,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_ids: Vec<String>,
+    pub waited_ms: u64,
+}
+
+#[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum WaitError {
     #[error("wait is already running in this session.")]
@@ -158,6 +166,6 @@ pub enum WaitError {
 
 #[rutis::service]
 impl WaitBranch {
-    pub async fn wait(&self, request: WaitRequest, cancelled: CancelledFn) -> Result<WaitOutcome, WaitError> { /* .. */ }
+    pub async fn wait(&self, request: WaitRequest, cancelled: CancelledFn) -> Result<WaitReply, WaitError> { /* .. */ }
 }
 ```

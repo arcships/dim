@@ -535,7 +535,7 @@ configured. Rejected:
 | Situation | Behaviour |
 | --- | --- |
 | Later compactions | Nothing moves: recall covers the whole history and ids never change. Each compaction is one more line |
-| Compaction during the call | Cannot happen on the calling branch: compaction runs in a request's preparation or as a Loop step, never while a tool batch runs ([ContextCompaction §5.4](ContextCompaction.md#54-manual-compaction)). The pinned head keeps the result consistent regardless |
+| Compaction during the call | Cannot happen on the calling branch: compaction runs in a request's preparation or as ContextPreparation's manual step, never while a tool batch runs ([ContextCompaction §5.4](ContextCompaction.md#54-manual-compaction)). The pinned head keeps the result consistent regardless |
 | Branch fork inside a Session | The child recalls the inherited prefix with the same ids, then its fork line and its own events |
 | Session fork | The fork's `main` holds the copied facts with their event ids, then its `session/forked` line, then its own events; ids from the source Session open the same things. |
 | Session close, deletion | Closing a Session cancels calls in flight through the tool's cancellation token |

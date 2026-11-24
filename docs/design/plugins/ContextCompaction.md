@@ -2,8 +2,9 @@
 
 Status: Implemented on the F1 branch (approved design; implementation notes in §12). Roadmap item F1 ([#72](https://github.com/arcships/dim/issues/72)).
 Overview: [Appendix B.1 ContextPreparation row](../overview.md#b1-session-and-branch-capabilities).
-Scope: [ADR 002](../../adr/002-plugin-scope.md): Session parts plus supplements to the existing
-branch capabilities Loop and ContextPreparation. §12 records where the implementation refines this text.
+Scope: [ADR 002](../../adr/002-plugin-scope.md): the compaction policy and the supplements it needs. The owner contracts are
+[ContextPreparation](ContextPreparation.md) and [ContextUsage](ContextUsage.md); this document keeps the trigger,
+retention, record and recovery rules. §12 records where the implementation refines this text.
 The trigger, retention and recovery rules follow the
 [#128](https://github.com/arcships/dim/issues/128) research
 ([compaction-trigger](../research/compaction-trigger.md)); its reserve and retention share are
@@ -81,16 +82,17 @@ unreleased.
  |    provides S:CompactionStrategyHost(Some(summary strategy))      |
  |  ContextMethods (new part)                                        |
  |    registers session.context with sessionMethods: compact, usage  |
- |      compact -> TreeCommands.get(b).service::<AgentLoop>().compact()
- |      usage   -> TreeCommands.get(b).service::<ContextPreparation>().usage()
+ |      compact -> line_owner::<ContextPreparation>(line).compact(..)
+ |      usage   -> line_owner::<ContextUsage>(line).read(..)
  +---------------------------------^---------------------------------+
             Rpc (C1) dispatches ---'
  Branch scope (one Timeline, one Dispatcher)
  +-------------------------------------------------------------------+
- |  Loop (supplement): sequences steps                               |
+ |  Loop: sequences turns and steps                                  |
  |    model request -> context/prepare (handoff, unchanged)          |
- |    compaction step (manual) -> ContextPolicy::compact_step        |
+ |    starts no request while a compaction step runs                 |
  |  ContextPreparation (supplement)                                  |
+ |    manual: compact command, single-flight slot, step task          |
  |    in preparation: ContextPolicy::prepare -> compact_step         |
  |  ContextPolicy::compact_step: retention rule, strategy.compact,   |
  |    validate, append context/compaction, snapshot                  |
@@ -124,7 +126,7 @@ The manual command and the step are ContextPreparation's; see [ContextPreparatio
 
 | Layer | What it fixes | Where | Changes when a new strategy is added |
 | --- | --- | --- | --- |
-| Mechanism | When compaction runs, and that the Loop holds while it runs: the automatic trigger in preparation, the manual Loop step, the retention rule, validation, commit | Loop, ContextPolicy | No |
+| Mechanism | When compaction runs, and that ContextPreparation holds while it runs: the automatic trigger in preparation, the manual command, the retention rule, validation, commit | ContextPreparation, ContextPolicy | No |
 | Contract | The record and its replay: `context/compaction {retain_from, replacement, strategy, context_baseline}`, where `retain_from` is a Timeline event id; replay puts `replacement`, then the keyed baseline, then the entries placed by `retain_from` and later events. The record references Timeline events, not rendering details, so another `HistoryRenderer` or strategy still finds the cut. Replay is deterministic, so fork, reload and prompt-cache prefixes see the same messages | `dim-agent-types`, `history.rs` projection | No |
 | Strategy | Its own messages of the replacement (the summary), the replacement's planned size, and the cut within the retention rule. The pinned inputs and the digest are the mechanism's parts (§5.9, §5.10, §4.3) | `CompactionStrategyHost` Session value | It is replaced |
 
@@ -132,7 +134,7 @@ The manual command and the step are ContextPreparation's; see [ContextPreparatio
 `CompactionStrategyHost` Session value: the assembly registers another value, or another Session
 part that provides it, instead of `ProductSummaryStrategy`.
 
-- ContextPreparation and the Loop depend on the key, not on the strategy's plugin, so no
+- ContextPreparation depends on the key, not on the strategy's plugin, so no
   optional dependency is added.
 - Old records stay replayable because replay never calls the strategy.
 - Examples of later strategies: a sliding window with notes, or old tool calls rendered as short
@@ -144,10 +146,10 @@ part that provides it, instead of `ProductSummaryStrategy`.
 
 | Item | Owner | Kind |
 | --- | --- | --- |
-| `context/compact {}` | Loop | New command event (§4.3) |
+| `context/compact {}` | ContextPreparation | New command event (§4.3) |
 | `context/compaction-start` | Written by ContextPolicy for its caller | New fact (§4.3) |
 | `context/compaction` | Written by ContextPolicy for its caller, or by the settling owner on reload | Existing fact, changed (§4.3) |
-| Compaction slot: at most one outstanding command `{sequence, consumed, running: Option<CancellationToken>}` | Loop | Private. Set by `AgentLoop::compact` or by consuming a command; cleared by that command's result. Settled on load (§5.5) |
+| Compaction slot: at most one outstanding command `{sequence, consumed, running: Option<CancellationToken>}` | ContextPreparation | Private. Set by `contextPreparation.compact` or by consuming a command; cleared by that command's result. Settled on load (§5.5) |
 
 The Session values hold no state. A resolved connection lives only inside one strategy call.
 
@@ -167,13 +169,12 @@ methods are declared with `interruption: report`, `progress: false`, `notificati
 
 `session.context.compact`:
 
-- It calls `AgentLoop::compact`, which returns a command sequence `c`: a newly written
-  `context/compact`, or the command already outstanding on the branch (§5.4). Concurrent or
-  repeated calls therefore join one in-flight compaction.
-- It then waits on the branch Timeline for the result that carries its command:
-  the first `context/compaction` with `command = c`.
+- It calls `contextPreparation.compact`, which returns the step's outcome; the owner writes or
+  joins the command `c` and runs the step (§5.4). Concurrent or repeated calls therefore join one
+  in-flight compaction.
 - It maps the outcome: `completed` → `{status: "completed", sequence}`;
   `skipped` → `{status: "skipped", reason}`; `failed` → `compaction_failed`;
+  `cancelled` → `compaction_cancelled`;
   `cancelled` → `compaction_cancelled`.
 
 The reply keeps that shape. A completed compaction's cost and its insufficient-space mark are
@@ -230,9 +231,9 @@ failures before any model work.
 
 | Event | Writer | Consumer | Data |
 | --- | --- | --- | --- |
-| `context/compact` (new) | Loop, through its public write operation `AgentLoop::compact` | Loop, in sequence order | `{}` |
-| `context/compaction-start` (new) | ContextPolicy in `compact_step`, for its caller (Loop step or ContextPreparation) | Loop (rebuild), ContextPreparation (steer deferral and rebuild), clients | `{turn_id?, request_id?, command?, through, trigger: "manual" \| "threshold" \| "provider_output_budget_exhausted", strategy}` |
-| `context/compaction` (changed) | ContextPolicy, for its caller; on reload, the settling owner | Loop (manual step terminal), ContextPreparation (steer deferral), ContextPolicy (retry reuse), projection, ContextMethods, clients | `{turn_id?, request_id?, command?, start?, through, outcome}` |
+| `context/compact` (new) | ContextPreparation, through its `compact` operation | ContextPreparation, in sequence order | `{}` |
+| `context/compaction-start` (new) | ContextPolicy in `compact_step`, for its caller (ContextPreparation's manual step or preparation) | ContextPreparation (steer deferral and rebuild), clients | `{turn_id?, request_id?, command?, through, trigger: "manual" \| "threshold" \| "provider_output_budget_exhausted", strategy}` |
+| `context/compaction` (changed) | ContextPolicy, for its caller; on reload, the settling owner | ContextPreparation (manual step terminal and steer deferral), ContextPolicy (retry reuse), ContextProjection, ContextMethods, clients | `{turn_id?, request_id?, command?, start?, through, outcome}` |
 
 `outcome` is one of:
 
@@ -267,8 +268,8 @@ failures before any model work.
   - `failed` when no request could be built (no `context/configured`, no capability snapshot);
   - `cancelled` when a pending command was dropped by an interrupt or settled on reload.
 - Automatic compaction that never reaches the strategy writes neither fact, as today.
-- At most one start per branch is unmatched at any time: the Loop never runs a manual step while
-  a request is in flight, and ContextPreparation runs one preparation at a time.
+- At most one start per branch is unmatched at any time: ContextPreparation never runs a manual step while
+  a request is in flight, and it runs one preparation at a time.
 - On reload, an unmatched start means a compaction was in flight, and its owner writes the
   `cancelled` result (§5.8). Automatic compaction also writes a `cancelled` result when it is
   cancelled after its start by an interrupt. Steer waits for the result (§5.3).
@@ -384,7 +385,7 @@ Readers update with the struct:
 **Dynamic events (decision A).** `context/compact` and `context/compaction-start` are
 `EventKind` variants. #2 does not move them: it carries event types the core does not define as
 opaque data with the same envelope, so core events keep their variants and wire form. `context/compact`
-is owned by the Loop, and `context/compaction-start` by the owner of the compaction facts.
+is owned by ContextPreparation, and `context/compaction-start` by the owner of the compaction facts.
 
 **Diagnostics (breaking).** `CompactionDiagnosticsRecord` becomes strategy-neutral. The
 summary-oriented required fields move into a strategy-owned object:
@@ -487,20 +488,20 @@ pub struct DigestEntries { pub entries: Vec<ToolEffect>, pub dropped: bool }  //
 impl ContextPolicy { async fn compact_step(&self, step: CompactionStep, cancel: CancellationToken)
                          -> Result<Arc<AgentEvent>, HostError>; }   // committed fact
 
-// dim-agent-capabilities/src/agent_loop.rs
-impl AgentLoop { pub fn compact(&self) -> Result<u64>; }  // appends context/compact
-impl PublicService for AgentLoop {}
 // dim-agent-capabilities/src/context_preparation.rs
-impl ContextPreparation { pub async fn usage(&self, cancel: CancellationToken)
-                              -> Result<ContextUsage, ContextOpError>; }
+impl ContextPreparation { pub async fn compact(&self, request: CompactionRequest, cancelled: CancelledFn)
+                              -> Result<CompactionOutcome, PreparationError>; }
+impl PublicService for ContextPreparation {}
 impl PublicService for ContextPreparation {}
 
+// The parts below belong to their owners' contracts (#2025, #2027); this sketch records the F1
+// installation and is not a contract.
 // dim-agent-capabilities: context_model.rs, summary_strategy.rs, context_methods.rs (new)
 pub struct ProductContextModel;                    // ResolveContextModel, no dependencies
-pub struct ProductSummaryStrategyPlugin { host: DepKey<CompactionStrategyHost> }   // new(names)
-//   Deps = (Keyed<ModelHost>, Keyed<ProviderConnectionResolver>); provides CompactionStrategyHost
+pub struct ProductSummaryStrategyPlugin { host: DepKey<SummaryStrategy> }   // new(names)
+//   Deps = (Keyed<ModelHost>, Keyed<ProviderConnectionResolver>); provides SummaryStrategy
 pub struct ContextMethodsPlugin;
-//   Deps = (Keyed<TreeCommands>, Keyed<SessionMethods>); methods.register(ctx, "session.context", ..)
+//   Deps = (Keyed<SessionMethods>, line owners by id); methods.register(ctx, "session.context", ..)
 
 // dim-app-server/src/cli.rs, defaults::install_compaction, the one install of every profile
 // that compacts; the product profile passes ProductContextModel and its product home,
@@ -804,13 +805,13 @@ Callers:
 
 - **ContextPreparation, inside `prepare`.** At the threshold (§5.6) or under `recovery`. The
   rest of `prepare` is unchanged.
-- **The Loop's manual step.** Trigger `Manual`. The request is built as `start_preparation`
+- **The manual command's step.** Trigger `Manual`. The request is built as `start_preparation`
   builds one: the latest `context/configured` settings and system with the projected messages,
   without binding tools.
 
 **Steer during compaction.** From `context/compaction-start` through its terminal
 `context/compaction`, a steer never cancels or restarts the compaction, regardless of its
-producer. Inputs are accepted and applied in their normal order, but the Loop consumes them
+producer. Inputs are accepted and applied in their normal order, and the Loop consumes them
 only after the result commits. The source `through` stays fixed. An automatic preparation
 whose request was replaced finishes the compaction before ending that request `Cancelled`
 with `replaced by steer`; the Loop then consumes the pending inputs and prepares a new
@@ -848,13 +849,13 @@ Without a provider baseline the full local estimate and its error remain (#128).
 
 ```
       step/model-start {T, R1} ... step/model-output-end {T, R1, completed}
- k    context/compact {}                          writer: Loop (AgentLoop::compact)
+ k    context/compact {}                          writer: ContextPreparation (compact)
       -- Loop consumes k: a request is in flight -> pending
       step/tool-call {T, R1} ... step/tool-result {T, R1}
       -- Loop consumes the tool result (boundary b): pending -> compaction step
- s    context/compaction-start {turn_id: T,       writer: ContextPolicy (Loop's step)
+ s    context/compaction-start {turn_id: T,       writer: ContextPolicy (ContextPreparation's step)
         command: k, through: b, trigger: manual, strategy: "summary"}
- m    context/compaction {turn_id: T, command: k,  writer: ContextPolicy (Loop's step)
+ m    context/compaction {turn_id: T, command: k,  writer: ContextPolicy (ContextPreparation's step)
                           start: s, through: b, outcome}
       -- Loop consumes m: the step is over -> next_model as usual
       input/consumed* ; step/model-start {T, R2}   Loop (unchanged)
@@ -864,7 +865,7 @@ Without a provider baseline the full local estimate and its error remain (#128).
 **With no turn running:**
 
 ```
- k    context/compact {}                          writer: Loop (AgentLoop::compact)
+ k    context/compact {}                          writer: ContextPreparation (compact)
       -- Loop consumes k: no request in flight -> compaction step at once
  s    context/compaction-start {command: k, through: k,      writer: ContextPolicy
                                 trigger: manual, strategy: "summary"}
@@ -894,15 +895,15 @@ Without a provider baseline the full local estimate and its error remain (#128).
   - A budget retry belongs to its request and is not a boundary.
 - **Through.** `through` is the sequence of the event whose consumption started the step.
 - **One outstanding command.** By the maintainer's decision, repeated requests are an interaction
-  concern: deduplication belongs to the interaction boundary, not to the Loop's state machine or
-  the Timeline.
-  - `AgentLoop::compact` is the only writer of `context/compact`. Under the Loop's lock it checks
+  concern: deduplication belongs to the interaction boundary, not to ContextPreparation's state
+  machine or the Timeline.
+  - `contextPreparation.compact` is the only writer of `context/compact`. Under its lock it checks
     whether a command is outstanding on the branch (written and without a result). If one is, it
-    writes nothing and returns that command's sequence, and the caller waits for that command's
+    writes nothing and returns that command's outcome, and the caller waits for that command's
     result. Otherwise it writes the command.
-  - The Loop's slot holds at most one outstanding command. Its result clears the slot.
-  - **Defensive rule.** A `context/compact` the Loop consumes while another command is outstanding
-    (one not written through `AgentLoop::compact`, or old data) is settled at once with
+  - ContextPreparation's slot holds at most one outstanding command. Its result clears the slot.
+  - **Defensive rule.** A `context/compact` ContextPreparation consumes while another command is outstanding
+    (one not written through `contextPreparation.compact`, or old data) is settled at once with
     `context/compaction {command: <its sequence>, outcome: skipped {reason: "a compaction is
     already in progress"}}`, without a start. It is not queued.
 - **No advance.** While a step runs, `next_model` and `try_start` wait for its fact. Inputs queue
@@ -911,36 +912,36 @@ Without a provider baseline the full local estimate and its error remain (#128).
 **Steer.** Inputs wait as in §5.3, joining the next request or starting a turn after the step.
 Interrupt, failure, reload and restart are in §5.8.
 
-### 5.5 What the Loop gains
+### 5.5 What ContextPreparation gains
 
-All in `crates/dim-agent-capabilities/src/agent_loop.rs`:
+All in `crates/dim-agent-capabilities/src/context_preparation.rs`:
 
 1. **Subscription.** `context/compact`, `context/compaction-start` and `context/compaction` are
-   added. `CompactionStrategyHost`
+   consumed. `SummaryStrategy`
    is added to `Deps`.
-2. **Public write.** `AgentLoop::compact()` returns the outstanding command's sequence, or appends
-   `context/compact` and returns its sequence (§5.4). `AgentLoop` gets the `PublicService` marker.
-3. **Compaction slot**, at most one outstanding command. On consuming that command, the Loop marks
+2. **Public operation.** `compact()` joins or writes the outstanding command, runs its step and
+   answers the outcome (§5.4). `ContextPreparation` gets the `PublicService` marker.
+3. **Compaction slot**, at most one outstanding command. On consuming that command, the owner marks
    the step waiting, and starts it at once if no request is in flight. Another command consumed
    while one is outstanding is skipped (§5.4).
 4. **Boundaries.**
-   - `next_model` (except with a budget-retry source) and `turn/end` start a pending step instead
+   - The Loop's `next_model` (except with a budget-retry source) and `turn/end` start a pending step instead
      of advancing.
-   - `next_model` and `try_start` do nothing while a step runs.
+   - The Loop's `next_model` and `try_start` do nothing while a step runs.
 5. **The step task.** It is tracked like the preparation task, builds the request as
    `start_preparation` does, and calls `ContextPolicy::compact_step`.
-6. **Step terminal.** On consuming the result of the outstanding command, the Loop clears the
+6. **Step terminal.** On consuming the result of the outstanding command, the owner clears the
    slot. If its step ran, the Loop resumes: `next_model` inside a turn, `try_start` otherwise.
    Results of other commands (skips, settlements) change nothing.
 7. **Interrupt.** A `stop/interrupt` cancels the running step, whose result is `cancelled` with
    its `start`, or writes `cancelled` without `start` for a waiting command. The command is
    settled once.
 8. **Rebuild.** The slot is folded from command, start and result pairs:
-   - A manual start without a result: the step was running. The Loop writes the `cancelled`
+   - A manual start without a result: the step was running. ContextPreparation writes the `cancelled`
      result with that `start` and `command`.
-   - A command with neither a start nor a result: it was waiting. The Loop writes a `cancelled`
-     result with that `command` and no `start`. Each command is settled once. An unloading Loop
-     starts no further step.
+   - A command with neither a start nor a result: it was waiting. ContextPreparation writes a `cancelled`
+     result with that `command` and no `start`. Each command is settled once. An unloading
+     ContextPreparation starts no further step.
 
 Unchanged: turn and request lifecycles, input consumption, tool batches, steer of model
 requests, budget recovery, `LoopSnapshot` and `context/prepare`.
@@ -994,16 +995,16 @@ time:
 
 ### 5.8 Failure, interrupt, reload and restart
 
-| Case | Timeline facts | What the Loop does next | What the client sees |
+| Case | Timeline facts | What ContextPreparation does next | What the client sees |
 | --- | --- | --- | --- |
 | Strategy error or validation failure, manual inside a turn | start, then `context/compaction {start, failed}` | Continues the turn uncompacted (`next_model`). If the next request exceeds the input budget, the existing budget recovery forces a compaction (fallback cut); if that also fails, the request and the turn fail | Running, then `failed`; reply `compaction_failed` |
 | Same, manual outside a turn | start, then `failed` | Nothing more (`try_start` if an input is waiting) | Running, then `failed`; reply `compaction_failed` |
 | Same, automatic | start, then `failed` | Unchanged: the request continues uncompacted; under recovery the request fails | Running, then `failed` |
-| Recovery compaction completed, the request still exceeds `B` | start, then `completed`; no further `model/call` | The preparation fails with the budget error that names what keeps the request above `B` (§5.3); the Loop does not compact again, so the turn fails with it | The compaction shows `completed`, with its mark when its own parts cannot shrink; the turn shows the budget error |
+| Recovery compaction completed, the request still exceeds `B` | start, then `completed`; no further `model/call` | The request fails with the budget error that names what keeps it above `B` (§5.3); ContextPreparation does not compact again, so the turn fails with it | The compaction shows `completed`, with its mark when its own parts cannot shrink; the turn shows the budget error |
 | Manual, no request can be built (no configuration or snapshot) | `failed` without `start` | As above | Pending, then `failed` |
 | `stop/interrupt` during a running step (manual or automatic) | `cancelled {reason}` for the start, or `completed` if the strategy had already returned | Manual inside a turn: the turn ends `Cancelled` through `next_model`. Automatic: the request ends `Cancelled` as today | Running, then `cancelled` or `completed`; reply to match |
 | `stop/interrupt` while a manual command is pending | `cancelled` without `start` | Turn behaviour unchanged | Pending, then `cancelled` |
-| Plugin reload | For each unmatched start, the owner writes `cancelled: "capability reloading"` with that `start`: the Loop for a manual start, ContextPreparation for an automatic one (before its existing reloading terminal). For a pending command, the Loop writes `cancelled` without `start` | No replay. A rebuilt turn ends `Failed` as today | Running or pending, then `cancelled`; a waiting reply is `operation_interrupted` or `compaction_cancelled` |
+| Plugin reload | For each unmatched start, ContextPreparation writes `cancelled: "capability reloading"` with that `start` (manual or automatic; manual before its existing reloading terminal). For a pending command, it writes `cancelled` without `start` | No replay. A rebuilt turn ends `Failed` as today | Running or pending, then `cancelled`; a waiting reply is `operation_interrupted` or `compaction_cancelled` |
 | Process crash or restart mid-compaction | On the next load, the same settlement as a reload, from the same unmatched starts and commands | Same as reload | Running (from history) until the load, then `cancelled` |
 
 **About crashes and restarts:**
@@ -1256,19 +1257,19 @@ A `failed` fact carries the same cost diagnostics as a completed one whenever th
 | --- | --- |
 | Principles §1 (Capability, App Server boundary) | New parts and supplements live in `dim-agent-capabilities`; the App Server only installs them in its product profile. |
 | §1 one event bus | The command and the fact are on the branch Timeline and consumed through its Dispatcher. The method's wait reads that Timeline. Clients see the compaction state from the same facts, so there is no side channel. |
-| §3 dependency direction | New parts depend on core services. ContextPreparation and the Loop depend on the `ContextModelHost` and `CompactionStrategyHost` keys, which every profile binds explicitly. No optional dependency. |
-| §3 changing another module (Loop) | Approved change. The need is the Loop's own control of the context window: compaction is a Loop step like a model call or a tool batch, and the Loop must not advance on a context the replacement supersedes. It closes within the Loop: automatic compaction already runs in its request preparation, and the manual step uses the same function under the same sequencer. |
-| §3 extension without change (three layers) | The mechanism (Loop step and trigger) and the contract (record and replay) are fixed. The strategy is a replaceable Session value. A new strategy changes neither the Loop, nor the record, nor replay, and replay of old records never calls a strategy (§2.2). |
-| §4 rule 1 (command events) | The client asks the owner of progression with `context/compact`. The Loop decides when to serve it, and the result is one `context/compaction` that references the command. |
+| §3 dependency direction | New parts depend on core services. ContextPreparation depends on `ContextFacts` and `SummaryStrategy`, which every profile binds explicitly. No optional dependency. |
+| §3 changing another module (ContextPreparation) | Approved change. The need is ContextPreparation's own control of the context window: the manual command and the step are its operations, and the Loop must not advance on a context the replacement supersedes. It closes within ContextPreparation: automatic compaction already runs in its preparation, and the manual step uses the same function under the same sequencer. |
+| §3 extension without change (three layers) | The mechanism (step and trigger) and the contract (record and replay) are fixed. The strategy is a replaceable Session value. A new strategy changes neither ContextPreparation, nor the record, nor replay, and replay of old records never calls a strategy (§2.2). |
+| §4 rule 1 (command events) | The client asks the owner of progression with `context/compact`. ContextPreparation decides when to serve it, and the result is one `context/compaction` that references the command. |
 | §4 rule 2 (handoff) | Model requests are handed over with `context/prepare` as today. A manual step hands nothing over. |
-| §4 rule 3 (before callback; handlers) | No before callback. Loop handlers register the step task and return. |
+| §4 rule 3 (before callback; handlers) | No before callback. ContextPreparation handlers register the step task and return. |
 | §4 rule 4 (no business meaning in core) | Timeline, Dispatcher and facades unchanged. The digest is composed by ContextPolicy from the declarations on `step/tool-result` facts; no core part names an effect kind. |
 | §4 rule 5 (atomic batch) | Each new write is one event. |
 | §4 rule 6 (context only from handed-off events) | The replacement reaches the model only through the projection of a completed fact. Pending inputs are not consumed by a step (AGENTS rule 10). |
-| §4 rule 7 (public events and services) | `TreeCommands`, `Branch::service` on `PublicService`s, `ProviderConnectionResolver`, `ModelHost`, `sessionMethods`. |
+| §4 rule 7 (public events and services) | `line_owner::<T>(line)` data faces, `ProviderConnectionResolver`, `ModelHost`, `sessionMethods`. |
 | §4 rule 8 (infrastructure unchanged) | Dispatcher, envelope, rutis, loader, Agent assembly and facades unchanged. There is one infrastructure change (#130): snapshot anchoring in Timeline and both stores drops its knowledge of `context/compaction` and keeps only structural checks, and the owner's decode callback receives the anchor event. The requirement comes from Timeline itself: it must not know event content (principles §4 rule 4; Timeline checks only the envelope and reserved core domains, ADR 001). It closes within Timeline's own contract: a snapshot is a cache with a structural anchor. Valid snapshots behave the same, and an invalid one is a cache miss. |
-| §4 rule 9 (only needed facts) | `context/compact` is read by the Loop's later decisions and on reload. `context/compaction` is used by projection. `context/compaction-start` and the visible result are facts by the maintainer's decision, for two reasons. First, they do not only drive a state machine: they are content that users and other state machines need in order to read the history (a UI connecting at any time must see that a compaction is running or how it ended). Second, reload settlement uses them: an unmatched start means a compaction was in flight. The Loop and ContextPreparation rebuild from start/result pairs, which is more precise than commands alone because it tells a running compaction from a pending one and covers automatic compaction. Usage writes nothing. The completed result's `modelUsage` and `insufficientSpace` are descriptive fields of that required fact: the trigger reads the latest start's `through`, recovery reads the budget, and only a client reads the cost and the mark. The digest adds no fact: it is composed into the existing replacement from declarations the `step/tool-result` facts already carry. The next compaction's roll-forward is why the completed result stores the entries as data (`digest_entries`): that decision reads the field, never the rendered message, and the field is an optional part of a fact the projection already reads. |
-| ADR 002 D1 (scope) | Window facts, strategy and methods: Session. Command, step and slot: branch, in the Loop. The pinning, the digest, the retention rule and the mark are branch-scope ContextPolicy work: they read the branch's events and compose its record. |
+| §4 rule 9 (only needed facts) | `context/compact` is read by ContextPreparation's later decisions and on reload. `context/compaction` is used by projection. `context/compaction-start` and the visible result are facts by the maintainer's decision, for two reasons. First, they do not only drive a state machine: they are content that users and other state machines need in order to read the history (a UI connecting at any time must see that a compaction is running or how it ended). Second, reload settlement uses them: an unmatched start means a compaction was in flight. The Loop and ContextPreparation rebuild from start/result pairs, which is more precise than commands alone because it tells a running compaction from a pending one and covers automatic compaction. Usage writes nothing. The completed result's `modelUsage` and `insufficientSpace` are descriptive fields of that required fact: the trigger reads the latest start's `through`, recovery reads the budget, and only a client reads the cost and the mark. The digest adds no fact: it is composed into the existing replacement from declarations the `step/tool-result` facts already carry. The next compaction's roll-forward is why the completed result stores the entries as data (`digest_entries`): that decision reads the field, never the rendered message, and the field is an optional part of a fact the projection already reads. |
+| ADR 002 D1 (scope) | Window facts, strategy and methods: Session. Command, step and slot: branch, in ContextPreparation. The pinning, the digest, the retention rule and the mark are branch-scope ContextPolicy work: they read the branch's events and compose its record. |
 | ADR 002 D2 (no wiring modules) | ContextMethods exposes owners' operations through `sessionMethods`. |
 | ADR 002 D3 (dependencies) | Hard dependencies on core only. A Provider or Aimux reload propagates to the strategy part (accepted cost). |
 | ADR 002 D4 (configuration) | No configuration; provisional constants are code (#128). |
@@ -1305,7 +1306,7 @@ Internal Rust changes:
   and its `decode` callback becomes `fn(&RecoverySnapshot, &AgentEvent)`.
   `MemoryTimelineStore::save_snapshot` and the SQLite store's save and lookup drop the
   compaction kind and status checks.
-- `PublicService` on `AgentLoop` and `ContextPreparation`.
+- `PublicService` on `ContextPreparation`.
 
 **Requirements raised to mechanism owners:** none.
 
@@ -1315,8 +1316,8 @@ Internal Rust changes:
 | --- | --- |
 | Which model compacts | The request's own model, in the summary strategy; a separate model is deferred |
 | Trigger and retention | #128: trigger at `B − min(max(0.10 × B, 16,000), 0.20 × B)`; keep the longest tail that fits `min(0.25 × B, 0.5 × B − resident)` (§5.3), and replace everything when no kept tail fits the bound; manual steps keep at most the latest turn; `validate` compares the trigger's estimate with `B`; `bytes / 4` and 1,600 tokens per image unchanged. The reserve and share are provisional heuristics |
-| Manual compaction | A Loop step scheduled by `context/compact`, inside or outside a turn, never creating a turn |
-| Where the step runs | In the Loop, calling the one ContextPolicy compaction function (§2.1) |
+| Manual compaction | ContextPreparation's operation, scheduled by `context/compact`, inside or outside a turn, never creating a turn |
+| Where the step runs | In ContextPreparation, calling the one ContextPolicy compaction function (§2.1) |
 | Record | `retain_from` (Timeline event id), `replacement` and `strategy` with one replay rule; optional ids, `command`, `cancelled`; changed directly (unreleased) |
 | Ports | `ContextModel` (window facts) and `CompactionStrategy` (replacement), each from its own Session value |
 | Other strategies, composition | Not done in F1 |
@@ -1413,7 +1414,7 @@ window, and the same App Server on a `--models` file whose entry declares a smal
      Timeline holds exactly one `context/compact`, one start and one result, and every caller
      receives the same reply.
    - A `context/compact` consumed while another is outstanding (written without
-     `AgentLoop::compact`) gets `skipped: "a compaction is already in progress"` at once, with no
+     `contextPreparation.compact`) gets `skipped: "a compaction is already in progress"` at once, with no
      start, and the outstanding compaction completes normally.
    - `stop/interrupt` or a plugin reload with one outstanding command settles it `cancelled` once.
 8. **Compaction state for clients.**
@@ -1540,8 +1541,8 @@ fix, the smallest choice was made and is recorded here.
 | Adoption | `compact_step` validates the strategy's result before it appends the fact, then adopts the committed fact as Timeline middleware left it: the projection, the reduction check and the snapshot use the committed `retain_from`, `replacement` and baseline. A committed cut that cannot be projected fails the preparation, as a committed cursor did before. |
 | Diagnostics | `retainFrom` is absent when the strategy found no cut (`skipped`), and `estimatedOutputTokens` is absent when no candidate request could be projected. |
 | v1 | There is no v1-to-native conversion in production code: the frozen samples decode as v1 events only, and `v1::EventRef` has no form for `context/compact`, `context/compaction-start` or the changed `context/compaction`, so v1 connections no longer receive compaction facts. The old flat diagnostics type moved into the v1 module. |
-| Loop subscription | The Loop subscribes to `context/compact` and `context/compaction`; starts are folded only at rebuild, where they tell a running step from a pending command. |
-| One outstanding command | Maintainer's decision during review: repeated requests are deduplicated at the interaction boundary. `AgentLoop::compact` joins an outstanding command instead of writing another, the slot holds at most one command, a command consumed while another is outstanding is skipped, and the waiter matches its own command id (§4.1, §5.4, acceptance 7). This replaces an earlier active/pending split, so commands can no longer interleave with a running step. |
+| Compaction subscription | ContextPreparation subscribes to `context/compact` and `context/compaction`; starts are folded only at rebuild, where they tell a running step from a pending command. |
+| One outstanding command | Maintainer's decision during review: repeated requests are deduplicated at the interaction boundary. `contextPreparation.compact` joins an outstanding command instead of writing another, the slot holds at most one command, a command consumed while another is outstanding is skipped, and the waiter matches its own command id (§4.1, §5.4, acceptance 7). This replaces an earlier active/pending split, so commands can no longer interleave with a running step. |
 | Snapshot anchor | Timeline keeps the structural checks of §4.3. The old `resume ≤ through` check needed the anchor's content; it is replaced by the structural "resume precedes the anchor on the anchor's branch", and the owner's decode checks `through` before the anchor. |
 | A skipped re-plan | When the second pass of §5.3 step 4 returns `skipped`, the first result is committed: a strategy that skips a continuation has nothing to add, and the first result is already validated and composed. Its diagnostics stay the first pass's. |
 | Native storage example | The record example in [native-storage-format](../appserver/native-storage-format.md) uses the changed record and the v3 interpreter. |

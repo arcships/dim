@@ -300,7 +300,7 @@ End of turn. Open one: open=<id>.
 | 情况 | 行为 |
 | --- | --- |
 | 后续压缩 | 什么都不移动：Recall 覆盖整个历史，id 永不改变。每次压缩只是多一行 |
-| 调用期间发生压缩 | 在调用方分支上不会发生：压缩只在请求的准备阶段或作为 Loop 的一步运行，从不在工具批次运行时发生（[ContextCompaction §5.4](ContextCompaction.md#54-手动压缩)）。无论如何，固定的 head 保证结果一致 |
+| 调用期间发生压缩 | 在调用方分支上不会发生：压缩只在请求的准备阶段或作为 ContextPreparation 的手动步骤运行，从不在工具批次运行时发生（[ContextCompaction §5.4](ContextCompaction.md#54-手动压缩)）。无论如何，固定的 head 保证结果一致 |
 | Session 内的分支 fork | 子分支以相同的 id 回忆继承前缀，然后是它的 fork 那一行和它自己的事件 |
 | Session fork | fork 的 `main` 先是带原事件 id 的复制事实，然后是它的 `session/forked` 那一行，再是它自己的事件；源 Session 的 id 展开同样的内容 |
 | Session 关闭与删除 | 关闭 Session 通过工具的取消令牌取消进行中的调用 |

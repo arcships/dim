@@ -12,7 +12,7 @@ ModelProvider owns:
 - **Streamed output.** The `step/text`, `step/thinking`, `step/tool-use-start`, `step/tool-use` and `step/model-content` blocks, their ids and their commit boundaries.
 - **The terminal fact.** `step/model-output-end` with the outcome, the failure chain totals and the runtime's failure kinds.
 - **Durable images.** Before the call, resolving a file-backed image for the Session the request names; the request that reaches Provider carries only what the model may receive.
-- **Progress.** The active request's block ids and character counts as a value other owners and clients read.
+- **Progress.** The active request's `ModelProgress` value: the open blocks, the text and thinking seen so far, the tools and the retry, which the App Server's notice is built from field for field.
 
 Callers keep as business:
 
@@ -24,7 +24,7 @@ Callers keep as business:
 
 | Requirement (caller) | Can callers compose it from the operations below without breaking ModelProvider's invariants? | Handling |
 | --- | --- | --- |
-| A client or a Session method reads the active output's length and follows changes | No: the block ids and character counts are the owner's transient state; a caller folding `step/*` events duplicates the stream | `progress`, `observe` |
+| A client or a Session method reads the active output and follows changes | No: the open blocks, offsets, tools and retry are the owner's transient state; a caller folding `step/*` events duplicates the stream | `progress`, `observe` |
 | Loop learns how the call ended | Yes: the terminal fact | Business composition |
 | A client follows the streamed text | Yes: `step/text` facts, ordered by the Timeline | Business composition |
 | A caller stops the call | Not this owner: a stop is `stop/interrupt`; Loop writes it and ModelProvider settles | Business |
@@ -36,8 +36,8 @@ An operation exists only where the row says No.
 A Session method answers the active output of an open turn:
 
 ```rust
-let Progress { request_id, text_characters, thinking_characters, .. } =
-    model_provider.progress()?;
+let progress: ModelProgress = line_owner::<ModelProvider>(line)?.progress()?;
+let text_total = progress.text_offset + progress.text.chars().count() as u64;
 ```
 
 A client subscribes to progress for the rest of its connection:
@@ -65,10 +65,10 @@ model_provider
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `progress` | The active request's output so far | `{}` | `{requestId?, textCharacters, thinkingCharacters, textPartId?, thinkingPartId?, thinkingStartedAt?, retry?}` | None | `closed` |
+| `progress` | The active request's output so far | `{}` | `ModelProgress`: turn, request, open part ids, text and thinking with their offsets, tools and retry | None | `closed` |
 | `observe` | The current progress, then every change, until the row unloads | the listener argument | `{}` | The row's unload ends the subscription; nothing is released by the caller | `closed` |
 
-The reply is a value: no block, stream or request object crosses. `listener` is a callback by reference, called outside the owner's locks and outside the Timeline's commit lock.
+The reply is the existing `dim_agent_runtime::ModelProgress` value, field for field; the App Server builds its `ModelProgressNotice` from it without another source. No block, stream or request object crosses. `listener` is a callback by reference, called outside the owner's locks and outside the Timeline's commit lock.
 
 ### Errors
 
@@ -87,14 +87,11 @@ The reply is a value: no block, stream or request object crosses. `listener` is 
 
 The owner writes no fact before the batch that carries it commits, and a failed output closes every started call with an error result in the same batch as the terminal, so no call of a failed output reaches a tool.
 
-## Client-visible changes
-
-The `session.model.progress` notice keeps its field names and gains three additive fields: `requestId`, `textCharacters` and `thinkingCharacters`. The additions let `session.turn.get` read the active output from the owner instead of folding `step/text` and `step/thinking` facts; a client that ignores unknown fields is unaffected. No other client-visible behavior changes: `session.turn.get` and the model-visible texts keep their shapes.
-
 ## Exceptions with reasons
 
 - The failure chain and its retry display are Provider's execution data but the terminal fact is ModelProvider's: the fact is the branch's durable record of the call, and Provider has no Timeline.
 - A terminal fact for a reload-settled call carries no Provider failure: no provider call ran, so the owner does not invent one.
+- A request that fails before the model call is reached is settled with `step/model-output-end` by ContextPreparation; ModelProvider's rule check names that single exception and writes the terminal for every request it consumes.
 
 ## Supersedes
 
@@ -119,7 +116,7 @@ None: the contract adds the owner's first public read and keeps the provider and
 | §4 rule 2 | The request handover is `model/call`; after it ModelProvider owns the call. |
 | §4 rule 3 | Handlers register tasks; the provider stream runs in those tasks. |
 | §4 rule 4 | No business meaning: which model and which credential are Provider's. |
-| §4 rule 5 | A terminal fact and its error results commit in one batch. |
+| §4 rule 5 | A terminal fact and its error results commit in one batch. A request that never reaches this owner is the stated exception, settled by ContextPreparation. |
 | §4 rule 6 | Output enters context only as committed blocks and the terminal result. |
 | §4 rule 7 | Callers use the two reads; the owner uses Provider's operation. |
 | §4 rule 8 | No infrastructure change. |
@@ -141,37 +138,15 @@ None: the contract adds the owner's first public read and keeps the provider and
 The service is marked on the `ModelProvider` type; the wire name is `modelProvider`.
 
 ```rust
-use dim_agent_runtime::PublicService;
 use rutis::Ctx;
 use std::sync::Arc;
 
 pub type ProgressListener = Arc<dyn Fn(Progress) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Progress {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
-    pub text_characters: u64,
-    pub thinking_characters: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text_part_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_part_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_started_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry: Option<RetryProgress>,
-}
+pub use dim_agent_runtime::ModelProgress;
+pub type Progress = ModelProgress;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RetryProgress {
-    pub attempt: u32,
-    pub next_attempt_after_ms: u64,
-}
-
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ProgressError {
     #[error("closed")]
@@ -180,7 +155,7 @@ pub enum ProgressError {
 
 #[rutis::service]
 impl ModelProvider {
-    pub fn progress(&self) -> Result<Progress, ProgressError> { /* .. */ }
+    pub fn progress(&self) -> Result<ModelProgress, ProgressError> { /* .. */ }
     pub async fn observe(&self, caller: &Ctx, listener: ProgressListener) -> Result<(), ProgressError> { /* .. */ }
 }
 ```
