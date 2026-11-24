@@ -6,6 +6,8 @@ Issue: [#1320](https://github.com/arcships/dim/issues/1320)。
 
 依据：[Goal](Goal.md)、[读取与输入删除](Goal-property-queries.md)、[设计规则](../../architecture/rust-agent/principles.md)、[ADR 002](../../adr/002-plugin-scope.md)、[插件合同](../plugin-contract.md)、[rutis](../rutis-usage.md)。本文件规定状态保存与读取合同。
 
+> 目标契约见 [Goal](Goal.md)。[Goal](Goal.md#client-visible-changes) 取代本文的命令与状态记录同批规则和「回复是 trigger 的 sequence」之外的排序描述；状态对象、加载映射与属性查询仍以本文为准。
+
 ## 1. 决定
 
 1. 运行中的次数、轮次、输入和任务集合、评估关系、待处理报告、决定去重及写任务只存在于本次 Goal 实例的内存中。普通输入、input/consumed、turn/start、turn/end 和 exec 事件不因推进消费位置而写恢复记录。

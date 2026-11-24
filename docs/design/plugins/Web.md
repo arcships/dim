@@ -65,11 +65,11 @@ Ok(numbered(&reply.results, &request))
 
 | Owner | Operation | Use |
 | --- | --- | --- |
-| Settings ([#2017](https://github.com/arcships/dim/issues/2017)) | `register`, `read` | The `web` source: search service, private-host exceptions, proxy, proxy DNS; read at each call |
+| Settings ([#2017](https://github.com/arcships/dim/issues/2017), target, pending [#2094](https://github.com/arcships/dim/pull/2094)) | `register`, `read` | The `web` source: search service, private-host exceptions, proxy, proxy DNS; read at each call |
 | `dimAccount` (DimOAuth, [#2019](https://github.com/arcships/dim/issues/2019), optional) | `availability`, `subscribe`, `search` | The relay's sign-in state, its changes, and the relay search when the source names no adapter |
-| Session registries ([#2026](https://github.com/arcships/dim/issues/2026)) | `toolRegistry.register`, `toolRegistry.register_source` | The fixed `web_fetch` contribution and the dynamic `web_search` source |
+| Session registries ([#2026](https://github.com/arcships/dim/issues/2026), target, pending [#2103](https://github.com/arcships/dim/pull/2103)) | `toolRegistry.register`, `toolRegistry.register_source` | The fixed `web_fetch` contribution and the dynamic `web_search` source |
 
-The account owner is read by its face name when the source names no search adapter. A profile without an account owner declares `web_fetch` only; a profile with one declares `web_search` while that owner reports a usable account.
+A configured adapter with its key declares `web_search` without any account (Appendix A.5, A3). The account owner is read by its face name only when the source names no adapter or names `dim-oauth`; a profile without an account owner then declares `web_fetch` only, and a profile with one declares `web_search` while that owner reports a usable account.
 
 ### Operations
 
@@ -162,7 +162,7 @@ impl ToolHandler for WebFetch {
 /// The dynamic source: `sets()` answers one set with `web_search` while a
 /// search service is usable and no set otherwise.
 impl ToolProvider for SearchSource {
-    fn sets(&self) -> Vec<ToolSet>;
+    fn sets(&self) -> Vec<Arc<ToolSourceSet>>;
 }
 ```
 
@@ -177,7 +177,7 @@ Web registers `web_fetch` once, from the part's apply, and offers `web_search` t
 | Method | Kind | Request | Reply |
 | --- | --- | --- | --- |
 | `toolRegistry.register` | async | `ToolDeclaration {name, description, inputSchema, risk: "network"}`, `execute` | Nothing once registered |
-| `toolRegistry.registerSource` | — | source name `web`, `sets()` | one set while a search service is usable, none otherwise |
+| `toolRegistry.register_source` | — | source name `web`, `sets()` | one set while a search service is usable, none otherwise |
 | `execute` (Web's function) | async | `ToolCall {sessionId, branchId, turnId, callId, arguments, config}, cancelled: Promise<void>` | `ToolResult {content: [{type: "text", text}], isError, structuredContent?}` |
 
 C4 supplies the existing by-reference `cancelled` Promise as the second argument. When it settles, Web aborts requests and releases sockets/timers before settling its call; row effects likewise release owned resources. ToolExecutor owns interruption terminal facts: Web writes no second cancellation fact and never retries an unknown outcome. Business errors are `ToolResult`s with `isError: true` (Appendix C); runtime/protocol binding failures retain C4 call-failure behavior rather than being masked as success or business data. Parameters are validated by the handler; a violation returns an error result without network access.
@@ -267,7 +267,7 @@ Fake-IP DNS answers are ordinary addresses. With a proxy and `proxyDns: true` th
 | `proxy` | string (URL); write-only; absent means the session's own proxy (A.4) | absent |
 | `proxyDns` | boolean; user-only | `true` |
 
-Read at each call and used as delivered: Settings validates the document against the schema Web declares and applies its defaults on write and when reading a persisted file, and Web does not validate it again. Web has no tool that writes configuration, so the document is written only through the client methods (S8b). A change is a data update with notification, never a reload. The row's structural on/off state belongs to PluginManager (PluginManager). Built-in adapter ids are an implementation choice (A13). The API key is `searchService.apiKey` (A.5).
+Read at each call and used as delivered: Settings validates the document against the schema Web declares and applies its defaults on write and when reading a persisted file, and Web does not validate it again. Web has no tool that writes configuration, so the document is written only through the client methods (S8b). A change is a data update with notification, never a reload. The row's structural on/off state belongs to [PluginManager](PluginManager.md). Built-in adapter ids are an implementation choice (A13). The API key is `searchService.apiKey` (A.5).
 
 ### A.6 Timeline and capability mechanics
 

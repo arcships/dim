@@ -11,7 +11,7 @@ Goal owns:
 - **The goal of a line.** One objective, the judge that decides completion, the status (`active`, `paused` with a reason, `completed`, `blocked`, or none) and the moment it last changed. The state belongs to the line and ends with it.
 - **The decisions that follow a fact.** After a turn ends: continue, stop at the optional continuation limit, stop after three turns without progress, or ask for an evaluation. On an interrupt, a failed or cancelled turn, or an unload: pause with the reason. When a child line starts: retire the keys of an inherited goal.
 - **The texts the model reads.** The `dim-goal` marker's command block, state block and continuation, and the guide entry that explains them.
-- **The commands' vocabulary.** `set`, `edit`, `pause`, `resume`, `clear` and the completion report, their parameter rules, and the two entry points that carry them (`session.goal.*` and the `goal_update` tool).
+- **The commands' vocabulary.** `set`, `edit`, `pause`, `resume`, `clear` and the completion report, their parameter rules, and the two entry points that carry them (`session.goal.*` and the `goal_update` tool). The retained limits: an objective of 1..=4000 characters, a summary of 1..=2000, and `maxContinuations` in 1..=1000 with absence meaning no limit.
 - **The evaluator line's purpose.** Goal asks TimelineTree to open a child line cut at the turn end and closes it with the operation id it wrote.
 
 Callers keep as business:
@@ -26,7 +26,7 @@ Callers keep as business:
 | The model reports completion or blockage | No: the report changes the goal, and its line is the call's line | the tool handler writes one command input to that line |
 | A client reads the goal of a line | No: the goal is the line owner's state and nothing else publishes it | `goalLine.read` at the line id |
 | The owner states the state to the model | No: the state block restates the whole goal and the live keys when it changes | the branch owner writes the state record input |
-| A command is retried after a lost reply | No: accepting a command once is the input owner's rule | the submission id on `submit` |
+| A command is retried after a lost reply | No: accepting a command once is the input owner's rule | `submissionId` on the request when the caller retries; Goal generates one when absent |
 | A client shows the goal of an ended line | Yes: the line's facts stay readable at its fixed head and the fold is the client's projection | business composes with TimelineTree's `read` |
 | A client reads the conversation line's goal without naming it | Yes: the line record carries the Session's current line | business composes with TimelineTree's `directory` |
 | The owner continues a goal after a turn | No: the decision uses the owner's fold, counters and tasks | branch-internal |
@@ -35,7 +35,7 @@ An operation or parameter exists only where its row says No.
 
 ## Caller example
 
-`session.goal.set` writes one command input to the named line; the branch owner decides and states the result. No object, no sequence, no wait.
+`session.goal.set` writes one command input to the named line; the branch owner decides and states the result. The reply carries the committed command input's sequence, the same value the method returns today.
 
 ```rust
 // The entry checks its own parameters and resolves the line a client left unnamed.
@@ -43,13 +43,13 @@ let line = match command.line {
     Some(line) => line,
     None => tree.directory()?.default,      // TimelineTree's shape (#2092)
 };
-let _ = tree.line(LineRequest { line: line.clone() })?;   // unknown_branch for a line that does not exist
+let _ = tree.line(line.clone())?;   // the tree's `unknown` kind; the method answers `unknown_branch`
 // Goal's own text: the command block carries the operation, the objective and the judge.
 let input = goal_command(&line, &command);
 line_owner::<InputQueue>(&line)?
     .submit(input, cancelled)
     .await?;
-// The reply is the input's position; nothing else is returned and nothing is released.
+// The reply is the committed command input's sequence; nothing else is returned and nothing is released.
 ```
 
 `session.goal.get` reads the line owner's published value; the caller decides what "no owner" means for its screen.
@@ -78,8 +78,8 @@ line_owner::<InputQueue>(&line)?
 | Owner | Operation | Use |
 | --- | --- | --- |
 | TimelineTree ([#2024](https://github.com/arcships/dim/issues/2024)) | `directory`, `line`, `read`, `create`, `end` | The conversation line; one line's record for the named line; an ended line's facts; opening and closing the evaluator line |
-| The line's input owner ([#2027](https://github.com/arcships/dim/issues/2027)) | `submit` | The command input and the state record input |
-| The line's timeline (branch runtime) | `append` | The business fact recovery reads |
+| The line's input owner ([#2027](https://github.com/arcships/dim/issues/2027), target, pending [#2102](https://github.com/arcships/dim/pull/2102)) | `submit` | The command input only |
+| The line's timeline (branch runtime) | `append` | The business fact recovery reads, then the state record input |
 | Dispatcher, BranchLifecycle, TimelineIdentity (branch runtime) | facts, activation, closing | Folding the line's facts and the branch part's lifetime |
 | SessionScope ([#2025](https://github.com/arcships/dim/issues/2025)) | `phase` | Not ending evaluator lines while the Session is closing |
 | Settings ([#2017](https://github.com/arcships/dim/issues/2017)) | `register`, `read` | The `goal` source's optional `maxContinuations` |
@@ -93,14 +93,14 @@ The entry's operations are the five commands, the read, the tool and the guide e
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `session.goal.set` | Start a new execution of a goal on a line | `{sessionId, branchId?, objective, judge?}` | `{sequence}`: the accepted input's position | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
-| `session.goal.edit` | Replace the objective, keeping status and judge | `{sessionId, branchId?, objective}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
-| `session.goal.pause` / `resume` / `clear` | Pause, resume or clear the goal | `{sessionId, branchId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
-| `session.goal.get` | The goal of a line now | `{sessionId, branchId?}` | `{branchId, through, goal?}`; the goal carries `{objective, status, evaluator}` | The wait for the owner's fold stops | `invalid_params`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `session.goal.set` | Start a new execution of a goal on a line | `{sessionId, branchId?, objective, judge?, submissionId?}` | `{sequence}`: the committed command input's sequence, as today | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `session.goal.edit` | Replace the objective, keeping status and judge | `{sessionId, branchId?, objective, submissionId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `session.goal.pause` / `resume` / `clear` | Pause, resume or clear the goal | `{sessionId, branchId?, submissionId?}` | `{sequence}` | Before the input is submitted | `invalid_params`, `branch_ended`, `unknown_branch`, `service_reloading`, `closed`, `operation_interrupted` |
+| `session.goal.get` | The goal of a line now | `{sessionId, branchId?}` | `{branchId, through, goal?}`; the goal carries `{objective, status, evaluator}` | The wait for the owner's fold stops | `invalid_params`, `service_reloading` (also for an ended line), `closed`, `operation_interrupted` |
 | `goal_update` | The model reports completion or blockage | `{status, summary}` | text in `ToolResult.content` | Before the input is submitted | the commands' codes, returned as an error result |
-| `goalLine.read` | The line's published goal value | `{}` | `{objective?, status, evaluator, through}` | While the fold reaches the head | `closed` as the service error `{code, message}` |
+| `goalLine.read` | The line's published goal value | `{}` | `{objective?, status, evaluator, through}` | The wait stops; the value is unaffected | `closed` |
 
-`invalid_params` covers what Goal itself checks: an objective outside 1..=4000 characters, a summary outside 1..=2000, an unknown judge, an empty `branchId`. `unknown_branch` is TimelineTree's `line` refusal; `branch_ended` is the input owner's refusal; `service_reloading` is the mechanism's answer that the line has no live goal owner, which the client shows as no goal and reads from history instead. Every code above is one the client already receives today.
+`invalid_params` covers what Goal itself checks: an objective outside 1..=4000 characters, a summary outside 1..=2000, an unknown judge, an empty `branchId`. `unknown_branch` is TimelineTree's `line` refusal (`unknown` in the tree's vocabulary, mapped to the published code); `branch_ended` is the input owner's refusal; `service_reloading` is the mechanism's answer that the line has no live goal owner, which the client shows as no goal and reads from history instead. Every code above is one the client already receives today.
 
 `goalLine.read` takes no request parameter: the line is the instance the mechanism resolved. Requests, replies and errors are data; `cancelled` is the binding's cancellation argument.
 
@@ -112,6 +112,7 @@ The entry's operations are the five commands, the read, the tool and the guide e
 | `goalLine.read` | Wait for the branch part's fold to reach its head, answer the value | The wait stops; the value is unaffected | Nothing to release | `closed` when the part is closing | the branch part |
 | Branch decision | Consume a command input, decide from the fold, append the business fact, append the state record, then write the continuation or ask for an evaluation | The line's closers end the branch part's tasks; an admitted input is not withdrawn | — | Closing cancels the tasks, writes `paused` with its reason, then the services are withdrawn | the branch part: its own tasks, the fact and the record; the input owner: the continuation it accepted |
 | Evaluator line | Open a child line at the turn end with Goal's operation id; the evaluator reports a conclusion; Goal closes the line | The line's close stops the decision that would open it | — | On rebuild and on close Goal closes the evaluator lines it opened, before the Session closes | the branch part asks; TimelineTree creates, holds and closes the line |
+| Evaluator line refused | `create` answers `branch_not_opener` or `branch_limit_reached`: Goal pauses the goal with reason `evaluation_failed` and writes no conclusion | — | — | — | the branch part; the parent line's fact carries the pause |
 
 The business fact precedes the state record: the fact is what recovery reads, the record is model-visible text. A crash between the two leaves the goal correct in recovery and one state block missing from history; the next change restates the whole state. This supersedes [Goal-state-read.md](Goal-state-read.md)'s one-batch command write; the state object, the load mapping and the property queries in that document stay.
 
@@ -142,7 +143,7 @@ Flow tests through the entry's public interfaces and the branch owner:
 - `pause`, `resume` and `clear` change the status in the stated order; a paused goal does not continue; `clear` retires the model-visible keys.
 - `get` on an ended line answers `service_reloading`, and the line's facts still carry the last state for a client that folds them.
 - A turn end continues, stops at the configured limit, and stops after three turns without progress; an interrupt, a failed turn or an unload writes `paused` with its reason.
-- An evaluator goal opens one child line per turn end and closes the line it opened on rebuild and on close; a conclusion sets `completed` or `blocked`.
+- An evaluator goal opens one child line per turn end and closes the line it opened on rebuild and on close; a conclusion sets `completed` or `blocked`; a refused `create` (`branch_not_opener`, `branch_limit_reached`) pauses the goal with `evaluation_failed`.
 - A dropped read leaves nothing behind; a command submitted twice with one submission id is accepted once.
 
 ## Supersedes
@@ -154,7 +155,9 @@ Flow tests through the entry's public interfaces and the branch owner:
 
 ## Client-visible changes
 
-The `goal:state` record no longer shares one batch with the command. The model sees the command input first and the state record from the next request; the record's text format is unchanged. No client field, code or notification changes: `session.goal.*` keeps `{sequence}` and `{branchId, through, goal?}` with `{objective, status, evaluator}`, and every error code above is one the client already receives. Affected: the prompt-evaluation tests that assert the command and record order, and `Goal-state-read.md`'s ordering rule.
+- `session.goal.*` replies keep their fields: `{sequence}` is the committed command input's sequence, the same value returned today; `session.goal.get` keeps `{branchId, through, goal?}` with `{objective, status, evaluator}`. Every error code above is one the client already receives. The write requests gain an optional `submissionId`; a client that sends none keeps today's behavior, and a retrying client sends the same id to be accepted once.
+- An ended line no longer answers `session.goal.get` with its last goal: the entry has no live owner to read, and folding the line's facts in the entry is what this contract removes. `session.goal.get` answers `service_reloading` and a client shows no goal. Affected: `dim-cli`'s `/goal` and `sessions.status` projection (`crates/dim-cli/src/goal_command.rs`, `session_host.rs`) and the TUI's goal panel, which read the value. Migration: read the line's facts (`goal/state`) for an ended line, or show no goal; the CLI change ships with the implementation.
+- The `goal:state` record no longer shares one batch with the command. The model sees the command input first and the state record from the next request; the record's text format is unchanged. Affected: the prompt-evaluation tests that assert the command and record order, and `Goal-state-read.md`'s ordering rule.
 
 ## Rule check
 
@@ -170,15 +173,15 @@ The `goal:state` record no longer shares one batch with the command. The model s
 | §4 rule 5 (batches) | The fact and the record are separate appends in that order, so recovery never reads state that was not committed. |
 | §4 rule 6 (context) | The model reads goals only through adopted inputs; `goalLine.read` serves callers, not context preparation. |
 | §4 rule 7 (public events and services) | The branch part uses the Dispatcher, its timeline, TimelineTree and the input owner; the entry uses the registration points and the mechanism. |
-| §4 rule 8 (requirements) | Two requirements are listed below; no core change. |
+| §4 rule 8 (requirements) | Three requirements are listed below; no core change. |
 | §4 rule 9 (facts) | The goal is a line fact plus the model-visible record; execution counters stay in memory. |
 | §7 values, ids and callbacks | The entry writes an input (data) and reads a value at a line id; the mechanism resolves the line's owner; no object crosses. |
 | §7 no proxy lookup | The entry neither folds the line's state nor answers from Goal's facts; the branch owner answers its own value. |
 | §7 one interface | The commands are one method namespace and one tool contribution; the branch owner's face is one read; no adapter exists beside either. |
 | §7 cross-language | Commands, parameters, replies and errors are data; the tool result is text in `ToolResult.content`. |
 | §7 one change | The implementation task deletes the routing table, the re-fold path and the pre-commit callback in the same change that adds `goalLine.read` and migrates the entries. |
-| ADR 027 D1–D3 | The entry reaches `GoalLine` and the line's `InputQueue` by line id; the resolution is not a dependency and is not kept across calls. The registration points it uses (`sessionMethods`, `toolRegistry`, `guideEntries`) are its own Session's, not resolved by id. |
-| ADR 027 D2 | No registration point and no lifecycle service is resolved by line id: `GoalLine` and `InputQueue` are data faces of the branch group. |
+| ADR 027 D1, D4 | The entry reaches `GoalLine` and the line's `InputQueue` by line id; the resolution is not a dependency and is not kept across calls. |
+| ADR 027 D3 | No registration point and no lifecycle service is resolved by line id: `GoalLine` and `InputQueue` are data faces of the branch group; the registration points it uses (`sessionMethods`, `toolRegistry`, `guideEntries`) are its own Session's. |
 | ADR 002 D1 | The goal, its decisions and its tasks live in the branch; the Session entry registers the commands. |
 | ADR 002 D2 | No wiring plugin: the branch part provides `goalLine` on its own type; the mechanism resolves the line. |
 | ADR 002 D3 | Dependencies point from Goal to TimelineTree, the input owner, Settings and the runtime; nothing depends on Goal. |
@@ -189,7 +192,65 @@ The `goal:state` record no longer shares one batch with the command. The model s
 
 - [TimelineTree #2024](https://github.com/arcships/dim/issues/2024): the cross-cutting decision names this owner's contract as the place that fixes who provides the line-id operations to Session parts. Goal needs two: a Session part resolving `GoalLine` for the read and the line's `InputQueue` for the command. SessionScope's contract has no such operation.
 - [The line's input owner #2027](https://github.com/arcships/dim/issues/2027): `submit` accepts one validated input with its submission id, commits it in order and answers its position; an ended line and a closing owner are data.
-- The line's timeline owner (runtime, outside the #2015 scan): `append` accepts an input-message draft and an extension fact; Goal appends the fact and then the record.
+- The line's timeline owner (runtime, outside the #2015 scan): `append` accepts an input-message draft and an extension fact; Goal appends the fact and then the record. The record is an input-message draft, never a second `submit`.
+- The id routing mechanism is [#2127](https://github.com/arcships/dim/issues/2127); the `line_owner` requirement lands there, and #2024's contract states the line-id operations it serves ([target, pending #2092](https://github.com/arcships/dim/pull/2092)).
+
+
+## 兼容锚点（Compatibility anchors）
+
+以下标题只为保留其他文档与代码注释里的旧锚点；每一节的正文都已并入上面的契约。
+
+### 2. 数据与状态
+
+目标属于一行；状态对象与加载映射见 [Goal-state-read.md](Goal-state-read.md)，本契约的 [Own contract](#own-contract) 规定写入顺序。
+
+### 3.4 新分支清除继承的目标
+
+子行开始时不继承目标，见 [Own contract](#own-contract) 的 decisions 与 [Exceptions with reasons](#exceptions-with-reasons)。
+
+### 5. 上下文映射
+
+模型只经采用输入看到目标文本；见 [Own contract](#own-contract) 与 [Client-visible changes](#client-visible-changes)。
+
+### 10. 实现
+
+实现顺序与删除清单见 #2033 的交付评论。
+
+### A.2 Session 方法
+
+`session.goal.*` 的参数、回复与错误见 [Own contract](#own-contract)。
+
+### A.3 读取目标
+
+读目标见 [Own contract](#own-contract) 的 `session.goal.get` 与 `goalLine.read`；结束行不再回答。
+
+### A.4 续跑决策
+
+续跑、上限与无进展见 [Own contract](#own-contract) 的 decisions。
+
+### A.5 模型可见文本
+
+标记、状态块、命令块与续行仍是 Goal 的模型协议；文本格式不变，记录顺序见 [Client-visible changes](#client-visible-changes)。
+
+### A.5.1 协议与策略
+
+guide 条目见 [Own contract](#own-contract)；策略句仍归 Goal。
+
+### A.5.2 评估
+
+评估分支与结论见 [Own contract](#own-contract) 的 flows 与 [Exceptions with reasons](#exceptions-with-reasons)。
+
+### 附录 B 完整冲突表
+
+冲突与终止见 [Own contract](#own-contract) 的 Flows。
+
+### 附录 C 错误与恢复
+
+错误码见 [Own contract](#own-contract) 的 Errors。
+
+### 附录 E 假设
+
+参数上限见 [Use and scope: responsibility split](#use-and-scope-responsibility-split)。
 
 ## Binding appendix
 
@@ -203,7 +264,7 @@ use rutis::host::BoxFuture;
 #[serde(rename_all = "camelCase")]
 pub struct GoalValue {
     pub objective: Option<String>,
-    pub status: GoalStatus,          // dim_agent_types::GoalStatus: active | paused{reason} | completed | blocked | none
+    pub status: GoalViewStatus,      // dim_agent_types::GoalViewStatus: active | paused{reason} | completed | blocked | none
     pub evaluator: bool,             // the judge; `GoalView` uses this field name on the wire
     pub through: u64,
 }
@@ -211,7 +272,7 @@ pub struct GoalValue {
 #[rutis::service]
 impl GoalLine {
     /// The goal of this line now; waits until the fold reaches the head.
-    pub async fn read(&self) -> Result<GoalValue, ServiceError>;
+    pub async fn read(&self, cancelled: CancelledFn) -> Result<GoalValue, ServiceError>;
 }
 
 /// The service error shape of every data face: `{code, message, data?}`.
@@ -224,4 +285,4 @@ pub struct ServiceError {
 }
 ```
 
-`GoalStatus` and `GoalView` are the existing types in `dim_agent_types`; the command input's text and its `dim-goal` marker are the existing ones in `crates/dim-goal`, and their wire spelling is unchanged.
+`GoalViewStatus` and `GoalView` are the existing types in `dim_agent_types`; the command input's text and its `dim-goal` marker are the existing ones in `crates/dim-goal`, and their wire spelling is unchanged.

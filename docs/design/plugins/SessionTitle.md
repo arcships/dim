@@ -9,8 +9,8 @@ SessionTitle owns a Session's title policy: when a title is generated, what text
 SessionTitle owns:
 
 - **The moment of generation.** The first adopted input on the Session's conversation line — an operator input with user content, or Goal's applied objective — triggers one attempt; a Session that already has a title never generates one.
-- **The text rules.** The instruction sent to the model, the 2000-code-point excerpt, the output normalization (one line, no quoting, collapsed whitespace) and the length bound from the `session-title` source.
-- **The routing.** An explicit model from the source, otherwise the account owner's title operation when the adopted provider belongs to it, otherwise the adopted model, otherwise the excerpt fallback; one 30 s budget across the paths; three failed attempts end the attempts for this generation.
+- **The text rules.** The instruction sent to the model, the 2000-code-point excerpt, the output normalization (one line, no quoting, collapsed whitespace) and the length bound from the `session-title` source (`maxLength` 10..=200, default 80).
+- **The routing.** An explicit model from the source, otherwise the account owner's title operation when the adopted provider belongs to it, otherwise the adopted model, otherwise the excerpt fallback; one 30 s budget across the paths; three failed attempts end the attempts for this generation. The acceptance list is the previous version's Appendix D and is unchanged.
 - **The manual rename.** `session.rename`'s parameter rules and the text it accepts or clears.
 - **The requested initial title.** The title a launch carried is written once, as the first manual title, after the Session is published.
 
@@ -37,15 +37,19 @@ An operation or parameter exists only where its row says No.
 
 ```rust
 let text = title_text(params.title.as_deref(), &document)?;   // owner rules: trim, no control characters, length
-let change = TitleChange::new(move |current: Option<StoredTitle>| {
-    // A manual rename always wins: the operator's text replaces whatever is stored.
-    Ok(text.clone().map(|text| Title { text, source: TitleSource::Manual }))
+// The store's ChangeFn: the current title and revision in, the next title (none clears) or its own refusal out.
+let change: ChangeFn = Arc::new(move |current: TitleState| {
+    let text = text.clone();
+    Box::pin(async move {
+        // A manual rename always wins: the operator's text replaces whatever is stored.
+        Ok(text.map(|text| Title { text, source: TitleSource::Manual }))
+    })
 });
 let written = store
-    .setTitle(SetTitle { id: session }, change, cancelled)
+    .set_title(caller, SetTitle { id: session }, change)
     .await
     .map_err(|error| match error {
-        StoreError::Rejected { code, message } => wire_invalid(code, message),   // the change refused the write
+        StoreError::Rejected { .. } => invalid_params("title refused"),   // the change's refusal
         StoreError::NotFound => session_not_found(),
         other => storage_failed(other),
     })?;
@@ -54,7 +58,15 @@ let written = store
 A generation attempt: the adopted input's text, the model, and one write whose `change` refuses once any title exists.
 
 ```rust
-let input = tree.read(ReadLines { line: ROOT, scope: None, from: None, through: Some(adopted_at), fields: INPUT_FIELDS, limit: None }).await?;
+let line = tree.directory()?.default;                    // the conversation line, as Goal resolves it
+let input = tree.read(ReadLines {
+    line,
+    scope: None,
+    from: None,
+    through: Some(adopted_at),
+    fields: vec!["id".into(), "data.user".into(), "data.blocks".into()],
+    limit: None,
+}).await?;
 let text: String = eligible_text(&input).chars().take(2000).collect();
 let title = match route(&document, &adopted_model) {
     Route::Account(account) => match account.title(TitleRequest { provider, text }, cancel.clone()).await {
@@ -65,11 +77,18 @@ let title = match route(&document, &adopted_model) {
     Route::Model(model) => generate_with_model(&model, &text).await?,
     Route::Excerpt => excerpt_title(&text, document.max_length),
 };
-let change = TitleChange::new(move |current: Option<StoredTitle>| match current {
-    Some(_) => Err(Rejected::new("titled", "the Session already has a title")),   // the operator's title wins
-    None => Ok(Some(Title { text: title.clone(), source: TitleSource::Auto })),
+let title = title.clone();
+let change: ChangeFn = Arc::new(move |current: TitleState| {
+    let title = title.clone();
+    Box::pin(async move {
+        if current.title.is_some() {
+            // The operator's title wins; the attempt is discarded, not an error.
+            return Err(StoreRejected { code: "titled".into(), message: "the Session already has a title".into() });
+        }
+        Ok(Some(Title { text: title, source: TitleSource::Auto }))
+    })
 });
-store.setTitle(SetTitle { id }, change, cancel).await?;
+store.set_title(caller, SetTitle { id }, change).await?;
 ```
 
 ## Own contract
@@ -78,12 +97,12 @@ store.setTitle(SetTitle { id }, change, cancel).await?;
 
 | Owner | Operation | Use |
 | --- | --- | --- |
-| SessionScope ([#2025](https://github.com/arcships/dim/issues/2025)) | `config`, `identity`, `activated`, `closing` | The creation record (`initialTitle`, `interactive`, `collaborationRole`), the Session id, publication and close |
-| SessionStore ([#2018](https://github.com/arcships/dim/issues/2018)) | `title`, `setTitle` with a `change` callback | The current title (text, source, revision) inside the decision; the write, its announcement and the new revision |
-| TimelineTree ([#2024](https://github.com/arcships/dim/issues/2024)) | `read` | The first adopted input's text and the adopted model at a fixed cutoff |
-| Provider ([#2019](https://github.com/arcships/dim/issues/2019)) | `invoke` with `Once` | One title request on an adopted model |
-| The Dim account owner ([#2019](https://github.com/arcships/dim/issues/2019), optional) | `title` | The relay's title endpoint when the adopted provider belongs to it |
-| Settings ([#2017](https://github.com/arcships/dim/issues/2017)) | `register`, `read` | The `session-title` source: `enabled`, `maxLength`, `model` |
+| SessionScope ([#2025](https://github.com/arcships/dim/issues/2025), target, pending [#2093](https://github.com/arcships/dim/pull/2093)) | `config`, `identity`, `activated`, `closing` | The creation record (`initialTitle`, `interactive`, `collaborationRole`), the Session id, publication and close |
+| SessionStore ([#2018](https://github.com/arcships/dim/issues/2018), target, pending [#2091](https://github.com/arcships/dim/pull/2091)) | `title`, `setTitle` with a `change` | `title` answers `{revision, title?: {text, source}}`; `setTitle(caller, SetTitle, ChangeFn)` runs the change under the owner's serialization and answers `{revision}` |
+| TimelineTree ([#2024](https://github.com/arcships/dim/issues/2024), target, pending [#2092](https://github.com/arcships/dim/pull/2092)) | `directory`, `read` | The conversation line; the first adopted input's text and the adopted model at a fixed cutoff |
+| Provider ([#2019](https://github.com/arcships/dim/issues/2019), target, pending [#2096](https://github.com/arcships/dim/pull/2096)) | `invoke` with `Once` | One title request on an adopted model |
+| The Dim account owner ([#2019](https://github.com/arcships/dim/issues/2019), target, pending [#2096](https://github.com/arcships/dim/pull/2096); optional) | `title` | The relay's title endpoint when the adopted provider belongs to it |
+| Settings ([#2017](https://github.com/arcships/dim/issues/2017), target, pending [#2094](https://github.com/arcships/dim/pull/2094)) | `register`, `read` | The `session-title` source: `enabled`, `maxLength` (10..=200, default 80), `model` |
 | Session registries ([#2026](https://github.com/arcships/dim/issues/2026)) | `sessionMethods.register` | Publishing `session.rename` |
 
 The account owner is read by its face name when generation needs it, so a profile without that owner generates through the model or the excerpt; this document does not require the account owner to exist.
@@ -101,7 +120,7 @@ The account owner is read by its face name when generation needs it, so a profil
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `session.rename` | Check the text, call `setTitle` with a `change` that returns the manual text, answer the new revision | Before admission the call ends `cancelled`; an admitted write is not undone | Nothing to release | `closed` once the Session is closing; an admitted write settles in the store | SessionStore for the write and the exclusion; SessionTitle for nothing |
+| `session.rename` | Check the text, call `set_title` with a `change` that returns the manual text, answer the new revision | Before admission the call ends without a write; an admitted write is not undone | Nothing to release | `service_reloading` once the part is unloading; an admitted write settles in the store | SessionStore for the write and the exclusion; SessionTitle for nothing |
 | Generation | Observe adoption, read the input and the model at a fixed cutoff, generate within the budget, fall back to the excerpt, write with a `change` that refuses when a title exists | Cancelled before admission: nothing is written; the in-flight model call is cancelled and joined | The task is cancelled; nothing is written | Cancelled before the store handover; an admitted write settles in the store | SessionTitle for the model call; SessionStore for the write and the exclusion |
 | Initial title | After publication, call `setTitle` with a `change` that returns the requested text only while the title is untitled | Before the write nothing is written | Cancelled with the part | A later rename or clear is never undone by a reload: the `change` sees the stored title and refuses | SessionStore |
 
@@ -162,7 +181,7 @@ None. `session.rename` keeps its parameters, its `{title, titleSource, revision}
 | §4 rule 4 (no business meaning in core) | The instruction, the excerpt rule and the routing are SessionTitle's. |
 | §4 rule 5 (batches) | No batches. |
 | §4 rule 6 (context) | No model-visible text is added to the Session's context; the title request is a separate one-shot call. |
-| §4 rule 7 (public events and services) | The Session broadcast, the line's read, the store's operations, Provider's `invoke`, the optional account face and Settings. |
+| §4 rule 7 (public events and services) | The line's published adoption facts read at a fixed cutoff, the store's operations, Provider's `invoke`, the optional account face and Settings. |
 | §4 rule 8 (requirements) | One requirement on SessionStore, listed below. |
 | §4 rule 9 (facts) | The title never enters the Timeline; the store announces each commit. |
 | §7 values, ids and callbacks | The Session id, the title value and the revision cross; `setTitle` takes the caller's `change` by reference and the model request takes Provider's consumer; no object crosses. |
@@ -171,6 +190,7 @@ None. `session.rename` keeps its parameters, its `{title, titleSource, revision}
 | §7 cross-language | The rename is data; the internal generation has no cross-owner caller. |
 | §7 one change | Deleting the optional generator name, the required auxiliary dependency and the model-text decode happens in the same change that adds the store precondition and the account call. |
 | ADR 002 D1 | The policy is Session state; the title value is the store's. |
+| ADR 027 D4 | SessionTitle resolves nothing by id: its dependencies are process services and its own Session's line read, both declared at load. |
 | ADR 002 D2 | No wiring plugin: the part registers one namespace and calls owners' operations. |
 | ADR 002 D3 | Dependencies point from SessionTitle to SessionScope, SessionStore, TimelineTree, Provider, Settings and optionally the account owner. |
 | ADR 002 D4 | `enabled`, `maxLength` and `model` are business configuration read at use; enabling the plugin is structural. |
@@ -178,7 +198,64 @@ None. `session.rename` keeps its parameters, its `{title, titleSource, revision}
 
 ## Requirements raised to mechanism owners
 
-- None open. SessionStore's current contract ([#2091](https://github.com/arcships/dim/pull/2091)) has `setTitle {id} + change` running the change under the owner's serialization with `rejected` as a kind, and `title` answering `{text, source}`; this document depends on exactly that.
+- [SessionStore #2091](https://github.com/arcships/dim/pull/2091) is open: `set_title(caller, SetTitle, ChangeFn)` running the change under the owner's serialization with `rejected` as a kind, and `title` answering `{revision, title?: {text, source}}`. SessionTitle's examples and appendix use that binding; landing order: #2091 before this contract's implementation.
+
+
+## Compatibility anchors
+
+These headings exist only so the links in other documents and code comments resolve; their content is in the sections above.
+
+### 2. Data and state
+
+The title value and its revision are SessionStore's; the policy is in [Own contract](#own-contract).
+
+### 3.2 Manual rename
+
+See `session.rename` in [Own contract](#own-contract).
+
+### 3.3 Generation routing and optional service
+
+Routing is in [Own contract](#own-contract); the account owner is optional.
+
+### 4. Timing and conflicts
+
+A manual title always wins inside the store's change; see [Own contract](#own-contract) and [Client-visible changes](#client-visible-changes).
+
+### 5. Context mapping
+
+The title has no model-visible effect; see [Own contract](#own-contract).
+
+### 9. Requirements raised to mechanism owners
+
+See [Requirements raised to mechanism owners](#requirements-raised-to-mechanism-owners).
+
+### A.1 `session.rename`
+
+See `session.rename` in [Own contract](#own-contract).
+
+### A.2 Depended-on shapes (owners define them)
+
+The store's shapes are [#2091](https://github.com/arcships/dim/pull/2091)'s; see the dependency table in [Own contract](#own-contract).
+
+### A.3 Configuration
+
+`enabled`, `maxLength` (10..=200, default 80) and `model` are read from the `session-title` source; see [Own contract](#own-contract).
+
+### Appendix B. Full conflict table
+
+See [Own contract](#own-contract) and [Exceptions with reasons](#exceptions-with-reasons).
+
+### Appendix C. Errors and recovery
+
+See the error table in [Own contract](#own-contract).
+
+### Appendix D. Acceptance
+
+The previous version's acceptance list stays in force; see [Verification](#verification).
+
+### Appendix E. Assumptions
+
+See [Use and scope: responsibility split](#use-and-scope-responsibility-split).
 
 ## Binding appendix
 
@@ -209,13 +286,10 @@ pub enum RenameError {
     OperationInterrupted,
 }
 
-/// One title decision inside the store's exclusion. `StoredTitle` carries the
-/// text, the source and the revision the store holds now; `Rejected` is the
-/// store's kind for a change that refuses, and SessionTitle treats it as
-/// "discarded" for an automatic title and as `invalid` for a rename.
-pub type TitleChange = Arc<
-    dyn Fn(Option<StoredTitle>) -> Result<Option<Title>, Rejected> + Send + Sync,
->;
+/// `ChangeFn`, `TitleState`, `Title`, `TitleSource`, `StoreRejected` and
+/// `SetTitle` are SessionStore's types ([#2091](https://github.com/arcships/dim/pull/2091));
+/// this contract defines none of them. `set_title` takes `caller: &Ctx`, the
+/// request and the change, and no cancellation argument.
 ```
 
 The store's `title` and `setTitle` shapes are SessionStore's contract ([#2091](https://github.com/arcships/dim/pull/2091)); this appendix restates none of them.

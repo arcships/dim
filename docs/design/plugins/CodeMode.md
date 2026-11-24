@@ -8,10 +8,10 @@ Code Mode lets the model submit one bounded QuickJS program that invokes the req
 
 Code Mode owns:
 
-- **The structural bounds.** `max_code_bytes`, `max_runtime_ms`, `max_calls`, `max_parallel_calls`, `max_memory_bytes`, `max_programs`, `max_output_bytes`, `max_single_result_bytes`. They are configuration, not tool parameters and not prompt text.
+- **The structural bounds.** 256 KiB `max_code_bytes`, 600 s `max_runtime_ms`, 4096 `max_calls`, 16 `max_parallel_calls`, 1024 MiB `max_memory_bytes`, 2 `max_programs`, 16 MiB `max_output_bytes`, 4 MiB `max_single_result_bytes`. They are configuration, not tool parameters and not prompt text.
 - **The process program slots.** At most `max_programs` programs run in one process at a time; the slot is held from the program's start to its settlement and released by the quota owner, including when the caller unloads.
 - **The one-shot run.** One fresh QuickJS context per call with only `tools.list`, `tools.describe` and `tools.call`; the memory limit, the wall-clock interrupt and the program's cancellation; the outer result's text, effects and failure warning.
-- **The tool declaration.** The `codemode` tool's name, description, schema, `session` risk and the v4 client gate.
+- **The tool declaration.** The `codemode` tool's name, description, schema and `session` risk. The v4 gate is the Session's mount exclusion: the connection adds `codemode` to the excluded tools for a v1–v3 client, and the entry registers the contribution regardless.
 
 Callers keep as business:
 
@@ -26,7 +26,7 @@ Callers keep as business:
 | At most `max_programs` programs per process | No: the cap is process state and must be settled when the run ends or the caller unloads | `codeMode.with_slot {work}` |
 | Each child call is admitted on its own | No: admission, the child batch and the terminal result are ToolExecutor's | ToolExecutor's nested operation ([#2028](https://github.com/arcships/dim/issues/2028)); the program only names a tool and its arguments |
 | A failed program returns a result the model reads | No: the failure text, the effects collected before it and the warning are the run's | the run's reply |
-| Only v4 Sessions are offered the tool | No: the declaration is the entry's and the client's protocol version is SessionScope's record | the entry's declaration |
+| Only v4 Sessions are offered the tool | No: the exclusion is the Session's creation record, set by the connection's protocol version | the mount exclusion `SessionConfig.excluded_tools`, as `exclude_codemode_below` sets it; the entry adds no version read |
 
 An operation or parameter exists only where its row says No.
 
@@ -51,12 +51,14 @@ The line's run owner holds the slot around the program; the slot never leaves th
 ```rust
 // CodeModeLine: one program inside one process slot. The gate is the executor's;
 // the run closes it early to word the result, and the owner settles it again.
-quota.with_slot(Arc::new(move |cancelled| Box::pin(async move {
-    let gate = executor.open(OpenRequest { parent_call_id: outer_call_id, context }, cancelled.clone()).await?;
-    let outcome = quick_js(code, gate.gate_id.clone(), cancelled.clone()).await;
-    let effects = executor.close(CloseRequest { gate_id: gate.gate_id }, cancelled).await?;
-    Ok(program_result(outcome, effects))      // the same effects appear once in the parent result
-})), cancelled).await?
+let slot: Result<ToolResult, ServiceError> = quota
+    .with_slot(caller, Arc::new(move |cancelled| Box::pin(async move {
+        let gate = executor.open(caller, OpenRequest { parent_call_id: outer_call_id, context }, &cancelled)?;
+        let outcome = quick_js(code, gate.gate_id.clone(), &cancelled).await;
+        let effects = executor.close(caller, CloseRequest { gate_id: gate.gate_id })?;
+        Ok(program_result(outcome, effects))  // the same effects appear once in the parent result
+    })), cancelled)
+    .await?;
 ```
 
 ## Own contract
@@ -65,11 +67,11 @@ quota.with_slot(Arc::new(move |cancelled| Box::pin(async move {
 
 | Owner | Operation | Use |
 | --- | --- | --- |
-| Session access ([#2025](https://github.com/arcships/dim/issues/2025)) | the line's owner by line id | The entry reaches `CodeModeLine`; the run reaches the line's ToolExecutor |
-| ToolExecutor ([#2028](https://github.com/arcships/dim/issues/2028)) | `open {parentCallId, context}` → `{gateId}`; `invoke {gateId, call}` → `{result}`; `close {gateId}` → `{effects}` | Child calls, admission, child facts; the run closes the gate to word its result, and the owner closes it again at parent settlement with the effects merged once |
-| ToolBinding ([#2028](https://github.com/arcships/dim/issues/2028)) | `adopted {requestId}` → `{adopted}` | The request's pinned declarations for `tools.list`, `tools.describe`, `tools.call` |
-| Session registries ([#2026](https://github.com/arcships/dim/issues/2026)) | `toolRegistry.register` | The `codemode` contribution |
-| SessionScope ([#2025](https://github.com/arcships/dim/issues/2025)) | `config` | The Session's protocol version for the declaration |
+| Session access ([#2025](https://github.com/arcships/dim/issues/2025), target, pending [#2093](https://github.com/arcships/dim/pull/2093)) | the line's owner by line id | The entry reaches `CodeModeLine`; the run reaches the line's ToolExecutor |
+| ToolExecutor ([#2028](https://github.com/arcships/dim/issues/2028), target, pending [#2100](https://github.com/arcships/dim/pull/2100)) | `open {parentCallId, context}` → `{gateId}`; `invoke {gateId, call}` → `{result}`; `close {gateId}` → `{effects}` | Child calls, admission, child facts; the run closes the gate to word its result, and the owner closes it again at parent settlement with the effects merged once |
+| ToolBinding ([#2028](https://github.com/arcships/dim/issues/2028), target, pending [#2100](https://github.com/arcships/dim/pull/2100)) | `adopted {requestId}` → `{adoption, tools}` | The request's pinned declarations for `tools.list`, `tools.describe`, `tools.call` |
+| Session registries ([#2026](https://github.com/arcships/dim/issues/2026), target, pending [#2103](https://github.com/arcships/dim/pull/2103)) | `toolRegistry.register` | The `codemode` contribution |
+| (none) | — | The v4 gate is the mount exclusion in the Session's creation record; no version read and no service call |
 
 ### Operations
 
@@ -152,8 +154,8 @@ None. The `codemode` tool keeps its name, description, schema, risk and v4 gate;
 | §7 cross-language | The tool, the run and the quota are data and callbacks; the program's bridge is `tools.list/describe/call`. |
 | §7 one change | Deleting the process runner table, the runner trait and the executor wrapper happens in the same change that adds the quota operation and the line's run operation. |
 | ADR 002 D1 | Slots are process state; the run is line state; the declaration is Session state. |
-| ADR 027 D1–D3 | The tool handler reaches `codeModeLine` and the line's ToolExecutor by the line id on its execution context; the resolution is not a dependency and is not kept across calls. |
-| ADR 027 D2 | `codeModeLine` and ToolExecutor are branch data faces; no registration point or lifecycle service is resolved by id. |
+| ADR 027 D1, D4 | The tool handler reaches `codeModeLine` and the line's ToolExecutor by the line id on its execution context; the resolution is not a dependency and is not kept across calls. |
+| ADR 027 D3 | `codeModeLine` and ToolExecutor are branch data faces; no registration point or lifecycle service is resolved by id. |
 | ADR 002 D2 | No wiring plugin: both operations are on their owners' types; the mechanism resolves the line. |
 | ADR 002 D3 | Dependencies point from Code Mode to the registry, the mechanism and ToolExecutor. |
 | ADR 002 D4 | The bounds are structural configuration; no business setting is read. |
@@ -161,13 +163,15 @@ None. The `codemode` tool keeps its name, description, schema, risk and v4 gate;
 
 ## Requirements raised to mechanism owners
 
-- [TimelineTree #2024](https://github.com/arcships/dim/issues/2024): the cross-cutting decision names this owner's contract as the place that fixes who provides the line-id operations to Session parts. Code Mode needs two: a Session-registered tool handler resolving `codeModeLine` by the line id on its execution context, and the run resolving the line's ToolExecutor. SessionScope's contract has no such operation.
+Both requirements below land in the id routing mechanism [#2127](https://github.com/arcships/dim/issues/2127), owned by the dim runtime; #2024's contract (#2092) states the line-id operations that mechanism serves.
+
+- [TimelineTree #2024](https://github.com/arcships/dim/issues/2024) (target, pending [#2092](https://github.com/arcships/dim/pull/2092)): the cross-cutting decision names this owner's contract as the place that fixes who provides the line-id operations to Session parts; the mechanism that serves them is [#2127](https://github.com/arcships/dim/issues/2127). Code Mode needs two: a Session-registered tool handler resolving `codeModeLine` by the line id on its execution context, and the run resolving the line's ToolExecutor. SessionScope's contract has no such operation.
 - [The branch tool chain #2028](https://github.com/arcships/dim/issues/2028): none open; `open`/`invoke` and `toolBinding.adopted` are what this contract calls ([#2100](https://github.com/arcships/dim/pull/2100)).
 - The line's timeline owner (runtime): child `step/tool-call` and `step/tool-result` batches carry `parent_call_id`; the v1–v3 projection omits them.
 
 ## Binding appendix
 
-The process part provides `codeMode`; the branch part provides `codeModeLine`; the Session part registers the tool. Request, reply and error types are data; `cancelled` is the binding's cancellation argument.
+The process part provides `codeMode`; the branch part provides `codeModeLine`; the Session part registers the tool. Both names are set with `#[rutis::service(name = ...)]` on the owner type. Request, reply and error types are data; `cancelled` is the binding's cancellation argument.
 
 ```rust
 use rutis::host::BoxFuture;
@@ -176,12 +180,12 @@ use rutis::host::BoxFuture;
 impl ProgramSlots {
     /// Run `work` while holding one process program slot; `caller` binds the
     /// slot to the calling row, so the owner releases it at that row's unload.
-    pub async fn with_slot(
+    pub async fn with_slot<T>(
         &self,
         caller: &Ctx,
-        work: impl Fn(CancellationToken) -> BoxFuture<'static, Result<(), ServiceError>> + Send + Sync,
-        cancelled: CancellationToken,
-    ) -> Result<(), ServiceError>;
+        work: ChangeFn<T>,
+        cancelled: CancelledFn,
+    ) -> Result<T, ServiceError>;
 }
 
 /// The service error shape of every data face: `{code, message, data?}`.

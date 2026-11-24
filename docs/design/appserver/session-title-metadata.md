@@ -18,8 +18,8 @@ channel ([C6](session-notices.md)), and Rpc shows the title in protocol v3 Sessi
 
 - **Data.** A revision counter (0 means never written) and either no title or a title `{text, source}` with source
   `auto` or `manual`. Clearing keeps the counter, so a revision never repeats.
-- **Write.** `setTitle {sessionId, expectedRevision, title | null}` commits revision `expectedRevision + 1` or fails
-  `conflict`, `not_found` or `storage`. The call is the handover: SessionStore admits the write when called, unless it
+- **Write.** `setTitle {sessionId, the change callback's current title and revision, title | null}` commits revision `the change callback's current title and revision + 1` or fails
+  `rejected`, `not_found` or `storage`. The call is the handover: SessionStore admits the write when called, unless it
   is closing, and settles it itself; dropping the call only loses the reply.
 - **Notice.** After each commit, `{source: "SessionStore", kind: "title", data: {title, titleSource,
   titleRevision}}`, in commit order.
@@ -66,7 +66,7 @@ protocol version.
 
 | Item | Meaning |
 | --- | --- |
-| `revision` | Per-Session counter of committed `setTitle` writes. 0 means never written. Each committed write sets it to `expectedRevision + 1`: a new title, the same text again, a source change or a clear |
+| `revision` | Per-Session counter of committed `setTitle` writes. 0 means never written. Each committed write sets it to `the change callback's current title and revision + 1`: a new title, the same text again, a source change or a clear |
 | `title` | `{text, source}` or none |
 | `source` | `auto` (SessionTitle's generation) or `manual` (`session.rename`). SessionStore stores the source it is given and attaches no rule to it. "A manual title always wins" is SessionTitle's rule, enforced inside `setTitle`'s change callback ([SessionTitle](../plugins/SessionTitle.md#own-contract)) |
 
@@ -88,7 +88,7 @@ protocol version.
 | Method | Mode | Request | Reply value | Errors |
 | --- | --- | --- | --- | --- |
 | `read` | async | `{sessionId}` | `{revision, title: {text, source} \| null}` | `not_found`, `storage` |
-| `setTitle` | async | `{sessionId, expectedRevision, title: {text, source: "auto" \| "manual"} \| null}` | `{revision}`: the committed revision | `conflict`, `not_found`, `storage` |
+| `setTitle` | async | `{id}` plus the caller's change: current `{revision, title}` in, next title or a refusal out | `{revision}`: the committed revision | `rejected`, `not_found`, `storage` |
 
 - Replies use one envelope, `{ok: true, value}` or `{ok: false, error: {code, message}}`, as `settings` does.
 - Neither method loads the Session. `read` reads committed state and does not wait for the title writer (§5).
@@ -100,7 +100,7 @@ protocol version.
 | Code | When | State after |
 | --- | --- | --- |
 | `not_found` | The store holds no record of the Session: never created, deleted, or rolled back. A stored Session that is closed or not loaded is found | Unchanged |
-| `conflict` | `expectedRevision` is not the current revision | Unchanged, no notice. Read again |
+| `rejected` | the caller's change refused with its own code; nothing changed, no notice | Act on that code; an automatic title is discarded |
 | `storage` | The transaction failed, or the call arrived after SessionStore started closing (§6) | Unchanged, no notice |
 
 ### 4.2 Rust
@@ -150,7 +150,7 @@ This settles the boundary that SessionTitle §0 left to S5b.
 | Before the call | The caller's own work. Cancelling it before the call writes nothing |
 | The call | The handover is SessionStore receiving the call: before it returns, `setTitle` admits the write and starts it as SessionStore's own task, or, once SessionStore is closing, fails `storage` without writing. In Rust `set_title` is a plain function that does this and returns a future of the reply. That future only awaits the task, so dropping it detaches the reply, never the write. The named service calls it inside `invoke`, so a JavaScript call is handed over once the host receives it |
 | After the call | SessionStore settles the write itself: it commits and announces, or fails and writes nothing. Dropping the call, unloading the calling row or losing the reply neither cancels nor undoes it. `setTitle` has no cancel action |
-| Lost reply | The caller reads with `read`. It does not repeat the write blindly: a repeat at the old revision fails `conflict`, and one at the new revision would be a second change ([SessionTitle](../plugins/SessionTitle.md#errors)) |
+| Lost reply | The caller reads with `title`. It does not repeat the write blindly: a repeat would be a second change, and an automatic title's change refuses once a title exists ([SessionTitle](../plugins/SessionTitle.md#errors)) |
 | SessionStore unload | Its disposer first stops admission: from then on a call fails `storage` at once and writes nothing. It then waits until every admitted write, the one in its turn and those waiting for theirs, has committed and announced or failed. Only then does it close Session files and the Timeline writer, and SqliteStorage, which unloads after SessionStore, closes the connection. The notices follow C6 delivery: once the Session is no longer loaded, nobody listens and they are dropped. Nothing is retried after a reload |
 
 Rejected: a cancel action that works until the transaction starts. It would only move the uncertainty, since a caller
@@ -166,7 +166,7 @@ that drops the call still has to read to learn the outcome; and a JavaScript cal
 | `data` | `{title: string \| null, titleSource: "auto" \| "manual" \| null, titleRevision}` |
 
 - **Once per commit.** Emitted after each committed write with SessionStore's own context through
-  `session_broadcast::notify`. A conflict, a missing Session or a failed write emits nothing.
+  `session_broadcast::notify`. A refusal, a missing Session or a failed write emits nothing.
 - **No `sessionId` in `data`.** The channel names the Session, and Rpc adds `sessionId` to `session.notice`
   ([C6 D4](session-notices.md#10-decisions)).
 - **The list's fields.** `data` holds exactly the three title fields of a v3 Session list entry (§8). A client
@@ -202,7 +202,7 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 | --- | --- | --- |
 | `storage` | The catalog read fails as it does today | `storage_failed` |
 | `not_found` | The Session is not listed | `session_not_found` |
-| `conflict` | — | SessionTitle reads again and retries ([SessionTitle](../plugins/SessionTitle.md#operations)) |
+| `rejected` | — | the caller's change refused; an automatic title is discarded ([SessionTitle](../plugins/SessionTitle.md#operations)) |
 
 ## 9. Lifecycle
 
@@ -219,7 +219,7 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 
 | Scenario | Outcome |
 | --- | --- |
-| Two writes with the same expected revision | The first to commit wins; the other fails `conflict` and announces nothing |
+| Two writes | They commit in admission order and each announces its revision; a change that refuses leaves the title as it was |
 | Writes to different Sessions | Run one at a time by the one title writer; each commits in its own transaction |
 | `setTitle` and `session.delete` | The store's write transactions order them: a commit first is removed by the delete; a delete first makes the write `not_found` |
 | `setTitle` and `session.fork` | Independent: the fork copies no title |
@@ -328,7 +328,7 @@ None. S5b uses C6's `notify`, the existing service catalog and `HostDispatch`, a
 
 1. `setTitle` commits and returns the next revision; `read` returns it. Two v3 clients attached over IPC and
    WebSocket each receive exactly one `session.notice` per commit, in commit order, with `data` equal to the list's
-   title fields. A conflict and an unknown Session announce nothing.
+   title fields. A refusal and an unknown Session announce nothing.
 2. Concurrent writers: every commit is announced once, in increasing `titleRevision` order.
 3. A clear (`null`) commits a revision with no title and announces nulls.
 4. `read` and `setTitle` of a Session that was never created, or was deleted: `not_found`.
@@ -369,7 +369,7 @@ fixture](../../../runtime/fixtures/session-metadata.ts); items 6 and 12 hold the
 | D6 | `titleRevision` in v3 list entries | `title` and `titleSource` only | Without it a client cannot order a list reply against a notice (§8) |
 | D7 | List fields for protocol v3 only | All protocol versions | v1 and v2 are frozen and receive no title notices |
 | D8 | Service `sessionMetadata` with `read` and `setTitle`; the Rust binding uses `read` and `set_title` | A.2's method name `metadata` | `sessionMetadata.metadata` repeats itself; `read` matches `settings.read` |
-| D9 | Errors `conflict`, `not_found`, `storage` as data; malformed calls are bridge errors | A `rejected` code as in `sessions` | The three codes are the write's outcomes; a malformed call is a programming error, as in `settings` |
+| D9 | Errors `rejected`, `not_found`, `storage` as data; malformed calls are bridge errors | A `rejected` code as in `sessions` | The three codes are the write's outcomes; a malformed call is a programming error, as in `settings` |
 | D10 | `not_found` for a Session the store does not hold | `session_closed` | Maintainer decision; it is SessionStore's vocabulary, and SessionTitle maps it to `session_not_found` |
 | D11 | SessionStore stores text as given | Validating length and characters | SessionTitle owns the title rules and validates them; checking again would duplicate the contract |
 | D12 | SessionStore itself provides `sessionMetadata` | A part that never reloads | SessionStore reloads only with SqliteStorage (§12) |
