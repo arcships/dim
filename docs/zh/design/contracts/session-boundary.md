@@ -186,7 +186,15 @@ sequenceDiagram
 
 ### 9.4 Session 门面上的 Session 作用域
 
-已撤回命名空间的作答移到 Session 方法表：`sessionMethods.call` 按注册它的行的状态，以及该行在本 Session 中的副本，回答 `service_reloading` 或 `service_unavailable`（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）。方法表是 Session 部件，从自己的名字就得到所在实例，不需要门面读取。行状态的读取本身是 [SessionMethods](../../../design/plugins/SessionMethods.md#requirements-raised-to-mechanism-owners) 的 §4 第 8 条请求（[#2021](https://github.com/arcships/dim/issues/2021)）。
+| 项 | 内容 |
+| --- | --- |
+| 被什么挡住 | 已撤回的 Session 命名空间原本由 Rpc 按注册它的行在该 Session 实例中的副本作答（A.1）。Rpc 手里只有 `Session` 句柄，它不说明自己的行运行在哪个实例中。该作答已移到 Session 方法表：方法表从自己的名字得到所在实例（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）；下面这项能力仍然实现，其他调用方仍可用。 |
+| 考虑过的现有机制 | `Session::diagnostics` 每次这样的调用都要遍历 Session 的插件树。由一个 Session 部分把自己的作用域作为公开服务提供，会给每个 Session 增加一个部分，只为重新发布门面已经持有的信息。 |
+| 需要的通用能力 | `Session::instance()`，即 Session 的 `InstanceId`，也就是它的部件解析名字时所在的实例（`Names::instance`）。其下的 key 只能在该 Session 内部读取（rutis 拒绝在实例之外读取实例 key），因此它不会开放 `PublicService` 之外的任何服务。 |
+| 对序号、批次、中断、重载的影响 | 无。Session 作用域插件拒绝重载，因此 Session 装载期间实例不变；对已关闭的 Session，读取像其他门面读取一样以 `Closed` 失败。 |
+| 由谁实现、对应 issue | 运行时（Session 门面）；为 [#207](https://github.com/arcships/dim/issues/207) 实现。 |
+
+方法表自己的行状态读取是 [SessionMethods](../../../design/plugins/SessionMethods.md#requirements-raised-to-mechanism-owners) 的 §4 第 8 条请求（[#2021](https://github.com/arcships/dim/issues/2021)）。
 
 外来 Session 服务的已实现子集见 [C4](../../../design/session-typescript.md)；通用插件安装仍由其所有者推进。
 
@@ -216,7 +224,7 @@ sequenceDiagram
 // MethodCall、MethodReply 与方法表的错误：见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。
 ```
 
-目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（原生处理函数收到 A.2 的 `Caller`；线上为 `origin.caller.connectionId` 与 `origin.caller.callId`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply`、回复交接、`origin.entry` 与 `origin.peer` 未实现。
+目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（原生处理函数收到 A.2 的 `Caller`；当前线上是顶层 `callId` 与扁平的 `origin.connectionId`，目标把它们嵌套为 `origin.caller`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply`、回复交接、`origin.entry` 与 `origin.peer` 未实现。
 
 取消与中断：调用由提供方自己回复，不由 Rpc 回复。有两种情况会中断已受理的调用：提供方这一代卸载，以及受理该调用的 Rpc 装载卸载。任一发生时，处理函数的取消令牌都会触发，`drain` 调用也不例外。随后 `report` 调用立即回复 `operation_interrupted`（操作可能已经提交），之后再结算；`drain` 调用回复自己的结果。提供方的卸载等待它受理的每个调用，包括 `report` 调用。调用方断开不会取消任何东西。
 
@@ -228,7 +236,7 @@ sequenceDiagram
 | 保留名 | 在命名空间注册时检查。精确内建名是 `is_builtin_method` 接受的名称（[protocol.rs](../../../../crates/dim-app-server/src/protocol.rs)）。声明的通知不能取内建通知的线上名称，即 `Notification` 各变体的名称：提供方不能冒充其连接已经在读取的通知。管理方法：命名空间须符合语法，不能位于保留根（`hello`、`daemon`、`agent`、`approval`、`session`）之内，任何前缀都不能等于精确内建名，声明的方法也不能等于精确内建名（"Invalid management namespace"、"Invalid management contribution"）；精确内建名不会落在管理命名空间之内，因为每个精确内建名都位于某个保留根之下。Session：App Server 提供进程值 `ReservedMethods`，每个 Session 的方法表都用它检查；不符合语法、位于根 `hello`、`daemon`、`agent` 或 `approval` 之内，或者与精确内建名相等、包含它或位于它之内的命名空间被拒绝（"invalid Session namespace <ns>"）。例如 `session.mcp` 是精确内建名，因此 `session.mcp`、`session.mcp.extra` 以及包含它的单独 `session` 根都被拒绝。Session 命名空间可以位于 `session` 之下（`session.goal`、`session.input`）。`session.input` 不保留：InputQueue 把它注册到 `sessionMethods`，因此 Rpc 不点名任何所属服务 |
 | 优先级与路由 | 内建方法；否则，管理命名空间（已注册或已撤回）持有的名称交给管理方法（§3.2）；否则，对协议 v3+，符合语法且 params 对象带 `sessionId` 字段的名称是 Session 方法候选（见下文 Session 级调用）；否则交给管理方法，没有命名空间持有的名称为 `unknown_method`。共用一个线上名称空间。params 中没有 `sessionId` 的名称从不是 Session 方法候选：没有 Session，Rpc 就不知道它的命名空间，因此只有 Session 命名空间持有的名称在没有 `sessionId` 时为 `unknown_method` |
 | 命名空间冲突 | 没有装配检查，由路由优先级决定。与某个管理命名空间相等、包含它或位于它之内的 Session 命名空间照常注册，但管理命名空间持有的名称路由到管理方法，从不到达该 Session |
-| Session 级调用 | Rpc 从候选的原始 params 读取 `sessionId`；不是非空字符串时结果为 `-32602`（空字符串为 `invalid_params`，"sessionId must not be empty"）。Rpc 对其授权，并通过 `index.acquire` 获取该 Session，未装载的 Session 会被恢复（不同于 `approval.respond`：对未装载的 Session 它返回 `session_closed`）；非空但不对应任何 Session 的 id 为 `session_closed`。然后 Rpc 调用该 Session 的 `sessionMethods.call {method, params, caller}`（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）：方法表找到该名称的所有者并作答自己的错误。已注册命名空间的处理函数回复；已撤回的命名空间按注册它的行在本 Session 中的副本状态（§9.4、§3.2）作答：该副本尚未启动、处于 Pending、Loading 或新旧两代之间时返回 `service_reloading`，处于 Failed、Unresolved、Disposed 或 Stopped 时返回 `service_unavailable`，副本处于 Active（该行的子插件正在重载）或没有副本（部件处于新旧两代之间）时返回 `service_reloading`；本 Session 从没有命名空间持有过的名称，以及注册它的行已禁用或不存在的名称 → `unknown_method`。Rpc 一直持有该 Session 的使用权，直到调用的操作结算。`sessionId` 与 `branchId` 留在 `params` 中；Rpc 读取 `sessionId` 只为授权和解析。提供方通过该分支的服务到达某个分支。管理命名空间持有的名称，或 params 中没有 `sessionId` 的名称，从不恢复 Session |
+| Session 级调用 | Rpc 从候选的原始 params 读取 `sessionId`；不是非空字符串时结果为 `-32602`（空字符串为 `invalid_params`，"sessionId must not be empty"）。Rpc 对其授权，并通过 `index.acquire` 获取该 Session，未装载的 Session 会被恢复（不同于 `approval.respond`：对未装载的 Session 它返回 `session_closed`）；非空但不对应任何 Session 的 id 为 `session_closed`。然后 Rpc 调用该 Session 的 `sessionMethods.call {method, params, caller}`（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）：方法表找到该名称的所有者并作答自己的错误。已注册命名空间的处理函数回复；已撤回的命名空间按注册它的行在本 Session 中的副本状态（§3.2）作答：该副本尚未启动、处于 Pending、Loading 或新旧两代之间时返回 `service_reloading`，处于 Failed、Unresolved、Disposed 或 Stopped 时返回 `service_unavailable`，副本处于 Active（该行的子插件正在重载）或没有副本（部件处于新旧两代之间）时返回 `service_reloading`；本 Session 从没有命名空间持有过的名称，以及注册它的行已禁用或不存在的名称 → `unknown_method`。Rpc 一直持有该 Session 的使用权，直到调用的操作结算。`sessionId` 与 `branchId` 留在 `params` 中；Rpc 读取 `sessionId` 只为授权和解析。提供方通过该分支的服务到达某个分支。管理命名空间持有的名称，或 params 中没有 `sessionId` 的名称，从不恢复 Session |
 | 调用归属 | Session 级提供方这一代拥有它受理的调用，与管理方法提供方相同：由它回复，它的卸载按 `interruption` 中断这些调用并等待它们（见上文取消与中断） |
 | 共享类型 | `MethodDecl`、`Interruption`、`MethodCall`、`Origin`、`Caller`、`CallSite`、`MethodReply`、`MethodCallbackError`、`MethodError`、`Handler`、`Progress` 与 `RpcError`，连同两张方法表共用的调用受理，位于 dim-agent-capabilities 的 `methods` 模块，因为那里的 Session 能力不能依赖 dim-app-server。它们的唯一定义是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix) 的绑定；`MethodTable` 是该所有者的私有存储，不是共享类型。不放在 dim-agent-types：它只接受 serde 与 serde_json（`xtask check`；[架构](../../../architecture/README.md)：不用 Tokio 或 rutis），而 `Handler` 持有 tokio-util 的 `CancellationToken` 并返回 rutis 的 `BoxFuture`；并且 `RpcError` 在那里时，`From<AgentError> for RpcError` 只能在 dim-agent-runtime 实现（孤儿规则）。在 dim-agent-capabilities 中该转换与 `RpcError` 同处，因此 Rpc 与 Session 提供方都对运行时错误保留 `?` |
 | 不分发 | 该表从没有命名空间持有过该名称、注册其已撤回命名空间的行已禁用或不存在（对管理方法，还包括处于 Active 但没有重新注册的行）、提供方未声明该名称、只有 Session 命名空间持有的名称在 params 中没有 `sessionId`、在带 `deviceId` 的连接、未导出的链接或裸 WebSocket 上调用管理方法，或 v1/v2 → `-32601 unknown_method`。Session 正在重载，或已撤回命名空间的注册行（对 Session 命名空间，是该行在该 Session 中的副本）尚未启动、处于 Pending、Loading 或新旧两代之间，或已撤回 Session 命名空间的副本处于 Active 或不存在 → `-32000 service_reloading`（可重试）。已撤回命名空间的注册行或其在该 Session 中的副本处于 Failed、Unresolved、Disposed 或 Stopped → `-32000 service_unavailable`（不可重试）。不对应任何 Session 的 Session id → `session_closed`。已开始的 `report` 调用被中断 → `operation_interrupted` |
@@ -256,7 +264,7 @@ sequenceDiagram
   |
   该 Session 的 sessionMethods 中的所有者？ ---- 没有 -----> -32601 unknown_method
   |                                              已撤回 ---> 注册它的行在本 Session 中的副本
-  |                                                （§9.4、§3.2）：
+  |                                                （§3.2）：
   |                                                启动中或重载中、Active 或没有副本
   |                                                  -> -32000 service_reloading
   |                                                Failed、Unresolved、Disposed 或 Stopped
@@ -512,12 +520,12 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 
 | 语言中立服务 | Rust 类型 | Rust 中的注册 | 收集 | 状态 |
 | --- | --- | --- | --- | --- |
-| `managementMethods` | `ManagementMethods`，持有方法命名空间的进程服务，由 App Server 的 `ManagementMethodsPlugin` 行提供 | 进程部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作与线上形状归进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） | Rpc 按调用分发 `call`，并按 `heldNamespaces` 路由（§3.2）；没有提供方在 Rpc 的 `Deps` 中 | 已实现（#14、#382） |
-| `sessionMethods` | `SessionMethods`，由 `SessionMethodsPlugin` 部件提供的 Session 服务；其检查是 App Server 提供的进程值 `ReservedMethods` | Session 部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作、值与线上形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | Rpc 在 `sessionId` 指定、经 `index.acquire` 获取的 Session 上调用 `call`，并为 `session.methods` 调用 `methods`；没有提供方在 Rpc 的 `Deps` 中 | 已实现（C1、#382） |
+| `managementMethods` | `ManagementMethods`，持有方法命名空间的进程服务，由 App Server 的 `ManagementMethodsPlugin` 行提供 | 进程部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作与线上形状归进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） | Rpc 按调用分发 `call`，并按 `heldNamespaces` 路由（§3.2）；没有提供方在 Rpc 的 `Deps` 中 | 已实现（#14、#382）；目标操作见进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） |
+| `sessionMethods` | `SessionMethods`，由 `SessionMethodsPlugin` 部件提供的 Session 服务；其检查是 App Server 提供的进程值 `ReservedMethods` | Session 部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作、值与线上形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | Rpc 在 `sessionId` 指定、经 `index.acquire` 获取的 Session 上调用 `call`，并为 `session.methods` 调用 `methods`；没有提供方在 Rpc 的 `Deps` 中 | 已实现（C1、#382）；目标操作见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) |
 | 工具注册 | `ToolContribution {definition, handler}`，注册到本 Session 的 `ToolRegistry`（`Keyed<ToolRegistry>`） | 在部件的 `apply` 中调用 `tools.register(ctx, ToolContribution)`；动态来源用 `tools.register_source(ctx, name, provider)` | 每次读取纳入已注册的内容；挂载列表中没有注册的名称被省略并记录诊断；每次注册是注册表自有的带版本集合（A.5，#241） | 已实现（#382） |
 | `callChannel` | `progress`：处理函数的 `Progress` 参数，每次调用一个；`notify` 与 `closed`：处理函数 `MethodCall.origin` 上的 `Caller`，每次调用一个；其他语言使用进程服务 `callChannel`。调用数据归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | — | Rpc 为每个已受理调用提供一个通向发起调用连接的 sink；索引按 `callId` 记录其他语言的调用直到其回复写出，并在连接关闭或卸载时删除该连接的条目 | `progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现 |
 
-调用数据——`MethodDecl`、`Interruption`、`MethodCall`、`Origin`、`CallerRef`、`MethodReply`、`MethodCallbackError`、`MethodError`、`Handler`、`Progress` 与 `RpcError`——连同两张方法表共用的调用受理，是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix) 的绑定，位于 dim-agent-capabilities 的 `methods` 模块。`MethodTable` 是该表的私有存储；Session 表不再对它 `Deref`。`RpcError` 在同一处保留 `From<AgentError>`，因此 Rpc 与 Session 提供方都对运行时错误保留 `?`。Session 方法表的检查是 App Server 的数据面 `ReservedMethods`：`reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]} -> {}` 拒绝宿主保留的命名空间，Rust 方法表在进程内调用同一个操作（[service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)）；宿主不登记它时只检查语法。
+调用数据——`MethodDecl`、`Interruption`、`MethodCall`、`Origin`、`Caller`、`CallSite`、`MethodReply`、`MethodCallbackError`、`MethodError`、`Handler`、`Progress` 与 `RpcError`——连同两张方法表共用的调用受理，是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix) 的绑定，位于 dim-agent-capabilities 的 `methods` 模块。`MethodTable` 是该表的私有存储；Session 表不再对它 `Deref`。`RpcError` 在同一处保留 `From<AgentError>`，因此 Rpc 与 Session 提供方都对运行时错误保留 `?`。Session 方法表的检查是 App Server 的数据面 `ReservedMethods`：`reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]} -> {}` 拒绝宿主保留的命名空间，Rust 方法表在进程内调用同一个操作（[service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)）；宿主不登记它时只检查语法。
 
 注册被拒绝会使注册它的部件失败：命名空间及其声明按名称语法与保留名检查，同一张表内已被注册的命名空间失败，注册持续到发起它的行卸载（A.1 注册）。
 
