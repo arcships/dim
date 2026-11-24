@@ -137,12 +137,29 @@ pub struct RequestSettings {
     pub metadata: Option<RequestMetadata>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepairRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<ModelConfig>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<ModelConfig>,
+}
+
 impl PublicService for RequestSettings {}
 
 #[rutis::service(name = "requestSettings")]
 impl RequestSettings {
     pub fn settings(&self) -> RequestSettings { /* ... */ }
+    /// The one allowance rule: Loop calls it on the configuration it reads, and a
+    /// restored Session calls it on the replayed record before the first request.
+    pub fn repair(&self, request: RepairRequest) -> RepairReply { /* ... */ }
 }
 ```
 
-`ModelSelection` and the reply's members are `dim_agent_types` data; `settings` answers the value itself. Errors: this owner has none.
+`ModelSelection` and the reply's members are `dim_agent_types` data; `settings` answers the value itself and `repair` answers the bounded configuration. Errors: this owner has none.
