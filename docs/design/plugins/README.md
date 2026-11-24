@@ -9,7 +9,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | Plugin | Process part | Session part | Branch part | Phase / issue |
 | --- | --- | --- | --- | --- |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
-| [TimelineTree](TimelineTree.md) (owner contract) | — | the line directory, line lifecycle and default line behind the `timelineTree` operations; the model's `branch` tool ([BranchTool](BranchTool.md)) | one line's own view, roster and notices ([BranchLine](BranchLine.md)); the route from a line's facts to the directory ([TreeTimeline](TreeTimeline.md)) | [#2024](https://github.com/arcships/dim/issues/2024) |
+| [TimelineTree](../../architecture/rust-agent/plugins/TimelineTree.md) (owner contract) | — | the line directory, line lifecycle and default line behind the `timelineTree` operations; the model's `branch` tool ([BranchTool](BranchTool.md)) | one line's own view, roster and notices ([BranchLine](BranchLine.md)); the route from a line's facts to the directory ([TreeTimeline](TreeTimeline.md)) | [#2024](https://github.com/arcships/dim/issues/2024) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
 | [ShellInput](ShellInput.md) | — | `shell.*` methods, command runs | — | P1 |

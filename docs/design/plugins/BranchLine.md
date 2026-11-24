@@ -136,7 +136,7 @@ None: the `branchLine` wire name keeps its scope and gains one operation; no cli
 
 ## Requirements raised to mechanism owners
 
-None beyond TimelineTree's: BranchTool is a Session part and reaches this owner with `line_owner::<BranchLine>(line)`, which is the runtime's id routing stated there ([#2127](https://github.com/arcships/dim/issues/2127); [SessionScope](https://github.com/arcships/dim/pull/2093) states the Session side).
+None beyond TimelineTree's: BranchTool is a Session part and reaches this owner with `line_owner::<BranchLine>(line)`, which is the runtime's id routing stated there, including its three answers `SessionClosing`, `NoLine` and `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [SessionScope](https://github.com/arcships/dim/pull/2093) states the Session side).
 
 ## Binding appendix
 

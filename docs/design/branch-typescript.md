@@ -1,6 +1,6 @@
 # Branch TypeScript binding
 
-The Session tree's contract is [TimelineTree](plugins/TimelineTree.md): `timelineTree` with `create`, `end`, `set_default`, `directory`, `line` and `read`; no `treeCommands`, `TreeCommands` or `TimelineTreeControl` exists. A part acts on a line's own owners with `line_owner::<T>(line)` ([ADR 027](https://github.com/arcships/dim/pull/2029)). References below to `treeCommands` describe the pre-redesign binding only.
+The Session tree's contract is [TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md): `timelineTree` with `create`, `end`, `set_default`, `directory`, `line` and `read`; no `treeCommands`, `TreeCommands` or `TimelineTreeControl` exists. A part acts on a line's own owners with `line_owner::<T>(line)` ([ADR 027](https://github.com/arcships/dim/pull/2029)). References below to `treeCommands` describe the pre-redesign binding only.
 
 Status: implemented for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
 [#4](https://github.com/arcships/dim/issues/4), on rutis 0.16.0 `build::Exports`
@@ -34,7 +34,7 @@ ordered consumption.
 | Ordered consumption, handler failures, committed reads | Branch `Dispatcher` (over its `Timeline`) |
 | Input validation and commitment | The line's own input owner, reached with `line_owner::<InputQueue>(line)` |
 | Event writes, including extension events | Branch `Timeline` |
-| Line directory, creation and end | Session `timelineTree` ([TimelineTree](plugins/TimelineTree.md)) |
+| Line directory, creation and end | Session `timelineTree` ([TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md)) |
 | Activation and closing | `BranchLifecycle` |
 | Branch identity | `TimelineIdentity` |
 

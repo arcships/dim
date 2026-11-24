@@ -1,6 +1,6 @@
 # Timeline branches
 
-The Session tree's target contract is [TimelineTree](plugins/TimelineTree.md): `timelineTree` with `create`, `end`, `set_default`, `directory`, `line` and `read`, and no `treeCommands`, `TreeCommands` or `TimelineTreeControl`. References to `TreeCommands` and `treeCommands` below describe the pre-redesign binding; the behavior this document requires of the tree is unchanged.
+The Session tree's target contract is [TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md): `timelineTree` with `create`, `end`, `set_default`, `directory`, `line` and `read`, and no `treeCommands`, `TreeCommands` or `TimelineTreeControl`. References to `TreeCommands` and `treeCommands` below describe the pre-redesign binding; the behavior this document requires of the tree is unchanged.
 
 Status: Accepted ([#427](https://github.com/arcships/dim/issues/427)). This document holds both the requirements and the design: §1–§3 answer #427's questions, and §4 onward is the design. Scope: the TimelineTree plugin (TimelineTree, TreeTimeline, BranchTool, plus a new branch part for BranchLine), one App Server built-in method, one core event, one `BranchSource` kind, the CLI TUI, the Web workspace, and a rewrite of [design rules §2](../architecture/rust-agent/principles.md#2-作用域的含义). Language: Rust. Chinese: [中文](../zh/design/timeline-branches.md).
 

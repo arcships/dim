@@ -114,7 +114,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `modelHost` | `modelHost` | 完整模型请求直接调用所选配置的执行入口；辅助请求使用 `providerService.complete`。 |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
 | `sessionStore` | `store`、`sessionFiles`、`timelineStore` | 标题与 worktree 关联直接调 store |
-| `treeCommands`、`timelineTreeControl` | `timelineTree` | 已按 [TimelineTree](plugins/TimelineTree.md) 收敛：两个名字删除，`timelineTree` 是树唯一的数据面 |
+| `treeCommands`、`timelineTreeControl` | `timelineTree` | 已按 [TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md) 收敛：两个名字删除，`timelineTree` 是树唯一的数据面 |
 
 ### 3.4 对象/句柄：拆成操作加 id
 

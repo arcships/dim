@@ -4,7 +4,7 @@
 
 | Caller → owner | Final API |
 | --- | --- |
-| Line directory, lifecycle and history callers → `timelineTree` | The tree's face is [TimelineTree](../plugins/TimelineTree.md): `create`, `end`, `set_default`, `directory`, `line`, `read`. A Session part reaches a branch owner by line id with `line_owner::<T>(line)`; no forwarding call exists. |
+| Line directory, lifecycle and history callers → `timelineTree` | The tree's face is [TimelineTree](../../architecture/rust-agent/plugins/TimelineTree.md): `create`, `end`, `set_default`, `directory`, `line`, `read`. A Session part reaches a branch owner by line id with `line_owner::<T>(line)`; no forwarding call exists. |
 | Language readers → PromptSources | `sessionLanguage.get`. |
 | Language updates → App Server | [`session.language.update`](session-access.md) accepts the existing language code or clear action. The owner serializes persistence, live-state replacement and Prompt adoption on main and loaded branches before replying. |
 | Prompt → PromptRegistry; guide and tool contributors → their registries | `initialPromptConfiguration.get`, `promptHost.load`, `guideEntries.register`, `toolRegistry.register`, `toolSourcesView.get/observe`. |
@@ -18,8 +18,8 @@
 | --- | --- |
 | Skills content and MCP publication → Session loader | `sessionLoader.create({group, definitionId, instanceData}) → {instanceId}`; `remove({instanceId}) → void`. The Session loader admits groups whose configured parent is the Session group. Registered Session extension definitions must activate their instance rows. Host-added optional groups retain their optional rows. Skills supplies its content definition; MCP supplies its connection definition ID and retains the resolved transport configuration. |
 | Context RPC → target branch | `agentLoop.compact` and `contextUsage.read`. |
-| InputQueue and Collaboration approvals → target line | `line_owner::<T>(line)`: `inputQueue.submit`, `inputQueue.withdraw` after submission checks, `approval.pending` and `approval.decide` ([TimelineTree](../plugins/TimelineTree.md)). |
-| PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration`, with the tree's `read` for evidence ([TimelineTree](../plugins/TimelineTree.md)). |
+| InputQueue and Collaboration approvals → target line | `line_owner::<T>(line)`: `inputQueue.submit`, `inputQueue.withdraw` after submission checks, `approval.pending` and `approval.decide` ([TimelineTree](../../architecture/rust-agent/plugins/TimelineTree.md)). |
+| PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration`, with the tree's `read` for evidence ([TimelineTree](../../architecture/rust-agent/plugins/TimelineTree.md)). |
 | Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |
 | Fault producers and Session observers → `sessionLifecycle` | `reportFault(error) → void`, `failure({}) → SessionFault or null`, `observeFault(listener) → id`, `release(id) → boolean`. The listener receives the current failure (initially null) and subsequent reports. Caller unload releases the observation. The first fault wins until a storage failure supersedes it; the first storage failure wins. |
 | Check providers and input admission → SubmitChecks | `register(name, check) → void`; `check({entry, branchId, user?, mode}, cancelled) → proceed{blocks, warnings} or block{message}`. Run in name order through the first block. Interrupted checks write nothing. |

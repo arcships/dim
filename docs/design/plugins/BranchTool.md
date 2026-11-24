@@ -93,7 +93,7 @@ Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A 
 
 ### Errors
 
-Every kind the owners answer maps onto one code here; a refusal writes nothing. The table covers every ending of the four actions, including an ended or protected target and a cancelled create.
+Every kind the owners answer maps onto one code here; a refusal writes nothing. The table covers every ending of the four actions, including an ended or protected target and a cancelled create. The route adds no code of its own: `NoLine` from `line_owner` is `branch_ended`, and `SessionClosing` is `closed`; `NoSession` never reaches a Session part, so the tool has no code for it ([TimelineTree](../../architecture/rust-agent/plugins/TimelineTree.md#session-parts-reaching-a-lines-owners)).
 
 | Code | What the model does next |
 | --- | --- |
