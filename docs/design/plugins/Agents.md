@@ -152,7 +152,7 @@ Face `sessions`, marked on `Agents`. Every operation answers one reply object; a
 | `close_session` | End a Session for this process, keeping its rows | `{sessionId}` | `{}` | Not cancelled once admitted | `closed` |
 | `delete_session` | Close and remove a Session, its members and its owned Agents | `{sessionId, requireInactive}` | `{removed: true}` or `{removed: false, inUse: reason}` | Not cancelled once admitted | `storage`, `closed` |
 | `fork_session` | Copy a Session at a cut | `{sourceId, at}` | `{sessionId, sequence}` | Before the copy commits | `invalid`, `storage`, `cancelled`, `closed` |
-| `acquire` | Pin a loaded Session for the calling row | `{sessionId, agentId?}` | `{leaseId, generation}` | None; admission only | `unknown`, `closed_session`, `mismatch`, `unavailable`, `closed` |
+| `acquire` | Pin a loaded Session for the calling row | `{sessionId, agentId?}` | `{leaseId, generation}` | None; admission only | `unknown`, `session_closed`, `mismatch`, `unavailable`, `closed` |
 | `release` | Release a pin before the row unloads | `{leaseId}` | `{released}` | None | `invalid`, `closed` |
 | `observe` | One end notification for one Session generation | `{sessionId, generation?}` + `onEnd` | `{agentId, generation}` or `null` | None; the observation ends with the row, the end or a new generation | `unknown`, `generation`, `closed` |
 | `session` | One Session's admission value | `{sessionId}` | `{agentId?, generation?, version?, state, running, stored, unavailable?}`; `state` is `loaded`, `closed`, `deleted` or `unknown`; an id this process never saw answers `unknown` | None | `closed` |
@@ -189,7 +189,7 @@ Face `sessions`, marked on `Agents`. Every operation answers one reply object; a
 | `create` | The Session instance failed to build after its rows were written; the rows are removed and the caller reports the failure. |
 | `mismatch` | The id names a Session of another Agent; fix the caller's own record. |
 | `unknown` | No loaded Session has the id; read `session` for its state. |
-| `closed_session` | The Session was closed in this process; it will not load again until a restart. |
+| `session_closed` | The Session was closed in this process; it will not load again until a restart. `acquire` answers this for a Session that is closing or already closed. |
 | `generation` | The generation the caller kept is not the loaded one; read `session` and observe again. |
 | `unavailable` | The Session is unusable, or the requested Agent exists but cannot run now (its reason is in the message). Report it and stop retrying until the named reason changes. |
 | `default` | The default Agent cannot be closed. |
