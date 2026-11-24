@@ -1068,7 +1068,7 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode account PROVIDER` | 打印被描述账号的非机密状态。 |
 | `dimcode logout PROVIDER` | 让被描述的账号退出。 |
 | `/connect` | 列出 `provider.management` 报告的提供方；被描述的账号打开签到或退出步骤，其他提供方打开连接表单。 |
-| `/report` | 上报当前 Session。回合进行中或没有错误时均可使用。可将报告保存为 ZIP，查看保存路径，并在保存后打开分享页面。参见[报告契约](../../design/plugins/Report.md#2-client-interaction)。 |
+| `/report` | 上报当前 Session。回合进行中或没有错误时均可使用。可将报告保存为 ZIP，查看保存路径，并在保存后打开分享页面。参见[报告契约](../../design/plugins/Report.md#client-interaction)。 |
 | `/exit` | 在空闲的交互提示符处断开并退出。 |
 | `!command` / `!!command` | 以 record/private 模式调用 Session 现有的 `shell.run`，模型回合进行中也可用。 |
 | `--permission read-only\|workspace-write\|full-access` | 为 `dimcode`、`tui`、`exec` 和 `exec resume` 选择新建或恢复的 Session 的预设（[权限控制](#权限控制)）。 |
