@@ -61,7 +61,7 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 
 ### Dependencies
 
-`fsHost` for file creation, atomic replacement, import, page reads, listing and removal; the operations used are the ones in [FileStorage's contract](https://github.com/arcships/dim/pull/2080). The owner computes its own directory (`<db>.session-files`) from the database path it holds and passes absolute paths; FileStorage's root set must cover the native store directory, which the host registers. The engine's file-ownership rows are private to the storage crate and are not a service. The owner does not depend on `store`: the store depends on this owner when a delete releases files.
+`fsHost` for `root_path`, file creation, atomic replacement, import, page reads, listing and removal; the operations used are the ones in [FileStorage's contract](https://github.com/arcships/dim/pull/2080). The owner joins the store directory's root path from `root_path` with `<db>.session-files` and passes absolute paths under it; the host registers the native store directory as a root. The engine's file-ownership rows are private to the storage crate and are not a service. The owner does not depend on `store`: the store depends on this owner when a delete releases files.
 
 ### Operations
 
@@ -164,7 +164,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-1. **FileStorage (#2016): the operations this owner calls.** `read` with `{offset, length}`, `write` with its `source` and `privateReadOnly`, `import` with `max_bytes` and `privateReadOnly`, `create_directory`, `list` and `remove` exist in [FileStorage's contract](https://github.com/arcships/dim/pull/2080) at head `e951536ec`. `root_path` left that face: the owner computes `<db>.session-files` from its database path, so the only need is that the host's root set covers the native store directory; a comment on #2016 states it.
+1. **FileStorage (#2016): the operations this owner calls.** `root_path`, `read` with `{offset, length}` and `{data, eof, size}`, `write` with its `source` and `privateReadOnly`, `import` with `max_bytes` and `privateReadOnly`, `create_directory`, `list` and `remove` exist in [FileStorage's contract](https://github.com/arcships/dim/pull/2080) at head `7224c0cd4`. The owner reads the store directory's root with `root_path`; the host registers the native store directory as a root, and a comment on #2016 records the dependency.
 2. **Service type placement (#2015): a process owner in the app server.** The owner type is in `dim-app-server`, where the engine and the rows are; callers in plugin crates cannot depend on the app server. The request and reply types are plain data in `dim-agent-capabilities::host`, and callers outside the crate call the operations by the `sessionFiles` name. If the maintainers decide every process face must be annotated on a type plugin crates can name, the type moves to a shared crate; a comment on #2015 states the requirement.
 
 ## Binding appendix
