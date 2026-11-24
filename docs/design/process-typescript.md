@@ -445,7 +445,7 @@ through the existing catalog; a Session-only configuration must not require a
 dummy process row.
 
 The scope offers `withLock`, `list(prefix)`, `remove(name)`, `directory(name)`,
-`openRead(name)` and `writeStream(name, next)`. The lease offers
+`read(name, offset, length)` and `writeStream(name, next)`. The lease offers
 `read`, `replace`, `backup`, `readBytes` and `replaceBytes`. `list` returns one
 level of a directory prefix, sorted, each entry its name relative to the
 authorized root and its kind, and never enters a directory entry; a returned
@@ -464,9 +464,8 @@ before the file changes, while the row and the file store stay up. Since rutis
 a rejected write leaves the previous contents intact. A call argument that no Dim
 face limits is no longer refused by the runtime at the 16 MiB boundary.
 `scope.directory(name)` creates missing parents and returns the node-local work path.
-`scope.openRead(name)` returns a pinned reader ID and size, or null for a missing file.
-Use `fsHost.readAt` to read. The reader remains valid across `scope.close()` until
-`fsHost.closeRead` or unload of the opening row.
+`scope.read(name, offset, length)` reads one page through FileStorage's offset read and
+returns its bytes, size and `eof`; no reader id crosses and nothing outlives the call.
 `scope.writeStream(name, next)` consumes byte chunks until null and replaces the file atomically.
 Source failure or cancellation discards the partial replacement.
 
@@ -478,7 +477,7 @@ creates `<root>/<id>/` when it turns a plugin with code on
 an embedding host that supplies rows itself provisions the consumer directories
 at installation. Scheduler uses `scheduler/` and Workflow uses `workflow/`.
 Only `scope.directory` creates missing parents. For an absent parent,
-`writeStream` returns `io`, `openRead` returns null, and `withLock` returns `io`
+`writeStream` returns `io`, `read` returns null, and `withLock` returns `io`
 before invoking its callback. The consumer surfaces that storage failure and
 starts no run effect; it does not create a Session or submit input without the
 required durable transition.

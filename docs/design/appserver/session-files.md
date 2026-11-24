@@ -247,7 +247,7 @@ also removes the Session's command output on the node first
    2 remove: for each row on node N with writer IS NULL and no owner:
                FileStorage(N).remove(<sf>/<file_id>)          absent counts as removed
                  ok                -> txn: delete the row if it is still unowned
-                 Locked, I/O error -> keep the row, record a diagnostic; the next sweep retries
+                 cancelled, unsynced, I/O error -> keep the row, record a diagnostic; the next sweep retries
                  node unavailable  -> stop; the next sweep retries
    3 list:   FileStorage(N).list(<sf>), then read the rows for those names
                every entry with no row -> FileStorage(N).remove(<sf>/<name>)
@@ -278,8 +278,8 @@ safe because FileStorage removal can be retried.
 **Order against Session close and keys.** S5c closes the Session first, then commits its
 delete transaction, then SessionStore sweeps. No FileStorage key outlives a put: `write`
 holds its key only while it writes. The sweep never removes a pending file of the live
-generation. A deletion therefore never meets `Locked` or `DirectoryNotEmpty` because of a put.
-If it meets them because of something outside SessionStore, the row stays and the next sweep
+generation. A deletion therefore never waits on a key or meets a non-empty directory because of a
+put. If it does because of something outside SessionStore, the row stays and the next sweep
 retries.
 
 **Serializing put against delete and fork.** All three decide at a write transaction of the one
@@ -621,7 +621,7 @@ Rejected alternatives:
 | FileStorage reloads during a put | `node_unavailable` or `storage`; abandoned and swept | SessionStore |
 | SessionStore reloads during a put | Cancelled before txn 2 (abandoned), or already committed; Attachments reloads with it | SessionStore unload |
 | Process restart | Leftovers are swept on the first put or after the next delete | Sweep |
-| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. `Locked` leaves it for the next sweep | FileStorage, sweep |
+| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. a `cancelled` or `unsynced` removal leaves it for the next sweep | FileStorage, sweep |
 | `read` after the last owner is deleted | File not found; no surviving Session quotes the path | — |
 
 ## 13. Changes to other documents
@@ -763,8 +763,8 @@ FileStorage:
 
 ```rust
 impl FileStorage {
-    pub async fn create_directory(self: &Arc<Self>, path: &FilePath, cancel: &CancellationToken)
-        -> Result<()>;
+    pub async fn create_directory(&self, path: String, cancelled: CancelledFn)
+        -> Result<String, FileError>;
 }
 ```
 
