@@ -290,47 +290,17 @@ export default definePlugin({
     ctx.effect(() => files.close());
     ctx.provide('notebook', {
       async read() {
-        return files.withLock('notebook/state.json', file => file.read());
+        return files.withLock('notebook/state.json', current => ({ text: null, value: current }));
       },
       async replace(text: string) {
-        return files.withLock('notebook/state.json', file => file.replace(text));
+        return files.withLock('notebook/state.json', () => ({ text, value: null }));
       },
     });
   },
 });
 ```
 
-`withLock` is one `update` over the record: the change only computes; a step that needs external I/O reads the record first, does the I/O outside, and commits with one `update` comparing the revision, retrying on `conflict`. The outer `FileResult` is the transaction result; a callback returning a `FileResult`
-produces a nested result. Check each result rather than treating failure as empty
-state. `read()` returns `null` only when the file is absent. `replace` atomically
-writes and flushes the host's v1 envelope around your opaque text; keep your own
-payload schema/version inside that text. Invalid, unversioned or unknown storage
-records return `invalid_data` and preserve the original bytes.
-
-Do not retain a lease after its callback. `backup` uses a fresh alphanumeric/hyphen
-suffix and never overwrites a backup; a retained partial backup is not proof of a
-successful copy. Quiesce stops new acquisition; close joins admitted work. An
-optional cancellation Promise cancels acquisition when it settles. Settle it on
-ordinary completion too, so it cannot hold runtime drain open. rutis does
-not encode an `AbortSignal` as this argument.
-
-`readBytes()` and `replaceBytes(bytes)` use the same names and lease for raw
-bytes: no text envelope is involved, a text file's bytes are its stored
-envelope, and a file over 8 MiB fails `invalid_data` before it is read. The
-scope's `list(prefix)` returns one level of a directory, sorted, with each
-entry's name relative to the authorized root and its kind; a name is the stored
-components joined by `/`, ready to pass to another operation, and on Unix a
-backslash is part of a name while on Windows it is a separator. `remove(name)`
-removes a file or a directory tree and waits for the key while a lease holds it
-or a file beneath it. Use `scope.read(name, offset, length)` for larger files; it returns a page's bytes, size and
-`eof`, and no reader id crosses.
-`scope.writeStream(name, next)` pulls chunks until null and preserves the old file
-on failure or cancellation. `scope.directory(name)` creates the work directory
-and returns its node-local path. A text `replace` whose serialized record would
-exceed the runtime's 16 MiB frame fails that call with a `BindingError` coded
-`bad-value`; the file is unchanged. rutis 0.23 chunks a larger call frame up to
-the deployment's `max_transfer`, so the runtime no longer refuses a call at the
-16 MiB boundary; limits that a Dim face does not enforce are not guaranteed.
+This section is superseded by the [PluginFiles contract](design/plugins/PluginFiles.md).
 
 Native storage locking and durability do not make remote side effects atomic.
 After an uncertain external outcome, use that system's reconciliation contract

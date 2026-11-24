@@ -616,7 +616,7 @@ Rejected alternatives:
 | FileStorage reloads during a put | `node_unavailable` or `storage`; abandoned and swept | SessionStore |
 | SessionStore reloads during a put | Cancelled before txn 2 (abandoned), or already committed; Attachments reloads with it | SessionStore unload |
 | Process restart | Leftovers are swept on the first put or after the next delete | Sweep |
-| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. A `cancelled` or `unsynced` removal leaves it for the next sweep | FileStorage, sweep |
+| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. A `cancelled`, `unsynced` or `io` removal leaves it for the next sweep | FileStorage, sweep |
 | `read` after the last owner is deleted | File not found; no surviving Session quotes the path | — |
 
 ## 13. Changes to other documents
@@ -683,7 +683,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
    the upgrade, which the §8 log line comes from; the reopen does not. The branch-only v14 and unknown
    schemas are refused and preserved.
 8. FileStorage flow: `create_directory` creates the tree with `0700` and syncs the parent; an existing
-   directory succeeds; a missing parent fails `missing_parent`. Reserved names, a case alias of the
+   directory succeeds; a link at any level fails `invalid`. Reserved names, a case alias of the
    reserved directory, and a case alias of `auth.json.lock` (on a case-insensitive filesystem)
    fail `InvalidPath` and create nothing. An existing file or link is refused and untouched.
    Cancellation before creation creates nothing.
