@@ -97,7 +97,7 @@ let listed = declarations.into_iter().filter(|decl| {
 | Service | Purpose |
 | --- | --- |
 | `P:reservedMethods` (optional) | The host's reserved names, consulted at registration. It is an `Option<Key<ReservedMethods>>` the factory fills only when the assembly names it; a host that names none reserves only the name grammar. |
-| `P:loaderRows` (proposed dim-owned process face) | The loader row that registered a withdrawn namespace: `status {row}` answers `{status, copies: [{instance, status}]}`, the row's own state and each copy's state with its instance. The table reads it before it answers `reloading` or `unavailable`, and picks the copy in this Session. The face does not exist yet; §4 rule 8 raises it, and App Server's loader row is its provider. |
+| `P:loaderRows` (proposed dim-owned process face) | The loader row that registered a withdrawn namespace: `status {row}` answers `{status, copies: [{instance, status}]}`, the row's own state and each copy's state with its instance. The table reads it before it answers `reloading` or `unavailable`, and picks the copy in this Session; a row that does not exist answers so, and the table then answers `unknown_method`. The face does not exist yet; §4 rule 8 raises it, and App Server's loader row is its provider. |
 
 The process table (#2021) serves the same `MethodCall`, `MethodReply` and `MethodError` data — its `call` takes the admission's `CallSite` and its `MethodCall.origin` carries the `Caller`, with this contract, recorded on #2021 — and answers `held_namespaces` so Rpc routes a name and filters `session.methods` by A.1's longest-namespace rule.
 
@@ -124,7 +124,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 | `invalid` | `register` | — | The namespace or a declaration is refused: outside the name grammar, in a reserved root, equal to, containing or inside a built-in, a declared notification equal to a built-in notification's name, or a declaration that is malformed or repeated — the table checks the declarations and the host's check answers its reserved names. Fix the name or the declaration and register again |
 | `duplicate` | `register` | — | The namespace is registered already; the row may register another namespace instead |
 | `unknown_method` | `call` | `unknown_method` | No registered namespace holds the name, the name is outside the grammar, the owning namespace's provider does not declare it, or the row that registered its withdrawn namespace is disabled or absent. Check the name and the namespace's declarations; an absent row is a configuration problem |
-| `reloading` | `call` | `service_reloading` | The registering row is starting or reloading, or its copy in this Session is Active because a child plugin reloads; retry after it is Active and registered the namespace again |
+| `reloading` | `call` | `service_reloading` | The registering row is starting or reloading, its copy in this Session is Active because a child plugin reloads, or the row has no copy in this Session because its part is between generations; retry after it is Active and registered the namespace again |
 | `unavailable` | `call` | `service_unavailable` | The registering row failed or cannot run. Retrying fails the same way until that row is fixed or restarted |
 | `interrupted` | `call` | `operation_interrupted` | The provider's generation or the admitting Rpc load unloaded while the call ran; the call may have committed, so read the current state before retrying |
 | `closed` | all | `session_closed` (Session table) | The table is closing. Call the replacement generation: the next Session for a Session table, the next process for the process table |
@@ -136,7 +136,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `register` | Check the host's refusal and the duplicate, record the declarations and the callback under the row | — | The registration is withdrawn and its row recorded | New registrations are refused; the table reloads with the Session | The registering row |
-| `call` | Find the owner, admit the call, run the handler, return its reply; on unload interrupt `report` calls and wait for every accepted call | A caller that stops waiting drops the future; the accepted call settles by its declaration, and a disconnect cancels nothing | The registration's accepted calls settle by their declarations | A withdrawn namespace answers from its row's status; a table reload interrupts its calls by their declarations and waits for them | The table for admission and settlement; the handler for its effects |
+| `call` | Find the owner, admit the call, run the handler, return its reply; on unload interrupt `report` calls and wait for every accepted call. A withdrawn namespace answers from its row and that row's copy in this Session, and no copy is `reloading` | A caller that stops waiting drops the future; the accepted call settles by its declaration, and a disconnect cancels nothing | The registration's accepted calls settle by their declarations | A withdrawn namespace answers from its row's status; a table reload interrupts its calls by their declarations and waits for them | The table for admission and settlement; the handler for its effects |
 | `methods` | Read the registered namespaces' declarations; the read observes the state at the call | — | Nothing to release | A table that closes answers no further read; a read already answered is unaffected | SessionMethods |
 
 ## Exceptions with reasons
@@ -148,10 +148,10 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 Flow tests on the owner:
 
 - A registration lives until its row unloads; a duplicate namespace is `duplicate`, while a reserved name or a malformed declaration is `invalid`; a refused registration fails the registering part.
-- `call` reaches the longest namespace holding the name; a withdrawn namespace answers `reloading` while the row starts and `unavailable` once it failed; a name no namespace ever held, and a name whose registering row is disabled or absent, are `unknown_method`.
+- `call` reaches the longest namespace holding the name; a withdrawn namespace answers `reloading` while the row starts, while its copy in this Session is Active or missing, and `unavailable` once it failed; a name no namespace ever held, and a name whose registering row is disabled or absent, are `unknown_method`.
 - A `report` call interrupted by the provider's unload replies `interrupted` and the provider's unload waits for it; a `drain` call settles with its own result; a caller that disconnects while the call runs receives nothing further and the call still settles.
 - A native handler receives the call's `Caller` and notifies through its `CallerConnection`; a handler of another language receives `{connectionId, callId}` and notifies through `callChannel` with that id. An in-process call has no caller. The handler's `closed` resolves when the connection closes or the admitting Rpc load unloads.
-- A value reply and an error reply reach the client unchanged: the error's `appError` is the handler's `code` and its JSON-RPC code follows the service-error rule.
+- A value reply and an error reply reach the client unchanged: the error's `appError` is the handler's `code`, its owner fields sit beside it, and its JSON-RPC code is the handler's own when it carries one and otherwise follows the service-error rule.
 - A handler of another language that returns `{code, message}` reaches the client with that `appError`. A handler that fails with an `AgentError` reaches it with the code Rpc maps for that error. A runtime error converted from a `CallError` keeps its `code()`, else a remote's variant name; an error with no code and a call that crossed nothing are both `failed`.
 - `methods` lists the registered declarations; Rpc's filter removes the names a held management namespace owns.
 
@@ -528,6 +528,8 @@ impl SessionMethods {
 /// bind `register`'s callback, and a marked service beside this dispatch would
 /// claim the same name twice.
 impl HostDispatch for SessionMethods {
+    /// The dispatch's method list, not the owner's read: `invoke` forwards
+    /// `methods` to the inherent `SessionMethods::methods`.
     fn methods(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({ "register": "async", "methods": "sync" }))
     }
