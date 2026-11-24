@@ -64,7 +64,7 @@ agent_loop
 | --- | --- | --- |
 | RequestSettings (#2025) | `settings` | The Session's default model settings before a configuration is adopted. |
 | ContextPreparation | `prepare` | Build the request at the source's cutoff from the projection and publish the handoff facts. |
-| ToolBinding (#2028) | `bind`, `adopted`, `claim`, `transfer` | Pin the request's tool generation, read its declarations, register the calls' claims and move the record to a retry; settlement follows the line's facts. |
+| ToolBinding (#2028) | `bind`, `adopted`, `claim`, `transfer`; `release` and `retain_only` | Pin the request's tool generation, read its declarations, register the calls' claims and move the record to a retry. Settlement otherwise follows the line's facts; the Loop calls `retain_only` after its own rebuild, because ToolBinding outlives a Loop reload and only the new Loop knows the request it is on, and may call `release` when it knows a request ended sooner. |
 | GuideEntries (#2026) | `compose` | The System the request carries. |
 | Provider (#2019) | — | Not called by Loop; ModelProvider calls `invoke`. |
 | BranchScope | `timeline`, `dispatcher`, `timelineIdentity`, `branchLifecycle` | The line's facts, their order, its identity and its phase. |
@@ -142,7 +142,7 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 
 ## Requirements raised to mechanism owners
 
-- #2028 (ToolBinding): Loop needs `bind`, `adopted`, `claim` and `transfer` as data operations; settlement follows `step/tool-result` and `turn/end`, so the Loop calls no release or retain operation.
+- #2028 (ToolBinding): Loop needs `bind`, `adopted`, `claim`, `transfer`, `release` and `retain_only` as data operations. Settlement otherwise follows `step/tool-result` and `turn/end`; `retain_only` is the Loop's own rebuild step, since ToolBinding keeps its records across a Loop reload, and `release` lets the Loop settle a request it knows has ended.
 - #2026 (GuideEntries): Loop needs `compose` as a data operation returning the System text for one line and a base System; the current `compose_system` takes Rust values.
 - #2025 (Session access): the Session entry `session.turn.get` reaches `line_owner::<Loop>(line)?.state()` and `timelineTree.read` by line id; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
 

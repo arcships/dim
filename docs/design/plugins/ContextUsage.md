@@ -58,7 +58,7 @@ context_usage.confirm(ConfirmRequest { request_id }).await?;
 | Owner | Operation | Use |
 | --- | --- | --- |
 | ContextFacts (#2025, Session) | `describe`, `contributions`, `estimate` | The additive counter, the fixed contribution and one contribution's size. |
-| ToolRegistry (#2026, Session) | `definitions`, `toolSourcesView.get` | The current tool declarations when the adopted configuration names no tools. |
+| ToolRegistry (#2026, Session) | `declarations` | The current tool declarations and source versions when the adopted configuration names no tools ([ToolRegistry](https://github.com/arcships/dim/pull/2103), target, pending). |
 | BranchScope | `timeline`, `dispatcher`, `branchLifecycle` | The line's facts, their order and its phase. |
 
 ### Operations
@@ -139,7 +139,7 @@ A missing predecessor makes the numbers unavailable rather than recounting histo
 
 ## Requirements raised to mechanism owners
 
-- #2026 (ToolRegistry): `definitions` and `toolSourcesView.get` must answer the current declarations and their identity as data; ContextUsage reads them when the adopted configuration names no tools.
+- #2026 (ToolRegistry): `declarations` answers `{tools, sources}` as data ([ToolRegistry](https://github.com/arcships/dim/pull/2103), target, pending); ContextUsage reads it when the adopted configuration names no tools.
 - #2025 (ContextFacts): `contributions` and `estimate` must accept the model selection as data, as the target contract states.
 - #2025 (ContextProjection): `estimate` counts the line's sources at a cutoff; it does not take a `StreamedContext`. The projection stays in ContextPreparation.
 - #2025 (Session access): the Session methods read `line_owner::<ContextUsage>(line)?.read(..)`; ADR 027's id-to-instance step resolves the branch group's data face.
