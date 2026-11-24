@@ -4,7 +4,7 @@
 
 | Caller → owner | Final API |
 | --- | --- |
-| Branch management, input and history callers → `timelineTree` | `create/end/info/input/list/page/query` retain their existing signatures on the single Session tree face. Creation returns the branch ID. |
+| Branch management, input and history callers → `timelineTree` | `create`, `end`, `set_default`, `directory`, `line` and `read` on the single Session tree face; creation returns the line id ([TimelineTree](https://github.com/arcships/dim/pull/2092), #2024). `query` is not the tree's: a stored Session's history is `store.query` on the process face ([SessionStore](https://github.com/arcships/dim/pull/2091), #2018). |
 | Language readers → PromptSources | `sessionLanguage.get`. |
 | Language updates → App Server | [`session.language.update`](session-access.md) accepts the existing language code or clear action. The owner serializes persistence, live-state replacement and Prompt adoption on main and loaded branches before replying. |
 | Prompt → PromptRegistry; guide and tool contributors → their registries | `initialPromptConfiguration.get`, `promptHost.load`, `guideEntries.register`, `toolRegistry.register`, `toolSourcesView.get/observe`. |
@@ -20,9 +20,9 @@
 | Skills content and MCP publication → Session mounts | `sessionScope.mount({group, definitionId, instanceData}) → {instanceId}`; `unmount({instanceId})`. The owner admits groups whose configured parent is the Session group, waits for the definition's rows and settles a rejected instance. Skills supplies its content definition; MCP supplies its connection definition ID and retains the resolved transport configuration ([SessionScope](../../../docs/design/plugins/SessionScope.md), #2093). |
 | Goal → timelineTree | `inputs(id, inputs) → committed events`. One validated atomic batch for the Goal record and trigger. |
 | Branch-detail RPC → timelineTree | `display(id) → {entry,purpose?,cutMessages?,end?}`. |
-| History RPC and line-read tools → timelineTree | `batchEnd(id, sequence) → void`, `pageEnd(id, after, limit, through) → sequence`, and `page` at the same cutoff. Preserve complete batches and the fixed head of ended lines. |
+| History RPC and line-read tools → timelineTree | `read({line, through, …})` at one cutoff, with the complete batches and the fixed head of an ended line; the reply carries the events or the selected fields. |
 | Context RPC → target branch | `agentLoop.compact` and `contextUsage.read`. |
-| Goal and Shell admission → timelineTree | `directory({id})` returns the matching directory entry or the unknown-branch error using a single-branch lookup. Goal reads ended history through `query`; writes retain the ended/unknown errors. |
+| Goal and Shell admission → timelineTree | `directory({id})` returns the matching directory entry or the unknown-branch error using a single-branch lookup. Goal reads ended history through `read` at the line's fixed head; writes retain the ended/unknown errors. |
 | InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch. |
 | PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report also uses `timelineTree.read` at the selected head for evidence. |
 | Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |

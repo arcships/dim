@@ -145,7 +145,9 @@ This contract replaces the `historyRenderer` value; the delivery in #2025 carrie
 - `docs/design/service-faces.md`: §3.5's `historyRenderer` row.
 - `docs/design/plugins/ContextCompaction.md` §4.2 and the sections that name `HistoryRenderer`: the projection is this owner's, and the history renderer's name leaves the catalog.
 
-Rule D: no client wire protocol or user-visible behavior changes; `StreamedContext` keeps its fields and the model-visible text is unchanged.
+Rule D: no client wire protocol or user-visible behavior changes; the streamed reply keeps the fields the callers use, and the model-visible text is unchanged.
+
+Left to the upper layer: #2102's `PrepareRequest.projection` still names the internal `history::StreamedContext`. The wire types are `contextProjection::StreamedContext`, `contextProjection::Entry` and `contextProjection::History` as defined here; #2102 aligns its import to these names when it rebases on this contract.
 
 ## Binding appendix
 

@@ -118,7 +118,7 @@ Rule D: no client wire protocol or user-visible behavior changes; the aimux requ
 ```rust
 use dim_agent_runtime::PublicService;
 use dim_agent_types::{
-    ModelCapabilitySnapshot, ModelConfig, ModelSelection, RequestMetadata, SystemPrompt,
+    ModelCapabilitySnapshot, ModelConfig, RequestMetadata, SystemPrompt,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

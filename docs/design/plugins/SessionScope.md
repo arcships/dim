@@ -125,7 +125,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | `unmount` | Retire a content instance this Session owns | `{instanceId}` | `{}` | None; the owner completes the release | `unknown` when no live instance has the id; `cleanup`; `closed` |
 | `openBranch` (Rust-only, `#[rutis::service(skip)]`) | Construct a branch's runtime context for the branch tree | `{branchId, ancestors}` | the branch's runtime context (see Exceptions) | The caller drops the call; a construction the caller abandoned is shut down before the branch becomes visible | `closed`, `build` |
 
-`listener` and `work` are callbacks by reference: they run outside the owner's locks and outside the Timeline's commit lock. `work` returns nothing; its failure and its cleanup stay with the caller. A lease id is an owner-issued token bound to the calling row; it carries no authority, the owner settles it at the row's unload, and a caller never has to free it on an error path.
+`listener` is a callback by reference: it runs outside the owner's locks and outside the Timeline's commit lock. A lease id is an owner-issued token bound to the calling row; it carries no authority, the owner settles it at the row's unload, and a caller never has to free it on an error path.
 
 ### Errors
 
@@ -167,7 +167,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 
 ## Exceptions with reasons
 
-- `openBranch` hands out the branch's runtime context: an id would put branch runtime state behind a second set of operations owned by SessionScope, while ADR 002 D1 gives the directory and the close to TimelineTree, and the branch's whole capability machine runs behind that context. Ids, values and callbacks cannot carry it, so the object crosses under the handover design above.
+- `openBranch` hands out the branch's runtime context: an id would put branch runtime state behind a second set of operations owned by SessionScope, while ADR 002 D1 gives the directory and the close to TimelineTree, and the branch's whole capability machine runs behind that context. Ids, values and callbacks cannot carry it. §7 allows the object only with a lifecycle design both sides cite, and [lifecycle.md §1](../../architecture/rust-agent/lifecycle.md) is that design: the handover table above states who creates, holds and closes it and what either side's close means.
 - The Session-scoped `timelineStore` binding is assembly infrastructure: the store owns the engine and the operations, SessionScope installs the binding and states the spelling, and a process caller uses `store` (§2018's requirement).
 - `config` is the persisted record's serde form: `interactive` is omitted when true because only the native store writes that form. A caller that decodes the value must treat absence as true; the live reply language is `sessionLanguage`, not this record.
 - The failure record keeps only the first fault, and a storage failure supersedes a non-storage one: work that fails after the Session already stopped learns the original cause, not its own.
@@ -216,8 +216,8 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 ## Requirements raised to mechanism owners
 
 - [#2127](https://github.com/arcships/dim/issues/2127), owned by the dim runtime, and [#2024](https://github.com/arcships/dim/issues/2024): route by line id so a Session part resolves a branch-group data face with `line_owner::<T>(line)?` and calls that owner's typed operation, per [ADR 027 D1–D3](https://github.com/arcships/dim/pull/2029). The instance key never leaves the instance, the caller keeps no resolution between calls, and this owner adds no forwarding operation, operation-name routing or reply envelope. TimelineTree supplies the line id and the line's state, never the address.
-- The runtime's `Session` facade stops forwarding line operations: `end_branch`, `set_default_branch`, `branch`, `branches`, `directory`, `default_and_directory`, `ended_head`, `sequence`, `batch_end` and `query` are TimelineTree's, and the Session access surface must not restate them.
-- [#2018](https://github.com/arcships/dim/issues/2018): the Session store owns the Timeline engine and constructs the Session-scope binding; SessionScope installs it. The Session face publishes the per-line reads and the completion subscriptions; `query` and `sessionConfig` stay on `store`; `createSession`, `releaseSession`, `rollbackSession` and `append` are not on the Session face.
+- The runtime's `Session` facade stops forwarding line operations: `end_branch`, `set_default_branch`, `branch`, `branches`, `directory`, `default_and_directory`, `ended_head`, `sequence` and `batch_end` are TimelineTree's own operations, and the Session access surface must not restate them. History reads of a line go through `timelineTree.read`, never a second `query`.
+- [#2018](https://github.com/arcships/dim/issues/2018): the Session store owns the Timeline engine and constructs the Session-scope binding; SessionScope installs it. The Session face publishes the per-line reads and the completion subscriptions; `query` and `sessionConfig` exist only on the process `store`; `createSession`, `releaseSession`, `rollbackSession` and `append` are not on the Session face.
 
 ## Supersedes
 
@@ -235,7 +235,7 @@ Rule D: no client wire protocol or user-visible behavior changes; every change h
 The service is marked on the owner type under one name; the existing names `sessionConfig`, `sessionIdentity`, `sessionLifecycle`, `sessionLoader` and `timelineFactory` stop existing.
 
 ```rust
-use dim_agent_runtime::{PublicService, SessionConfig, SessionFault};
+use dim_agent_runtime::{PublicService, SessionConfig, SessionFault, TimelineContext};
 use rutis::Ctx;
 use std::sync::Arc;
 
