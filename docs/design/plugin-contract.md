@@ -59,7 +59,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- |
 | Process (root) | Host start | Host shutdown | — (process parts provide their own) |
 | Agent (`agent`) | Agents creates an Agent | Agent close, host shutdown | Host-internal |
-| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionIdentity`, `sessionLifecycle`; a Session's line directory is the [TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md) part |
+| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionScope`; a Session's line directory is the [TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md) part |
 | Branch (`branch`) | TimelineTree creates a branch | The branch ends, or its Session closes | `timeline`, `dispatcher`, `branchLifecycle`, `timelineIdentity` |
 
 Visibility follows the tree, as in [principles §2](../architecture/rust-agent/principles.md):
@@ -115,8 +115,8 @@ R4). This table says what each name Dim defines is for.
 | `eventHub` | process | EventHub | designed, not implemented | A producer declares a source and publishes an event; EventHub delivers it to the Sessions subscribed, through Agents' `sessions` ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
 | `timelineTree` | `session` | TimelineTree | designed, not implemented (today: `treeCommands`) | 见 [TimelineTree 契约](../architecture/rust-agent/plugins/TimelineTree.md#own-contract) |
-| `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
-| `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload. `reportFault` reports a fault, `failure` reads it and `observeFault` subscribes. The calling row releases its subscription with `release(id)` or on unload. |
+
+| `sessionScope` | `session` | SessionScope | designed, not implemented (today: `sessionIdentity`, `sessionLifecycle`) | the Session's identity, phase, faults and holds ([SessionScope](https://github.com/arcships/dim/pull/2093)) |
 | `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |
 | `agentConfig` | `session` | SessionScope | yes | `get()`: the Agent's identity and default model |
 | `timeline` | `branch` | BranchScope | yes, except `before` | `append`, the published sequence and the event query (§5.4); the query reaches other languages with its declaration |

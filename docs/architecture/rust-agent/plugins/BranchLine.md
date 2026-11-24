@@ -59,16 +59,16 @@ let after = line.cursor.unwrap_or(cut);
 | `B:Dispatcher` | The line's own facts, in commit order after the rebuild. |
 | `B:Timeline` / `B:TimelineIdentity` | Its own facts and its own id. |
 | `B:BranchLifecycle` | Wait for the branch to be active before writing. |
-| `B:InputQueue` | Its own line's input entry, and the opener's through `line_owner::<InputQueue>` for the idle notice. |
+| `B:InputQueue` | Its own line's input entry. The opener's entry is called by line id (`line_owner::<InputQueue>`), not injected (ADR 027 D4). |
 | `S:SessionScope` | `activated` and `closing`: wait for the Session's publication before roster repair. |
 | `S:GuideEntries` | The four markers above, until this part unloads. |
-| `S:TreeHandle` | The owner's weak handle to TimelineTree: the line's record, the default line, the move transitions and the parent's turn-end signal. Weak because the tree holds this line's scope and the scope holds this part; a strong handle would be a cycle close could not break. |
+| owner-internal `TreeHandle` | The owner's weak handle to TimelineTree: the line's record, the default line, the move transitions and the parent's turn-end signal. Weak because the tree holds this line's scope and the scope holds this part; a strong handle would be a cycle close could not break. |
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors (codes) |
 | --- | --- | --- | --- | --- | --- |
-| `view` | One line's role, parent, end state and the read cursor for the target the caller asks about | `{target?}` (the operation runs on the line's own BranchLine) | `{role, parent?, ending, cursor?, blocked?}` | None: a read of the owner's folded state | `unknown` (the line has no directory record yet), `closed` |
+| `view` | One line's role, parent, end state and the read cursor for the target the caller asks about | `{target?}` (the operation runs on the line's own BranchLine) | `{role, parent?, ending, cursor?, blocked?}` | None: a read of the owner's folded state, or one bounded read of its own history for that target | `unknown` (the line has no directory record yet), `storage` (the read of its own history failed; retryable), `closed` |
 
 `cursor` is the `nextCursor` of this line's latest successful read of the named target: retained from live results, and rebuilt on load from this line's own `step/tool-use` and `step/tool-result` for that target when the line has read it. It is absent when the target is omitted or this line never read it. `blocked` reports the held parent block: its target and the head it reported. The reply is a value, not a subscription: BranchTool reads it once per call, and the owner keeps it current from its own facts.
 
@@ -77,6 +77,7 @@ let after = line.cursor.unwrap_or(cut);
 | Kind (wire code) | What the caller does next |
 | --- | --- |
 | `unknown` | The line has no directory record yet; retry after it is published, or treat the line as unopened |
+| `storage` | Retryable: the line's own history could not be read, so no cursor is known; retry the view, or read with no `after` |
 | `closed` | The Session is closing; the caller's own refusal follows |
 
 ### Flows
@@ -84,7 +85,7 @@ let after = line.cursor.unwrap_or(cut);
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `view` | Read the cached role and the target's cursor; a target with no cursor reads that target's facts once | Nothing to release | Nothing to release | Refused `closed` for a closing Session; a reloaded line rebuilds from its own facts | BranchLine |
-| internal writes | A fact of the line's own arrives, the fold decides, one keyed block is written into its own line through `TreeCommands.input`; only the idle notice steers the opener through `line_owner::<InputQueue>(opener)`, while the ended notice and the roster retirement are written on the line's own line when this line folds `branch/ended` as the opener | The write belongs to the line, not to a caller; a cancelled turn writes nothing more | The line's writes stop with the line | The branch scope closes after its last write; a restored line rebuilds its blocks and writes only what is owed | BranchLine writes; the line's input owner admits; TimelineTree settles the scope |
+| internal writes | A fact of the line's own arrives, the fold decides, one keyed block is written into its own line through its input entry. The ended notice is one **Steer** input carrying the roster's keyed block when the roster retires, so an idle opener wakes once; only the idle notice steers the opener through `line_owner::<InputQueue>(opener)` | The write belongs to the line, not to a caller; a cancelled turn writes nothing more | The line's writes stop with the line | The branch scope closes after its last write; a restored line rebuilds its blocks and writes only what is owed | BranchLine writes; the line's input owner admits; TimelineTree settles the scope |
 
 ## Exceptions with reasons
 
@@ -156,8 +157,6 @@ pub enum LineRole {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct HeldBlock {
     pub target: String,
     pub head: u64,
@@ -182,6 +181,8 @@ pub struct LineView {
 pub enum LineViewError {
     #[error("line {line} has no directory record yet")]
     Unknown { line: String },
+    #[error("the line's history could not be read")]
+    Storage,
     #[error("the Session is closing")]
     Closed,
 }

@@ -55,9 +55,7 @@ line_owner::<InputQueue>(target.line.clone())?
 
 // read: the cursor is the calling line's, the page is the tool's rendering.
 let own = line_owner::<BranchLine>(&execution.branch_id)?.view(Some(target.clone())).await?;
-let after = input.after.unwrap_or_else(|| {
-    own.cursors.iter().find(|c| c.target == target.line).map(|c| c.cursor).unwrap_or(cut)
-});
+let after = input.after.unwrap_or_else(|| own.cursor.unwrap_or(cut));
 let page = tree.read(ReadLines {
     line: target.line.clone(),
     from: Some(after + 1),
@@ -76,7 +74,8 @@ let page = tree.read(ReadLines {
 | --- | --- |
 | `S:ToolRegistry` | Register the `branch` tool, until this part unloads. |
 | `S:TimelineTree` | `create`, `end`, `read` and `line`. |
-| `line_owner::<BranchLine>` | The calling line's role, end state, read cursors and held parent block (`view`). |
+| `line_owner::<BranchLine>` | The calling line's role, end state, its cursor for a target and the held parent block (`view`). |
+| `line_owner::<InputQueue>` | `submit`, for the message action. This is a call by line id, not an injection. |
 
 ### Operations
 
@@ -117,7 +116,6 @@ Endings without a code, reported as a failed result:
 | The page's cutoff is inside an atomic batch | `read` | Start at the record's head, which ends a batch |
 | A continuation arrived without its `after` | `read` | Resend `after` with the current record |
 | The tool's own start is not a usable cut | `create` | Report it; do not retry |
-| The tree answers `branch_target_protected` (a cascade is ending the target) | `end` | Read the line and report the state; do not retry the same end |
 | `SessionClosing` or a closing Session | all | Stop; nothing more happens in this generation |
 | An admitted creation cancelled by its caller | `create` | The line publishes without a waiter and the call has no result |
 
