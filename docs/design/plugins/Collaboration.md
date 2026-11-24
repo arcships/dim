@@ -66,7 +66,7 @@ collaboration.close(CloseMember { member_session_id: member }).await?;
 | --- | --- |
 | `sessions.agents`, `create_agent`, `close_agent`, `create_session`, `close_session`, `session`, `observe` | Agent and Session lifetime ([Agents](Agents.md)). |
 | `sessions.members` | The member links Agents recorded, at load. |
-| `providerService.retain_startup`, `release_startup` | The temporary connection a member inherits ([Provider](https://github.com/arcships/dim/pull/2096/files)); the retention requirement is below. |
+| `providerService.retain_startup`, `release_startup` | The temporary connection a member inherits, `retain_startup({session, model})` ([Provider](https://github.com/arcships/dim/pull/2096/files)). |
 | `collaborationModelPolicy.policy` | The model a new member runs ([CollaborationModelPolicy](https://github.com/arcships/dim/pull/2094/files)). |
 | The member's line owners by `(session, line)` id | Stopping a member's turn and withdrawing its input ([Session access](#session-access)). |
 
@@ -120,7 +120,7 @@ Collaboration holds no Agent, Session or line object. Its Session part calls the
 
 ## Session access
 
-A member's owners are reached by id: `(memberSessionId, line)` resolves any branch-group data face, not only the input write and the published-value read ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1); registration points and lifecycle services are excluded (D2). The mechanism resolves the id and the caller calls the owner's own operation. Collaboration receives no `Branch` and no `Session` and reads no member Timeline; the branch part performs these writes, and implementation is [#2093](https://github.com/arcships/dim/pull/2093).
+A member's owners are reached by id: `(memberSessionId, line)` resolves any branch-group data face, not only the input write and the published-value read ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1); registration points and lifecycle services are excluded (D3). The mechanism resolves the id and the caller calls the owner's own operation. Collaboration receives no `Branch` and no `Session` and reads no member Timeline; the branch part performs these writes, and implementation is [#2093](https://github.com/arcships/dim/pull/2093).
 
 ## Exceptions with reasons
 
@@ -155,8 +155,7 @@ A member's owners are reached by id: `(memberSessionId, line)` resolves any bran
 
 ## Requirements raised to other owners
 
-1. **Provider retains a startup connection by source id for a member.** A member inherits the leader's adopted model; when that model carries a startup connection, retention needs the connection the leader's creator admitted, and Provider's `retain_startup` takes an admission id only. Either `retain_startup` accepts `{source, session}` for a source another Session already admitted, or Provider states that an inherited startup connection is not retained for a member. Raised with [#2019](https://github.com/arcships/dim/issues/2019).
-2. **`(session, line)` addressing** as stated in [CollaborationTimeline](CollaborationTimeline.md) and [Agents](Agents.md): [ADR 027](https://github.com/arcships/dim/pull/2029/files) decides it, the mechanism implements it, and callers write `line_owner::<T>(line)?.op(..)` for any branch-group data face except registration points and lifecycle services — no forwarding facade and no string-routed call. Implementation is [#2093](https://github.com/arcships/dim/pull/2093).
+1. **`(session, line)` addressing** as stated in [CollaborationTimeline](CollaborationTimeline.md) and [Agents](Agents.md): [ADR 027](https://github.com/arcships/dim/pull/2029/files) decides it, the mechanism implements it, and callers write `line_owner::<T>(line)?.op(..)` for any branch-group data face except registration points and lifecycle services — no forwarding facade and no string-routed call. Implementation is [#2093](https://github.com/arcships/dim/pull/2093).
 
 ## Supersedes
 
@@ -170,7 +169,7 @@ No catalog face. The interface exists on the `Collaboration` type for this owner
 
 ```rust
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum Target { Agent { agent_id: String }, Profile { profile: crate::protocol::AgentProfile } }
 
 #[derive(serde::Serialize, serde::Deserialize)]

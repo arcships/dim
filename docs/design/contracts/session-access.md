@@ -1,24 +1,24 @@
 # Session access by id
 
-Status: Draft. The `sessions` supplement this document used to define is replaced by [ADR 027](../../adr/027-cross-scope-access-by-id.md) and the [Agents contract](../plugins/Agents.md). What remains here are the input-source, configuration, withdrawal and fixed-prefix conventions; each is owned by the plugin listed below.
+Status: Draft. The `sessions` supplement this document used to define is replaced by [ADR 027](https://github.com/arcships/dim/pull/2029/files) and the [Agents contract](../plugins/Agents.md). What remains here are the input-source, configuration, withdrawal and fixed-prefix conventions; each is owned by the plugin listed below.
 
 > **Offline resource nodes.** Rows about an offline resource node describe P3 multi-node behaviour. #5 is withdrawn (rutis is an external dependency, and it withdraws imported services when a link drops), so these rows are redesigned in P3 following overview §6.3: node services are looked up on each call by the Session's resource node, which P3 adds to `SessionConfig` ([A.3](#a3-sessionconfig-fields)). In P1/P2 every Session uses the control node.
 
 ## 1. Cross-scope access by id
 
-A process-scope caller reaches any Session-group data face with `sessionId` and any branch-group data face with `(sessionId, branchId)`; a Session-scope caller reaches its own line's owners with `branchId`. The address is not limited to input writes or published-value reads. The mechanism resolves the instance key to the target scope's data-face dispatch and the caller calls the owner's own operation ([ADR 027](../../adr/027-cross-scope-access-by-id.md) D1). Nothing forwards by operation name, wraps a request or reply, or restates the owner's error. An unknown, unloaded or closing target ends resolution with the mechanism's own error.
+A process-scope caller reaches any Session-group data face with `sessionId` and any branch-group data face with `(sessionId, branchId)`; a Session-scope caller reaches its own line's owners with `branchId`. The address is not limited to input writes or published-value reads. The mechanism routes the id to the target instance's data-face dispatch; the instance key never reaches the caller, and the caller calls the owner's own operation ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D2; [#2127](https://github.com/arcships/dim/issues/2127)). Nothing forwards by operation name, wraps a request or reply, or restates the owner's error. An unknown, unloaded or closing target ends resolution with the mechanism's own error.
 
-Resolution reaches the target scope's shared data faces only. Registration points (`sessionMethods`, `toolRegistry`) and lifecycle services are not reachable this way (ADR 027 D2). The path is available to Rust parts, language runtimes and leaves through rutis sessions; clients keep using Rpc's method tables and Session authorization. Which links reach it is the deployment's ([service faces §2.1](../service-faces.md#21-目标)).
+Resolution reaches the target scope's shared data faces only. Registration points (`sessionMethods`, `toolRegistry`) and lifecycle services are not reachable this way (ADR 027 D3). The path is available to Rust parts, language runtimes and leaves through rutis sessions; clients keep using Rpc's method tables and Session authorization. Which links reach it is the deployment's ([service faces §2.1](../service-faces.md#21-目标)).
 
-Keeping a target loaded is Agents' operation: a process caller that needs a Session to stay loaded across calls takes a lease from [Agents](../plugins/Agents.md), bound to the caller's row and settled on release or row unload (ADR 027 D4). A lease decides whether the Session is loaded; it grants no access.
+Keeping a target loaded is Agents' operation: a process caller that needs a Session to stay loaded across calls takes a lease from [Agents](https://github.com/arcships/dim/pull/2098/files), bound to the caller's row and settled on release or row unload (ADR 027 D5). A lease decides whether the Session is loaded; it grants no access.
 
 | Block | Owner |
 | --- | --- |
-| Session creation, close, delete, fork, admission values and leases | [Agents](../plugins/Agents.md) |
-| Input submission, its receipt, pending state and withdrawal | [InputQueue](../plugins/InputQueue.md) |
-| Stopping a line's turn | [Loop](../plugins/Loop.md) |
-| Reading a line's events and its default line | [TimelineTree](../plugins/TimelineTree.md) |
-| A line's current permission state | [Permission](../plugins/Permission.md) |
+| Session creation, close, delete, fork, admission values and leases | [Agents](https://github.com/arcships/dim/pull/2098/files) |
+| Input submission, its receipt, pending state and withdrawal | [InputQueue](https://github.com/arcships/dim/pull/2102/files) |
+| Stopping a line's turn | [Loop](https://github.com/arcships/dim/pull/2102/files) |
+| Reading a line's events and its default line | [TimelineTree](https://github.com/arcships/dim/pull/2092/files) |
+| A line's current permission state | [Permission](https://github.com/arcships/dim/pull/2100/files) |
 | Input source conventions, `SessionConfig` fields, withdrawal and the fixed-prefix read | this document, Appendix A |
 
 ## 2. Attach expectations
@@ -29,7 +29,7 @@ Keeping a target loaded is Agents' operation: a process caller that needs a Sess
 
 Input withdrawal is by the `input_id` the caller received when it wrote the input; a process caller reaches InputQueue by `(sessionId, branchId)`, a client through Rpc's Session authorization and InputQueue's `session.input.withdraw`. Markers are model-facing text: shared components (InputQueue, Agents, the runtime) never parse them; the plugin that wrote a marker may interpret its own content. Writing input confers no authority, because the resulting tool calls are admitted by Approval and Permission under the Session's policy. The policy bound of a creation is a convention for well-behaved callers, not a security boundary: the caller supplies `starter` itself, and without one the bound is the host's Session defaults ([Agents: `create_session`](../plugins/Agents.md#operations)). Inputs are replayed into model context, so callers must not put credentials or host security settings into them.
 
-The path ADR 027 defines is available to language runtimes and leaves through rutis sessions; they are host-run trusted local code and id is not authorization (ADR 027 D2, AGENTS.md rule 11). Clients do not use it: a client reaches a Session only through Rpc's method tables and Session authorization.
+The path ADR 027 defines is available to language runtimes and leaves through rutis sessions; they are host-run trusted local code and id is not authorization (ADR 027 D3, AGENTS.md rule 11). Clients do not use it: a client reaches a Session only through Rpc's method tables and Session authorization.
 
 ## 4. Rule check
 
@@ -46,14 +46,14 @@ The path ADR 027 defines is available to language runtimes and leaves through ru
 | §4 rule 9 (only decision facts in the Timeline) | `SessionConfig` and leases stay out of the Timeline; only inputs, withdrawal commands and results, and `stop/interrupt` are events; the descriptive `reason` on the required `input/withdraw` is allowed. `submissionId` is a field of the required `input/message` that callers' recovery decisions read by resubmitting. |
 | §1 (Capability and App Server boundary) | InputQueue owns the withdrawal decision; callers keep their business logic in their own plugins. |
 | ADR 002 D1 | InputQueue's withdrawal stays in its branch part, served to clients by its Session part. |
-| ADR 002 D2 | Superseded for cross-Session access by [ADR 027](../../adr/027-cross-scope-access-by-id.md); no access host or facade plugin exists. |
+| ADR 002 D2 | Superseded for cross-Session access by [ADR 027](https://github.com/arcships/dim/pull/2029/files); no access host or facade plugin exists. |
 | ADR 002 D3 | Callers do not declare inner services as dependencies; a call resolves the target by id and does not keep the resolution. |
 | ADR 002 D4 | `SessionConfig.interactive` is creation data of the Session record, not plugin configuration. |
 | ADR 002 D5 | The conventions here are language-neutral; Rust types appear only where an owner's binding appendix defines them. |
 
 ## 5. Requirements raised to mechanism owners
 
-The runtime-services-by-name requirement (#4) is answered by [ADR 027](../../adr/027-cross-scope-access-by-id.md): the instance-key resolution of Session and branch data faces, reachable from language runtimes and leaves, without registration points or lifecycle services. No separate requirement remains here.
+The runtime-services-by-name requirement (#4) is answered by [ADR 027](https://github.com/arcships/dim/pull/2029/files): routing by id to the Session and branch data faces, reachable from language runtimes and leaves, without registration points or lifecycle services; the mechanism owns it in [#2127](https://github.com/arcships/dim/issues/2127). No separate requirement remains here.
 
 ## Appendix A. Kept conventions
 
@@ -63,7 +63,7 @@ The runtime-services-by-name requirement (#4) is answered by [ADR 027](../../adr
 | --- | --- |
 | Marker | The first raw block is the element `<dim-<source> kind="..." ...>body</dim-<source>>` in the existing context-block format. It is model-facing text written by the producing plugin; shared components never parse it, and only the producing plugin may interpret its own content (for example Goal folding its own blocks) |
 | Keys | `RawBlock.key` with `use: live` or `retire`, per branch Timeline. The writer chooses the full key; by convention it starts with the writer's own prefix (overview constraint 14), and nothing checks it |
-| Submission identity | `<source>:<uuid>`, generated per logical submission. A branch accepts each identity once: a resubmission writes nothing and replies the first input's receipt, also after the input is consumed or withdrawn. A caller that lost a reply resubmits the same identity to [InputQueue](../plugins/InputQueue.md)'s submit and receives the existing receipt; error `ambiguous` means several inputs share the identity, written before branches accepted each once. The identity is the `submission_id` field of the committed `input/message`, so it commits, forks and is deleted with the input; no separate record exists ([sessions service §6.3](../appserver/sessions-service.md#where-the-submission-identity-lives), #32) |
+| Submission identity | `<source>:<uuid>`, generated per logical submission. A branch accepts each identity once: a resubmission writes nothing and replies the first input's receipt, also after the input is consumed or withdrawn. A caller that lost a reply resubmits the same identity to [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s submit and receives the existing receipt; error `ambiguous` means several inputs share the identity, written before branches accepted each once. The identity is the `submission_id` field of the committed `input/message`, so it commits, forks and is deleted with the input; no separate record exists ([sessions service §6.3](../appserver/sessions-service.md#where-the-submission-identity-lives), #32) |
 | Never possible | Writing events other than `input/message`, `input/withdraw` through the withdrawal command and `stop/interrupt` through the line's stop; writing `input/deleted`; editing history |
 
 ### A.3 SessionConfig fields
@@ -106,7 +106,7 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | Held | InputQueue holds an input from its `input/message` until it writes `input/applied` or `input/deleted` for it. |
 | No effect | Unknown id, input already applied, or already deleted: InputQueue writes no result fact or replacement input and no failure event exists; the caller's reply is `notHeld` |
 | Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), only a `deleted` reply also carries `steer: {inputId, sequence}` for the committed replacement, and with it `warnings?: [{check, message}]` for the submit checks' work that did not happen (Hooks A.6.2), absent when there is none. The warnings describe the replacement this call wrote, so they appear only with its receipt: a reply that wrote no replacement carries neither |
-| Process and branch-part path | [InputQueue](../plugins/InputQueue.md)'s withdrawal operation, reached with `(sessionId, branchId)` by process callers and with `branchId` by branch parts: by the `input_id` returned when the caller wrote the input |
+| Process and branch-part path | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s withdrawal operation, reached with `(sessionId, branchId)` by process callers and with `branchId` by branch parts: by the `input_id` returned when the caller wrote the input |
 | Write path | The service appends `input/withdraw`, then replies with InputQueue's decision for that command. InputQueue's recheck uses only its own decision state (held set), never a lock on another owner's facts |
 | Withdraw and re-submit as Steer | InputQueue accepts the replacement only when it accepts withdrawal of the old held input. The replacement Steer `input/message` and the old input's `input/deleted` commit in one atomic result batch, with `input/deleted` last. A `notHeld` decision creates no replacement |
 | After apply | An applied input cannot be withdrawn; Loop consumes it as usual and needs no change |
@@ -190,8 +190,8 @@ previous wire shape, and the frozen v1 projection remains unchanged.
 
 ### A.5 Fixed-prefix read
 
-The fixed-prefix read fixes `through` as the line's published head at call time. A read with `atLeast` fails `future_sequence` if that head is below `atLeast`, and otherwise returns the line's own events through that head, paged by `after` and `limit`. [TimelineTree](../plugins/TimelineTree.md)'s read provides it for every caller: a live line pages through its query; an ended line pages at its fixed head and batch boundaries. This entry has no store-read fallback for a Session the process does not hold. A live line pages through its query; an ended line pages through `TimelineTree` at its fixed head and batch boundaries. This entry has no store-read fallback for a Session the process does not hold. A branch part that needs the ancestor prefix reads the chain with the same query (§9.2). Every event delivered by the branch Dispatcher or the Session broadcast is published, so `atLeast = event.sequence` succeeds while the branch exists.
+The fixed-prefix read fixes `through` as the line's published head at call time. A read with `atLeast` fails `future_sequence` if that head is below `atLeast`, and otherwise returns the line's own events through that head, paged by `after` and `limit`. [TimelineTree](https://github.com/arcships/dim/pull/2092/files)'s read provides it for every caller: a live line pages through its query; an ended line pages at its fixed head and batch boundaries. This entry has no store-read fallback for a Session the process does not hold. A branch part that needs the ancestor prefix reads the chain with the same query. Every event delivered by the branch Dispatcher or the Session broadcast is published, so `atLeast = event.sequence` succeeds while the branch exists.
 
 ### A.6 Errors
 
-Each owner defines its own kinds; see [Agents](../plugins/Agents.md#errors), [InputQueue](../plugins/InputQueue.md#errors) and [TimelineTree](../plugins/TimelineTree.md#errors).
+Each owner defines its own kinds; see [Agents](https://github.com/arcships/dim/pull/2098/files#errors), [InputQueue](https://github.com/arcships/dim/pull/2102/files#errors) and [TimelineTree](https://github.com/arcships/dim/pull/2092/files#errors).

@@ -57,7 +57,7 @@ let delivered = line_owner::<CollaborationTimeline>(calling_line)?
 | Service | Purpose |
 | --- | --- |
 | `timeline`, `dispatcher`, `timelineIdentity`, `branchLifecycle` (branch infrastructure) | Write this line's facts, consume them in order, know the line and wait for activation. |
-| The member's data faces by `(session, line)` id | Any branch-group data face except registration points and lifecycle services ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D2): write the request input, stop the serving turn, withdraw an unqueued input, read the member's published state. |
+| The member's data faces by `(session, line)` id | Any branch-group data face except registration points and lifecycle services ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D3): write the request input, stop the serving turn, withdraw an unqueued input, read the member's published state. |
 | The member line's Approval owner by id | Answer an approval ask. |
 | `sessions.session`, `sessions.observe` | A member's running state and end ([Agents](Agents.md)). |
 | `Collaboration` (process, this owner's part) | Establish a member Session for a request ([Collaboration](Collaboration.md)). |
@@ -90,7 +90,7 @@ The line publishes `{open, closing}`: one entry per delegation whose request has
 
 ### Session access
 
-This owner resolves a member's owners by `(session, line)` id and calls them directly; any branch-group data face is addressable, except registration points and lifecycle services ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D2), and the mechanism implements the resolution ([#2093](https://github.com/arcships/dim/pull/2093)). It never receives a member `Branch`, never reads a member's Timeline to re-derive another owner's state, and never addresses the member's default line: the delivery fact names the line the input was written to.
+This owner resolves a member's owners by `(session, line)` id and calls them directly; any branch-group data face is addressable, except registration points and lifecycle services ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D3), and the mechanism implements the resolution ([#2093](https://github.com/arcships/dim/pull/2093)). It never receives a member `Branch`, never reads a member's Timeline to re-derive another owner's state, and never addresses the member's default line: the delivery fact names the line the input was written to.
 
 ## Exceptions with reasons
 
@@ -164,7 +164,7 @@ pub struct OpenDelegation {
 pub struct DelegationState { pub open: Vec<OpenDelegation>, pub closing: bool }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
+#[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Delivered { Ok { member_session_id: String }, Refused { code: String, detail: String } }
 
 impl CollaborationTimeline {

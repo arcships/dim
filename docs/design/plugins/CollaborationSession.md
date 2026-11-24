@@ -70,7 +70,7 @@ let Some(destination) = leader_session.approval_destination(member_session_id) e
 | --- | --- |
 | `Collaboration` (process, this owner's part) | `establish`, `close`, `member_agent`, `visible`, `addresses`, `team`, `leader_of` ([Collaboration](Collaboration.md)). |
 | `sessions.session`, `sessions.sessions`, `sessions.agents` | Admission values the tool's listing and the inventory's running state read ([Agents](Agents.md)). |
-| The Session and branch data faces resolved by id | Any Session-group data face by `sessionId`, any branch-group data face by `(session, line)`, except registration points and lifecycle services ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D2). |
+| The Session and branch data faces resolved by id | Any Session-group data face by `sessionId`, any branch-group data face by `(session, line)`, except registration points and lifecycle services ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D3). |
 | `timelineTree.directory` | The lines of this Session, for the routing index ([TimelineTree](https://github.com/arcships/dim/pull/2092/files)). |
 | `toolRegistry`, `sessionMethods`, `guideEntries` | Registration points for the tool, the three methods and the two entries ([ADR 002](../../adr/002-plugin-scope.md) D2). |
 | `providerService.selectableModels` | The `models` action, when the deployment provides it ([Provider](https://github.com/arcships/dim/pull/2096/files)). |
@@ -125,7 +125,7 @@ A member line's approval ask is forwarded to the leader line that requested the 
 
 ### Session access
 
-This owner holds no line or Session object. A member line's owner is resolved by id and called directly: `(session, line)` reaches any branch-group data face except registration points and lifecycle services, `sessionId` any Session-group data face ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D2). Registering a tool, a method or a guide entry stays in this Session's own scope. An answer it needs from another Session — the leader's destination from the member's part — is the other Session's `collaborationSession` value read by session id. It does not read a line's Timeline to re-derive state another owner folds.
+This owner holds no line or Session object. A member line's owner is resolved by id and called directly: `(session, line)` reaches any branch-group data face except registration points and lifecycle services, `sessionId` any Session-group data face ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D3). Registering a tool, a method or a guide entry stays in this Session's own scope. An answer it needs from another Session — the leader's destination from the member's part — is the other Session's `collaborationSession` value read by session id. It does not read a line's Timeline to re-derive state another owner folds.
 
 ## Flows
 

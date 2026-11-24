@@ -8,14 +8,14 @@ Agents owns the process's Agent instances and the Session instances under them. 
 
 Agents owns:
 
-- **Agent instances.** The loader row, the runtime `Agent`, its profile and its owner Session. Which Agent is the process default is Agents' choice ([agents.rs:90-101](https://github.com/arcships/dim/blob/5a279d6988c80692a77f3438fff4d26f7875e4c9/crates/dim-app-server/src/agents.rs#L90-L101)).
+- **Agent instances.** The loader row, the runtime `Agent`, its profile and its owner Session. Which Agent is the process default is Agents' choice ([agents.rs:90-101](https://github.com/arcships/dim/blob/5582af4747c42ea6f437f62f10513b9ce17c6afd/crates/dim-app-server/src/agents.rs#L90-L101)).
 - **Session instances under those Agents.** Creation from a profile and a request, restoration from stored rows, the idle release, the business close, the delete and the fork. The runtime `Session` facade stays inside Agents; no other owner receives it.
-- **Admission.** Each Session's slot: the gate that serializes restore, close and creation, the use count the idle release reads, and the marks that keep a closed Session from loading again ([agents.rs:330-384](https://github.com/arcships/dim/blob/5a279d6988c80692a77f3438fff4d26f7875e4c9/crates/dim-app-server/src/agents.rs#L330-L384)).
+- **Admission.** Each Session's slot: the gate that serializes restore, close and creation, the use count the idle release reads, and the marks that keep a closed Session from loading again ([agents.rs:169-183](https://github.com/arcships/dim/blob/5582af4747c42ea6f437f62f10513b9ce17c6afd/crates/dim-app-server/src/agents.rs#L169-L183)).
 - **The protocol binding of a Session.** The version recorded when the Session was created; a Session belongs to the version that created it.
-- **A Session's end.** A business close ends it for this process and keeps its rows; an unload keeps it for restore; a delete removes its rows after its close. Only Agents sees the difference ([agents.rs:670-704](https://github.com/arcships/dim/blob/5a279d6988c80692a77f3438fff4d26f7875e4c9/crates/dim-app-server/src/agents.rs#L670-L704)).
+- **A Session's end.** A business close ends it for this process and keeps its rows; an unload keeps it for restore; a delete removes its rows after its close. Only Agents sees the difference ([agents.rs:670-704](https://github.com/arcships/dim/blob/5582af4747c42ea6f437f62f10513b9ce17c6afd/crates/dim-app-server/src/agents.rs#L670-L704)).
 - **Agent and member records.** Which Agent record exists, which owner it names, and which member Sessions a leader created. Both are this owner's records, persisted through the storage engine's private transactions; no storage face carries them.
-- **Agent record lifetime and the Team cascade.** Deleting a leader ends its members and its owned Agents first; an owned Agent without a member is removed ([agents.rs:1641-1740](https://github.com/arcships/dim/blob/5a279d6988c80692a77f3438fff4d26f7875e4c9/crates/dim-app-server/src/agents.rs#L1641-L1740)).
-- **The idle shutdown decision for Sessions.** Whether every Session is quiescent, and the pause that keeps it so until this generation unloads ([agents.rs:738-744](https://github.com/arcships/dim/blob/5a279d6988c80692a77f3438fff4d26f7875e4c9/crates/dim-app-server/src/agents.rs#L738-L744)).
+- **Agent record lifetime and the Team cascade.** Deleting a leader ends its members and its owned Agents first; an owned Agent without a member is removed ([agents.rs:1641-1740](https://github.com/arcships/dim/blob/5582af4747c42ea6f437f62f10513b9ce17c6afd/crates/dim-app-server/src/agents.rs#L1641-L1740)).
+- **The idle shutdown decision for Sessions.** Whether every Session is quiescent, and the pause that keeps it so until this generation unloads ([agents.rs:738-744](https://github.com/arcships/dim/blob/5582af4747c42ea6f437f62f10513b9ce17c6afd/crates/dim-app-server/src/agents.rs#L738-L744)).
 
 Callers keep:
 
@@ -54,7 +54,7 @@ An operation or parameter exists only where the row says No.
 Rpc creating a client Session from a request naming an Agent, a cwd and a policy:
 
 ```rust
-let policy = request.policy.unwrap_or_else(|| defaults.policy.clone()); // business default
+let policy = request.policy.unwrap_or_else(|| defaults.permission_policy.clone()); // business default
 let created = agents.create_session(
     CreateSession {
         agent_id: request.agent_id,          // none: the default Agent
@@ -98,12 +98,14 @@ Provider observing a Session's end for a retained startup admission:
 
 ```rust
 let watched = directory.observe(
-    Observe { session_id: session.id().to_string(), generation: Some(generation) },
+    caller,
+    ObserveRequest { session_id: session.id().to_string(), generation: Some(generation) },
     Arc::new(move |end| Box::pin(async move {
         // end.reason: Closed releases the admission; Unloaded keeps it for restore.
         provider.on_session_end(end);
+        Ok(())
     })),
-).await?;
+)?;
 ```
 
 A caller reading a line's current policy (Rpc's `session.permission.get`):
@@ -116,7 +118,7 @@ let state = line_owner::<Permission>(line)?.published()?;
 Rpc deciding an idle shutdown:
 
 ```rust
-match agents.quiesce().await? {
+match agents.quiesce(caller)? {
     Quiesce::Paused => control.begin_shutdown(),
     Quiesce::Busy { running } => return Err(RpcError::daemon_busy(running)),
 }
@@ -143,28 +145,30 @@ Face `sessions`, marked on `Agents`. Every operation answers one reply object; a
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `agents` | The Agent directory as a value | `{}` | `{agents: [{agentId, default, profile, ownerSessionId?, unavailable?}]}` | None | `closed` |
+| `agents` | The Agent directory as a value | — | `{agents: [{agentId, default, profile, ownerSessionId?, unavailable?}]}` | None | — |
 | `create_agent` | Create an Agent instance and its record | `{profile, ownerSessionId?}` | `{agentId}` | Before the instance is published; a cancelled creation leaves no instance and no record | `invalid`, `storage`, `cancelled`, `closed` |
 | `close_agent` | Close one Agent and settle its Sessions | `{agentId}` | `{}` | Not cancelled once admitted | `unknown`, `default`, `closed` |
-| `create_session` | Create a Session for an Agent | `{agentId?, cwd, policy, starter?, model?, title?, origin, leaderSessionId?, protocolVersion?, worktree?}` | `{sessionId, policy, model, worktree?}` | Before the rows commit; a cancelled or failed creation removes the rows it wrote and discards its worktree | `invalid`, `unknown_agent`, `starter`, `model`, `worktree`, `storage`, `create`, `cancelled`, `closed` |
+| `create_session` | Create a Session for an Agent | `{agentId?, cwd, policy, starter?, model?, title?, origin, leaderSessionId?, protocolVersion?, worktree?}` | `{sessionId, policy, model, worktree?}` | Before the rows commit; a cancelled or failed creation removes the rows it wrote and discards its worktree | `invalid`, `unknown_agent`, `unavailable`, `starter`, `model`, `worktree`, `storage`, `create`, `cancelled`, `closed` |
 | `close_session` | End a Session for this process, keeping its rows | `{sessionId}` | `{}` | Not cancelled once admitted | `closed` |
-| `delete_session` | Close and remove a Session, its members and its owned Agents | `{sessionId, requireInactive}` | `{removed}` or `{inUse}` | Not cancelled once admitted | `in_use`, `storage`, `closed` |
+| `delete_session` | Close and remove a Session, its members and its owned Agents | `{sessionId, requireInactive}` | `{removed: true}` or `{removed: false, inUse: reason}` | Not cancelled once admitted | `storage`, `closed` |
 | `fork_session` | Copy a Session at a cut | `{sourceId, at}` | `{sessionId, sequence}` | Before the copy commits | `invalid`, `storage`, `cancelled`, `closed` |
 | `acquire` | Pin a loaded Session for the calling row | `{sessionId, agentId?}` | `{leaseId, generation}` | None; admission only | `unknown`, `closed_session`, `mismatch`, `unavailable`, `closed` |
 | `release` | Release a pin before the row unloads | `{leaseId}` | `{released}` | None | `invalid`, `closed` |
-| `observe` | One end notification for one Session generation | `{sessionId, generation?}` + `onEnd` | `{agentId, generation}` or none | None; the observation ends with the row, the end or a new generation | `unknown`, `generation`, `closed` |
-| `session` | One Session's admission value | `{sessionId}` | `{agentId?, generation?, version?, state, running, stored, unavailable?}`; `state` is `loaded`, `closed`, `deleted` or `unknown` | None | `closed` |
-| `sessions` | The loaded Sessions' value | `{}` | `{sessions: [{sessionId, agentId, generation, closed, running}]}` | None | `closed` |
-| `defaults` | The process Session defaults | `{}` | `SessionConfig` | None | `closed` |
-| `instance` | The protocol instance of this generation | `{}` | `{instanceId}` | None | `closed` |
+| `observe` | One end notification for one Session generation | `{sessionId, generation?}` + `onEnd` | `{agentId, generation}` or `null` | None; the observation ends with the row, the end or a new generation | `unknown`, `generation`, `closed` |
+| `session` | One Session's admission value | `{sessionId}` | `{agentId?, generation?, version?, state, running, stored, unavailable?}`; `state` is `loaded`, `closed`, `deleted` or `unknown`; an id this process never saw answers `unknown` | None | `closed` |
+| `sessions` | The loaded Sessions' value | — | `{sessions: [{sessionId, agentId, generation, closed, running}]}` | None | — |
+| `defaults` | The process Session defaults | — | `SessionConfig` | None | — |
+| `instance` | The protocol instance of this generation | — | `{instanceId}` | None | — |
 | `members` | The member links this owner recorded | `{leaderSessionId?}` | `[{memberSessionId, leaderSessionId, memberAgentId}]` | None | `closed` |
-| `permissionDefaults` | The host's policy for a new Session | `{}` | `PermissionPolicy` | None | `closed` |
-| `quiesce` | Pause every Session until this generation unloads | `{}` | `{paused}` or `{running}` | None | `closed` |
-| `settle` | Close every Agent and Session for process shutdown and answer when settled | `{}` | `{}` | Not cancelled | — |
+| `permissionDefaults` | The host's policy for a new Session | — | `PermissionPolicy` | None | — |
+| `quiesce` | Pause every Session until this generation unloads | `{}` | `{paused: true}` or `{paused: false, running}` | None | `closed` |
+| `settle` | Close every Agent and Session for process shutdown and answer when settled | `{}` | `{}` | Not cancelled | `closed` |
 
 `create_session.starter` is a `{sessionId, branchId}` pair: the owner reads that line's published `PermissionState` and caps. When the starter's value cannot be read the call answers `starter` and creates nothing; the caller retries when the line is available or asks for a wider bound explicitly.
 
 `create_session.model` is a resolved `ModelSelection`. Absent, the owner asks Provider's `resolve` for the Agent profile's model and cwd. The reply carries the policy and model the Session was created with, so a caller records the authority a run got without a second read.
+
+`delete_session` answers an in-use Session as a normal reply, not an error: `{removed: false, inUse: reason}`, which Rpc maps back to its `session_active` error; a delete that removed the Session answers `{removed: true}`.
 
 `observe` is one shot per `(sessionId, generation)`. The callback runs on the owner's task, never inside a Timeline commit lock; a second registration for the same generation answers the same reply and replaces nothing. A generation mismatch answers `generation`, so a caller that kept an old id cannot attach to a newer instance.
 
@@ -183,12 +187,11 @@ Face `sessions`, marked on `Agents`. Every operation answers one reply object; a
 | `worktree` | The worktree was not created; the creation is unchanged and the caller reports the worktree failure. |
 | `storage` | A row write or read failed; the creation or delete did not complete and the caller reports it; a retry is safe. |
 | `create` | The Session instance failed to build after its rows were written; the rows are removed and the caller reports the failure. |
-| `in_use` | The Session has a use or is loaded; release the uses or close it first. |
 | `mismatch` | The id names a Session of another Agent; fix the caller's own record. |
 | `unknown` | No loaded Session has the id; read `session` for its state. |
 | `closed_session` | The Session was closed in this process; it will not load again until a restart. |
 | `generation` | The generation the caller kept is not the loaded one; read `session` and observe again. |
-| `unavailable` | Storage reported this Session unusable; report it and stop retrying the Session. |
+| `unavailable` | The Session is unusable, or the requested Agent exists but cannot run now (its reason is in the message). Report it and stop retrying until the named reason changes. |
 | `default` | The default Agent cannot be closed. |
 | `cancelled` | The caller stopped the call before the rows committed; nothing was created. |
 | `closed` | This generation is unloading; the next generation serves the call. |
@@ -220,8 +223,8 @@ The calls `sessions` serves today and where each goes; a row that names a line o
 | `sessions.lookup` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s submit re-sent with the caller's `submissionId`: a duplicate answers the existing `{inputId, sequence}` (requirement below); no separate lookup exists |
 | `sessions.stop` | [Loop](https://github.com/arcships/dim/pull/2102/files)'s `stop_turn({turnId, reason})` by `(session, line)` id, after reading its published running state for the current turn id; a turn that already ended writes nothing |
 | `sessions.withdraw` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s `withdraw({inputId, reason})` by `(session, line)` id |
-| `sessions.pending` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s `pending({inputId, publishedCutoff?})` by `(session, line)` id; the owner's published-cutoff default applies when the caller names none |
-| `sessions.history` | [TimelineTree](https://github.com/arcships/dim/pull/2092/files)'s `read(line, from, through, window)` by `(session, line)` id |
+| `sessions.pending` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s `pending({inputId, through?, includeBlockPresence?})` by `(session, line)` id; the owner's published head applies when the caller names no `through` |
+| `sessions.history` | [TimelineTree](https://github.com/arcships/dim/pull/2092/files)'s `read(line, from, through, limit)` by `(session, line)` id |
 | `sessions.defaultBranchId` | [TimelineTree](https://github.com/arcships/dim/pull/2092/files)'s `directory` for the Session; the default line is in the reply |
 | `sessions.exists` | `session.state`: `deleted` answers false, `closed` and `loaded` answer true |
 | `sessions.delete` | `delete_session` |
@@ -229,16 +232,16 @@ The calls `sessions` serves today and where each goes; a row that names a line o
 
 ### Execution notices
 
-A delete that removed a Session's rows publishes one process event, `agent/session-deleted {agentId, sessionId}`, loaded or not, after the rows are gone. EventHub removes that Session's subscriptions on it; no other owner needs the older restore and unloaded-delete events, which are deleted with the `observe` operation replacing them. The notice is a rutis process event, not a Timeline fact, and carries no state a caller folds.
+Three process events stay, because their consumers see state `observe` cannot report: `agent/session-restored {agentId, sessionId, generation}` when a Session is restored for this process, `agent/unloaded-session-deleted {agentId, sessionId}` when a delete removed an unloaded Session's rows, and `agent/session-deleted {agentId, sessionId}` after any other delete removed the rows. Provider reattaches a retained startup connection on the restore event and releases it on the unloaded-delete event; Collaboration re-arms its member watch on the restore event and ends the relation on the unloaded-delete event; EventHub removes the Session's subscriptions on either delete event. They are rutis process events, not Timeline facts, and carry no state a caller folds (`observe` remains the per-generation end notification for callers that need the close/unload distinction).
 
 ### Session access
 
-No `Session`, `Agent` or lease object crosses this face. A caller that must run an operation on a Session's own owners resolves the target's data face by id and calls that owner's operation: `sessionId` for any Session-group data face, `(sessionId, line)` for any branch-group data face — not only input writes and published-value reads; registration points and lifecycle services are excluded ([ADR 027](../../adr/027-cross-scope-access-by-id.md) D1, D2). `acquire`'s lease keeps the addressed generation loaded for the caller's row; the lease decides loading and grants no access (ADR 027 D4). Rpc's Session methods, Provider's adoption read, Scheduler's pending and default-line reads, Workflow's history read, EventHub's input, receipt and delete cleanup all use this path. A Session-scope owner reached across Sessions (the leader's `collaborationSession` value from a member) is reached by `sessionId` the same way.
+No `Session`, `Agent` or lease object crosses this face. A caller that must run an operation on a Session's own owners resolves the target's data face by id and calls that owner's operation: `sessionId` for any Session-group data face, `(sessionId, line)` for any branch-group data face — not only input writes and published-value reads; registration points and lifecycle services are excluded ([ADR 027](../../adr/027-cross-scope-access-by-id.md) D1, D3). `acquire`'s lease keeps the addressed generation loaded for the caller's row; the lease decides loading and grants no access (ADR 027 D5). Rpc's Session methods, Provider's adoption read, Scheduler's pending and default-line reads, Workflow's history read, EventHub's input, receipt and delete cleanup all use this path. A Session-scope owner reached across Sessions (the leader's `collaborationSession` value from a member) is reached by `sessionId` the same way.
 
 ## Exceptions with reasons
 
 - `observe` takes a callback: the end of a Session is an event with no value to poll, the callback is bound to the calling row, and it is never called inside a commit lock.
-- The protocol instance id is a process-lifetime value that survives a reload of the directory logic: the face is served by a stable row while creation and restore logic reloads behind it ([sessions-service D1](../appserver/sessions-service.md#3-decisions)). This keeps consumers from reloading with storage; it is not a second face.
+- The protocol instance id is a process-lifetime value that survives a reload of the directory logic: the face is served by a stable row while creation and restore logic reloads behind it (this contract). This keeps consumers from reloading with storage; it is not a second face.
 - Agents reads the starter line's published `PermissionState` to cap a creation: the value belongs to Permission and never leaves Agents except as the capped policy the Session was created with.
 - `close_session` keeps the rows: a business close is not a delete, and the design decision is [session deletion and fork §16 D5](../appserver/session-deletion-and-fork.md#16-design-changes-in-implementation).
 
@@ -269,7 +272,7 @@ No `Session`, `Agent` or lease object crosses this face. A caller that must run 
 
 ## Requirements raised to mechanism owners
 
-1. **Resolve a Session's and a line's data faces by instance key.** The mechanism must resolve the Session group's data faces by `sessionId` and the branch group's data faces by `(sessionId, line)`, so a caller reaches the owner's own operation without a facade or a forwarding object ([ADR 027](../../adr/027-cross-scope-access-by-id.md) D1). Registration points (`sessionMethods`, `toolRegistry`) and lifecycle services are excluded (D2). The path must be available through rutis sessions to language runtimes and leaves, as other data faces are (D2); clients keep using Rpc. This is the same requirement TimelineTree records ([TimelineTree](https://github.com/arcships/dim/pull/2092/files)); Rpc, Provider, Collaboration, Scheduler, Workflow and EventHub depend on it.
+1. **Route by id; the instance key never goes to the caller.** The mechanism must route a call to the Session group's data faces by `sessionId` and to the branch group's data faces by `(sessionId, line)`, so a caller reaches the owner's own operation without a facade, a forwarding object or an instance key ([ADR 027](../../adr/027-cross-scope-access-by-id.md) D2, D4; [#2127](https://github.com/arcships/dim/issues/2127)). Registration points (`sessionMethods`, `toolRegistry`) and lifecycle services are excluded (D3). The path must be available through rutis sessions to language runtimes and leaves, as other data faces are (D3); clients keep using Rpc. This is the same requirement TimelineTree records ([TimelineTree](https://github.com/arcships/dim/pull/2092/files)); Rpc, Provider, Collaboration, Scheduler, Workflow and EventHub depend on it.
 2. **The input owner answers a duplicate submission with the existing receipt, and Loop's stop takes a turn id.** A caller that lost a reply verifies a write by re-sending the same `submissionId`; `inputQueue.submit` must answer the existing `{inputId, sequence}` instead of a bare duplicate error, so no separate lookup exists on any face. `inputQueue.pending` must answer with the input id and accept the owner's published-cutoff default. Loop's published running state must carry the current turn id and `stop_turn` must take it. Raised with [#2027](https://github.com/arcships/dim/issues/2027).
 3. **SessionStore's `query` answers for a loaded Session.** Rpc's `session.summaries` reads a preview and activity for loaded Sessions; SessionStore's contract describes `query` as a read for an unloaded Session. The data owner is the store, so the store's operation must serve both with one cutoff. Raised with [#2018](https://github.com/arcships/dim/issues/2018).
 
@@ -281,6 +284,9 @@ No `Session`, `Agent` or lease object crosses this face. A caller that must run 
 - `docs/design/contracts/resource-owner-operations.md` §Persistent Agents: the Agent records move to this owner; the storage engine carries no face for them.
 - `docs/design/appserver/session-title-metadata.md` and `docs/design/plugins/SessionTitle.md`: the `sessions.launch` title path becomes `create_session`'s `title`.
 - `docs/design/resource-faces.md` §"repository steps": the `sessions.delete` name becomes `delete_session`.
+- `docs/design/contracts/process-owner-operations.md`: the `sessions.permission` row and the `sessions` rows naming `useId`/`observeCurrent`/`startupSources` are replaced by this contract and ADR 027.
+- `docs/design/service-faces.md` §3.1: the `collaborationDirectory.relations` example is removed with that face.
+- Follow-ups recorded, not changed here because their owners rewrite them: `docs/design/plugins/Scheduler.md` (its `sessions.launch/input/stop` rows move with [#2097](https://github.com/arcships/dim/pull/2097/files)), `docs/design/plugins/Workflow.md` (same, with its own issue), `docs/design/worktree-management.md` §3 and `docs/design/p6-p7-bindings.md` (their `sessions.launch` references).
 
 ## Client-visible changes
 
@@ -292,18 +298,20 @@ Face name `sessions`, marked on `Agents`. `Agents` replaces `AgentIndex`, `Agent
 
 ```rust
 use dim_agent_capabilities::host::CancelledFn;
-use dim_agent_types::{PermissionPolicy, SessionConfig};
+use dim_agent_runtime::{PublicService, SessionConfig};
+use dim_agent_types::{AgentProfile, PermissionPolicy, ModelSelection};
 use rutis::Ctx;
 use dim_agent_runtime::PublicService;
 use rutis::host::BoxFuture;
 use std::future::Future;
+use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentEntry {
     pub agent_id: String,
     pub default: bool,
-    pub profile: crate::protocol::AgentProfile,
+    pub profile: AgentProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -334,14 +342,14 @@ pub struct AgentRef { pub agent_id: String }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Starter { pub session_id: String, pub branch_id: String }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateSession {
     #[serde(default)] pub agent_id: Option<String>,
     pub cwd: String,
     pub policy: PermissionPolicy,
     #[serde(default)] pub starter: Option<Starter>,
-    #[serde(default)] pub model: Option<dim_agent_types::ModelSelection>,
+    #[serde(default)] pub model: Option<ModelSelection>,
     #[serde(default)] pub title: Option<String>,
     pub origin: crate::protocol::SessionOrigin,
     #[serde(default)] pub leader_session_id: Option<String>,
@@ -349,14 +357,14 @@ pub struct CreateSession {
     #[serde(default)] pub worktree: Option<crate::protocol::CreateWorktree>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreatedSession {
     pub session_id: String,
     pub policy: PermissionPolicy,
-    pub model: dim_agent_types::ModelSelection,
+    pub model: ModelSelection,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<crate::worktrees::CreatedWorktreeReply>,
+    pub worktree: Option<serde_json::Value>, // the worktree owner's reply, carried as data
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -421,7 +429,8 @@ pub enum SessionEnd {
     Unloaded,
 }
 
-pub type EndListener = Box<dyn Fn(EndNotice) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type EndListener =
+    Arc<dyn Fn(EndNotice) -> BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -488,7 +497,6 @@ pub enum AgentsError {
     #[error("{message}")] Worktree { message: String },
     #[error("{message}")] Storage { message: String },
     #[error("{message}")] Create { message: String },
-    #[error("{message}")] InUse { message: String },
     #[error("{message}")] Mismatch { message: String },
     #[error("{message}")] Unknown { message: String },
     #[error("{message}")] ClosedSession { message: String },
@@ -553,7 +561,7 @@ impl Agents {
         caller: &Ctx,
         request: ObserveRequest,
         on_end: EndListener,
-    ) -> Result<Observed, AgentsError> { /* register under the calling row */ }
+    ) -> Result<Option<Observed>, AgentsError> { /* register under the calling row */ }
 
     pub fn session(&self, request: SessionRef) -> Result<SessionState, AgentsError> { /* … */ }
 
