@@ -17,10 +17,16 @@ accepted. The value is also the data face `reservedMethods`: a row of another
 language asks `check {namespace, declarations}` the same question
 ([service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)).
 
+The contract also answers a withdrawn namespace from the row that registered it.
+Rpc reads that row today (`session_provider` in
+[dim-app-server/src/methods.rs](../../../../crates/dim-app-server/src/methods.rs));
+the table itself has no readable face for it, and the read is raised in the
+contract ([SessionMethods §4 rule 8](../../../design/plugins/SessionMethods.md#requirements-raised-to-mechanism-owners)).
+
 ## Events and lifetime
 
 No Timeline events, worker tasks or I/O. A part depends on `sessionMethods` and
-calls `register(ctx, namespace, declarations, handler)` from its own `apply`;
+calls `register(ctx, namespace, declarations, call)` from its own `apply`, with the part's own function as `call`;
 the registration is withdrawn when that part unloads, and a namespace registered
 already fails
 ([rutis usage R6](../../../design/rutis-usage.md#r6-contributions-register-with-their-owner)).
@@ -31,9 +37,9 @@ called back through the bridge. The table provides that entry itself, at its
 dispatcher key, with the native service.
 
 A name belongs to the longest namespace that holds it. When a namespace is
-withdrawn, the table keeps the row that registered it, so Rpc answers a call
-into it from that row's status (`service_reloading` or `service_unavailable`)
-rather than `unknown_method`. Each registration owns the calls it admitted: its
+withdrawn, the table keeps the row that registered it, so a call into it answers
+`service_reloading` or `service_unavailable` from that row's status rather than
+`unknown_method`. Each registration owns the calls it admitted: its
 part's unload interrupts `report` calls and waits for every admitted call.
 `session.methods` lists the methods of the namespaces registered now that no
 management namespace holds.
