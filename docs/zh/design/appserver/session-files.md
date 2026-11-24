@@ -178,7 +178,7 @@ put 作为 SessionStore 自己的任务运行：调用方不再等待就会取�
    2 移除：对节点 N 上 writer IS NULL 且无所有者的每一行：
              FileStorage(N).remove(<sf>/<file_id>)          不存在即视为已删除
                成功              -> txn：若该行仍无主，删除它
-               cancelled、unsynced、io -> 保留该行，记录诊断；下次清扫重试
+               cancelled、unsynced、io、closed -> 保留该行，记录诊断；下次清扫重试
                节点不可用        -> 停止；下次清扫重试
    3 列目录：FileStorage(N).list(<sf>)，再读取这些名字对应的行
              没有行的每个条目 -> FileStorage(N).remove(<sf>/<name>)
@@ -415,7 +415,7 @@ SessionStore 从两张所有权表回答"S 拥有哪些文件"（ADR 013）：Se
 | 写入期间 FileStorage 重载 | `node_unavailable` 或 `storage`；放弃并清扫 | SessionStore |
 | 写入期间 SessionStore 重载 | 在 txn 2 之前取消（放弃），或已提交；Attachments 随之重载 | SessionStore 卸载 |
 | 进程重启 | 遗留物在第一次写入时或下一次删除之后被清扫 | 清扫 |
-| SessionStore 以外的东西写入 Session 文件目录 | 顶层条目由清扫的第 3 步移除；某个文件目录内的条目在该文件无主时随目录移除。遇到 `cancelled`、`unsynced` 或 `io` 则留给下次清扫 | FileStorage、清扫 |
+| SessionStore 以外的东西写入 Session 文件目录 | 顶层条目由清扫的第 3 步移除；某个文件目录内的条目在该文件无主时随目录移除。遇到 `cancelled`、`unsynced`、`io` 或 `closed` 则留给下次清扫 | FileStorage、清扫 |
 | 最后一个所有者删除后 `read` | 文件不存在；没有存活的 Session 引用该路径 | — |
 
 ## 13. 对其他文档的修改

@@ -216,7 +216,7 @@ Every step tolerates an absent target, so a delete can be retried after any fail
 A held key in step 3 comes only from a FileStorage writer outside the closed Session, such as a
 PowerShell child that outlived its shell and still writes through FileStorage. A process that
 merely holds the file open without FileStorage produces `io`, not a key wait. The removal waits
-for the key; cancelling the delete ends that wait with `cancelled`. An `unsynced` or `io` failure
+for the key; cancelling the delete ends that wait with `cancelled`. An `unsynced`, `io` or `closed` failure
 leaves the delete failed and retried.
 
 ## 4. Crash convergence
@@ -247,7 +247,7 @@ means no committed delete ever leaves one behind. A directory another Session in
 (ADR 013 D4): it is found again through that Session's rows, so the next delete removes it. S5a's files follow the
 opposite order because their rows record them and the sweep can find them. FileStorage removal was not synced
 ([S6](https://github.com/arcships/dim/pull/87)): after a power loss a removed directory could reappear while the later
-commit, made with `synchronous=FULL`, stays. `remove` now syncs the parent before it returns (§14), which closes that
+commit, made with `synchronous=FULL`, stays. `remove` now syncs the parent before it returns ([FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md#listing-and-removal)), which closes that
 gap; HostPlatform syncs the parent of a removed `.dim/exec` directory the same way.
 
 **Only an id with rows here.** For the same reason a delete removes the directory only while its own database has
@@ -566,10 +566,10 @@ delete against loading.
 | Two forks of one source | Independent Sessions, each owning the shared files |
 
 **S6 review notes.** "SessionStore must close the Session and release its keys and claims first": step 2 comes before any
-removal. "`attachment.put` racing a delete should expect `cancelled`, `unsynced` or `io`": a put's directory belongs
+removal. "`attachment.put` racing a delete should expect `cancelled`, `unsynced`, `io` or `closed`": a put's directory belongs
 to no Session (S5a), the delete never removes it, and S5a's sweep removes only unowned, non-pending files, so neither
 meets a put's key. The command output removal waits for a key held by a writer outside the
-closed Session; cancelling the delete ends the wait with `cancelled`, and an `unsynced` or `io` failure is retried
+closed Session; cancelling the delete ends the wait with `cancelled`, and an `unsynced`, `io` or `closed` failure is retried
 (§3.5). "Put and delete must be serialized": the store's write
 transactions order them (S5a §6); no in-memory lock is added.
 

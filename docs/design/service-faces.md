@@ -160,7 +160,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 `backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`backgroundExec.stop` 是 kill。
 这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
 
-`hostPlatform`、`fileStorage`、`timelineStore` 的旧名字不按对象分类保留：`fileStorage` 这个名字被删除，数据面就是公开契约，`execHost`、`fsHost` 与 `timelineStore` 的操作就是接口，旧名字只是提供方的历史称法，Rust 类型是它的 binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
+`hostPlatform`、`fileStorage`、`store`、`timelineStore` 的旧名字不按对象分类保留：`fileStorage` 这个名字被删除，`fsHost` 是 FileStorage 的数据面；`execHost`、`fsHost`、`store` 与 `timelineStore` 的操作就是接口，旧名字只是提供方的历史称法，Rust 类型是它的 binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
 
 ### 3.5 热路径与顺序：待操作化
 

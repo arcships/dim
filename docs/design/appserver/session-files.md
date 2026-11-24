@@ -248,7 +248,7 @@ also removes the Session's command output on the node first
    2 remove: for each row on node N with writer IS NULL and no owner:
                FileStorage(N).remove(<sf>/<file_id>)          absent counts as removed
                  ok                -> txn: delete the row if it is still unowned
-                 cancelled, unsynced, io -> keep the row, record a diagnostic; the next sweep retries
+                 cancelled, unsynced, io, closed -> keep the row, record a diagnostic; the next sweep retries
                  node unavailable  -> stop; the next sweep retries
    3 list:   FileStorage(N).list(<sf>), then read the rows for those names
                every entry with no row -> FileStorage(N).remove(<sf>/<name>)
@@ -617,7 +617,7 @@ Rejected alternatives:
 | FileStorage reloads during a put | `node_unavailable` or `storage`; abandoned and swept | SessionStore |
 | SessionStore reloads during a put | Cancelled before txn 2 (abandoned), or already committed; Attachments reloads with it | SessionStore unload |
 | Process restart | Leftovers are swept on the first put or after the next delete | Sweep |
-| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. A `cancelled`, `unsynced` or `io` removal leaves it for the next sweep | FileStorage, sweep |
+| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. A `cancelled`, `unsynced`, `io` or `closed` removal leaves it for the next sweep | FileStorage, sweep |
 | `read` after the last owner is deleted | File not found; no surviving Session quotes the path | — |
 
 ## 13. Changes to other documents
