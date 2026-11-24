@@ -209,7 +209,7 @@ The table's registration and dispatch shapes are the [SessionMethods](../plugins
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
 | `register` (the table's) | async | `caller`, `namespace`, `MethodDecl[]`, `call` | Nothing once registered; an error when refused |
-| `call` (the registering part's function) | async | `MethodCall`, `cancelled` | `MethodReply` data; the handler's own error is `{code, message}` |
+| `call` (the registering part's function) | async | `MethodCall`, `cancelled`, `progress` | `MethodReply` data; the handler's own error is `{code, message}` |
 
 ```text
 // MethodDecl

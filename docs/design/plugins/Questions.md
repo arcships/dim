@@ -29,7 +29,7 @@ An operation or parameter exists only where the row says No.
 
 ## Caller example
 
-The tool registers with its declaration and claim callback; the claim inserts the waiter and returns nothing:
+The tool registers with its declaration and claim callback; the claim inserts the waiter and answers `true`, the registry's "claimed" answer:
 
 ```rust
 tools.register(
@@ -89,7 +89,7 @@ The pending read's `invalid` is the wire's `invalid_params`; its `cancelled` is 
 
 - An answer accepted between the claim and a refused append is delivered and then dropped with the claim: the call's result is the refusal, and the question does not stay open.
 - A wait left by a reload or restart is settled by ToolExecutor, not rebuilt: the waiter is a human I/O, and the line's facts do not hold it.
-- `pending` reads the line's facts at the cutoff through `timelineTree.query`, not the waiter table: the batches are the line's published facts, and a waiting question is only the table's live entry.
+- `pending` reads the line's facts at the cutoff through `timelineTree.read`, not the waiter table: the batches are the line's published facts, and a waiting question is only the table's live entry.
 
 ## Verification
 

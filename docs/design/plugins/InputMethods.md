@@ -15,7 +15,7 @@ InputMethods owns:
 Callers keep:
 
 - What a check means: Hooks and Skills decide; a check that fails is no opinion.
-- When input is written: the operator-entry paths call `check` and write the returned input; the line's queue decides order, idempotency and withdrawal.
+- When input is written: an operator entry calls `check` before writing the returned input; a Steer replacement is checked by the line's queue inside `withdraw`, which also decides order, idempotency and withdrawal.
 - The line an input belongs to: the caller names the line id.
 
 | Requirement (caller) | Compose from the operations below without breaking the owner's invariants? | Handling |
@@ -98,7 +98,7 @@ None beyond the line's input owner, reached by line id.
 | --- | --- | --- | --- | --- | --- |
 | `register` | Check the name and record the callback under the row | — | The registration is withdrawn | New registrations are refused | The registering row |
 | `check` | Take the registered checks in name order, run each with the token, combine, place the blocks, answer | A running check stops with the token; the entry writes nothing | The checks' callbacks are revoked; the entry writes nothing | Pending checks end `closed` | InputMethods for the combination; each check for its own work |
-| `session.input.withdraw` | Validate the input, run the checks, write the command to the line's queue, wait for publication, answer the receipt | A committed withdrawal is not undone; the wait ends `cancelled` / `operation_interrupted` | The command settles with the line | The line's queue answers by its own state | The line's InputQueue |
+| `session.input.withdraw` | Validate the input, call the line's queue, which runs the checks and decides the withdrawal, wait for publication, answer the receipt | A committed withdrawal is not undone; the wait ends `cancelled` / `operation_interrupted` | The command settles with the line | The line's queue answers by its own state | The line's InputQueue |
 | `session.input.pending` | Read the line's facts at the cutoff, select the candidates, read their applied state, page | The read stops | Nothing | Answers the state it observed | TimelineTree for the read; InputMethods for the projection |
 
 ## Exceptions with reasons
@@ -139,13 +139,13 @@ None beyond the line's input owner, reached by line id.
 
 ## Requirements raised to mechanism owners
 
-1. [#2027](https://github.com/arcships/dim/issues/2027): the line's InputQueue needs `withdraw` reached by line id, including the publication wait. The line mechanism is [#2127](https://github.com/arcships/dim/issues/2127) ([#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)); until it exists the method cannot be migrated off `TreeCommands`. `withdraw` uses the `user` returned by `check` instead of appending blocks itself. The `session.input.pending` page reads the line through `timelineTree.query`; it needs no InputQueue operation.
+1. [#2027](https://github.com/arcships/dim/issues/2027): the line's InputQueue needs `withdraw` reached by line id, including the publication wait. The line mechanism is [#2127](https://github.com/arcships/dim/issues/2127) ([#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)); until it exists the method cannot be migrated off the tree's line lookup. `withdraw` uses the `user` returned by `check` instead of appending blocks itself. The `session.input.pending` page reads the line through `timelineTree.read`; it needs no InputQueue operation.
 
 ## Supersedes
 
 - [session boundary A.1](../contracts/session-boundary.md): the `session.input.withdraw` and `session.input.pending` shapes; the client shapes stay, and the method table registration is `sessionMethods.register`.
 - [Hooks A.6.2](Hooks.md#a62-submit-check-at-the-operator-input-entries): the check's behavior (name order, first block ends, warnings, marker placement) is unchanged; the registration is the direct callback below instead of `Arc<dyn CheckSubmission>`.
-- [pending input read](../input-state-read.md): the read's data source moves from `TreeCommands` to `timelineTree.query`; the request, page and reply shapes are unchanged.
+- [pending input read](../input-state-read.md): the read's data source moves from the tree's line lookup to `timelineTree.read`; the request, page and reply shapes are unchanged.
 
 ## Binding appendix
 
@@ -250,4 +250,4 @@ impl SubmitChecks {
 }
 ```
 
-`session.input.withdraw` and `session.input.pending` are registered with `sessionMethods.register`; their handlers take the client's data and call the line's InputQueue or `timelineTree.query`.
+`session.input.withdraw` and `session.input.pending` are registered with `sessionMethods.register`; their handlers take the client's data and call the line's InputQueue or `timelineTree.read`.

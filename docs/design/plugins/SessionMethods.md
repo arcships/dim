@@ -40,7 +40,7 @@ methods.register(
     ctx,
     "session.input",
     declarations,
-    |call| Box::pin(withdraw(call)),
+    |call, cancelled, _progress| Box::pin(withdraw(call, cancelled)),
 ).await?;
 ```
 
@@ -167,25 +167,18 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `MethodCall`, `MethodDecl` and `RpcError` are the capabilities crate's types; `MethodReply` is the dispatch data defined below. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field. A handler's error is `MethodReply` data, so the table returns it unchanged.
+The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `MethodDecl` and `RpcError` are the capabilities crate's types; `MethodCall`, `Origin`, `CallerRef` and `Progress` are the methods contract's (Appendix F); `MethodReply` and `MethodError` are defined below, and the process table ([ManagementMethods](https://github.com/arcships/dim/pull/2095)) uses the same types. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field. A handler's error is `MethodReply` data, so the table returns it unchanged.
 
 ```rust
 use crate::host::CancelledFn;
-use crate::methods::{MethodDecl, RpcError};
+use crate::methods::{CallerRef, MethodCall, MethodDecl, Progress, RpcError};
 use rutis::host::{BoxFuture, CallError};
 use rutis::Ctx;
+use tokio_util::sync::CancellationToken;
 
-/// One admitted call as the handler receives it: the declared method, the raw
-/// params and the connection that called, when one did.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MethodCall {
-    pub call_id: String,
-    pub method: String,
-    pub params: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connection_id: Option<String>,
-}
+// `MethodCall { method, params, origin }` and `Origin { caller: Option<CallerRef> }`
+// are the methods contract's ([session boundary](../contracts/session-boundary.md) A.1,
+// Appendix F); this appendix declares no second copy.
 
 /// A handler's own failure, carried to the client as its `code` and `message`.
 #[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
@@ -247,7 +240,7 @@ impl SessionMethods {
         caller: &Ctx,
         namespace: String,
         declarations: Vec<MethodDecl>,
-        call: impl Fn(MethodCall) -> BoxFuture<'static, Result<serde_json::Value, MethodCallbackError>> + Send + Sync + 'static,
+        call: impl Fn(MethodCall, CancellationToken, Progress) -> BoxFuture<'static, Result<MethodReply, MethodCallbackError>> + Send + Sync + 'static,
     ) -> Result<(), MethodError> { /* ... */ }
 
     pub async fn call(
@@ -256,7 +249,7 @@ impl SessionMethods {
         params: serde_json::Value,
         caller: Option<CallerRef>,
         cancelled: CancelledFn,
-    ) -> Result<MethodReply, MethodError> { /* ... */ }
+    ) -> Result<MethodReply, MethodError> { /* ... */ } // builds MethodCall { method, params, origin }
 
     pub fn methods(&self) -> Result<Vec<MethodDecl>, MethodError> { /* ... */ }
 }
