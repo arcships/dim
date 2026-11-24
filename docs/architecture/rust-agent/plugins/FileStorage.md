@@ -98,7 +98,7 @@ SessionStore's write of bytes, and of a host path:
 
 ```rust
 // `once` is a source that yields the bytes once and then none.
-let size = storage.write(path, once(bytes), None, Some(Permissions::PrivateReadOnly), cancelled.clone()).await?;
+let size = storage.write(path, once(bytes), Some(Permissions::PrivateReadOnly), cancelled.clone()).await?;
 // A host file the caller named, without reading it first.
 let size = storage.import(path, source, Some(MAX_FILE_BYTES), Some(Permissions::PrivateReadOnly), cancelled).await?;
 ```
@@ -110,7 +110,7 @@ let current = storage.read(auth_path.clone(), None, None, cancelled.clone()).awa
     .ok_or(OAuthError::UnsupportedSchema)?
     .data;
 // The backup is a business copy; the rewrite starts only after the copy is durable.
-storage.write(backup_path, once(current.clone()), None, Some(Permissions::PrivateReadOnly), cancelled.clone()).await?;
+storage.write(backup_path, once(current.clone()), Some(Permissions::PrivateReadOnly), cancelled.clone()).await?;
 storage.update(
     ctx,
     auth_path,
