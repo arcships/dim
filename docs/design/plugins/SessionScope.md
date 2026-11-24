@@ -136,7 +136,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | `unknown` | `unmount` | The id names no live instance of this Session; nothing to retire |
 | `not_ready` | `mount` | Act on the reported row and state: the definition's rows did not activate; the instance was shut down and nothing is left to release |
 | `cleanup` | `mount`, `unmount` | The instance is unreachable but its shutdown failed; the Session will report it as a fault; treat the content as unavailable |
-| `build` | `openBranch` | The branch did not open: `cause` is why, `cleanup` is a shutdown that also failed; the tree records the branch as failed and settles it |
+| `build` | `openBranch` | The branch did not open: `message` says why, `cleanup` is a shutdown that also failed; the tree records the branch as failed and settles it |
 
 `reportFault`, `failure`, `config`, `identity`, `phase`, `activated` and `closing` have no error kinds: nothing in the owner refuses them.
 

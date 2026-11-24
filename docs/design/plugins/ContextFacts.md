@@ -36,10 +36,10 @@ let over = counted.tokens > limits.threshold_tokens;
 
 ```rust
 // ContextUsage: the contributions of one request, when the model has an additive counter.
-let described = owner.describe(DescribeRequest { model: selection.clone() }).await?;
-let Some(algorithm) = described.algorithm else {
-    return Err(UsageError::NotCountable); // the caller keeps complete-request counts only
-};
+// A model without an additive counter has no algorithm; the caller keeps complete-request counts only.
+if owner.describe(DescribeRequest { model: selection.clone() }).await?.algorithm.is_none() {
+    return Err(UsageError::NotCountable);
+}
 let parts = owner.contributions(ContributionsRequest {
     model: selection.clone(),
     fixed: Some(Fixed { system, tools }),

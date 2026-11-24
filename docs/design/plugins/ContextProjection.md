@@ -97,7 +97,7 @@ else {
 
 - `renderedStream` and `renderedContext` take a cutoff, not a branch id: the owner is a branch part and folds its own branch's facts; a Session-scoped fold by branch id returned another owner's history and is removed.
 - The projection policy is factory configuration rather than a Session value: a table of Rust functions cannot cross languages, and a host that substitutes the projection installs another part, so no Rust-only value sits on the public face.
-- `snapshotFromCheckpoint` answers none instead of failing when the anchor does not match: a snapshot is optional acceleration, and the caller's next step is the same fold the snapshot would have skipped.
+- `snapshotFromCheckpoint` answers none instead of failing when the anchor does not match: a snapshot is optional acceleration, and the caller's next step is the same fold the snapshot would have skipped. `snapshot` is the caller's own cutoff and answers `invalid` when the interpreter is not current or the cut is outside the chain; it never answers none.
 - `streamCheckpoint` takes `batch`: a streamed fold's page size is the caller's memory decision, and the checkpoint must be built from the same fold the caller will use.
 
 ## Verification
