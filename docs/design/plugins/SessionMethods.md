@@ -28,6 +28,7 @@ Callers keep:
 | The caller learns why a registration was refused | Yes: `register` answers `duplicate` or `invalid`; a separate check would race the next registration | Business |
 | Rpc routes a name between management and Session | Yes: the process table answers its own `call` and `held_namespaces`; Rpc reads `sessionId` | Business |
 | A provider notifies its caller | Yes: a native handler has the call's `Caller`, and a handler of another language has `{connectionId, callId}` for `callChannel` (#2021) | Business |
+| A Session part asks the table in process, as WebEntry's upload entry does | Yes: the same `call` without a site | Business |
 
 An operation or parameter exists only where the row says No.
 
@@ -194,18 +195,19 @@ Flow tests on the owner:
 | Existing mechanisms considered | Rpc answering the two kinds instead of the table: rejected, the reviewed `call` answers them. Depending on `rutis/loader` as it is: blocked, it is `rutis-loader`'s own service (`create`, `reload`, `remove`, `status` over the whole process), it is not a dim face, and `dim-agent-capabilities` does not depend on that crate. `Loader::get(row)` answers one row's `EntryInfo` but lives on the crate's value, not on the face. The table subscribing to loader changes and recording row status itself: a plugin-layer port, which §4 rule 8 forbids. |
 | Generic capability needed | A dim-owned process face `loaderRows` over one loader row: `status {row}` → `{found, status?, copies?}`, each copy naming its instance and its state, and `found: false` for a row id nothing has. No business meaning. |
 | Effect on sequence, batches, interruption, reload | None on sequence or batches. A read, so it interrupts nothing. During a reload it answers the transitional status, which is its purpose. |
-| Who implements it, which issue | The dim runtime: App Server's loader row (`crates/dim-app-server/src/lib.rs:1476` registers the row; the per-row read Rpc does today is at `crates/dim-app-server/src/methods.rs:220-253`) provides the face, tracked in [#2021](https://github.com/arcships/dim/issues/2021). |
+| Who implements it, which issue | The dim runtime: App Server's loader row (`crates/dim-app-server/src/lib.rs:1475-1481` registers the row; the per-row read Rpc does today is at `crates/dim-app-server/src/methods.rs:220-250`) provides the face, tracked in [#2021](https://github.com/arcships/dim/issues/2021). |
 
 ## Supersedes
 
 - [session boundary A.1](../contracts/session-boundary.md#a1-method-contributions): the `MethodTable`/`MethodProvider`/`Accepted` shapes and the Session table's `owner`/`provider`/`holds`/`listed` readers are replaced by `register`, `call` and `methods`; `Caller`, `CallSite` and `Callers` stay the binding's, stated below and in A.2; the `MethodCall`, `MethodReply` and `MethodError` shapes of A.1's interface block are defined in `crate::methods` as stated here, and A.1 links to them.
 - [session boundary Appendix F](../contracts/session-boundary.md#appendix-f-rust-binding): its method-table paragraphs — `Handler`, `MethodProvider`, `Check`, `Owner`, `MethodTable`, the `SessionMethods` deref, the `MethodCall`/`Origin` block and the foreign `register` decode — are the binding below; Appendix F links here and keeps only what CallChannel and ToolRegistry bind.
 
-No method changes. A handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Four client-visible changes, all in failures:
+No method changes and no new error kinds. A handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Two client-visible failure changes:
 
-- A withdrawn Session namespace whose registering row is absent from the loader answers `unknown_method`; today `session_provider` falls through to `service_reloading` (`crates/dim-app-server/src/methods.rs:240-252`), which retrying could not fix. A disabled row already answers `unknown_method`.
-- A handler's failure without an application code, and a failed or malformed foreign reply, carry `appError: "failed"`; today the binding failure is `-32603` "Method binding failed" with no `appError` (`crates/dim-agent-capabilities/src/methods.rs:905-918`).
-- Three request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`; its handler's owner fields now reach the client, where today the `{code, message}` decode rejects a reply that carries them; and a declaration may carry a `reply` field, accepted and ignored.
+- A withdrawn Session namespace whose registering row is absent from the loader answers `unknown_method`; today `session_provider` falls through to `service_reloading` (`crates/dim-app-server/src/methods.rs:240-249`), which retrying could not fix. A disabled row already answers `unknown_method`.
+- A handler's failure without an application code, and a failed or malformed foreign reply, carry `appError: "failed"`; a binding failure keeps today's `-32603` and gains the code (`crates/dim-agent-capabilities/src/methods.rs:905-918`).
+
+Two request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`, and its handler's owner fields now reach the client, where today the `{code, message}` decode rejects a reply that carries them. A declaration may also carry a `reply` field, accepted and ignored.
 
 ## Binding appendix
 
@@ -395,16 +397,20 @@ impl From<CallError> for MethodCallbackError {
             return Self::from_wire(wire);
         }
         // Otherwise the application code the error carries; a remote's variant
-        // name without one, and `failed` for a call that crossed nothing.
-        let code = remote
-            .and_then(|error| {
+        // name without one. A call that crossed nothing is the binding's own
+        // failure: `failed`, with today's `-32603`.
+        let (code, wire) = match remote {
+            Some(error) => (
                 error.code().map(str::to_owned).or_else(|| match error {
                     rutis_bridge::session::Error::Remote { name, .. } => Some(name.clone()),
                     _ => None,
                 })
-            })
-            .unwrap_or_else(|| "failed".into());
-        Self { code, message: error.message().into(), wire: None, data: Default::default() }
+                .unwrap_or_else(|| "failed".into()),
+                None,
+            ),
+            None => ("failed".into(), Some(-32603)),
+        };
+        Self { code, message: error.message().into(), wire, data: Default::default() }
     }
 }
 
