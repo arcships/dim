@@ -310,8 +310,8 @@ key 与模式互不相关（[history.rs](../../../crates/dim-agent-capabilities/
 
 各线共用 Session 的工作区。没有哪条线能知道文件是谁改的，本设计也不去归属改动。现有的保护已经够用：
 
-- FileReads 按线保留读取绑定。
-- 文件在这条线上次读取之后改变时，`edit` 和 `write` 以 `file_modified_since_read` 拒绝，不管是谁改的（[edit.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/edit.rs)、[write.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/write.rs)）。
+- FileReads 按 canonical path 保留文本绑定。
+- 文件在这条线上最后一次建立绑定的操作之后改变时，`edit` 和 `write` 以 `file_modified_since_read` 拒绝，不管是谁改的（[edit.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/edit.rs)、[write.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/write.rs)、[FileReads](../../design/plugins/FileReads.md)）。
 
 其余靠协议，写在线的身份块和工具描述里：
 

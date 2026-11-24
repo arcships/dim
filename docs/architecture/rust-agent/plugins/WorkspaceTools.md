@@ -480,7 +480,7 @@ empty live preview and unavailable historical captures.
 
 ## FileReads
 
-Owner: [workspace_tools/file_reads.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/file_reads.rs).
+Owner: [workspace_tools/file_reads.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/file_reads.rs). The owner's target contract is [FileReads](../../../design/plugins/FileReads.md); this page describes the current implementation.
 Records canonical-path bindings for files read on this branch: raw-byte revision,
 encoding, BOM and line endings. Existing-file `edit` admission requires a binding
 established by that branch. Existing-file `write` admission requires one whose

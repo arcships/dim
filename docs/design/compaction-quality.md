@@ -110,7 +110,7 @@ The tool description says that Recall reads history from before a compaction, an
 
 **Owner:** WorkspaceTools (FileReads); implemented under [#524](https://github.com/arcships/dim/issues/524).
 
-A `write` that replaces an existing file needs a read that is still in the context. After a completed compaction cuts out the operation that bound the file, `write` refuses until any read of the file, a part included. `edit` keeps its binding, because its exact `oldText` match checks the content itself. A read in the kept tail still counts. A binding is what the model has seen of a file on this branch, and the bindings live in branch memory, which compaction never touches ([file_reads.rs](../../crates/dim-agent-capabilities/src/workspace_tools/file_reads.rs)). The owner designs how, from the branch's own facts.
+A `write` that replaces an existing file needs a read that is still in the context. After a completed compaction cuts out the operation that bound the file, `write` refuses until any read of the file, a part included. `edit` keeps its binding, because its exact `oldText` match checks the content itself. A read in the kept tail still counts. A binding is what the model has seen of a file on this branch, and the bindings live in branch memory, which compaction never touches ([file_reads.rs](../../crates/dim-agent-capabilities/src/workspace_tools/file_reads.rs)). The owner's operations and its rule for rebuilding the bindings from the branch's own facts are in the [FileReads owner contract](plugins/FileReads.md).
 
 ### 7.4 ToolRegistry (the tool contract)
 
@@ -161,7 +161,7 @@ Against [design rules §4](../architecture/rust-agent/principles.md#4-通过时�
 **Rule 8, with evidence.** No requirement reaches infrastructure:
 
 - Class 2 uses the compaction record's existing `replacement` and replay rule ([ContextCompaction §2.2](plugins/ContextCompaction.md#22-extension-points), [§4.3](plugins/ContextCompaction.md#43-events)).
-- FileReads folds the existing public `context/compaction` fact on its own branch; it needs no new event and no new service.
+- FileReads reads the latest completed `context/compaction` on its own branch at `binding` with `write`; it needs no new event and no new service ([FileReads](plugins/FileReads.md)).
 - Nothing is added to the Timeline for the UI: the TUI reads the existing `context/compaction-start` and `context/compaction`, which [§4.3](plugins/ContextCompaction.md#43-events) already lists for clients.
 
 **Rules 1 and 7.** No requirement has one plugin decide for another or read another's state: ContextCompaction does not call FileReads, FileReads reacts to the public fact, and the TUI uses the existing session method.

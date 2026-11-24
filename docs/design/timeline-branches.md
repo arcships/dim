@@ -327,8 +327,8 @@ Why this changes no Goal behavior:
 
 Lines share the Session's workspace. No line can know who changed a file, and the design does not try to attribute changes. The guard that already exists is enough:
 
-- FileReads keeps a read binding per line.
-- `edit` and `write` refuse with `file_modified_since_read` when a file changed after this line last read it, whoever changed it ([edit.rs](../../crates/dim-agent-capabilities/src/workspace_tools/files/edit.rs), [write.rs](../../crates/dim-agent-capabilities/src/workspace_tools/files/write.rs)).
+- FileReads keeps a text binding per canonical path.
+- `edit` and `write` refuse with `file_modified_since_read` when a file changed after the last operation that bound it, whoever changed it ([edit.rs](../../crates/dim-agent-capabilities/src/workspace_tools/files/edit.rs), [write.rs](../../crates/dim-agent-capabilities/src/workspace_tools/files/write.rs), [FileReads](plugins/FileReads.md)).
 
 The rest is protocol, carried by the tool line's identity and by the tool description:
 

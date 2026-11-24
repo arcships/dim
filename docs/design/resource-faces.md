@@ -543,12 +543,12 @@ or changed one:
   image.
 - `write` and `edit` keep their refusals (`text_binding_required`, `file_modified_since_read`,
   `is_directory`, `write_error`, `edit_target_file_too_large`) and their `effects: [fileWritten]`
-  declaration; the binding the control side holds from the branch's last read of that file travels
-  with the request, so the node normalizes and encodes exactly what the model's context was based
-  on. A file that changed since the read is `file_modified_since_read`. The reply's `binding` is
-  what the call installed.
-- The control side records the returned binding in `FileReads` for the branch; that record stays
-  branch memory on the control node and is not reconstructed from the node.
+  declaration; the binding the control side holds from the branch's last operation that bound that
+  file travels with the request ([owner contract](plugins/FileReads.md)), so the node normalizes and
+  encodes exactly what the model's context was based on. A file that changed since that operation is
+  `file_modified_since_read`. The reply's `binding` is what the call installed.
+- The control side records the returned binding in `FileReads` for the branch ([owner contract](plugins/FileReads.md)); that record stays
+  branch memory on the control node and is rebuilt from the branch's facts on reload, not from the node.
 - `write` and `edit` are admitted before they run, so their `path` is the resolved path `resolve`
   returned. `ToolHost.resolve_write` asks `fsHost.resolve` for a remote Session instead of
   resolving locally; the resolved call is what approval and execution receive, as today.

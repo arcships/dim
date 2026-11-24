@@ -179,7 +179,7 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
-| `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
+| `fileReads` | branch | FileReads | hot-path | 数据面见 [FileReads](plugins/FileReads.md) |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |

@@ -110,7 +110,7 @@
 
 **所有者：** WorkspaceTools（FileReads）；在 [#524](https://github.com/arcships/dim/issues/524) 下实现。
 
-覆盖写已有文件的 `write` 需要一次仍在上下文里的读取。一次已完成的压缩把绑定该文件的那个操作切出去之后，`write` 会拒绝，直到重新读到这个文件的任意一部分。`edit` 保留它的绑定，因为它用精确的 `oldText` 匹配核对内容本身。留在尾部里的读取仍然算数。绑定是"这条分支上模型看过这个文件的什么"，绑定放在内存里、压缩从不碰它（[file_reads.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/file_reads.rs)）。具体怎么判断由所有者设计，依据是分支自己的事实。
+覆盖写已有文件的 `write` 需要一次仍在上下文里的读取。一次已完成的压缩把绑定该文件的那个操作切出去之后，`write` 会拒绝，直到重新读到这个文件的任意一部分。`edit` 保留它的绑定，因为它用精确的 `oldText` 匹配核对内容本身。留在尾部里的读取仍然算数。绑定是"这条分支上模型看过这个文件的什么"，绑定放在内存里、压缩从不碰它（[file_reads.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/file_reads.rs)）。所有者的操作以及从分支自己的事实重建绑定的规则见 [FileReads 所有者契约](../../design/plugins/FileReads.md)。
 
 ### 7.4 ToolRegistry（工具合同）
 
@@ -161,7 +161,7 @@
 **规则 8 的证据。** 没有哪条需求触到基础设施：
 
 - 第 2 类用的是压缩记录现有的 `replacement` 与重放规则（[ContextCompaction §2.2](plugins/ContextCompaction.md#22-扩展点)、[§4.3](plugins/ContextCompaction.md#43-事件)）。
-- FileReads 在自己分支上折叠公开的 `context/compaction` 事实；不需要新事件，也不需要新服务。
+- FileReads 在 `binding` 且用途为 `write` 时读取自己分支上最新的已完成 `context/compaction`；不需要新事件，也不需要新服务（[FileReads](../../design/plugins/FileReads.md)）。
 - 没有为 UI 往 Timeline 加任何东西：TUI 读的是现有的 `context/compaction-start` 和 `context/compaction`，[§4.3](plugins/ContextCompaction.md#43-事件) 本来就把它们列为客户端可见。
 
 **规则 1 和 7。** 没有哪条需求让一个插件替另一个插件决定，或去读另一个插件的状态：ContextCompaction 不调用 FileReads，FileReads 是对公开事实作出反应；TUI 用的是现有的 session 方法。

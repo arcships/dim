@@ -60,7 +60,7 @@ substitutes a newer head.
 | --- | --- |
 | ToolBinding, Session language and Agent configuration → `prompt` | `prompt.initialCompletion({}) → void or opening error`; `prompt.configure({sources, model?}) → unchanged, adopted or superseded`. |
 | Prompt and guide adoption → `contextPreparation` | `contextPreparation.publish({adopted, changes, model?, toolAdoption?, inputs}) → sequence or null`; `awaitPublished({sequence}) → sequence`. Publication commits adoption atomically. |
-| File read/edit/write tools → branch FileReads | `binding({path}) → TextFileBinding or null`, `writeBinding({path}) → absent, compacted or bound`, `record({path, binding, established}) → void`. The original read supplies the established sequence; file I/O stays on the file node. |
+| File read/edit/write tools → branch FileReads | `binding({path, purpose}) → BindingReply` (`bound {binding}` or `unavailable {reason: neverRead\|compacted}`; `path` is canonical), `record({path, binding, established, ordinal}) → void` ([FileReads](../plugins/FileReads.md)). The call that establishes the binding supplies its own call event's `step/tool-call` sequence and its position in the batch; a batch's calls share that event, and a parent and its Code Mode child are ordered by their own events. The pair orders two operations on one path. File I/O stays on the file node. |
 
 ### Model preparation, history and tools
 
