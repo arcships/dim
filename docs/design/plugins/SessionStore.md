@@ -15,6 +15,7 @@ SessionStore owns:
 - **Worktree records.** A recorded directory, its last-use time and the Session associations that point into it.
 - **The Session exclusion.** One lock that keeps creation, fork, deletion, association and worktree removal from observing each other's partial state.
 - **The Timeline storage engine.** The admitted batch queue, the grouped commit, paging, snapshots and release, executed over the Session rows. `timelineStore` publishes the same engine per Session; the Session face belongs to SessionScope.
+- **The Session reads.** `query` and `sessionConfig` exist only on the process `store`; both take `{id}` and serve loaded and unloaded Sessions. No Session-scoped or `timelineStore` operation carries them.
 
 Callers keep:
 
@@ -30,7 +31,7 @@ Callers keep:
 | --- | --- | --- |
 | Create an admitted Session and its optional worktree association | No: the rows, the owner row, the main branch, the catalog row and the association are one transaction; a partial write would publish a Session without its rows or an association without its Session | `create` |
 | Close a Session, then remove its output directories and rows | No: output removal, visible rows and Timeline rows must run under the Session exclusion and in this order; a caller composing them could delete a row a concurrent creation still names | `delete` |
-| Copy a source Session's rows at a cut, deciding the target text from the source's exact text | No: the source text must be read and the target text written in one transaction, and the lifecycle owner's decision must run under the fork's exclusion | `fork` with a text callback |
+| Copy a source Session's rows at a cut, deciding the target text from the source's exact text | No: the source body must be read and the target text decided under the fork's exclusion, and the target body and rows are written by the last batch transaction | `fork` with a text callback |
 | Read a stored Session's creation origin and leader link for an attach reply | No: the caller has no row access | `creationRecord` |
 | Read the Agent that owns a stored Session before its delete notice | No: the caller has no row access | `owner` |
 | Ask whether an id has stored rows without loading a Session | No: the check spans five tables | `hasRecords` |
@@ -79,7 +80,7 @@ let change: ChangeFn = Arc::new(move |current: TitleState| {
     let next = decide(current.revision, current.title.as_ref(), &text); // business rules
     Box::pin(async move { Ok(next) })
 });
-let next = store.setTitle(SetTitle { id }, change, cancelled).await?;
+let next = store.setTitle(SetTitle { id }, change).await?;
 ```
 
 ManagedWorktrees removes a directory: the owner holds the exclusion while the caller's Git step removes the root, and deletes or keeps the record by that step's result.
@@ -113,7 +114,7 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `hasRecords` | Whether an id has any stored row | `{id}` | `{exists}` | None | `closed`, `storage` |
 | `sessionConfig` | A stored Session's decoded configuration | `{id}` | `{config?}` | None | `not_found`, `closed`, `storage` |
 | `catalog` | One stored Session page | `{request, agent?, version, hosts, closed}` | the stored page | While the page is read | `invalid`, `cancelled`, `closed`, `storage` |
-| `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{scope, query, page?}` | the query result | While the page is read | `storage`, `cancelled`, `closed` |
+| `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{id, query, page?}` | the query result | While the page is read | `storage`, `cancelled`, `closed` |
 | `grants` | The Session's grant set | `{id}` | `{grants}` | None | `closed`, `storage` |
 | `addGrant` | Add one grant, never downgrading a write grant | `{id, path, kind, mode}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
 | `removeGrant` | Remove one grant; an absent grant counts as removed | `{id, path}` | `{}` | None | `closed`, `storage` |
@@ -150,7 +151,7 @@ When a change, text or removal callback refuses, the operation answers `rejected
 | --- | --- | --- | --- | --- | --- |
 | `create` | Validate the id, take the exclusion, validate the workspace, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller keeps the id it supplied and decides whether to publish or delete the Session | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
 | `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove visible and Timeline rows, schedule the file sweep | Before the first commit: every row stays. After: the steps run to their end | The work continues under the owner's task; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
-| `fork` | Take the exclusion, read the source text, call `text`, copy in bounded transactions with the returned text, write the target row, commit | Before the first copy; a refused text step copies nothing | The copy continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
+| `fork` | Take the exclusion, read the source body, call `text`, copy in bounded transactions, write the target body and target rows in the last batch transaction, commit | Before the first copy; a refused text step copies nothing | The copy continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
 | `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
 | `catalog`, `query` | One consistent read under the caller's token | The read stops; no partial page | Nothing to release | Pending reads end `cancelled`; a new call ends `closed` | SessionStore |
 | `addGrant`, `removeGrant`, `setLanguage`, `associateWorktree` | One write transaction | None after it starts | The write completes; the reply may be lost | Admitted writes end before close | SessionStore |
@@ -172,12 +173,13 @@ None. The client methods (`session.rename`, `sessions.list`, `session.delete`, `
 
 ## Supersedes
 
-- [Resource faces §5, §5.1 and §5.2](../resource-faces.md): the `store`/`timelineStore` split, the admission and drain steps, the Session row operations, the Rust `Store` binding and the metadata and association rows.
-- [Service faces §3.3 and §3.4](../service-faces.md): the `sessionStore` row and the `store` and `timelineStore` rows.
-- [Resource owner operations](../contracts/resource-owner-operations.md): the `SessionStore → sqliteStorage` rows and the Session row paragraphs.
-- [Session title metadata](../appserver/session-title-metadata.md): the `title` and `setTitle(id, change)` shapes.
-- [Resource faces §4.2 and §5](../resource-faces.md), [service faces §4.8](../service-faces.md), [worktree access §4](../worktree-access.md): the `associateWorktree` request uses `{id, repository, root, subtree}`.
-- [SessionTitle](SessionTitle.md): the paragraph that writes a title under an expected revision.
+- [Resource faces §5, §5.1, §5.2 and §9(6)](../resource-faces.md): the `store`/`timelineStore` split, the admission and drain steps, the Session rows, the Rust `Store` binding and the face names.
+- [Resource faces §4.2](../resource-faces.md): the `associateWorktree` sentence.
+- [Service faces §3.2, §3.3 and §3.4](../service-faces.md): the `worktreeAssociations` row, the `sessionStore` row and the `timelineStore` row.
+- [Resource owner operations](../contracts/resource-owner-operations.md): the `sessionStore` row and the Native storage section.
+- [Session title metadata](../appserver/session-title-metadata.md): §1 Write and Binding, §4.1, §4.2, §5, §6, §10 and Appendix A.
+- [SessionTitle](SessionTitle.md): the metadata/notice row, the A.4 Write row and the Appendix G title metadata row.
+- [Worktree access §4](../worktree-access.md): the `associateWorktree` sentence.
 
 ## Verification
 

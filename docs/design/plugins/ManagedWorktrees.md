@@ -118,7 +118,7 @@ None. `worktree.list`, `worktree.remove` and `worktree.prune` keep their request
 
 ## Supersedes
 
-- [Managed worktrees](../worktree-management.md) §5: the list/remove/prune composition under the store's removal operations and the branch rule for a never-adopted worktree. §3 and §4 remain the source for creation and the directory records.
+- [Managed worktrees](../worktree-management.md) §5: the removal paragraph is replaced by a pointer to this contract.
 
 ## Verification
 

@@ -91,14 +91,14 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `scheduleJobs` | `scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md#a2-tool-schedule) 的 flat `JobRequest`/`JobReply`，与 `wakeups` 同一批次（[#1396](https://github.com/arcships/dim/pull/1396)）。 |
 | `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
 | `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
-| `sessionFiles` | `sessionFiles.put/import/write/read/register/owns/remove/owned_paths` | 形状按 [SessionFiles](plugins/SessionFiles.md)；服务标注在所有者类型上。 |
+| `sessionFiles` | 本节由 [SessionFiles 契约](plugins/SessionFiles.md) 取代。 | 本节由 [SessionFiles 契约](plugins/SessionFiles.md) 取代。 |
 | `commandRules` | `commandRules.read` | Session 命令规则读取，按 [命令规则](appserver/permission-command-rules.md#41-language-neutral-adr-002-d5) §4.1。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
 | `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
 | `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
 | `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.8。 |
-| `worktreeAssociations` | 已并入 `store.associateWorktree` | 见 [SessionStore](plugins/SessionStore.md)。 |
+| `worktreeAssociations` | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 |
 | `toolSourcesView` | `toolSourcesView.get/observe` | 同一 ToolRegistry owner 的独立只读观察面；贡献注册仍由 `toolRegistry` 负责，见 [工具贡献 §7.5](../architecture/rust-agent/tool-contributions.md#75-服务接口)。 |
 
 宿主读取端口的数据面（§4.10）包括 `executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`。模型选择与列表统一由 `providerService` 提供；调用方和配置见[进程操作](contracts/process-owner-operations.md)；其余读取端口沿用现名。
@@ -113,7 +113,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `settingsService` | `settings` | GoalBranch 的取消契约见 §4.1。 |
 | `modelHost` | `modelHost` | 完整模型请求直接调用所选配置的执行入口；辅助请求使用 `providerService.complete`。 |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
-| `sessionStore` | `store`、`sessionFiles`、`timelineStore` | 已退役：绑定读取与标题、关联、worktree 记录都是 `store` 的操作，见 [SessionStore](plugins/SessionStore.md) |
+| `sessionStore` | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 |
 | `treeCommands`、`timelineTreeControl` | `timelineTree` | 分支操作直接调用 Session 的树；不保留别名 |
 
 ### 3.4 对象/句柄：拆成操作加 id
@@ -125,8 +125,8 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | --- | --- | --- |
 | `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 数据面 `execHost`：`start`/`wait`/`kill`/`settle`/`output`/`tail`/`removeOutputDirectory`/`shell`/`write`/`resize`/`info`/`confined`/`configured`（[resource and store data faces](resource-faces.md) §3，#1295）；`hostPlatform` 是提供方和它的 Rust binding |
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
-| `sqliteStorage` | 连接与事务 | 公开面只剩 `storageReport` 与离线操作；Settings、Provider、Agent 记录与 Timeline 事务是各数据所有者的私有实现（[SqliteStorage](plugins/SqliteStorage.md)）。 |
-| `timelineStore` | 连接与批次 | Session 仓储自己的 Timeline 面，由 SessionScope 在 Session 实例上绑定（[SessionStore](plugins/SessionStore.md)）：`sessionConfig`/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`batchEndAt`/`saveSnapshot`/`latestSnapshot`；`createSession`/`releaseSession`/`rollbackSession`/`append` 是所有者内部步骤 |
+| `sqliteStorage` | 本节由 [SqliteStorage 契约](plugins/SqliteStorage.md) 取代。 | 本节由 [SqliteStorage 契约](plugins/SqliteStorage.md) 取代。 |
+| `timelineStore` | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
@@ -248,7 +248,7 @@ workflowRuns.call(RunRequest)
 
 ### 4.5 `sessionFiles`
 
-按 owner 契约 [SessionFiles](plugins/SessionFiles.md) 暴露 `sessionFiles`；服务标注在所有者类型上，不另设包装类型。
+本节由 [SessionFiles 契约](plugins/SessionFiles.md) 取代。
 
 文件导入、分块读取、归属操作的参数、回复、错误及取消语义均由 §9.1 定义。文件传输使用按路径导入与有界读取操作。
 

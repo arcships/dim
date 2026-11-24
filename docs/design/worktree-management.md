@@ -105,38 +105,7 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
   `--force`）或未登记的目录一律不选。删除前逐项复核 Git 登记、根未变与内容干净，先预览再按确认删除；apply
   携带预览的 task id，只删除用户看到的集合，单个候选失败时保留其记录并继续其余候选。保留项逐条给出原因。
   选择语义与交互沿用 [session cleanup](cli-commands.md#session-deletion-and-cleanup)，不新增第二套。
-- **排斥**：删除分两步。已登记的 remove 与 prune 经由 SessionStore 的 `store.removeWorktree` 操作：它在会话存储
-  所有权锁内复核关联与存储中的 Session cwd；未登记的 remove 经由 `store.removeUnregisteredDirectory`：它在同一把锁内
-  复核目录记录中没有根在该目录或其下的条目、存储中没有 Session 的 cwd 在该目录或其下。两个操作随后把要删的规范化路径
-  登记进内存的“正在删除”集合，放锁。调用方传入的删除步骤（`git worktree remove`、`cleanup_unregistered_root`、未登记目录
-  的检查与递归删除）在本次请求自己的任务里前台完成，失败照样返回给调用方，记录只在删除成功后删除。删除结束时同一个任务把路径
-  移出集合；外层请求被取消也不会提前移出，集合只在内存里，进程崩溃后半删的目录仍可按 task id 再删一次。
-- **正在删除**：集合只拦与登记路径相同、在其上或在其下的操作：`session.create` 与 `sessions.launch` 的 cwd、
-  `store.fork` 配置里的 cwd、`associate_worktree` 的根、同一路径的再次删除，以及同一目录的记录删除
-  （`store.removeWorktreeDirectory`）都被拒绝（`worktree.remove` 报 `worktree_in_use`）；`worktree.create` 在
-  同一把锁内拿选中的目录与集合比对，命中就换一个 `<task-id>`，所以登记期间不会在同一路径建出目录。
-  父路径方向也拒绝，因为它的内容正在被删（例如任务目录下的仓库），这期间不在其上新建 Session。删除结束后被删的目录
-  自然通不过创建与关联的目录检查。不相关路径的创建、分叉、删除与关联不再等删除；复核之后也不会出现指向已删根的
-  新 Session 或关联。
-- **正在创建**：`worktree.create` 选中目录之后、建目录之前，在同一把锁内把选中的规范化路径登记进“正在创建”集合，
-  与“正在删除”对称。登记由创建自己的任务持有，只随创建结束而释放（目录记录与使用关联写入之后，或失败清除把它交接成“正在删除”之后），
-  删除方移不掉它；集合同样只在内存里。`store.removeWorktree` 与 `store.removeUnregisteredDirectory` 在锁内
-  登记“正在删除”时与这个集合双向比对，命中（路径相同、在其上或在其下）即以 `worktree_in_use` 拒绝，所以创建通过
-  目录检查之后、把 worktree 交给 Session 之前落进来的删除不会删到正在创建的 worktree。创建自己的失败清除（撤回目录与分支）
-  在同一把锁内把这条登记直接交接成“正在删除”，中间没有空档，所以撤回既不会被自己的登记挡住，也不会被另一条在同一路径上
-  通过检查的创建插进去。创建成功时登记在目录记录写入后释放，同一路径随后可正常删除；两条创建撞上同一路径时
-  后一条换一个 `<task-id>`。
-- **未登记目录的复核**：由 ManagedWorktrees 提供的删除步骤在删除前用文件系统检查复核目录仍是管理根下的普通目录、
-  它的直接子目录仍是管理根内的普通目录，以及删除范围内每个目录都没有 `.git` 条目（目录、gitdir 文件或符号链接，含悬空链接；
-  遍历不跟随符号链接，不起 Git 子进程），不满足就拒绝。
-- **非 force 的删除**：只删检查记录下来的空直接子目录和任务目录本身，逐个按名字从已打开的目录句柄删除（Unix 的 `unlinkat`）；
-  任务目录或子目录在检查后被换成符号链接时删除以 `worktree_in_use` 失败，不会删到管理根外。Windows 没有既能只删空目录、
-  又能守住管理根边界的现成原语，所以非 Unix 平台上未登记目录的非 force 删除直接以 `worktree_in_use` 拒绝并提示 `--force`；
-  `--force` 用标准库的 `remove_dir_all`，它按目录句柄遍历、不跟随树内的 reparse point。
-- **时间上限**：锁只跨越复核与登记，没有慢步骤。删除本身没有时间上限：`git worktree remove` 有 30 秒超时，
-  递归删除按目录内容多少决定，这是已知限制。
-  可证明的使用只有记录与存储中的 cwd；其余使用不可证明，由预览、确认和 worktree-access §4 的删除授权承担。
-- Session 删除和 `session cleanup` 不删除也不报告遗留的 worktree；`worktree list` 是查看它们的唯一入口。
+- **排斥**：本节由 [ManagedWorktrees 契约](plugins/ManagedWorktrees.md) 取代。
 
 ## 6. 影响面
 

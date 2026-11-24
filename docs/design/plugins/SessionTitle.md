@@ -39,7 +39,7 @@ only outcome and duration.
 | Observation | Read the Session id, the creation configuration and closing from SessionScope's `identity`, `config` and `closing` ([#2093](https://github.com/arcships/dim/pull/2093), target, pending; [plugin contract](../plugin-contract.md#9-requirements-raised-to-mechanism-owners) R2), then the records on its Session's `session/{sessionId}` channel. C4 broadcast #180 is delivered; #63/#168 are closed. |
 | Timeline reads | Use the Session’s branch query facade on `main`, with a fixed published cutoff. Read only the adopted input identity, its user content or Goal objective, and the adopted model fields (§0.1). |
 | Configuration | Existing named Settings and row source declaration, user scope only (A.3/A12). Read settings.read({source:"session-title",scope:"user"}) at each decision and use its validated/defaulted document directly. |
-| Metadata/notice | The process `store` face provides `title` and `setTitle(id, change)`; `setTitle` commits the title the change returns and answers the revision, with errors `rejected`/`not_found`/`closed`/`storage` ([SessionStore](SessionStore.md)); the v3 list fields are `title`/`titleSource`/`titleRevision`. After each commit SessionStore calls `session_broadcast::notify`, and Rpc forwards the record to attached v3 clients as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). |
+| Metadata/notice | This row is superseded by [the SessionStore contract](SessionStore.md#operations); the v3 list fields are `title`/`titleSource`/`titleRevision`, and Rpc forwards the notice as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). |
 | Auxiliary request | The profile's model-selection owner implements AuxiliaryModel and its named `auxiliaryModel.complete` HostDispatch/catalog binding: Provider in the product profile, ConfiguredModels in the model-config profile. Inject it through ordinary C4 dependencies; credentials stay with that owner ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). |
 | Policies | A1–A12 define the first implementation. Appendix D requires public-flow acceptance; documentation CI alone is not runtime acceptance. |
 
@@ -413,7 +413,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | Check | `store.title({id})`: the change decides from the current title and revision; a `rejected` change discards |
 | Read | The four field queries in §0.1 share published T >= N. No adopted eligible input/text means no title (A8/A10). |
 | Generate | Route and fall back under §3.3 within the shared 30 s budget (A4); normalize the first line, remove quotes and trailing punctuation, collapse whitespace, cut at `maxLength`, trim again |
-| Write | `setTitle({id}, change)` where the change returns the generated title or `null`; a `rejected` change discards, and `closed` retries on the replacement generation |
+| Write | This row is superseded by [the SessionStore contract](SessionStore.md#operations); a `rejected` change discards, and `closed` retries on the replacement generation |
 | Timeline | No writes, no Dispatcher registration, no `StateCell` |
 | Reload / unload | Cancel before store handover; the owner settles an admitted mutation. Events in the gap are not replayed |
 
@@ -506,17 +506,13 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 | --- | --- |
 | Namespace `session.rename` registered with `sessionMethods` | The Session part calls `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` on a `Key<SessionMethods>` dependency |
 | Published branch properties | The Session's `timelineTree` service: `read({line: "main", from?, through, fields, limit})` with the published cutoff, which answers `{through, rows}` ([#2092](https://github.com/arcships/dim/pull/2092), target, pending). Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
-| Title metadata | `store.title` and `store.setTitle(id, change)` |
+| Title metadata | This row is superseded by [the SessionStore contract](SessionStore.md#operations) |
 | Auxiliary call | `AuxiliaryModel.0.complete` with its cancellation token |
 | Optional generation | `ctx.get_at(&host_key("sessionTitleGenerator"))` at use; `HostDispatch.generate` with a cancellable callback promise, using the request/reply types exported by `dim-session-title` |
 | Session broadcast listener | Listener on `session_channel(session_id)` for `Event` records, removed by `ctx.effect` |
 | Generation task | Spawned under `ctx.effect` |
 
 ```rust
-// the `store` face; `setTitle` stays on the hand-written method table
-async fn title(&self, id: &str) -> Result<SessionMetadata, StoreError>; // NotFound | Closed | Storage
-fn set_title(&self, id: &str, change: ChangeFn)
-    -> impl Future<Output = Result<u64, StoreError>>; // Rejected | NotFound | Closed | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct Title { pub text: String, pub source: TitleSource }   // Auto | Manual
 // AuxiliaryModel (the profile's model-selection owner)

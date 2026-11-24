@@ -1,6 +1,6 @@
 # SessionStore title metadata
 
-The [SessionStore contract](../plugins/SessionStore.md) supersedes the title interface: `store.title` reads the title with its source and revision, and `store.setTitle(id, change)` takes the caller's change, serializes the write, commits the returned title and announces it. The revision is the owner's; the interface has no `expectedRevision`. The data, notice, list and sequence paragraphs below describe the stored title and remain in force.
+The [SessionStore contract](../plugins/SessionStore.md) supersedes the title interface: `store.title` reads the title with its source and revision, and `store.setTitle(id, change)` takes the caller's change, serializes the write, commits the returned title and announces it. The revision is the owner's; the interface has no `expectedRevision`. The data, notice and list paragraphs below describe the stored title and remain in force.
 
 Status: Implemented in roadmap item S5b ([#60](https://github.com/arcships/dim/issues/60),
 [#96](https://github.com/arcships/dim/pull/96)), after C6 ([#49](https://github.com/arcships/dim/issues/49),
@@ -19,16 +19,12 @@ channel ([C6](session-notices.md)), and Rpc shows the title in protocol v3 Sessi
 
 - **Data.** A revision counter (0 means never written) and either no title or a title `{text, source}` with source
   `auto` or `manual`. Clearing keeps the counter, so a revision never repeats.
-- **Write.** `setTitle {id}` plus a change callback that receives the current `{revision, title}` and returns the next
-  title or its own refusal. SessionStore serializes the write, commits the returned title as the next revision and
-  answers it; failures are `rejected`, `not_found` or `storage`. The call is the handover: SessionStore admits the
-  write when called, unless it is closing, and settles it itself; dropping the call only loses the reply.
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 - **Notice.** After each commit, `{source: "SessionStore", kind: "title", data: {title, titleSource,
   titleRevision}}`, in commit order.
 - **Lists.** Protocol v3 `session.summaries` entries carry `title`, `titleSource` and
   `titleRevision`.
-- **Binding.** The process service `store` (`title`, `setTitle`), provided by SessionStore, reaches TypeScript through
-  the existing service catalog.
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 - **Lifecycle.** A delete removes the title in S5c's delete transaction; a fork does not copy it (SessionTitle A7);
   a restart keeps it. Reading or writing a title never loads the Session.
 - **Format.** Native store v16: one new table, upgraded in place from v15, and from v13 through v15's step.
@@ -84,81 +80,16 @@ protocol version.
 ## 4. Operations
 
 ### 4.1 Language-neutral (ADR 002 D5)
-
-The `store` face, process scope, control node only, no instance key, provided by SessionStore.
-
-| Method | Mode | Request | Reply value | Errors |
-| --- | --- | --- | --- | --- |
-| `title` | async | `{id}` | `{revision, title: {text, source} \| null}` | `not_found`, `closed`, `storage` |
-| `setTitle` | async | `{id}` plus the change callback | `{revision}`: the committed revision | `rejected`, `not_found`, `closed`, `storage` |
-
-- Replies use one envelope, `{ok: true, value}` or `{ok: false, error: {code, message}}`, as `settings` does.
-- Neither method loads the Session. `title` reads committed state and does not wait for the title writer (§5).
-- The change returns the next title or `null` to clear; the owner stores what the change returns. A caller's change
-  decides the manual-title rule and the clear, so an omission never erases a user's title.
-- A malformed call (unknown method, not exactly one request object, an unknown field, a wrong type or a missing
-  field) is a bridge error, as for `settings`: it is a caller's programming error, not an outcome of the write.
-
-| Code | When | State after |
-| --- | --- | --- |
-| `not_found` | The store holds no record of the Session: never created, deleted, or rolled back. A stored Session that is closed or not loaded is found | Unchanged |
-| `rejected` | The change refused with its own `code` and `message`; the manual-title rule is the change's | Unchanged, no notice. Act on the change's code |
-| `storage` | The transaction or the file write failed | Unchanged, no notice |
-| `closed` | The call arrived after SessionStore started closing (§6) | Unchanged, no notice; retry on the replacement generation |
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 
 ### 4.2 Rust
-
-Rust consumers inject the `store` owner and call `title`/`set_title`; the target operations are
-`title` and `set_title`. The binding is the existing dispatcher, published at both its typed key
-and `host_key("store")` delegate directly to the same SessionStore owner.
-The existing `SessionMetadata` reply type is unchanged.
-
-`set_title` is a regular function returning the owner's wait future. Calling it admits the write
-immediately, before that future is polled; dropping the future loses only the reply. The binding
-adds no asynchronous wrapper before handover, cancellation point, read, or second title writer.
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 
 ## 5. setTitle sequence
-
-```text
- caller                  SessionStore                                     SQLite             Session channel
- ------                  -----------------------------------------------  -----------------  ---------------
- setTitle(S, C) ----> SessionStore closing? -> closed at once, nothing written
-                         admit: start the write task   <== handover (the call)
-                           |  (SessionStore owns the task; dropping the
-                           |   call from here on only loses the reply)
-                           |  wait for its turn at the title writer
-                           |  (one write at a time)
-                           +-- BEGIN IMMEDIATE ---------------------------> revision of S
-                           |                                                 no Session: not_found, rollback
-                           |                                                 change refuses: rejected, rollback
-                           |                                                 write the next revision and T
-                           +-- COMMIT ------------------------------------> committed, or storage
-                           |  committed only:
-                           |    notify(S, {SessionStore, title,
-                           |      {title, titleSource, titleRevision: next}}) ------------------> Notice
-                           |  end its turn
- <---- {revision: next} ---+
-```
-
-`notify` runs after the commit and before the next write takes its turn, so the notices of one Session reach its
-channel in commit order. It never runs under the SQLite connection lock: listener code does not run under the database
-lock (the rule in [timeline.rs](../../../crates/dim-app-server/src/storage/timeline.rs)).
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 
 ## 6. Handover, cancellation and settlement
-
-This settles the boundary that SessionTitle §0 left to S5b.
-
-| Point | Rule |
-| --- | --- |
-| Before the call | The caller's own work. Cancelling it before the call writes nothing |
-| The call | The handover is SessionStore receiving the call: before it returns, `setTitle` admits the write and starts it as SessionStore's own task, or, once SessionStore is closing, fails `closed` without writing. In Rust `set_title` is a plain function that does this and returns a future of the reply. That future only awaits the task, so dropping it detaches the reply, never the write. The named service calls it inside `invoke`, so a JavaScript call is handed over once the host receives it |
-| After the call | SessionStore settles the write itself: it commits and announces, or fails and writes nothing. Dropping the call, unloading the calling row or losing the reply neither cancels nor undoes it. `setTitle` has no cancel action |
-| Lost reply | The caller reads with `title`. It does not repeat the write blindly: a second change would commit another revision ([SessionTitle Appendix C](../plugins/SessionTitle.md#appendix-c-errors-and-recovery)) |
-| SessionStore unload | Its disposer first stops admission: from then on a call fails `closed` at once and writes nothing. It then waits until every admitted write, the one in its turn and those waiting for theirs, has committed and announced or failed. Only then does it close Session files and the Timeline writer, and SqliteStorage, which unloads after SessionStore, closes the connection. The notices follow C6 delivery: once the Session is no longer loaded, nobody listens and they are dropped. Nothing is retried after a reload |
-
-Rejected: a cancel action that works until the transaction starts. It would only move the uncertainty, since a caller
-that drops the call still has to read to learn the outcome; and a JavaScript caller cannot cancel a host call in rutis
-([sessions §2](sessions-service.md#2-spike-findings), finding 5).
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 
 ## 7. The title notice
 
@@ -220,17 +151,7 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 | SessionStore or SqliteStorage reload | Settles as in §6. Consumers of `store` reload with SessionStore ([ADR 002](../../adr/002-plugin-scope.md) D3), which SessionTitle §1 accepts. SessionStore reloads only with SqliteStorage, which has no dependencies |
 
 ## 10. Timing and conflicts
-
-| Scenario | Outcome |
-| --- | --- |
-| Two changes in flight | The owner serializes them; the second change sees the first title and decides; a refusal announces nothing |
-| Writes to different Sessions | Run one at a time by the one title writer; each commits in its own transaction |
-| `setTitle` and `session.delete` | The store's write transactions order them: a commit first is removed by the delete; a delete first makes the write `not_found` |
-| `setTitle` and `session.fork` | Independent: the fork copies no title |
-| `setTitle` and Timeline appends | Independent rows; each uses its own transaction on the one store connection |
-| Notice and list read on one connection | §8: the higher `titleRevision` wins |
-| `setTitle` with no client attached | Committed; the notice is dropped; the next list shows the title |
-| The same text written again | Commits a new revision and announces it ([SessionTitle Appendix B](../plugins/SessionTitle.md#appendix-b-full-conflict-table): a duplicate rename rewrites) |
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 
 ## 11. Storage format
 
@@ -308,7 +229,7 @@ SessionTitle gate.
 
 | Rule | How this design complies |
 | --- | --- |
-| [Principles](../../architecture/rust-agent/principles.md) §4 rule 1 (commands for others' state) | The title is SessionStore's process state, outside any Timeline. Others change it only through SessionStore's typed `setTitle`, and SessionStore decides through its revision check |
+| [Principles](../../architecture/rust-agent/principles.md) §4 rule 1 (commands for others' state) | The title is SessionStore's process state, outside any Timeline. Others change it only through SessionStore's typed `setTitle`, and the change decides the next title while the owner serializes the writes |
 | §4 rule 2 (handover) | The handover is explicit: the call (§6). Before it the caller can cancel; after it only SessionStore settles the write |
 | §4 rule 3 (before callbacks) | Not applicable: no before callback |
 | §4 rule 4 (no business meaning in core) | SessionStore stores text and source without interpreting them; the notice is C6's generic record; Rpc copies the fields |
@@ -381,31 +302,4 @@ fixture](../../../runtime/fixtures/session-metadata.ts); items 6 and 12 hold the
 | D14 | Admission at the call; unload stops admission, then waits for every admitted write | Admitting a write when it takes its turn, and failing the writes still waiting at unload (the first implementation) | That left a handed-over write without a definite admission: whether it ran depended on whether its task reached the title writer before the disposer did, and a call that arrived during unload was neither refused nor admitted until the write in progress ended. Admitting at the call makes both the handover and the refusal immediate. Titles are written rarely, so waiting for the admitted ones is short. Session files' puts are admitted the same way |
 
 ## Appendix A. Rust binding
-
-In `dim_app_server::storage`:
-
-```rust
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TitleSource { Auto, Manual }
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Title { pub text: String, pub source: TitleSource }
-#[derive(Clone, PartialEq, Eq, Serialize)]
-pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
-/// The title fields of a v3 Session list entry and the title notice's data.
-#[derive(Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TitleFields { pub title: Option<String>, pub title_source: Option<TitleSource>, pub title_revision: u64 }
-#[serde(tag = "code", rename_all = "snake_case")]
-pub enum StoreError { Rejected { reason: String, message: String }, NotFound { message: String }, Closed, Storage { message: String } }
-
-impl SessionStore {
-    pub async fn title(&self, id: &str) -> Result<SessionMetadata, StoreError>;
-    /// Admits and starts the write when called, or fails `Closed` once
-    /// SessionStore is closing: the call is the handover. Dropping the
-    /// returned future loses only the reply; the hand-written method table
-    /// calls this plain fn eagerly, so a wire caller that drops the reply still commits.
-    pub fn set_title(&self, id: &str, change: ChangeFn)
-        -> impl Future<Output = Result<u64, StoreError>> + Send + 'static;
-}
-```
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).

@@ -33,11 +33,7 @@ Superseded by the owner contracts. The Agent records belong to [Agents and Colla
 
 ### Credential values in replies
 
-The Provider and Settings owners' record operations return the stored fields their contracts name ([Provider](https://github.com/arcships/dim/pull/2096), [Settings](https://github.com/arcships/dim/pull/2094)). A stored secret reference is returned as a reference; Provider resolves it through its configured secret host and obtains managed OAuth credentials from their existing owner.
-
-Provider's record read returns inline credentials only in the projection its contract names, and its business replies omit them. Settings' document read and import return the complete stored document, including original values in `mcp-secrets`; its replace answers the committed version. MCP reads its credential document through Settings and uses it to establish connections. The business API `settings.read` serves declared sources and excludes the native `mcp-secrets` document.
-
-The exception is scoped to the Provider and Settings owners' own operations, not to `sqliteStorage`: the engine's row operations are its crate-private implementation and are not callable by plugins.
+This section is superseded by the Provider and Settings contracts ([#2096](https://github.com/arcships/dim/pull/2096), [#2094](https://github.com/arcships/dim/pull/2094)).
 
 ## Settings
 

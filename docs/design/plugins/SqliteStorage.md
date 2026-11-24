@@ -107,10 +107,10 @@ None. The `storage.report` client method keeps its request, reply and error shap
 
 ## Supersedes
 
-- [Resource owner operations](../contracts/resource-owner-operations.md): the Native storage section — the `SessionStore → sqliteStorage` rows, the Settings and Provider storage tables and the `sqliteStorage` public face.
-- [Resource faces §5](../resource-faces.md): the `sqliteStorage` paragraph of the `store`/`timelineStore` section.
+- [Resource owner operations](../contracts/resource-owner-operations.md): the Native storage section.
+- [Resource faces §6](../resource-faces.md): the `sqliteStorage` row.
 - [Service faces §3.4](../service-faces.md): the `sqliteStorage` row.
-- [Native storage format](../appserver/native-storage-format.md): the paragraphs that describe the public storage face.
+- [Native storage format](../appserver/native-storage-format.md): the SQLite owner operations note.
 
 ## Rule check
 

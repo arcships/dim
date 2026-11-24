@@ -18,7 +18,7 @@ Resource and state operations use these public data faces:
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
 | `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
-| `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
+| `timelineStore` | This row is superseded by [the SessionStore contract](plugins/SessionStore.md). | — | #1298 |
 
 
 ```text
@@ -467,7 +467,7 @@ The order is fixed, and the Session part is the only participant that both waits
    `recognize` only when its own view does not already cover the path.
 2. The node answers the resolution, the node facts, and either a `worktree` candidate or a
    `discoveryError`.
-3. A candidate goes to `store.associateWorktree {id, repository, root, subtree}`. That
+3. A candidate is recorded through the Session store's association operation ([SessionStore](plugins/SessionStore.md)). That
    operation writes the directory record and the usage association together and answers `{}` only
    after both commit, deduplicated by repository and root and by Session and directory. A failed
    write is a `discoveryError` for the caller: the range is not published, and the user can still
@@ -602,96 +602,10 @@ Operation refusals are not in this table: they arrive as the tool result's own `
 code the operation already uses, so one code vocabulary serves the local and the remote path.
 
 ## 5. `store` and `timelineStore`
-
-The repository and Timeline operations are the Session store's, defined in
-[the SessionStore contract](plugins/SessionStore.md): process `store` provides the repository
-operations and the Timeline reads for callers outside a Session, and Session-scoped
-`timelineStore` is the same owner's Timeline face, bound at the Session instance by SessionScope.
-`createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and
-commit paths, not operations of that face.
-
-| Family | Operations |
-| --- | --- |
-| Timeline (`timelineStore`) | `sessionConfig`, `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot` |
-| Timeline completion (`timelineStore`) | `commits`, `closeCommits`; notifications `{subscriptionId, batchId, branchId, through, result}` |
-| Session rows (`store`) | The repository operations in [SessionStore](plugins/SessionStore.md) |
-| Worktree association (`store`) | `associateWorktree`; [service faces](service-faces.md) §4.8 |
+This section is superseded by [the SessionStore contract](plugins/SessionStore.md).
 
 ### 5.1 Ordered admission and durable completion
-
-Admission and release are the Session store's own steps, not operations of the `timelineStore`
-face. The store's `create`, `fork`, `delete` and its internal commit path assign each batch its
-place in the Session's single writer queue, drain accepted batches before a release and roll back
-a prepared creation ([SessionStore](plugins/SessionStore.md)). The face carries the reads and the
-completion notifications below.
-
-The store's admission is synchronous and ordered, and completion is a notification in branch
-sequence order:
-
-```text
-admission (owner step)  batch -> queued in call order
-commits {sessionId}                              (async)
-  -> {subscriptionId}
-notification {subscriptionId, batchId, branchId, through, result: "committed" | {code, message}}
-```
-
-- `commits` registers the caller's completion listener and answers a subscription id. The
-  provider then delivers one notification per accepted batch, after that batch is durable or has
-  failed, **in branch sequence order**. `through` is the inclusive sequence of the batch's last
-  event on `branchId`. It advances the durable watermark only when `result` is `"committed"`.
-- A failed batch is reported with its `batchId` and error, and refuses later admissions for that
-  Session with a storage error until the store releases it. The failure is not delivered twice.
-- A Session's close waits for the store's release, which answers only after every accepted batch
-  has completed or failed, so a caller that closes a Session knows no write is still in flight.
-- `closeCommits {subscriptionId}` ends a listener; the caller's unload ends it too.
-- A remote consumer reads history (`readPage`, `query`, `trace`, and the completion
-  notifications); it does not admit a batch, because the store is provided where the Session
-  state is.
-
-#### Binding shapes and lifecycle
-
-The Timeline methods take one request object. Keys are `{sessionId, branchId}`;
-`head` returns `{sequence}`, `branches {sessionId}` returns `{branches:[{info,sequence}]}`.
-`readPage {sessionId,branchId,after,limit,through}` returns `{events}`. `limit` is a target event
-count: the final complete atomic batch may exceed it. `readSegments {sessionId,segments:
-[{branchId,from,through}]}` returns `{segments}` in request order, using the existing shared read
-scope. Each stored record is `{event,trace,batchEnd}` using the canonical event and trace data.
-The Rust `TimelineStore::read(key, range)` convenience corresponds to one interval of
-`readSegments`, returning that segment directly. The native binding preserves backend overrides;
-it does not introduce a separate wire operation or replace an override with fallback probes.
-`batchEnd {sessionId,branchId,sequence}` validates the boundary and returns `{}`;
-`batchEndAt` returns `{sequence}` for the containing batch's end through the backend's existing
-operation, without repeated remote probes. `trace` takes the same position and returns `{trace}`.
-`query` takes the scope, query and optional page of [SessionStore](plugins/SessionStore.md) and
-keeps that canonical reply.
-
-`saveSnapshot {sessionId,branchId,snapshot}` returns `{}`. `sessionConfig {sessionId}` returns
-`{config}`. `latestSnapshot {sessionId,branchId,through,interpreter}` returns `{snapshot}`.
-App Server creation/deletion retain the repository and lifecycle obligations the contract states.
-
-Snapshots retain their canonical fields (`sequence`, `event_id`, `interpreter`, `state`), optional
-acceleration semantics and owner validation. Domain errors preserve `{code,message}` using
-`invalid`, `closed`, `cancelled` or `storage`; parsing rejects malformed requests at the boundary.
-
-The bridge binding of `commits` is `commits({sessionId}, listener) -> {subscriptionId}`. The caller
-must declare `timelineStore`; the owner registers the listener with that calling row before
-returning, and the row's unload withdraws it. Register before the store admits the batches to
-observe; there is no replay of earlier admissions. `closeCommits` withdraws it explicitly and is
-idempotent. Each listener receives only its requested Session's completions, tagged with its own
-subscription id. A slow or failed observer does not delay durable completion or release, and
-ending observation never cancels a write or the native publication callback. The calling row must
-belong to the runtime in which the provider installed the binding; sharing the native binding
-with another runtime does not connect that runtime's listeners to the provider's completion bus.
-
-The native binding keeps the store's synchronous admission and its existing publish callback.
-Its notification `batchId` is the JSON encoding of `[branchId, through]`, the batch identity
-already known at admission; local data calls preserve their supplied `batchId`. This identifier
-is notification correlation only, with no additional durable fact or lookup. A refused admission
-produces no completion notification. The one backend callback keeps native publication
-synchronous, then enqueues observation on rutis's existing ordered asynchronous bus. Release
-drains that backend's writes and callbacks; it does not wait for observers to finish.
-Foreign-language rows in the provider runtime may observe and read; a separate runtime has
-read-only access.
+This section is superseded by [the SessionStore contract](plugins/SessionStore.md).
 
 ### 5.2 Session rows
 
@@ -706,8 +620,8 @@ hand-written `HostDispatch`.
 | --- | --- | --- |
 | `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
 | `fileStorage` | `fsHost` | The provider and its binding: roots, leases, generations and one validated path component per open are its internals |
-| `sqliteStorage` | `sqliteStorage.storageReport({})` | SQLite file, WAL and reclaimable bytes ([native storage](appserver/native-storage-format.md)). Session repository operations belong to `store`. |
-| `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
+| `sqliteStorage` | This row is superseded by [the SqliteStorage contract](plugins/SqliteStorage.md). | — |
+| `timelineStore` | This row is superseded by [the SessionStore contract](plugins/SessionStore.md). | — |
 
 For the owners below, Rust callers use a thin binding over the operations — a direct
 in-process call rather than JSON — and none of them publishes a second API: there is no owner
@@ -797,11 +711,8 @@ No other requirement is raised:
    the text is the file operation's own (line numbers, previews, image blocks). A command returns
    records, and the control side composes the tool result, because the task identity, the
    background policy and the output-path registration are its.
-6. **Repository face names.** `store` names the Session-row repository operations and the
-   Timeline reads for callers outside a Session; `timelineStore` is the same owner's Timeline
-   face bound at the Session instance by SessionScope. One owner, two scope bindings
-   ([SessionStore](plugins/SessionStore.md)); `createSession`, `releaseSession`,
-   `rollbackSession` and `append` are the owner's own steps.
+6. **Repository face names.** This section is superseded by [the SessionStore contract](plugins/SessionStore.md).
+
 7. **Root identity form.** The Session passes the opaque `rootIdentity` back to the provider.
    The provider owns its platform form and comparison.
 8. **Retained task records.** Settlement is explicit (§3.8). If a long-lived local provider wants a
