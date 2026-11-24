@@ -466,9 +466,14 @@ function Approval({ request, sessionId, enabled }: { request: ApprovalRequest; s
     finally { setBusy(false) }
   }
   const call = member?.call ?? request.call
-  return <section className="rw-prompt" aria-label="Approval required">
+  return <section className={memberRequest ? "rw-prompt rw-member-approval" : "rw-prompt"} aria-label="Approval required">
     <h2>Approval required · {call.name}</h2>
     <p>{request.reason}</p>
+    {memberRequest && <p>Leader branch: {request.branchId}</p>}
+    {member && <>
+      <p>Member: {member.member.agentId} · Session: {member.member.sessionId} · Branch: {member.member.branchId}</p>
+      <p>Original reason: {member.reason}</p>
+    </>}
     {reading && <p role="status">Reading member action…</p>}
     {(!memberRequest || member !== undefined) && <pre>{JSON.stringify(call.input, null, 2)}</pre>}
     {error && <p className="rw-error" role="alert">{error}</p>}

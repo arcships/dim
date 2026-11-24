@@ -61,7 +61,8 @@ export function useFileMentions(sessionId: string, enabled: boolean, replace: (t
   }
 
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (!open || event.nativeEvent.isComposing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false
+    if (!open || event.nativeEvent.isComposing || event.altKey || event.shiftKey
+      || ((event.metaKey || event.ctrlKey) && event.key !== "Enter")) return false
     if (event.key === "Escape") {
       setDismissed(key)
     } else if (options.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {

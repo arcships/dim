@@ -182,7 +182,8 @@ export function ProviderSettings({ detail, onDirty, open, text }: {
       </div>
       {tab === "models" && <ProviderModels key={provider.providerId} providerId={provider.providerId} online={online && !busy}
         refreshCount={formKey} text={text} onDirty={markDirty}
-        onVersion={(version) => setProvider((current) => current?.providerId === provider.providerId ? { ...current, version } : current)} />}
+        onVersion={(expectedVersion, version) => setProvider((current) =>
+          current?.providerId === provider.providerId && current.version === expectedVersion ? { ...current, version } : current)} />}
       {tab === "connection" && provider.account && <section className="rw-settings-card">
         <h2>{text("Account", "账户")}</h2>
         <p>{provider.account.state.authenticated

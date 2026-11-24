@@ -69,7 +69,8 @@ function identification(model: ManagementModel, providerId: string, text: Text) 
 }
 
 export function ProviderModels({ providerId, online, refreshCount, text, onDirty, onVersion }: {
-  providerId: string; online: boolean; refreshCount: number; text: Text; onDirty: (dirty: boolean) => void; onVersion: (version: number) => void
+  providerId: string; online: boolean; refreshCount: number; text: Text; onDirty: (dirty: boolean) => void
+  onVersion: (expectedVersion: number, version: number) => void
 }) {
   const [catalog, setCatalog] = useState<Selection>()
   const [query, setQuery] = useState("")
@@ -174,7 +175,7 @@ export function ProviderModels({ providerId, online, refreshCount, text, onDirty
     const result = await connection.client.call(method, {
       providerId, expectedVersion: version, ...(method !== "provider.model.set_enabled" ? { reply: "summary" } : {}), ...params,
     }, readModelWrite)
-    onVersion(result.version)
+    onVersion(version, result.version)
     return result
   }
 

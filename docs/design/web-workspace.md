@@ -250,12 +250,15 @@ indent and a connector. Expand the Session to read its branch directory.
 Attached Sessions reflect branch lifecycle notices in the list. Search matches
 titles in directories already read and reveals their ancestor rows.
 Selecting a branch opens its transcript in the main conversation area.
-A Session title opens its current default conversation.
+A Session title opens its current default conversation. If a child is the
+default, the expanded Session also shows a Root branch row that opens the
+root without changing that default.
 The row menu offers available branch actions and keeps the end confirmation.
 
 ```text
 Session List                        Conversation
   Update cache              [v]       Check parser
+    L Root branch
     L Check parser        [...]       [branch transcript]
     L Review docs         [...]       [branch composer]
 ```

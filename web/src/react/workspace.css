@@ -374,6 +374,7 @@ button:disabled { cursor: default; }
   .rw-queue { max-block-size: calc(2 * var(--queue-row-height) + var(--queue-row-gap)); }
 }
 .rw-prompt { max-height: 32dvh; overflow: auto; }
+.rw-member-approval { max-height: 50dvh; overflow-wrap: anywhere; }
 .rw-prompt + .rw-prompt { margin-top: .35rem; }
 .rw-prompt > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
 .rw-prompt fieldset { display: grid; gap: .25rem; }

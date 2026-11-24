@@ -1,5 +1,5 @@
 import { Button, ComboBox, Input, Label, ListBox } from "@heroui/react"
-import { useEffect, useLayoutEffect, useState, type FormEvent } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react"
 import { RpcError } from "../rpc/client"
 import { ROOT_BRANCH_ID, type PermissionPreset } from "../rpc/protocol"
 import { readScheduledDelete, readScheduledHistory, readScheduledJob, readScheduledJobs, readScheduledRun, readScheduledSave,
@@ -59,6 +59,7 @@ export function ScheduledSettings({ page, text, open, openSession, onDirty }: {
   const [historyBusy, setHistoryBusy] = useState(false)
   const [editorVersion, setEditorVersion] = useState(0)
   const [editorDirty, setEditorDirty] = useState(false)
+  const routeVersion = useRef(0)
   const routeCwd = new URLSearchParams(location.search).get("cwd")
   const id = page.kind === "job" ? page.id : undefined
   const editing = page.kind === "new" || (page.kind === "job" && page.edit)
@@ -84,25 +85,28 @@ export function ScheduledSettings({ page, text, open, openSession, onDirty }: {
 
   async function history(jobId: string, limit: number) {
     if (!online || !connection.supports("schedule.history")) return
+    const version = routeVersion.current
     setHistoryBusy(true)
     setHistoryError("")
     try {
-      setRuns(await connection.client.call("schedule.history", { job_id: jobId, limit }, readScheduledHistory))
+      const result = await connection.client.call("schedule.history", { job_id: jobId, limit }, readScheduledHistory)
+      if (version === routeVersion.current) setRuns(result)
     } catch (cause) {
-      setHistoryError(errorMessage(cause))
+      if (version === routeVersion.current) setHistoryError(errorMessage(cause))
     } finally {
-      setHistoryBusy(false)
+      if (version === routeVersion.current) setHistoryBusy(false)
     }
   }
 
   async function load(manual = false) {
     if (!supported || loading || busy) return
     if (editorDirty && (!manual || !window.confirm(text("Discard the draft and reload this task?", "放弃草稿并重新加载此任务？")))) return
+    const version = routeVersion.current
     setLoading(true)
     setError("")
     try {
       setJobs(await connection.client.call("schedule.list", {}, readScheduledJobs))
-      if (runs !== undefined && id) await history(id, 20)
+      if (version === routeVersion.current && runs !== undefined && id) await history(id, 20)
       if (editing && page.kind !== "new") setEditorVersion((version) => version + 1)
       setConflict(false)
       if (manual && page.kind === "list") setUncertain(false)
@@ -117,12 +121,14 @@ export function ScheduledSettings({ page, text, open, openSession, onDirty }: {
     if (supported) void load()
   }, [supported])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setRuns(undefined)
     setHistoryError("")
+    setHistoryBusy(false)
     setConflict(false)
     setError("")
-  }, [id, editing])
+    return () => { routeVersion.current++ }
+  }, [page.kind, id, editing, routeCwd])
 
   function writeFailed(cause: unknown) {
     setConflict(cause instanceof RpcError && cause.appError === "schedule_conflict")
@@ -139,13 +145,14 @@ export function ScheduledSettings({ page, text, open, openSession, onDirty }: {
     for (const key of ["name", "prompt", "schedule", "target", "enabled"] as const) {
       if (!selected || JSON.stringify(input[key]) !== JSON.stringify(baseline[key])) Object.assign(patch, { [key]: input[key] })
     }
+    const version = routeVersion.current
     setBusy(true)
     setError("")
     try {
       const result = await connection.client.call("schedule.save", { job: patch, ...(selected ? { revision: selected.revision } : {}) }, readScheduledSave)
       setJobs((list) => [...(list?.filter(({ id }) => id !== result.job.id) ?? []), result.job])
       setNotice(text("Task saved.", "任务已保存。"))
-      open(path(jobPath(result.job.id)), true, true)
+      if (version === routeVersion.current) open(path(jobPath(result.job.id)), true, true)
     } catch (cause) {
       writeFailed(cause)
     } finally {
@@ -168,6 +175,7 @@ export function ScheduledSettings({ page, text, open, openSession, onDirty }: {
     setNotice("")
     try {
       if (action === "run_now") {
+        const version = routeVersion.current
         const result = await connection.client.call(method, { job_id: job.id }, readScheduledRun)
         setNotice([result.state, result.detail].filter(Boolean).join(" · "))
         try {
@@ -175,7 +183,7 @@ export function ScheduledSettings({ page, text, open, openSession, onDirty }: {
         } catch (cause) {
           setError(errorMessage(cause))
         }
-        if (runs !== undefined && id) await history(id, 20)
+        if (version === routeVersion.current && runs !== undefined && id) await history(id, 20)
       } else if (action === "set_enabled") {
         const updated = await connection.client.call(method, { job_id: job.id, enabled: !job.enabled }, readScheduledJob)
         setJobs((list) => list?.map((item) => item.id === updated.id ? updated : item))

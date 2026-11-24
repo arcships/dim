@@ -64,7 +64,7 @@ export function SessionDirectory({ workspaces, members, openMember, active, phas
       const matchParent = matches(session)
       const children = (members.get(session.sessionId) ?? []).filter((member) => (!runningOnly || member.running) && (matchParent || matches(member))).sort(bySort)
       const directory = branchProps.branchDirectories.get(session.sessionId)
-      const lines = directory?.lines.filter((line) => line.id !== ROOT_BRANCH_ID) ?? []
+      const lines = directory?.lines.filter((line) => line.id !== ROOT_BRANCH_ID || directory.defaultBranchId !== ROOT_BRANCH_ID) ?? []
       const visibleIds = new Set(lines.filter((line) => (!runningOnly || line.state.kind === "working")
         && (matchParent || includes(line.purpose || line.id))).map((line) => line.id))
       for (const line of [...lines].reverse()) {
@@ -186,17 +186,18 @@ function SessionGroup({ workspace, rows, active, searching, phase, expandedSessi
             </div>
             {canExpand && <ul className="rw-member-list" id={`${listId}-children-${sessionId}`} hidden={!childrenOpen}>
               {directory && branches.map((line) => {
-                const name = line.purpose || line.id
-                return <li key={line.id} className="rw-branch-row" style={{ marginInlineStart: `${Math.min(line.depth - 1, 3) * .65}rem` }}>
+                const isRoot = line.id === ROOT_BRANCH_ID
+                const name = isRoot ? branchStates.main : line.purpose || line.id
+                return <li key={line.id} className="rw-branch-row" style={{ marginInlineStart: `${Math.max(0, Math.min(line.depth - 1, 3)) * .65}rem` }}>
                   <button type="button" className="rw-directory-session rw-directory-member" aria-label={name}
                     aria-current={active === sessionId && activeBranch === line.id ? "page" : undefined}
                     disabled={line.state.kind === "creation-failed"} onClick={() => openBranch(sessionId, line.id)}>
                     <GitBranch size={14} aria-hidden="true" />
-                    <span className="rw-session-copy"><span>{name}</span><small>{line.id === directory.defaultBranchId ? "Current conversation" : branchStates[line.state.kind]}</small></span>
+                    <span className="rw-session-copy"><span>{name}</span>{!isRoot && <small>{line.id === directory.defaultBranchId ? "Current conversation" : branchStates[line.state.kind]}</small>}</span>
                     {line.state.kind === "working" && <span className="rw-live" aria-hidden="true" />}
                   </button>
-                  <BranchActions sessionId={sessionId} line={line} lines={directory.lines} defaultBranchId={directory.defaultBranchId}
-                    connected={phase === "connected"} useDefault={() => select(sessionId)} create={createBranch(sessionId, line.id)} />
+                  {!isRoot && <BranchActions sessionId={sessionId} line={line} lines={directory.lines} defaultBranchId={directory.defaultBranchId}
+                    connected={phase === "connected"} useDefault={() => select(sessionId)} create={createBranch(sessionId, line.id)} />}
                 </li>
               })}
               {!searching && directory === undefined && <li className="rw-branch-discovery">
