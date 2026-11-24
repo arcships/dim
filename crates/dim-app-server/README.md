@@ -623,6 +623,8 @@ unchanged transaction/backup/lifecycle behavior.
 
 ## Managed provider contract
 
+> Superseded: the account owners' target contract is [ManagedAccount](../../docs/design/plugins/ManagedAccount.md) and the ChatGPT account's is [ManagedProviders](../../docs/design/plugins/ManagedProviders.md). The `dyn ManagedProvider` port, the `ManagedSearch` face and the lease paragraphs below are the pre-migration shape.
+
 The product profile includes the local [ChatGPT plan provider](../../docs/design/appserver/chatgpt-plan.md). Its account operations live in `account.chatgpt` and its models use the managed catalog and connection path below.
 
 Catalog reads accept caller cancellation. Concurrent reads may share the account

@@ -50,7 +50,7 @@ with its existing owner; management never writes another owner's state.
 | Account namespaces | Account owners provide login, usage and logout. The [ChatGPT plan provider](chatgpt-plan.md) owns `account.chatgpt`. |
 | Model selection and credentials | `providerService.resolve` and the account owners' `credential`; the old host ports are deleted ([Provider](../plugins/Provider.md)) |
 | `auxiliaryModel.complete` | Deleted: the caller uses `providerService.invoke` with `Mode::Once` ([Provider](../plugins/Provider.md)) |
-| `provider` Settings source, user scope (`provider.json`) | The Provider part registers it; it holds `userAgent`, the User-Agent override (§2, Model request identity), so a user's choice is a declared, validated document rather than a request-local input |
+| `provider` Settings source, user scope (`provider.json`) | ProviderSettings owns the source and its `userAgent` ([#2094](https://github.com/arcships/dim/pull/2094)); Provider reads `user_agent` at request time (§2, Model request identity) |
 | Native CLI Provider flows | Migrate discovery, create, update and disconnect together with the new owner methods |
 
 Business logic stays in Provider, not `connection.rs`, `protocol.rs` or a wiring

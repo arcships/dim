@@ -11,8 +11,8 @@ Images a Session receives — attachments ([Attachments](Attachments.md) A.1) an
 ([WorkspaceTools § read results and images](../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images))
 — reach the conversational model only as references, and the model asks about them through the
 `image_understand` tool. Which model answers is Modality's `modality.image.understand` target
-([Modality](Modality.md) A.1), resolved by its owner and executed through the existing
-`auxiliaryModel` host. The conversational model never receives image pixels, and the image's
+([Modality](Modality.md) A.1), resolved by its owner and executed through
+`providerService.invoke`. The conversational model never receives image pixels, and the image's
 stored content never changes.
 
 ## 1. Scope and non-goals
@@ -21,7 +21,7 @@ Owns:
 
 - the `image_understand` tool: its declaration, its reference and question parameters, its
   reference resolution against the calling branch, its limits, errors and reuse;
-- the request it hands to the `auxiliaryModel` host: the image, the question and the
+- the request it hands to `providerService.invoke`: the image, the question and the
   instruction, and nothing else.
 
 Does not own:
@@ -29,7 +29,7 @@ Does not own:
 - how an image block becomes a reference in a request — ModelProvider, stated in
   [Attachments](Attachments.md) A.1;
 - which model answers — Modality's `modality.image.understand` resolution;
-- executing a provider call — Provider's connection and the `auxiliaryModel` host;
+- executing a provider call — Provider's `invoke` and the connection it resolves;
 - the stored image and its authorization — the Timeline and the branch facade.
 
 ## 2. Own contract
@@ -55,7 +55,7 @@ image_understand {image, question}
   v
 Modality: the modality.image.understand target
   |-- configured default unavailable -------------------------> image_model_unavailable (owner's reason)
-  |-- execution through auxiliaryModel -> answer -------------> result text
+  |-- execution through providerService.invoke -> answer ------> result text
   '-- provider, account or connection failure ----------------> image_understand_failed
 ```
 
@@ -125,7 +125,7 @@ the resulting target for that call and its retries. Explicit, configured default
 precedence, and the reason an unavailable target reports, are Modality's rule; this design
 consumes the answer.
 
-Execution uses the `auxiliaryModel` host's named-binding form: the resolved model, an
+Execution uses `providerService.invoke` with `Mode::Once`: the resolved model, an
 instruction fixed by this design (the request's `system`, not the Agent System), one user
 message carrying the image block and the question, and the output limit. The request carries no
 conversation, no tool definitions and no Session identity. The answer is text.
@@ -165,7 +165,7 @@ owner changes its own document.
 - **Ordering impact.** None: composed per request with the other entries.
 - **Owner and issue.** Prompt, [#798](https://github.com/arcships/dim/issues/798).
 
-**No requirement raised to Provider or the assembly.** The `auxiliaryModel` host already takes the model for one call ([AuxiliaryModel](../appserver/auxiliary-model.md)); the product assembly only installs this part next to the other Session parts.
+**No requirement raised to Provider or the assembly.** `providerService.invoke` already runs one request with `Mode::Once` ([Provider](Provider.md)); the product assembly only installs this part next to the other Session parts.
 
 **M4 TimelineTree: published branch-chain queries for Session parts.**
 
@@ -209,7 +209,7 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 | §4.4 No business meaning in core | No core change: the tool is registered through `toolRegistry`, and the reference rule stays in ModelProvider as Attachments already owns it. |
 | §4.5 Atomic batches | The design writes no event itself; Loop's ordinary tool-call batch covers the call and its result. |
 | §4.6 Context only from handed-off events | The answer reaches the model only as a tool result; no injection during request preparation. |
-| §4.7 Public events and services only | The part uses `toolRegistry`, `treeCommands.query` with published chain scope (§5 M4) to resolve a reference, the declared `auxiliaryModel` host, `sessionFiles` to read stored image bytes, `guideEntries` for its input-guide entry, and Modality's M1 read. |
+| §4.7 Public events and services only | The part uses `toolRegistry`, `treeCommands.query` with published chain scope (§5 M4) to resolve a reference, Provider's `invoke`,  `sessionFiles` to read stored image bytes, `guideEntries` for its input-guide entry, and Modality's M1 read. |
 | §4.8 Requirements to mechanism owners | §5, M1–M4. The existing TimelineTree query gains published chain scope; no new runtime or rutis mechanism. |
 | §4.9 Only facts later decisions use enter the Timeline | Only the ordinary tool facts enter; the digest index is derived and discarded. |
 | §1 Capability and App Server boundary | A Session Capability in its own crate; the App Server only installs it. |

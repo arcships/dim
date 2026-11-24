@@ -85,6 +85,8 @@ Superseded: the `auxiliaryModel` name leaves the catalog. The replacement operat
 
 ## 5. Flow
 
+> Sections 5–11 describe the retired `auxiliaryModel` flow; they are historical and superseded by [Provider](../plugins/Provider.md) and [DimOAuth](../plugins/DimOAuth.md).
+
 ```
  Consumer          AuxiliaryModel (owner)     catalog/connection    ModelHost (Aimux)
     | complete(model, req)  |                       |                       |

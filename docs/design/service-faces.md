@@ -352,7 +352,7 @@ providerService.selectable({use}) -> {models, default?}
   -> error {code: invalid | not_found | unavailable | auth_required | cancelled | closed | failed, message}
 ```
 
-- 每个 operation 只收一个请求对象；没有输入的写 `{}`（`provider-management.md` §3.6 的形状），多一个参数或未知字段都是 `invalid_request`。
+- 每个 operation 只收一个请求对象；没有输入的写 `{}`，多一个参数或未知字段都是 `invalid`。
 - 取消是协议动作：调用方丢弃等待，或被取消的绑定调用不再进入 owner；owner 自己的生命周期仍然约束它启动的 worker。
 - 回复就是 owner 的类型：`ExecutionSettings`、`PromptSuggestionSettings`、`ModelCapabilitySnapshot`、`ModalityModelSnapshot`、`ModelSelection` 都是 serde camelCase 数据，形状与 [Provider](plugins/Provider.md) 的操作一致。`InstalledToolchain` 的 `PathBuf` 换成 UTF-8 字符串（`{bin, root}`）：某个 runtime 的目录不是 UTF-8 时只跳过那一项，其余照常给子进程用。
 - 提供方仍是原来的部件（App Server 的 `ExecutionSettings`、`ToolchainSource`、`PromptSuggestionSettings`、`Provider`，以及 aimux 的 `ConfiguredModels`）：`provide` 一次给出类型键上的绑定和 `host_key(name)` 上的 face；没有适配层，也没有第二份业务逻辑。

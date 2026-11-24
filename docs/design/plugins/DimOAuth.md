@@ -80,12 +80,12 @@ The `account.*` namespace keeps its published methods; handlers call the same ow
 
 ### Flows
 
-| Operation | Normal path | Caller cancels | Owner closes or reloads | Settled by |
-| --- | --- | --- | --- | --- |
+| Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
+| --- | --- | --- | --- | --- | --- |
 | `credential` | Read the grant atomically when fresh; inside the 30-second window take the lock and refresh; answer the facts and the generation | The wait ends; a started refresh continues under the owner | The call ends `cancelled` | Pending calls end `closed`; a persisted grant stays | DimOAuth's refresh task |
 | `rejected` | Compare the generation; current → one serialized refresh, superseded → the current credential; a rejected refresh signs out the grant that holds the lock | The wait ends; the refresh continues | The call ends `cancelled` | Pending calls end `closed` | DimOAuth |
-| `search` / `title` | Send the relay request with the current bearer; a 401 follows the same rule as `rejected` | The request is cancelled | Pending requests end `closed` | DimOAuth |
-| `account.*` | Run the login flow or the account read; write the record through FileStorage; publish the result | The attempt is cancelled | Attempts end with the generation; a completed token rotation settles before unload | DimOAuth |
+| `search` / `title` | Send the relay request with the current bearer; a 401 follows the same rule as `rejected` | The request is cancelled | The call ends `cancelled` | Pending requests end `closed` | DimOAuth |
+| `account.*` | Run the login flow or the account read; write the record through FileStorage; publish the result | The attempt is cancelled | The attempt stays queryable until its deadline | Attempts end with the generation; a completed token rotation settles before unload | DimOAuth |
 
 ## Exceptions with reasons
 
@@ -126,19 +126,66 @@ None. The `account.*` method names, fields, error codes and user-visible behavio
 
 - `service-faces.md`: the `managedSearch` row and §4.6, whose `search` this owner answers.
 - `crates/dim-app-server/README.md`: the managed provider contract's search paragraph; the account owner answers it directly.
-- `plugins/SessionTitle.md` §3.3's `sessionTitleGenerator` name: the title operation is `dimAccount.title`.
+
 
 ## Binding appendix
 
-`DimOAuth` is the owner type; `dimAccount` is the wire name. The request and reply types are the [ManagedAccount](ManagedAccount.md) types plus the search and title types this crate already exports.
+`DimOAuth` is the owner type; `dimAccount` is the wire name. The request and reply types are the [ManagedAccount](ManagedAccount.md) types plus these:
 
 ```rust
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRequest { pub query: String, pub count: u32 }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchReply { pub results: Vec<SearchHit> }
+
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", content = "details", rename_all = "snake_case")]
+pub enum SearchError {
+    #[error("{reason}")] Unavailable { reason: String },
+    #[error("{0}")] Failed(String),
+    #[error("cancelled")] Cancelled,
+    #[error("the account owner is unloading")] Closed,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleRequest { pub provider: String, pub text: String }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleReply { pub title: String }
+
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", content = "details", rename_all = "snake_case")]
+pub enum TitleError {
+    #[error("{0}")] UnsupportedProvider(String),
+    #[error("{reason}")] Unavailable { reason: String },
+    #[error("cancelled")] Cancelled,
+    #[error("the account owner is unloading")] Closed,
+    #[error("{0}")] Failed(String),
+}
+
+// The delivery maps the search types to the facade's `WebSearchRequest`/`WebSearchResponse` and the
+// title types to `GenerateTitleRequest`/`GenerateTitleReply`; the operation shapes above are the face.
+
 impl PublicService for DimOAuth {}
 
 #[rutis::service(name = "dimAccount")]
 impl DimOAuth {
     pub async fn availability(&self, cancelled: CancelledFn) -> Result<AccountAvailability, AccountError> { /* ... */ }
-    pub async fn subscribe(&self, cancelled: CancelledFn) -> Result<Subscription, AccountError> { /* ... */ }
+    pub async fn subscribe(&self, caller: &Ctx, notify: NotifyFn, cancelled: CancelledFn) -> Result<(), AccountError> { /* ... */ }
     pub async fn catalog(&self, cancelled: CancelledFn) -> Result<AccountCatalog, AccountError> { /* ... */ }
     pub async fn credential(&self, request: CredentialRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }
     pub async fn rejected(&self, request: RejectedRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }

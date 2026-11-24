@@ -100,7 +100,7 @@ None. The `account.chatgpt.*` method names, fields, error codes and user-visible
 ## Requirements raised to mechanism owners
 
 - **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `read`, `update` and `write` for the ChatGPT account record.
-- **Storage owner ([#2018](https://github.com/arcships/dim/issues/2018)).** Provider reads a Session's creation record through `store.creationRecord` to require an interactive client Session for this provider; the requirement is stated in [Provider](Provider.md)'s requirements.
+- **SessionStore ([#2091](https://github.com/arcships/dim/pull/2091)).** Provider reads a Session's creation record through `creationRecord` to require an interactive client Session for this provider; the requirement is stated in [Provider](Provider.md)'s requirements.
 
 ## Supersedes
 
@@ -115,7 +115,7 @@ impl PublicService for ChatGptAccount {}
 #[rutis::service(name = "chatgptAccount")]
 impl ChatGptAccount {
     pub async fn availability(&self, cancelled: CancelledFn) -> Result<AccountAvailability, AccountError> { /* ... */ }
-    pub async fn subscribe(&self, cancelled: CancelledFn) -> Result<Subscription, AccountError> { /* ... */ }
+    pub async fn subscribe(&self, caller: &Ctx, notify: NotifyFn, cancelled: CancelledFn) -> Result<(), AccountError> { /* ... */ }
     pub async fn catalog(&self, cancelled: CancelledFn) -> Result<AccountCatalog, AccountError> { /* ... */ }
     pub async fn credential(&self, request: CredentialRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }
     pub async fn rejected(&self, request: RejectedRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }

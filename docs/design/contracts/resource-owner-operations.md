@@ -81,39 +81,7 @@ First import emits no notice. File and project profiles retain their lease and n
 
 ### Provider → sqliteStorage
 
-| Operation family | Current call sites and proposed inputs/results |
-| --- | --- |
-| readSelection(scope); writeSelection(scope,expectedVersion,selection) | selection/select. Return the stored selection and version; the write checks the scope version and commits the selected model atomically. |
-| readPreferences(providerId,modelId) | saved_preferences. Read the one model preference field and keep the existing absent-value behavior in Provider. |
-| readRecord({providerId,projection}) | catalog, catalog_for, catalog_target, resolve_connection, probe, discovery and edit preparation. Select header/version, one target model, managed catalog or full editable record as required. Return missing or the matching persisted projection. A projection containing an inline credential returns its stored value. |
-| findCandidates(criteria); listProviders(filter); queryModels(page); managementPage(page) | Candidate IDs/ordered models, provider list, filtered model pages and management windows use their existing indexed selectors, limits, ordering and row-error behavior. Pass bundle identity, required catalog inputs and account facts as data. Keep transaction-local adoption and page selection together wherever the existing query does both. |
-| activateSource(revision,baseFacts); adoptProvider(id,revision,baseFacts) | Existing source activation and per-provider adoption transactions. Supply only the bundle facts required by the existing operation. |
-| commitEdit({providerId,edit}) | Closed edit variants: create, delete, connection/header patch, model create/edit/reset/delete, preferences, single/bulk enablement and discovery refresh. Preserve each existing transaction's touched columns, indexes, write precondition and projection. Create checks absence; versioned edits check the expected version. Refresh and connection changes that compare the prior record keep that exact comparison. Return the committed version and requested existing projection. |
-| importLegacy(batch) | The existing legacy import commits its related records together and returns the existing item results. Cancellation and rollback keep the original transaction boundary. |
-
-Provider validates edits and runs probe/discovery HTTP requests outside SQLite. A conditional
-commit returns the original conflict on a stale snapshot.
-
-**Record reads.** `readRecord({providerId,projection}) → PersistedProviderRecord | null`.
-Use the existing persisted managed/static variants and the five SQLite model projections:
-`header`, `all`, `mutable`, `one{modelId}`, `selected{modelIds}`. Header and target reads
-retain their original query bounds. A version-only read uses the existing header version lookup.
-
-**Conditional edits.** `commitEdit({providerId,edit})` selects one transaction by the edit tag.
-Each variant carries its own precondition; callers cannot choose a weaker one.
-
-| Edit | Input and precondition | Reply to Provider |
-| --- | --- | --- |
-| create / delete | Admitted create record and absence / expected version. Built-in deletion disables the record. | Created record / void |
-| patchHeader | Expected version, existing ProviderPatch header fields, UpdateReplyKind (full or summary) | Committed projection for the requested reply |
-| replaceConnection / refreshStatic | Prior complete static record and admitted replacement. Compare the exact prior record in the transaction. | Committed record |
-| refreshManaged | Previous optional version, discovered account catalog and current account facts. Preserve account identity and optional-version checks. | Committed managed record |
-| createModel / deleteModel / editModel | Expected version and ModelEntry / modelId / {modelId, edit: ModelEdit or null}. Null resets the edit. | Committed catalog projection |
-| preferences / enableModel / enableModels | Expected version and {modelId, patch: PreferencesPatch} / {modelId, enabled} / {modelIds}. Retain bundled and account facts used by the existing mutation. | Management projection / version / catalog projection |
-
-Discovery and credential admission run in Provider before the conditional write. SQLite executes
-the existing mutation, including its index updates, in one transaction. Provider constructs the
-existing business reply. `importLegacy` remains its existing separate bulk transaction.
+Superseded by [Provider](../plugins/Provider.md): Provider owns its records, selections, preferences, candidates, pages, source activation, adoption, edit commits and legacy import. `sqliteStorage` keeps only `storageReport` and the offline operations; Provider uses the engine's private transaction primitive inside the crate. The operation families below are historical.
 
 ### Credential values in replies
 

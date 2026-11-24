@@ -51,8 +51,18 @@ Web follows the Dim account's availability:
 
 ```rust
 let AccountAvailability { signed_in, .. } = account.availability(cancelled.clone()).await?;
-let mut changes = account.subscribe(cancelled.clone()).await?;
-while let Some(available) = changes.next().await { /* declare or withdraw web_search */ }
+account
+    .subscribe(
+        &self.ctx,
+        Arc::new(|availability: AccountAvailability| {
+            Box::pin(async move {
+                // Declare or withdraw web_search from `availability.signed_in`.
+                Ok(())
+            })
+        }),
+        cancelled.clone(),
+    )
+    .await?;
 ```
 
 The client namespace is the same owner's operations behind the client protocol; no part calls it.
@@ -76,7 +86,7 @@ All operations are marked on the owner type and provided under the owner's face 
 | Operation | Intent | Request | Reply | Cancellation, timeout | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `availability` | Whether the account is signed in | `{}` | `{signed_in, identity?}` | The caller cancels; no timeout | `cancelled`, `closed`, `failed` |
-| `subscribe` | Follow availability changes | `{}` | `{subscription}` | The subscription ends with the caller's row | `closed` |
+| `subscribe` | Follow availability changes | `caller`, a `notify` callback | `{}` | The registration ends with the calling row or the owner's close; a call cancelled before registration changes nothing | `cancelled`, `closed` |
 | `catalog` | The models the plan serves | `{}` | `{account, models}` | The caller cancels; a catalog read may wait on the account's own refresh | `unavailable`, `cancelled`, `closed`, `failed` |
 | `credential` | The connection facts for one request | `{provider, model}` | `{protocol, base_url, headers, bearer, generation}`; a read inside the refresh window refreshes first | The caller cancels; a refresh already started finishes under the owner | `not_found`, `account_required`, `unavailable`, `cancelled`, `closed`, `failed` |
 | `rejected` | The generation the provider refused; answer the credential to retry with | `{provider, generation}` | A credential; the current generation refreshes once, a superseded generation answers the current credential | The caller cancels; a refresh already started finishes under the owner | `not_found`, `account_required`, `unavailable`, `cancelled`, `closed`, `failed` |
@@ -91,15 +101,15 @@ All operations are marked on the owner type and provided under the owner's face 
 
 ### Errors
 
-| Kind | What the caller does next |
-| --- | --- |
-| `not_found` | The provider is not this owner's; re-read the record |
-| `account_required` | Sign in: the account is signed out, or the refresh it attempted was rejected |
-| `unavailable` | The plan or the relay cannot serve the model now; the message names the reason |
-| `unsupported_provider` | This owner does not serve that provider; use the owner the record names |
-| `cancelled` | Nothing changed; the call stopped where it was cancelled |
-| `closed` | This generation is unloading; call the next generation |
-| `failed` | The account store or the provider request failed; retry the business step |
+| Kind | Retry | What the caller does next |
+| --- | --- | --- |
+| `not_found` | No | The provider is not this owner's; re-read the record and use the owner it names |
+| `account_required` | After sign-in | The account is signed out, or the refresh was rejected; the client signs in, then the caller calls again |
+| `unavailable` | After the account changes | The plan or the relay cannot serve the model now; the message names the reason |
+| `unsupported_provider` | No | This owner does not serve that provider; use the owner the record names |
+| `cancelled` | Yes, by calling again | Nothing changed; the call stopped where it was cancelled |
+| `closed` | Against the next generation | This generation is unloading; call the replacement generation |
+| `failed` | Yes, after the store or provider recovers | The account store or the provider request failed; retry the business step |
 
 ### Flows
 
@@ -108,6 +118,7 @@ All operations are marked on the owner type and provided under the owner's face 
 | `availability`, `subscribe` | Read the account state; publish the value and its changes | The read stops; a subscription ends | The subscription ends | The watch is rebuilt from the store; subscribers end | The owner |
 | `catalog` | Read the grant, refresh if inside the window, project the plan's models | The wait ends; the owner's refresh continues | The call ends `cancelled` | Pending calls end `closed`; the next generation re-reads | The owner's refresh task |
 | `credential` | Read the grant, refresh if inside the window, answer the facts and the generation | The wait ends; a started refresh continues | The call ends `cancelled` | Pending calls end `closed`; a persisted grant stays | The owner's refresh task |
+| `subscribe` | Register the callback under the calling row and publish the current value once | Before registration; nothing registered | The registration ends with the row | The registration ends; no further values | The owner: the registration; the row: its lifetime |
 | `rejected` | Compare the generation, refresh once or answer the current credential, or apply the sign-out rule | The wait ends; a started refresh continues | The call ends `cancelled` | Pending calls end `closed` | The owner |
 | `search` / `title` | Send the relay request with the grant's bearer | The request is cancelled | The call ends `cancelled` | Pending requests end `closed` | The owner |
 | Client namespace | Run the login flow, write the record through FileStorage and publish the result | The attempt is cancelled | The attempt stays queryable until its deadline | Attempts end with the generation | The owner |
@@ -152,8 +163,10 @@ None. The `account.*`, `account.codex.*`, `account.grok.*` and `account.chatgpt.
 Shared request, reply and error types; each owner's `#[rutis::service]` block is in its own document. `CancelledFn` is the binding's cancellation argument.
 
 ```rust
-use dim_agent_capabilities::host::CancelledFn;
-use rutis::host::BoxFuture;
+use dim_agent_capabilities::host::{CancelledFn, ModelProtocol};
+use dim_agent_types::ModelCapabilitySnapshot;
+use rutis::host::{BoxFuture, CallError};
+use rutis::Ctx;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -164,6 +177,21 @@ pub struct AccountIdentity { pub issuer: String, pub subject: String }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountAvailability { pub signed_in: bool, pub identity: Option<AccountIdentity> }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSnapshot { pub generation: u64, pub identity: AccountIdentity }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCatalog {
+    pub account: AccountSnapshot,
+    pub models: Vec<ModelCapabilitySnapshot>,
+}
+
+/// The owner calls this with each availability change while the calling row lives.
+pub type NotifyFn =
+    Arc<dyn Fn(AccountAvailability) -> BoxFuture<'static, Result<(), CallError>> + Send + Sync>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,11 +208,12 @@ pub struct Credential {
     pub base_url: String,
     pub headers: BTreeMap<String, String>,
     pub bearer: String,
-    pub generation: u64,
+    /// The grant generation; `None` for a static credential a profile owner answers.
+    pub generation: Option<u64>,
 }
 
 /// The wire code is the variant's snake_case name; `details` carries its data.
-#[derive(thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", content = "details", rename_all = "snake_case")]
 pub enum AccountError {
     #[error("{0}")] NotFound(String),
@@ -197,10 +226,11 @@ pub enum AccountError {
 }
 ```
 
-`Subscription` is the owner's replayable watch over availability; it ends when the calling row unloads or the owner closes.
+The `notify` callback is invoked once with the current value when the registration starts, then on every change until the calling row unloads or the owner closes; it is not called inside a commit lock.
 
 ## Supersedes
 
 - `service-faces.md`: the `grokOAuthService` and `openAICodexOAuthService` rows; the `managedSearch` row and §4.6, which the account owners' `search` replaces.
 - `appserver/provider-management.md`: the account rows in §2 and §3.1 that describe the account catalog and status as reported by a host binding.
 - `crates/dim-app-server/README.md`: the managed provider contract's account and lease paragraphs; the account owners answer them directly.
+- `resource-faces.md` §6: the managed OAuth and OAuth token store row, whose `lock`/`unlock` shape the account owner's FileStorage `read`/`update`/`write` replaces.

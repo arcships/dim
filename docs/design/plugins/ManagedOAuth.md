@@ -107,7 +107,7 @@ impl PublicService for OpenAICodexOAuthService {}
 #[rutis::service(name = "codexAccount")]
 impl OpenAICodexOAuthService {
     pub async fn availability(&self, cancelled: CancelledFn) -> Result<AccountAvailability, AccountError> { /* ... */ }
-    pub async fn subscribe(&self, cancelled: CancelledFn) -> Result<Subscription, AccountError> { /* ... */ }
+    pub async fn subscribe(&self, caller: &Ctx, notify: NotifyFn, cancelled: CancelledFn) -> Result<(), AccountError> { /* ... */ }
     pub async fn catalog(&self, cancelled: CancelledFn) -> Result<AccountCatalog, AccountError> { /* ... */ }
     pub async fn credential(&self, request: CredentialRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }
     pub async fn rejected(&self, request: RejectedRequest, cancelled: CancelledFn) -> Result<Credential, AccountError> { /* ... */ }

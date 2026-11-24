@@ -21,7 +21,7 @@ Callers keep:
 - Which model a Session adopts and when it changes; Provider answers the selection and the caller writes the Session's configuration.
 - The request's messages, system prompt, tools and metadata; Provider adapts and sends what the caller built.
 - What the output means: ModelProvider commits the stream to the Timeline and decides the turn's end; a one-shot caller collects the text.
-- The summary budget and the retry display: the caller passes an `admit` callback and observes progress.
+- The summary budget and the retry display: the caller passes an `admit` callback and receives `Retrying` chunks.
 - Account login, logout and usage: the account owners' client namespaces, not Provider.
 - Which search service a tool uses: Web's own settings, with the account owner's availability read.
 
@@ -35,7 +35,7 @@ Callers keep:
 | Learn a media model's route and where its credential comes from (the media executor) | No: the route is catalog state; the credential owner is the record's authority | `media_route` |
 | Read a static model's credential for one media exchange (the media executor) | No: the record, the route and the credential are Provider's | `credential` |
 | Read or write a Provider's management record | No: records, versions and transactions are Provider's | The `provider` client namespace; handlers call the same operations |
-| Show a retry countdown | Yes: the `invoke` progress callback | Business |
+| Show a retry countdown | Yes: the `Retrying` chunk | Business |
 | Learn where the recorder writes | Yes: read ModelLog's `recording` value | Business |
 | Decide the prompt, tools or output handling | Yes | Business |
 | Decide whether a search is offered | Yes: read the account owner's availability | Business |
@@ -91,7 +91,7 @@ ModelProvider runs a turn; `consume` is the branch part's own callback that writ
 
 ```rust
 let reply = provider
-    .invoke(request, Mode::Dialogue { chain: failure_chain }, consumer, None, cancelled.clone())
+    .invoke(request, Mode::Dialogue { chain: failure_chain }, consumer, admit_all, cancelled.clone())
     .await?;
 ```
 
@@ -99,7 +99,7 @@ The summary strategy runs with its own budget:
 
 ```rust
 provider
-    .invoke(request, Mode::Dialogue { chain: None }, consume, Some(budget), cancelled)
+    .invoke(request, Mode::Dialogue { chain: None }, consume, budget, cancelled)
     .await?;
 ```
 
@@ -108,7 +108,7 @@ SessionTitle and ImageUnderstanding run one request and keep the text:
 ```rust
 let selection = provider.resolve(ResolveRequest { target: Some(model), cwd: None }, cancel.clone()).await?;
 let reply = provider
-    .invoke(ModelRequest::from(selection, messages), Mode::Once, collect_text, None, cancel)
+    .invoke(ModelRequest::from(selection, messages), Mode::Once, collect_text, admit_all, cancel)
     .await?;
 ```
 
@@ -137,8 +137,8 @@ provider.release_startup(&self.ctx, ReleaseRequest { model: selection }).await?;
 | --- | --- | --- |
 | ProviderSettings ([#2017](https://github.com/arcships/dim/issues/2017)) | `user_agent` | The operator's User-Agent replacement |
 | ModelLog ([#2017](https://github.com/arcships/dim/issues/2017)) | `recording` | The recorder's directory |
-| FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)) | `root_path` | The directory the wire recorder writes under |
-| Storage engine ([#2018](https://github.com/arcships/dim/issues/2018)) | private transaction primitive; the public face keeps `storageReport` and the offline operations | Provider's records, selections, candidates, pages, source activation, adoption, edit commits, legacy import and `store.creationRecord` |
+| Storage engine ([#2018](https://github.com/arcships/dim/issues/2018)) | private transaction primitive; the public face keeps `storageReport` and the offline operations | Provider's records, selections, candidates, pages, source activation, adoption, edit commits and legacy import |
+| SessionStore ([#2091](https://github.com/arcships/dim/pull/2091)) | `creationRecord({id})` | The ChatGPT client-session rule |
 | Session directory ([#2020](https://github.com/arcships/dim/issues/2020)) | session close observation | Releasing a retained startup source |
 | Account owners ([ManagedAccount](ManagedAccount.md)) | `availability`, `catalog`, `credential`, `rejected` | Account-backed models; the record's authority names the owner |
 
@@ -152,31 +152,31 @@ All operations are marked on `Provider` and provided under `providerService`; re
 | --- | --- | --- | --- | --- | --- |
 | `resolve` | The model one request resolves to | `{target?, cwd?}` | `Selection` | The caller cancels; no timeout | `invalid`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed` |
 | `preferences` | Apply a patch to an adopted selection | `{selection, update}` | `Selection` | None; completes immediately | `invalid` |
-| `selectable` | The models that can run a use, and the default | `{use: "chat" \| {modality}}` | `{models, default?}` | The caller cancels; no timeout | `cancelled`, `closed`, `failed` |
+| `selectable` | The models that can run a use, and the default | `{use: "chat" \| {modality}}` | `{models, default?}` | The caller cancels; no timeout | `invalid`, `cancelled`, `closed`, `failed` |
 | `prepare_startup` | Admit a temporary connection under the calling row and select its model | `{target?, cwd?, preferences, connection?, limits?}` | `{selection}` | The caller cancels before admission | `invalid`, `invalid_connection`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed` |
 | `retain_startup` | Bind the temporary connection the model carries to a Session | `{session, model}` | `{}` | None; completes immediately | `not_found` (the model carries no source, or the source is not bound), `closed` |
 | `release_startup` | Release a source the calling row owns | `caller`, `{model}` | `{}` | None; completes immediately | `not_found` (already retained by a Session, or another row's), `closed` |
-| `invoke` | Run one model request | `request`, `mode`, and the `consume` / optional `admit` callbacks as direct parameters | `{accepted}` | The caller cancels; the request stops and the consumer is released. No owner timeout; a request may wait on the transport through its configured HTTP timeout | `invalid`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed`, `provider_failed {retryable}` |
+| `invoke` | Run one model request | `request`, `mode`, and the `consume` / `admit` callbacks as direct parameters | `{accepted}` | The caller cancels; the request stops and the consumer is released. No owner timeout; a request may wait on the transport through its configured HTTP timeout | `invalid`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed`, `provider_failed {retryable}` |
 | `media_route` | A media model's route and the owner of its credential | `{target, operation}` | `{protocol, base_url, headers, realtime?, credential: Owner}` | The caller cancels; no timeout | `invalid`, `not_found`, `unavailable`, `cancelled`, `closed`, `failed` |
 | `credential` | A static model's connection facts for one request | `{provider, model}` | `{protocol, base_url, headers, bearer, generation: none}` | The caller cancels; no timeout | `not_found`, `unavailable`, `cancelled`, `closed`, `failed` |
 
 `prepare_startup` admits the source under the calling row; the row's unload releases it, so a missed `retain_startup` or `release_startup` settles with the row. `retain_startup({session, model})` moves the source to the Session named by the caller and the model's metadata; the Session's close releases it, so a missed failure-path release settles with the Session. `release_startup({model})` is the optional early release for a creation that failed; it answers `not_found` once a Session retains the source. A member Session that inherits the leader's model retains the same source by value. A connection never crosses. `Selection` is the adopted provider, model, configuration, capability snapshot and metadata. `Credential` is [ManagedAccount](ManagedAccount.md)'s value: static credentials carry no generation; an account owner's carry the grant's. `invoke` calls the account owner's `credential`, sends, and on a refusal calls `rejected` with the refused generation before retrying within its own failure chain.
 
-`invoke`'s `mode` is `Dialogue { chain? }` or `Once`. `Dialogue` continues the failure chain when given one and reports retry waits through the optional `admit`/progress callbacks; `Once` makes exactly one request with no retry and no model substitution, which is what a caller sending one paid request needs (Report's model generation). `consume(chunk)` reports `Continue`, `End`, `CredentialRejected` (the provider refused the credential, so `invoke` calls the account owner's `rejected` once and retries) or `Failed { retryable }`; output accepted before a failure prevents replay, and the reply's `accepted` says whether any output was accepted. `admit` runs before each attempt and answers `Admitted` or `Rejected { message }`; only a caller with its own budget passes it. Both callbacks are direct parameters, so the request data stays serde-only.
+`invoke`'s `mode` is `Dialogue { chain? }` or `Once`. `Dialogue` continues the failure chain when given one and reports retry waits as `Retrying` chunks; `Once` makes exactly one request with no retry and no model substitution, which is what a caller sending one paid request needs (Report's model generation). `consume(chunk)` reports `Continue`, `End`, `CredentialRejected` (the provider refused the credential, so `invoke` calls the account owner's `rejected` once and retries) or `Failed { retryable }`; output accepted before a failure prevents replay, and the reply's `accepted` says whether any output was accepted. `admit` runs before each attempt and answers `Admitted` or `Rejected { message }`; a caller without its own budget passes `admit_all`, the binding's default that admits every attempt. Both callbacks are direct parameters, so the request data stays serde-only. A request for `openai-chatgpt` requires a client-origin Session: Provider reads the Session's creation record (`creationRecord`) and answers `invalid` for a non-client Session.
 
 ### Errors
 
-| Kind | What the caller does next |
-| --- | --- |
-| `invalid` | Fix the input: an unknown use, an explicit target missing its model, a malformed preference patch |
-| `invalid_connection` | Fix the startup connection: a rejected URL, user info, query, fragment, both an API key and a bearer, or an unsupported auth |
-| `not_found` | The provider, model or source does not exist; re-read or choose another |
-| `unavailable` | The model cannot run now; the message names the reason; choose another model or fix the record |
-| `auth_required` | Sign in through the account owner named by the record, then retry |
-| `cancelled` | Nothing changed; the call stopped where it was cancelled |
-| `closed` | This generation is unloading; call the next generation |
-| `failed` | Provider's storage or a catalog read failed; retry the read |
-| `provider_failed {retryable}` | The request failed after the owner's retries; `retryable` says whether a new `invoke` can succeed |
+| Kind | Retry | What the caller does next |
+| --- | --- | --- |
+| `invalid` | No | Fix the input: an unknown use, an explicit target missing its model, a malformed preference patch, or a non-client Session for the ChatGPT provider |
+| `invalid_connection` | No | Fix the startup connection: a rejected URL, user info, query, fragment, both an API key and a bearer, or an unsupported auth |
+| `not_found` | No | The provider, model or source does not exist; re-read the record or choose another |
+| `unavailable` | After the model or account changes | The model cannot run now; the message names the reason; choose another model or fix the record |
+| `auth_required` | After sign-in | Sign in through the account owner named by the record, then call again |
+| `cancelled` | Yes, by calling again | Nothing changed; the call stopped where it was cancelled |
+| `closed` | Against the next generation | This generation is unloading; call the replacement generation |
+| `failed` | Yes, after the store recovers | Provider's storage or a catalog read failed; retry the read |
+| `provider_failed {retryable}` | When `retryable` | The request failed after the owner's retries; `retryable` says whether a new `invoke` can succeed |
 
 ### Flows
 
@@ -226,28 +226,35 @@ None. The `provider.*` client method names, request and reply fields, error code
 
 ## Requirements raised to mechanism owners
 
-- **Storage engine ([#2018](https://github.com/arcships/dim/issues/2018)).** The engine's public face keeps only `storageReport` and the offline operations. Provider owns its records, selection, preferences, candidate and page queries, source activation, adoption, edit commits, legacy import and `store.creationRecord`; the engine supplies the private transaction primitive inside this crate, which is not a public operation.
+- **Storage engine ([#2018](https://github.com/arcships/dim/issues/2018)).** The engine's public face keeps only `storageReport` and the offline operations. Provider owns its records, selection, preferences, candidate and page queries, source activation, adoption, edit commits and legacy import; the engine supplies the private transaction primitive inside this crate, which is not a public operation.
+- **SessionStore ([#2091](https://github.com/arcships/dim/pull/2091)).** `creationRecord({id})` for the ChatGPT client-session rule; SessionStore owns the record.
 - **ProviderSettings and ModelLog ([#2017](https://github.com/arcships/dim/issues/2017)).** Their owner contracts define `user_agent` and `recording`; Provider reads both at request time. No requirement remains.
 - **Session directory ([#2020](https://github.com/arcships/dim/issues/2020)).** Provider needs a close observation for a retained startup source: when the Session closes without unload, the source is released; an unload keeps it for restore.
-- **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `root_path` only; the recorder owns its JSONL file.
 - **Account owners ([ManagedAccount](ManagedAccount.md)).** `availability`, `catalog`, `credential`, `rejected`; the face name comes from the record's credential authority.
 - **Media executor (Modality's adapter contract).** The adapter resolves `media_route` and reads the credential from the owner it names; Modality passes the target and settles the task, so no business caller holds a credential. The adapter's service shape is Modality's contract.
+- **Id routing ([#2127](https://github.com/arcships/dim/issues/2127)).** The line-owner calls in the caller examples use the runtime's id routing; this contract raises no new mechanism requirement.
 
 ## Binding appendix
 
-`Provider` is the owner type; `providerService` is the wire name. `CancelledFn` is the binding's cancellation argument. The request and reply types are serde data; `consume` and `admit` are direct call parameters, never request fields.
+The owner type is `ProviderService` today (`crates/dim-app-server/src/provider.rs`; the delivery renames it to `Provider`). `providerService` is the wire name. `CancelledFn` is the binding's cancellation argument. The request and reply types are serde data; `consume` and `admit` are direct call parameters, never request fields.
 
 ```rust
-use dim_agent_capabilities::host::{CancelledFn, ModelChunk, ModelProtocol, RealtimeDeclaration};
+use dim_agent_capabilities::host::{
+    CancelledFn, ModelProtocol, ModelStopReason, RealtimeDeclaration,
+};
 use dim_agent_runtime::PublicService;
-use rutis::host::BoxFuture;
+use dim_agent_types::FailureChain;
+use dim_agent_types::{
+    MessagePart, ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId, ModelPreferences,
+    ModelRequest, ModelSelection, ToolCall, Usage,
+};
+use rutis::host::{BoxFuture, CallError};
+use rutis::Ctx;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use dim_agent_types::{
-    ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId, ModelPreferences, ModelRequest,
-    ModelSelection,
-};
-use rutis::Ctx;
+// `Credential` is the shared account value defined in ManagedAccount.md; the delivery places it in
+// the account module both owners use.
+use crate::account::Credential;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -273,7 +280,7 @@ pub struct SelectableReply {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", content = "models", rename_all = "camelCase")]
 pub enum SelectableModels { Chat(Vec<ModelCapabilitySnapshot>), Modality(Vec<ModalityModelSnapshot>) }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -309,12 +316,24 @@ pub struct RetainRequest { pub session: String, pub model: ModelSelection }
 pub struct ReleaseRequest { pub model: ModelSelection }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FailureChain { pub from_request_id: String, pub attempts: u32, pub waited_ms: u64 }
-
-#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Mode { Dialogue { chain: Option<FailureChain> }, Once }
+
+/// One streamed fact for the consumer, serialized to the wire; the delivery maps each variant to
+/// its `step/*` event.
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProviderChunk {
+    Text { delta: String },
+    Thinking { delta: String },
+    ToolStart { id: String, name: String },
+    ToolArguments { id: String, delta: String },
+    ToolUse { call: ToolCall },
+    Content { parts: Vec<MessagePart> },
+    Stop { reason: ModelStopReason },
+    Usage { usage: Usage },
+    Retrying { attempt: u32, delay_ms: u64 },
+}
 
 /// What the consumer reports for one chunk; `CredentialRejected` asks the owner to recover once.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -324,9 +343,6 @@ pub enum Consumed { Continue, End, CredentialRejected, Failed { retryable: bool 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Admitted { Admitted, Rejected { message: String } }
-
-pub type ConsumeFn = Arc<dyn Fn(ModelChunk) -> BoxFuture<'static, Consumed> + Send + Sync>;
-pub type AdmitFn = Arc<dyn Fn() -> BoxFuture<'static, Admitted> + Send + Sync>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -354,10 +370,9 @@ pub struct MediaRouteReply {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StaticCredentialRequest { pub provider: String, pub model: String }
-// `Credential` is the shared value in ManagedAccount.md; a static credential carries no generation.
 
 /// The wire code is the variant's snake_case name; `details` carries its data.
-#[derive(thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
 #[serde(tag = "code", content = "details", rename_all = "snake_case")]
 pub enum ProviderError {
     #[error("{0}")] Invalid(String),
@@ -369,7 +384,6 @@ pub enum ProviderError {
     #[error("provider is unloading")] Closed,
     #[error("{0}")] Failed(String),
     #[error("{message}")] ProviderFailed { retryable: bool, message: String },
-    #[error("{0}")] InvalidPath(String),
 }
 
 impl PublicService for Provider {}
@@ -382,17 +396,17 @@ impl Provider {
     pub async fn prepare_startup(&self, caller: &Ctx, request: StartupRequest, cancelled: CancelledFn) -> Result<ModelSelection, ProviderError> { /* ... */ }
     pub async fn retain_startup(&self, request: RetainRequest) -> Result<(), ProviderError> { /* ... */ }
     pub async fn release_startup(&self, caller: &Ctx, request: ReleaseRequest) -> Result<(), ProviderError> { /* ... */ }
-    pub async fn invoke(&self, request: ModelRequest, mode: Mode, consume: ConsumeFn, admit: Option<AdmitFn>, cancelled: CancelledFn) -> Result<InvokeReply, ProviderError> { /* ... */ }
+    pub async fn invoke(
+        &self,
+        request: ModelRequest,
+        mode: Mode,
+        consume: impl Fn(ProviderChunk) -> BoxFuture<'static, Result<Consumed, CallError>> + Send + Sync + 'static,
+        admit: impl Fn() -> BoxFuture<'static, Result<Admitted, CallError>> + Send + Sync + 'static,
+        cancelled: CancelledFn,
+    ) -> Result<InvokeReply, ProviderError> { /* ... */ }
     pub async fn media_route(&self, request: MediaRouteRequest, cancelled: CancelledFn) -> Result<MediaRouteReply, ProviderError> { /* ... */ }
     pub async fn credential(&self, request: StaticCredentialRequest, cancelled: CancelledFn) -> Result<Credential, ProviderError> { /* ... */ }
 }
 ```
 
 The `provider` client namespace keeps its published method names and request shapes; handlers call the operations above and the management operations. No management operation is also published on `providerService`.
-
-## Supersedes
-
-- `service-faces.md`: the `modelHost` row and §4.2; the `providerService` and `providerConnectionResolver` rows; the `managedSearch` row where it names Provider; the Provider selection block in §4.10.
-- `contracts/process-owner-operations.md`: the model selection, session configuration, session creation/adoption, model invocation and auxiliary rows, and the `modelHost` paragraph.
-- `appserver/provider-management.md`: the surface-table rows for `ModelSelectionHost`, `SelectableModelsHost`, `ProviderConnectionResolver`, `ModalityConnectionHost` and `auxiliaryModel.complete`, and the port sections §3.6 and §3.8.
-- `appserver/auxiliary-model.md`: the `auxiliaryModel` interface in §4, replaced by `invoke`.

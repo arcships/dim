@@ -40,7 +40,7 @@ ModelProvider runs a turn through the same operation:
 
 ```rust
 let outcome = provider
-    .invoke(InvokeRequest { request, mode: Mode::Dialogue { chain }, consume, admit: None }, cancelled)
+    .invoke(request, Mode::Dialogue { chain }, consume, admit_all, cancelled)
     .await?;
 ```
 
@@ -54,7 +54,7 @@ The file's entries declare both limits; a selection always carries them, so `res
 
 ### Errors
 
-[Provider](Provider.md)'s kinds, minus `invalid_connection`, `invalid_path` and `output_limit`'s startup variants: `invalid` for a malformed request, `not_found` for a target missing from the file, `unavailable` for a media operation or a missing environment variable, `cancelled`, `closed`, `failed` and `provider_failed {retryable}`; `credential` has `not_found`, `unavailable`, `cancelled` and `closed`.
+[Provider](Provider.md)'s kinds, minus `invalid_connection` and the startup-only ones: `invalid` for a malformed request, `not_found` for a target missing from the file, `unavailable` for a media operation or a missing environment variable, `cancelled`, `closed`, `failed` and `provider_failed {retryable}`; `credential` has `not_found`, `unavailable`, `cancelled`, `closed` and `failed`.
 
 ### Flows
 
@@ -97,7 +97,7 @@ None. The model file and its validation are this owner's; no other owner's opera
 
 ## Binding appendix
 
-`providerService` is [Provider](Provider.md)'s name; this profile registers the same name from `ConfiguredModels`. The types are shared, including `Credential` and `CredentialRequest` from [ManagedAccount](ManagedAccount.md); only the operations listed above exist.
+`providerService` is [Provider](Provider.md)'s name; this profile registers the same name from `ConfiguredModels` (today `ConfiguredModelsPlugin`, with `AimuxModels` as its catalog, in `crates/dim-agent-aimux`; the delivery renames it to `ConfiguredModels`). The types are shared, including `Credential` and `StaticCredentialRequest` from [Provider](Provider.md) and [ManagedAccount](ManagedAccount.md); only the operations listed above exist.
 
 ```rust
 impl PublicService for ConfiguredModels {}
@@ -106,8 +106,15 @@ impl PublicService for ConfiguredModels {}
 impl ConfiguredModels {
     pub async fn resolve(&self, request: ResolveRequest, cancelled: CancelledFn) -> Result<ModelSelection, ProviderError> { /* ... */ }
     pub async fn selectable(&self, request: SelectableRequest, cancelled: CancelledFn) -> Result<SelectableReply, ProviderError> { /* ... */ }
-    pub async fn invoke(&self, request: InvokeRequest, cancelled: CancelledFn) -> Result<InvokeReply, ProviderError> { /* ... */ }
+    pub async fn invoke(
+        &self,
+        request: ModelRequest,
+        mode: Mode,
+        consume: impl Fn(ProviderChunk) -> BoxFuture<'static, Result<Consumed, CallError>> + Send + Sync + 'static,
+        admit: impl Fn() -> BoxFuture<'static, Result<Admitted, CallError>> + Send + Sync + 'static,
+        cancelled: CancelledFn,
+    ) -> Result<InvokeReply, ProviderError> { /* ... */ }
     pub async fn media_route(&self, request: MediaRouteRequest, cancelled: CancelledFn) -> Result<MediaRouteReply, ProviderError> { /* ... */ }
-    pub async fn credential(&self, request: CredentialRequest, cancelled: CancelledFn) -> Result<Credential, ProviderError> { /* ... */ }
+    pub async fn credential(&self, request: StaticCredentialRequest, cancelled: CancelledFn) -> Result<Credential, ProviderError> { /* ... */ }
 }
 ```

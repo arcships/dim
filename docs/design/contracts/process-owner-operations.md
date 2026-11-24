@@ -1,6 +1,6 @@
 # Process owner operations
 
-The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelectionHost`, `auxiliaryModel`, `modelHost` and `managedSearch` from the catalog. The Provider, account-owner and ModelLog rows below are superseded by [Provider](../plugins/Provider.md), [ManagedAccount](../plugins/ManagedAccount.md) and their per-owner contracts; the other owners' rows stand.
+The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelectionHost`, `auxiliaryModel`, `modelHost` and `managedSearch` from the catalog. The Provider and account-owner rows below are superseded by [Provider](../plugins/Provider.md), [ManagedAccount](../plugins/ManagedAccount.md) and their per-owner contracts; the other owners' rows stand.
 
 ## Retained operations
 
