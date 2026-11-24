@@ -78,7 +78,7 @@ let listed = methods.methods()?.into_iter().filter(|decl| !management.holds(&dec
 | --- | --- |
 | `P:reservedMethods` | The host's reserved names, consulted at registration; a host that names none reserves only the name grammar. |
 | `P:callChannel` | The calling connection's per-call progress, addressed by the caller's `{connectionId, callId}`; the table builds the handler's `Progress` from it, and an in-process call has none. |
-| The loader's row status (`rutis/loader`) | The row that registered a withdrawn namespace and its copy in this Session, read when a call answers `reloading` or `unavailable`. |
+| Host port: the registering row's status | The row that registered a withdrawn namespace and its copy in this Session, read when a call answers `reloading` or `unavailable`. The host supplies the port, so the table names no public service for the read. |
 
 ### Operations
 
@@ -117,7 +117,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 
 ## Exceptions with reasons
 
-- The table reads the loader's row status for a withdrawn namespace: the status is the mechanism's record of the registering row, not another business owner's state, and the table cannot answer `reloading` or `unavailable` without it.
+- The table reads the registering row's status through a host port: the status is the mechanism's record of the row, not another business owner's state, and the table cannot answer `reloading` or `unavailable` without it.
 - A handler's progress and notifications are not written here: the caller identity is data and `callChannel` (#2021) addresses the connection by call id, so no connection, `Caller` or caller index crosses this owner.
 - The table remembers the registering row per namespace: a withdrawn namespace must answer from that row rather than fall through to a parent namespace.
 
@@ -136,9 +136,9 @@ Flow tests on the owner:
 
 | Rule | Application |
 | --- | --- |
-| §1 parts and Capabilities | One Session part. It writes no Timeline fact and folds none, so it is not a Capability. It injects the host's reserved names and the call channel, and reads the loader's row status. |
+| §1 parts and Capabilities | One Session part. It writes no Timeline fact and folds none, so it is not a Capability. It injects the host's reserved names and the call channel, and reads the registering row's status through a host port. |
 | §2 scopes | Session: the table serves one Session; a branch part registers a Session namespace through this table only when its feature places the part in the Session. |
-| §3 orthogonality | No other business owner's state is read or changed; the reserved names, the call channel and the loader are the mechanism's faces. |
+| §3 orthogonality | No other business owner's state is read or changed; the reserved names, the call channel and the row-status port are the mechanism's faces. |
 | §4 rule 1 | No command event: a registration is the calling row's effect. |
 | §4 rule 2 | No handoff: the reply is data; the handler's work settles with its registration. |
 | §4 rule 3 | No before callback. |
@@ -146,10 +146,10 @@ Flow tests on the owner:
 | §4 rule 5 | No batches. |
 | §4 rule 6 | No context path: a method's reply reaches the client through Rpc. |
 | §4 rule 7 | Callers use `register`, `call` and `methods`; no caller sees the table, a provider or a channel. |
-| §4 rule 8 | No infrastructure change; the withdrawn-row answer is the loader's existing record. |
+| §4 rule 8 | No infrastructure change; the withdrawn-row answer reads the mechanism's existing record through the port. |
 | §4 rule 9 | No Timeline fact. |
 | §7 values, ids and callbacks | The caller identity is data; the call callback crosses by reference; a registration lives with its row; no object, channel or provider crosses. |
-| §7 no proxy | The table answers its own registrations; the loader answers the row status. |
+| §7 no proxy | The table answers its own registrations; the host port answers the row status. |
 | §7 one interface | One name, `sessionMethods`, on the owner type; the Rust binding and the wire call the same methods; the call data is defined here once; `SessionMethods` no longer derefs to a shared table type. |
 | §7 cross-language | `register` crosses as data plus the caller's callback, `methods` as data, and `call` is Rpc's in-process call with the protocol's cancellation; no operation is a Rust-only convenience. |
 | §7 one change | The implementation task deletes the old dispatch surface, adds these operations and migrates Rpc and every registering part in one change. |
