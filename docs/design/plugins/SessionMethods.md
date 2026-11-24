@@ -61,16 +61,31 @@ let reply = match methods.call(
     Err(MethodError::UnknownMethod { .. }) => return Err(RpcError::unknown_method()),
     Err(MethodError::Reloading) => return Err(RpcError::reloading()),
     Err(MethodError::Unavailable) => return Err(RpcError::app(-32000, "service_unavailable", "The service is unavailable")),
-    Err(MethodError::Interrupted) => return Err(RpcError::interrupted()),
     Err(MethodError::Closed) => return Err(RpcError::closed()),
+    Err(MethodError::Interrupted) => unreachable!("an interruption answers in the reply"),
     Err(MethodError::Duplicate { .. }) | Err(MethodError::Invalid { .. }) => unreachable!("dispatch cannot register"),
 };
+let CallReply {
+    reply,
+    registration,
+    settled,
+} = reply;
 // `MethodReply::Value` is the handler's value; `MethodReply::Error` is its own
-// failure, which Rpc wraps in its envelope.
-Ok(match reply {
-    MethodReply::Value(ValueReply::Value { value }) => value,
-    MethodReply::Error(error) => return Err(RpcError::from(error)),
-})
+// failure, which Rpc wraps in its envelope. An interrupted `report` call
+// answers `interrupted` here and settles later.
+let value = match reply {
+    Ok(MethodReply::Value(ValueReply::Value { value })) => value,
+    Ok(MethodReply::Error(error)) => return Err(RpcError::from(error)),
+    Err(MethodError::Interrupted) => return Err(RpcError::interrupted()),
+    Err(_) => return Err(RpcError::closed()),
+};
+// Rpc writes the reply first, then ends the foreign call's index entry and
+// waits for the call to settle.
+if let Some(registration) = registration {
+    registration.finish();
+}
+settled.await;
+Ok(value)
 ```
 
 `session.methods` composes the value with the process table's held namespaces:
@@ -107,14 +122,14 @@ The process table (#2021) serves the same `MethodCall`, `MethodReply` and `Metho
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `register` | Publish a namespace for the calling row's lifetime | `{namespace, declarations}` and a call callback | `{}` | None; it awaits nothing, so it completes at its first poll | `invalid`, `duplicate`, `closed` |
-| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}` | `cancelled` settles when the caller's load unloads (Rpc's, or the process part's for an in-process call); the table then interrupts the call: `report` answers `interrupted` and settles, `drain` replies with its own result. The provider's generation unload interrupts the same way. A caller that stops waiting drops the future and the accepted call continues; a disconnect cancels nothing. The progress sink is a binding parameter too | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `closed` |
-| `methods` | The declarations registered now | `{}` | `{methods}` | None | `closed` |
+| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}`, in Rust a `CallReply` | `cancelled` settles when the caller's load unloads (Rpc's, or the process part's for an in-process call); the table then interrupts the call: `report` answers `interrupted` and settles, `drain` replies with its own result. The provider's generation unload interrupts the same way. A caller that stops waiting drops the future and the accepted call continues; a disconnect cancels nothing. The progress sink is a binding parameter too | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `closed` |
+| `methods` | The declarations registered now, sorted by name | `{}` | `{methods}` | None | `closed` |
 
-`register`'s declarations follow A.1: at least one method; each name equal to or inside the namespace, and unique; each declared notification inside the namespace, unique across the set and never a method's name. A declaration that breaks them is `invalid`; so is one the host refuses, including a declared notification that takes a built-in notification's name.
+`register`'s declarations follow A.1: at least one method; each name equal to or inside the namespace, and unique; each declared notification inside the namespace, unique across the set and never a method's name. A declaration set that breaks them, or that cannot be decoded from another language's request, is `invalid`; so is one the host refuses, including a declared notification that takes a built-in notification's name.
 
-`register` is data plus the caller's function on the wire, `methods` is data, and `call` is the owner's in-process operation. In Rust each reply is a `Result`: `register` is `Result<(), MethodError>`, `call` is `Result<MethodReply, MethodError>`, and `methods` is `Result<Vec<MethodDecl>, MethodError>`. `{}` is the empty reply, `{methods}` the declaration vector, and `{reply}` the `MethodReply`. Rpc wraps a `MethodError` in its envelope; `MethodReply`'s own error is the handler's data and is not a table failure.
+`register` is data plus the caller's function on the wire, `methods` is data, and `call` is the owner's in-process operation. In Rust each reply is a `Result`: `register` is `Result<(), MethodError>`, `call` is `Result<CallReply, MethodError>`, and `methods` is `Result<Vec<MethodDecl>, MethodError>`. `{}` is the empty reply, `{methods}` the declaration vector, and `{reply}` the `MethodReply` the caller writes. `CallReply` carries what the caller that writes the reply needs beyond it: `{reply, registration, settled}`. `registration` is the call's caller-index entry for a call from another language, which the caller finishes once the reply is written so a later notification is direct; `settled` resolves once the call has settled, which may follow an interrupted reply. Rpc writes `reply`, finishes `registration` and awaits `settled`, so its load's unload waits for the call. Rpc wraps a `MethodError` in its envelope; `MethodReply`'s own error is the handler's data and is not a table failure.
 
-`caller` is `{connectionId}`: the connection the call arrived on, absent when no client connection made the call. In Rust Rpc passes the admission's site (`CallSite`, below), which holds the connection and the call's close signal. The handler receives the caller as `MethodCall.origin.caller`, A.2's `Caller`. The table writes no socket. It mints a call id for a call served by a registration of another language, and that id is what its `origin.caller.callId` and its notifications carry; a native call has none, because `Caller::notify` needs no id. Progress is the sink Rpc passes, which addresses the call by Rpc's own request id. It hands the handler a `Progress` over the call's sink; Rpc passes its connection's sink, and an in-process call passes one whose sends are dropped. The call callback is a direct parameter; it never runs inside the Timeline's commit lock; the handler's token fires on the provider's generation unload and on the admitting Rpc load's unload, which `cancelled` reports.
+`caller` is `{connectionId}`: the connection the call arrived on, absent when no client connection made the call. In Rust Rpc passes the admission's site (`CallSite`, below), which holds the connection and the call's close signal. The handler receives the caller as `MethodCall.origin.caller`, A.2's `Caller`. The table reads its own instance from its names (`Names::instance`) to pick this Session's copy. It writes no socket. It mints a call id for a call served by a registration of another language, and that id is what its `origin.caller.callId` and its notifications carry; a native call has none, because `Caller::notify` needs no id. Progress is the sink Rpc passes, which addresses the call by Rpc's own request id. It hands the handler a `Progress` over the call's sink; Rpc passes its connection's sink, and an in-process call passes one whose sends are dropped. The call callback is a direct parameter; it never runs inside the Timeline's commit lock; the handler's token fires on the provider's generation unload and on the admitting Rpc load's unload, which `cancelled` reports.
 
 A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own error as `{code, message, ...owner fields}`. The table adds no meaning. The client sees the handler's failure in the Rpc envelope's error: `appError` is the handler's `code`, the message is the handler's `message`, and the handler's `data` fields sit beside `appError` — the table and Rpc preserve them without interpreting them ([Appendix C](../contracts/session-boundary.md#appendix-c-errors-and-recovery)). The JSON-RPC code is the handler's `wire` code when it carries one, and otherwise the service-error rule (`invalid_params` → -32602, `unknown_method` → -32601, otherwise -32000); a handler of another language's own reply data carries no wire code, so its errors take the rule; an error it rethrows from a nested call keeps the code Rpc gives it.
 
@@ -126,7 +141,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 | `duplicate` | `register` | — | The namespace is registered already; the row may register another namespace instead |
 | `unknown_method` | `call` | `unknown_method` | Either no namespace, registered or withdrawn, holds the name, or the name is outside the grammar, or the owning namespace's provider does not declare it, or the row that registered its withdrawn namespace is disabled or absent. Check the name and the namespace's declarations; an absent row is a configuration problem |
 | `reloading` | `call` | `service_reloading` | The registering row is starting or reloading, its copy in this Session is Active because a child plugin reloads, or the row has no copy in this Session because its part is between generations; retry after it is Active and registered the namespace again |
-| `unavailable` | `call` | `service_unavailable` | The registering row failed or cannot run. Retrying fails the same way until that row is fixed or restarted |
+| `unavailable` | `call` | `service_unavailable` | The registering row's copy in this Session failed or cannot run; a missing copy is `reloading` instead. Retrying fails the same way until that row is fixed or restarted |
 | `interrupted` | `call` | `operation_interrupted` | A `report` call's provider generation or admitting Rpc load unloaded while it ran; the call may have committed, so read the current state before retrying. A `drain` call answers with its own result instead |
 | `closed` | `register` | — | The table is closing. The registration fails with the part that made it; the replacement part registers in the next generation: the next Session for a Session table, the next process for the process table |
 | `closed` | `call`, `methods` | `session_closed` (Session table) | The table ended with its Session or process. A Session table: re-acquire the Session by id (Rpc restores an unloaded Session) and call again. A process table: the process ended, so a later process serves the next call. Do not retry against the closed one |
@@ -155,7 +170,7 @@ Flow tests on the owner:
 - A native handler receives the call's `Caller` and notifies through its `CallerConnection`; a handler of another language receives `{connectionId, callId}` and notifies through `callChannel` with that id. An in-process call has no caller. The handler's `closed` resolves when the connection closes or the admitting Rpc load unloads.
 - A value reply and an error reply reach the client unchanged: the error's `appError` is the handler's `code`, its owner fields sit beside it, and its JSON-RPC code is the handler's own when it carries one and otherwise follows the service-error rule.
 - A handler of another language that returns `{code, message}` reaches the client with that `appError`. A handler that fails with an `AgentError` reaches it with the code Rpc maps for that error. A runtime error converted from a `CallError` keeps its `code()`, else a remote's variant name under the service-error rule; a call that crossed nothing is `failed` with `-32603`.
-- `methods` lists the registered declarations; Rpc's filter removes the names a held management namespace owns.
+- `methods` lists the registered declarations sorted by name; Rpc's filter removes the names a held management namespace owns.
 
 ## Rule check
 
@@ -193,7 +208,7 @@ Flow tests on the owner:
 | --- | --- |
 | Which feature is blocked, by which rule | The table answers `reloading` and `unavailable` for a withdrawn namespace, as [A.1](../contracts/session-boundary.md#a1-method-contributions) requires, from the status of the row that registered it and of that row's copy in this Session. §7 forbids reading another owner's state, and the process's loader is `rutis-loader`'s own business state; the table has no dim-owned face for it. |
 | Existing mechanisms considered | Rpc answering the two kinds instead of the table: rejected, the reviewed `call` answers them. Depending on `rutis/loader` as it is: blocked, it is `rutis-loader`'s own service (`create`, `reload`, `remove`, `status` over the whole process), it is not a dim face, and `dim-agent-capabilities` does not depend on that crate. `Loader::get(row)` answers one row's `EntryInfo` but lives on the crate's value, not on the face. The table subscribing to loader changes and recording row status itself: a plugin-layer port, which §4 rule 8 forbids. |
-| Generic capability needed | A dim-owned process face `loaderRows` over one loader row: `status {row}` → `{found, status?, copies?}`, each copy naming its instance and its state, and `found: false` for a row id nothing has. No business meaning. |
+| Generic capability needed | A dim-owned process face `loaderRows` over one loader row: `status {row}` → `{found, status?, copies?}`, each copy naming its instance and its state, and `found: false` for a row id nothing has or a row that is disabled. No business meaning. |
 | Effect on sequence, batches, interruption, reload | None on sequence or batches. A read, so it interrupts nothing. During a reload it answers the transitional status, which is its purpose. |
 | Who implements it, which issue | The dim runtime: App Server's loader row (`crates/dim-app-server/src/lib.rs:1476-1482` creates the loader row; the per-row read Rpc does today is at `crates/dim-app-server/src/methods.rs:220-250`) provides the face, tracked in [#2021](https://github.com/arcships/dim/issues/2021). |
 
@@ -206,7 +221,7 @@ No existing client method changes and no error kind is removed. The table adds o
 
 - A withdrawn Session namespace whose registering row is absent from the loader answers `unknown_method`; today `session_provider` falls through to `service_reloading` (`crates/dim-app-server/src/methods.rs:240-249`), which retrying could not fix. A disabled row already answers `unknown_method`.
 - A native handler's failure without an application code keeps `-32603` and gains `appError: "failed"`; today it carries no `appError` (`crates/dim-agent-capabilities/src/methods.rs:153,206`).
-- A malformed foreign reply carries `appError: "bad-value"` with `-32000`; today it is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:917`).
+- A malformed foreign reply carries `appError: "bad-value"`, and another bridge failure its own code (`peer-gone`, a `Binding` code), with `-32000`; today each is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:917`).
 - A foreign handler that throws an error without an application code now carries that error's name as `appError` with `-32000`; today it is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:843-853`).
 - A callback failure whose error never reached the bridge keeps `-32603` and gains `appError: "failed"` (`crates/dim-agent-capabilities/src/methods.rs:905-918`).
 
@@ -214,7 +229,7 @@ Three shapes change for a part of another language: its `call` request nests the
 
 ## Binding appendix
 
-One definition, in the `methods` module of `dim-agent-capabilities`: the call data below — the declarations, the interruption, the reply, the errors, the progress sink and the admission's site. [A.2](../contracts/session-boundary.md#a2-call-channel) states the behaviour of `Caller`, `Progress` and the connection; this block states their shape and lifecycle, `Caller` and `CallerConnection` included. `NotifyError` is A.2's too, stated below. `Callers` is the process's caller index, A.2's own private wiring at its Rust type key, and `CallSite` only references it. `RpcError` is Rpc's wire error, whose contract is [#2021](https://github.com/arcships/dim/issues/2021)'s; this module keeps it beside the types that convert to it. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field.
+One definition, in the `methods` module of `dim-agent-capabilities`: the call data below — the declarations, the interruption, the reply, the errors, the progress sink and the admission's site. [A.2](../contracts/session-boundary.md#a2-call-channel) states the behaviour of `Caller`, `Progress` and the connection; this block states their shape and lifecycle, `Caller` and `CallerConnection` included. `NotifyError` is A.2's too, stated below. `Callers` is the process's caller index, A.2's own private wiring at its Rust type key, and `CallSite` only references it. `RpcError` is Rpc's wire error, whose contract is [#2021](https://github.com/arcships/dim/issues/2021)'s; this module keeps it beside the types that convert to it. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave the Session table; its storage is private. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field.
 
 ```rust
 // crates/dim-agent-capabilities/src/methods.rs: the call data both tables serve.
@@ -420,8 +435,29 @@ impl From<CallError> for MethodCallbackError {
     }
 }
 
-/// The handler both tables store: the call, the serving generation's
-/// cancellation token and the call's progress sink.
+/// One admitted call's answer, for the caller that writes its reply.
+pub struct CallReply {
+    /// The handler's reply, or the table's own kind for an interrupted call.
+    pub reply: Result<MethodReply, MethodError>,
+    /// The foreign call's caller-index entry, finished once the reply is
+    /// written; `None` for a native call.
+    pub registration: Option<CallRegistration>,
+    /// Resolves once the call has settled, which may follow an interrupted reply.
+    pub settled: BoxFuture<'static, ()>,
+}
+
+/// The caller-index entry one call from another language holds until its reply
+/// is written (A.2).
+pub struct CallRegistration(/* the index, the row instance, the connection and the call id */);
+
+impl CallRegistration {
+    /// The call's reply is written: a later notification with its `callId` is
+    /// written directly, and the index no longer holds the call.
+    pub fn finish(self) { /* ... */ }
+}
+
+/// The handler both tables store: the call, a token that fires on either
+/// unload, and the call's progress sink.
 pub type Handler = std::sync::Arc<
     dyn Fn(MethodCall, CancellationToken, Progress)
             -> BoxFuture<'static, Result<MethodReply, MethodCallbackError>>
@@ -541,7 +577,7 @@ impl SessionMethods {
         site: Option<CallSite>,
         cancelled: CancelledFn,
         progress: impl Fn(serde_json::Value) + Send + Sync + 'static,
-    ) -> Result<MethodReply, MethodError> { /* ... */ }
+    ) -> Result<CallReply, MethodError> { /* ... */ }
 }
 
 /// The catalog name `sessionMethods` in the Session group, served to other
