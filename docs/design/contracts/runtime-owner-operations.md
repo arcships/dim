@@ -40,7 +40,7 @@ generic operation-name dispatch and no `timelineTree.call`. A line that is not l
 `NoLine`; a Session that is closing answers `SessionClosing`. `NoLine` is final for that line:
 the caller takes no hold and does not retry it. `SessionClosing` ends the Session part's work. A
 Session part never receives `NoSession`: only a process caller does, and it takes a hold from Agents
-before calling again.
+before calling again ([#2127](https://github.com/arcships/dim/issues/2127)).
 
 For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
 and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in
