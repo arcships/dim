@@ -605,16 +605,16 @@ code the operation already uses, so one code vocabulary serves the local and the
 ## 5. `store` and `timelineStore`
 
 The repository and Timeline operations use two names on the daemon that owns the state: process
-`store` provides the repository operations (§5.2), retaining its existing Timeline `query`,
-and Session-scoped `timelineStore` provides the Timeline operations and completion notifications
-below. Both use the existing state owner; the split follows §9(6), without changing Session
-placement or the storage engine.
+`store` provides the repository operations (§5.2), retaining its existing Timeline `query`.
+The Session-scoped `timelineStore` and its completion notifications are replaced by the
+[SessionScope contract](plugins/SessionScope.md) (#2093). Both use the existing state owner; the
+split follows §9(6), without changing Session placement or the storage engine.
 SessionTitle and FileAccess use the process repository operations in the [resource owner contract](contracts/resource-owner-operations.md).
 
 | Family | Operations |
 | --- | --- |
-| Timeline (`timelineStore`) | Session face: `head`, `branches`, `readPage`, `readSegments`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot`; the process face `store` keeps `query` and `sessionConfig`; `createSession`, `releaseSession`, `rollbackSession` and `append` are the engine's own path ([SessionScope](plugins/SessionScope.md), #2093) |
-| Timeline completion (`timelineStore`) | `commits`, `closeCommits`; notifications `{subscriptionId, batchId, branchId, through, result}` |
+| Timeline (`timelineStore`) | Replaced by the [SessionScope contract](plugins/SessionScope.md) (#2093). |
+| Timeline completion (`timelineStore`) | Replaced by the [SessionScope contract](plugins/SessionScope.md) (#2093). |
 | Session rows (`store`) | The repository operations listed in §5.2 |
 | Worktree association (`store`) | `associateWorktree`; [service faces](service-faces.md) §4.8 |
 

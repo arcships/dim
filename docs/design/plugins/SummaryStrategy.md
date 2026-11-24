@@ -9,7 +9,7 @@ The owner replaces a range of a branch's history with a summary produced by mode
 The owner answers:
 
 - **The plan.** The strategy's name and the planned token size of its replacement, so the caller can reserve the space before the strategy runs.
-- **The replacement.** One compaction from a request at a cutoff: the chosen cut, the replacement messages, and the model calls, usage and duration it took.
+- **The replacement.** One compaction from a request at a cutoff: the chosen cut, the replacement messages, and the model calls and usage it took. The caller measures the duration.
 - **The outcome as data.** `completed`, `skipped` or `failed`, each with diagnostics; a failure inside the strategy is an outcome, not an error.
 
 Callers keep:

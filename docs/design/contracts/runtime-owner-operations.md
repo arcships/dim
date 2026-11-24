@@ -24,7 +24,7 @@
 | Context RPC → target branch | `agentLoop.compact` and `contextUsage.read`. |
 | Goal and Shell admission → timelineTree | `directory({id})` returns the matching directory entry or the unknown-branch error using a single-branch lookup. Goal reads ended history through `read` at the line's fixed head; writes retain the ended/unknown errors. |
 | InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch. |
-| PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report also uses `timelineTree.read` at the selected head for evidence. |
+| PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report's own tree reads are [TimelineTree's](https://github.com/arcships/dim/pull/2092), not this row's. |
 | Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |
 | Fault producers and Session observers → `sessionScope` | `reportFault(fault) → void`, `failure() → SessionFault or none`, `observeFault(listener) → id`, `release({leaseId}) → boolean`. The listener receives the current failure (none included) and later reports; the calling row's unload releases the observation. The first fault wins until a storage failure supersedes it ([SessionScope](../../../docs/design/plugins/SessionScope.md), #2093). |
 | Check providers and input admission → SubmitChecks | `register(name, check) → void`; `check({entry, branchId, user?, mode}, cancelled) → proceed{blocks, warnings} or block{message}`. Run in name order through the first block. Interrupted checks write nothing. |
@@ -42,12 +42,8 @@ the caller takes no hold and does not retry it. `SessionClosing` ends the Sessio
 Session part never receives `NoSession`: only a process caller does, and it takes a hold from Agents
 before calling again ([#2127](https://github.com/arcships/dim/issues/2127)).
 
-For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
-and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in
-conversation extraction call `timelineTree.read` with `{line: "main", through: conversationThrough, limit: <the bounded window>}`;
-the read answers committed facts at that cutoff only, so there is no publishing flag and zero rows yield an empty window.
-A draft without a captured cutoff does not fetch a conversation. Plan generation never
-substitutes a newer head.
+Report's draft head, its bounded conversation window and the cutoff it keeps are stated by the
+[TimelineTree contract](https://github.com/arcships/dim/pull/2092) and Report's own contract; this document keeps neither.
 
 ### Prompt, configuration and files
 

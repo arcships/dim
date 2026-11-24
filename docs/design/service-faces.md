@@ -126,7 +126,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 数据面 `execHost`：`start`/`wait`/`kill`/`settle`/`output`/`tail`/`removeOutputDirectory`/`shell`/`write`/`resize`/`info`/`confined`/`configured`（[resource and store data faces](resource-faces.md) §3，#1295）；`hostPlatform` 是提供方和它的 Rust binding |
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
 | `sqliteStorage` | 连接与事务 | Session 行走 `store`；原生 Agent、Provider 和 Settings 的记录操作直接调用 `sqliteStorage`，连接与事务由 SQLite 插件持有。`sqliteStorage.storageReport({})` 返回 SQLite 文件和 WAL 的容量指标（[存储契约](appserver/native-storage-format.md)） |
-| `timelineStore` | 连接与批次 | Session 作用域的 `timelineStore` 数据面（resource-faces §9 允许与仓储族分名）：每行读取与完成通知 `head`/`branches`/`readPage`/`readSegments`/`trace`/`batchEnd`/`batchEndAt`/`saveSnapshot`/`latestSnapshot`/`commits`/`closeCommits`；`query` 与 `sessionConfig` 只在进程面 `store`（未加载的 Session 也能读），`createSession`/`releaseSession`/`rollbackSession`/`append` 不在 Session 面。引擎归 SessionStore，SessionScope 安装该绑定（[SessionScope](plugins/SessionScope.md)，#2093） |
+| `timelineStore` | 连接与批次 | Session 面由 [SessionScope](plugins/SessionScope.md) 取代（#2093）；进程面 `store` 见 #2018 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
