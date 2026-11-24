@@ -280,8 +280,6 @@ pub enum ReportError {
     CallerRequired,
     #[error("{message}")]
     InvalidParams { message: String },
-    #[error("The report cannot be prepared now")]
-    Unavailable,
     #[error("The report draft is missing or expired")]
     ReportNotFound,
     #[error("The plan was replaced or consumed")]

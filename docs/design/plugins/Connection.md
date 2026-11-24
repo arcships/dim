@@ -99,7 +99,7 @@ The owner type is `ConnectionHub`. `accept` is crate-internal because a socket c
 | `close_all` | Close every connection and wait for its tasks | `{}` | `{}` | None; the owner completes the close | none |
 | `settle` (crate-internal) | One connection ended: release its attachment, tell UiHost, end its writer | `{connection_id, reason}` | `{}` | None | none |
 
-`reply` writes the frame a call produced and releases the notifications `write_after` held behind it. `write` is for a notification with no call to follow (a UI close notice); `write_after` is for a notification sent while or after a call runs, ordered behind that call's reply. A notification over the frame budget is `too_large` and leaves the connection open; a notification or reply the reliable allowance cannot take is `slow` and closes the connection as a slow consumer.
+`reply` writes the frame a call produced and releases the notifications `write_after` held behind it. `write` is for a notification with no call to follow (a UI close notice); `write_after` is for a notification sent while or after a call runs, ordered behind that call's reply. A notification over the frame budget is `too_large` and leaves the connection open; a notification or reply the reliable allowance cannot take is `slow` and closes the connection as a slow consumer. A reply over the frame budget is also `too_large`, but the call cannot stay unanswered: the connection closes, the caller's wait ends `gone`, and the client reconnects and reads the current state.
 
 `close_for_idle` takes `running` from Agents' `sessions` value, read immediately before. The owner rechecks only its own counts under the admission lock and commits the refusal in the same step, so no hello or attach joins after the decision.
 
@@ -113,7 +113,7 @@ The caller's sequence is Rpc's: read Agents' `sessions`, then `close_for_idle`; 
 | `busy` | `daemon_busy` with `connections`, `attachedSessions`, `running` | Answer the client with the three counts and do not close |
 | `unknown_connection` | — (in-process) | The connection is gone; drop the write or the attachment and read the current state |
 | `gone` | — (in-process) | The connection closed or its generation unloaded; nothing was written |
-| `too_large` | — (in-process) | The frame exceeds the connection's frame budget; the connection stays open — shorten the notification |
+| `too_large` | — (in-process) | A notification over the budget: nothing written, the connection stays open — shorten it. A reply over the budget: the connection closes and the call ends unanswered; the client reconnects |
 | `slow` | — (in-process) | The connection's reliable allowance is exhausted; the connection is closed and the frame is dropped |
 | `session_unavailable` | `session_closed` when the Session is closed, `service_unavailable` when it cannot be acquired | Report it to the client and retry the attach later |
 | `cancelled` | — (in-process) | Nothing was attached; the caller stopped waiting |

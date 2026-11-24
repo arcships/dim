@@ -35,9 +35,10 @@ table.register(
     ctx,
     RegisterRequest { namespace: "settings".into() },
     declarations,
-    Arc::new(move |call: MethodCall| {
+    Arc::new(move |call: MethodCall, cancelled: CancellationToken, progress: Progress| {
         let owner = owner.clone();
-        Box::pin(async move { owner.handle(call).await }) // Result<MethodReply, MethodError>
+        // The token fires on the provider's or the admitting Rpc load's unload (A.1).
+        Box::pin(async move { owner.handle(call, cancelled, progress).await }) // Result<CallOutcome, TableError>
     }),
 ).await?;
 ```
@@ -52,8 +53,8 @@ let reply = table.call(CallRequest {
     caller: Some(CallerRef { connection_id, call_id }),
 }, cancelled).await?;
 match reply {
-    MethodReply::Value { value } => answer_value(value),
-    MethodReply::Error { code, message } => answer_error(code, message),
+    CallOutcome::Reply { reply } => answer_reply(reply),
+    CallOutcome::Error { error } => answer_error(error.code, error.app_error, error.message),
 }
 ```
 
@@ -74,7 +75,7 @@ The loader's row status (`rutis/loader`), read when a withdrawn namespace answer
 
 The handler's own failure is `MethodError` data inside `CallOutcome::Error` (A.1's `{code, appError, message}`), never a table error; the table returns only its routing failures.
 
-`register`'s `call` is a callback parameter, not a request field, and the registration is bound to `caller`'s row: the table removes it when that row unloads. The callback runs on the registering row and is never called inside a commit lock; it returns `Result<CallOutcome, TableError>` with `TableError: From<rutis::host::CallError>`, the form rutis accepts for a callback parameter.
+`register`'s `call` is a callback parameter, not a request field, and the registration is bound to `caller`'s row: the table removes it when that row unloads. The callback runs on the registering row and is never called inside a commit lock. Its handler signature is A.1's `(MethodCall, CancellationToken, Progress)`, so the token fires on either unload, `drain` calls included; `CancellationToken` is the runtime's cancellation token and `Progress` is A.1's per-call progress sink (Appendix F). The handler returns `CallOutcome` with `TableError: From<rutis::host::CallError>`.
 
 ### Errors
 
@@ -217,18 +218,34 @@ pub enum TableError {
     OperationInterrupted,
 }
 
-#[rutis::service(name = "managementMethods")]
-impl MethodTable {
-    pub async fn register(
+impl From<rutis::host::CallError> for TableError {
+    fn from(error: rutis::host::CallError) -> Self {
+        Self::InvalidParams { message: error.message().to_owned() }
+    }
+}
+
+pub type HandlerFn = Arc<
+    dyn Fn(MethodCall, CancellationToken, Progress) -> BoxFuture<'static, Result<CallOutcome, TableError>>
+        + Send + Sync,
+>;
+
+/// The process table's native binding. `managementMethods` is a shared catalog name
+/// with a hand-written `HostDispatch` at `host_key("managementMethods")`: the handler
+/// carries a cancellation token and a progress sink, which are not serde data, so the
+/// marked-service macro cannot bind `register`. Rust callers use this trait directly;
+/// other languages register through the dispatch, as the current `ForeignMethods` does.
+pub trait ManagementTable {
+    fn register(
         &self,
         caller: &Ctx,
         request: RegisterRequest,
         declarations: Vec<MethodDecl>,
-        call: impl Fn(MethodCall) -> BoxFuture<'static, Result<CallOutcome, TableError>> + Send + Sync,
-    ) -> Result<(), TableError> { /* ... */ }
-    pub async fn call(&self, request: CallRequest, cancelled: CancelledFn)
-        -> Result<CallOutcome, TableError> { /* ... */ }
+        call: HandlerFn,
+    ) -> BoxFuture<'static, Result<(), TableError>>;
+
+    fn call(&self, request: CallRequest, cancelled: CancelledFn)
+        -> BoxFuture<'static, Result<CallOutcome, TableError>>;
 }
 ```
 
-`MethodError` is A.1's `{code, appError, message}` data; the handler returns it inside `CallOutcome::Error` and the table never rewrites it. `HandedOff` is A.1's reply kind for a call whose final answer is written later by the provider.
+`ManagementTable` is the native spelling; the catalog name is `managementMethods` and the foreign registration uses the hand-written dispatch, because a handler's token and progress sink are not data. A native part implements the trait; the same table serves `call` in process and on the wire.

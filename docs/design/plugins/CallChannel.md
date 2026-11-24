@@ -54,7 +54,7 @@ let outcome = channel.run(
         Box::pin(async move {
             // The token is the Rpc load's, never the connection's: a disconnect stops delivery only.
             table.call(CallRequest { method, params, caller }, rpc_unload).await
-                .map_err(|error| rutis::Error::from(error.into_call_error()))
+                .map_err(RunError::from)
         })
     }),
 )
@@ -98,6 +98,7 @@ Connection's `write_after`, `write` and `closed`.
 | Kind | Wire code | What the caller does next |
 | --- | --- | --- |
 | `invalid_params` | `invalid_params` | The call id is bound to another connection or the request is malformed; a programming error, do not retry |
+| `table` | `table` with the table's own code inside | The table refused the call (`service_reloading`, `service_unavailable`, `unknown_method`, `operation_interrupted`); Rpc answers with the table's code |
 | `unsupported` | `unsupported` | The notification names a link this binding does not carry; drop the notification, nothing was written |
 | `undeclared` | `undeclared` | The registration did not declare the name; fix the declaration, nothing was written. Decided before the connection's state |
 | `gone` | `gone` | The connection closed, the Rpc load unloaded or the row unloaded; stop notifying for the call |
@@ -184,6 +185,14 @@ pub struct ClosedRequest { pub connection_id: String }
 pub enum RunError {
     #[error("{message}")]
     InvalidParams { message: String },
+    #[error("the table refused the call")]
+    Table { error: TableError },
+}
+
+impl From<TableError> for RunError {
+    fn from(error: TableError) -> Self {
+        Self::Table { error }
+    }
 }
 
 impl From<rutis::host::CallError> for RunError {

@@ -54,11 +54,11 @@ FileStorage's stateless `read {path, offset?, length?} → ReadReply {data, eof,
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `publish` | Publish a finalized regular file for interfaces | `{path, media_type}` | `{session_id, id}` | While the file is opened; nothing is registered | `invalid_params`, `resource_unavailable`, `session_closed` |
+| `publish` | Publish a finalized regular file for interfaces | `{path, media_type}` | `{session_id, id}` | While `stat` runs; nothing is registered | `invalid_params`, `resource_unavailable`, `session_closed` |
 | `withdraw` | Withdraw a reference this row published | `{reference}` | `{}` | None; the owner waits for admitted reads | `resource_gone`, `invalid_params`, `session_closed` |
-| `read` | One bounded page of a published file | `{sessionId, id, offset?, limit?}` (the client method's flat shape) | `{offset, bytes, total, media_type, data}`; `total` is FileStorage's `size`, and `eof` is `offset + bytes == total` | The caller's token; the page stops, the reference stays | `resource_gone`, `invalid_params`, `session_closed` |
+| `read` | One bounded page of a published file | `{sessionId, id, offset?, limit?}` (the client method's flat shape) | `{offset, bytes, total, media_type, data}`; `total` is the size recorded at publish, and `eof` is `offset + bytes == total` | The caller's token; the page stops, the reference stays | `resource_gone`, `invalid_params`, `resource_unavailable`, `session_closed` |
 
-`publish` takes the calling row's context as the binding's caller parameter, not as a request field: the reference belongs to the row that calls, and the owner registers the cleanup on that row. `publish` records the resolved path and the file's `size` from FileStorage; it opens no reader. The Rust binding and the wire call the same method; rutis supplies the calling row's context on the wire.
+`publish` takes the calling row's context as the binding's caller parameter, not as a request field: the reference belongs to the row that calls, and the owner registers the cleanup on that row. `publish` records the resolved path and the file's `size` from FileStorage's `stat`; it opens no reader. The recorded size is the page total, so the client's paging bounds stay stable across pages. The Rust binding and the wire call the same method; rutis supplies the calling row's context on the wire.
 
 The media type decides inline display: a listed image, audio, video, text or PDF type is served as declared; any other type is served as `application/octet-stream` and marked as an attachment.
 
@@ -67,7 +67,7 @@ The media type decides inline display: a listed image, audio, video, text or PDF
 | Kind | What the caller does next |
 | --- | --- |
 | `invalid_params` | The path is relative or outside every authorized root, the reference names another Session, or a page offset is beyond the file |
-| `resource_unavailable` | The file is gone or unreadable; publish again or show the caller that the resource is unavailable |
+| `resource_unavailable` | The file is gone, unreadable, or replaced after publish (its size changed); the client shows the resource as unavailable and the row publishes again. An absent file is this kind, not `resource_gone` |
 | `resource_gone` | The reference was withdrawn; stop reading |
 | `session_closed` | The Session is closing or is gone; the reference is settled |
 
@@ -75,9 +75,9 @@ The media type decides inline display: a listed image, audio, video, text or PDF
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `publish` | Check the Session phase, `read` the path's facts in FileStorage (`size`), register the reference (path and size) and the row's cleanup | Nothing is registered | The reference is removed by the row's cleanup | Every reference is removed | UiResources: the reference |
+| `publish` | Check the Session phase, `stat` the path in FileStorage (kind and `size`), register the reference (path and size) and the row's cleanup | Nothing is registered | The reference is removed by the row's cleanup | Every reference is removed | UiResources: the reference |
 | `withdraw` | Check the owner row, cancel and wait for admitted reads, remove the reference | — | Already removed | Already removed | UiResources |
-| `read` | Resolve the reference, call FileStorage's `read {path, offset, length}` for one page (64 KiB at most, the client's `limit` clamped to it), map `size` to `total` and `eof` to the page end | The page stops; nothing changes | The read ends with the row | Admitted reads are counted and awaited before the reference goes | UiResources: the reference and the read count; FileStorage: the page |
+| `read` | Resolve the reference, call FileStorage's `read {path, offset, length}` for one page (64 KiB at most, the client's `limit` clamped to it); `total` is the recorded publish size and `eof` is the page end; a `none` reply, or a reply whose `size` differs from the recorded size, is `resource_unavailable` | The page stops; nothing changes | The read ends with the row | Admitted reads are counted and awaited before the reference goes | UiResources: the reference and the read count; FileStorage: the page |
 
 The `session.ui.resources.read` client method is the same `read`, served to RPC clients; the web entry's HTTP route is its transport. Both stay.
 

@@ -18,7 +18,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [ServerControl](ServerControl.md) | publication gate, shutdown intent and accepted-work holds; `processActivity` | — | — | #2021 |
 | [Rpc](Rpc.md) | handshake, built-in methods and dispatch of one call; `rpc` | — | — | #2021 |
 | [ManagementMethods](ManagementMethods.md) | the process namespace table; `managementMethods` | — | — | #2021 |
-| [ProcessRoot](ProcessRoot.md) | process values: reserved names and credential variable names | — | — | #2021 |
+| [ProcessRoot](ProcessRoot.md) | process values: reserved names and credential variable names; the assembly supplies them, there is no plugin row | — | — | #2021 |
 | [CallChannel](CallChannel.md) | call bindings for connection-bound notifications; `callChannel` | — | — | #2021 |
 | [UiHost](UiHost.md) | interface registrations and UI leaves; `uiHost` | — | — | #2021 |
 | [UiExtensions](UiExtensions.md) | the UI content catalog; `uiExtensions` | UiResources | — | #2021 |

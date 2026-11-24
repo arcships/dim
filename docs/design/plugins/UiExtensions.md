@@ -51,7 +51,7 @@ let page = ui.read(ReadRequest { generation, path, offset: 0, limit: None }).awa
 
 ### Dependencies
 
-FileStorage (`add_root`, `list`, `read`; a page of a prepared file is `read {path, offset, length}` with the owner's 64 KiB page size, and the reply's `size`/`eof` give the end); ManagementMethods' `register` for the `ui.extensions` namespace; PartRegistry to mount the UiResources Session part (defined in the [UiResources contract](UiResources.md)).
+FileStorage (`add_root`, `list`, `read`; one client page is served by looping FileStorage's 64 KiB offset reads up to the client's bound, 1 MiB by default and 4 MiB at most, with `size`/`eof` giving the end); ManagementMethods' `register` for the `ui.extensions` namespace; PartRegistry to mount the UiResources Session part (defined in the [UiResources contract](UiResources.md)).
 
 ### Operations
 
@@ -62,7 +62,7 @@ FileStorage (`add_root`, `list`, `read`; a page of a prepared file is `read {pat
 | `plugins` | The packages with content now | `{}` | `{plugins: [id]}` | None | none |
 | `refusal` | Why a package's content was refused | `{plugin}` | `{message?}` | None | none |
 | `directory` | The published directory | `{}` | `{revision, extensions, errors}` | None | none |
-| `read` | One page of a prepared file | `{generation, path, offset?, limit?}` | `{offset, bytes, total, media_type, data}` | The calling connection's task ends; the page stops | `resource_unavailable` |
+| `read` | One page of a prepared file | `{generation, path, offset?, limit?}` (default 1 MiB, at most 4 MiB) | `{offset, bytes, total, media_type, data}` | The calling connection's task ends; the page stops | `resource_unavailable`, `invalid_params` |
 
 `register` with no manifest withdraws the package's content, the same as `withdraw`.
 
@@ -72,6 +72,7 @@ FileStorage (`add_root`, `list`, `read`; a page of a prepared file is `read {pat
 | --- | --- |
 | `invalid_params` | The package id is unknown, the version unsupported or the declaration invalid; the reason is recorded as the package's refusal |
 | `resource_unavailable` | The file is gone or unreadable; the client shows the panel as unavailable |
+| `invalid_params` | A page offset is past the file's end or the limit is zero; the client asks inside the file and at least one byte |
 
 ### Flows
 
@@ -79,7 +80,7 @@ FileStorage (`add_root`, `list`, `read`; a page of a prepared file is `read {pat
 | --- | --- | --- | --- | --- | --- |
 | `register` | Validate, copy into a new generation directory, swap the catalog entry, bump the revision, emit the change event | The generation directory is removed, the old entry stays | The registration is dropped with the process row | Sources are retained and restored on the next generation | UiExtensions: the generation directory and its reads |
 | `withdraw` | Remove the entry, cancel admitted reads, wait for them, remove the directory, emit the change event | — | — | — | UiExtensions |
-| `read` | Resolve the generation and the path, read one page with FileStorage's offset read (64 KiB at most) | The page stops; nothing changes | The read ends with the row | Admitted reads are cancelled and awaited before the directory goes | UiExtensions |
+| `read` | Resolve the generation and the path, loop FileStorage's 64 KiB offset reads up to the client's bound (1 MiB default, 4 MiB max), then answer one page | The page stops; nothing changes | The read ends with the row | Admitted reads are cancelled and awaited before the directory goes | UiExtensions: the page; FileStorage: the 64 KiB reads |
 
 The `ui.extensions.read` client method is the same `read`, served to clients; WebEntry's HTTP route is its transport. Both stay.
 
