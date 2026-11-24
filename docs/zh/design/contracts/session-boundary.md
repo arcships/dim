@@ -138,7 +138,7 @@ sequenceDiagram
 
 | 服务与方法 | 模式 | 用途 |
 | --- | --- | --- |
-| `sessionMethods.register(namespace, MethodDecl[], call)` | async | 注册一个 Session 方法命名空间，直到调用方部件卸载 |
+| `sessionMethods.register(caller, namespace, MethodDecl[], call)` | async | 注册一个 Session 方法命名空间，直到调用方部件卸载；形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) |
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | 注册一个管理命名空间，直到调用方部件卸载 |
 | `call(MethodCall, cancelled, progress) -> MethodReply`（注册部件自己的函数） | async | 执行该命名空间的方法 |
 | `session.methods {sessionId}`（线上方法，Rpc 内建） | async | 列出某个 Session 的方法（协议 v3） |
@@ -202,12 +202,14 @@ sequenceDiagram
 
 ### A.1 方法贡献
 
+两张表的调用数据——`MethodCall`、`MethodReply`、处理函数自己的错误与方法表的错误种类——归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) 契约定义；本附录保留重构不改的客户端错误、中断与路由行为。
+
 `sessionMethods`（Session）与 `managementMethods`（进程）是方法表，具有同一个方法 `register`。部件把它提供的每个命名空间注册到其作用域的方法表，方法表回调该部件自己的 `call`。其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)），并进入附录 F 的原生调用受理。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
-| `register`（方法表的） | async | `namespace`、`MethodDecl[]`、`call` | 注册完成时无返回值；被拒绝时返回错误 |
-| `call`（注册部件自己的函数） | async | `MethodCall`、`cancelled`、`progress` | `MethodReply`，或 `MethodError` |
+| `register`（方法表的） | async | `caller`、`namespace`、`MethodDecl[]`、`call` | 注册完成时无返回值；被拒绝时返回错误 |
+| `call`（注册部件自己的函数） | async | `MethodCall`、`cancelled`、`progress` | `MethodReply` 数据：处理函数的值，或它自己的 `{code, message}` 错误 |
 
 ```text
 // MethodDecl
@@ -217,18 +219,10 @@ sequenceDiagram
   "progress": false,
   "notifications?": ["session.goal.changed"], // 位于命名空间内
   "reply": "direct" | "handoff" }      // handoff：daemon.shutdown
-// MethodCall
-{ "callId": "string", "method": "session.goal.set",
-  "params": {},                        // 原样传入；Session 方法的 sessionId（以及 branchId）留在这里
-  "origin": { "entry?": { "name": "string", "deviceId?": "string" }, // 连接的 ConnectionEntry
-              "connectionId?": "string", "peer?": "string" } } // peer：rutis 链接；仅用于诊断
-// MethodReply
-{ "kind": "value", "value": {} } | { "kind": "handedOff" }
-// MethodError
-{ "code": -32000, "appError": "string", "message": "string" }
+// MethodCall、MethodReply 与方法表的错误：见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。
 ```
 
-目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（线上为 `origin.connectionId`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply`、`handedOff`、`origin.entry` 与 `origin.peer` 未实现。
+目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（线上为 `origin.connectionId`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply`、回复交接、`origin.entry` 与 `origin.peer` 未实现。
 
 取消与中断：调用由提供方自己回复，不由 Rpc 回复。有两种情况会中断已受理的调用：提供方这一代卸载，以及受理该调用的 Rpc 装载卸载。任一发生时，处理函数的取消令牌都会触发，`drain` 调用也不例外。随后 `report` 调用立即回复 `operation_interrupted`（操作可能已经提交），之后再结算；`drain` 调用回复自己的结果。提供方的卸载等待它受理的每个调用，包括 `report` 调用。调用方断开不会取消任何东西。
 

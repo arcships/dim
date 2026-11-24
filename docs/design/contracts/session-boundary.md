@@ -138,7 +138,7 @@ Methods have no model-visible effect. A method that changes model context does s
 
 | Service and method | Mode | Purpose |
 | --- | --- | --- |
-| `sessionMethods.register(namespace, MethodDecl[], call)` | async | Register a Session method namespace until the calling part unloads |
+| `sessionMethods.register(caller, namespace, MethodDecl[], call)` | async | Register a Session method namespace until the calling part unloads; shape in [SessionMethods](../plugins/SessionMethods.md#own-contract) |
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | Register a management namespace until the calling part unloads |
 | `call(MethodCall, cancelled, progress) -> MethodReply` (the registering part's function) | async | Execute a method of the namespace |
 | `session.methods {sessionId}` (wire, Rpc built-in) | async | List a Session's methods (protocol v3) |
@@ -202,12 +202,14 @@ Shapes are JSON with camelCase fields; a `?` after a field name marks it optiona
 
 ### A.1 Method contributions
 
+The call data of both tables — `MethodCall`, `MethodReply`, the handler's own error and the table's error kinds — is the [SessionMethods](../plugins/SessionMethods.md#own-contract) contract's; this appendix keeps the client error, interruption and routing behavior that the redesign does not change.
+
 `sessionMethods` (Session) and `managementMethods` (process) are method tables with the same method, `register`. A part registers each namespace it serves with the table of its scope, and the table calls back the part's own `call`. Parts of other languages register through the same services ([C4](../session-typescript.md), [process rows](../process-typescript.md)) and reach the native call admission of Appendix F.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `register` (the table's) | async | `namespace`, `MethodDecl[]`, `call` | Nothing once registered; an error when refused |
-| `call` (the registering part's function) | async | `MethodCall`, `cancelled`, `progress` | `MethodReply`, or `MethodError` |
+| `register` (the table's) | async | `caller`, `namespace`, `MethodDecl[]`, `call` | Nothing once registered; an error when refused |
+| `call` (the registering part's function) | async | `MethodCall`, `cancelled`, `progress` | `MethodReply` data: the handler's value, or its own `{code, message}` error |
 
 ```text
 // MethodDecl
@@ -217,18 +219,10 @@ Shapes are JSON with camelCase fields; a `?` after a field name marks it optiona
   "progress": false,
   "notifications?": ["session.goal.changed"], // inside the namespace
   "reply": "direct" | "handoff" }      // handoff: daemon.shutdown
-// MethodCall
-{ "callId": "string", "method": "session.goal.set",
-  "params": {},                        // as sent; Session methods keep sessionId (and branchId) here
-  "origin": { "entry?": { "name": "string", "deviceId?": "string" }, // the connection's ConnectionEntry
-              "connectionId?": "string", "peer?": "string" } } // peer: rutis link; diagnostics only
-// MethodReply
-{ "kind": "value", "value": {} } | { "kind": "handedOff" }
-// MethodError
-{ "code": -32000, "appError": "string", "message": "string" }
+// MethodCall, MethodReply and the table's errors: [SessionMethods](../plugins/SessionMethods.md#own-contract).
 ```
 
-Implemented today (Appendix F): `MethodDecl.name`, `MethodDecl.mutating`, `interruption`, `progress` and `notifications`, and `MethodCall.method`, `params` and `origin.caller` (`origin.connectionId` on the wire); the foreign `register` decodes these fields from a foreign part's declarations, supplies a fresh `callId` to each call, and adds `origin.connectionId` when the call came from a connection. `reply`, `handedOff`, `origin.entry` and `origin.peer` are not implemented.
+Implemented today (Appendix F): `MethodDecl.name`, `MethodDecl.mutating`, `interruption`, `progress` and `notifications`, and `MethodCall.method`, `params` and `origin.caller` (`origin.connectionId` on the wire); the foreign `register` decodes these fields from a foreign part's declarations, supplies a fresh `callId` to each call, and adds `origin.connectionId` when the call came from a connection. `reply`, reply handoff, `origin.entry` and `origin.peer` are not implemented.
 
 Cancellation and interruption: the provider replies to its own calls, not Rpc. Two events interrupt an admitted call: the unload of the provider's generation and the unload of the Rpc load that admitted it. On either, the handler's cancellation token fires, for `drain` calls too. A `report` call then replies `operation_interrupted` at once (the operation may already have committed) and settles afterwards; a `drain` call replies with its own result. The provider's unload waits for every call it accepted, `report` calls included. A caller's disconnect cancels nothing.
 

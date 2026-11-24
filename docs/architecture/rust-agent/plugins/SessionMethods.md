@@ -4,7 +4,7 @@ Owner: [methods.rs](../../../../crates/dim-agent-capabilities/src/methods.rs).
 Keeps the Session's method table, `sessionMethods`: the method namespaces the
 Session's parts register with it, which Rpc reads on each call to dispatch a
 Session method through the Session. Contract:
-[methods contract A.1](../../../design/contracts/session-boundary.md#a1-method-contributions).
+[SessionMethods](../../../design/plugins/SessionMethods.md).
 
 ## Dependencies
 
