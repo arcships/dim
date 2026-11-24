@@ -95,7 +95,7 @@ A caller that needs the line's own owners — the input queue it writes into, th
 
 A Session part acts on one line by line id, never through a `Branch` object. `line_owner::<T>(line)` resolves the branch-group service `T` of the instance the runtime holds for that line, and the caller calls that owner's own operation or reads its published value ([ADR 027](https://github.com/arcships/dim/pull/2029) D1). Any data face of the branch group may be reached this way, except the registration points (`sessionMethods`, `toolRegistry`, `promptRegistry`) and the lifecycle services (`timeline`, `dispatcher`, `branchLifecycle`, `timelineIdentity`); those stay inside the scope (ADR 027 D3).
 
-`line_owner` answers with the service. A Session part keeps the three route answers apart: `SessionClosing` — this Session is closing, so the part ends its work; `NoLine` — the line is closing, ended or not this Session's, which is final for that line: no hold and no retry; `NoSession` — no live Session instance, which only a process caller receives, and it takes an Agents hold before calling again ([#2127](https://github.com/arcships/dim/issues/2127)). No operation name is a string, no request is a `json!` value, and no forwarding facade sits between the caller and the owner. The runtime keeps the `(session, line)` index it builds when it constructs a line's context, routes the call itself, and hands no instance key to the caller (ADR 027 D2); TimelineTree is not in this path.
+`line_owner` answers with the service. A Session part keeps the three route answers apart: `SessionClosing` — this Session is closing, so the part ends its work; `NoLine` — the line is closing, ended or not this Session's, which is final for that line: no hold and no retry; `NoSession` — no live Session instance, which only a process caller receives, and it takes an Agents hold before calling again ([#2127](https://github.com/arcships/dim/issues/2127)). No operation name is a string, no request is a `json!` value, and no forwarding facade sits between the caller and the owner. The runtime keeps the `(session, line)` index it builds when it constructs a line's context, routes the call itself, and hands no instance key to the caller ([ADR 027](https://github.com/arcships/dim/pull/2029)); TimelineTree is not in this path.
 
 Caller code after the change: a Session method steering a member line, a method reading a line owner's published value, and one using another data face of the line.
 
@@ -221,7 +221,7 @@ One narrowing is visible: a line appears in `session.branches` and answers `sess
 | ADR 002 D3 | Dependencies point from extensions to the core; TimelineTree depends on the Session scope, the store and the guide entries only. |
 | ADR 002 D4 | No setting selects a behaviour here; the cap BranchTool configures is charged by this owner. |
 | ADR 002 D5 | The contract is language-neutral: ids, records and facts; the Rust binding is the appendix. |
-| ADR 027 | D1: a Session part reaches a branch owner with `line_owner::<T>(line)`. D2: the runtime routes by id and hands no instance key to the caller. D3: any data face except the registration points and the lifecycle services. |
+| ADR 027 | Applies: D1–D3. The mechanism is [#2127](https://github.com/arcships/dim/issues/2127). |
 
 ## Requirements raised to mechanism owners
 
