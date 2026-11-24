@@ -180,7 +180,7 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
-| `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
+| ~~`historyRenderer`~~ | session | SessionScope | hot-path | 由分支作用域的 `contextProjection` 取代（[Context projection](plugins/ContextProjection.md)，#2025） |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareContextHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |

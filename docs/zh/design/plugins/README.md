@@ -8,6 +8,7 @@
 
 | 插件 | 进程部件 | Session 部件 | 分支部件 | 阶段 / issue |
 | --- | --- | --- | --- | --- |
+| [上下文投影](../../../design/plugins/ContextProjection.md)（所有者契约） | — | — | 分支的上下文折叠与恢复快照，由 `contextProjection` 提供 | [#2025](https://github.com/arcships/dim/issues/2025) |
 | [Migration](../../../design/plugins/Migration.md) | 按需加载的导入任务、来源映射、进度与重试记录；结算后卸载 | — | — | [实施计划](../../../plan/analysis/legacy-migration.md) |
 | [Provider 管理](../appserver/provider-management.md) | 现有 Provider：配置、目录、客户端偏好与管理方法 | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` 工具、`session.question.respond`、运行中 `ask_user` 调用的等待者；没有事件 | — | M2；#262 |
@@ -46,4 +47,4 @@
 | --- | --- |
 | 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）、`CodeMode`（安装时）、light-ocr、EventHub；接入方宿主进程内的 AcpGateway |
 | Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、EventHub、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表）、Code Mode(启用时) |
-| 分支部件 | Goal（含 Pursuit）、ModelRecovery（拟议）、Hooks、Prompt、Code Mode(启用时) |
+| 分支部件 | Goal（含 Pursuit）、ModelRecovery（拟议）、Hooks、Prompt、Code Mode(启用时)、[上下文投影](../../../design/plugins/ContextProjection.md) |
