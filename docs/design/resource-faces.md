@@ -69,7 +69,7 @@ whether a call may run, or consults who is calling.
    confirmed roots it is given are node-absolute. Every other operation, `execHost.start` and
    `shell` included, takes a path a `resolve` reply or the caller's own record already returned.
    Returned paths are stable for history: the same file always resolves to the same path.
-4. **Ids are values.** A task, read or lease id is a string the provider issues or the caller
+4. **Ids are values.** A task, root or claim id is a string the provider issues or the caller
    assigns; ids carry no authority.
 5. **Pages are bounded.** Large output and long results cross as pages with a cursor, never as a
    stream. No reply carries unbounded bytes.

@@ -99,7 +99,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 标题元数据 | 原生存储，S5b 的 `session_metadata` 行（[标题元数据](session-title-metadata.md#9-生命周期)） | 第 4 步，同一事务 |
 | Worktree 使用关联 | 原生存储，`session_worktrees` 行（[worktree access §4](../../../design/worktree-access.md#4-持久使用关联与清理边界)） | 第 4 步，同一事务；保留目录记录与 worktree 文件 |
 | exec 输出、转存的 `read` 结果和持久 shell 日志 | `<数据库目录>/command-output/<S>/` 及 S 的输出行命名的每个目录 | 第 3 步。本数据库另一个 Session 仍命名的目录保留 |
-| 已加载实例、租约、订阅、在途使用 | 进程内存 | 第 2 步 |
+| 已加载实例、Session 租约、订阅、在途使用 | 进程内存 | 第 2 步 |
 | 协议版本、准入槽位、不可用 Session 条目 | Agents 内存 | 第 6 步 |
 | 指向 S 的 Collaboration 关系、S 领导的成员 Session 与 S 拥有的 Agent | 持久：`agent_sessions.leader_session_id` 与 `agents.owner_session_id`（[Collaboration §6](../plugins/Collaboration.md#6-委派的所有权与寿命)）；Collaboration 的关系由它们重建 | Agents 随 leader 一起删除 Team：每个成员自己的删除（其行由 SessionStore 删除）、Agents 拥有的 Agent 记录，最后是 S。Collaboration 在观察到成员关闭（[collaboration.rs](../../../../crates/dim-app-server/src/collaboration.rs) 的 `session_ended`）或删除已卸载成员时移除关系，装载时重建其余（[空闲卸载 §7](idle-unload.md#7-竞争与交互)） |
 
@@ -266,7 +266,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | --- | --- |
 | `at` 之后的 `main` 事件，`at` 之后创建的分支 | 在切点之后 |
 | 子分支的事件，以及其下的分支 | 与切点之间没有先后顺序，重载还会重新执行其中待处理的工作（§6.3）。它们的工作留在 S 中 |
-| 已加载实例、租约、订阅、已附着的客户端、在途请求 | 运行时状态，不存储；F 自己建立 |
+| 已加载实例、Session 租约、订阅、已附着的客户端、在途请求 | 运行时状态，不存储；F 自己建立 |
 | 正在提交中的输入 | 尚未提交，不是事实 |
 | 命令输出目录 | 不复制字节；F 的 `session_output_owners` 行命名 `command-output/<S>/` 或 `.dim/exec/<S>/<branch>/` 下的同一批文件，S 删除后仍可读（ADR 013 D4，§6.6） |
 | 标题元数据 | SessionTitle A7 |

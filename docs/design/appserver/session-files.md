@@ -641,7 +641,7 @@ RPC. S5a implements those steps and tests them at SessionStore's Rust API.
 | Principles §4 rule 5 (batch) | Not applicable: no event. |
 | Principles §4 rule 6 (context from handed-over events) | The model sees a path only in adopted user input, and file content only in a `read` result. |
 | Principles §4 rule 7 (public events and services only) | Attachments uses `sessionFiles`; SessionStore uses FileStorage's public operations and reads no plugin's internals. |
-| Principles §4 rule 8 (requirements to mechanism owners) | No change to the Timeline, Dispatcher, event format, rutis, assembly or the Session facade, and nothing raised to rutis. The format change belongs to SessionStore's own store and is recorded as a format decision. `create_directory` is a FileStorage supplement inside its own module, agreed in the S6 review. Permission admits file-tool reads and writes through the fixed facts (§11.1); §11.2 is the generic requirement it implements, not a Session-files exception. |
+| Principles §4 rule 8 (requirements to mechanism owners) | No change to the Timeline, Dispatcher, event format, rutis, assembly or the Session facade, and nothing raised to rutis. The format change belongs to SessionStore's own store and is recorded as a format decision. `create_directory` is a FileStorage operation defined by its [contract](../../architecture/rust-agent/plugins/FileStorage.md), agreed in the S6 review. Permission admits file-tool reads and writes through the fixed facts (§11.1); §11.2 is the generic requirement it implements, not a Session-files exception. |
 | Principles §4 rule 9 (only facts later decisions use) | No Timeline event. Ownership is process-level state in SessionStore's rows. |
 | Principles §1 (Capability and App Server boundary) | Session files are SessionStore data (overview B.2); no new plugin. The paste feature stays in Attachments' own crate. |
 | ADR 002 D1 (scope follows state) | Process scope: a file outlives the Session that put it and is shared across Sessions. |
@@ -657,7 +657,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
 
 | To | Requirement | Status |
 | --- | --- | --- |
-| FileStorage | `create_directory` (§7) | Added in S5a's implementation, agreed in the S6 review |
+| FileStorage | `create_directory` per its [contract](../../architecture/rust-agent/plugins/FileStorage.md) | Added in S5a's implementation, agreed in the S6 review |
 | App Server assembly (`serve` in lib.rs) | Register the database directory as a FileStorage root when it is not one, and pass its index to `SessionStorePlugin` (§3.1) | A few lines in S5a's implementation, appended after the assembly lane's work like other registrations |
 | Attachments (P2 design refinement) | Map `sessionFiles` `storage` to an `attachment.put` code. Attachments lists none today; SessionTitle maps SessionStore `storage` to `storage_failed` | Decided: `storage_failed`, recorded in [#66](https://github.com/arcships/dim/issues/66); applied in P2's design review |
 | S5c | Delete owner rows inside the delete transaction, after closing the Session and before `agent_sessions`; copy owner rows inside the fork transaction; schedule a sweep after a delete | Contract for S5c (§5.2, §5.3) |

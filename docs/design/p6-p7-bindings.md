@@ -161,7 +161,7 @@ Selectors and internal indices are not persisted definition identities.
 Methods return values directly; `Err(WorkflowFilesError)` throws the generated
 `RustError` with `name: WorkflowFilesError`, its enum's snake-case `code`, Display
 `message` and serde `data`. Define the error as a serde-tagged enum, retaining
-the native distinctions `invalid_path`, `closed`, `cancelled`, `locked`,
+the native distinctions `invalid_path`, `closed`, `cancelled`,
 `unsupported`, `unsynced` and `io`, plus `not_found` and `invalid_data` at this
 file boundary. Unknown/unauthorized selectors, package mutations and invalid
 filenames throw `invalid_path` before I/O. Malformed request data, including a

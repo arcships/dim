@@ -90,7 +90,7 @@ are Rust methods over the native store, not services: only Agents calls them.
   | delete(S) ->|                              |                     |                          |
   |             | 1 take S's admission gate    |                     |                          |
   |             | 2 loaded? close() ---------->| settle accepted work, write terminal facts,
-  |             |                              | release processes, leases, member requests;
+  |             |                              | release processes, keys and claims, member requests;
   |             |<-------------- closed -------|                      |                          |
   |             | delete_session(S) ------------------------------->|                          |
   |             |                              |  3 remove command-output/S, parent synced ---->|
@@ -174,7 +174,7 @@ are Rust methods over the native store, not services: only Agents calls them.
 | Output ownership | Native store, `session_output_owners` rows (v29, [ADR 013](../../adr/013-command-output-ownership.md) D1) | Step 4, same transaction |
 | Worktree usage associations | Native store, `session_worktrees` rows ([worktree access §4](../worktree-access.md#4-持久使用关联与清理边界)) | Step 4, same transaction; directory records and worktree files remain |
 | Exec output, offloaded `read` results and persistent shell logs | `<database directory>/command-output/<S>/` and every directory named by S's output rows | Step 3. A directory another Session in this database still names is kept |
-| Loaded instance, leases, subscriptions, in-flight uses | Process memory | Step 2 |
+| Loaded instance, Session leases, subscriptions, in-flight uses | Process memory | Step 2 |
 | Protocol version, admission slot, unavailable-Session entry | Agents, in memory | Step 6 |
 | Collaboration relations that name S, the member Sessions S leads and the Agents S owns | Durable: `agent_sessions.leader_session_id` and `agents.owner_session_id` ([Collaboration §6](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)); Collaboration's relations are rebuilt from them | Agents deletes a leader with its Team: each member's own delete, in which SessionStore removes that Session's rows, then the Agent records Agents owns, then S. Collaboration drops a relation when it observes a member's close ([collaboration.rs](../../../crates/dim-app-server/src/collaboration.rs) `session_ended`) or the delete of an unloaded member, and rebuilds the rest when it loads ([idle unload §7](idle-unload.md#7-races-and-interactions)) |
 
@@ -428,7 +428,7 @@ grows with `main`'s copied prefix, but no single transaction holds the writer fo
 | --- | --- |
 | `main` events after `at`, branches created after `at` | After the cut |
 | Events of child branches, and the branches below them | Not ordered against the cut, and a reload would run their pending work again (§6.3). Their work stays in S |
-| The loaded instance, leases, subscriptions, attached clients, in-flight requests | Runtime state, not stored; F builds its own |
+| The loaded instance, Session leases, subscriptions, attached clients, in-flight requests | Runtime state, not stored; F builds its own |
 | An input still being submitted | Not committed, so not a fact |
 | The command output directory | The bytes are not copied; F's `session_output_owners` rows name the same files under `command-output/<S>/` or `.dim/exec/<S>/<branch>/` and keep them readable after S is deleted (ADR 013 D4, §6.6) |
 | Title metadata | SessionTitle A7 |

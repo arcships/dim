@@ -439,7 +439,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 | 原则 §4 第 5 条（批次） | 不适用：没有事件。 |
 | 原则 §4 第 6 条（上下文来自交接后的事件） | 模型只在已采用的用户输入里看到路径，只在 `read` 结果里看到文件内容。 |
 | 原则 §4 第 7 条（只用公开的事件和服务） | Attachments 使用 `sessionFiles`；SessionStore 使用 FileStorage 的公开操作，不读任何插件的内部状态。 |
-| 原则 §4 第 8 条（向机制所有者提需求） | 不改 Timeline、Dispatcher、事件格式、rutis、装配或 Session 门面，也不向 rutis 提需求。格式变化属于 SessionStore 自己的存储，记录为格式决定。`create_directory` 是 FileStorage 在自己模块内的补充，已在 S6 评审中同意。Permission 通过固定事实准入文件工具的读写（§11.1）；§11.2 是它实现的通用需求，不是 Session 文件的例外。 |
+| 原则 §4 第 8 条（向机制所有者提需求） | 不改 Timeline、Dispatcher、事件格式、rutis、装配或 Session 门面，也不向 rutis 提需求。格式变化属于 SessionStore 自己的存储，记录为格式决定。`create_directory` 是 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 定义的操作，已在 S6 评审中同意。Permission 通过固定事实准入文件工具的读写（§11.1）；§11.2 是它实现的通用需求，不是 Session 文件的例外。 |
 | 原则 §4 第 9 条（只有后续决定要用的事实进 Timeline） | 没有 Timeline 事件。所有权是 SessionStore 行中的进程级状态。 |
 | 原则 §1（Capability 与 App Server 边界） | Session 文件是 SessionStore 的数据（总体设计 B.2）；不新增插件。粘贴功能留在 Attachments 自己的 crate 中。 |
 | ADR 002 D1（作用域跟随状态） | 进程作用域：文件比写入它的 Session 活得更久，并在 Session 之间共享。 |
@@ -455,7 +455,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 
 | 对象 | 需求 | 状态 |
 | --- | --- | --- |
-| FileStorage | `create_directory`（§7） | 在 S5a 的实现中加入，已在 S6 评审中同意 |
+| FileStorage | `create_directory`，按其[契约](../../../architecture/rust-agent/plugins/FileStorage.md) | 在 S5a 的实现中加入，已在 S6 评审中同意 |
 | App Server 装配（lib.rs 中的 `serve`） | 数据库目录还不是 FileStorage 根时注册它，并把索引交给 `SessionStorePlugin`（§3.1） | S5a 实现中的几行改动，像其他登记一样在装配线的工作之后追加 |
 | Attachments（P2 设计细化） | 把 `sessionFiles` 的 `storage` 映射为 `attachment.put` 的某个码。Attachments 目前没有；SessionTitle 把 SessionStore 的 `storage` 映射为 `storage_failed` | 已决定：`storage_failed`，记录在 [#66](https://github.com/arcships/dim/issues/66)；在 P2 的设计复核中落实 |
 | S5c | 在删除事务内、关闭 Session 之后、删除 `agent_sessions` 之前删除所有者行；在分叉事务内复制所有者行；删除后安排清扫 | S5c 的合同（§5.2、§5.3） |

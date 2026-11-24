@@ -89,8 +89,8 @@ source or the Session (§10 D8).
 - **Self-contained.** The record carries the token and revocation endpoints and the client's
   authentication method, so refresh and sign-out need no new discovery. A record is written when
   an attempt completes, with its client and tokens; an abandoned attempt leaves nothing.
-- **Write path.** A write claims the file's marker with `claim(path)`, then runs one `update_claimed`: the change re-reads the file and replaces only its own key's record, and the owner atomically replaces the file with mode 0600 under the held marker. The claim is released after the write. On Windows the file keeps the FileStorage DACL handling. A replace that is in place but whose sync failed counts as written: readers already see it, and a crash that loses it ends like the kill in §7.
-- **Token requests hold the claim.** A code exchange, refresh or revocation claims the marker before the re-read and holds it through the request to the write-back, as the managed OAuth host does. Two daemons can share a home (for example `--product-home` with different `--database` paths), and the marker stops both from redeeming one rotating refresh token. Token requests for different servers therefore wait on each other, each bounded by its 30 s timeout; they are rare. Discovery and registration run outside the claim.
+- **Write path.** A write claims the file's marker with `claim(path)`, then runs one `update_claimed`: the change receives the current content and returns it with only its own key's entry replaced, and the owner atomically replaces the file with mode 0600 under the held marker. The claim is released after the write, successfully or not. On Windows the file keeps the FileStorage DACL handling. A replace that is in place but whose sync failed counts as written: readers already see it, and a crash that loses it ends like the kill in §7.
+- **Token requests hold the claim.** A code exchange, refresh or revocation claims the marker before reading the current content and holds it through the request to the write-back, as the managed OAuth host does. Two daemons can share a home (for example `--product-home` with different `--database` paths), and the marker stops both from redeeming one rotating refresh token. Token requests for different servers therefore wait on each other, each bounded by its 30 s timeout; they are rare. Discovery and registration run outside the claim.
 - **Settled once sent.** A token request that has been sent is received and persisted on
   `McpAuth`'s own task, whoever is waiting for it, so neither the caller's departure nor an unload
   loses a rotated refresh token or a redeemed code. Mcp's unload waits for it. A code exchange
@@ -219,7 +219,7 @@ discovery, which follows the specification's order with the additions listed in 
    authorization server, nothing recorded for the old one is used. A DCR or CIMD client is
    registered again. A configured `oauth.clientId` is refused with `mcp_auth_client_required`,
    since the specification asks for an error rather than mismatched credentials; signing out
-   deletes the record, and the next `start` binds the configured client to the new issuer. While a
+   removes the key's entry, and the next `start` binds the configured client to the new issuer. While a
    server stays signed in, a switch of authorization server shows up as `401` after refresh, so
    the record becomes `expired` and the next `start` finds the change.
 
@@ -352,12 +352,15 @@ that carries the header to `InsufficientScope`.
 ### 5.8 Sign-out
 
 `mcp.auth.logout` revokes the refresh token, then the access token, through the authorization
-server's `revocation_endpoint` (RFC 7009) when one is advertised. It then deletes the record,
-including the registration and any client secret, whatever the revocation outcome. The reply
-says whether revocation succeeded. Every Session on the key then reports `auth_required`.
-From the moment it is accepted, sign-out closes the key's pending attempt, and it closes any
-attempt started before it completes, so a sign-in already under way in the same daemon cannot
-undo it (§7).
+server's `revocation_endpoint` (RFC 7009) when one is advertised. It holds the store claim from
+before the revocation, then removes only its own key's entry with one `update_claimed`,
+including the registration and any client secret, whatever the revocation outcome. The file and
+other keys' entries stay; an empty `credentials` array is valid, and deleting the file under the
+claim would require releasing it first, so sign-out does not delete it. The claim is released
+after the write, successfully or not. The reply says whether revocation succeeded. Every Session
+on the key then reports `auth_required`. From the moment it is accepted, sign-out closes the key's
+pending attempt, and it closes any attempt started before it completes, so a sign-in already under
+way in the same daemon cannot undo it (§7).
 Sign-out is also allowed once an entry no longer uses OAuth (static credentials added, or a
 cleartext URL), so a stored credential can always be removed.
 
@@ -382,8 +385,8 @@ Each node is the catalog's `auth.status` for one key. `refreshing` is internal a
    +---- logout, from required, authorized or expired
 ```
 
-`absent`: Dim holds no record for the key and no recorded challenge. Sign-out deletes the record
-and clears the challenge. The catalog then has no `auth` field.
+`absent`: Dim holds no record for the key and no recorded challenge. Sign-out removes the key's
+entry and clears the challenge. The catalog then has no `auth` field.
 
 ## 7. Timing and conflicts
 
@@ -401,15 +404,15 @@ wait for the store claim or a network request, so waiting for it takes at most o
 write, never a token request or a refresh. Every `start` and `logout` is therefore ordered either
 before an exchange's final check, which then finds its attempt superseded, or after its
 publication: a newer attempt that completes later replaces the stored credential, and a
-sign-out deletes and revokes it. A superseded attempt never writes the store or wakes Sessions
+sign-out revokes and removes it. A superseded attempt never writes the store or wakes Sessions
 after a newer `start` has returned.
 
 - **`start`** makes its attempt current when it returns, replacing the previous one. A
   publication under way holds the attempts lock, so the new attempt becomes current after it. If
   a sign-out completed after `start` read the record, `start` answers `mcp_auth_attempt_closed`
-  instead, because its attempt may reuse a client that the sign-out deleted.
+  instead, because its attempt may reuse a client that the sign-out removed.
 - **`logout`** closes the current attempt when it is accepted, before it waits for the store claim.
-  It closes the attempt again once it has deleted the record, which ends an attempt started in
+  It closes the attempt again once it has removed the entry, which ends an attempt started in
   the meantime.
 - **`cancel`** closes only the named current attempt. It leaves an existing grant intact and
   does not interrupt a token request already sent; that exchange settles and revokes any tokens
@@ -440,10 +443,10 @@ after a newer `start` has returned.
 | Two `start` calls for one key | The later to return replaces the earlier; completing the earlier is `mcp_auth_attempt_closed` |
 | `start` while a `complete` is under way | Until the old exchange's final check, the new attempt supersedes it: a code not yet sent is never sent, tokens already obtained are revoked and discarded, and `complete` answers `mcp_auth_attempt_closed`. After that check, `start` becomes current only once the old exchange has written its record and woken the Sessions; completing the new attempt replaces that record |
 | Two `complete` calls for one attempt | One exchange at a time: the second answers `mcp_auth_attempt_closed` at once. After a transport error the attempt is pending again |
-| `logout` while an attempt is pending or under way | The attempt closes when `logout` is accepted. An exchange still waiting for the store claim sends nothing; one whose request is out discards its tokens; one past its final check publishes first, and `logout` is accepted after it. `logout` then deletes the record and revokes its tokens |
+| `logout` while an attempt is pending or under way | The attempt closes when `logout` is accepted. An exchange still waiting for the store claim sends nothing; one whose request is out discards its tokens; one past its final check publishes first, and `logout` is accepted after it. `logout` then revokes its tokens and removes its entry |
 | `start` while `logout` runs | If the sign-out completes before `start` returns, `start` answers `mcp_auth_attempt_closed`; an attempt `start` made current before then closes when the sign-out completes |
 | `complete` while a refresh runs | Both hold the store claim in turn: a refresh after `complete` finds fresh tokens and does nothing; `complete` after a refresh replaces the tokens |
-| `logout` while a refresh runs | `logout` takes the store claim after it; the refreshed tokens are revoked and deleted. A refresh after `logout` finds no record |
+| `logout` while a refresh runs | `logout` takes the store claim after it; the refreshed tokens are revoked and deleted. A refresh after `logout` finds no entry |
 | Two Sessions get `401` together | One refresh (§5.6); both retry with the new lease |
 | Entry URL edited | New key, so the new generation starts `absent` and becomes `required` on its first `401`; the old record is inert |
 | Entry disabled or removed during an attempt | The attempt may still complete and persist; nothing connects until the entry is enabled |
@@ -536,7 +539,7 @@ callback URLs or authorization server `error_description` text from an unvalidat
 | D9 | Store `mcp-oauth.json` under the home root through FileStorage, atomic 0600 replace, versioned; token requests hold the file's published marker claim and settle once sent. S8b adds no credential service, so nothing migrates: tokens are owner state that each refresh rewrites, and every owner handles its own secrets ([settings-service §1.2](settings-service.md#12-decision-secrets-belong-to-their-owner)); every other OAuth holder follows the same rule | The Settings rows in SQLite hold business documents, not secrets; `pluginFiles` is FileStorage's bridge API for non-Rust plugins, while a Rust owner uses FileStorage directly, as the managed OAuth host does; an OS keychain needs a host-wide secret-store decision that covers every OAuth owner; waiting for S8b blocks on an API that cannot hold rotating secrets |
 | D10 | Refresh on use with a 30 s margin, plus refresh and one retry on `401`; single flight per key; persist rotation before use | Background refresh timers wake the daemon for idle servers and rotate tokens nobody uses |
 | D11 | Step-up is user-initiated: the call fails with fixed text, and the next sign-in requests the union | Automatic re-authorization from a tool call needs a browser in the middle of a turn |
-| D12 | Sign-out revokes (RFC 7009, best effort) then deletes the whole record; `mcp.remove` leaves credentials | Deleting on `mcp.remove` cannot know whether another source's entry with the same key still uses them |
+| D12 | Sign-out revokes (RFC 7009, best effort) then removes the key's entry; the file and other keys' entries stay; `mcp.remove` leaves credentials | Deleting on `mcp.remove` cannot know whether another source's entry with the same key still uses them; deleting the file under a held claim is not expressible, and an empty file is valid |
 | D13 | `session.mcp` gains `auth_required`, which clears by itself; the catalog gains `auth` | Reusing `failed` would require a manual refresh after sign-in and gives the CLI nothing to act on |
 | D14 | `start` requires an enabled entry; sign-out is always allowed; one key is shared across sources | Sign-in on a disabled project entry would contact a URL from project files before the user enabled it (ADR 003 D3) |
 | D15 | An entry with static credentials never uses OAuth; OAuth needs `https` or loopback `http` | Falling back to OAuth after a static credential fails mixes two credential sources; a bearer token over cleartext can be stolen |
@@ -715,8 +718,8 @@ tests, using an isolated home:
    again.
 5. **Reauthorization.** A `401` after refresh, or `invalid_grant`, gives `expired` and
    `auth_required`. A new sign-in recovers both Sessions.
-6. **Sign-out.** `logout` sends revocation, deletes the record and replies `revoked: true`. The
-   next request ends `auth_required`.
+6. **Sign-out.** `logout` sends revocation, removes the key's entry and replies `revoked: true`;
+   the file and other keys' entries stay. The next request ends `auth_required`.
 7. **Refusals.** None of these sends a token request:
    - a wrong `state`, redirect path or `iss` (the attempt stays pending);
    - metadata without `code_challenge_methods_supported`;

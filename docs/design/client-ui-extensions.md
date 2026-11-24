@@ -245,7 +245,7 @@ Rust 和 TypeScript Session part 均可使用此服务。路径由已持有文�
 | 部分 | 声明的服务依赖 | 用途 |
 | --- | --- | --- |
 | UiExtensions | `managementMethods`、`partRegistry`、`fileStorage` | 目录方法、Session 部分注册、内容快照与文件读取 |
-| UiResources | `sessionIdentity`、`sessionLifecycle`、`fileStorage` | 固定 Session 身份、发布与关闭边界、文件读取资源 |
+| UiResources | `sessionIdentity`、`sessionLifecycle`、`fileStorage` | 固定 Session 身份、发布与关闭边界、按路径分页的 `stat`/`read` |
 | PluginManager | 对 `uiExtensions` 的可选读取 | 与已有内容 owner 一样提交或撤下内容；owner 缺失不阻塞后端代码 |
 
 具体装配按 [rutis 使用](rutis-usage.md) 声明，贡献使用既有调用者生命周期。面板宿主依赖现有 Session 公开协议，不引入后端任意命名服务访问。没有对 rutis、Timeline 或 Dispatcher 的需求。
