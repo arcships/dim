@@ -854,7 +854,7 @@ The owners that read node files or start node processes, and the operations they
 
 No runtime requirement is raised. The faces use rutis's current capability, and an implementer
 must not use a gated dependency, which would park a consumer while a leaf is offline instead of
-failing one call with `node_unavailable`.
+failing one call with `io`.
 
 - The `timelineStore` face keeps the existing Timeline admission and publish ordering; the only change is
   that completion is delivered as a notification on the face instead of a Rust callback, which is

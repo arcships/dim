@@ -451,8 +451,7 @@ level of a directory prefix, sorted, each entry its name relative to the
 authorized root and its kind, and never enters a directory entry; a returned
 name is the resolved components joined by `/`, so it can be passed straight to
 another operation, and on Unix a backslash is part of a name while on Windows
-it separates. `remove` takes a file or a directory tree and reports `locked`
-while a lease holds it or a file beneath it. Text and binary are separate operations on the same names:
+it separates. `remove` takes a file or a directory tree and waits for the key while a lease holds it or a file beneath it. Text and binary are separate operations on the same names:
 `read` and `replace` use the v1 text envelope, `readBytes` and `replaceBytes`
 carry raw bytes. A text read of a raw file fails `invalid_data` and leaves it
 untouched, and a binary read of a text file returns its envelope bytes. The byte

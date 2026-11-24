@@ -682,8 +682,8 @@ None to the runtime or rutis. Supplements and requirements to other owners:
    schema with every business row unchanged, then reopens as v15. The upgrading open reports
    the upgrade, which the §8 log line comes from; the reopen does not. The branch-only v14 and unknown
    schemas are refused and preserved.
-8. FileStorage flow: `create_directory` creates `0700` and syncs the parent; an existing
-   directory succeeds; a missing parent fails `NotFound`. Reserved names, a case alias of the
+8. FileStorage flow: `create_directory` creates the tree with `0700` and syncs the parent; an existing
+   directory succeeds; a missing parent fails `missing_parent`. Reserved names, a case alias of the
    reserved directory, and a case alias of `auth.json.lock` (on a case-insensitive filesystem)
    fail `InvalidPath` and create nothing. An existing file or link is refused and untouched.
    Cancellation before creation creates nothing.
@@ -714,7 +714,7 @@ only S5a.
 
 | # | Change | Why |
 | --- | --- | --- |
-| D1 | `create_directory` ensures the key for `auth.json.lock` and only opens the key for the new name, instead of opening both keys with creation (§7) | Opening a key with creation leaves a key file named after the directory, and FileStorage unlinks keys only when it removes their parent. `<db>.session-files` is never removed, so every put would have left one key there for good. An existing alias of the marker still resolves to the marker's key, so the check gives the same answer |
+| D1 | The account marker's key handling is defined by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md); `create_directory` creates no key for the new name (§7) | A key file named after a directory that is never removed would stay for good. The contract's marker and private key keep the same alias check without leaving a key for the directory name |
 | D2 | Before P3, a put reads no resource node. The Session's existence is decided by txn 1, after the FileStorage lookup, so an unknown Session gets `node_unavailable` while FileStorage is not active (§5.1) | `SessionConfig.resourceNode` does not exist yet, so a read before txn 1 would only repeat txn 1's check. P3 adds the node read before the lookup |
 | D3 | Every put schedules a sweep until one sweep of the generation has completed on its node, instead of only the first put (§5.4) | A first sweep stopped by an unavailable node would otherwise wait for an abandon or a release to retry; a completed sweep ends the extra requests |
 

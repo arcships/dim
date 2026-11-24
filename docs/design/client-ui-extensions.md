@@ -194,7 +194,7 @@ UiResources 提供通用的**已完成文件发布**：受信任的后端 Sessio
 - 发布只接受 App Server 所在文件系统可读的有限长度普通文件，不接受目录、设备、socket 或网络 URL。远端浏览器不需要访问该文件系统；不共享文件系统的后端执行节点不是首期文件发布来源。
 - 发布参数 `path` 是 App Server 文件系统上的 canonical 绝对路径，且须位于 FileStorage 的既有授权根内。相对路径以 `invalid_params` 拒绝；绝对路径没有匹配的授权根、越界或指向链接时以 `resource_unavailable` 拒绝。UiResources 在可信后端发布边界解析到根相对路径，不因 UI 请求扩大授权。所需的原生文件读取能力见 R5。
 - 发布调用是后端命名服务，不是浏览器 Session RPC。浏览器没有“路径换 URL”、任意文件读取、上传或 URL 代理方法。业务 owner 在自己的外部输入边界决定哪些文件可以发布，不能直接把客户端传来的路径当成发布许可。
-- 生产者必须在文件完成后发布，并保证发布期间字节不变。UiResources 打开文件，记录长度和 MIME，持有读取资源；它不复制业务缓存、不接管下载或转码。替换内容要发布新引用，不能修改已发布文件。
+- 生产者必须在文件完成后发布，并保证发布期间字节不变。UiResources 按路径分页读取文件，记录长度和 MIME，不持有读取资源；它不复制业务缓存、不接管下载或转码。替换内容要发布新引用，不能修改已发布文件。
 - 引用绑定 Session、发布者的本次注册与资源 ID。它不是 bearer 凭据，也不是持久业务 ID。一个资源可被同一 Session 的多个面板读取；每个客户端仍需通过服务入口和 Session 访问授权。
 - 注册属于发布者的生命周期；显式撤下、发布者卸载和 Session closing 都停止准入，取消在途读取并等待文件句柄释放。撤下完成后，生产者才可删除缓存文件。Session 未发布前不接受读取。
 - UI 关闭只取消自己的读取，不撤下别的面板仍可能使用的资源。资源过期后由业务方法显式取得新引用，不自动下载或重放具有副作用的操作。
@@ -209,7 +209,7 @@ UiResources 提供通用的**已完成文件发布**：受信任的后端 Sessio
 
 Rust 和 TypeScript Session part 均可使用此服务。路径由已持有文件位置的业务 owner 提供，例如后端插件使用 Node 文件 I/O 在已授权工作目录生成文件，或由现有业务服务返回绝对路径。`pluginFiles` 只提供相对文本文件接口，不提供绝对路径，因此它的相对路径不能直接传给发布服务，也不能通过猜测产品 home 拼接。
 
-[sessionFiles](appserver/session-files.md) 负责持久化不可变文件及 Session 所有权记录、fork 和删除；UiResources 只持有已有文件的临时展示引用与读取句柄，不写入该存储、不复制文件、不增加持久化所有权行。关闭展示引用不等于删除 Session 文件，故不把传输生命周期加入 sessionFiles。
+[sessionFiles](appserver/session-files.md) 负责持久化不可变文件及 Session 所有权记录、fork 和删除；UiResources 只持有已有文件的临时展示引用，读取按路径分页进行，不写入该存储、不复制文件、不增加持久化所有权行。关闭展示引用不等于删除 Session 文件，故不把传输生命周期加入 sessionFiles。
 
 此服务不复用文本型 [pluginFiles](process-typescript.md#52-public-pluginfiles-binding) 的编码或事务格式。图片生成、网络抓取、媒体解密、转码与缓存策略属于发布资源的业务插件。
 
@@ -284,7 +284,7 @@ Rust 和 TypeScript Session part 均可使用此服务。路径由已持有文�
 
 ### R5. FileStorage：受授权根约束的原生只读流
 
-- **阻塞与规则：** §3.2 和 §6 需要有界复制与按字节区间读取；[FileStorage](../architecture/rust-agent/plugins/FileStorage.md) 的整块读取/限长读取不提供随传输背压拉取的文件句柄。
+- **阻塞与规则：** §3.2 和 §6 需要有界复制与按字节区间读取；[FileStorage](../architecture/rust-agent/plugins/FileStorage.md) 的按路径偏移读满足分页（`read` 的 offset/length），不提供文件句柄或背压流；撤下与在途页竞争时只返回整页或 `resource_gone`。
 - **考虑的机制：** 整块读取使内存随媒体大小增长；在 UI owner 中重写根约束和安全打开逻辑会复制文件边界；文本事务不能表达二进制流。
 - **所需通用能力：** FileStorage 接受已有授权根内的路径，返回只读文件长度和可定位读取资源；保留原有防越界打开、取消、generation 准入与收尾保证，不由读取请求扩大根授权。每个消费者有独立读取位置；读取资源随使用者释放，存储关闭等待其结束。这是 Rust 原生 I/O 能力，不把文件句柄或逐块字节回调导出给 TypeScript。
 - **时序影响：** 取得读取资源时固定文件对象；取消或 owner 关闭停止读取并释放。无 Timeline、格式或写事务变更。

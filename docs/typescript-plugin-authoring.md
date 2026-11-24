@@ -300,8 +300,7 @@ export default definePlugin({
 });
 ```
 
-`withLock` holds the native file lease through its complete async callback. The
-outer `FileResult` is the transaction result; a callback returning a `FileResult`
+`withLock` is one `update` over the record: the change only computes; a step that needs external I/O reads the record first, does the I/O outside, and commits with one `update` comparing the revision, retrying on `conflict`. The outer `FileResult` is the transaction result; a callback returning a `FileResult`
 produces a nested result. Check each result rather than treating failure as empty
 state. `read()` returns `null` only when the file is absent. `replace` atomically
 writes and flushes the host's v1 envelope around your opaque text; keep your own
@@ -322,7 +321,7 @@ scope's `list(prefix)` returns one level of a directory, sorted, with each
 entry's name relative to the authorized root and its kind; a name is the stored
 components joined by `/`, ready to pass to another operation, and on Unix a
 backslash is part of a name while on Windows it is a separator. `remove(name)`
-removes a file or a directory tree and returns `locked` while a lease holds it
+removes a file or a directory tree and waits for the key while a lease holds it
 or a file beneath it. Use `scope.read(name, offset, length)` for larger files; it returns a page's bytes, size and
 `eof`, and no reader id crosses.
 `scope.writeStream(name, next)` pulls chunks until null and preserves the old file
