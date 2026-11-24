@@ -177,8 +177,13 @@ export function Timeline({ sessionId, rows, active, slot, earlier, loadingEarlie
           if (!active) return
           const element = event.currentTarget
           const remaining = element.scrollHeight - element.clientHeight - element.scrollTop
-          if (remaining <= 1) jumping.current = false
-          if (remaining > 96 && !jumping.current) setFollowing(false)
+          if (remaining <= 1) {
+            jumping.current = false
+            setFollowing(true)
+            setNewOutput(false)
+          } else if (remaining > 96 && !jumping.current) {
+            setFollowing(false)
+          }
         }}
         onWheel={() => { jumping.current = false }}
         onKeyDown={(event) => {
