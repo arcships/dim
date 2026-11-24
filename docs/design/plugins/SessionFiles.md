@@ -61,7 +61,7 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 
 ### Dependencies
 
-`fsHost` for the owner's directory, file creation, atomic replacement, import, listing and removal; the operations used are the ones in [FileStorage's contract](https://github.com/arcships/dim/pull/2080). The engine's file-ownership rows are private to the storage crate and are not a service. The owner does not depend on `store`: the store depends on this owner when a delete releases files.
+`fsHost` for file creation, atomic replacement, import, page reads, listing and removal; the operations used are the ones in [FileStorage's contract](https://github.com/arcships/dim/pull/2080). The owner computes its own directory (`<db>.session-files`) from the database path it holds and passes absolute paths; FileStorage's root set must cover the native store directory, which the host registers. The engine's file-ownership rows are private to the storage crate and are not a service. The owner does not depend on `store`: the store depends on this owner when a delete releases files.
 
 ### Operations
 
@@ -69,11 +69,11 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | --- | --- | --- | --- | --- | --- |
 | `put` | Store bytes under a new file id and commit ownership | `{sessionId, name, content}`, `content` is base64 | `{fileId, path, bytes}` | While the bytes land; a cancelled put leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `import` | Copy a regular host file into the Session namespace and commit ownership | `{sessionId, name, source}` | `{fileId, path, bytes}` | Before the replacement; a cancelled import leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, content}`, `content` is base64 | `{fileId, path, bytes}` | Before the replacement; the old bytes stay | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, content}`, `content` is base64 | `{fileId, path, bytes}` | Before the replacement; the old bytes stay | `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `read` | One page of a Session file, at most 64 KiB | `{sessionId, fileId, offset}` | `{data, eof}`, `data` is base64 and `eof` is true exactly when it is empty | While the page is read; nothing changes | `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `register` | Record a caller-owned output path for the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `storage` |
 | `owns` | Whether a path or file id belongs to the Session | `{sessionId, path}` | `{owned}` | While the path is resolved | `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal | `storage` |
+| `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal | `node_unavailable`, `storage` |
 | `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `storage` |
 
 `path` is absolute on the Session's resource node; `bytes` is the stored length. `offset` at or beyond the end answers an empty `data` with `eof`. A `fileId` outside the Session, or a name that is not one component, is `not_found` for reads and writes and `invalid` for a name `put` or `import` receives.
@@ -164,7 +164,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-1. **FileStorage (#2016): the operations this owner calls.** `root_path`, `create_directory`, `write` with the read-only permission, `import` with `max_bytes` and the read-only permission, `list`, `remove`, `read`. [FileStorage's contract](https://github.com/arcships/dim/pull/2080) defines all of them; this contract raises no new need.
+1. **FileStorage (#2016): the operations this owner calls.** `read` with `{offset, length}`, `write` with its `source` and `privateReadOnly`, `import` with `max_bytes` and `privateReadOnly`, `create_directory`, `list` and `remove` exist in [FileStorage's contract](https://github.com/arcships/dim/pull/2080) at head `e951536ec`. `root_path` left that face: the owner computes `<db>.session-files` from its database path, so the only need is that the host's root set covers the native store directory; a comment on #2016 states it.
 2. **Service type placement (#2015): a process owner in the app server.** The owner type is in `dim-app-server`, where the engine and the rows are; callers in plugin crates cannot depend on the app server. The request and reply types are plain data in `dim-agent-capabilities::host`, and callers outside the crate call the operations by the `sessionFiles` name. If the maintainers decide every process face must be annotated on a type plugin crates can name, the type moves to a shared crate; a comment on #2015 states the requirement.
 
 ## Binding appendix
@@ -177,119 +177,24 @@ use dim_agent_runtime::PublicService;
 use rutis::Ctx;
 use std::sync::Arc;
 
-/// A caller's own refusal or failure; the wire carries its `code` and `message` unchanged.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
-#[error("{code}: {message}")]
-pub struct FileRejected {
-    pub code: String,
-    pub message: String,
-}
-
-impl From<rutis::host::CallError> for FileRejected {
-    fn from(error: rutis::host::CallError) -> Self {
-        Self {
-            code: error.code().unwrap_or_else(|| "rejected".into()),
-            message: error.message().to_owned(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Put {
-    pub session_id: String,
-    pub name: String,
-    /// base64
-    pub content: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Import {
-    pub session_id: String,
-    pub name: String,
-    pub source: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WriteFile {
-    pub session_id: String,
-    pub file_id: String,
-    /// base64
-    pub content: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReadFile {
-    pub session_id: String,
-    pub file_id: String,
-    pub offset: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RemoveFile {
-    pub session_id: String,
-    pub file_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Register {
-    pub session_id: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Owns {
-    pub session_id: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OfSession {
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StoredFile {
-    pub file_id: String,
-    pub path: String,
-    pub bytes: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Page {
-    /// base64, at most 64 KiB
-    pub data: String,
-    pub eof: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Owned {
-    pub owned: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Paths {
-    pub paths: Vec<String>,
-}
-
-/// The wire error: `{code, message}`.
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[error("{code}: {message}")]
-pub struct SessionFileError {
-    pub code: String,
-    pub message: String,
+/// The wire error: one variant per code; `code` is the variant name in snake_case.
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum SessionFileError {
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    TooLarge { message: String },
+    #[error("{message}")]
+    NotFound { message: String },
+    #[error("{message}")]
+    NodeUnavailable { message: String },
+    #[error("the call was cancelled")]
+    Cancelled,
+    #[error("the file service is unloading")]
+    Closed,
+    #[error("{message}")]
+    Storage { message: String },
 }
 
 impl PublicService for SessionFiles {}

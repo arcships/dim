@@ -2,13 +2,13 @@
 
 Scope: process. Issue: #2018.
 
-SqliteStorage owns the database file, the lease that admits one process to it, the format version and its upgrades, the writer and the read connections, and the transactions the data owners' rows are read and written in. This document is the owner's target contract. The current implementation is described in [Native storage format](../appserver/native-storage-format.md) and [Resource owner operations](../contracts/resource-owner-operations.md).
+SqliteStorage owns the database file, the lease that admits one process to it, the format version and its upgrades, the writer and the read connections, and the transactions the data owners' rows are read and written in. This document is the owner's target contract. The current implementation is described in [Native storage format](../appserver/native-storage-format.md).
 
 ## Use and scope: responsibility split
 
 SqliteStorage owns:
 
-- **The file and its lease.** `<db>` and `<db>.lock`; one process opens the store, upgrades it and holds the lock until close; an offline tool takes the same lock.
+- **The file and its lease.** `<db>` and `<db>.lock`; one process opens the store, upgrades it and holds the lock until close; backup and vacuum take the same lock, and restore writes a destination that must not exist.
 - **The format.** The version row, the schema, the ordered upgrades and the refusal of an unsupported format.
 - **The connections.** One writer connection with its queue, a read pool, the WAL checkpoint and the close drain.
 - **Transactions and reads.** One commit or one consistent read per call; the engine does not interpret the rows. These operations are the engine's private implementation for the data owners; they are not a service face.
@@ -58,7 +58,7 @@ None. The assembly provides the store; deployment chooses its instance. Offline 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `storageReport` | The store's own file bytes, WAL bytes and reclaimable bytes | `{}` | `{databaseBytes, walBytes, reclaimableBytes}` | None | `closed`, `storage` |
-| `backup` | Copy a closed store and its sidecar files into an archive | the database path and the destination | `{}` | None; the tool runs alone | `owned`, `storage` |
+| `backup` | Copy a closed store and its sidecar files into an archive | the database path and the destination | `{}` | None; the tool runs alone | `owned`, `format`, `storage` |
 | `restore` | Write a store from an archive produced by `backup` into a destination that does not exist | the archive and the destination | `{}` | None; the tool runs alone | `format`, `storage` |
 | `vacuum` | Remove the content rows no stored reference reaches and reclaim the file's free pages | the database path | the removed rows, content bytes and sizes | None; the tool runs alone | `owned`, `format`, `storage` |
 
@@ -98,7 +98,7 @@ Flow tests on the owner:
 - Opening a newer format refuses and leaves the file unchanged; an upgrade is one transaction; a second process fails to open while the lease is held.
 - `storageReport` answers the file, WAL and free-page values; the client method returns the same values.
 - Closing drains the running owner calls, checkpoints and releases the lease; an offline tool cannot open while the daemon owns it.
-- A backup round-trips through restore; restore refuses an existing destination; vacuum refuses a store a daemon owns and a store whose format differs.
+- A backup round-trips through restore; backup of a store whose format differs answers `format`; restore refuses an existing destination; vacuum refuses a store a daemon owns and a store whose format differs.
 - The data owners' transactions are tested by their owners' flow tests; the engine's tests cover their commit, rollback and drain, not their business answers.
 
 ## Client-visible changes
@@ -158,18 +158,19 @@ pub struct Capacity {
     pub reclaimable_bytes: u64,
 }
 
-/// The wire error: `{code, message}`, with `code` one of `storage`, `owned` or `format` for the offline functions.
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[error("{code}: {message}")]
-pub struct StorageError {
-    pub code: String,
-    pub message: String,
+/// The wire error: one variant per code; `code` is the variant name in snake_case.
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum StorageError {
+    #[error("{message}")]
+    Storage { message: String },
+    #[error("{message}")]
+    Owned { message: String },
+    #[error("{message}")]
+    Format { message: String },
+    #[error("the store is unloading")]
+    Closed,
 }
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Empty {}
 
 impl PublicService for SqliteStorage {}
 

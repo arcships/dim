@@ -1683,6 +1683,8 @@ semantics, preserved Steer candidates, automation origins and rollback.
 
 ## SQLite owner operations
 
+These operations are the engine's crate-private implementation for the data owners; the public faces are [SqliteStorage](../plugins/SqliteStorage.md), [SessionStore](../plugins/SessionStore.md), [SessionFiles](../plugins/SessionFiles.md) and each data owner's contract. The paragraphs below describe the internal call flow and remain the implementation record.
+
 Persistent Agents calls `sqliteStorage.agents`, `owners`, `save` and `delete` for its directory and Session ownership. Delegation reads use `members`, `ledMembers`, `ownedAgents`, `memberSessions` and `agentOwner`. Startup repair reads both lists from `unfinishedOwned`. SQLite owns all record reads and writes.
 
 SessionStore calls `sqliteStorage.createSession({sessionId,config})` to create a Session and its main branch in one transaction. `sessionConfig({sessionId})`, `branches({sessionId})`, `head({sessionId,branchId})`, `batchEnd({sessionId,branchId,sequence})` and `batchEndAt({sessionId,branchId,sequence})` use the existing TimelineStore requests and replies. The export reads the same branch directory through its read-only snapshot.

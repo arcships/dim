@@ -68,14 +68,14 @@ for candidate in confirmed(&preview) {
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `create` | Allocate a task id and make a Git worktree and branch for a Session creation | `{source, base?, branch?}` | `{taskId, repository, root, subtree, branch, base}` | Between Git calls and before the branch is created; a cancelled creation removes its empty task directory | `unavailable`, `invalid`, `branch_exists`, `git`, `interrupted` |
-| `discard` | Settle a created worktree that the Session creation did not adopt | `{taskId}` | `{}` | Not cancellable: the cleanup runs to its end | `unknown_preparation`, `in_use`, `git` |
+| `discard` | Settle a created worktree that the Session creation did not adopt | `{taskId}` | `{}` | Not cancellable: the cleanup runs to its end | `unknown_preparation`, `in_use`, `git`, `closed`, `storage` |
 | `list` | Managed worktrees with Git state and Session use | `{}` | `{worktrees}` | While the views are built | `unavailable`, `closed`, `storage` |
 | `pruneSelection` | Candidates a prune would delete and the kept ones with reasons | `{olderThanMs?, keep?, force}` | `{candidates, kept}` | While the selection is built | `invalid`, `unavailable`, `closed`, `storage` |
 | `remove` | Remove one managed worktree, or an unregistered directory, with its record | `{taskId, force}` | `{removed}` | Before the Git removal; after it starts the removal completes or reports `git` | `invalid`, `not_found`, `in_use`, `git`, `closed`, `storage` |
 
 `create` returns a value; `discard` and `remove` take the task id. No object crosses. The preparation table is the owner's generation state: a reload drops it, and `discard` for a task id the generation did not create answers `unknown_preparation`; the directory is then an unregistered directory that `remove` handles.
 
-`remove` composes the store's `removeWorktree`: the store checks the record, the associations and the stored workspaces under its exclusion and calls this owner's Git removal as a callback; the record is deleted when the callback succeeds and kept when it refuses or fails. No claim id or lock crosses. `force` overrides only the content check; the Git removal receives `--force` only then.
+`remove` composes the store's removal under its exclusion: `removeWorktree` for a recorded directory and `removeUnregisteredDirectory` for a directory no record names. The store checks the associations and the stored workspaces and calls this owner's Git and filesystem removal as a callback; the record is deleted when the callback succeeds and kept when it refuses or fails. No claim id or lock crosses. `force` overrides only the content check; the Git removal receives `--force` only then.
 
 ### Errors
 
@@ -90,6 +90,7 @@ for candidate in confirmed(&preview) {
 | `interrupted` | The call was stopped; a creation's partial state is cleaned, a removal is retried |
 | `unknown_preparation` | The preparation ended with the generation; the directory is unregistered and `remove` handles it |
 | `storage` | A record read or write failed; the caller reports the failure and keeps the record |
+| `closed` | This generation is unloading; call the replacement generation |
 
 ### Flows
 
@@ -99,16 +100,16 @@ for candidate in confirmed(&preview) {
 | `discard` | Look up the preparation, `store.removeWorktree(directory, remove)`, delete the branch; the record may be absent | No cancellation; the cleanup is the owner's | The preparation ends with the row; the directory is unregistered | The table drops with the generation; the directory stays unregistered | Directory and branch by ManagedWorktrees; record by the store |
 | `list` | Read the records and associations, join Git state per directory, add unregistered directories | Before the reply | Nothing to release | Pending calls end `closed` | ManagedWorktrees |
 | `pruneSelection` | `list`, then apply age, keep and force rules per candidate | Before the reply | Nothing to release | Pending calls end `closed` | ManagedWorktrees |
-| `remove` | Resolve the record or the unregistered directory, then `store.removeWorktree(directory, remove)`: the store checks and holds the exclusion, this owner removes the Git worktree, the store deletes or keeps the record | Before the Git removal; a started removal completes or reports `git`; the store keeps the record | The callback ends with the row; the store keeps the record | An in-flight removal ends; the store keeps the record unless the Git step succeeded | Directory by ManagedWorktrees; record by the store |
+| `remove` | Resolve the record or the unregistered directory; a recorded one goes through `store.removeWorktree(directory, remove)`, an unregistered one through `store.removeUnregisteredDirectory(root, remove)`: the store checks and holds the exclusion, this owner removes the Git worktree or the directory, the store deletes or keeps the record | Before the Git removal; a started removal completes or reports `git`; the store keeps the record | The callback ends with the row; the store keeps the record | An in-flight removal ends; the store keeps the record unless the Git step succeeded | Directory by ManagedWorktrees; record by the store |
 
 A process death between `create` and `store.create` leaves an unregistered directory; `list` reports it and `remove` deletes it after the operator names the task id. A process death during the removal step leaves the record; the next `list` reports the directory as missing or no longer registered, and `remove` cleans the record.
 
 ## Exceptions with reasons
 
-- A branch is kept when `remove` deletes a worktree: committed content must not disappear with the directory.
-- `discard` is not cancellable: a cancelled Session creation still has to settle what the owner made.
+- A branch is kept when `remove` deletes an adopted worktree: committed content must not disappear with the directory. Only the default `dim/<taskId>` branch of a never-adopted worktree is deleted with the directory.
+- `discard` is not cancellable: a cancelled Session creation still has to settle what the owner made. A store refusal (`closed` or `storage`) leaves the directory and branch in place; the caller reports it, and the preparation stays for a retry on the replacement generation.
 - Unregistered directories are never pruned: the owner has no record to age, so only an explicit `remove` by task id deletes them.
-- A branch outlives a creation that was never adopted: a process death between `create` and `store.create`, or a `discard` that ended before the branch deletion, leaves the branch. `remove` on an unregistered directory deletes the directory only; the operator deletes the leftover branch with Git, and `list` names the task id the branch was made for.
+- A branch outlives a creation that was never adopted: a process death between `create` and `store.create` leaves the branch. `remove` on an unregistered directory deletes the directory and, when the owner created the default `dim/<taskId>` branch for a worktree that was never adopted, deletes that branch too; an explicit branch from the request is retained and reported, so a name the operator chose is never deleted.
 - Git is the owner's process resource: the owner starts each call, bounds it (10s read, 30s write) and reaps it on cancellation.
 
 ## Client-visible changes
@@ -117,7 +118,7 @@ None. `worktree.list`, `worktree.remove` and `worktree.prune` keep their request
 
 ## Supersedes
 
-- [Managed worktrees](../worktree-management.md) §3–§5: creation, the directory records and associations, and the list/remove/prune composition under the store's removal operation.
+- [Managed worktrees](../worktree-management.md) §5: the list/remove/prune composition under the store's removal operations and the branch rule for a never-adopted worktree. §3 and §4 remain the source for creation and the directory records.
 
 ## Verification
 
@@ -213,13 +214,30 @@ pub struct RemoveWorktreeReply {
     pub removed: bool,
 }
 
-/// The wire error: `{code, message}`, with `code` one of the kinds in the error table.
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[error("{code}: {message}")]
-pub struct WorktreeError {
-    pub code: String,
-    pub message: String,
+/// The wire error: one variant per code; `code` is the variant name in snake_case.
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum WorktreeError {
+    #[error("{message}")]
+    Unavailable { message: String },
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    BranchExists { message: String },
+    #[error("{message}")]
+    NotFound { message: String },
+    #[error("{message}")]
+    InUse { message: String },
+    #[error("{message}")]
+    Git { message: String },
+    #[error("{message}")]
+    Interrupted { message: String },
+    #[error("{message}")]
+    UnknownPreparation { message: String },
+    #[error("{message}")]
+    Closed { message: String },
+    #[error("{message}")]
+    Storage { message: String },
 }
 
 impl PublicService for ManagedWorktrees {}

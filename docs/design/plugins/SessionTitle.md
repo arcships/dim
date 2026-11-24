@@ -69,10 +69,10 @@ and registers the Session part; each Session mounts a copy. The part injects
 `sessionMethods` and registers `session.rename` with it from `apply`; it provides no service.
 `apply` reads the Session identity and creation configuration and registers observation/cleanup;
 it does not start an asynchronous initialization job. Its creation configuration is immutable.
-The plugin depends on the existing public Rust Settings and sessionMetadata bindings; it does not expose or alter their implementations. Plugin behavior and cross-plugin title flows live in this crate's tests and use the public client and host APIs. App Server tests have no dependency on this crate and install no title plugin implicitly.
+The plugin depends on the existing public Rust Settings and `store` bindings; it does not expose or alter their implementations. Plugin behavior and cross-plugin title flows live in this crate's tests and use the public client and host APIs. App Server tests have no dependency on this crate and install no title plugin implicitly.
 
 The part injects its required dependencies: the process services
-`settings`, `sessionMetadata` and `auxiliaryModel`, and the Session services branch queries, `sessionIdentity`,
+`settings`, `store` and `auxiliaryModel`, and the Session services branch queries, `sessionIdentity`,
 `sessionConfig`, `sessionLifecycle` and `sessionMethods`. The optional `sessionTitleGenerator`
 is read by name when used, without injection or a readiness gate, under the
 [required/optional binding contract](../rutis-usage.md#3-services-by-name).
@@ -125,7 +125,7 @@ flowchart LR
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
 | `session-title` | Process | Settings and part registry | Registers the Settings source and Session part |
-| `SessionTitle` | Session | Session services `sessionIdentity`, `sessionConfig`, `sessionLifecycle` and `sessionMethods`; Session branch queries; process Settings, title metadata `sessionMetadata` (S5b) and required `auxiliaryModel` (a profile without an owner of model selection keeps the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
+| `SessionTitle` | Session | Session services `sessionIdentity`, `sessionConfig`, `sessionLifecycle` and `sessionMethods`; Session branch queries; process Settings, the title operations `store` and required `auxiliaryModel` (a profile without an owner of model selection keeps the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
 
 Dependencies stay in the Session or enclosing process. Session observation, branch queries and Settings supply observation, field reads and configuration; S5b supplies title metadata and C6 the notices; the profile's model-selection owner supplies the named auxiliary operation. The plugin's row registers its source in its `apply`. Real provider reloads cancel the row's work (ADR 002 D3); SessionStore index reload does not. Business data changes never reload the plugin (D4).
 
@@ -360,7 +360,7 @@ post-commit title notices. SessionTitle consumes these delivered contracts.
 | Effect on sequence, batch, interrupt, reload | No sequence number and no batch; not replayed: a client that resubscribes reads current state through the owner's query (`session.summaries`); interrupts do not apply; a reload of the emitter only stops notices. |
 | Owner and issue | Runtime C6 [#49](https://github.com/arcships/dim/issues/49), implemented in [#85](https://github.com/arcships/dim/pull/85): the record, `session_broadcast::notify` and Rpc's `session.notice` ([Session broadcast notices](../appserver/session-notices.md)). SessionStore emits the title notice ([S5b](../appserver/session-title-metadata.md), the supplement in [overview Appendix B.2](../overview.md#b2-app-server-process-plugins)). |
 
-**#4: None.** Observation uses the Session services and the Session channel; branch queries are Session services; Settings, `sessionMetadata` and the auxiliary model are process services. SessionTitle injects no branch service.
+**#4: None.** Observation uses the Session services and the Session channel; branch queries are Session services; Settings, `store` and the auxiliary model are process services. SessionTitle injects no branch service.
 
 **The model-selection owner (S4): the named `auxiliaryModel` binding.** Provider (product) and ConfiguredModels (model-config) bind their existing `AuxiliaryModel` operation for C4 injection ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). A profile without such an owner keeps SessionTitle's row Pending through its ordinary required dependency. No core mechanism is needed.
 
@@ -382,7 +382,7 @@ Registered with `sessionMethods` (Session, namespace `session.rename`) with one 
 
 | Service | Method | Kind | Request | Reply and errors |
 | --- | --- | --- | --- | --- |
-| SessionStore `sessionMetadata` (S5b) | `read` | async | `{sessionId}` | `{revision, title: {text, source: "auto" \| "manual"} \| null}`; errors `not_found`, `storage` ([S5b §4](../appserver/session-title-metadata.md#4-operations)) |
+| SessionStore `store` | `title` | async | `{id}` | `{revision, title: {text, source: "auto" \| "manual"} \| null}`; errors `not_found`, `closed`, `storage` ([SessionStore](SessionStore.md)) |
 | SessionStore `store` | `setTitle` | async | `{sessionId}` plus a change that receives `{revision, title}` and returns the next title or `null` | `{revision}`; errors `rejected`, `not_found`, `storage`. The call is the handover; after a commit SessionStore emits the title notice |
 | SessionStore (S5b) | title notice | Session broadcast notice (C6 record, §9) | — | `{source: "SessionStore", kind: "title", data: {title, titleSource, titleRevision}}` on the Session's broadcast channel; no sequence number, not replayed |
 | `AuxiliaryModel` (the profile's model-selection owner) | `complete` | async | `{model: {providerId, modelId}, request: {system, messages: [{role: "user", content: text}]}}`, optional `cancelled: () => Promise<void>` ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)) | `{text, stopReason, usage}`; rejects with the existing error code/message. Resolve the cancellation reference on timeout or closing and await the original call's settlement |
@@ -410,7 +410,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | Listen | The Session's copy of the part listens to its Session's `session/{sessionId}` from `apply`, filters main input/applied, registers an owned task and returns; `sessionLifecycle.closing()` or copy cleanup ends owned work |
 | Eligibility | C4 creation snapshot: `interactive !== false && collaborationRole === "leader"` for generation; native omission means true. A requested initial title (`initialTitle`, §3.4) is written for interactive and non-interactive Sessions alike: it needs no model, and it is the caller's own text |
 | Trigger | On `input/applied` at `N`: skip if not eligible, disabled, in flight or failed attempts ≥ 3 (A5); otherwise start a generation task owned by the plugin's lifetime |
-| Check | `sessionMetadata.read({sessionId})`: skip if any title exists; keep revision `r` |
+| Check | `store.title({id})`: the change decides from the current title and revision; a `rejected` change discards |
 | Read | The four field queries in §0.1 share published T >= N. No adopted eligible input/text means no title (A8/A10). |
 | Generate | Route and fall back under §3.3 within the shared 30 s budget (A4); normalize the first line, remove quotes and trailing punctuation, collapse whitespace, cut at `maxLength`, trim again |
 | Write | `setTitle({sessionId}, change)` where the change returns the generated title or `null`; a `rejected` change discards |
@@ -427,7 +427,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | First input withdrawn (`session.input.withdraw`) before it is applied | input < withdraw < `input/deleted` | Never applied: no generation, text never sent; the first applied eligible input triggers | SessionTitle |
 | First user input carries only images | — | No automatic title (A8) | SessionTitle |
 | Rename before the check | rename < check | Title present: skip | SessionTitle |
-| Rename during generation | check (r) < rename (r+1) < write | `conflict`: automatic title discarded | SessionStore revision |
+| Rename during generation | check < rename < write | the change sees the rename and refuses: automatic title discarded | SessionStore serialization |
 | Concurrent renames | revision order | Last committed rename wins | SessionStore |
 | Duplicate `session.rename` | — | Rewrites the same text | SessionTitle |
 | Steer/Queue/Append inputs after the first | — | Never in the excerpt | SessionTitle |
@@ -447,7 +447,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | --- | --- |
 | Model error, timeout, empty output, unavailable policy | Input-excerpt fallback (§3.3); cancellation never falls back |
 | Settings read fails | Automatic: no write, diagnostic, failure counted; rename: `storage_failed`. No fallback document |
-| `setTitle` `conflict` on automatic write | Discarded (diagnostic) |
+| `setTitle` `rejected` on automatic write | Discarded (diagnostic) |
 | `setTitle` `storage` | Automatic: failure counted; rename: `storage_failed` |
 | Unknown Session on rename | `session_not_found` |
 | SessionTitle reloading | Before handover: service_reloading, no rename. After handover/lost reply: read metadata; do not infer no commit or repeat the write |
@@ -512,10 +512,10 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 | Generation task | Spawned under `ctx.effect` |
 
 ```rust
-// SessionMetadataService (S5b; named service `sessionMetadata`)
+// the `store` face; `setTitle` stays on the hand-written method table
 async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
-fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Title>)
-    -> impl Future<Output = Result<u64, MetadataError>>; // Conflict | NotFound | Storage; the call is the handover
+fn set_title(&self, id: &str, change: ChangeFn)
+    -> impl Future<Output = Result<u64, StoreError>>; // Rejected | NotFound | Closed | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct Title { pub text: String, pub source: TitleSource }   // Auto | Manual
 // AuxiliaryModel (the profile's model-selection owner)

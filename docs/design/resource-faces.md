@@ -619,37 +619,34 @@ commit paths, not operations of that face.
 
 ### 5.1 Ordered admission and durable completion
 
-`append` keeps the existing contract, split into data: **admission is synchronous and ordered,
-completion is a notification in branch sequence order.**
+Admission and release are the Session store's own steps, not operations of the `timelineStore`
+face. The store's `create`, `fork`, `delete` and its internal commit path assign each batch its
+place in the Session's single writer queue, drain accepted batches before a release and roll back
+a prepared creation ([SessionStore](plugins/SessionStore.md)). The face carries the reads and the
+completion notifications below.
+
+The store's admission is synchronous and ordered, and completion is a notification in branch
+sequence order:
 
 ```text
-append {sessionId, branchId, batchId, events}     (sync)
-  -> {accepted: true} | error {code, message}
+admission (owner step)  batch -> queued in call order
 commits {sessionId}                              (async)
   -> {subscriptionId}
 notification {subscriptionId, batchId, branchId, through, result: "committed" | {code, message}}
 ```
 
-- `append` is a **sync** operation, like `localId.get`: it validates, assigns the batch its place
-  in the Session's single writer queue, and answers `{accepted}` without waiting for I/O. It is the
-  one face operation a caller may issue inside its own commit lock, because it performs no I/O and
-  returns nothing the caller must await. The Timeline's existing admission — one
-  `TimelineStore::append` under the branch's commit mutex — maps onto it one to one: batches are
-  queued in call order, so per-branch sequence order is the admission order.
 - `commits` registers the caller's completion listener and answers a subscription id. The
   provider then delivers one notification per accepted batch, after that batch is durable or has
   failed, **in branch sequence order**. `through` is the inclusive sequence of the batch's last
   event on `branchId`. It advances the durable watermark only when `result` is `"committed"`.
-- A failed batch is reported with its `batchId` and error, and rejects later `append` calls for
-  that Session with a storage error until it is released. The failure is not delivered twice.
-- `releaseSession` and `rollbackSession` answer only after every batch the Session had accepted
-  has completed or failed: draining is the reply, so a caller that closes a Session knows no write
-  is still in flight. A Session's close waits for its release.
+- A failed batch is reported with its `batchId` and error, and refuses later admissions for that
+  Session with a storage error until the store releases it. The failure is not delivered twice.
+- A Session's close waits for the store's release, which answers only after every accepted batch
+  has completed or failed, so a caller that closes a Session knows no write is still in flight.
 - `closeCommits {subscriptionId}` ends a listener; the caller's unload ends it too.
-- A remote consumer must not call `append`: the store is provided where the Session state is, and
-  a synchronous call across a link would block the caller inside its lock. Reading history
-  (`readPage`, `query`, `trace`, and the completion notifications) is the part a remote consumer
-  may use.
+- A remote consumer reads history (`readPage`, `query`, `trace`, and the completion
+  notifications); it does not admit a batch, because the store is provided where the Session
+  state is.
 
 #### Binding shapes and lifecycle
 
@@ -665,15 +662,12 @@ it does not introduce a separate wire operation or replace an override with fall
 `batchEnd {sessionId,branchId,sequence}` validates the boundary and returns `{}`;
 `batchEndAt` returns `{sequence}` for the containing batch's end through the backend's existing
 operation, without repeated remote probes. `trace` takes the same position and returns `{trace}`.
-`query` takes the scope, query and optional page described in §5.2 and keeps that canonical reply.
+`query` takes the scope, query and optional page of [SessionStore](plugins/SessionStore.md) and
+keeps that canonical reply.
 
 `saveSnapshot {sessionId,branchId,snapshot}` returns `{}`. `sessionConfig {sessionId}` returns
 `{config}`. `latestSnapshot {sessionId,branchId,through,interpreter}` returns `{snapshot}`.
-`createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and
-commit steps, not operations of the `timelineStore` face: the Session store prepares the backend
-record, rolls back a prepared creation, releases a Session's writes and admits batches inside its
-own operations ([SessionStore](plugins/SessionStore.md)). App Server creation/deletion retain the
-repository and lifecycle obligations the contract states.
+App Server creation/deletion retain the repository and lifecycle obligations the contract states.
 
 Snapshots retain their canonical fields (`sequence`, `event_id`, `interpreter`, `state`), optional
 acceleration semantics and owner validation. Domain errors preserve `{code,message}` using
@@ -681,28 +675,23 @@ acceleration semantics and owner validation. Domain errors preserve `{code,messa
 
 The bridge binding of `commits` is `commits({sessionId}, listener) -> {subscriptionId}`. The caller
 must declare `timelineStore`; the owner registers the listener with that calling row before
-returning, and the row's unload withdraws it. Register before the batches to observe are admitted;
-there is no replay of earlier admissions. `closeCommits` withdraws it explicitly and is
+returning, and the row's unload withdraws it. Register before the store admits the batches to
+observe; there is no replay of earlier admissions. `closeCommits` withdraws it explicitly and is
 idempotent. Each listener receives only its requested Session's completions, tagged with its own
 subscription id. A slow or failed observer does not delay durable completion or release, and
 ending observation never cancels a write or the native publication callback. The calling row must
 belong to the runtime in which the provider installed the binding; sharing the native binding
 with another runtime does not connect that runtime's listeners to the provider's completion bus.
 
-The native binding retains synchronous `append` admission and its existing publish callback.
+The native binding keeps the store's synchronous admission and its existing publish callback.
 Its notification `batchId` is the JSON encoding of `[branchId, through]`, the batch identity
 already known at admission; local data calls preserve their supplied `batchId`. This identifier
-is notification correlation only, with no additional durable fact or lookup. A synchronous
-admission refusal produces no completion notification. The one backend callback keeps native
-publication synchronous, then enqueues observation on rutis's existing ordered asynchronous
-bus. Release drains that backend's writes and callbacks; it does not wait for observers to finish.
+is notification correlation only, with no additional durable fact or lookup. A refused admission
+produces no completion notification. The one backend callback keeps native publication
+synchronous, then enqueues observation on rutis's existing ordered asynchronous bus. Release
+drains that backend's writes and callbacks; it does not wait for observers to finish.
 Foreign-language rows in the provider runtime may observe and read; a separate runtime has
-read-only access. Synchronous append across a link is rejected as stated in §5.1.
-
-The Rust `TimelineStore` trait is the local binding of `timelineStore`, not a second contract
-(§6); the SQL engine remains the provider's implementation. The binding of `append` is
-synchronous admission, and the binding of `commits` is publish-callback registration,
-with the existing ordering and draining.
+read-only access.
 
 ### 5.2 Session rows
 
