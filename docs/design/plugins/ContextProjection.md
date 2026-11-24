@@ -150,9 +150,11 @@ Rule D: no client wire protocol or user-visible behavior changes; `StreamedConte
 ## Binding appendix
 
 ```rust
-use dim_agent_capabilities::history::HistoryEntry;
-use dim_agent_runtime::{ContextHistory, PublicService};
-use dim_agent_types::{AgentEvent, ProjectionCheckpoint, RecoverySnapshot, TimelinePosition};
+use dim_agent_runtime::PublicService;
+use dim_agent_types::{
+    AgentEvent, ContextBaselineEntry, Message, ProjectionCheckpoint, RecoverySnapshot,
+    TimelinePosition,
+};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -164,7 +166,7 @@ pub struct RenderedStreamRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamedContext {
-    pub history: Vec<HistoryEntry>,
+    pub history: Vec<Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<dim_agent_types::ContextConfiguredData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,6 +183,32 @@ pub struct StreamedContext {
     pub compaction_cut: Option<dim_agent_types::TimelinePosition>,
 }
 
+/// The wire form of one rendered entry. The owner maps `HistoryEntry` to it
+/// (an `Arc<Message>` and an `Arc<[ContextBaselineEntry]>` become owned values);
+/// the internal type is unchanged.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Entry {
+    pub id: String,
+    pub message: Message,
+    pub tool_context: bool,
+    pub baseline: Vec<ContextBaselineEntry>,
+    pub event_id: String,
+    pub position: TimelinePosition,
+}
+
+/// The wire form of a folded context. The owner maps `ContextHistory` to it
+/// (`Arc<AgentEvent>` becomes an owned event); the internal type is unchanged.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct History {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<ProjectionCheckpoint>,
+    pub ancestry: Vec<String>,
+    pub events: Vec<AgentEvent>,
+    pub positions: Vec<TimelinePosition>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenderedContextRequest {
@@ -190,14 +218,14 @@ pub struct RenderedContextRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderedContextReply {
-    pub context: ContextHistory,
-    pub history: Vec<HistoryEntry>,
+    pub context: History,
+    pub history: Vec<Entry>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SnapshotRequest {
-    pub context: ContextHistory,
+    pub context: History,
     pub retain_from: String,
     pub anchor: AgentEvent,
 }
@@ -266,4 +294,4 @@ impl ContextProjection {
 }
 ```
 
-`ContextHistory`, `HistoryEntry`, `ProjectionCheckpoint`, `RecoverySnapshot`, `AgentEvent` and `TimelinePosition` are the types those facts already use and gain `Serialize`/`Deserialize` for this face; their fields do not change. `renderedStream` carries no `ContextHistory`, so a streamed fold never holds the event list; `renderedContext` and the snapshot reads carry events or checkpoints because their callers need them. Errors cross as `{code, message}`, `code` from the variant name.
+`Entry` and `History` are this face's wire forms of `dim_agent_capabilities::history::HistoryEntry` and `dim_agent_runtime::ContextHistory`; the owner maps them in one place, and the internal types stay unchanged. `ProjectionCheckpoint`, `RecoverySnapshot`, `AgentEvent`, `TimelinePosition`, `Message` and `ContextBaselineEntry` already derive serde, so `Entry` and `History` need no code change elsewhere. `renderedStream` carries no folded event list; `renderedContext` and the snapshot reads carry the events because their callers need them. Errors cross as `{code, message}`, `code` from the variant name.

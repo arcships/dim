@@ -149,14 +149,12 @@ Rule D: no client wire protocol or user-visible behavior changes; `completed`, `
 ## Binding appendix
 
 ```rust
-use dim_agent_capabilities::history::HistoryEntry;
-use dim_agent_capabilities::host::{CompactionCut, StrategyDiagnostics};
+use crate::context_projection::Entry;
 use dim_agent_runtime::PublicService;
 use dim_agent_types::{
-    BaselineSource, CompactionTrigger, Message, ModelRequest, ModelSelection,
-    ProviderOutputBudgetFacts,
+    BaselineSource, CompactionStrategyRecord, CompactionTrigger, ContextBaselineEntry, Message,
+    ModelRequest, ModelSelection, ProviderOutputBudgetFacts, Usage,
 };
-use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -171,12 +169,34 @@ pub struct Plan {
     pub replacement_size: f64,
 }
 
+/// The wire form of one legal cut. The owner maps `CompactionCut` to it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Cut {
+    pub retain_from: String,
+    pub entry: usize,
+    pub within_limit: bool,
+}
+
+/// The wire form of the strategy's diagnostics. The owner maps
+/// `StrategyDiagnostics` to it; the caller measures the duration itself.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Diagnostics {
+    pub model_call_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_usage: Option<Usage>,
+    pub record: CompactionStrategyRecord,
+}
+
+/// The wire form of the previous compaction's checkpoint; owned vectors replace
+/// the internal `Arc<[..]>` fields.
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionCheckpoint {
     pub retain_from: String,
-    pub replacement: Arc<[Message]>,
-    pub context_baseline: Arc<[dim_agent_types::ContextBaselineEntry]>,
+    pub replacement: Vec<Message>,
+    pub context_baseline: Vec<ContextBaselineEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_parts: Option<dim_agent_types::ReplacementParts>,
 }
@@ -184,18 +204,18 @@ pub struct CompactionCheckpoint {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionRequest {
-    pub history: Vec<HistoryEntry>,
+    pub history: Vec<Entry>,
     pub checkpoint: Option<CompactionCheckpoint>,
     pub request: ModelRequest,
     pub retain_limit: Option<String>,
-    pub cuts: Vec<CompactionCut>,
+    pub cuts: Vec<Cut>,
     pub trigger: CompactionTrigger,
     pub estimated_input_tokens: f64,
     pub baseline_source: BaselineSource,
     pub baseline_prompt_tokens: Option<f64>,
     pub delta_tokens: Option<f64>,
     pub provider_budget: Option<ProviderOutputBudgetFacts>,
-    pub prior: Option<StrategyDiagnostics>,
+    pub prior: Option<Diagnostics>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -204,15 +224,15 @@ pub enum StrategyOutcome {
     Completed {
         retain_from: String,
         replacement: Vec<Message>,
-        diagnostics: StrategyDiagnostics,
+        diagnostics: Diagnostics,
     },
     Skipped {
         reason: String,
-        diagnostics: StrategyDiagnostics,
+        diagnostics: Diagnostics,
     },
     Failed {
         error: String,
-        diagnostics: StrategyDiagnostics,
+        diagnostics: Diagnostics,
     },
 }
 
@@ -248,4 +268,4 @@ impl SummaryStrategy {
 }
 ```
 
-`cancelled` is the binding's cancellation argument, not a request field. `AgentEvent` is not part of the request: the caller writes the compaction facts. `CompactionCut`, `CompactionCheckpoint` and `StrategyDiagnostics` gain `Serialize`/`Deserialize` for this face; their fields do not change. Errors cross as `{code, message}`, `code` from the variant name; a strategy failure is the `failed` outcome, not an error.
+`cancelled` is the binding's cancellation argument, not a request field. `Entry` is the wire entry defined by [Context projection](ContextProjection.md); `Cut`, `Diagnostics` and `CompactionCheckpoint` are this face's wire forms of `CompactionCut`, `StrategyDiagnostics` and `CompactionCheckpoint`, mapped by the owner in one place. The internal types stay unchanged, and `Usage`, `CompactionStrategyRecord`, `Message`, `ContextBaselineEntry` and `ReplacementParts` already derive serde. A strategy failure is the `failed` outcome, not an error.
