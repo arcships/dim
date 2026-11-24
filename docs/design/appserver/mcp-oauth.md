@@ -362,7 +362,8 @@ on the key then reports `auth_required`. From the moment it is accepted, sign-ou
 pending attempt, and it closes any attempt started before it completes, so a sign-in already under
 way in the same daemon cannot undo it (§7).
 Sign-out is also allowed once an entry no longer uses OAuth (static credentials added, or a
-cleartext URL), so a stored credential can always be removed.
+cleartext URL), so a stored credential can always be removed. This sign-out decision is tracked by
+[#2022](https://github.com/arcships/dim/issues/2022).
 
 `mcp.remove` does not touch credentials, because an entry of the same `id` and URL in another
 source may still use them; the CLI offers sign-out first (§13). An orphaned record is inert: its

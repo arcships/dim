@@ -205,7 +205,7 @@ UiResources 提供通用的**已完成文件发布**：受信任的后端 Sessio
 
 读取按传输背压拉取有界字节块，内存不随文件大小增长；客户端关闭连接、取消、Session closing 或资源撤下均停止文件读取。头部发出前失败返回结构化资源错误；发出后失败终止流，不能在媒体 body 后追加 JSON。
 
-没有字节流入口的宿主通过 Session 方法 `session.ui.resources.read` 分页读取已发布资源：请求 `{sessionId, id, offset?, limit?}`，返回与 §6.1 相同的页形状和边界（标准 base64、1 MiB 默认、4 MiB 上限、`offset + bytes == total` 结束、`offset > total` 为 `invalid_params`）。它是普通 Session 方法：由 UiResources part 注册，经 `session.methods` 发现，并按 Session 方法的规则服务到各入口。按 ADR 021 D3，客户端读取要求活动 Session：资源 id 只在发布它的那个 Session 实例内有效，Session 卸载或 daemon 重启后，之前的每个 id 都回答 `resource_gone`；读取随 Session 路由进入，不为回答旧 id 跳过 Session。撤下与在途页竞争时，客户端收到整页或 `resource_gone`，绝不会收到半页；Session closing 与发布者卸载同样停止新读取并取消在途读取。
+没有字节流入口的宿主通过 Session 方法 `session.ui.resources.read` 分页读取已发布资源：请求 `{sessionId, id, offset?, limit?}`，返回与 §6.1 相同的页形状和边界（标准 base64、1 MiB 默认、4 MiB 上限、`offset + bytes == total` 结束、`offset > total` 为 `invalid_params`）。它是普通 Session 方法：由 UiResources part 注册，经 `session.methods` 发现，并按 Session 方法的规则服务到各入口。按 ADR 021 D3，客户端读取要求活动 Session：资源 id 只在发布它的那个 Session 实例内有效，Session 卸载或 daemon 重启后，之前的每个 id 都回答 `resource_gone`；读取随 Session 路由进入，不为回答旧 id 跳过 Session。撤下与在途页竞争时，客户端收到整页或 `resource_gone`，绝不会收到半页；同一引用的后续页发现文件缺失时回答 `resource_gone`，不返回空页；Session closing 与发布者卸载同样停止新读取并取消在途读取。
 
 Rust 和 TypeScript Session part 均可使用此服务。路径由已持有文件位置的业务 owner 提供，例如后端插件使用 Node 文件 I/O 在已授权工作目录生成文件，或由现有业务服务返回绝对路径。`pluginFiles` 只提供相对文本文件接口，不提供绝对路径，因此它的相对路径不能直接传给发布服务，也不能通过猜测产品 home 拼接。
 
@@ -229,6 +229,7 @@ Rust 和 TypeScript Session part 均可使用此服务。路径由已持有文�
 | 页读取的路径非法、`limit: 0` 或 `offset > total` | UiExtensions：`invalid_params`（-32602） | 修正参数 |
 | 页读取的 generation 未知或已替换、路径不在该快照内 | UiExtensions：`resource_gone` | 重新读取目录后取新 generation |
 | 页读取的文件 I/O 失败 | UiExtensions：`resource_unavailable` | 生产者修复资源；不返回空页成功 |
+| 同一引用的后续页发现文件缺失 | UiResources：`resource_gone` | 重新取得引用；不返回空页 |
 | 页读取时 Session 已关闭、不可用，或引用不属于该 Session | Rpc 的 Session 路由先回答（如 `session_closed`）；UiResources 对不属于本 Session 的引用回答 `resource_gone` | 使用活动 Session 的新引用 |
 | 文件定位、打开或撤下清理失败 | UiResources：`ResourceError.code = resource_unavailable` | 生产者修复资源；不返回空文件成功结果 |
 | 内容 generation、文件或动态引用不可用 | WebEntry：HTTP 404，响应 `error.code = resource_gone` | 重新发现内容或取得新引用 |
