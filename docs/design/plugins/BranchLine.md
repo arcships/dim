@@ -24,7 +24,7 @@ Callers keep: which lines they message or read (BranchTool's kin rules), what a 
 | --- | --- | --- |
 | BranchTool asks this line's role before deciding what it may message, read or end | No: the role and parent are folded from the line's own facts and cached; re-deriving them in a Session part means folding another owner's state | `view` |
 | BranchTool learns whether this line has committed its own end | No: same fold | `view` |
-| BranchTool continues a read of a target where the line's last read stopped | Yes, once the cursor is published with the view: one more field of the same read | `view` |
+| BranchTool continues a read of a target where the line's last read stopped | Yes, once the cursor is published with the view: look it up in `cursors` rather than call another operation | `view` |
 | Write the roster, the parent block, the idle notice, the ended notice, the status note | No, but not public: these are this owner's own writes, driven by the line's facts | Internal |
 | Tell the opener the line moved: a parent turn end past the cursor | No: it is this owner's fold of its own facts and its own write queue | Internal |
 | Answer what the line is holding back | Yes: `view` reports the held parent block | `view` |
@@ -44,7 +44,7 @@ match line.role {
 if line.ending {
     return refused("branch_ended", &execution.branch_id);
 }
-let after = line.cursor(&target).unwrap_or(cut);
+let after = line.cursors.iter().find(|c| c.target == target).map(|c| c.cursor).unwrap_or(cut);
 ```
 
 ## Own contract
@@ -102,7 +102,6 @@ Flow tests on the owner:
 
 ## Supersedes
 
-- The `branchLine` data face (`resolved`, `ending`, `cursor`) and its section of the [TimelineTree plugin page](../../architecture/rust-agent/plugins/TimelineTree.md): one `view` replaces the three reads.
 - The `TimelineTreeControl`-era dependency description of BranchLine in [timeline branches §5](../../design/timeline-branches.md#5-parts) as far as it names `S:TreeCommands`: the handle is the owner's weak `S:TreeHandle`.
 
 ## Client-visible changes
@@ -131,11 +130,11 @@ None: the `branchLine` wire name keeps its scope and gains one operation; no cli
 | ADR 002 D3 | Depends only on the branch services, its own input owner and the tree's handle. |
 | ADR 002 D4 | The idle-notice policy is the line's opening data, not a setting of this part. |
 | ADR 002 D5 | The contract is ids and values; the Rust binding is the appendix. |
-| ADR 027 | BranchTool reaches this owner with `line_owner::<BranchLine>(line)`, a data face of the branch group. |
+| ADR 027 | BranchTool reaches this owner with `line_owner::<BranchLine>(line)`, a data face of the branch group (D1–D3). |
 
 ## Requirements raised to mechanism owners
 
-None beyond TimelineTree's: BranchTool is a Session part and reaches this owner with `line_owner::<BranchLine>(line)`, which is the typed resolution requirement stated there ([SessionScope](https://github.com/arcships/dim/pull/2093) owns the mechanism side).
+None beyond TimelineTree's: BranchTool is a Session part and reaches this owner with `line_owner::<BranchLine>(line)`, which is the runtime's id routing stated there ([#2127](https://github.com/arcships/dim/issues/2127); [SessionScope](https://github.com/arcships/dim/pull/2093) states the Session side).
 
 ## Binding appendix
 
@@ -181,8 +180,8 @@ pub struct LineView {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum LineViewError {
-    #[error("line {0} has no directory record yet")]
-    Unknown(String),
+    #[error("line {line} has no directory record yet")]
+    Unknown { line: String },
     #[error("the Session is closing")]
     Closed,
 }

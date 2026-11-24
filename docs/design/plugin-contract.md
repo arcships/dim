@@ -67,7 +67,7 @@ Visibility follows the tree, as in [principles §2](../architecture/rust-agent/p
 | Direction | How |
 | --- | --- |
 | Up (an enclosing instance, the process) | Inject the service by name |
-| Down (Session to branch) | `line_owner::<T>(line)`: resolve the line to the branch scope's service and call that owner's own operation ([ADR 027](../adr/027-cross-scope-access-by-id.md)); registration points and the lifecycle services stay out ([TimelineTree](plugins/TimelineTree.md)) |
+| Down (Session to branch) | `line_owner::<T>(line)`: resolve the line to the branch scope's service and call that owner's own operation ([ADR 027](https://github.com/arcships/dim/pull/2029)); registration points and the lifecycle services stay out ([TimelineTree](plugins/TimelineTree.md)) |
 | Sideways (sibling branches, other Sessions) | Not visible. Go through a common ancestor's business service, such as `sessions` |
 
 The scope roots, the facades and their publication rules are mechanisms. Each Session and branch is

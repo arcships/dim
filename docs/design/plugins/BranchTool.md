@@ -21,9 +21,9 @@ Callers keep: nothing — the tool is the model's entrance. The Session owns the
 | --- | --- | --- |
 | Open a line to work on a part of the task | No: the cut is the calling request's own start, which the tool reads from its execution context | `timelineTree.create` |
 | Send a line a message or a last word | No: the write belongs to the target line's input owner; the tool decides the kin rule | Target line's input owner by id, with the mode the tool chose |
-| Read what a line did, continuing where the last read stopped | No: the continuation is the calling line's cursor, owned by BranchLine; the page boundaries and the rendering are the tool's | `branchLine.state`, `timelineTree.read` |
+| Read what a line did, continuing where the last read stopped | No: the continuation is the calling line's cursor, owned by BranchLine; the page boundaries and the rendering are the tool's | `branchLine.view`, `timelineTree.read` |
 | End the calling tool line with its last word | No: the end and the last word are one settled operation | `timelineTree.end` |
-| Learn what the calling line may do | No: role and parent are BranchLine's fold | `branchLine.state` |
+| Learn what the calling line may do | No: role and parent are BranchLine's fold | `branchLine.view` |
 | Check that a target belongs to the pair before messaging or reading it | No: the record's parent and source decide it | `timelineTree.line` with `{line}` |
 
 ## Caller example
@@ -51,8 +51,10 @@ line_owner::<InputQueue>(target.line.clone())?
     .await?;
 
 // read: the cursor is the calling line's, the page is the tool's rendering.
-let own = line_owner::<BranchLine>(&execution.branch_id)?.state().await?;
-let after = input.after.unwrap_or_else(|| own.cursor(&target.line).unwrap_or(cut));
+let own = line_owner::<BranchLine>(&execution.branch_id)?.view().await?;
+let after = input.after.unwrap_or_else(|| {
+    own.cursors.iter().find(|c| c.target == target.line).map(|c| c.cursor).unwrap_or(cut)
+});
 let page = tree.read(ReadLines {
     line: target.line.clone(),
     from: Some(after + 1),
@@ -71,7 +73,7 @@ let page = tree.read(ReadLines {
 | --- | --- |
 | `S:ToolRegistry` | Register the `branch` tool, until this part unloads. |
 | `S:TimelineTree` | `create`, `end`, `read` and `line`. |
-| `line_owner::<BranchLine>` | The calling line's role, end state and cursors. |
+| `line_owner::<BranchLine>` | The calling line's role, end state, read cursors and held parent block (`view`). |
 
 ### Operations
 
@@ -105,8 +107,9 @@ Every kind the owners answer maps onto one code here; a refusal writes nothing.
 | `beyond_head` | The target's head moved below `after`; read the record again |
 | `not_batch_boundary` | Pick the head from `line` again; the page must start at a batch boundary |
 | `continuation_without_cutoff` | Send `after` with the target's record; a bare continuation needs the original cutoff |
-| `final_undelivered` | The line ended; the last word is still owed, and the tree retries it; report the end as accepted |
+| `final_undelivered` | The line's end is recorded and its last word is still owed; calling `end` again retries the delivery, so report the end as accepted and the word as pending |
 | `closed` | The Session is closing; stop |
+| `cancelled` | The admitted creation publishes without a waiter; the tool call has no result and the line exists |
 | `invalid` | Fix the action's fields |
 
 ### Flows
@@ -116,12 +119,11 @@ Every kind the owners answer maps onto one code here; a refusal writes nothing.
 | `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes and the caller sees `cancelled` from its own tool call | Refused `branch_ended`/`closed` | TimelineTree |
 | `message` | Check the pair, write into the target's queue, answer the target id | The write is one commit; a cancelled call writes nothing | Refused `closed` | The target line's input owner |
 | `read` | Resolve the target record, the cursor and the head, read one page, render items | Nothing to release | Refused `closed` | TimelineTree, BranchLine |
-| `end` | Check that the caller is a tool line, end with the last word | The end settles even if the call stops watching | Refused `closed` | TimelineTree; a message still owed answers `final_undelivered` and is retried |
+| `end` | Check that the caller is a tool line, then call the tree's `end` even when the line's own end is already recorded: an owed last word answers `final_undelivered` and the call retries the delivery; only an ended line owed nothing answers `branch_ended` | The end settles even if the call stops watching | Refused `closed` | TimelineTree; a message still owed answers `final_undelivered` and is retried |
 
 ## Supersedes
 
 - The `branch` tool's description in [timeline branches §11](../../design/timeline-branches.md#11-the-branch-tool) as far as it names `TreeCommands` for a message and a page: the tool calls `timelineTree` and `line_owner`, as below.
-- The `TreeCommands` references in the [BranchTool plugin page](../../architecture/rust-agent/plugins/BranchTool.md).
 
 ## Client-visible changes
 
@@ -156,7 +158,7 @@ Flow tests on the tool:
 | §4 rule 5 | It reads whole batches through the tree's read. |
 | §4 rule 6 | The page is the tool result, the only text the model reads. |
 | §4 rule 7 | It uses the owners' operations; it holds no scope, node or queue. |
-| §4 rule 8 | One requirement is raised with TimelineTree's: resolving a line id to a branch-scope service. |
+| §4 rule 8 | One requirement is raised with TimelineTree's: resolving a line id to a branch-scope service ([#2127](https://github.com/arcships/dim/issues/2127)). |
 | §4 rule 9 | It writes no fact. |
 | §7 | Every argument and reply is data and a line is an id; no object or handle crosses, except the owner's internal weak handle. Deleting the old surface and migrating every caller is one change. The owner answers its own state and facts, never another owner's record. |
 | ADR 002 D1 | Session scope: one registration for every line. |
@@ -168,7 +170,7 @@ Flow tests on the tool:
 
 ## Requirements raised to mechanism owners
 
-The same one as TimelineTree's: a Session part reaches a line's input owner and BranchLine with `line_owner::<T>(line)`, which needs the mechanism's resolution ([SessionScope](https://github.com/arcships/dim/pull/2093) owns the surface).
+The same one as TimelineTree's: the tool reaches a line's input owner and BranchLine with `line_owner::<T>(line)`, which needs the runtime's id routing ([#2127](https://github.com/arcships/dim/issues/2127); [SessionScope](https://github.com/arcships/dim/pull/2093) states the Session side).
 
 ## Binding appendix
 

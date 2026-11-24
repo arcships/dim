@@ -27,21 +27,19 @@
 
 ### Calls from a Session to a selected branch
 
-Within a branch, inject its owner face directly. For Session callers the existing
-TimelineTree resolves the admitted live branch once using its existing branch lookup and
-dispatches on that branch instance. The operation is a tagged union of the calls below;
-Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
-Ended and unknown branches retain their original errors. Calls admitted before close stay
-with that generation. Tree history, directory and batch input continue to use the tree's
-own methods.
+A Session part acts on one line by line id: `line_owner::<T>(line)` resolves the branch-group service `T`
+of the live instance for that line, and the caller calls that owner's own operation; the runtime routes
+the call and hands no instance key to the caller ([ADR 027](https://github.com/arcships/dim/pull/2029) D1–D3,
+[#2127](https://github.com/arcships/dim/issues/2127)). There is no `timelineTree.call`, no tagged union of
+forwarded operations, and no request envelope: every row below is the callee's own operation.
 
 | Session caller | Target operation |
 | --- | --- |
-| Context RPC / PromptSuggestion | `contextUsage.read`. The `compactAndWait` variant runs the existing compact RPC handler: it calls `agentLoop.compact` and waits for the compaction fact matching that command sequence and returns the existing completed/skipped/failed reply. The committed sequence watch and bounded query run inside the selected branch for that wait. |
-| Session language / Agent configuration / Report | `prompt.configure` or `prompt.adoptedConfiguration` with the existing source, model and outcome records. |
-| InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
+| Context RPC / PromptSuggestion | `line_owner::<ContextUsage>(line)?.read(..)`; the compact RPC's `compactAndWait` calls `agentLoop.compact` through the same path and waits for the compaction fact at that sequence, in the selected branch. |
+| Session language / Agent configuration / Report | `line_owner::<Prompt>(line)?.configure(..)` or `adopted_configuration()`. |
+| InputQueue management / Collaboration | `line_owner::<InputQueue>(line)?.withdraw(..)` after the caller runs the submit checks for steer; `line_owner::<Approval>(line)?.pending()` and `decide(..)`. |
 
-For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
+For a live main branch, Report captures its published head once at draft capture (`line("main").head`)
 and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in
 conversation extraction call the tree's `read` with the same explicit `through`,
 existing bounded window and `include_publishing: false`. Zero yields an empty window.

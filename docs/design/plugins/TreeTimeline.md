@@ -63,7 +63,7 @@ None: the part has no public face.
 ## Exceptions with reasons
 
 - The routing crosses two scopes inside one owner: the subscription must live in the branch scope, while the reservation table and the directory are the Session's. `Weak` access to the tree keeps the branch scope from owning the tree, which the tree already holds through this line's scope.
-- An accepted creation need not survive this line's unload: a child that was never published is cancelled with its waiters, and a published child is the tree's.
+- A reservation this line opened and never dispatched is cancelled on unload and its waiters settle; a build already in flight is awaited and publishes, and the line is then the tree's.
 
 ## Verification
 
