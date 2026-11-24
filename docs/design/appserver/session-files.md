@@ -456,7 +456,7 @@ Limits, and who owns them:
 | Limit | Owner | Reason |
 | --- | --- | --- |
 | One file at most 16 MiB | SessionStore | A put is one message, and FileStorage streams its bytes; the bound caps one call's memory |
-| `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json` or `auth.json.lock` in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. `auth.json` would switch `write` to FileStorage's credential marker |
+| `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json`, `mcp-oauth.json` or `chatgpt-account.json`, or any of their `.lock` markers, in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. A credential record would switch `write` to its marker |
 | Content rules (non-empty text, 10 MiB, default `paste.txt`) | Each consumer (Attachments A.2) | Business rules of the feature |
 | No per-Session count or total quota | None | Disk use ends with Session deletion and cleanup (S5c); a quota would need a business owner, and none exists |
 

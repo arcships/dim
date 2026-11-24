@@ -140,7 +140,7 @@ The plain Rust methods take serde request types. `read` returns
 `list` returns `std::result::Result<Vec<WorkflowFileEntry>, WorkflowFilesError>`
 (UTF-8 `name` and the `kind` above); `replace` and `create_directory` return
 `std::result::Result<(), WorkflowFilesError>`. Their generated TS methods use the
-table's shapes; Bytes becomes `Uint8Array` and `()` becomes `void`. Root indices, resolved paths and `CancellationToken` stay private. Dropping a call follows the
+table's shapes; Bytes becomes `Uint8Array` and `()` becomes `void`. Project/package indices, resolved paths and `CancellationToken` stay private. Dropping a call follows the
 existing generated future cancellation; it does not undo a committed mutation.
 
 The native binding constructs fixed prefixes after checking the selector; it

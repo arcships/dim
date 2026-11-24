@@ -24,7 +24,7 @@ directly. The rutis binding dispatches its data arguments and returns its result
 | FileScope.writeStream(name, next) → FileResult of null | The file scope consumes a reader to EOF under the destination lease. A rutis callback supplies bytes or EOF for the native reader parameter. Preserve atomic replacement and cleanup on failure or caller shutdown. The existing bounded whole-file replaceBytes remains available for small files. |
 | settings.declaredBy({instanceId}) → SourceDeclaration[] | SettingsService.declared_by already selects live declarations by registering instance. PluginManager passes the loader's current instance ID. settings.sources lists declarations across owners and omits that identity. |
 
-The OS path, pinned reader and input reader above are now a path and a callback: the pinned reader is gone, FileStorage's `read(path, offset, length)` pages by path, and its [contract](../../architecture/rust-agent/plugins/FileStorage.md) defines the operation. Existing local media submission/import, legacy node paths,
+The OS path and input reader above are now a path and a callback: the pinned reader is gone, FileStorage's `read(path, offset, length)` pages by path, and its [contract](../../architecture/rust-agent/plugins/FileStorage.md) defines the operation. Existing local media submission/import, legacy node paths,
 result settlement and result paging keep the [Modality contract](../plugins/Modality.md).
 
 ## Persistent Agents → sqliteStorage

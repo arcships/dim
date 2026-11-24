@@ -326,7 +326,7 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
 | 限制 | 归属 | 原因 |
 | --- | --- | --- |
 | 单个文件至多 16 MiB | SessionStore | 一次写入是一条消息，FileStorage 流式写入；这个上限约束单次调用的内存 |
-| `name`：`[A-Za-z0-9._-]{1,64}`，不以点开头，不论大小写都不是 `auth.json` 或 `auth.json.lock`，并且节点的 FileStorage 接受它作为一个路径组成部分（Windows 设备名） | SessionStore | 文件名会成为 SessionStore 目录下的路径组成部分。`auth.json` 会让 `write` 改走 FileStorage 的凭据 marker |
+| `name`：`[A-Za-z0-9._-]{1,64}`，不以点开头，不论大小写都不是 `auth.json`、`mcp-oauth.json` 或 `chatgpt-account.json`，也不是它们的 `.lock` marker，并且节点的 FileStorage 接受它作为一个路径组成部分（Windows 设备名） | SessionStore | 文件名会成为 SessionStore 目录下的路径组成部分。凭据记录会让 `write` 改走其 marker |
 | 内容规则（非空文本、10 MiB、默认 `paste.txt`） | 各使用方（Attachments A.2） | 功能的业务规则 |
 | 不设每个 Session 的数量或总量配额 | 无 | 磁盘占用随 Session 删除和清理（S5c）结束；配额需要一个业务所有者，目前没有 |
 
