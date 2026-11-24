@@ -11,7 +11,7 @@ The model reads that path with `read` like any file. Design:
 | Service | Purpose |
 | --- | --- |
 | `S:SessionIdentity` | The Session a put stores for; Rpc already resolved it from `sessionId`. |
-| `P:SessionFiles` | SessionStore's `sessionFiles` data face (§9 of its owner contract). In this graph it is a graph-only fixture that stores nothing. |
+| `P:SessionFiles` | SessionStore's `sessionFiles` data face ([SessionFiles](../../../design/plugins/SessionFiles.md)). In this graph it is a graph-only fixture that stores nothing. |
 | `S:SessionMethods` | Register the `attachment` namespace from `apply`, until this part unloads. |
 
 ## Method

@@ -107,7 +107,7 @@ alone grants no access. Attachment methods are user actions under
 
 | Owner | Requirement | Ordering impact |
 | --- | --- | --- |
-| SessionStore | [Path import and authorized bounded reads](../appserver/session-files.md#9-interface), using one owner through native and wire bindings | Reply after file and ownership commit; fork/delete preserve live ownership |
+| SessionFiles | [Path import and bounded page reads](SessionFiles.md), using one owner through native and wire bindings | Reply after file and ownership commit; fork/delete preserve live ownership |
 | WebEntry / Rpc | [HTTP reception](../web-workspace.md#session-file-http-api) and local-only path admission | Temporary file remains available through import settlement |
 | ModelProvider / Aimux | A.4 and [request execution](../../architecture/rust-agent/plugins/ModelProvider.md#durable-images-at-model-execution) | Resolve images after effective-context and capability selection |
 
