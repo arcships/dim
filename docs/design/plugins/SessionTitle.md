@@ -158,7 +158,7 @@ Flow tests through `session.create`, `session.submit`, `session.rename`, `sessio
 
 ## Supersedes
 
-- [session-title-metadata.md](../appserver/session-title-metadata.md): the paragraph describing SessionTitle's calls on the old metadata service (`sessionMetadata.read`/`setTitle`, revision compare). The title value, the source and the notice stay that document's; this contract's dependency table replaces the calls.
+- The store's `title` and `setTitle(caller, SetTitle, ChangeFn)` shapes are SessionStore's ([#2091](https://github.com/arcships/dim/pull/2091)); [session-title-metadata.md](../appserver/session-title-metadata.md) stays that owner's document for the title value, its source and the notice, and this contract adds no title operation of its own.
 - [resource-owner-operations.md](../contracts/resource-owner-operations.md): the SessionTitle row (`store.readMetadata`, `setTitle` with an existing title request). SessionTitle calls `store.title` and `store.setTitle` with a `change`.
 - [resource-faces.md](../resource-faces.md): the sentence that SessionTitle uses the process repository operations.
 - The Chinese mirror `docs/zh/design/plugins/SessionTitle.md` describes the pre-contract shape; its target is this document.

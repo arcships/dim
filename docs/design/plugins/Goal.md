@@ -57,7 +57,9 @@ line_owner::<InputQueue>(&line)?
 ```rust
 let goal = match line_owner::<GoalLine>(&line) {
     Ok(owner) => owner.read().await?,
-    Err(NoInstance) => return Err(AgentError::Reloading("Goal".into())),   // service_reloading
+    Err(NoLine) => return Err(AgentError::Reloading("Goal".into())),       // service_reloading
+    Err(SessionClosing) => return Err(AgentError::Closed),                  // session_closed
+    // NoSession cannot arrive here: only a process caller receives it.
 };
 // `goal.objective`, `goal.status`, `goal.evaluator`, `goal.through`; history is read from facts instead.
 ```
@@ -100,7 +102,7 @@ The entry's operations are the five commands, the read, the tool and the guide e
 | `goal_update` | The model reports completion or blockage | `{status, summary}` | text in `ToolResult.content` | Before the input is submitted | the commands' codes, returned as an error result |
 | `goalLine.read` | The line's published goal value | `{}` | `{objective?, status, evaluator, through}` | The wait stops; the value is unaffected | `closed` (the service's `{code, message}`) |
 
-`invalid_params` is Goal's own parameter check: an objective outside 1..=4000 characters, a summary outside 1..=2000, an unknown judge, an empty `branchId`. `session_invalid_input` is the published code for TimelineTree's `unknown` kind and for `AgentError::InvalidInput`, and `session_closed` for `AgentError::Closed` (`crates/dim-agent-capabilities/src/methods.rs:137-154`); `branch_ended` is the ended-line refusal today, and the input owner's contract names it `line_ended` (target, pending [#2102](https://github.com/arcships/dim/pull/2102)), which lands as a client-visible code when that owner ships; `service_reloading` is the mechanism's answer that the line has no live goal owner, which the client shows as no goal and reads from history instead. Every code above is one a client receives today.
+`invalid_params` is Goal's own parameter check: an objective outside 1..=4000 characters, a summary outside 1..=2000, an unknown judge, an empty `branchId`. `session_invalid_input` is the published code for TimelineTree's `unknown` kind and for `AgentError::InvalidInput`, and `session_closed` for `AgentError::Closed` (`crates/dim-agent-capabilities/src/methods.rs:137-154`); `branch_ended` is the ended-line refusal today, also for a route that answers `NoLine` after the record was read, and the input owner's contract names it `line_ended` (target, pending [#2102](https://github.com/arcships/dim/pull/2102)), which lands as a client-visible code when that owner ships; `service_reloading` is the mechanism's answer that the line has no live goal owner, which the client shows as no goal and reads from history instead. The entry keeps the mechanism's three answers apart: `NoLine` and a reloading owner are `service_reloading`, `SessionClosing` is `session_closed`, and `NoSession` never reaches a Session part. Every code above is one a client receives today.
 
 `goalLine.read` takes no request parameter: the line is the instance the mechanism resolved. Requests, replies and errors are data; `cancelled` is the binding's cancellation argument.
 
@@ -123,7 +125,7 @@ The business fact precedes the state record: the fact is what recovery reads, th
 | `invalid_params` | Fix the parameters: the objective, the judge, the summary, the line id; retry with the fix |
 | `session_invalid_input` | The named line does not exist; read the directory and choose a line, then retry |
 | `branch_ended` | The line has ended; read its facts for history or choose an open line |
-| `service_reloading` | The line has no live goal owner or is reloading; show no goal, read history from the line's facts, retry later |
+| `service_reloading` | The id routing answered `NoLine` (the line is closing, ended or not this Session's) or the goal owner is reloading; show no goal, read history from the line's facts, retry later |
 | `session_closed` | The Session or the input owner is unloading; the next generation serves the next Session |
 | `operation_interrupted` | The mechanism interrupted the call on unload; the accepted input is settled, the read stops waiting |
 
