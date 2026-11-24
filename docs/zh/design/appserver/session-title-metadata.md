@@ -245,4 +245,3 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
 
 ## 附录 A. Rust 绑定
 「本节由 [SessionStore 契约](../../../design/plugins/SessionStore.md#operations) 取代。」
-

@@ -36,7 +36,7 @@ only outcome and duration.
 
 | Boundary | Current contract and Ready decision |
 | --- | --- |
-| Observation | Read the Session id, the creation configuration and closing from SessionScope's `identity`, `config` and `closing` ([#2093](https://github.com/arcships/dim/pull/2093), target, pending; [plugin contract](../plugin-contract.md#9-requirements-raised-to-mechanism-owners) R2), then the records on its Session's `session/{sessionId}` channel. C4 broadcast #180 is delivered; #63/#168 are closed. |
+| Observation | Read the Session id, the creation configuration and closing from SessionScope's `identity`, `config` and `closing` ([#2093](https://github.com/arcships/dim/pull/2093), target, pending; [plugin contract](../plugin-contract.md#9-requirements-raised-to-mechanism-owners) R2); the copy starts observing on `activated`, when the Session is published, then reads the records on its Session's `session/{sessionId}` channel. C4 broadcast #180 is delivered; #63/#168 are closed. |
 | Timeline reads | Use the Session’s branch query facade on `main`, with a fixed published cutoff. Read only the adopted input identity, its user content or Goal objective, and the adopted model fields (§0.1). |
 | Configuration | Existing named Settings and row source declaration, user scope only (A.3/A12). Read settings.read({source:"session-title",scope:"user"}) at each decision and use its validated/defaulted document directly. |
 | Metadata/notice | This row is superseded by [the SessionStore contract](SessionStore.md#operations); the v3 list fields are `title`/`titleSource`/`titleRevision`, and Rpc forwards the notice as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). |

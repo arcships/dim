@@ -92,7 +92,7 @@ let remove: RemoveFn = Arc::new(move |root: String| {
     let cancelled = cancelled.clone();
     Box::pin(async move { git_remove(&root, force, &cancelled).await })
 });
-store.removeWorktree(Directory { repository, root }, remove, cancelled.clone()).await?;
+store.removeWorktree(Directory { repository, root }, remove).await?;
 ```
 
 ## Own contract
@@ -126,14 +126,14 @@ Every operation takes one request object and answers one reply object. Writes ar
 | `worktrees` | Recorded directories, with their last use when known | `{}` | `{directories}` | None | `closed`, `storage` |
 | `worktreeUsages` | The Session associations of one recorded directory | `{repository, root}` | `{usages}` | None | `invalid`, `closed`, `storage` |
 | `sessionsUnder` | Stored Sessions whose workspace is a root or lies under it | `{root}` | `{sessionIds}` | None | `invalid`, `closed`, `storage` |
-| `removeWorktree` | Remove a directory under the Session exclusion, with the caller's own removal step; the directory record may be absent | `{repository, root}` + `remove` | `{removed}`; true when a record was deleted | The caller's step ends; the record, if any, stays | `invalid`, `not_found`, `in_use`, `rejected`, `closed`, `storage` |
+| `removeWorktree` | Remove a directory under the Session exclusion, with the caller's own removal step; the record may be absent and an already-missing root is success | `{repository, root}` + `remove` | `{removed}`; true when a record was deleted | The caller's step ends; the record, if any, stays | `invalid`, `in_use`, `rejected`, `closed`, `storage` |
 | `removeUnregisteredDirectory` | Remove a directory no record names, under the Session exclusion, with the caller's own removal step | `{root}` + `remove` | `{removed}` | The caller's step runs to its end; no record is involved | `invalid`, `not_found`, `in_use`, `rejected`, `closed`, `storage` |
 
 `worktree` in `create` and `associateWorktree` is `{repository, root, subtree}`: absolute UTF-8 paths, `subtree` inside `root`, and no `.` or `..` component. The caller passes paths it already resolved; the owner re-checks that each is absolute, UTF-8, has no relative component and, for an association, that the root still is a directory.
 
 #### Timeline face
 
-`timelineStore` is the same owner's Session-scoped Timeline face; SessionScope installs the binding at the Session instance (#2093). This contract owns the spellings. The instance identity is the Session: every request's `sessionId` must equal it, and a mismatch answers `invalid`; that rule is part of every row's `invalid` below. The face carries the line reads and the completion subscriptions; `createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and commit steps, and `sessionConfig`/`query` are the process `store` reads.
+`timelineStore` is the same owner's Session-scoped Timeline face; SessionScope installs the binding at the Session instance (#2093). This contract owns the spellings. The instance identity is the Session: every request's `sessionId` must equal it, and a mismatch answers `invalid`; that rule is part of every row's `invalid` below. The face carries the line reads and the completion subscriptions; `createSession`, `releaseTimeline`, `rollbackSession` and `append` are the store's own creation and commit steps, and `sessionConfig`/`query` are the process `store` reads.
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
@@ -175,7 +175,7 @@ After the store releases a Session, a face call answers `not_found`; after the g
 | --- | --- |
 | `invalid` | Fix the request: an id that is not one path component, a relative or non-UTF-8 path or a `.`/`..` component, a subtree outside the root, an unknown language code, an invalid catalog cursor. A `removeUnregisteredDirectory` root that lies under a registered directory answers `invalid`; call `removeWorktree` for it |
 | `workspace_missing` | The creation's `cwd` no longer is a directory; the caller reports the failed creation and discards the worktree |
-| `not_found` | No stored Session has the id, a fork source has no rows, or the directory a removal names is absent; the caller decides whether that is a business error or an answer. A removal whose record is absent but whose directory exists still runs the removal step and answers `{removed:false}`; only an absent directory answers `not_found` |
+| `not_found` | No stored Session has the id or a fork source has no rows; the caller decides whether that is a business error or an answer. A worktree removal whose root is already gone is success: the step confirms the missing root and the record is deleted under the same exclusion, so a retry is safe (`crates/dim-app-server/src/storage/timeline.rs:1853-1890`) |
 | `in_use` | A Session association or a stored workspace still names the directory; delete that Session or refuse the removal |
 | `rejected` | The caller's change, text or removal step refused with its own `code` and `message`; nothing was written and the caller acts on that code. `create` with an id that already has rows answers reason `exists`; the caller reads the id instead of retrying |
 | `cancelled` | The caller stopped the read; nothing changed |
@@ -189,7 +189,7 @@ When a change, text or removal callback refuses, the operation answers `rejected
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `create` | Validate the id, take the exclusion, validate the workspace, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller keeps the id it supplied and decides whether to publish or delete the Session | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
-| `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove the visible and Timeline rows and clear the leader link on member Sessions, then call `sessionFiles.releaseSession`, which deletes the file-ownership rows and schedules the bytes sweep | Dropping the caller before the handover: every row stays. After: the owner task runs to its end | The owner task continues; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
+| `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove the visible and Timeline rows and clear the leader link on member Sessions, then call `sessionFiles.releaseSession`, which deletes the file-ownership rows and schedules the bytes sweep; the store's own Timeline step is `releaseTimeline` | Dropping the caller before the handover: every row stays. After: the owner task runs to its end | The owner task continues; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
 | `fork` | Take the exclusion, read the source body, call `text`, copy in bounded transactions, write the target body and target rows in the last batch transaction, commit | Dropping the caller before the handover; a refused text step copies nothing | The owner task continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
 | `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
 | `worktrees`, `worktreeUsages`, `sessionsUnder` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed`; a new call is refused `closed` | SessionStore |
@@ -273,7 +273,7 @@ Material uncertainty: a process death during the caller's removal step leaves th
 
 1. **SessionTitle (#2033): the title write is a change callback.** `store.setTitle(id, change)` receives the current title, its source and revision, and returns the next title or its own refusal; the owner serializes the write and announces the commit. The revision-checked `{expectedRevision, title}` shape in SessionTitle.md and session-title-metadata.md is superseded; the manual-title rule moves into the change. A comment on #2033 states the requirement.
 
-2. **SessionScope (#2025): `timelineStore` ownership aligned.** This owner owns the Timeline operations and the `timelineStore` face; SessionScope binds that face at the Session instance. The face does not carry `createSession`, `releaseSession`, `rollbackSession` or `append`; those belong to the store's own creation and commit paths. The process `store.query` and `store.sessionConfig` are the same engine's reads for callers outside a Session (loaded or not) and keep one implementation. A comment on #2025 records the alignment.
+2. **SessionScope (#2025): `timelineStore` ownership aligned.** This owner owns the Timeline operations and the `timelineStore` face; SessionScope binds that face at the Session instance. The face does not carry `createSession`, `releaseTimeline`, `rollbackSession` or `append`; those belong to the store's own creation and commit paths. The process `store.query` and `store.sessionConfig` are the same engine's reads for callers outside a Session (loaded or not) and keep one implementation. A comment on #2025 records the alignment.
 
 
 The delivery part maps the current codes to these kinds: `creationRecord`, `title` and `associateWorktree` move from `closed` to `not_found`; `addGrant` on a missing Session moves from `storage` to `not_found`; `setLanguage` moves from `closed` to `not_found`; `setTitle` during close moves from `storage` to `closed`; a worktree removal conflict moves from `invalid` to `in_use`; a missing `cwd` moves from `invalid` to `workspace_missing`; `delete` answers `hadRows` instead of `removed`. Field and operation renames: `sessionId`→`id`, `leaderSessionId`→`leader`, `createOwnedSession`→`create`, `worktreeDirectories`→`worktrees`, `sessionsUnderWorkspace`→`sessionsUnder`, `setSessionLanguage`→`setLanguage`.

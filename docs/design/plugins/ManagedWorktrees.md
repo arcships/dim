@@ -68,7 +68,7 @@ for candidate in confirmed(&preview) {
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `create` | Allocate a task id and make a Git worktree and branch for a Session creation | `{source, base?, branch?}` | `{taskId, repository, root, subtree, branch, base}` | Between Git calls and before the branch is created; a cancelled creation removes its empty task directory | `worktree_unavailable`, `worktree_invalid`, `worktree_branch_exists`, `worktree_git_failed`, `worktree_interrupted` |
-| `discard` | Settle a created worktree that the Session creation did not adopt; the store's record may not exist yet | `{taskId}` | `{}` | Not cancellable: the cleanup runs to its end | `unknown_preparation`, `worktree_in_use`, `worktree_git_failed`, `worktree_interrupted`, `worktree_store_failed` |
+| `discard` | Settle a created worktree that the Session creation did not adopt; the store's record may not exist yet | `{taskId}` | `{}` | Not cancellable: the cleanup runs to its end | `unknown_preparation`, `worktree_invalid`, `worktree_in_use`, `worktree_git_failed`, `worktree_interrupted`, `worktree_store_failed` |
 | `list` | Managed worktrees with Git state and Session use | `{}` | `{worktrees}` | While the views are built | `worktree_unavailable`, `worktree_interrupted`, `worktree_store_failed` |
 | `pruneSelection` | Candidates a prune would delete and the kept ones with reasons | `{olderThanMs?, keep?, force}` | `{candidates, kept}` | While the selection is built | `worktree_invalid`, `worktree_unavailable`, `worktree_interrupted`, `worktree_store_failed` |
 | `remove` | Remove one managed worktree, or an unregistered directory, with its record; an unregistered removal keeps the branch, and `worktree.list` reports it | `{taskId, force}` | `{removed}` | Before the Git removal; after it starts the removal completes or reports `worktree_git_failed` | `worktree_invalid`, `worktree_not_found`, `worktree_in_use`, `worktree_git_failed`, `worktree_interrupted`, `worktree_store_failed` |
@@ -76,6 +76,18 @@ for candidate in confirmed(&preview) {
 `create` returns a value; `discard` and `remove` take the task id. No object crosses. The preparation table is the owner's generation state: a reload drops it, and `discard` for a task id the generation did not create answers `unknown_preparation`; the directory is then an unregistered directory that `remove` handles.
 
 `remove` composes the store's removal under its exclusion: `removeWorktree` for a recorded directory and `removeUnregisteredDirectory` for a directory no record names. The store checks the associations and the stored workspaces and calls this owner's Git and filesystem removal as a callback; the record is deleted when the callback succeeds and kept when it refuses or fails. No claim id or lock crosses. `force` overrides only the content check; the Git removal receives `--force` only then.
+
+The store's refusals map to this owner's codes, and each has the caller's next step:
+
+| Store answer | Owner code | Caller next step |
+| --- | --- | --- |
+| `invalid` | `worktree_invalid` | Fix the task id or root; if the root is under a registered directory, call `removeWorktree` |
+| `not_found` (unregistered removal only) | `worktree_not_found` | The directory is already gone; nothing to retry |
+| `in_use` | `worktree_in_use` | Delete the Session or stored workspace that uses the directory, then retry |
+| `rejected` with reason `git` | `worktree_git_failed` | Report Git's message; the directory and record stay |
+| `rejected` with reason `cancelled` | `worktree_interrupted` | Retry the removal on the same generation |
+| `rejected` with reason `invalid` | `worktree_invalid` | Fix the directory state; the record stays |
+| `closed` or `storage` | `worktree_store_failed` | Report the failure; the record stays and the call is retryable on the replacement generation |
 
 ### Errors
 
