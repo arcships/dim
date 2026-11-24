@@ -114,7 +114,7 @@ R4). This table says what each name Dim defines is for.
 | `workflowFiles` | process | App Server | yes | Marked `#[rutis::service]` |
 | `eventHub` | process | EventHub | designed, not implemented | A producer declares a source and publishes an event; EventHub delivers it to the Sessions subscribed, through Agents' `sessions` ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
-| `timelineTree` | `session` | TimelineTree | yes | the line directory and lifecycle: `create`, `end`, `set_default`, `directory`, `line`, `read` ([TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md)) |
+| `timelineTree` | `session` | TimelineTree | yes | 见 [TimelineTree 契约](../architecture/rust-agent/plugins/TimelineTree.md#own-contract) |
 | `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload. `reportFault` reports a fault, `failure` reads it and `observeFault` subscribes. The calling row releases its subscription with `release(id)` or on unload. |
 | `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |

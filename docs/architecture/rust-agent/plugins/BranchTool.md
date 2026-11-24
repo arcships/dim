@@ -54,7 +54,7 @@ line_owner::<InputQueue>(target.line.clone())?
     .await?;
 
 // read: the cursor is the calling line's, the page is the tool's rendering.
-let own = line_owner::<BranchLine>(&execution.branch_id)?.view().await?;
+let own = line_owner::<BranchLine>(&execution.branch_id)?.view(Some(target.clone())).await?;
 let after = input.after.unwrap_or_else(|| {
     own.cursors.iter().find(|c| c.target == target.line).map(|c| c.cursor).unwrap_or(cut)
 });
@@ -62,7 +62,7 @@ let page = tree.read(ReadLines {
     line: target.line.clone(),
     from: Some(after + 1),
     through: Some(target.head),
-    fields: READ_FIELDS.to_vec(),
+    fields: Some(READ_FIELDS.to_vec()),
     limit: Some(input.limit.unwrap_or(READ_PAGE_LIMIT)),
 }).await
     .map_err(refusal_from_line_error)?;
@@ -87,54 +87,53 @@ One tool, one request object, no service:
 | `action` | `create`, `message`, `read` or `end`; required, no other property allowed |
 | `prompt` | `create`: what the new line is for |
 | `at` | `create`: the cut; absent means this request's own start |
-| `idle_notice` | `create`: `steer` (default) or `none` |
+| `idleNotice` | `create`: `steer` (default) or `none` |
 | `to`, `content`, `mode` | `message`: the target, the text and the mode (`append` or `steer`) |
 | `branch`, `after`, `limit` | `read`: the target, the continuation and the page size |
 | `content` | `end`: the line's last word |
 
-Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A refusal is an error result whose `structuredContent` carries one code and no write happens.
+Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A refusal is an error result whose `structuredContent` carries `{error, message}`, where `error` is the code below and `message` the text; no write happens. An argument error is a failed result with no code, as today (`Invalid branch arguments: …`).
 
 ### Errors
 
-The tool's coded refusals are the accepted set ([timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)) plus the argument error; every other ending of the four actions is a failed result without a code, so the model-visible result shape does not change. The route adds no code of its own: `NoLine` from `line_owner` is reported as `branch_ended`, `SessionClosing` as a failed result without a code, and a Session part never receives `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [TimelineTree](TimelineTree.md#session-parts-reaching-a-lines-owners)).
+The tool's coded refusals are the accepted set ([timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)); an argument error and every other ending are failed results without a code, so the model-visible result shape does not change. The pair check reads `line(id)` first: `unknown` there becomes `branch_not_kin`, never a separate code. A `NoLine` after the pair check succeeded means the target's instance closed in between, which each action reports as `branch_ended`. `SessionClosing` is a failed result without a code, and a Session part never receives `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [TimelineTree](TimelineTree.md#session-parts-reaching-a-lines-owners)).
 
-Refusals, with `structuredContent.code`:
+Refusals, with the code in `structuredContent.error`:
 
-| Code | What the model does next |
-| --- | --- |
-| `branch_not_opener` | Only the root and the conversation line open lines; move the conversation or ask one of those |
-| `branch_limit_reached` | End an open tool line first |
-| `branch_not_kin` | Address the line it was cut from, or a line it opened |
-| `branch_not_tool_line` | A plugin line follows its creator's protocol; a plugin line reads only the line it was cut from |
-| `branch_ended` | The target's own end is recorded, or the calling line's own end is: read the line instead. Not retryable; an owed last word is delivered by restore |
-| `branch_cannot_end` | Not retryable as is: only a tool line ends itself, and not while its chain holds the conversation line |
-| `invalid` | Fix the action's fields |
+| Code | Actions | What the model does next |
+| --- | --- | --- |
+| `branch_not_opener` | `create` | Only the root and the conversation line open lines; move the conversation or ask one of those |
+| `branch_limit_reached` | `create` | End an open tool line first |
+| `branch_not_kin` | `message`, `read` | Address the line it was cut from, or a line it opened |
+| `branch_not_tool_line` | `message`, `read` | A plugin line follows its creator's protocol; a plugin line reads only the line it was cut from |
+| `branch_ended` | `create`, `message`, `read`, `end` | The target's own end is recorded, or the calling line's own end is: read the line instead. Not retryable; an owed last word is delivered by restore |
+| `branch_cannot_end` | `end` | Not retryable as is: only a tool line ends itself, and not while its chain holds the conversation line |
 
 Endings without a code, reported as a failed result:
 
-| Ending | What the model does next |
-| --- | --- |
-| The read's `after` is past the target's head | Re-read `line` and start at or below its head; retry once |
-| The page's cutoff is inside an atomic batch | Start at the record's head, which ends a batch |
-| A continuation arrived without its `after` | Resend `after` with the current record |
-| The tool's own start is not a usable cut | Report it; do not retry |
-| The target's id is not a line of this Session | Report `branch_not_kin` at the pair check; never retry the same call |
-| The tree answers `branch_target_protected` (a cascade is ending the target) | Read the line and report the state; do not retry the same end |
-| `SessionClosing` or a closing Session | Stop; nothing more happens in this generation |
-| An admitted creation cancelled by its caller | The line publishes without a waiter and the call has no result |
+| Ending | Actions | What the model does next |
+| --- | --- | --- |
+| The read's `after` is past the target's head | `read` | Re-read `line` and start at or below its head; retry once |
+| The page's cutoff is inside an atomic batch | `read` | Start at the record's head, which ends a batch |
+| A continuation arrived without its `after` | `read` | Resend `after` with the current record |
+| The tool's own start is not a usable cut | `create` | Report it; do not retry |
+| The parent or the target is not a line of this Session | `create`, `message`, `read` | Report `branch_not_kin` at the pair check; never retry the same call |
+| The tree answers `branch_target_protected` (a cascade is ending the target) | `end` | Read the line and report the state; do not retry the same end |
+| `SessionClosing` or a closing Session | all | Stop; nothing more happens in this generation |
+| An admitted creation cancelled by its caller | `create` | The line publishes without a waiter and the call has no result |
 
 ### Flows
 
 | Action | Normal path | Caller cancels | Session closes | Settled by |
 | --- | --- | --- | --- | --- |
-| `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes and the caller sees `cancelled` from its own tool call | Refused `branch_ended`/`closed` | TimelineTree |
-| `message` | Check the pair, write into the target's queue, answer the target id | The write is one commit; a cancelled call writes nothing | Refused `closed` | The target line's input owner |
-| `read` | Resolve the target record, the cursor and the head, read one page, render items | Nothing to release | Refused `closed` | TimelineTree, BranchLine |
-| `end` | Check that the caller is a tool line and that its own end is not yet recorded, then call the tree's `end` with the last word; a line that already recorded its own end answers `branch_ended` and an owed last word is delivered by restore | The end settles even if the call stops watching | Refused `closed` | TimelineTree |
+| `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes, the call has no result, and the caller sees `cancelled` from its own tool call | `branch_ended` when the parent ended; a failed result without a code when the Session is closing | TimelineTree |
+| `message` | Check the pair, write into the target's queue, answer the target id | The write is one commit; a cancelled call writes nothing | A failed result without a code | The target line's input owner |
+| `read` | Resolve the target record, the cursor and the head, read one page, render items | Nothing to release | A failed result without a code | TimelineTree, BranchLine |
+| `end` | Check that the caller is a tool line and that its own end is not yet recorded, then call the tree's `end` with the last word; a line that already recorded its own end answers `branch_ended` and an owed last word is delivered by restore | The end settles even if the call stops watching | A failed result without a code | TimelineTree |
 
 ## Supersedes
 
-- The `branch` tool's description in [timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool) as far as it names `TreeCommands` for a message and a page: the tool calls `timelineTree` and `line_owner`, as below.
+- [Timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)'s **Read** paragraph, which now points at this page's contract.
 
 ## Client-visible changes
 

@@ -26,7 +26,7 @@ Callers keep: which lines they message or read (BranchTool's kin rules), what a 
 | --- | --- | --- |
 | BranchTool asks this line's role before deciding what it may message, read or end | No: the role and parent are folded from the line's own facts and cached; re-deriving them in a Session part means folding another owner's state | `view` |
 | BranchTool learns whether this line has committed its own end | No: same fold | `view` |
-| BranchTool continues a read of a target where the line's last read stopped | Yes, once the cursor is published with the view: look it up in `cursors` rather than call another operation | `view` |
+| BranchTool continues a read of a target where the line's last read stopped | Yes: the view answers that target's cursor in the same call | `view` |
 | Write the roster, the parent block, the idle notice, the ended notice, the status note | No, but not public: these are this owner's own writes, driven by the line's facts | Internal |
 | Tell the opener the line moved: a parent turn end past the cursor | No: it is this owner's fold of its own facts and its own write queue | Internal |
 | Tell the opener a line it opened ended | No: only the opener's own BranchLine can write its line, and the ended line's writer is closing | `branch/ended` fold, internal |
@@ -47,7 +47,7 @@ match line.role {
 if line.ending {
     return refused("branch_ended", &execution.branch_id);
 }
-let after = line.cursors.iter().find(|c| c.target == target).map(|c| c.cursor).unwrap_or(cut);
+let after = line.cursor.unwrap_or(cut);
 ```
 
 ## Own contract
@@ -59,8 +59,8 @@ let after = line.cursors.iter().find(|c| c.target == target).map(|c| c.cursor).u
 | `B:Dispatcher` | The line's own facts, in commit order after the rebuild. |
 | `B:Timeline` / `B:TimelineIdentity` | Its own facts and its own id. |
 | `B:BranchLifecycle` | Wait for the branch to be active before writing. |
-| `B:InputQueue` | Its own line's input entry: every block this part writes is an input of its own line. |
-| `S:SessionLifecycle` | Wait for a restored directory before roster repair. |
+| `B:InputQueue` | Its own line's input entry, and the opener's through `line_owner::<InputQueue>` for the idle notice. |
+| `S:SessionScope` | `activated` and `closing`: wait for the Session's publication before roster repair. |
 | `S:GuideEntries` | The four markers above, until this part unloads. |
 | `S:TreeHandle` | The owner's weak handle to TimelineTree: the line's record, the default line, the move transitions and the parent's turn-end signal. Weak because the tree holds this line's scope and the scope holds this part; a strong handle would be a cycle close could not break. |
 
@@ -68,9 +68,9 @@ let after = line.cursors.iter().find(|c| c.target == target).map(|c| c.cursor).u
 
 | Operation | Intent | Request | Reply | Cancellation | Errors (codes) |
 | --- | --- | --- | --- | --- | --- |
-| `view` | One line's role, parent, end state, read cursors and held parent block | `{}` (the operation runs on the line's own BranchLine) | `{role, parent?, ending, cursors: [{target, cursor}], blocked?}` | None: a read of the owner's folded state | `unknown` (the line has no directory record yet), `closed` |
+| `view` | One line's role, parent, end state and the read cursor for the target the caller asks about | `{target?}` (the operation runs on the line's own BranchLine) | `{role, parent?, ending, cursor?, blocked?}` | None: a read of the owner's folded state | `unknown` (the line has no directory record yet), `closed` |
 
-`blocked` reports the held parent block: its target and the head it reported. `cursors` holds one entry per target the line has read; an absent target is a line this line never read. The reply is a value, not a subscription: BranchTool reads it once per call, and the owner keeps it current from its own facts.
+`cursor` is the `nextCursor` of this line's latest successful read of the named target; it is absent when the target is omitted or this line never read it. `blocked` reports the held parent block: its target and the head it reported. The reply is a value, not a subscription: BranchTool reads it once per call, and the owner keeps it current from its own facts.
 
 ### Errors
 
@@ -83,8 +83,8 @@ let after = line.cursors.iter().find(|c| c.target == target).map(|c| c.cursor).u
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `view` | Read the cached role and cursors; a missing cursor reads that target's facts once | Nothing to release | Nothing to release | Refused `closed` for a closing Session; a reloaded line rebuilds from its own facts | BranchLine |
-| internal writes | A fact of the line's own arrives, the fold decides, one keyed block is written into its own line through the line's input entry; only the idle notice steers the opener through `line_owner::<InputQueue>(opener)`, while the ended notice and the roster retirement are written on the line's own line when this line folds `branch/ended` as the opener | The write belongs to the line, not to a caller; a cancelled turn writes nothing more | The line's writes stop with the line | The branch scope closes after its last write; a restored line rebuilds its blocks and writes only what is owed | BranchLine writes; the line's input owner admits; TimelineTree settles the scope |
+| `view` | Read the cached role and the target's cursor; a target with no cursor reads that target's facts once | Nothing to release | Nothing to release | Refused `closed` for a closing Session; a reloaded line rebuilds from its own facts | BranchLine |
+| internal writes | A fact of the line's own arrives, the fold decides, one keyed block is written into its own line through `TreeCommands.input`; only the idle notice steers the opener through `line_owner::<InputQueue>(opener)`, while the ended notice and the roster retirement are written on the line's own line when this line folds `branch/ended` as the opener | The write belongs to the line, not to a caller; a cancelled turn writes nothing more | The line's writes stop with the line | The branch scope closes after its last write; a restored line rebuilds its blocks and writes only what is owed | BranchLine writes; the line's input owner admits; TimelineTree settles the scope |
 
 ## Exceptions with reasons
 
@@ -106,11 +106,11 @@ Flow tests on the owner:
 
 ## Supersedes
 
-- The `TimelineTreeControl`-era dependency description of BranchLine in [timeline branches §5](../../../design/timeline-branches.md#5-parts) as far as it names `S:TreeCommands`: the handle is the owner's weak `S:TreeHandle`.
+- [Timeline branches](../../../design/timeline-branches.md): §5's BranchLine row and its "BranchLine injects …" sentence, and §7.1's write paragraph, each now a pointer to this contract.
 
 ## Client-visible changes
 
-None: the `branchLine` wire name keeps its scope and gains one operation; no client calls it today.
+The `branchLine` face keeps its wire name and its scope but replaces its three operations (`resolved`, `ending`, `cursor`) with one `view` that takes `{target?}` and answers `{role, parent?, ending, cursor?, blocked?}`. No first-party client or TypeScript part calls them today, so no shipped caller changes; a foreign part that bound one of the three must move to `view`, and its caller gets the same facts in one reply.
 
 ## Rule check
 
@@ -134,11 +134,11 @@ None: the `branchLine` wire name keeps its scope and gains one operation; no cli
 | ADR 002 D3 | Depends only on the branch services, its own input owner and the tree's handle. |
 | ADR 002 D4 | The idle-notice policy is the line's opening data, not a setting of this part. |
 | ADR 002 D5 | The contract is ids and values; the Rust binding is the appendix. |
-| ADR 027 | BranchTool reaches this owner with `line_owner::<BranchLine>(line)`, a data face of the branch group (D1–D3). |
+| ADR 027 | BranchTool reaches this owner with `line_owner::<BranchLine>(line)`, a data face of the branch group (D1–D3); a Session part sees `SessionClosing` and `NoLine`, never `NoSession`. |
 
 ## Requirements raised to mechanism owners
 
-None beyond TimelineTree's: BranchTool is a Session part and reaches this owner with `line_owner::<BranchLine>(line)`, which is the runtime's id routing stated there, including its three answers `SessionClosing`, `NoLine` and `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [SessionScope](https://github.com/arcships/dim/pull/2093) states the Session side).
+None beyond TimelineTree's: BranchTool is a Session part and reaches this owner with `line_owner::<BranchLine>(line)`, which is the runtime's id routing stated there; a Session part sees `SessionClosing` and `NoLine`, never `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [SessionScope](https://github.com/arcships/dim/pull/2093) states the Session side).
 
 ## Binding appendix
 
@@ -156,11 +156,6 @@ pub enum LineRole {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Cursor {
-    pub target: String,
-    pub cursor: u64,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeldBlock {
@@ -176,7 +171,8 @@ pub struct LineView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub ending: bool,
-    pub cursors: Vec<Cursor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<HeldBlock>,
 }
@@ -192,7 +188,7 @@ pub enum LineViewError {
 
 #[rutis::service(name = "branchLine")]
 impl BranchLine {
-    pub async fn view(&self) -> Result<LineView, LineViewError> {
+    pub async fn view(&self, target: Option<String>) -> Result<LineView, LineViewError> {
         // ...
     }
 }

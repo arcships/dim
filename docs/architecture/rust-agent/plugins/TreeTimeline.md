@@ -12,8 +12,8 @@ TreeTimeline is the branch-scope half of the line directory: it watches the fact
 
 TreeTimeline owns:
 
-- **The route from a line's own facts to the tree.** A `branch/create` on this line opens the child's reservation; a `branch/end` commits this line's end; a `turn/end` is the point after which a tool end settles.
-- **The release of this line's reservations.** When this line unloads, the children it reserved and never received are cancelled and their waiters settled, so a parent that goes away leaves no half-open line.
+- **The route from a line's own committed facts to the tree.** TimelineTree reserves a child inside `create`'s lock, before it appends `branch/create`; this part hands the committed `branch/create` to the tree, which starts that child's build and records the create position. A `branch/end` commits this line's end; a `turn/end` is the point after which a tool end settles.
+- **The release of the reservations this line's children hold.** When this line unloads, a child reservation the tree made and has not dispatched is cancelled and its waiter settled, so a parent that goes away leaves no half-open line.
 
 Callers keep: every decision about the parent's own facts; TreeTimeline decides nothing, it routes and releases.
 
@@ -52,7 +52,7 @@ None reach a caller. A routing failure is recorded on the tree's cleanup list an
 
 | Case | Normal path | Line unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- |
-| A child is created on this line | The subscription hands the fact to the tree; the tree reserves the child and later builds it | Reservations this line opened and never received are cancelled; their waiters are settled | The tree's close cancels every reservation before the scopes close | TreeTimeline releases reservations; TimelineTree settles the children |
+| A child was created on this line | TimelineTree already reserved the child inside `create`'s lock and appended `branch/create`; the subscription hands that committed fact to the tree, which starts the build and records the create position | A reservation the tree made and never dispatched is cancelled; its waiter is settled | The tree's close cancels every reservation before the scopes close | TreeTimeline releases reservations; TimelineTree settles the children |
 | This line committed its end | A tool end waits for the turn end; any other end settles at once | The end is already the tree's; the scope closes after its last write | An end in flight finishes before the generation's close | TimelineTree |
 | This line ended a turn | The tree publishes the sequence for this line's children | Nothing held | Nothing held | TimelineTree |
 
@@ -73,7 +73,7 @@ None: the part has no public face.
 
 Flow tests on the owner:
 
-- A `branch/create` on this line reserves the child; a parent that unloads before the child is published cancels the reservation and settles the waiter.
+- `create` reserves the child under its own lock; the committed `branch/create` starts the build through this part; a parent that unloads before the reservation is dispatched cancels it and settles the waiter.
 - A tool end waits for the line's turn end and settles after it; a client end settles without waiting.
 - A turn end publishes the sequence this line's children read; an ended line publishes nothing further.
 
@@ -82,7 +82,7 @@ Flow tests on the owner:
 | Rule | Application |
 | --- | --- |
 | §1 parts and Capabilities | TreeTimeline is one branch part and a Capability: it consumes the line's committed facts and drives the tree's writes; it holds no state of its own and writes no fact. |
-| §2 scopes | Branch scope for the subscription and the unload; the reservation table is the Session's. |
+| §2 scopes | Branch scope for the subscription and the unload; the reservation table and the cap lock are TimelineTree's, in `create`. |
 | §3 orthogonality | It routes facts and touches no other owner's state. |
 | §4 rule 1 | No command; it reacts to committed facts. |
 | §4 rule 2 | The handover is a fact route; the tree writes every resulting fact. |

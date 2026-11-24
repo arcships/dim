@@ -1,6 +1,6 @@
 # Branch TypeScript binding
 
-The Session tree's contract is [TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md): `timelineTree` with `create`, `end`, `set_default`, `directory`, `line` and `read`; no `treeCommands`, `TreeCommands` or `TimelineTreeControl` exists. A part acts on a line's own owners with `line_owner::<T>(line)` ([ADR 027](https://github.com/arcships/dim/pull/2029)). References below to `treeCommands` describe the pre-redesign binding only.
+The Session tree's binding is superseded by the [TimelineTree contract](../architecture/rust-agent/plugins/TimelineTree.md); references below to `treeCommands` describe the pre-redesign binding. A Session part cannot inject a single branch's service, but can read that branch-group data face by line id with `line_owner` ([ADR 027](https://github.com/arcships/dim/pull/2029)).
 
 Status: implemented for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
 [#4](https://github.com/arcships/dim/issues/4), on rutis 0.16.0 `build::Exports`
@@ -32,9 +32,9 @@ ordered consumption.
 | --- | --- |
 | Branch instance and typed keys | The `branch` group instance, nested in its Session's; the catalog keys each name for it (`Names`) |
 | Ordered consumption, handler failures, committed reads | Branch `Dispatcher` (over its `Timeline`) |
-| Input validation and commitment | The line's own input owner, reached with `line_owner::<InputQueue>(line)` |
+| Input validation and commitment | 见 [TimelineTree 契约](../architecture/rust-agent/plugins/TimelineTree.md#session-parts-reaching-a-lines-owners) |
 | Event writes, including extension events | Branch `Timeline` |
-| Line directory, creation and end | Session `timelineTree` ([TimelineTree](../architecture/rust-agent/plugins/TimelineTree.md)) |
+| Line directory, creation and end | 见 [TimelineTree 契约](../architecture/rust-agent/plugins/TimelineTree.md#own-contract) |
 | Activation and closing | `BranchLifecycle` |
 | Branch identity | `TimelineIdentity` |
 
@@ -48,7 +48,7 @@ every instance of that group; a row gets the nearest enclosing instance. Its met
 
 | Name | Group | Rust type | Methods used by parts |
 | --- | --- | --- | --- |
-| `timelineTree` | `session` | `TimelineTree` | `create(request, cancelled)`, `end(request)`, `set_default(line, source)`, `directory()`, `line(id)`, `read(request)` |
+| `timelineTree` | `session` | `TimelineTree` | 见 [TimelineTree 契约](../architecture/rust-agent/plugins/TimelineTree.md#binding-appendix) |
 | `dispatcher` | `branch` | `Dispatcher` | `consume(name, keys, rebuild, handler)`, `listen(name, keys, handler)`, `committed()`, `notify()`, `sequence()`, `changed()` |
 | `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()`. `registerOpening` registers work that branch opening waits for. |
 | `timeline` | `branch` | `Timeline` | `append({type, name, data, tags?})` → the committed event; `query(query)` (the one bounded read, `include_publishing` for the branch's not-yet-published facts), `ancestors()`, `sequence()`, `committed()`, `hasPending()` |
@@ -57,11 +57,8 @@ every instance of that group; a row gets the nearest enclosing instance. Its met
 The data methods were added for this purpose; the existing ones that return handles or take Rust
 closures stay as they are for Rust callers:
 
-- `timelineTree`'s operations address lines by id and return data: a record per line (with
-  `source`, and answered for an ended line as well), the new line's id, and one bounded read of an
-  open or ended line's facts at a cutoff.
-  `create` takes the caller's cancellation explicitly (§Cancellation); `end` is
-  [timeline branches](timeline-branches.md#10-ending-a-line).
+- The tree's operations are the [TimelineTree contract](../architecture/rust-agent/plugins/TimelineTree.md#own-contract):
+  a record per line, the new line's id, and one bounded read of a line's facts at a cutoff.
 - `Dispatcher::listen` is `subscribe` in data form. Its `&Ctx` parameter is the calling row's
   context, so the subscription belongs to that row and ends when it unloads or restarts. The
   handler receives the committed event by value; its throw or rejection is the subscriber's handler
@@ -152,10 +149,9 @@ same-module snapshots, online metadata, disablement and Pending apply unchanged.
 
 ## Open
 
-- ~~**A Session part reading a branch-owned service.**~~ Settled with Goal: a Session part reads
-  no branch state. It writes input by branch id and the branch owner decides; clients read the
-  owner's results as Timeline facts (Goal A.3, A8). A Session part cannot depend on a per-branch
-  service (ADR 002 D3), and none is needed.
+- ~~**A Session part reading a branch-owned service.**~~ Settled: a Session part cannot inject a
+  single branch's service (ADR 002 D3), but it reads that branch-group data face by line id with
+  `line_owner` ([TimelineTree contract](../architecture/rust-agent/plugins/TimelineTree.md#session-parts-reaching-a-lines-owners); [ADR 027](https://github.com/arcships/dim/pull/2029)).
 - **Generator limitations worked around.** rutis' generator resolves a generic alias's item type
   where the alias is defined, so the exported methods spell out `std::result::Result<_, AgentError>`
   instead of the runtime's `Result<_>` ([arcships/rutis#463](https://github.com/arcships/rutis/issues/463)); and, as documented, it
