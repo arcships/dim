@@ -67,7 +67,7 @@ the directory (ADR 013 D4). An absent directory counts as removed.
 detected shell choices, returning the byte revision, optional explicit executable
 and any parse error. `update_exec_shell_settings(expected_revision, executable_path,
 cancel)` validates the selection with the same resolver used by execution, then
-replaces the preference atomically under a FileStorage lease if its byte revision
+replaces the preference atomically with FileStorage's `update` if its byte revision
 still matches. An absent executable selects automatic detection; a malformed
 preference can be repaired using its current revision. Missing files have revision
 `absent`. App Server exposes these operations as trusted local management methods

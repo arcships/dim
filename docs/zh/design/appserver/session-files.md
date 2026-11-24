@@ -12,7 +12,7 @@ SessionStore 为 Session 保存不可变文件。调用方为某个 Session 交�
 - **位置。** 文件位于原生数据库 `<db>`（默认 `dimcode.sqlite`）旁边的 `<db>.session-files/<fileId>/<name>`。这个目录属于该数据库，不属于任何单个 Session。
 - **所有权。** 所有权是控制节点原生存储中的一组行。分叉只增加行，不复制字节；删除 Session 就删除它的行。
 - **移除。** 后台清扫移除最后一个所有者行已消失的文件，以及目录中没有任何行记录的东西。
-- **FileStorage。** S5a 只新增一个操作 `create_directory`。共享不需要建链接的操作。
+- **FileStorage。** 本节由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 取代。共享不需要建链接的操作。
 - **格式。** 原生存储升级到 15 版，新增两张表；v13 存储在启动时原地升级。
 - **接口。** Attachments 通过进程服务 `sessionFiles` 使用它。
 - **读取。** 模型像读其他文件一样用 `read` 读取这些文件：所有权无需授权即可满足文件范围，但不绕过工具准入（§11）。
@@ -223,23 +223,7 @@ put 作为 SessionStore 自己的任务运行：调用方不再等待就会取�
 
 ## 7. FileStorage 新增操作
 
-**只新增 `create_directory`。** 共享靠行（§4），FileStorage 不需要建链接或引用计数的操作。删除、列目录和持久写入已经有了：S6 的 `remove` 和 `list`，以及带权限参数的 `replace`。S6 评审已同意在 S5a 中加入 `create_directory`。
-
-`create_directory(path, cancel) -> ()`：让授权根目录下的 `path` 成为一个已存在的业务目录。
-
-| 规则 | 内容 |
-| --- | --- |
-| 父目录 | 除最后一个之外的每个组成部分都按 `open_directory` 的方式打开：不跟随链接到达的已有目录，且不是保留目录。父目录缺失时以 `Io` `NotFound` 失败；不递归创建，调用方按层依次创建 |
-| 保留名 | `path` 已经按名字拒绝保留前缀 `.dim-file-storage-` 和 `auth.json.lock`（`InvalidPath`） |
-| 别名 | 在创建任何东西之前，按 `lock` 的方式检查别名。先确保父目录中的保留目录存在，这样文件系统视为等同的任何拼写都已存在。然后确保该保留目录中有 `auth.json.lock` 的锁键，并在最后一个组成部分的锁键存在时打开它；二者是同一个文件时，名字就是账户标记的别名，调用以 `InvalidPath` 失败 |
-| 创建 | 最后一个组成部分不存在时，相对已持有的父目录句柄创建：Unix 用 `mkdirat`，模式 `0700`；Windows 用 `NtCreateFile` 加 `FILE_CREATE` 和 `FILE_DIRECTORY_FILE`，继承父目录的 DACL |
-| 已存在 | 已存在的目录按 `open_directory` 的方式打开，所以保留目录的别名以 `InvalidPath` 失败。已存在的业务目录视为创建成功，正如 S6 的 `remove` 把不存在的条目视为已删除。其他已存在的条目（文件、链接、重解析点、特殊文件）以 `Io` 失败且不被改动；从不跟随链接 |
-| 持久性 | 无论是新建还是已存在，返回前都同步父目录，所以 `Unsynced` 之后的重试能确认持久性。同步失败时返回 `Unsynced`（目录存在且可见，持久性未确认）；它的消息从"file replaced"推广到也涵盖目录。Windows 没有目录同步，与 `replace` 相同 |
-| 根目录 | 不能指名根目录本身：`path` 要求相对名称 |
-| 取消 | 一直检查到创建为止，创建就是提交边界；创建之后报告同步结果 |
-| 错误 | `InvalidPath`、`Io`（父目录 `NotFound`、已存在的非目录条目、其他 I/O）、`Unsynced`、`Closed`、`Cancelled`、`Worker` |
-
-别名检查从不为新目录的名字创建锁键，所以 put 不会在永不删除的 `<db>.session-files/.dim-file-storage-locks` 中留下锁键（设计变更 D1）。该操作位于 FileStorage 自己的模块内，与 `list`、`remove` 并列，使用相同的代次准入。FileStorage 的插件页记录了它。
+本节由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 取代。
 
 ## 8. 存储格式
 
@@ -486,7 +470,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 5. FileStorage 未激活：`node_unavailable`；什么都不写；SessionStore 和 Attachments 保持加载。
 6. 在 txn 2 之前取消：不拥有任何文件；目录被清扫。文件名无效（包括 `AUTH.JSON`）或内容超过 16 MiB：`invalid` 或 `too_large`；什么都不写。
 7. 空库建为 v15。一次性 v13 库原地升级为精确的 v15 结构，所有业务行不变，再次打开时为 v15。执行升级的那次打开报告升级，§8 的日志行由此而来；再次打开不报告。分支专用 v14 和未知结构被拒绝并保留。
-8. FileStorage 流程：`create_directory` 以 `0700` 创建并同步父目录；已存在的目录成功；父目录缺失以 `NotFound` 失败。保留名、保留目录的大小写别名，以及（在大小写不敏感的文件系统上）`auth.json.lock` 的大小写别名，都以 `InvalidPath` 失败且不创建任何东西。已存在的文件或链接被拒绝且不改动。创建前取消则什么都不创建。
+8. FileStorage 流程：`create_directory` 创建整棵树（`0700`）并同步父目录；已存在的目录成功；任一层是链接则以 `invalid` 失败。保留名、保留目录的大小写别名，以及（在大小写不敏感的文件系统上）`auth.json.lock` 的大小写别名，都以 `InvalidPath` 失败且不创建任何东西。已存在的文件或链接被拒绝且不改动。创建前取消则什么都不创建。
 9. 读取准入，经由 Session 的工具路径：`put` 之后，在产品默认的 `workspace-write` 和 `read-only` 下，该 Session 对返回路径的 `read` 返回内容；分支不写 `approval/request`，它的权限状态（版本和策略）不变。拒绝读取另一个 Session 的文件或数据库目录属于 §11.1 事实之外读取询问的验收：两者都不在该 Session 的事实中。
 
 测试：第 1、3（未知 Session）、5、6（名字、大小、已取消的调用）、4、9 项是经由 `sessionFiles` 的流程测试，位于 [session_files_flow.rs](../../../../crates/dim-app-server/tests/session_files_flow.rs)；第 2 项，以及写入与 txn 2 之间的第 3、6 项，在 [files/tests.rs](../../../../crates/dim-app-server/src/storage/files/tests.rs) 中运行 S5c 的分叉步骤和该处的钩子；第 7 项是 [storage_flow.rs](../../../../crates/dim-app-server/tests/storage_flow.rs) 中的 `a_v13_store_upgrades_in_place_once`、`the_daemon_reports_a_v13_upgrade_on_stderr_once` 和拒绝用例；第 8 项是 [file_storage_flow.rs](../../../../crates/dim-agent-capabilities/tests/file_storage_flow.rs) 中的 `directory_creation_stays_inside_the_authorized_root`。
@@ -499,7 +483,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 
 | # | 变更 | 原因 |
 | --- | --- | --- |
-| D1 | `create_directory` 确保 `auth.json.lock` 的锁键存在，对新名字的锁键只打开、不创建，不再带创建地打开两个锁键（§7） | 带创建地打开锁键会留下以目录命名的锁键文件，而 FileStorage 只在删除其父目录时才删除锁键。`<db>.session-files` 永远不会被删除，所以每次 put 都会在那里永久留下一个锁键。已存在的账户标记别名仍会解析到标记的锁键，检查结果不变 |
+| D1 | 账户标记的锁键处理由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 定义；`create_directory` 不为新名字创建锁键（§7） | 永远不会被删除的目录若留下以它命名的锁键文件，就会一直留着。契约的标记与私有锁键保留同样的别名检查，又不为目录名留下锁键 |
 | D2 | P3 之前，put 不读取资源节点。Session 是否存在由 txn 1 判定，它在 FileStorage 查找之后，所以 FileStorage 未激活时，未知 Session 得到 `node_unavailable`（§5.1） | `SessionConfig.resourceNode` 还不存在，txn 1 之前的读取只会重复 txn 1 的检查。P3 在查找之前加入节点读取 |
 | D3 | 在本代次的一次清扫在该节点上完成之前，每次 put 都安排清扫，而不只是第一次 put（§5.4） | 否则因节点不可用而中止的第一次清扫，要等到放弃或释放才会重试；完成一次清扫后便不再多发请求 |
 
@@ -536,7 +520,7 @@ FileStorage：
 
 ```rust
 impl FileStorage {
-    pub async fn create_directory(self: &Arc<Self>, path: &FilePath, cancel: &CancellationToken)
-        -> Result<()>;
+    pub async fn create_directory(&self, path: String, cancelled: CancelledFn)
+        -> Result<String, FileError>;
 }
 ```

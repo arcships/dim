@@ -20,7 +20,7 @@ history quotes it and history never changes.
   rows instead of copying bytes. Deleting a Session removes its rows.
 - **Removal.** A background sweep removes files whose last owner row is gone, and anything in the
   directory that no row records.
-- **FileStorage.** S5a adds one operation, `create_directory`. Sharing needs no link operation.
+- **FileStorage.** This section is superseded by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md). Sharing needs no link operation.
 - **Format.** The native store moves to version 15, with two new tables. A v13 store is upgraded
   in place at startup.
 - **Interface.** Attachments reaches the store through the process service `sessionFiles`.
@@ -309,30 +309,7 @@ creates the fork. SQLite orders those transactions, so no in-memory lock is need
 
 ## 7. FileStorage additions
 
-**`create_directory` is the only addition.** Sharing is by rows (§4), so FileStorage needs no
-link or reference-count operation. Removal, listing and durable writes already exist: S6's
-`remove` and `list`, and `replace` with its permissions parameter. The S6 review agreed to add
-`create_directory` in S5a.
-
-`create_directory(path, cancel) -> ()`: makes `path`, below an authorized root, an existing
-business directory.
-
-| Rule | Content |
-| --- | --- |
-| Parent | Every component but the last is opened as `open_directory` opens it: an existing directory reached without following links, never the reserved directory. A missing parent fails `Io` `NotFound`; there is no recursive creation, and callers create each level in order |
-| Reserved names | `path` already rejects the reserved prefix `.dim-file-storage-` and `auth.json.lock` by name (`InvalidPath`) |
-| Aliases | Aliases are checked the way `lock` checks them, before anything is created. The parent's reserved directory is ensured first, so any spelling the filesystem equates with it already exists. Then the key for `auth.json.lock` is ensured in that reserved directory and the key for the last component is opened if it exists; if they are the same file, the name is an alias of the account marker and the call fails `InvalidPath` |
-| Create | An absent last component is created relative to the held parent handle: Unix `mkdirat` with mode `0700`; Windows `NtCreateFile` with `FILE_CREATE` and `FILE_DIRECTORY_FILE`, inheriting the parent's DACL |
-| Present | An existing directory is opened as `open_directory` opens it, so an alias of the reserved directory fails `InvalidPath`. An existing business directory counts as created, just as S6's `remove` counts an absent entry as removed. Any other existing entry (file, link, reparse point, special file) fails `Io` and is left untouched; links are never followed |
-| Durability | In both the created and the present case the parent is synced before the call returns, so a retry after `Unsynced` confirms durability. A sync failure returns `Unsynced` (the directory exists and is visible, durability unconfirmed); its message is generalized from "file replaced" to cover directories. Windows has no directory sync, as for `replace` |
-| Roots | A root itself cannot be named: `path` requires a relative name |
-| Cancellation | Checked up to the creation, which is the commit boundary. Once created, the sync result is reported |
-| Errors | `InvalidPath`, `Io` (`NotFound` parent, an existing non-directory entry, other I/O), `Unsynced`, `Closed`, `Cancelled`, `Worker` |
-
-The alias check never creates a key for the new directory's name, so a put leaves no key behind
-in `<db>.session-files/.dim-file-storage-locks`, which is never removed (Design changes, D1). The
-operation lives inside FileStorage's own module, beside `list` and `remove`, and holds the same
-generation admission. FileStorage's plugin page documents it.
+This section is superseded by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md).
 
 ## 8. Storage format
 
@@ -705,8 +682,8 @@ None to the runtime or rutis. Supplements and requirements to other owners:
    schema with every business row unchanged, then reopens as v15. The upgrading open reports
    the upgrade, which the §8 log line comes from; the reopen does not. The branch-only v14 and unknown
    schemas are refused and preserved.
-8. FileStorage flow: `create_directory` creates `0700` and syncs the parent; an existing
-   directory succeeds; a missing parent fails `NotFound`. Reserved names, a case alias of the
+8. FileStorage flow: `create_directory` creates the tree with `0700` and syncs the parent; an existing
+   directory succeeds; a link at any level fails `invalid`. Reserved names, a case alias of the
    reserved directory, and a case alias of `auth.json.lock` (on a case-insensitive filesystem)
    fail `InvalidPath` and create nothing. An existing file or link is refused and untouched.
    Cancellation before creation creates nothing.
@@ -737,7 +714,7 @@ only S5a.
 
 | # | Change | Why |
 | --- | --- | --- |
-| D1 | `create_directory` ensures the key for `auth.json.lock` and only opens the key for the new name, instead of opening both keys with creation (§7) | Opening a key with creation leaves a key file named after the directory, and FileStorage unlinks keys only when it removes their parent. `<db>.session-files` is never removed, so every put would have left one key there for good. An existing alias of the marker still resolves to the marker's key, so the check gives the same answer |
+| D1 | The account marker's key handling is defined by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md); `create_directory` creates no key for the new name (§7) | A key file named after a directory that is never removed would stay for good. The contract's marker and private key keep the same alias check without leaving a key for the directory name |
 | D2 | Before P3, a put reads no resource node. The Session's existence is decided by txn 1, after the FileStorage lookup, so an unknown Session gets `node_unavailable` while FileStorage is not active (§5.1) | `SessionConfig.resourceNode` does not exist yet, so a read before txn 1 would only repeat txn 1's check. P3 adds the node read before the lookup |
 | D3 | Every put schedules a sweep until one sweep of the generation has completed on its node, instead of only the first put (§5.4) | A first sweep stopped by an unavailable node would otherwise wait for an abandon or a release to retry; a completed sweep ends the extra requests |
 
@@ -781,8 +758,8 @@ FileStorage:
 
 ```rust
 impl FileStorage {
-    pub async fn create_directory(self: &Arc<Self>, path: &FilePath, cancel: &CancellationToken)
-        -> Result<()>;
+    pub async fn create_directory(&self, path: String, cancelled: CancelledFn)
+        -> Result<String, FileError>;
 }
 ```
 

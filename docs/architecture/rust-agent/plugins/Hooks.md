@@ -45,7 +45,7 @@ The runtime reads sources when a hook point is evaluated, never at Session
 start: a change to the user's `hooks.json` or to a project document applies to
 the next hook point, and the catalog is recomputed rather than cached. Reading
 is a `S:HookSourcesHost` call, which the App Server binds to Settings and
-`fsHost.readBytes`; a Session whose host binds no sources (the scripted model
+FileStorage's `read`; a Session whose host binds no sources (the scripted model
 assembly) sees an empty catalog. `DIMCODE_HOME` comes from the same port, so a
 Session started by a product daemon passes the daemon's product home into every
 hook command and a Session without one sets nothing.

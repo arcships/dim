@@ -2,7 +2,8 @@
 
 Status: Draft. Issues: [#1295](https://github.com/arcships/dim/issues/1295) (`execHost`),
 [#1296](https://github.com/arcships/dim/issues/1296) (leaf identity and lifecycle),
-[#1297](https://github.com/arcships/dim/issues/1297) (`fsHost`),
+[#1297](https://github.com/arcships/dim/issues/1297) (the file tools),
+[#2016](https://github.com/arcships/dim/issues/2016) (`fsHost`),
 [#1298](https://github.com/arcships/dim/issues/1298) (`store`); parent
 [#1292](https://github.com/arcships/dim/issues/1292). Policy: [service faces](service-faces.md).
 Background: [remote plugins §3–§4](research/remote-plugins.md).
@@ -16,14 +17,16 @@ Resource and state operations use these public data faces:
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
-| `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
+| `fsHost` | This section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). | the file-storage owner | #2016 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
+
+The tool family (`resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`) is the file-tools owner's operations and is not part of `fsHost`; [#1297](https://github.com/arcships/dim/issues/1297) tracks that design. `fsHost` is the storage face of the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md).
 
 
 ```text
  control node                                        resource leaf (mounted per #1296)
-   WorkspaceTools          ── fsHost ─── data ──────►  file operations on node files
+   WorkspaceTools          ── file tools ─ data ─────►  file operations on node files
    exec, ShellSession      ── execHost ─ data ──────►  processes, PTY, output files
    settings, auth, Hooks   ── fsHost ─── data ──────►  the same face, answered locally
    Permission and Approval                            never asked, never decides
@@ -42,7 +45,7 @@ SQLite or PostgreSQL. Whether a face is reachable over a link is decided by depl
 classification on the name.
 
 The public contract and migration rules are in [service faces](service-faces.md) §2.
-For these resource faces, §6 maps `hostPlatform`, `fileStorage`, `sqliteStorage` and `timelineStore`
+For these resource faces, §6 maps `hostPlatform`, `fsHost`, `sqliteStorage` and `timelineStore`
 to their public operations and Rust bindings.
 
 What stays on the control side, in every case: Session and branch scope, admission
@@ -292,7 +295,7 @@ not an agent-reachable operation: no tool maps to it.
   `execHost.removeOutputDirectory {path}` for persistent-shell output. The provider validates
   that the directory is strictly below its `execRoot`, removes it and makes removal durable
   before replying, as required by [ADR 013 D4](../adr/013-command-output-ownership.md#d4-fork-delete-and-growth).
-  An absent directory counts as removed. SessionStore uses `fsHost.remove` for command-output
+  An absent directory counts as removed. SessionStore uses FileStorage's `remove` for command-output
   directories in the FileStorage root.
 - When the link drops, the node's own host ends the processes it started
   ([overview §6.3](overview.md#63-multiple-nodes)), and settlement is the connection's end. A
@@ -339,11 +342,16 @@ client reads and writes them through the node's own management methods, not thro
 | `remove_failed` | Removing a persistent-shell output directory or making the removal durable failed |
 | `cancelled` | The call was cancelled before it changed anything |
 
-## 4. `fsHost`
+## 4. File storage (`fsHost`) and the file tools
+
+The storage family in §4.1 and the error table in §4.7 are superseded by the [FileStorage
+contract](../architecture/rust-agent/plugins/FileStorage.md). The tool-family table in §4.1 and subsections §4.2–§4.5
+belong to the file-tools face, whose name [#1297](https://github.com/arcships/dim/issues/1297)
+settles, and are not part of `fsHost`.
 
 ### 4.1 Methods
 
-Tool family — the file tools' operations, one call each:
+Tool family — the file-tools face's operations, one call each (not `fsHost`):
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
@@ -355,49 +363,7 @@ Tool family — the file tools' operations, one call each:
 | `grep` | async | `{pattern, path, include?, outputMode?, lineNumbers?, limit?, multiline?, literal?, timeoutMs?}` | `{result: ToolResult}` |
 | `mentions` | async | `{path, query, limit?}` | `{candidates}` |
 
-Storage family — the raw operations the other file owners use. They take absolute paths and no
-tool semantics: no line numbers, no images, no effects.
-
-| Method | Mode | Request | Reply |
-| --- | --- | --- | --- |
-| `stat` | async | `{path}` | `{kind: "file" \| "directory" \| "missing" \| "other", size?}` |
-| `readBytes` | async | `{path, limit, leaseId?}` | `{bytes, size}` |
-| `openRead` | async | `{path}` | `{readId, size}` |
-| `readAt` | async | `{readId, offset, limit}` | `{bytes}` |
-| `closeRead` | async | `{readId}` | `{}` |
-| `lock` | async | `{path}` | `{leaseId}` |
-| `unlock` | async | `{leaseId}` | `{}` |
-| `backup` | async | `{leaseId, suffix, permissions?}` | `{}` |
-| `createDirectory` | async | `{path}` | `{}` |
-| `replace` | async | `{path, bytes, permissions?, leaseId?}` | `{}` |
-| `list` | async | `{path}` | `{entries: [{name, kind}]}` |
-| `remove` | async | `{path}` / `{parent, name}` | `{}` |
-
-A listed name passes unchanged to `remove({parent, name})`: a Unicode string, `{Unix: number[]}` for native bytes, or `{Windows: number[]}` for native UTF-16 code units. The owner checks that the name is a single component.
-
-- `readBytes` is the bounded read: `limit` is required, a larger file is `too_large` without
-  partial bytes, and `bytes` is base64. `size` is the file's length, so a caller can tell "done"
-  from "cut".
-- `readBytes` and `replace` accept a `leaseId`: they then read or write through that lease, so a
-  read-modify-write keeps one lock from read to replace. `backup` writes the lease's current bytes
-  to a durable sibling named `<name>.<suffix>`. `unlock` releases the lease; ending the caller's
-  connection releases every lease it held. `permissions` is data — `"private"` (owner-only, 0600
-  on Unix) or `"preserve"` (the existing file's mode) — because the provider's own permission type
-  is an OS object and does not cross; absent means `"preserve"`, as today. `replace` also accepts
-  `"privateReadOnly"` for a newly written Session file (Unix mode `0400`, Windows read-only
-  attribute).
-- `openRead` pins a file for several bounded random reads (`readAt`) and is closed by `closeRead`
-  or the caller's connection. `readAt` retains the existing 64 KiB maximum per
-  call; a larger requested limit is clamped, zero or an offset at/past the pinned
-  length returns empty bytes. UI resource streaming uses these bounded reads. Plugin-file
-  uploads and work directories stay with the host-local
-  [PluginFiles service](../../crates/dim-app-server/README.md#trusted-plugin-storage).
-- `stat` is one path, never a traversal: existence and kind for configuration discovery (a
-  project rule file, a hooks file). It is not a `stat`/`open` primitive API; traversals stay
-  `glob`, `grep` and `mentions`.
-- `createDirectory` creates one directory with the existing rules (mode 0700, an existing one
-  counts as created, the parent must exist), `list` and `remove` serve the Session-file sweep, and
-  `replace` without a lease is the atomic whole-file write.
+Storage family — the raw operations the other file owners use: this section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md).
 
 Only `resolve` takes an unresolved `path`; every other operation takes the node-absolute `path`
 its caller holds (§2 rule 3). `resolve` is what the file facts owner and process preparation
@@ -583,24 +549,13 @@ grant, and tool approval still follows the preset
 
 ### 4.6 Session files and exec output
 
-`sessionFiles.put` uses `createDirectory` and `replace` with `permissions: "privateReadOnly"` to
-store the file on the resource node. It returns a node path and owns the rows under the
+Session files' FileStorage operations are superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). `sessionFiles.put` returns a node path and owns the rows under the
 [Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
 and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 
 ### 4.7 Errors
 
-| Code | When |
-| --- | --- |
-| `node_unavailable` | The provider is not connected. Only this call fails |
-| `invalid` | A relative path, an unbounded request, an id the provider does not hold |
-| `not_found` | A storage operation on a missing path where one is required |
-| `too_large` | A bounded read whose file exceeds `limit`; no partial bytes |
-| `locked` | A `lock` whose lease is held by another call; the retry policy is the caller's |
-| `cancelled` | The call was cancelled before it changed anything |
-
-Operation refusals are not in this table: they arrive as the tool result's own `isError` with the
-code the operation already uses, so one code vocabulary serves the local and the remote path.
+This section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own `isError` with the code the operation already uses.
 
 ## 5. `store` and `timelineStore`
 
@@ -844,7 +799,7 @@ original path argument and ownership exclusion.
 | Old name | Face | What the name is now |
 | --- | --- | --- |
 | `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
-| `fileStorage` | `fsHost` | The provider and its binding: roots, leases, generations and one validated path component per open are its internals |
+| `fileStorage` | `fsHost` | This row is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). |
 | `sqliteStorage` | `sqliteStorage.storageReport({})` | SQLite file, WAL and reclaimable bytes ([native storage](appserver/native-storage-format.md)). Session repository operations belong to `store`. |
 | `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
 
@@ -859,13 +814,13 @@ The owners that read node files or start node processes, and the operations they
 | Owner | Operations |
 | --- | --- |
 | WorkspaceTools file tools | `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions` |
-| SessionStore Session files and command output | `createDirectory`, `replace`, `list`, `remove`, `execHost.removeOutputDirectory` |
-| Settings sources and their CAS writes | `readBytes`, `stat`, `lock`, `readBytes {leaseId}`, `replace {leaseId}`, `unlock` |
-| MCP auth store, managed OAuth and OAuth token stores | `readBytes`, `lock`, `readBytes {leaseId}`, `backup`, `replace {leaseId}`, `unlock` |
-| Hooks project file (`.dimcode/hooks.json`) | `stat`, `readBytes` |
-| PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
-| UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
-| Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
+| SessionStore Session files and command output | `execHost.removeOutputDirectory`; FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| Settings sources and their CAS writes | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| MCP auth store, managed OAuth and OAuth token stores | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| Hooks project file (`.dimcode/hooks.json`) | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`); FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| UI extension resources | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| Migration ledger and snapshots | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
 | Hooks configuration commands | `execHost.configured` |
 | Worktree association | `store.associateWorktree` |
 
@@ -953,10 +908,7 @@ are the PTY primitives the shell already has; `info`, `confined` and `configured
 and starts the platform already performs, including the configuration command Hooks runs.
 `removeOutputDirectory` carries the existing HostPlatform cleanup across the face. Paging by a
 registered output path reuses `output` after the provider releases its task record.
-`fsHost` adds no primitive file API and no per-file traversal: its storage family is the reads and
-leases the node's storage already offers, needed because a path's facts and its bytes cannot be
-read on a machine that does not hold the file; `resolve` is where resolution and the worktree
-probe belong. `store` publishes the repository operations the state owner already has;
+The [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md) adds no primitive file API and no per-file traversal: its operations are the reads, writes, keys and roots the node's storage already offers, needed because a path's facts and its bytes cannot be read on a machine that does not hold the file; `resolve` belongs to the file-tools face (#1297), where resolution and the worktree probe belong. `store` publishes the repository operations the state owner already has;
 `timelineStore` publishes its Timeline operations and completion notifications. StorageMethods reads database and WAL sizes through the native binding of `sqliteStorage.storageReport({})`; plugins can dispatch the same operation. SQLite owns the connections and SQL. `TimelineStore` is the native binding of `timelineStore`.
 Admission stays synchronous and completion keeps the callback's ordering as a notification.
 

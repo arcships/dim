@@ -36,7 +36,7 @@ flow, and the gaps rmcp leaves, three of them MUSTs of the specification (Append
 | [rmcp pin](../../../crates/dim-app-server/Cargo.toml), feature `auth` (`src/transport/auth.rs`) | The `auth` module covers metadata discovery, DCR and CIMD client selection, PKCE and `state`, code exchange with `resource` and `iss`, and refresh with rotation. The `CredentialStore` and `StateStore` traits are pluggable. It shares the reqwest 0.13 already used by the transport | The protocol engine; gaps in Appendix A |
 | Claude Code (`/mcp`, `claude mcp login`, [docs](https://code.claude.com/docs/en/mcp)) | The `oauth` object in `.mcp.json`: `clientId`, `callbackPort`, `authServerMetadataUrl`, `scopes`. Redirect `http://localhost:PORT/callback`; a switch to `127.0.0.1` broke servers that match the registered URI exactly and was reverted. Paste the callback URL when the redirect fails. The client secret is kept out of config. Refresh, then retry once, on `401` | The `oauth` field names and types, the redirect form, the paste fallback, the secret outside config |
 | MCP TypeScript and Python SDKs (`OAuthClientProvider`, `TokenStorage`) | Storage and redirect handling are injected by the host. Credentials carry an issuer stamp and are discarded on mismatch. `invalid_client` clears the registration and `invalid_grant` clears the tokens | Owner-supplied storage, issuer binding, clearing rules |
-| Dim account login (`account.login.browser.begin/complete`, `managed_oauth.rs`, `dim-cli/src/login.rs`) | The daemon returns `{attemptId, authorizationUrl, expiresAt}`. The client sends back the pasted callback URL, read with hidden input. Tokens live in `auth.json` under the home root, through a FileStorage lease with atomic 0600 replace | The attempt shape, paste input, the storage pattern |
+| Dim account login (`account.login.browser.begin/complete`, `managed_oauth.rs`, `dim-cli/src/login.rs`) | The daemon returns `{attemptId, authorizationUrl, expiresAt}`. The client sends back the pasted callback URL, read with hidden input. Tokens live in `auth.json` under the home root, through FileStorage's `claim`/`update` with atomic 0600 replace | The attempt shape, paste input, the storage pattern |
 
 ## 3. Structure
 
@@ -89,8 +89,9 @@ source or the Session (§10 D8).
 - **Self-contained.** The record carries the token and revocation endpoints and the client's
   authentication method, so refresh and sign-out need no new discovery. A record is written when
   an attempt completes, with its client and tokens; an abandoned attempt leaves nothing.
-- **Write path.** A write takes the store's FileStorage lock, re-reads the file, replaces only its
-  own key's record and atomically replaces the file with mode 0600. On Windows the file keeps the
+- **Write path.** A write runs FileStorage's `update` on the file key: the change re-reads the
+  file, replaces only its own key's record, and the owner atomically replaces the file with mode
+  0600. On Windows the file keeps the
   FileStorage DACL handling. A replace that is in place but whose sync failed counts as written:
   readers already see it, and a crash that loses it ends like the kill in §7.
 - **Token requests hold the lock.** A code exchange, refresh or revocation holds that lock from
