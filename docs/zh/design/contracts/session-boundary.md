@@ -170,7 +170,7 @@ sequenceDiagram
 | ADR 002 D2 | 不新增端口或 Management 插件；方法命名空间注册到其作用域的方法表，工具注册到拥有本 Session 工具的 ToolRegistry。 |
 | ADR 002 D3 | 提供方只依赖自身或外层作用域，包括它注册时用的方法表。方法表与 ToolRegistry 跟随注册与撤回，不依赖注册的部件（A.1、A.5）；Rpc 既不依赖管理方法提供方（§3.2），也不依赖 Session 方法提供方（A.1），因此它们的重载只影响自己的命名空间。 |
 | ADR 002 D4 | 链接的管理方法导出是宿主本地的结构性配置；本文不定义业务配置。 |
-| ADR 002 D5 | 每个服务都有名称、作用域和纯数据方法，任何语言的部件都用同样的数据和自己的函数（`call`、`execute`）注册方法命名空间或工具；Rust 类型只出现在各表自己的绑定里（Session 表见 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)）。已实现的绑定是这些结构的一个子集（A.1）。 |
+| ADR 002 D5 | 每个服务都有名称、作用域和纯数据方法，任何语言的部件都用同样的数据和自己的函数（`call`、`execute`）注册方法命名空间或工具；Rust 类型只出现在各所有者自己的绑定里：Session 表见 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)，进程表见其契约（[#2021](https://github.com/arcships/dim/issues/2021)），工具见 ToolRegistry 的绑定。已实现的绑定是这些结构的一个子集（A.1）。 |
 
 ## 9. 向机制所有者提出的需求
 
@@ -539,6 +539,6 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 
 `Callers` 是 CallChannel 和 Rpc 行通过 Rust 类型键共享的私有传输装配，不登记服务目录名称；公开操作面仍是 `callChannel`。`Callers` 是进程内唯一的调用方索引：按行实例保存该代际声明的通知名称，该实例的连接关闭后仍保留，因此先判定 `Undeclared` 再看连接状态；并按行实例与连接保存该连接的直接写入端与该行按 `callId` 记录的未完成调用。方法表的受理在调用的 sink、实例与提供方声明都可用的位置生成其他语言调用的 `callId` 并记录该调用；`Connection::answer` 在回复写出后移除它。连接关闭、受理该调用的 Rpc 代际卸载或该行代际卸载时删除该连接的条目；声明的名称随该实例的代际一起删除。原生提供方保留自己的 `Caller`，不记录任何内容。App Server 以进程服务 `callChannel`（`ForeignCallChannel`，位于 `host_key("callChannel")`，由无依赖的 `CallChannel` 行提供）向其他语言提供 A.2 的 `callChannel`：其 `notify` 与 `closed` 用 `rutis_bridge::session::caller_row()` 读取调用行的实例，并最终落在 Rust 绑定所用同一次调用的 sink 上，两种绑定共用一条送达路径。
 
-外来注册经各自表的分发器：Session 表的是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)，进程表的是它自己的契约（[#2021](https://github.com/arcships/dim/issues/2021)）。两者都一次性解码声明，并以调用方的函数调用同一个 `register`；`ForeignMethods` 离开。两种绑定都未实现：最终回复交接、`origin.entry` 与 `origin.peer`。声明的 `reply` 字段接受并忽略。
+外来注册经各自表的分发器：Session 表的是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)，进程表的是它自己的契约（[#2021](https://github.com/arcships/dim/issues/2021)）。两者都一次性解码声明，并以调用方的函数调用同一个 `register`；`ForeignMethods` 离开。两种绑定都未实现：最终回复交接。声明的 `reply` 字段接受并忽略。
 
 `ToolContribution` 与 `ToolHandler` 是 `dim-agent-capabilities/src/tool_registry.rs` 中的原生类型。`ToolRegistry::register(ctx, ToolContribution)` 代表拥有 `ctx` 的部件注册，直到该部件卸载；它拒绝不满足 `[A-Za-z0-9_-]{1,64}` 的名称、宿主工具名和已被注册的名称。其他语言经 ToolRegistry 的分发器访问 `toolRegistry`：`register(declaration, execute, options?)` 把声明解码为 `ToolDefinition` 一次，要求 `risk` 非空，并代表调用方行（桥的 `caller_row`）注册一个经桥回调 `execute` 的 `ToolHandler`。`options.concurrency` 取 `'concurrent'` 或缺省；它不属于声明，因为这个类别是绑定后处理器的执行属性，所以落盘的 `ToolDefinition` 形状不变。缺省表示该工具的调用单独执行，按调用顺序。该处理器持有调用方行的代次令牌：行开始卸载后，经保留的处理器发起的调用不会发出，在途调用以错误结束，错误提示它可能已经生效，不会改绑到新的代次；外部所有者仍负责结算其 JavaScript 工作。每次执行派生自己的子取消令牌，单个工具正常完成不会取消同批其他工具。

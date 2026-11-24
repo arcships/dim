@@ -26,7 +26,7 @@ Callers keep:
 | Rpc dispatches one call to the namespace that holds it | No: the lookup, the caller identity, the interruption and the withdrawn-row answer are the owner's | `call` |
 | `session.methods` lists what a Session serves | No: the declarations and the namespace that owns each are the owner's | `methods` |
 | The caller learns why a registration was refused | Yes: `register` answers `duplicate` or `invalid`; a separate check would race the next registration | Business |
-| Rpc routes a name between management and Session | Yes: the process table answers its own `call` and `held_namespaces`; Rpc reads `sessionId` | Business |
+| Rpc routes a name between management and Session | Yes: the process table answers its own `call` and `heldNamespaces`; Rpc reads `sessionId` | Business |
 | A provider notifies its caller | Yes: a native handler has the call's `Caller`, and a handler of another language has `{connectionId, callId}` for `callChannel` (#2021) | Business |
 | A process-side caller holding a Session asks the table in process, as WebEntry's upload entry does | Yes: the same `call` without a site | Business |
 
@@ -98,9 +98,9 @@ let listed = declarations.into_iter().filter(|decl| {
 | Service | Purpose |
 | --- | --- |
 | `P:reservedMethods` (optional) | The host's reserved names, consulted at registration. It is an `Option<Key<ReservedMethods>>` the factory fills only when the assembly names it; a host that names none reserves only the name grammar. |
-| `P:loaderRows` (proposed dim-owned process face) | The loader row that registered a withdrawn namespace: `status {row}` answers `{found, status?, copies?}`. `found: false` when no row has that id, which the table answers as `unknown_method`; otherwise `status` is the row's own state and `copies: [{instance, status}]` gives each copy's state with its instance, from which the table picks this Session's copy before answering `reloading` or `unavailable`. The face does not exist yet; §4 rule 8 raises it, and App Server's loader row is its provider. |
+| `P:loaderRows` (proposed dim-owned process face) | The loader row that registered a withdrawn namespace: `status {row}` answers `{found, status?, copies?}`. `found: false` when no row has that id, and a disabled row answers so too, both of which the table answers as `unknown_method`; otherwise `status` is the row's own state and `copies: [{instance, status}]` gives each copy's state with its instance, from which the table picks this Session's copy before answering `reloading` or `unavailable`. The face does not exist yet; §4 rule 8 raises it, and App Server's loader row is its provider. |
 
-The process table (#2021) serves the same `MethodCall`, `MethodReply` and `MethodError` data — its `call` takes the admission's `CallSite` and its `MethodCall.origin` carries the `Caller`, with this contract, recorded on #2021 — and answers `held_namespaces` so Rpc routes a name and filters `session.methods` by A.1's routing precedence.
+The process table (#2021) serves the same `MethodCall`, `MethodReply` and `MethodError` data — its `call` takes the admission's `CallSite` and its `MethodCall.origin` carries the `Caller`, with this contract, recorded on #2021 — and answers `heldNamespaces` (Rust `held_namespaces`) so Rpc routes a name and filters `session.methods` by A.1's routing precedence.
 
 ### Operations
 
@@ -110,7 +110,7 @@ The process table (#2021) serves the same `MethodCall`, `MethodReply` and `Metho
 | `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}` | `cancelled` settles when the caller's load unloads (Rpc's, or the process part's for an in-process call); the table then interrupts the call: `report` answers `interrupted` and settles, `drain` replies with its own result. The provider's generation unload interrupts the same way. A caller that stops waiting drops the future and the accepted call continues; a disconnect cancels nothing. The progress sink is a binding parameter too | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `closed` |
 | `methods` | The declarations registered now | `{}` | `{methods}` | None | `closed` |
 
-`register`'s declarations follow A.1: at least one method; each name inside the namespace and unique; each declared notification inside the namespace, unique across the set and never a method's name. A declaration that breaks them is `invalid`; so is one the host refuses, including a declared notification that takes a built-in notification's name.
+`register`'s declarations follow A.1: at least one method; each name equal to or inside the namespace, and unique; each declared notification inside the namespace, unique across the set and never a method's name. A declaration that breaks them is `invalid`; so is one the host refuses, including a declared notification that takes a built-in notification's name.
 
 `register` is data plus the caller's function on the wire, `methods` is data, and `call` is the owner's in-process operation. In Rust each reply is a `Result`: `register` is `Result<(), MethodError>`, `call` is `Result<MethodReply, MethodError>`, and `methods` is `Result<Vec<MethodDecl>, MethodError>`. `{}` is the empty reply, `{methods}` the declaration vector, and `{reply}` the `MethodReply`. Rpc wraps a `MethodError` in its envelope; `MethodReply`'s own error is the handler's data and is not a table failure.
 
@@ -202,10 +202,10 @@ Flow tests on the owner:
 - [session boundary A.1](../contracts/session-boundary.md#a1-method-contributions): the `MethodTable`/`MethodProvider`/`Accepted` shapes and the Session table's `owner`/`provider`/`holds`/`listed` readers are replaced by `register`, `call` and `methods`; `Caller`, `CallSite` and `Callers` stay the binding's, stated below and in A.2; the `MethodCall`, `MethodReply` and `MethodError` shapes of A.1's interface block are defined in `crate::methods` as stated here, and A.1 links to them.
 - [session boundary Appendix F](../contracts/session-boundary.md#appendix-f-rust-binding): its `Handler`, `MethodCall`/`Origin` and foreign `register` decode are this contract's [binding below](#binding-appendix), and Appendix F links here. `MethodProvider`, `Check`, `Owner`, the Session table's `MethodTable` storage and the `SessionMethods` deref leave; Appendix F keeps what CallChannel, ManagementMethods (its own storage and read) and ToolRegistry bind.
 
-No method changes and no new error kinds. A handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Five client-visible failure changes:
+No existing client method changes and no error kind is removed. The table adds one wire read, `sessionMethods.methods`, and new `appError` values appear inside existing kinds. A handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Five client-visible failure changes:
 
 - A withdrawn Session namespace whose registering row is absent from the loader answers `unknown_method`; today `session_provider` falls through to `service_reloading` (`crates/dim-app-server/src/methods.rs:240-249`), which retrying could not fix. A disabled row already answers `unknown_method`.
-- A native handler's failure without an application code carries `appError: "failed"` under the service rule (`-32000`); today it is `-32603` with none (`crates/dim-agent-capabilities/src/methods.rs:153,206`).
+- A native handler's failure without an application code keeps `-32603` and gains `appError: "failed"`; today it carries no `appError` (`crates/dim-agent-capabilities/src/methods.rs:153,206`).
 - A malformed foreign reply carries `appError: "bad-value"` with `-32000`; today it is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:917`).
 - A foreign handler that throws an error without an application code now carries that error's name as `appError` with `-32000`; today it is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:843-853`).
 - A callback failure whose error never reached the bridge keeps `-32603` and gains `appError: "failed"` (`crates/dim-agent-capabilities/src/methods.rs:905-918`).
