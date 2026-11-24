@@ -84,7 +84,7 @@ The host's process-by-id operations are a target of #2032; they are stated in Re
 | --- | --- | --- | --- | --- | --- |
 | `adopt` | Take over supervision of a command the host started | `{taskId, description, title?, outputPath}` | `()` | The caller drops the call: nothing was adopted, and the host's process is killed | `closed`, `unknown_task` (the host has no live task with this id), `failed` (the `exec/started` fact could not be committed; nothing was adopted and the process is killed) |
 | `output` | The running task's tail preview | `{taskId}` | `String` | The caller drops the call; the read stops | `unknown` (no such task, or the task has ended), `closed` |
-| `output_page` | One bounded page of the registered output file; a stateless offset read, with no pin or release | `{taskId, cursor, limit}` | `OutputPage` | The caller drops the call; the read stops | `unknown`, `unavailable`, `invalid_limit`, `read` (the task facts could not be read or are inconsistent), `closed` |
+| `output_page` | One bounded page of the registered output file; a stateless offset read, with no pin or release | `{taskId, cursor, limit}` | `OutputPage` | The caller drops the call; the read stops | `unknown`, `unavailable`, `invalidLimit`, `read` (the task facts could not be read or are inconsistent), `closed` |
 | `wait` | Wait until the task's terminal is dispatched | `{taskId, timeoutMs}` | `ExecEndedData` | The caller drops the call; the wait releases and nothing changes | `unknown`, `timeout`, `read`, `closed`, `cancelled` |
 | `stop` | Cancel a running task and answer its terminal | `{taskId}` | `ExecEndedData` | None: an admitted stop settles | `unknown`, `read`, `closed` |
 
@@ -97,7 +97,7 @@ The host's process-by-id operations are a target of #2032; they are stated in Re
 | `unknown_task` | `adopt` | No | The host has no such task; nothing was adopted and the command is not supervised. |
 | `unknown` | `output`, `output_page`, `wait`, `stop` | No | This line has no such task; do not retry. `output` also answers `unknown` for an ended task, whose file stays readable by `output_page`. |
 | `unavailable` | `output_page` | No | The registered file is gone (cleaned or its Session deleted); report the loss, do not retry. |
-| `invalid_limit` | `output_page` | No | Use a limit of at least one byte. |
+| `invalidLimit` | `output_page` | No | Use a limit of at least one byte. |
 | `read` | `output_page`, `wait`, `stop` | Yes | The task facts could not be read or are inconsistent; retry the read; if it persists, the task's record is damaged and the caller reports a fault. |
 | `timeout` | `wait` | Yes | The task is still running; wait again or stop it. |
 | `failed` | `adopt` | Yes, by the exec tool retrying the launch | The `exec/started` fact could not be committed; nothing was adopted; the process is killed. |
@@ -121,7 +121,7 @@ The host's process-by-id operations are a target of #2032; they are stated in Re
 The published `backgroundExec` face ([WorkspaceTools plugin page](../../architecture/rust-agent/plugins/WorkspaceTools.md#data-face)) keeps `output`, `output_page`, `wait` and `stop` with their published shapes, and `start` stays off the face. The changes, which the maintainer is asked to confirm:
 
 - `adopt({taskId, description, title?, outputPath})` is new (additive); the exec tool uses it after the host starts the process.
-- Error codes change case with the standard binding spelling: `invalidLimit` becomes `invalid_limit`; `read` is kept; `unknown_task`, `failed` and `cancelled` are new.
+- The published codes `unknown`, `closed`, `unavailable`, `invalidLimit`, `read` and `timeout` are kept; the Appendix's explicit `invalidLimit` rename is what keeps that one, and `unknown_task`, `failed` and `cancelled` are new.
 - `output` keeps its published promise: a running task's live tail preview, `unknown` once the task ends; `output_page` keeps reading the registered file for every state.
 - No client RPC, notification name, request field or model-visible text changes.
 
@@ -144,7 +144,7 @@ Flow tests on the owner:
 - A command moved to the background ends once, its terminal is written once, and the line wakes once; a stop cancels it without a wake; a branch close cancels it without a wake.
 - A reload writes failed terminals for unfinished commands, rebuilds every ended task with its output path, posts the wakes the previous generation lost, and refuses a new adoption; a Session close settles the hold.
 - A historical task answers `output_page` and `stop` after a reload; `output` is `unknown` for it; `wait` answers its terminal at once.
-- The tail preview and the pages read the artifact in every state of the task; a page's cursor advances by its bytes; a limit of zero is `invalid_limit`; a deleted file is `unavailable`; a failed task-fact read is `read`.
+- The pages read the artifact in every state of the task, and the tail preview only while the task runs; a page's cursor advances by its bytes; a limit of zero is `invalidLimit`; a deleted file is `unavailable`; a failed task-fact read is `read`.
 - `wait` answers an ended task at once, times out for a running task, and releases when dropped or cancelled; `adopt` answers `unknown_task` for an id the host does not have and `unknown` answers the other operations for a task this line does not know.
 - The face and the Rust call answer the same previews, pages, terminals and errors.
 
@@ -237,6 +237,7 @@ pub enum BackgroundError {
     #[error("the task's output file is no longer available")]
     Unavailable,
     #[error("limit must be at least 1")]
+    #[serde(rename = "invalidLimit")]
     InvalidLimit,
     #[error("the task facts could not be read: {reason}")]
     Read { reason: String },

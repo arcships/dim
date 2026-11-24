@@ -296,8 +296,8 @@ impl ToolBinding {
     pub async fn bind(&self, request: BindRequest) -> Result<(), BindingError> { /* ... */ }
     pub fn adopted(&self, request_id: String) -> Result<Adopted, BindingError> { /* ... */ }
     pub async fn claim(&self, request: ClaimRequest) -> Result<(), BindingError> { /* ... */ }
-    pub fn release(&self, request_id: String) { /* ... */ }
-    pub fn retain_only(&self, request_id: String) { /* ... */ }
+    pub fn release(&self, request_id: String) -> Result<(), BindingError> { /* ... */ }
+    pub fn retain_only(&self, request_id: String) -> Result<(), BindingError> { /* ... */ }
     pub fn transfer(&self, request: TransferRequest) -> Result<(), BindingError> { /* ... */ }
 }
 ```

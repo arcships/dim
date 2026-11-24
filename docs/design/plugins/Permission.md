@@ -80,9 +80,9 @@ The file-access facts operation that resolves the target is a target of #2093; i
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `decide` | One call's outcome | `{call, risk?, source?}` | `DecisionReply` | The caller's token stops the facts or advice read; the decision is not made | `cancelled`, `failed`, `closed` |
-| `update` | Versioned policy write | `{expectedVersion, policy}` | `u64` (the new version) | None; one commit | `conflict`, `failed`, `closed` |
-| `advise` | Register tool advice for the calling row's lifetime | `caller: &Ctx`, `name`, callback | `()` | None | `duplicate`, `closed` |
+| `decide` | One call's outcome | `{call, risk?, source?}` | `DecisionReply` | The caller's token stops the facts or advice read; the decision is not made | `Cancelled`, `Failed`, `Closed` |
+| `update` | Versioned policy write | `{expectedVersion, policy}` | `u64` (the new version) | None; one commit | `Conflict`, `Failed`, `Closed` |
+| `advise` | Register tool advice for the calling row's lifetime | `caller: &Ctx`, `name`, callback | `()` | None | `Duplicate`, `Closed` |
 | `PermissionState` (published value) | Read the policy and its version | — | `{version, policy}` | None | — |
 
 `risk` is the tool owner's declaration (`read_filesystem`, `write_filesystem`, `execute_process`, `network`, `session`, or absent). `source` is present exactly for an admission; the owner asks the advisors only then, and `advisorQuestion` says whether an advisor required an explicit answer, so a policy change can end a policy question but never an advisor's.
@@ -93,35 +93,35 @@ The policy is the preset and `allowedTools`/`disallowedTools`. A deny from the t
 
 | Kind | Operation | Retryable | What the caller does next |
 | --- | --- | --- | --- |
-| `cancelled` | `decide` | No | The call's batch was cancelled; do not run the call. |
-| `failed` | `decide`, `update` | Yes, by a later attempt | A fact or rule read failed, or the `permission/changed` fact could not be committed; nothing was decided or written; the owner reports a fault; `decide`'s caller does not run the call, and `update`'s caller re-reads the version and may retry. |
-| `closed` | any | No, in this generation | The generation is closing or reloading; stop; a later generation serves. |
-| `conflict` | `update` | Yes, after re-reading | Re-read the version from `PermissionState` and decide whether to retry the update with the new base. |
-| `duplicate` | `advise` | No | The name is taken; choose another name. The registration stays until the row unloads. |
+| `Cancelled` | `decide` | No | The call's batch was cancelled; do not run the call. |
+| `Failed` | `decide`, `update` | Yes, by a later attempt | A fact or rule read failed, or the `permission/changed` fact could not be committed; nothing was decided or written; the owner reports a fault; `decide`'s caller does not run the call, and `update`'s caller re-reads the version and may retry. |
+| `Closed` | any | No, in this generation | The generation is closing or reloading; stop; a later generation serves. |
+| `Conflict` | `update` | Yes, after re-reading | Re-read the version from `PermissionState` and decide whether to retry the update with the new base. |
+| `Duplicate` | `advise` | No | The name is taken; choose another name. The registration stays until the row unloads. |
 
-An unreadable fact or rule is not a decision: the owner reports `failed`, because the caller's next step is to retry or fail the turn, not to treat the call as denied. An advisor's failure counts as no advice: its code and message are not forwarded, and the owner decides on its own result.
+An unreadable fact or rule is not a decision: the owner reports `Failed`, because the caller's next step is to retry or fail the turn, not to treat the call as denied. An advisor's failure counts as no advice: its code and message are not forwarded, and the owner decides on its own result.
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `decide` | Read the policy, resolve the target and read the facts, read the rules for a command, ask the advisors for an admission, combine and answer | The facts or advice read stops; `cancelled`; nothing changes | The decision's future is the caller's; no resource is held | Refused with `closed`; an in-flight decision ends `closed` | Permission; the facts read by the facts owner |
-| `decide` — a fact or rule read fails | Answer `failed`; nothing is decided | — | — | — | Permission |
-| `update` | Commit `permission/changed` when the expected version matches, answer the new version once dispatched | None | The write is admitted or not; nothing to release | Refused with `closed` | Permission and the Timeline |
+| `decide` | Read the policy, resolve the target and read the facts, read the rules for a command, ask the advisors for an admission, combine and answer | The facts or advice read stops; `Cancelled`; nothing changes | The decision's future is the caller's; no resource is held | Refused with `Closed`; an in-flight decision ends `Closed` | Permission; the facts read by the facts owner |
+| `decide` — a fact or rule read fails | Answer `Failed`; nothing is decided | — | — | — | Permission |
+| `update` | Commit `permission/changed` when the expected version matches, answer the new version once dispatched | None | The write is admitted or not; nothing to release | Refused with `Closed` | Permission and the Timeline |
 | `advise` | Register the callback under the name against the calling row | None | The row's unload withdraws the registration | Every registration of the generation is withdrawn | Permission |
 
 ## Client-visible changes
 
 The published `permission` face ([Permission plugin page](../../architecture/rust-agent/plugins/Permission.md#permission-data-face)) publishes `check(call, risk, cancelled) -> {decision} | {decision, reason}` with errors `Failed`/`Cancelled`. It is replaced as follows, and the maintainer is asked to confirm:
 
-- `check` is removed; `decide({call, risk?, source?}, cancelled)` answers `{outcome: "allow"|"ask"|"deny", reason?, advisorQuestion}`. The admission case (advisors, source) moves into the same operation, so Approval no longer calls two operations.
+- `check` is removed; `decide({call, risk?, source?}, cancelled)` answers `DecisionReply` (`outcome`, `reason?`, `advisorQuestion`). The admission case (advisors, source) moves into the same operation, so Approval no longer calls two operations.
 - `update` and `advise` are new on the face; `PermissionState` keeps its `{version, policy}` shape.
-- Error codes change case with the standard binding spelling: `Failed`/`Cancelled` become `failed`/`cancelled`; `conflict` and `duplicate` are new.
+- The published codes `Failed` and `Cancelled` are kept, and `Closed`, `Conflict` and `Duplicate` are added; the Appendix's `PascalCase` rename is what keeps them, so a caller matches the same strings as before.
 - The only caller of `check` is Approval, which this PR migrates; no client RPC, notification name, request field or model-visible text changes.
 
 ## Exceptions with reasons
 
-- A branch part registers a callback (`advise`): §7 allows a callback by reference; the owner never calls it inside the Timeline's commit lock, and the calling row's unload withdraws it.
+- A branch part registers a callback (`advise`): the callback is a direct parameter and a function value (`rutis::FromFunction`), so the bridge carries it as a function and the method needs no `#[service(skip)]`; the owner never calls it inside the Timeline's commit lock, and the calling row's unload withdraws it. The current code's `#[service(skip)]` on `register_advice` is removed by this contract.
 - The policy value is published as a read-only view: Approval subscribes to it to recheck a waiting call, and the App Server reads it for the client; neither reads Permission's internals.
 
 ## Supersedes
@@ -135,9 +135,9 @@ Flow tests on the owner:
 
 - Presets decide by risk; `allowedTools` and `disallowedTools` refine the preset and a deny wins; an explicit disallow, a deny rule and a file denial are not lifted by an allow.
 - A file call asks when its resolved target is outside the workspace; a read or write fact denial refuses the call; a command rule denies under every preset and an allow rule only answers an ask for a simple command.
-- An admission asks the advisors in name order; an ask refines an allow; a deny wins over an ask and an allow; a recheck asks no advisor; a registration is withdrawn when its part unloads; a second registration of the same name is `duplicate`.
-- An update with a stale version is `conflict` with the current version; a dispatched change is visible to the next decision and survives a reload; a failed append answers `failed` and writes nothing.
-- A failed fact read answers `failed`, not a denial.
+- An admission asks the advisors in name order; an ask refines an allow; a deny wins over an ask and an allow; a recheck asks no advisor; a registration is withdrawn when its part unloads; a second registration of the same name is `Duplicate`.
+- An update with a stale version is `Conflict` with the current version; a dispatched change is visible to the next decision and survives a reload; a failed append answers `Failed` and writes nothing.
+- A failed fact read answers `Failed`, not a denial.
 - The published value's version is the last local change; the face and the Rust call answer the same decision.
 
 ## Rule check
@@ -262,7 +262,7 @@ pub type AdviseFn = std::sync::Arc<
 >;
 
 #[derive(Debug, serde::Serialize, thiserror::Error)]
-#[serde(tag = "code", rename_all = "snake_case")]
+#[serde(tag = "code", rename_all = "PascalCase")]
 pub enum PermissionError {
     #[error("the decision was cancelled")]
     Cancelled,

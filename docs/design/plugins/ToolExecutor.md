@@ -128,7 +128,7 @@ Flow tests on the owner:
 - A program that returns early still has its child effects merged; a `close` before the program ends answers the confirmed effects, and the same effects appear once in the parent result.
 - An interrupt cancels a running child and refuses a new gate; a reload settles an open child and open parent, and a reload-settled result fails the turn.
 - A dropped `invoke` ends with `cancelled` and leaves the child's fact recording the child's cancellation; the gate still accepts the program's next call; a child's own failure is `Ok(ToolResult { is_error: true })`.
-- `open` refuses a parent call that is not in the current batch and a second batch while one runs; `gate_closed` answers a call after the parent settled.
+- `open` refuses a parent call that is not in the current batch and a second batch while one runs; a call from another row is `gate_closed` for `invoke` and `close`, because the gate id is bound to the row that opened it; `gate_closed` answers a call after the parent settled.
 - The same operations over the face and in process answer the same results and errors.
 
 ## Rule check

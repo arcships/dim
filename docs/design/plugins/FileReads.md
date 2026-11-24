@@ -42,8 +42,8 @@ let binding = reads.binding(BindingRequest {
     purpose: Purpose::Write,
 }).await?; // Closed, Failed
 match binding {
-    BindingReply::Bound(binding) => { /* preserve encoding and line endings; check the revision */ }
-    BindingReply::Unavailable(reason) => {
+    BindingReply::Bound { binding } => { /* preserve encoding and line endings; check the revision */ }
+    BindingReply::Unavailable { reason } => {
         return Ok(text_binding_required(reason)); // the model re-reads or edits
     }
 }
@@ -154,7 +154,7 @@ Flow tests on the owner:
 ## Requirements raised to mechanism owners
 
 - **Cross-scope access ([ADR 027](https://github.com/arcships/dim/pull/2029), [#2127](https://github.com/arcships/dim/issues/2127), target).** A Session part reaches a line's data face by line id with `line_owner::<T>(line)`. The file tools use it to reach `binding` and `record`; FileReads adds no forwarding operation.
-- **File-tool codec ([#2103](https://github.com/arcships/dim/pull/2103), target).** The codec's `TextEncoding`, `EncodingSource`, `Bom`, `Eol` and `TextFileBinding` are not wire data (`TextEncoding::Legacy` holds an `encoding_rs` reference and `raw_revision` is `[u8; 32]`). The codec owner provides the mapping to the DTOs below: the encoding label (`utf-8`, `utf-16le`, `utf-16be`, or the requested legacy name lowercased), the revision as lowercase hex, and the three enums as their snake-case names; or derives serde on them with the same wire values. This owner does not change the codec.
+- **File-tool codec ([#2103](https://github.com/arcships/dim/pull/2103), target).** The codec's `TextEncoding`, `EncodingSource`, `Bom`, `Eol` and `TextFileBinding` are not wire data (`TextEncoding::Legacy` holds an `encoding_rs` reference and `raw_revision` is `[u8; 32]`). The codec owner provides an explicit mapping to the DTOs below: the encoding label as the codec's current `utf8`, `utf16le`, `utf16be` or the requested legacy name lowercased; the revision as lowercase hex; `EncodingSource` as `bom`, `user` or `utf8Policy` (the codec's `utf8-policy` label maps to `utf8Policy`); and `Bom`/`Eol` as their camelCase wire names. `TextEncoding::Legacy` holds an `encoding_rs` reference, so deriving serde on the codec types is not a substitute; the mapping is the contract. This owner does not change the codec.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix
@@ -184,7 +184,7 @@ pub struct BindingRequest {
 pub struct TextFileBinding {
     /// Lowercase hex of the SHA-256 of the raw file bytes.
     pub revision: String,
-    /// The codec's label: "utf-8", "utf-16le", "utf-16be", or the requested
+    /// The codec's label: `utf8`, `utf16le`, `utf16be`, or the requested
     /// legacy name lowercased.
     pub encoding: String,
     pub encoding_source: EncodingSource,
