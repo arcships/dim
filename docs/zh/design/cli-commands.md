@@ -367,7 +367,7 @@ Goal cleared on main.
 ## Loop
 
 `/loop` 按节奏重复一个 prompt，并读取 Scheduler 保存的 loop。记录、轮次与节奏属于
-[Scheduler §12](plugins/Scheduler.md#12-loop)；本节只规定原生客户端怎么用它。命令与 `/goal` 一起列在面板里。
+[Scheduler](plugins/Scheduler.md)；本节只规定原生客户端怎么用它。命令与 `/goal` 一起列在面板里。
 
 | 形式 | 调用 |
 | --- | --- |
@@ -748,7 +748,7 @@ Hooks（#809）：`/hooks` 面板与 `dimcode hooks list|enable|disable|edit|set
 
 ### Scheduler 领域
 
-Scheduler（#815）：`/scheduled` 面板，`/schedule` 在两种模式下都是它的别名，以及 `dimcode scheduled list|enable ID|disable ID|edit ID|set ID PATH|add PATH|remove ID|run ID|history ID`，经 `schedule.list`、`schedule.save`、`schedule.delete`、`schedule.set_enabled`、`schedule.run_now` 与 `schedule.history`（[Scheduler §A.3](plugins/Scheduler.md#a3-管理方法)）。每个任务是条目：名称是标签，调度、下次窗口、上次投递、目标与停用原因是详情。目标行说明任务在哪里投递——session 目标是 `Delivers to Session {session} branch {branch} ({mode}).`，launch 目标是 `Launches a new Session in {cwd}.`。所有者无法使用其调度的任务标记为无效，详情带上所有者的消息；已停用的任务说明没有下次窗口，所有者因目标消失而停用的任务另加 `Disabled: {code} at {instant}.`。所有者不报告分组，所以任务共用 `jobs` 一个分组。
+Scheduler（#815）：`/scheduled` 面板，`/schedule` 在两种模式下都是它的别名，以及 `dimcode scheduled list|enable ID|disable ID|edit ID|set ID PATH|add PATH|remove ID|run ID|history ID`，经 `schedule.list`、`schedule.save`、`schedule.delete`、`schedule.set_enabled`、`schedule.run_now` 与 `schedule.history`（[Scheduler](plugins/Scheduler.md)）。每个任务是条目：名称是标签，调度、下次窗口、上次投递、目标与停用原因是详情。目标行说明任务在哪里投递——session 目标是 `Delivers to Session {session} branch {branch} ({mode}).`，launch 目标是 `Launches a new Session in {cwd}.`。所有者无法使用其调度的任务标记为无效，详情带上所有者的消息；已停用的任务说明没有下次窗口，所有者因目标消失而停用的任务另加 `Disabled: {code} at {instant}.`。所有者不报告分组，所以任务共用 `jobs` 一个分组。
 
 任务的文档就是所有者写入的那条记录；客户端只改动 `schedule.save` 接受的字段——`name`、`schedule`、`prompt` 与 `target`——并把 id 放在 Save 动作上、把任务的 revision 作为草稿读取时的 revision。`schedule.save` 是合并到已存任务上的补丁，所以一次编辑只写入草稿改动的成员：适配器重新读取该任务，草稿的 revision 不再等于任务的就拒绝，然后带着 id 与 revision 只发送改动的成员。没有改动任何可编辑成员的草稿不写入；草稿删除的成员无法清除，因为补丁没有 null：写入在发送前就被拒绝，并指出该成员。例外是 `target`，草稿省略时更新保留已存值，所以编辑不能改变任务的目标。revision 过期就是 `schedule_conflict`，即类型化的冲突：什么都不写，重新读取任务，下次编辑打开当前记录。`created_by`、`enabled_at` 与 `disabled_reason` 由所有者推导，客户端从不发送；启用与暂停是 `schedule.set_enabled`，不是一次保存。新条目从所有者的创建形态开始——一个名称、一个 `every` 示例调度、一个提示词与一个目标——以不带 revision 的 `schedule.save` 写入。`inspect` 就是 `history`：任务最近的投递，最新的在前，带所有者记录的状态。
 
@@ -1025,7 +1025,7 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode hooks edit` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开用户 Hook 文档，并以 `hooks.catalog` 报告的 revision 经 `hooks.save` 写回；交互式编辑需要终端。 |
 | `dimcode hooks set PATH` | 从 `PATH`（`-` 表示 stdin）读取用户 Hook 文档并写入，用写入前紧邻读到的 revision；内容没有变化时不写入。 |
 | `/hooks` | 打开会话所在工作区的 Hooks 面板（[管理界面](#管理界面)）：每个来源一个条目，项目来源提供 toggle，用户文档提供 edit。 |
-| `dimcode scheduled list` | 经 `schedule.list` 列出 Scheduler 持有的任务（[Scheduler](plugins/Scheduler.md#a3-管理方法)）：每个任务的 id、名称、计划、状态、下一次窗口、上次投递与目标，然后是计划无法被 owner 使用的任务。 |
+| `dimcode scheduled list` | 经 `schedule.list` 列出 Scheduler 持有的任务（[Scheduler](plugins/Scheduler.md)）：每个任务的 id、名称、计划、状态、下一次窗口、上次投递与目标，然后是计划无法被 owner 使用的任务。 |
 | `dimcode scheduled enable\|disable ID` | 经 `schedule.set_enabled` 启用或暂停单个任务，然后再次报告任务。 |
 | `dimcode scheduled edit ID` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开单个任务的文档，并以列表报告的 revision 经 `schedule.save` 写回；交互式编辑需要终端。 |
 | `dimcode scheduled set ID PATH` | 从 `PATH`（`-` 表示 stdin）读取单个任务的文档并写入，用写入前紧邻读到的 revision；内容没有变化时不写入。 |

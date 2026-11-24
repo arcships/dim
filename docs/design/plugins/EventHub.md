@@ -32,7 +32,7 @@ Callers keep:
 | A source's guide changes | No: the digest and the refresh at the next delivery are the owner's | inside `publish` |
 | A subscribed Session is deleted | No: the notice and the reconciliation are the owner's | internal |
 | The model manages its own Session's subscriptions | No: the tool maps to the same operations with its own Session | the `events` tool |
-| The scenario-eval harness manages a Session's subscriptions | No: the management namespace is removed; the harness reads the process service | `subscribe`, `list` |
+| The scenario-eval harness manages a Session's subscriptions | No: the management namespace is removed and the producer face has no subscription operations; the harness drives the `events` tool | the `events` tool |
 
 An operation or parameter exists only where its row says No.
 
@@ -77,30 +77,26 @@ The `events` tool manages its own Session. The branch defaults to the calling to
 
 ```rust
 let created = hub
-    .subscribe(SubscribeRequest {
-        target: SubscribeTarget { session_id: identity.session_id.clone(), branch_id: Some(branch) },
-        types: vec!["im.*".into()],
-        matches: None,
-        mode: Some(InputMode::Steer),
-        origin: Origin::Tool,
-    })
+    .subscribe(
+        &ctx,
+        SubscribeRequest {
+            target: SubscribeTarget { session_id: identity.session_id.clone(), branch_id: Some(branch) },
+            types: vec!["im.*".into()],
+            matches: None,
+            mode: Some(InputMode::Steer),
+            origin: Origin::Tool,
+        },
+        cancelled,
+    )
     .await?;
-let own = hub.list(ListRequest { session_id: Some(identity.session_id.clone()) });
+let own = hub.list(&ctx, ListRequest { session_id: identity.session_id.clone() });
 ```
 
-The scenario-eval harness reads the process service directly; it no longer uses a management namespace.
+The scenario-eval harness drives the `events` tool; the producer face has no subscription operations.
 
 ```rust
-let hub = server.service::<EventHub>();
-hub.subscribe(SubscribeRequest {
-    target: SubscribeTarget { session_id: session.clone(), branch_id: Some("main".into()) },
-    types: vec!["im.*".into()],
-    matches: None,
-    mode: None,
-    origin: Origin::Client,
-})
-.await?;
-let all = hub.list(ListRequest { session_id: None });
+// The harness's scripted model calls `events { action: "subscribe", ... }`;
+// the producer `eventHub` face only declares and publishes.
 ```
 
 ## Own contract
@@ -116,16 +112,18 @@ let all = hub.list(ListRequest { session_id: None });
 
 ### Operations
 
+The public producer face `eventHub` has `declare` and `publish`. The other four operations are the owner's in-process operations used by the `events` tool; they are not on the producer face, so a producer row cannot create, remove or enumerate subscriptions.
+
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `declare` | Make a source addressable under the calling row | `{source, guide, types}` | `{}` | None; the owner completes the in-memory insert | `duplicate_source`, `invalid_declaration` |
-| `publish` | Deliver one event to every matching branch and explicit target | `{source, type, id?, title?, body, attributes?, to?}` | `{eventId, deliveries}` | None; accepted work completes | `unknown_source`, `unknown_type`, `too_large`, `invalid_event` |
+| `declare` | Make a source addressable under the calling row | `{source, guide, types}` | `{}` | None; the owner completes the in-memory insert | `duplicate_source`, `invalid_declaration`, `invalid_params`, `no_caller_row` |
+| `publish` | Deliver one event to every matching branch and explicit target | `{source, type, id?, title?, body, attributes?, to?}` | `{eventId, deliveries}` | None; accepted work completes | `unknown_source`, `unknown_type`, `too_large`, `invalid_event`, `invalid_params`, `no_caller_row` |
 | `sources` | The declared catalog as stored now | `{}` | `{sources}` | None | none |
-| `subscribe` | Create one subscription and write the source's guide to the branch | `{target, types, match?, mode?, origin}` | `{subscriptionId}` | Before the guide write; the record is stored only after the guide commits | `unknown_type`, `limit_reached`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `rejected`, `ambiguous`, `failed`, `publication_unknown`, `transport`, `storage` |
-| `unsubscribe` | Remove one subscription and retire the guide when no remaining subscription names the source | `{subscriptionId}` | `{}` | Before the record removal | `subscription_unknown`, `storage` |
-| `list` | The subscriptions of one Session, or every subscription | `{sessionId?}` | `{subscriptions}` | None | none |
+| `subscribe` | Create one subscription and write the source's guide to the branch | `{target, types, match?, mode?, origin}` | `{subscriptionId}` | Before the guide write; a committed guide stores the record even when its publication is unknown | `unknown_type`, `limit_reached`, `invalid_params`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `rejected`, `ambiguous`, `failed`, `transport`, `storage`, `cancelled` |
+| `unsubscribe` | Remove one subscription and retire the guide when no remaining subscription names the source | `{subscriptionId}` | `{}` | Before the record removal | `subscription_unknown`, `invalid_params`, `storage` |
+| `list` | One Session's subscriptions | `{sessionId}` | `{subscriptions}` | None | `invalid_params` |
 
-`origin` is data: `tool` for the `events` tool and `client` for a client or the harness. The tool always supplies its own Session id; the branch defaults to its calling branch. `publish` takes the target branch ids as data and never a Session handle. `to` is 0 to 16 targets; zero targets reply `deliveries: []`.
+`origin` is data: `tool` for the `events` tool and `client` for a client. The tool always supplies its own Session id and the owner refuses a target Session that is not the calling Session part's; the branch defaults to its calling branch. `publish` takes the target branch ids as data and never a Session handle. `to` is 0 to 16 targets; zero targets reply `deliveries: []`.
 
 ### Errors
 
@@ -133,14 +131,16 @@ let all = hub.list(ListRequest { session_id: None });
 | --- | --- |
 | `duplicate_source` | Another row holds the source; pick another source or stop declaring |
 | `invalid_declaration` | Fix the source, guide or type bounds |
+| `invalid_params` | Fix the request shape or a field outside its bound |
+| `no_caller_row` | The foreign call's row could not be resolved; the caller retries from a registered row |
 | `unknown_source` | The calling row holds no such source; declare it first or publish another source |
 | `unknown_type` | The source does not declare the type now; fix the type or declare it |
 | `too_large` / `invalid_event` | Fix the body or fields; the event was not delivered |
-| `unknown_type` (subscribe) | Fix the pattern or declare the source |
 | `limit_reached` | Remove a subscription first; 32 per Session, 1024 in total |
 | `session_closed` / `branch_missing` / `branch_ended` | The target cannot take input; fix the target |
-| `reloading` / `rejected` / `ambiguous` / `failed` / `publication_unknown` / `transport` | The `sessions` call's answer; the subscription is stored only after a committed guide, `publication_unknown` included |
+| `reloading` / `rejected` / `ambiguous` / `failed` / `transport` | The `sessions` call's answer; a committed guide stores the record and replies its id; `rejected` carries the `sessions` code in `reason` |
 | `storage` | The subscription file was not written; the in-memory set is unchanged |
+| `cancelled` | The call stopped before the guide write; nothing was stored |
 | `subscription_unknown` | No such subscription of the calling Session; read `list` first |
 
 ### Flows
@@ -166,13 +166,13 @@ EventHub must distinguish a deleted Session from a close that keeps its rows. `s
 ## Supersedes
 
 - `docs/design/plugins/EventHub.md` sections 1–10 and Appendices B–E (the old feature design) are replaced by this contract; A.4 and A.6 remain as the published model-visible texts.
-- `docs/design/service-faces.md` §3.2's `eventHub`/`eventSubscriptions` rows and §4's `eventSubscriptions` section: one `eventHub` face with the six operations; `eventSubscriptions` is gone.
+- `docs/design/service-faces.md` §3.2's `eventHub`/`eventSubscriptions` rows and §4's `eventSubscriptions` section: the producer face `eventHub` has `declare`/`publish`; the subscription operations are the `events` tool's in-process operations; `eventSubscriptions` is gone.
 - `docs/design/plugin-contract.md` §5.3's `agent/session-deleted` and `eventhub/ready` rows: §9.1 and the ready exception here.
 - `docs/design/overview.md` §3's EventHub paragraphs, `docs/design/typescript-plugin-authoring.md`'s EventHub paragraph, and the `eventHub`/`eventSubscriptions` catalog and README rows.
 
 ## Client-visible changes
 
-- `eventhub.*` is removed. No shipped client called it; the `xtask scenario-eval` harness migrates to the process `eventHub` service.
+- `eventhub.*` is removed. No shipped client called it; the `xtask scenario-eval` harness drives the `events` tool. The producer face has `declare` and `publish` only; subscription management is not exposed to producer rows.
 - The `events` tool and the published A.4/A.6 texts are unchanged; their model-visible text and assertions stay.
 
 ## Verification
@@ -203,13 +203,15 @@ Flow tests on the owner:
 | §4 rule 7 | The dependencies are the operations above; no caller reads the owner's state. |
 | §4 rule 8 | The Agents notice is the mechanism requirement in §9.1; the rest is the owner's. |
 | §4 rule 9 | No Timeline event; subscriptions, the catalog and the failure record are the owner's own state. |
-| §7.2 ids, one face | The face is `eventHub`; `declare`/`publish` take the binding's `caller: &Ctx`, not a request field. The operations cross by data; a Session, branch, subscription or event is an id or value. |
+| §7.2 ids, one face | The producer face is `eventHub`; `declare`/`publish` take the binding's `caller: &Ctx`, not a request field. The subscription operations are the `events` tool's in-process operations on the same owner. The operations cross by data; a Session, branch, subscription or event is an id or value. |
 | §7.2 no proxy | The `events` tool is a registration point, not a facade: it maps the model's actions to the owner's operations. |
 | ADR 002 D1 | Process for the catalog, subscriptions and delivery; Session for the entry and tool. |
 | ADR 002 D2 | No wiring plugin: the service is on the `EventHub` type; the `events` tool and guide entry are the owner's own Session part. |
 | ADR 002 D3 | EventHub depends on core process services; no core part depends on EventHub. |
 | ADR 002 D4 | The row's enablement is PluginManager's; subscriptions are business state in the owner's file. |
 | ADR 002 D5 | The contract is data and ids; the Rust binding is the appendix. |
+
+§7.2 is the rule text of [#2029](https://github.com/arcships/dim/pull/2029) (open, head `da6f4a950`); this contract is reviewed against that head.
 
 ## Requirements raised to mechanism owners
 
@@ -225,14 +227,13 @@ The service is marked on the `EventHub` owner type; the wire name stays `eventHu
 
 ```rust
 use dim_agent_runtime::PublicService;
-use rutis::host::BoxFuture;
 use rutis::Ctx;
-use std::sync::Arc;
+use std::collections::BTreeMap;
 
 pub type SubscriptionId = String;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TypeDeclaration {
     pub r#type: String,
     pub description: String,
@@ -240,37 +241,72 @@ pub struct TypeDeclaration {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeclareRequest {
+    pub source: String,
+    pub guide: String,
+    pub types: Vec<TypeDeclaration>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublishRequest {
+    pub source: String,
+    pub r#type: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub body: String,
+    #[serde(default)]
+    pub attributes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub to: Vec<ToTarget>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToTarget {
     pub session_id: String,
+    #[serde(default)]
     pub branch_id: Option<String>,
+    #[serde(default)]
     pub mode: Option<dim_agent_types::InputMode>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubscribeRequest {
+    pub types: Vec<String>,
+    #[serde(default, rename = "match")]
+    pub matches: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub target: SubscribeTarget,
+    #[serde(default)]
+    pub mode: Option<dim_agent_types::InputMode>,
+    #[serde(default)]
+    pub origin: Origin,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscribeTarget {
+    #[serde(default)]
     pub session_id: String,
+    #[serde(default)]
     pub branch_id: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscriptionTarget {
-    pub session_id: String,
-    pub branch_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UnsubscribeRequest {
     pub subscription_id: SubscriptionId,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListRequest {
-    pub session_id: Option<String>,
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -288,6 +324,18 @@ pub struct SubscribeReply {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SourcesReply {
+    pub sources: Vec<Source>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionsReply {
+    pub subscriptions: Vec<Subscription>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Source {
     pub source: String,
     pub guide: String,
@@ -300,7 +348,7 @@ pub struct Subscription {
     pub id: SubscriptionId,
     pub types: Vec<String>,
     #[serde(default, rename = "match")]
-    pub matches: Option<std::collections::BTreeMap<String, String>>,
+    pub matches: Option<BTreeMap<String, String>>,
     pub target: SubscriptionTarget,
     pub mode: Option<dim_agent_types::InputMode>,
     pub origin: Origin,
@@ -310,48 +358,22 @@ pub struct Subscription {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubscriptionTarget {
+    pub session_id: String,
+    pub branch_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LastFailure {
     pub code: String,
     pub at: String,
 }
 
-pub type Sources = Vec<Source>;
-pub type Subscriptions = Vec<Subscription>;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeclareRequest {
-    pub source: String,
-    pub guide: String,
-    pub types: Vec<TypeDeclaration>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PublishRequest {
-    pub source: String,
-    pub r#type: String,
-    pub id: Option<String>,
-    pub title: Option<String>,
-    pub body: String,
-    pub attributes: std::collections::BTreeMap<String, String>,
-    pub to: Vec<ToTarget>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscribeRequest {
-    pub target: SubscribeTarget,
-    pub types: Vec<String>,
-    #[serde(rename = "match")]
-    pub matches: Option<std::collections::BTreeMap<String, String>>,
-    pub mode: Option<dim_agent_types::InputMode>,
-    pub origin: Origin,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Origin {
+    #[default]
     Tool,
     Client,
 }
@@ -359,28 +381,75 @@ pub enum Origin {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum Delivery {
-    Delivered { session_id: String, branch_id: String, subscription_ids: Vec<String>, input_id: String, sequence: u64, truncated: Option<bool>, repeated: Option<bool> },
-    Gone { session_id: String, branch_id: String, subscription_ids: Vec<String>, code: String },
-    Failed { session_id: String, branch_id: Option<String>, subscription_ids: Vec<String>, code: String, message: String },
+    #[serde(rename_all = "camelCase")]
+    Delivered {
+        session_id: String,
+        branch_id: String,
+        subscription_ids: Vec<String>,
+        input_id: String,
+        sequence: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        truncated: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeated: Option<bool>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Gone {
+        session_id: String,
+        branch_id: String,
+        subscription_ids: Vec<String>,
+        code: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Failed {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch_id: Option<String>,
+        subscription_ids: Vec<String>,
+        code: String,
+        message: String,
+    },
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
-#[serde(rename_all = "camelCase")]
-#[error("{code}: {message}")]
-pub struct EventHubError {
-    pub code: String,
-    pub message: String,
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum EventHubError {
+    #[error("{message}")] InvalidDeclaration { message: String },
+    #[error("{message}")] DuplicateSource { message: String },
+    #[error("{message}")] NoCallerRow { message: String },
+    #[error("{message}")] UnknownSource { message: String },
+    #[error("{message}")] UnknownType { message: String },
+    #[error("{message}")] TooLarge { message: String },
+    #[error("{message}")] InvalidEvent { message: String },
+    #[error("{message}")] InvalidParams { message: String },
+    #[error("{message}")] LimitReached { message: String },
+    #[error("{message}")] SubscriptionUnknown { message: String },
+    #[error("{message}")] SessionClosed { message: String },
+    #[error("{message}")] BranchMissing { message: String },
+    #[error("{message}")] BranchEnded { message: String },
+    #[error("{message}")] Reloading { message: String },
+    #[error("{reason}: {message}")] Rejected { reason: String, message: String },
+    #[error("{message}")] Ambiguous { message: String },
+    #[error("{message}")] Failed { message: String },
+    #[error("{message}")] Transport { message: String },
+    #[error("{message}")] Storage { message: String },
+    #[error("{message}")] Cancelled { message: String },
 }
 
+/// Producer face: a producer row can declare and publish, nothing else.
 #[rutis::service]
 impl EventHub {
     pub async fn declare(&self, caller: &Ctx, request: DeclareRequest) -> Result<(), EventHubError>;
     // The request is received before the future is returned; a dropped reply does not stop the accepted work.
     pub fn publish(&self, caller: &Ctx, request: PublishRequest) -> impl std::future::Future<Output = Result<Receipt, EventHubError>> + Send + '_;
-    pub fn sources(&self) -> Sources;
-    pub async fn subscribe(&self, request: SubscribeRequest) -> Result<SubscribeReply, EventHubError>;
-    pub async fn unsubscribe(&self, request: UnsubscribeRequest) -> Result<(), EventHubError>;
-    pub fn list(&self, request: ListRequest) -> Subscriptions;
+}
+
+/// Session part: the `events` tool calls these in process; they are not on the producer face.
+impl EventHub {
+    pub(crate) fn sources(&self) -> SourcesReply;
+    pub(crate) async fn subscribe(&self, caller: &Ctx, request: SubscribeRequest, cancelled: dim_agent_capabilities::host::CancelledFn) -> Result<SubscribeReply, EventHubError>;
+    pub(crate) async fn unsubscribe(&self, caller: &Ctx, request: UnsubscribeRequest) -> Result<(), EventHubError>;
+    pub(crate) fn list(&self, caller: &Ctx, request: ListRequest) -> SubscriptionsReply;
 }
 ```
 

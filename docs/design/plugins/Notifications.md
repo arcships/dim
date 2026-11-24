@@ -36,7 +36,7 @@ flowchart LR
 
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
-| `Notifications` | Session (installed only when enabled) | Session broadcast of its Session, TimelineTree, `SessionConfig`; process services Settings business source and SessionStore title metadata; listens (no dependency) to Scheduler's `scheduled_run_outcomes` event; Session service `sessionMethods` | Registers `notify` (risk `outbound_message`) with `toolRegistry`; registers `notifications` (`notifications.test`) with `sessionMethods`; trigger names `turn.completed`, `turn.failed`, `approval.pending`, `question.pending`, `schedule.ended`; business document `notifications` |
+| `Notifications` | Session (installed only when enabled) | Session broadcast of its Session, TimelineTree, `SessionConfig`; process services Settings business source and SessionStore title metadata; listens (no dependency) to Scheduler's `scheduled_run_outcomes` event (historical: the Scheduler target contract removes it); Session service `sessionMethods` | Registers `notify` (risk `outbound_message`) with `toolRegistry`; registers `notifications` (`notifications.test`) with `sessionMethods`; trigger names `turn.completed`, `turn.failed`, `approval.pending`, `question.pending`, `schedule.ended`; business document `notifications` |
 
 The Session broadcast, TimelineTree and `SessionConfig` are existing typed services; the Settings business source and SessionStore title metadata are supplements ([overview Appendix B.2](../overview.md#b2-app-server-process-plugins)). Exposing these services by name to the TypeScript implementation is issue [#4](https://github.com/arcships/dim/issues/4)'s work, stated in [session-access §9](../contracts/session-access.md#9-requirements-raised-to-mechanism-owners); listening to Scheduler's event by name across languages is a rutis requirement stated in [Scheduler](Scheduler.md). Run outcomes arrive as an event notice, not a dependency ([ADR 002 D2](../../adr/002-plugin-scope.md#d2-no-wiring-modules)): without Scheduler the `schedule.ended` trigger is inert. A reload of Settings or SessionStore reloads Notifications and, through `notify`, ToolRegistry and its dependents; this is accepted ([D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)). The `notifications` document is business configuration ([D4](../../adr/002-plugin-scope.md#d4-structural-configuration-and-business-configuration-are-separate)): read at use time, never a reload.
 
@@ -175,7 +175,7 @@ Event-triggered notifications have no model-visible effect.
 | --- | --- | --- |
 | `notify {message, channel?}` | Tool registered with `toolRegistry` (Session), risk `outbound_message` | Model-initiated message to a configured channel |
 | `notifications.test {sessionId, channel?}` | `sessionMethods` (Session, namespace `notifications`) | Send a fixed test message to a configured channel |
-| `scheduled_run_outcomes` | Process event listened to (Scheduler's contract; no dependency) | `schedule.ended` trigger |
+| `scheduled_run_outcomes` | Process event listened to (historical; the Scheduler target contract removes it) | `schedule.ended` trigger |
 | `notifications` document | Business configuration, Settings user scope, read at use | Channels, triggers, delays |
 
 Channels are tested with `notifications.test`, a Session method, not a management method (A9).

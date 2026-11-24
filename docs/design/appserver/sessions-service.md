@@ -501,7 +501,7 @@ An `inputId` the branch does not hold answers `false`; that covers both an id th
 
 `{sessionId}` → `{defaultBranchId}`; errors `rejected`, `session_closed`, `reloading`, `failed`.
 
-The read answers the line the Session's conversation is on: the tree's current default, read from its owner (`TreeCommands::default_branch`) after the Session is acquired, so an idle-unloaded Session is restored for the answer as for §6.10. It reads no history page and writes no event. It exists for the request-side defaults that name no line: a management `schedule.save` that records the default branch for a new job ([Scheduler](plugins/Scheduler.md)), and the `loops`, `wakeups` and EventHub faces when a request omits a branch ([timeline branches §20.22](../timeline-branches.md#20-acceptance)). A caller resolves it once per request.
+The read answers the line the Session's conversation is on: the tree's current default, read from its owner (`TreeCommands::default_branch`) after the Session is acquired, so an idle-unloaded Session is restored for the answer as for §6.10. It reads no history page and writes no event. It exists for the request-side defaults that name no line: a management `schedule.save` that records the default branch for a new job ([Scheduler](../plugins/Scheduler.md)), and `session.loop.*`, the `wakeup` tool and `eventHub.subscribe` when a request omits a branch ([timeline branches §20.22](../timeline-branches.md#20-acceptance)). A caller resolves it once per request.
 
 ## 7. Sequence
 

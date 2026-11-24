@@ -102,7 +102,7 @@ Plugins never add wiring plugins (ADR 002 D2). Each need maps to a mechanism tha
 | Client method about a Session | A namespace registered with the Session's `sessionMethods`, which Rpc dispatches through the Session ([A.1](contracts/session-boundary.md#a1-method-contributions)) | Questions, Goal, SessionTitle, Attachments, ShellInput, InputQueue (`session.input.withdraw`) |
 | Host management method | A namespace a process plugin registers with `managementMethods`, looked up by Rpc per call | Existing management methods, Settings (business configuration, `settings.read`/`settings.update`/`settings.sources`/`settings.projects`, S8b, implemented), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RemoteGateway |
 | Reach other Sessions | Agents' `sessions` service (`launch`, `input`, `history`, `idle`, ...), as Collaboration does ([session access](contracts/session-access.md#a1-the-sessions-service)) | Scheduler, Workflow |
-| Hand an event to the Sessions that subscribed to it | The process service `eventHub`, which delivers each event through Agents' `sessions` service ([EventHub](plugins/EventHub.md)) | Producers: IM, SaaS and CI notifications, timers, other agents; a Session's `events` tool and clients' `eventhub.*` methods subscribe |
+| Hand an event to the Sessions that subscribed to it | The process service `eventHub`, which delivers each event through Agents' `sessions` service ([EventHub](plugins/EventHub.md)) | Producers: IM, SaaS and CI notifications, timers, other agents; the Session `events` tool subscribes; no client subscription method ships |
 
 ```mermaid
 flowchart LR
@@ -166,7 +166,7 @@ Index of plugin design documents: [plugins/README.md](plugins/README.md).
 | Goal | Session + branch | Goal state folded from `goal:objective` and `goal:status` input blocks; continuation; `goal_update`; `session.goal.*` | P2 | Rust | [Goal](plugins/Goal.md) |
 | Web | Session | `web_search`, `web_fetch` | P2 | TypeScript first | [Web](plugins/Web.md) |
 | Hooks | Process + Session + branch | Command hooks in Dim's own configuration, with a Claude Code / Codex compatible document shape and script protocol, attached to business owners: Permission (pre-tool advice), Approval (permission requests), the operator-input entries (prompt check), branch inputs (post-tool, Stop, Session start) | M1 | Rust | [Hooks](plugins/Hooks.md) |
-| Scheduler | Process + Session | Scheduled jobs; `schedule` tool; run-outcome report | P2 | TypeScript first | [Scheduler](plugins/Scheduler.md) |
+| Scheduler | Process + Session | Scheduled jobs; `schedule` tool; delivery records (no report or notice) | P2 | TypeScript first | [Scheduler](plugins/Scheduler.md) |
 | Workflow | Process + Session | Multi-stage runs across Sessions; `workflow` tool | P2 | TypeScript first | [Workflow](plugins/Workflow.md) |
 | Notifications | Session | Delivery to channels; `notify` tool | P2 | TypeScript first | [Notifications](plugins/Notifications.md) (withdrawn) |
 | ExternalAgent | Process | External agents as Collaboration sub-agents (a member kind) | P3 | TypeScript first | [ExternalAgent](plugins/ExternalAgent.md) |
