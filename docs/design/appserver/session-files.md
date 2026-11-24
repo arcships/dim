@@ -459,7 +459,7 @@ Limits, and who owns them:
 
 | Limit | Owner | Reason |
 | --- | --- | --- |
-| One file at most 16 MiB | SessionStore | A put is one message, and `write` holds the content in memory; the bound caps one call's memory |
+| One file at most 16 MiB | SessionStore | A put is one message, and FileStorage streams its bytes; the bound caps one call's memory |
 | `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json` or `auth.json.lock` in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. `auth.json` would switch `write` to FileStorage's account-marker protocol |
 | Content rules (non-empty text, 10 MiB, default `paste.txt`) | Each consumer (Attachments A.2) | Business rules of the feature |
 | No per-Session count or total quota | None | Disk use ends with Session deletion and cleanup (S5c); a quota would need a business owner, and none exists |
@@ -621,7 +621,7 @@ Rejected alternatives:
 | FileStorage reloads during a put | `node_unavailable` or `storage`; abandoned and swept | SessionStore |
 | SessionStore reloads during a put | Cancelled before txn 2 (abandoned), or already committed; Attachments reloads with it | SessionStore unload |
 | Process restart | Leftovers are swept on the first put or after the next delete | Sweep |
-| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. a `cancelled` or `unsynced` removal leaves it for the next sweep | FileStorage, sweep |
+| Something outside SessionStore writes into the Session-files directory | A top-level entry is removed by step 3 of the sweep; an entry inside a file's directory goes with that directory when the file is unowned. A `cancelled` or `unsynced` removal leaves it for the next sweep | FileStorage, sweep |
 | `read` after the last owner is deleted | File not found; no surviving Session quotes the path | — |
 
 ## 13. Changes to other documents

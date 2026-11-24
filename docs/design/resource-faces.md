@@ -16,7 +16,7 @@ Resource and state operations use these public data faces:
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
-| `fsHost` | the [FileStorage contract](plugins/FileStorage.md) operations: `addRoot`, `rootPath`, `stat`, `read`, `write`, `import`, `update`, `createDirectory`, `list`, `remove` | the file-storage owner | #2016 |
+| `fsHost` | the [FileStorage contract](plugins/FileStorage.md) operations: `addRoot`, `rootPath`, `stat`, `read`, `claim`, `release`, `write`, `import`, `update`, `createDirectory`, `list`, `remove` | the file-storage owner | #2016 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
 
@@ -364,7 +364,8 @@ Tool family — the file-tools face's operations, one call each (not `fsHost`):
 
 Storage family — the raw operations the other file owners use: [FileStorage
 contract](plugins/FileStorage.md) § Own contract. The owner's face is `addRoot`, `rootPath`,
-`stat`, `read`, `write`, `import`, `update`, `createDirectory`, `list` and `remove`.
+`stat`, `read`, `claim`, `release`, `write`, `import`, `update`, `createDirectory`, `list` and
+`remove`.
 
 Only `resolve` takes an unresolved `path`; every other operation takes the node-absolute `path`
 its caller holds (§2 rule 3). `resolve` is what the file facts owner and process preparation
@@ -821,7 +822,7 @@ The owners that read node files or start node processes, and the operations they
 | WorkspaceTools file tools | `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions` |
 | SessionStore Session files and command output | `createDirectory`, `write`, `import`, `list`, `remove`, `execHost.removeOutputDirectory` |
 | Settings sources and their CAS writes | `read`, `update`, `createDirectory`, `write` |
-| MCP auth store, managed OAuth and OAuth token stores | `read`, `update`, `write` |
+| MCP auth store, managed OAuth and OAuth token stores | `read`, `update`, `write`, `claim`, `release` |
 | Hooks project file (`.dimcode/hooks.json`) | `read` |
 | PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `read` |
 | UI extension resources | `read` with `offset` and `length` |
