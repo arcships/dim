@@ -47,7 +47,7 @@
 | [Goal](../../../crates/dim-goal/src/branch.rs) `rebuild` | committed、publication(h)、load 固定 h；返回 h | [read](../../../crates/dim-goal/src/read.rs) 读取最后 goal/state；[query](../../../crates/dim-goal/src/branch/recovery.rs) 不含 publishing；pause_reloaded，不恢复旧任务 |
 | [CollaborationTimeline](../../../crates/dim-app-server/src/collaboration.rs) `restore` | 回调内 committed、固定 through、include_publishing；返回原 through | 整理旧操作；部分撤回工作另等 activated；这不等于所有协作副作用已经结束 |
 | [HooksBranch](../../../crates/dim-agent-capabilities/src/hooks/runner.rs) apply 回调 | 回调内 committed，设置 view.last，返回 h；不读历史 | [Hooks 合同](../../architecture/rust-agent/plugins/Hooks.md) 明确不重跑旧 hook；不是遗漏了通用恢复扫描 |
-| [BranchLine](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) apply 回调 | 回调内 committed，返回 h；随后 want Roster/Parent | [BranchTool 合同](../../architecture/rust-agent/plugins/BranchTool.md) 从当前目录和按需历史重建；跳过旧触发不等于恢复整个业务视图 |
+| [BranchLine](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) apply 回调 | 回调内 committed，返回 h；随后 want Roster/Parent | [BranchLine 合同](../../architecture/rust-agent/plugins/BranchLine.md) 从当前目录和按需历史重建；跳过旧触发不等于恢复整个业务视图 |
 
 [TS branch](../../../runtime/fixtures/branch-part.ts)、[TS extension](../../../runtime/fixtures/extension-events.ts)、
 [Python branch](../../../runtime/fixtures/python/python_branch_part.py) 均在 rebuild 回调里调用
@@ -183,7 +183,7 @@ ModelOutputEnd 数量断言以确认终态身份：未创建 request 时为零�
 | Goal | 固定 cut 读取业务状态，pause_reloaded，不重启旧 continuation/evaluator；依赖 input/turn 和子分支目录 | [Goal 合同](../../design/plugins/Goal.md)；GoalLifecycle/GoalProgress；[goal_cases_flow](../../../crates/dim-goal/tests/goal_cases_flow.rs) 的 `d5_a_restored_line_repeats_no_decision` 断言已读：恢复暂停、旧 continuation 不重启、显式 resume 才继续 | 复用已有恢复语义；evaluator 子分支清理/输入撤回组合仍是业务范围，不因 cut 核对判定全覆盖 |
 | CollaborationTimeline | 未投递操作写关闭错误，已投递 delegation 恢复关联，后续撤回等待 publication；依赖 Session collaboration owner 和 input/tree | [Collaboration 合同](../../design/plugins/Collaboration.md)；CollaborationHandoff/Identity；restore 选择及 transport_flow 的 restart/private 与 orphan 清理断言已读：重启保留 delegation 与隔离、移除 orphan/incomplete 目录且保留合法 leader | 目录/投递/撤回并非一个 terminal；保留逐项核对，不用“delegation 可恢复”代表全部副作用已结算 |
 | HooksBranch | 从当前 cut 开始接收新触发，不重跑旧 hook；旧运行 handler 由自己卸载结算 | [Hooks 合同](../../architecture/rust-agent/plugins/Hooks.md)；HookScheduling/HookFollowups 等；`a_live_reload_resolves_the_tool_that_started_before_hooks_mounted` 断言已读：工具阻塞时重启 Hooks，释放后仍得到正确工具名/参数 | 真实跨 owner 热重载已有流程，直接复用；不要求补全量历史回放，不把旧请求身份查询误作重执行 |
-| BranchLine | 不回放旧触发；从当前目录、last roster/parent block 和目标 cursor 按需构造视图；依赖 TimelineTree/目录及 publication | [BranchTool 合同](../../architecture/rust-agent/plugins/BranchTool.md)；BranchLine；branch_flow 的 `a_restore_writes_a_due_parent_block_once_and_none_without_movement`、`a_read_cursor_survives_a_restore` 断言已读：只补应有 parent block、无新进展不补、cursor 后续读严格前进 | 归按需视图恢复，不能强加“所有历史事件消费一次”；目录重建/通知组合仍按对应 flow 进一步核对 |
+| BranchLine | 不回放旧触发；从当前目录、last roster/parent block 和目标 cursor 按需构造视图；依赖 TimelineTree/目录及 publication | [BranchLine 合同](../../architecture/rust-agent/plugins/BranchLine.md)；branch_flow 的 `a_restore_writes_a_due_parent_block_once_and_none_without_movement`、`a_read_cursor_survives_a_restore` 断言已读：只补应有 parent block、无新进展不补、cursor 后续读严格前进 | 归按需视图恢复，不能强加“所有历史事件消费一次”；目录重建/通知组合仍按对应 flow 进一步核对 |
 
 ### 7.1 生命周期不是全局停机屏障
 

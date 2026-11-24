@@ -6,7 +6,7 @@ The sections through [Binding appendix](#binding-appendix) are the owner contrac
 
 TimelineTree owns a Session's lines: the directory of what lines exist, each line's beginning and end, and the facts a line's neighbours learn. A line is one branch scope with an id; the RPC field naming a line stays `branchId`. The code this contract replaces is described under [Current implementation](#current-implementation).
 
-TreeTimeline, BranchLine and BranchTool are separate owners in this group with their own documents. A line's own owners — its input queue, its capabilities, its Prompt — are other owners; a Session part reaches them through `line_owner` (see below), and this contract provides no entry into them.
+TreeTimeline, BranchLine and BranchTool are separate owners in this group with their own documents ([TreeTimeline](TreeTimeline.md), [BranchLine](BranchLine.md), [BranchTool](BranchTool.md)). A line's own owners — its input queue, its capabilities, its Prompt — are other owners; a Session part reaches them through `line_owner` (see below), and this contract provides no entry into them.
 
 ## Use and scope: responsibility split
 
@@ -399,6 +399,8 @@ impl TimelineTree {
 
 ## Current implementation
 
+The code here still uses the pre-contract names (`TreeCommands`, `treeCommands`); the contract above is the target.
+
 The single-line display read also belongs to TimelineTree. The directory itself
 is read without history I/O; display details are requested separately. It reads the
 creation prompt/source and end fact by position only when detail is requested. It omits the
@@ -503,45 +505,4 @@ Session close, and closing is not deletion of persisted history.
 | 注入 | `S:GuideEntries`、`S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
 | 提供 | `S:TimelineTree`、`S:TreeCommands`、`S:dyn HostDispatch#treeCommands`、`S:dyn TimelineTreeControl` |
 | 被注入于 | `BranchLine`、`BranchTool`、`InputMethods`、`InputQueue`、`LoopMethods`、`PromptSuggestion`、`Questions`、`Recall`、`ShellInput`、`ToolMethods`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
-<!-- /generated -->
-
-### TreeTimeline
-
-Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
-Routes branch-local creation facts to the Session tree using the actual parent
-identity, and releases pending child reservations when the parent unloads.
-
-#### Dependencies
-
-| Service | Purpose |
-| --- | --- |
-| `S:TreeCommands` | Reach the owning Session tree through its command port. |
-| `B:TimelineIdentity` | Identify the parent branch. |
-| `B:Dispatcher` | Consume creation events. |
-| `B:Timeline` | Parent history, creation and end settlement location. |
-
-#### Events and lifetime
-
-Consumes `branch/create` and `branch/end` (with the next turn end of a line
-that ended through a tool call), and reports every `turn/end` to the tree,
-which publishes it for the line's children; tree-owned work produces the
-opening, failure and end facts (see TimelineTree). The handler registers creation, not a long-running build future.
-Cleanup cancels pending reservations for this parent and settles their waiters.
-No independent worker or persistent tree is owned here. Reload does not by
-itself replay arbitrary old create events; recovery belongs to TimelineTree.
-An accepted creation need not survive parent or Session close.
-
-#### Tests
-
-[branch_flow.rs](../../../../crates/dim-agent-capabilities/tests/branch_flow.rs):
-`parent_close_waits_for_dispatch_before_releasing_branch_reservations`,
-`close_releases_an_unconsumed_create_without_waiting_for_dispatch`.
-
-<!-- generated:plugin TreeTimeline — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
-| 项 | 值 |
-| --- | --- |
-| 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TreeCommands` |
-| 提供 | — |
-| 被注入于 | — |
 <!-- /generated -->

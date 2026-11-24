@@ -1,41 +1,207 @@
 # BranchTool
 
 Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
-Registers the Session's `branch` tool, through which one line opens, messages,
-reads and ends its lines ([timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)).
-It is installed with the default execution loop; the minimal execution profile
-leaves it out. The facts it emits and consumes are BranchLine's, the branch
-part below.
+Scope: Session. Issue: [#2024](https://github.com/arcships/dim/issues/2024).
 
-`create` passes the optional idle notice policy and the Session's cap to TimelineTree.
-The child restores the idle notice from its opening identity before BranchLine handles
-turn ends. `create` admits two callers and refuses every other line: the root, in every
-state, and the current default branch. The root's right never changes, which is what
-lets a user ask it for a line while another line holds the role. The cap is a total
-over the Session and counts the open tool lines that are not on the protected path, so
-a line the user keeps continuing on costs no slot. TimelineTree charges the caller's
-eligibility and the cap in the lock that reserves the new line, so a switch or a second
-create cannot slip between a check and the reservation; publication charges nothing a
-second time, and a creation that fails releases its slot.
+The sections through [Binding appendix](#binding-appendix) are the owner contract for the model's
+`branch` tool. [Current implementation](#current-implementation) describes the code as it is today.
+BranchLine is its own owner with [its own contract](BranchLine.md).
 
-`end` ends the calling line and every line below it, so it guards the caller as well as
-the target: only a tool line ends itself, a plugin line follows its own protocol, and a line
-the user opened is ended by the user. A line that is the default branch, or that has a
-descendant which is, is refused, because ending a line ends every line below it.
+BranchTool is the model's `branch` tool: the only way a line opens, messages, reads or ends another line. It owns the tool's action menu, its kin rules and the shape of its answer. TimelineTree owns the directory and the lifecycle; BranchLine owns the calling line's view; the lines' input owners accept writes. BranchTool decides, per call, what the calling line may do and how the answer reads.
 
-## Dependencies
+## Use and scope: responsibility split
+
+BranchTool owns:
+
+- **The action menu.** `create`, `message`, `read`, `end`, the fields each takes, and the refusal when a field belongs to another action.
+- **The kin rule.** A line messages and reads the line it was cut from and the tool lines it opened; a plugin line follows its creator's protocol and opens nothing; a line the user opened is not on a roster and is ended by the user.
+- **The read page.** Which ranges a read covers, where it continues from the line's cursor, the item shapes and the effects a tool result declares.
+- **The model-facing text** of every refusal and every page.
+
+Callers keep: nothing — the tool is the model's entrance. The Session owns the tool registry and the assembly decides whether the tool is installed.
+
+| Requirement (model intent) | Compose from the operations below without breaking the owner's invariants? | Handling |
+| --- | --- | --- |
+| Open a line to work on a part of the task | No: the cut is the calling request's own start, which the tool reads from its execution context | `timelineTree.create` |
+| Send a line a message or a last word | No: the write belongs to the target line's input owner; the tool decides the kin rule | Target line's input owner by id, with the mode the tool chose |
+| Read what a line did, continuing where the last read stopped | No: the continuation is the calling line's cursor, owned by BranchLine; the page boundaries and the rendering are the tool's | `branchLine.view`, `timelineTree.read` |
+| End the calling tool line with its last word | No: the end and the last word are one settled operation | `timelineTree.end` |
+| Learn what the calling line may do | No: role and parent are BranchLine's fold | `branchLine.view` |
+| Check that a target belongs to the pair before messaging or reading it | No: the record's parent and source decide it | `timelineTree.line` with `{line}` |
+
+## Caller example
+
+The model calls `branch`; the tool maps one action onto the owner operations and answers one page or one refusal.
+
+```rust
+// create: the cut is this request's own start, read from the execution context.
+let cut = self.request_start(execution).await?;      // business: the calling request's start
+let line = tree.create(CreateLine {
+    parent: execution.branch_id.clone(),
+    cut,
+    prompt,
+    source: BranchSource::Tool { turn_id, request_id, call_id },
+    idle_notice: input.idle_notice,
+}, cancelled).await
+    .map_err(refusal_from_line_error)?;
+
+// message: the kin rule is the tool's; the write is the target line's owner.
+if !kin(&own, &target) {
+    return refused("branch_not_kin");
+}
+line_owner::<InputQueue>(target.line.clone())?
+    .submit(InputMessageData::message(&own.line, &target.line, content, mode))
+    .await?;
+
+// read: the cursor is the calling line's, the page is the tool's rendering.
+let own = line_owner::<BranchLine>(&execution.branch_id)?.view().await?;
+let after = input.after.unwrap_or_else(|| {
+    own.cursors.iter().find(|c| c.target == target.line).map(|c| c.cursor).unwrap_or(cut)
+});
+let page = tree.read(ReadLines {
+    line: target.line.clone(),
+    from: Some(after + 1),
+    through: Some(target.head),
+    fields: READ_FIELDS.to_vec(),
+    limit: Some(input.limit.unwrap_or(READ_PAGE_LIMIT)),
+}).await
+    .map_err(refusal_from_line_error)?;
+```
+
+## Own contract
+
+### Contract dependencies
 
 | Service | Purpose |
 | --- | --- |
-| `S:TreeCommands` | Create a child, write and read a line, and end a line, per call. |
+| `S:ToolRegistry` | Register the `branch` tool, until this part unloads. |
+| `S:TimelineTree` | `create`, `end`, `read` and `line`. |
+| `line_owner::<BranchLine>` | The calling line's role, end state, read cursors and held parent block (`view`). |
+
+### Operations
+
+One tool, one request object, no service:
+
+| Field | Meaning |
+| --- | --- |
+| `action` | `create`, `message`, `read` or `end`; required, no other property allowed |
+| `prompt` | `create`: what the new line is for |
+| `at` | `create`: the cut; absent means this request's own start |
+| `idle_notice` | `create`: `steer` (default) or `none` |
+| `to`, `content`, `mode` | `message`: the target, the text and the mode (`append` or `steer`) |
+| `branch`, `after`, `limit` | `read`: the target, the continuation and the page size |
+| `content` | `end`: the line's last word |
+
+Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A refusal is an error result whose `structuredContent` carries one code and no write happens.
+
+### Errors
+
+The tool's coded refusals are the accepted set ([timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)) plus the argument error; every other ending of the four actions is a failed result without a code, so the model-visible result shape does not change. The route adds no code of its own: `NoLine` from `line_owner` is reported as `branch_ended`, `SessionClosing` as a failed result without a code, and a Session part never receives `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [TimelineTree](TimelineTree.md#session-parts-reaching-a-lines-owners)).
+
+Refusals, with `structuredContent.code`:
+
+| Code | What the model does next |
+| --- | --- |
+| `branch_not_opener` | Only the root and the conversation line open lines; move the conversation or ask one of those |
+| `branch_limit_reached` | End an open tool line first |
+| `branch_not_kin` | Address the line it was cut from, or a line it opened |
+| `branch_not_tool_line` | A plugin line follows its creator's protocol; a plugin line reads only the line it was cut from |
+| `branch_ended` | The target's own end is recorded, or the calling line's own end is: read the line instead. Not retryable; an owed last word is delivered by restore |
+| `branch_cannot_end` | Not retryable as is: only a tool line ends itself, and not while its chain holds the conversation line |
+| `invalid` | Fix the action's fields |
+
+Endings without a code, reported as a failed result:
+
+| Ending | What the model does next |
+| --- | --- |
+| The read's `after` is past the target's head | Re-read `line` and start at or below its head; retry once |
+| The page's cutoff is inside an atomic batch | Start at the record's head, which ends a batch |
+| A continuation arrived without its `after` | Resend `after` with the current record |
+| The tool's own start is not a usable cut | Report it; do not retry |
+| The target's id is not a line of this Session | Report `branch_not_kin` at the pair check; never retry the same call |
+| The tree answers `branch_target_protected` (a cascade is ending the target) | Read the line and report the state; do not retry the same end |
+| `SessionClosing` or a closing Session | Stop; nothing more happens in this generation |
+| An admitted creation cancelled by its caller | The line publishes without a waiter and the call has no result |
+
+### Flows
+
+| Action | Normal path | Caller cancels | Session closes | Settled by |
+| --- | --- | --- | --- | --- |
+| `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes and the caller sees `cancelled` from its own tool call | Refused `branch_ended`/`closed` | TimelineTree |
+| `message` | Check the pair, write into the target's queue, answer the target id | The write is one commit; a cancelled call writes nothing | Refused `closed` | The target line's input owner |
+| `read` | Resolve the target record, the cursor and the head, read one page, render items | Nothing to release | Refused `closed` | TimelineTree, BranchLine |
+| `end` | Check that the caller is a tool line and that its own end is not yet recorded, then call the tree's `end` with the last word; a line that already recorded its own end answers `branch_ended` and an owed last word is delivered by restore | The end settles even if the call stops watching | Refused `closed` | TimelineTree |
+
+## Supersedes
+
+- The `branch` tool's description in [timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool) as far as it names `TreeCommands` for a message and a page: the tool calls `timelineTree` and `line_owner`, as below.
+
+## Client-visible changes
+
+None: the tool's action menu, fields, result shape and refusal codes are unchanged.
+
+## Exceptions with reasons
+
+- The tool reads the calling request's own start to cut the new line: the request identity is the tool execution's context, not a line fact, so no owner can supply it.
+- The rendered page repeats a tool result's declared effects and cuts a command at its 200th character: the rendering is model-facing text and belongs to the tool that reads it.
+
+## Verification
+
+Flow tests on the tool:
+
+- A root and the conversation line open a line; a tool line and a plugin line answer `branch_not_opener` with no write.
+- The Session's cap counts open tool lines outside the conversation line's chain; a creation failure releases the slot.
+- A message reaches its receiver in the requested mode; a sibling or a grandparent answers `branch_not_kin` with nothing written.
+- A read of the line the caller was cut from starts at the cut; a read without `after` continues from the line's cursor; an `after` past the head answers an error and leaves the cursor unchanged.
+- `end` on a line that is not the default line withholds no final word; a line whose chain holds the conversation line answers `branch_cannot_end`.
+
+## Rule check
+
+| Rule | Application |
+| --- | --- |
+| §1 parts and Capabilities | BranchTool is one Session part and not a Capability: it registers a tool and folds nothing. |
+| §2 scopes | Session scope for the registration; each call acts on the calling line's id. |
+| §3 orthogonality | It reads the directory and the calling line's state and writes through owners. |
+| §4 rule 1 | A refused call writes nothing; an accepted one lands in the target owner's operation. |
+| §4 rule 2 | It writes no fact of its own; the owners it calls do. |
+| §4 rule 3 | The tool returns after its work; waits belong to the owners it calls. |
+| §4 rule 4 | It keeps no state between calls except what BranchLine publishes. |
+| §4 rule 5 | It reads whole batches through the tree's read. |
+| §4 rule 6 | The page is the tool result, the only text the model reads. |
+| §4 rule 7 | It uses the owners' operations; it holds no scope, node or queue. |
+| §4 rule 8 | One requirement is raised with TimelineTree's: resolving a line id to a branch-scope service ([#2127](https://github.com/arcships/dim/issues/2127)). |
+| §4 rule 9 | It writes no fact. |
+| §7 | Every argument and reply is data and a line is an id; no object or handle crosses, except the owner's internal weak handle. Deleting the old surface and migrating every caller is one change. The owner answers its own state and facts, never another owner's record. |
+| ADR 002 D1 | Session scope: one registration for every line. |
+| ADR 002 D2 | No wiring plugin: the tool belongs to the TimelineTree plugin's feature. |
+| ADR 002 D3 | Depends only on the registry, the tree and BranchLine. |
+| ADR 002 D4 | The profile decides whether the tool is installed. |
+| ADR 002 D5 | The tool's request and reply are data; the Rust binding is the appendix. |
+| ADR 027 | The tool reaches BranchLine and a target's input owner with `line_owner::<T>(line)`. |
+
+## Requirements raised to mechanism owners
+
+The same one as TimelineTree's: the tool reaches a line's input owner and BranchLine with `line_owner::<T>(line)`, which needs the runtime's id routing ([#2127](https://github.com/arcships/dim/issues/2127); [SessionScope](https://github.com/arcships/dim/pull/2093) states the Session side).
+
+## Binding appendix
+
+No service and no wire name. The request is the tool's input object; the refusal codes are its data. The Rust side is the tool handler registered with `ToolRegistry`.
+
+## Current implementation
+
+### Dependencies
+
+| Service | Purpose |
+| --- | --- |
 | `S:ToolRegistry` | Register `branch`, until this part unloads. |
+| `S:TreeCommands` | Create a child, write and read a line, and end a line, per call. |
 
 ## Events and lifetime
 
 No events of its own: the tree writes `branch/create`, `branch/start` and
 `branch/end`; a call writes its result, and `message` and `end` write their
-inputs through `TreeCommands.input` (`end` the final message before the
-command it writes). The input is one
+inputs through the target line's input owner, and `end` carries the final message on
+`branch/end` ([the contract](#own-contract)). The input is one
 action-based object, `{action, prompt?, at?, to?, content?, mode?, branch?,
 after?, limit?}`, with `action` required and no other properties; risk stays
 `session`, and Approval admits each call like any tool
@@ -91,130 +257,5 @@ specific target from its own `step/tool-use` and `step/tool-result` (design [§6
 | 作用域 | Session |
 | 注入 | `S:ToolRegistry`、`S:TreeCommands` |
 | 提供 | — |
-| 被注入于 | — |
-<!-- /generated -->
-
-## BranchLine
-
-Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
-Folds the line's own committed facts into its role, the tool lines it opened,
-the state of its current turn and the line's read cursors, and writes its roster,
-the parent block, the idle notice, the ended notice and the one status note a
-move of the default branch writes on a participant, through `S:TreeCommands`.
-
-Its role and its parent come from
-`TreeCommands.info`, which is filled from the parent's `branch/create` at
-creation and at restore.
-
-### Data face
-
-The branch-scoped `branchLine` face exposes the owner's existing read operations:
-`resolved()` returns `[role, parent]` or `null`, where role is `main` (the root), `tool`, `host` (a plugin line) or
-`user` (a line a client opened); `ending()` reports whether the line committed its own `branch/end`;
-`cursor(target)` returns its latest successful read cursor for that target or
-`null`. Cursor read failures use the standard `AgentError` name, variant code
-and display message on the wire; native error source identity is not serialized.
-The native binding and foreign dispatcher call these same operations. Reads retain the current cached
-role/cursor behavior and load only the requested target's cursor when needed;
-they do not read or rebuild all history. Writer lifecycle and event settlement
-are unchanged. See [service faces](../../../design/service-faces.md).
-
-### Dependencies
-
-| Service | Purpose |
-| --- | --- |
-| `B:Dispatcher` | Consume the line's own facts in order after the rebuild. |
-| `B:Timeline` | Fix the committed mount cutoff. |
-| `B:TimelineIdentity` | The line's own id. |
-| `B:BranchLifecycle` | Wait for the branch to be Active before writing. |
-| `S:SessionLifecycle` | Wait for the restored child directory to be published before roster repair. |
-| `S:TreeCommands` | `info` for the role and its lines; `head`, the crate-internal `turn_ends` and the parent's new-activity check for the parent block; `default_branch`, the crate-internal move signal and the line's own queue of owed moves for the status note; `input` for every write. |
-| `S:GuideEntries` | Register the roster and message entries on every line, until this part unloads. |
-
-### Events and lifetime
-
-Consumes `branch/create`, `branch/create-failed`, `branch/ended`, `branch/end`,
-`input/message`, `input/consumed`, `input/deleted`, `turn/end`, `step/tool-use` and
-`step/tool-result`. It writes only `input/message`, through the tree's input path.
-
-- **Status note.** On a line that is not the root, one keyed Append under `branch:line` when the
-  line becomes the default branch or stops being it, read in commit order from the queue the tree
-  filled when the move committed, woken by its move signal. It
-  restates the line's birth identity byte for byte and then the sentences the move changes; the
-  root never receives one, and a load whose latest block disagrees with the tree writes the
-  missing note once; on the tree's current default branch the load also compares that block's text
-  with the note this code writes, and replaces a note an older rule set left once (design [§5](../../../design/timeline-branches.md#5-parts), [§12.1](../../../design/timeline-branches.md#121-context-mapping)).
-- **Roster.** On a line that has opened tool lines, a keyed Append under `branch:roster` of `<dim-branch-lines>` lists the lines it opened with the tool that are still open, in the order it opened them, with the
-  first line of each purpose; when none is open the key is retired. A plugin line is never on a roster, and neither is a line the user opened: it stays in the Session's directory and coordinates its own tool lines. A child whose inherited prefix holds a live roster gets one block in its opening input that retires that key, so a line that opened no tool line of its own keeps no list; TimelineTree writes it with the identity block (design [§7.1](../../../design/timeline-branches.md#71-keyed-state-branchline-branchroster-and-branchparent)).
-- **Parent block.** On a line that is not the root, one keyed Append of
-  `<dim-branch-parent>` on the line itself when its opener ends a turn past
-  the line's read cursor for it, the head the latest block reported, and the
-  line's opening, the sequence of its `branch/create` on the parent. It names
-  the parent, that head and the cursor, and never carries the parent's
-  content. The fold keeps the cursor of each successful read from the line's
-  own `step/tool-use` and `step/tool-result`, so a replay rebuilds it. The block is
-  decided from the line's state rather than the parent's signal: the parent's
-  turn-end, published by TimelineTree, and the line's own write queue wake the
-  writer, and consuming, deleting or interrupting a held block queues the same
-  decision. An idle line is not woken, and the root gets none. A child whose
-  inherited prefix holds a live parent block, meaning a nested line, gets one
-  more block in its opening input, naming its own parent at the cut;
-  TimelineTree writes it with the identity block
-  (design [§7.1.1](../../../design/timeline-branches.md#711-the-parent-block-branchparent)).
-- **Idle notice.** On a line opened by the tool, one Steer to its opener at a `turn/end` that
-  neither steered the opener in that turn, called `end`, nor left a driving
-  input pending, and only while the line is not the current default branch. A steer counts only once its tool result says the call was
-  accepted: a refused or denied call wrote nothing to the parent, which would
-  otherwise wait on silence.
-- **Ended notice.** On the opener, the roster update and `<dim-branch-ended>` in one
-  Steer, for any end of a tool line it opened other than that line's own `end`.
-- **Status note.** On the new default branch and on the former one, one keyed Append of
-  `<dim-branch-line>` under `branch:line`, carrying `default`, restating the identity it replaces
-  and then the rules that hold while the line is, or is no longer, the default branch. The key is
-  the identity's, so a compaction replays the note and the line still knows which line it is. The
-  note states no rule another line could contradict: the protection of the default branch's chain
-  is decided when `end` is called, from the tree. The root gets no note, because neither of its
-  rules changes with the role, so a note to it would say nothing.
-
-BranchLine mounts at the committed Dispatcher cutoff without reading historical events. It starts its writer after both branch and Session publication so all current child directory entries are available. Roster repair reads known current creation positions and the last roster block. A root whose stored history was written before the key split also holds its old roster under `branch:line`; its load reads that block once and retires the key with the roster write, alone when none is owed, so the root keeps no identity, as a root has none. Parent notices read the last parent block and the requested parent's read cursor. Old turn progress is not restored; a recovery turn end does not emit an idle notice. Read cursors are loaded for one target when used, and neither ordinary input history nor all tool results are retained. No recovery event is written.
-
-### Tests
-
-[branch_flow.rs](../../../../crates/dim-agent-capabilities/tests/branch_flow.rs):
-`the_root_lists_its_open_tool_lines_under_the_roster_key`,
-`a_configured_roster_closing_reaches_the_roster`,
-`an_idle_line_tells_main_once_when_its_turn_ends_without_a_word`,
-`a_tool_line_ends_itself_and_main_learns_it_from_the_roster`,
-`an_end_from_outside_a_tool_line_wakes_main_with_a_notice`,
-`a_roster_and_an_identity_replay_separately_after_a_compaction`,
-`a_child_cut_after_a_roster_retires_it_and_one_cut_before_gets_nothing`,
-`the_roots_roster_from_before_the_key_split_is_retired_at_load`,
-`an_opener_that_is_not_the_root_keeps_its_identity_and_its_roster`,
-`a_status_note_and_a_live_roster_do_not_retire_each_other`,
-`a_user_opened_default_branch_coordinates_the_line_it_opens`,
-`a_line_messages_and_reads_its_parent_and_the_lines_it_opened`,
-`a_sibling_or_grandparent_is_refused_with_nothing_written`,
-`an_idle_line_is_told_its_parent_moved_without_being_woken`,
-`a_running_line_gets_the_block_with_its_next_request_once`,
-`two_parent_turns_while_the_line_is_idle_write_one_block`,
-`a_move_while_a_block_is_held_is_written_after_the_block_is_consumed`,
-`a_move_while_a_block_is_held_is_written_after_the_block_is_deleted`,
-`a_move_while_a_block_is_held_is_written_after_the_block_is_interrupted`,
-`a_restore_writes_a_due_parent_block_once_and_none_without_movement`,
-`an_ending_line_and_main_get_no_parent_block`,
-`the_parent_block_replays_after_a_compaction`,
-`the_creating_call_is_written_before_the_line_was_opened`,
-`a_host_line_cut_at_the_start_is_not_told_what_happened_before_it`,
-`a_host_line_cut_at_the_start_is_told_when_main_acts_after_it`,
-`a_host_line_cut_before_it_was_opened_is_not_told_about_the_gap`,
-`a_nested_line_is_told_its_own_parent_at_open`,
-`a_childs_first_system_is_its_parents_at_the_cut`.
-
-<!-- generated:plugin BranchLine — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
-| 项 | 值 |
-| --- | --- |
-| 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle`、`S:TreeCommands` |
-| 提供 | `B:BranchLine`、`B:dyn HostDispatch#branchLine` |
 | 被注入于 | — |
 <!-- /generated -->

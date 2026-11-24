@@ -17,7 +17,7 @@
 | --- | --- | --- | --- | --- |
 | Approval | 审批请求、响应与未完成请求结算 | approval/*；读取权限状态 | 产品生成目录 | [实现](../../../crates/dim-agent-capabilities/src/approval.rs) / [说明](plugins/Permission.md) |
 | BackgroundExec | 后台执行任务及完成通知 | exec/*、input/message；中断与回合边界 | 产品生成目录 | [实现](../../../crates/dim-agent-capabilities/src/workspace_tools/background.rs) / [说明](plugins/WorkspaceTools.md) |
-| BranchLine | 父子分支工作的跟踪、输入交接与结果通知 | branch/*、input/*、turn/*、step/tool-* | 产品生成目录 | [实现](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) / [说明](plugins/BranchTool.md) |
+| BranchLine | 父子分支工作的跟踪、输入交接与结果通知 | branch/*、input/*、turn/*、step/tool-* | 产品生成目录 | [实现](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) / [说明](plugins/BranchLine.md) |
 | CollaborationTimeline | 跨 Session 协作交接与结算 | collaboration/*、input/*、turn/*、step/* | 产品生成目录 | [实现](../../../crates/dim-app-server/src/collaboration.rs) |
 | ContextPreparation | 准备模型请求与上下文压缩工作 | context/prepare、compaction-*、model/call；失败输出终态 | 产品生成目录 | [实现](../../../crates/dim-agent-capabilities/src/context_preparation.rs) / [说明](plugins/ContextPreparation.md) |
 | ContextUsage | 上下文使用量计算与派生结果恢复 | context/*、model/*、input/consumed、step/*、context-usage/* | 产品生成目录 | [实现](../../../crates/dim-agent-capabilities/src/context_usage.rs) / [说明](plugins/ContextUsage.md) |
@@ -108,7 +108,7 @@
 | exec | [WorkspaceTools](plugins/WorkspaceTools.md)、[ShellSession](../../../crates/dim-agent-capabilities/src/shell_session.rs) |
 | prompt、context | [Prompt](plugins/Prompt.md)、[ContextPreparation](plugins/ContextPreparation.md)、[ContextUsage](plugins/ContextUsage.md)、[上下文策略](../../../crates/dim-agent-capabilities/src/context_policy.rs) |
 | model、step | [ModelProvider](plugins/ModelProvider.md)、[输出提交](../../../crates/dim-agent-capabilities/src/output.rs)、[ToolExecution](plugins/ToolExecution.md)、[Loop](plugins/Loop.md) |
-| branch | [TimelineTree](plugins/TimelineTree.md)、[BranchLine](plugins/BranchTool.md) |
+| branch | [TimelineTree](plugins/TimelineTree.md)、[BranchLine](plugins/BranchLine.md) |
 | collaboration | [协作实现](../../../crates/dim-app-server/src/collaboration.rs) |
 | session/forked | [Timeline 存储](../../../crates/dim-app-server/src/storage/timeline.rs) |
 

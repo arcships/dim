@@ -29,7 +29,7 @@ dependency is not necessarily a plugin with the same name.
 | [WorkspaceTools](WorkspaceTools.md) | WorkspaceToolsOwner | WorkspaceTools | FileReads, BackgroundExec |
 | [Wait](Wait.md) | — | Wait | WaitBranch |
 | [Recall](Recall.md) | — | Recall | — |
-| [TimelineTree](TimelineTree.md) | — | TimelineTree | TreeTimeline |
+| [TimelineTree](TimelineTree.md) | — | TimelineTree | [TreeTimeline](TreeTimeline.md) |
 | [InputQueue](InputQueue.md) | — | InputMethods | InputQueue |
 | [Permission](Permission.md) | — | — | Permission, Approval |
 | [ToolExecution](ToolExecution.md) | — | [ToolMethods](ToolMethods.md) | ToolBinding, ToolExecutor |
@@ -39,7 +39,7 @@ dependency is not necessarily a plugin with the same name.
 | [PromptSuggestion](PromptSuggestion.md) | — | PromptSuggestion | — |
 | [Attachments](Attachments.md) | — | Attachments | — |
 | [Questions](Questions.md) | — | Questions | — |
-| [BranchTool](BranchTool.md) | — | BranchTool, BranchLine | — |
+| [BranchTool](BranchTool.md) | — | BranchTool, [BranchLine](BranchLine.md) | — |
 | [ContextPreparation](ContextPreparation.md) | — | — | ContextPreparation, [ContextUsage](ContextUsage.md) |
 | [Prompt](Prompt.md) | — | — | Prompt |
 | [Loop](Loop.md) | — | [LoopMethods](LoopMethods.md) | Loop |

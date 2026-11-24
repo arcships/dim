@@ -1,8 +1,12 @@
 # TreeTimeline
 
-Scope: branch. Issue: #2024.
+Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
+Scope: branch. Issue: [#2024](https://github.com/arcships/dim/issues/2024).
 
-TreeTimeline is the branch-scope half of the line directory: it watches the facts of the line it runs in and hands the ones the tree must act on to TimelineTree. It holds no state of its own and answers no caller. The current implementation is described in the [TreeTimeline section of the plugin page](../../architecture/rust-agent/plugins/TimelineTree.md#treetimeline).
+This page is the owner contract for the branch-scope route from a line's facts to the line
+directory. [Current implementation](#current-implementation) describes the code as it is today.
+
+TreeTimeline is the branch-scope half of the line directory: it watches the facts of the line it runs in and hands the ones the tree must act on to TimelineTree. It holds no state of its own and answers no caller.
 
 ## Use and scope: responsibility split
 
@@ -28,7 +32,7 @@ None: no caller holds TreeTimeline. The tree's own directory is the only reader 
 
 ## Own contract
 
-### Dependencies
+### Contract dependencies
 
 | Service | Purpose |
 | --- | --- |
@@ -54,7 +58,7 @@ None reach a caller. A routing failure is recorded on the tree's cleanup list an
 
 ## Supersedes
 
-- The `TreeTimeline` dependency on `S:TreeCommands` in [timeline branches §5](../../design/timeline-branches.md#5-parts): the service is the owner's weak `S:TreeHandle`.
+- The `TreeTimeline` dependency on `S:TreeCommands` in [timeline branches §5](../../../design/timeline-branches.md#5-parts): the service is the owner's weak `S:TreeHandle`.
 
 ## Client-visible changes
 
@@ -103,3 +107,46 @@ None.
 ## Binding appendix
 
 None: no service and no wire name. The part provides no name in the catalog.
+
+## Current implementation
+
+The code here still uses the pre-contract names (`TreeCommands`, `treeCommands`); the contract above is the target.
+
+Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
+Routes branch-local creation facts to the Session tree using the actual parent
+identity, and releases pending child reservations when the parent unloads.
+
+#### Dependencies
+
+| Service | Purpose |
+| --- | --- |
+| `S:TreeCommands` | Reach the owning Session tree through its command port. |
+| `B:TimelineIdentity` | Identify the parent branch. |
+| `B:Dispatcher` | Consume creation events. |
+| `B:Timeline` | Parent history, creation and end settlement location. |
+
+#### Events and lifetime
+
+Consumes `branch/create` and `branch/end` (with the next turn end of a line
+that ended through a tool call), and reports every `turn/end` to the tree,
+which publishes it for the line's children; tree-owned work produces the
+opening, failure and end facts (see TimelineTree). The handler registers creation, not a long-running build future.
+Cleanup cancels pending reservations for this parent and settles their waiters.
+No independent worker or persistent tree is owned here. Reload does not by
+itself replay arbitrary old create events; recovery belongs to TimelineTree.
+An accepted creation need not survive parent or Session close.
+
+#### Tests
+
+[branch_flow.rs](../../../../crates/dim-agent-capabilities/tests/branch_flow.rs):
+`parent_close_waits_for_dispatch_before_releasing_branch_reservations`,
+`close_releases_an_unconsumed_create_without_waiting_for_dispatch`.
+
+<!-- generated:plugin TreeTimeline — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
+| 项 | 值 |
+| --- | --- |
+| 作用域 | 分支 |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TreeCommands` |
+| 提供 | — |
+| 被注入于 | — |
+<!-- /generated -->

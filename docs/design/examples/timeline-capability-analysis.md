@@ -162,7 +162,7 @@
 - **转换**：子线变化更新 keyed roster；父亲 turn/end 后基于 read cursor 发布 parent block；tool line 结束按原因/当前驾驶输入决定 idle/ended notice。失败或拒绝的 steer 不算已通知父线。
 - **恢复**：从 Dispatcher committed cut 挂载；按当前子线创建位置、最后 roster/parent block 和目标 read cursor 精准查询。旧 turn 进度不恢复，恢复补写 turn/end 不触发新的 idle notice。
 - **性质/论证**：parent block 只报告身份与位置而不复制父正文；通知依据 line 消费态而非一个原始父信号，消费/删除 held block 后可重算。不同目标 cursor 不混用。
-- **对应**：[timeline_tree.rs](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) 的 BranchLine 与 writer/read-cursor 查询；[BranchTool](../../architecture/rust-agent/plugins/BranchTool.md#branchline)；branch_flow 和 local_execution 的分支交接流程。文档 `tool/use`/`tool/result` 拼写应与实际 `step/tool-use`/`step/tool-result` 区分。
+- **对应**：[timeline_tree.rs](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) 的 BranchLine 与 writer/read-cursor 查询；[BranchLine](../../architecture/rust-agent/plugins/BranchLine.md)；branch_flow 和 local_execution 的分支交接流程。文档 `tool/use`/`tool/result` 拼写应与实际 `step/tool-use`/`step/tool-result` 区分。
 
 ## 17. CollaborationTimeline
 
