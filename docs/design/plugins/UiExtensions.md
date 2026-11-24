@@ -51,7 +51,7 @@ let page = ui.read(ReadRequest { generation, path, offset: 0, limit: None }).awa
 
 ### Dependencies
 
-FileStorage (`add_root`, `list`, `read`, and `open_read`/`read_at`/`close_read` for a page of a prepared file; the reader id stays inside this owner); ManagementMethods' `register` for the `ui.extensions` namespace; PartRegistry to mount the UiResources Session part (defined in the [UiResources contract](UiResources.md)).
+FileStorage (`add_root`, `list`, `read`; a page of a prepared file is `read {path, offset, length}` with the owner's 64 KiB page size, and the reply's `size`/`eof` give the end); ManagementMethods' `register` for the `ui.extensions` namespace; PartRegistry to mount the UiResources Session part (defined in the [UiResources contract](UiResources.md)).
 
 ### Operations
 
@@ -79,7 +79,7 @@ FileStorage (`add_root`, `list`, `read`, and `open_read`/`read_at`/`close_read` 
 | --- | --- | --- | --- | --- | --- |
 | `register` | Validate, copy into a new generation directory, swap the catalog entry, bump the revision, emit the change event | The generation directory is removed, the old entry stays | The registration is dropped with the process row | Sources are retained and restored on the next generation | UiExtensions: the generation directory and its reads |
 | `withdraw` | Remove the entry, cancel admitted reads, wait for them, remove the directory, emit the change event | — | — | — | UiExtensions |
-| `read` | Resolve the generation and the path, read one bounded page under the read counter | The page stops; nothing changes | The read token is released | Admitted reads are cancelled and awaited before the directory goes | UiExtensions |
+| `read` | Resolve the generation and the path, read one page with FileStorage's offset read (64 KiB at most) | The page stops; nothing changes | The read ends with the row | Admitted reads are cancelled and awaited before the directory goes | UiExtensions |
 
 The `ui.extensions.read` client method is the same `read`, served to clients; WebEntry's HTTP route is its transport. Both stay.
 
@@ -114,7 +114,7 @@ The checks below cite [design rules §7, PR #2029](https://github.com/arcships/d
 
 ## Requirements raised to mechanism owners
 
-None. FileStorage's contract (#2016) supplies `add_root`, `list`, `read`, `open_read`, `read_at` and `close_read`.
+None. FileStorage's contract ([PR #2080](https://github.com/arcships/dim/pull/2080)) supplies `add_root`, `list` and the offset `read`.
 
 ## Binding appendix
 
