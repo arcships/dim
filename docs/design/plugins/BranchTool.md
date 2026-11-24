@@ -93,7 +93,7 @@ Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A 
 
 ### Errors
 
-Every kind the owners answer maps onto one code here; a refusal writes nothing.
+Every kind the owners answer maps onto one code here; a refusal writes nothing. The table covers every ending of the four actions, including an ended or protected target and a cancelled create.
 
 | Code | What the model does next |
 | --- | --- |
@@ -101,13 +101,14 @@ Every kind the owners answer maps onto one code here; a refusal writes nothing.
 | `branch_limit_reached` | End an open tool line first |
 | `branch_not_kin` | Address the line it was cut from, or a line it opened |
 | `branch_not_tool_line` | A plugin line follows its creator's protocol; a plugin line reads only the line it was cut from |
-| `branch_ended` | The target ended (TimelineTree's `branch_ended` or the calling line's own end): read the line instead |
-| `branch_cannot_end` | Only a tool line ends itself, and not while its chain holds the conversation line |
+| `branch_ended` | The target's own end is recorded, or the calling line's own end is: read the line instead. Not retryable; an owed last word is delivered by restore |
+| `branch_cannot_end` | Not retryable as is: only a tool line ends itself, and not while its chain holds the conversation line |
 | `invalid_cut` | This request's own start cannot be a cut; report it, do not retry |
 | `beyond_head` | The target's head moved below `after`; read the record again |
 | `not_batch_boundary` | Pick the head from `line` again; the page must start at a batch boundary |
 | `continuation_without_cutoff` | Send `after` with the target's record; a bare continuation needs the original cutoff |
-| `final_undelivered` | The line's end is recorded and its last word is still owed; calling `end` again retries the delivery, so report the end as accepted and the word as pending |
+| `branch_target_protected` | Not retryable now: an ancestor is being ended, or a cascade is ending the target without its own end recorded yet; read the line and report the state |
+| `unknown` | The id is not a line of this Session: report `branch_not_kin` for a pair that does not exist, and never retry the same call |
 | `closed` | The Session is closing; stop |
 | `cancelled` | The admitted creation publishes without a waiter; the tool call has no result and the line exists |
 | `invalid` | Fix the action's fields |
@@ -119,7 +120,7 @@ Every kind the owners answer maps onto one code here; a refusal writes nothing.
 | `create` | Read this request's start as the cut, admit and build through the tree, answer the line id | A cancel before admission writes nothing; after admission the line publishes and the caller sees `cancelled` from its own tool call | Refused `branch_ended`/`closed` | TimelineTree |
 | `message` | Check the pair, write into the target's queue, answer the target id | The write is one commit; a cancelled call writes nothing | Refused `closed` | The target line's input owner |
 | `read` | Resolve the target record, the cursor and the head, read one page, render items | Nothing to release | Refused `closed` | TimelineTree, BranchLine |
-| `end` | Check that the caller is a tool line, then call the tree's `end` even when the line's own end is already recorded: an owed last word answers `final_undelivered` and the call retries the delivery; only an ended line owed nothing answers `branch_ended` | The end settles even if the call stops watching | Refused `closed` | TimelineTree; a message still owed answers `final_undelivered` and is retried |
+| `end` | Check that the caller is a tool line and that its own end is not yet recorded, then call the tree's `end` with the last word; a line that already recorded its own end answers `branch_ended` and an owed last word is delivered by restore | The end settles even if the call stops watching | Refused `closed` | TimelineTree |
 
 ## Supersedes
 

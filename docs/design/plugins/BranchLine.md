@@ -14,7 +14,7 @@ BranchLine owns:
 - **The tool lines it opened and their states.** The roster of open tool lines with the first line of each purpose, in opening order, retired when none is open.
 - **Its read cursors.** The `nextCursor` of its latest successful read of each target it may read.
 - **The parent block.** The head and cursor the line has reported to itself about the line it was cut from, and whether a block is currently held and undelivered.
-- **Its turn and notices.** The state of its current turn, the idle notice to its opener, the ended notice on its opener.
+- **Its turn and notices.** The state of its current turn, and the idle notice it steers into its opener. The roster and the ended notice are written when this line is the opener of a line that ended: the opener's own BranchLine writes them on the opener's own line.
 - **The status note.** One keyed block when the line becomes, or stops being, the conversation line, with the text this owner writes after TimelineTree records the transition.
 - **The model-facing markers.** `<dim-branch-lines>`, `<dim-branch-message>`, `<dim-branch-idle>` and `<dim-branch-ended>`, and the guide entries for them, until this part unloads.
 
@@ -27,6 +27,7 @@ Callers keep: which lines they message or read (BranchTool's kin rules), what a 
 | BranchTool continues a read of a target where the line's last read stopped | Yes, once the cursor is published with the view: look it up in `cursors` rather than call another operation | `view` |
 | Write the roster, the parent block, the idle notice, the ended notice, the status note | No, but not public: these are this owner's own writes, driven by the line's facts | Internal |
 | Tell the opener the line moved: a parent turn end past the cursor | No: it is this owner's fold of its own facts and its own write queue | Internal |
+| Tell the opener a line it opened ended | No: only the opener's own BranchLine can write its line, and the ended line's writer is closing | `branch/ended` fold, internal |
 | Answer what the line is holding back | Yes: `view` reports the held parent block | `view` |
 
 ## Caller example
@@ -88,7 +89,7 @@ let after = line.cursors.iter().find(|c| c.target == target).map(|c| c.cursor).u
 - The status note restates the line's birth identity byte for byte: a compaction replays the note, so it must be self-contained; the identity is written by TimelineTree and repeated here only as text. TimelineTree records the move; this owner writes the note.
 - A restored line writes a missing note once and, on the conversation line, replaces a note an older rule set wrote: the note's text is this owner's, and the tree only knows the transition.
 - The parent block is decided from the line's own state rather than from the parent's signal: a signal that arrives while a block is held must not lose the move, so the queue and the block's consumption decide the write.
-- The idle and ended notices are written into the opener's line through the opener's input owner (`line_owner::<InputQueue>`), not by TimelineTree: the notice is this line's statement about itself, and the opener's queue decides its order.
+- The idle notice is steered into the opener's line through the opener's input owner (`line_owner::<InputQueue>`), not by TimelineTree: the notice is this line's statement about itself, and the opener's queue decides its order. The ended notice and the roster retirement are written by the opener's own BranchLine on its own line when it folds `branch/ended`, because the ended line's scope is closing and its writer must not be the one to tell the opener.
 
 ## Verification
 
@@ -97,6 +98,7 @@ Flow tests on the owner:
 - A line cut from the root knows `main`, `tool` or `host` from its opening facts and reports no cursor before its first read.
 - The roster lists the open tool lines in opening order, retires when none is open, and a child cut after its parent wrote a roster gets one retirement block.
 - An idle tool line steers its opener once per turn end that said nothing, and never while it is the conversation line.
+- A line ended from outside wakes its opener once: the opener's BranchLine writes the roster retirement and `<dim-branch-ended>` on its own line, and the ended line's closing scope writes nothing to it.
 - A move writes one status note per participant in commit order; a reload of the conversation line replaces an outdated note once and writes nothing on a second restart.
 - A parent turn end past the cursor writes one parent block; a block held while a move arrives is written after consumption, deletion or interruption.
 
@@ -116,7 +118,7 @@ None: the `branchLine` wire name keeps its scope and gains one operation; no cli
 | §2 scopes | Branch scope: role, roster, cursors and notes belong to one line and end with it. |
 | §3 orthogonality | It reads its own facts and the directory record; it writes only its own line and steers its opener through the opener's input owner. |
 | §4 rule 1 | Its writes are inputs of its own line, admitted once. |
-| §4 rule 2 | Parent and ended notices travel as facts; the opener's own BranchLine writes its line. |
+| §4 rule 2 | The ended notice travels as `branch/ended`; the opener's own BranchLine writes its line. The idle notice is steered into the opener's queue. |
 | §4 rule 3 | Handlers register tasks; no handler awaits I/O of another owner. |
 | §4 rule 4 | Its state is rebuildable from its own facts; the read cursors are re-derived from its own tool results. |
 | §4 rule 5 | No batch crosses. |

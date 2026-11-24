@@ -116,7 +116,7 @@ A Session part that cannot resolve a line keeps its business blocked; it does no
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionScope` | `identity` for the Session id the store is keyed by, and the branch-construction entry (`openBranch`, target, pending [#2093](https://github.com/arcships/dim/pull/2093)) that builds a line's context; the tree holds and settles what that entry returns. |
+| `S:SessionScope` | `identity` for the Session id the store is keyed by, and the branch-construction entry (`openBranch`; its only caller is this owner, target, pending [#2093](https://github.com/arcships/dim/pull/2093)) that builds a line's context; the tree holds and settles what that entry returns. |
 | `S:dyn TimelineStore` | The line directory and a line's facts in storage, at a fixed head. |
 | `S:GuideEntries` | The `<dim-branch-line>` and `<dim-branch-parent>` entries, until this part unloads. |
 
@@ -125,20 +125,19 @@ A Session part that cannot resolve a line keeps its business blocked; it does no
 | Operation | Intent | Request | Reply | Cancellation | Errors (codes) |
 | --- | --- | --- | --- | --- | --- |
 | `create` | Open a line at a cut of its parent | `{parent, cut, prompt, source, idleNotice?}`, `cancelled` | `{line}` | The caller's cancel stops only the wait for admission: a creation that was admitted builds and publishes, keeps its slot, and answers nothing to a caller that left; before admission nothing is reserved and the reply is `cancelled` | `invalid_parent`, `branch_ended` (the parent ended), `invalid_cut` (over the parent's head, or not an atomic-batch boundary), `branch_not_opener`, `branch_limit_reached`, `cancelled`, `closed` |
-| `end` | End a line and settle it | `{line, source, finalMessage?}` | `{}` | None: an admitted end settles even if the caller goes away | `unknown`, `branch_cannot_end` (the root never ends; the conversation line and its ancestors need a move first), `branch_target_protected` (the target or an ancestor is ending), `final_undelivered` (the line's own end is recorded and its final message is still owed; the call retries delivery only and answers this until the message lands), `branch_ended` (the line is ended and owed nothing), `closed` |
+| `end` | End a line and settle it | `{line, source, finalMessage?}` | `{}` | None: an admitted end settles even if the caller goes away | `unknown`, `branch_ended` (the target's own end is already recorded), `branch_cannot_end` (the root never ends; the conversation line and its ancestors need a move first), `branch_target_protected` (an ancestor of the target is ending, or the target is being ended by a cascade that has not recorded the target's own end), `closed` |
 | `set_default` | Move the conversation to a line | `{line, source}` | `{default}` | None: the move is one commit | `unknown`, `branch_ended` (the target ended), `branch_already_default`, `branch_not_selectable` (a plugin line), `branch_target_protected` (the target or an ancestor is ending), `closed` |
 | `directory` | The lines and the current default, from one read | `{}` | `{default, lines}` | None | `closed` |
 | `line` | One line's record | `{line}` | `record` | None | `unknown` (no such line, or still a reservation), `closed` |
 | `read` | A line's facts at a cutoff, or the line and its ancestors at one cut | `{line, scope?, from?, through?, fields?, limit?}` | `{through, events}` or `{through, rows}` | None: one bounded read | `unknown`, `beyond_head` (a cutoff past the line's head), `not_batch_boundary` (a cutoff inside an atomic batch), `continuation_without_cutoff`, `closed` |
 
-A record is `{line, parent, cut, source, state, head, endEvent?}`; `state` is `open`, `ending` or `ended`. A line whose own `branch/end` is recorded is `ending` until its scope closed and its final message, if any, is delivered; it is `ended` once both are done, and only then does `end` answer `branch_ended` instead of `final_undelivered`. A reservation has no record yet and answers `unknown` until it is published. `read` answers a live line from its scope and an ended line from the store at its fixed head, with the same shape and the same visibility. The chain scope reads only published facts, bounds every ancestor at the cut the line inherited, and keeps the original cutoff across a continuation page. `fields` absent selects the whole event data; ids and sizes cross as strings and numbers; no handle, cursor or channel crosses.
+A record is `{line, parent, cut, source, state, head, endEvent?}`; `state` is `open`, `ending` or `ended`. A line whose own `branch/end` is recorded is `ending` until its scope closed and the parent holds its `branch/ended`; a repeated `end` answers `branch_ended` from that point on. An owed final message is delivered by restore, never by a repeated `end`. A reservation has no record yet and answers `unknown` until it is published. `read` answers a live line from its scope and an ended line from the store at its fixed head, with the same shape and the same visibility. The chain scope reads only published facts, bounds every ancestor at the cut the line inherited, and keeps the original cutoff across a continuation page. `fields` absent selects the whole event data; ids and sizes cross as strings and numbers; no handle, cursor or channel crosses.
 
 ### Errors
 
 | Kind (wire code) | What the caller does next |
 | --- | --- |
 | `invalid_parent` | Retry with an existing line, after reading `directory` |
-| `branch_ended` | The line is gone and owed nothing: read it with `read`, or pick a live line. Not retryable |
 | `invalid_cut` | Retry with the parent's head from `line`, or a cutoff that ends an atomic batch |
 | `branch_not_opener` | Not retryable from this line: only the root and the conversation line open lines; move the conversation first with `set_default` |
 | `branch_limit_reached` | Retry after ending an open tool line |
@@ -146,7 +145,7 @@ A record is `{line, parent, cut, source, state, head, endEvent?}`; `state` is `o
 | `branch_target_protected` | Stop and do not retry the same call: an end already on its way to the target or an ancestor wins; read `line` and act on the state found |
 | `branch_already_default` | Not retryable and nothing happened |
 | `branch_not_selectable` | Not retryable: a plugin line cannot be the conversation line |
-| `final_undelivered` | The line's end is recorded and its message is still owed; call `end` again (retryable) to deliver it. Until it lands the record reads `ending`, not `ended`. The message never delivers twice |
+| `branch_ended` | Not retryable: the target's own end is recorded. An owed final message is delivered by restore, and the message never delivers twice; read the line if the last word matters |
 | `beyond_head` | Retry with the record's head as the cutoff |
 | `not_batch_boundary` | Retry with a reply's `through`, or the head of a record |
 | `continuation_without_cutoff` | Retry with the original `through` on the continuation page |
@@ -159,7 +158,7 @@ A record is `{line, parent, cut, source, state, head, endEvent?}`; `state` is `o
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `create` | Validate parent, cut, opener and cap under one lock, reserve the line, build the scope, write the opening blocks and the first input, publish; a caller that stopped waiting leaves the build running and the slot spent | Before admission: nothing reserved, `cancelled`. After admission: the build continues, the line publishes and charges nothing again; a definitively failed creation writes `branch/create-failed` and releases the slot | The admitted build continues; the line is the Session's, not the caller's | A build in flight finishes or is rolled back before the generation closes; new calls answer `closed` | TimelineTree: the scope, the reservation, the slot and a failed creation's fact |
-| `end` | Check the target, end descendants deepest first, commit `branch/end` (a tool end carries its final message), deliver that message to the parent, close the scope, write `branch/ended` on the parent | None; the call answers when the end settles | The end continues; the caller's absence changes nothing | An end in flight finishes before the generation closes; the close waits for it and for the store's answer | TimelineTree: the delivery, the scope's close and the end facts |
+| `end` | Check the target, end descendants deepest first, commit `branch/end` (a tool end carries its final message), deliver that message to the parent, close the scope, write `branch/ended` on the parent; a delivery that fails is completed by restore, and a repeated `end` answers `branch_ended` | None; the call answers when the end settles | The end continues; the caller's absence changes nothing | An end in flight finishes before the generation closes; the close waits for it and for the store's answer | TimelineTree: the delivery, the scope's close and the end facts |
 | `set_default` | Validate the target and its chain, write `branch/default` on the root, queue one transition per participant, wake the writers | None | Nothing to release | Refused with `closed` once closing starts | TimelineTree records the transitions; each participant's BranchLine writes its own note |
 | `directory` | Read the default and every record under one lock, resolve each head | None | Nothing to release | Pending reads answer at the state they observed | TimelineTree |
 | `line` | Read one record under the tree lock | None | Nothing to release | An ended line answers until its record leaves; an id the Session never had answers `unknown` | TimelineTree |
@@ -168,7 +167,7 @@ A record is `{line, parent, cut, source, state, head, endEvent?}`; `state` is `o
 ## Exceptions with reasons
 
 - A child's opening blocks are written before the child's scope is published: until publication the line has no other owner, so no other owner's timeline is written.
-- `end` delivers a tool end's final message into the parent's timeline: the message is part of the end's settlement, and the accepted design keeps the delivery with the end so `branch/end` carries the message and restore can finish exactly once ([timeline branches §10](../../design/timeline-branches.md#10-ending-a-line)). Delivery happens before the scope close and before `branch/ended`, so a parent that holds `branch/ended` is never owed a message.
+- `end` delivers a tool end's final message into the parent's timeline: the message is part of the end's settlement, `branch/end` carries it, and the accepted design keeps the delivery with the end so restore can finish exactly once ([timeline branches §10](../../design/timeline-branches.md#10-ending-a-line)). Delivery happens before the scope close and before `branch/ended`, so a parent that holds `branch/ended` is never owed a message; a delivery that fails is completed by restore, not by a repeated `end`.
 - `read` resolves a live line through the directory and returns its facts unchanged: facts are shared state under design rules §4, not another owner's folded state.
 - An ended line's facts are answered here because the line's own owners are gone with its scope; the tree keeps the fixed head and the directory record.
 - `set_default` queues one transition per participant: the note's key and text are BranchLine's, and only the transition is recorded here, in commit order, because a restart must not lose it.
@@ -180,7 +179,7 @@ Flow tests on the owner:
 
 - `create` charges opener, cap and reservations under the same lock: a second create and a `set_default` interleaved with it cannot both pass a check; a caller that cancels after admission leaves a line that publishes, and a definitively failed creation releases its slot and writes `branch/create-failed`.
 - `end` ends descendants before their parent, records one `branch/ended` each, writes `branch/ended` only after the final message is delivered, and refuses the root and the conversation line's chain with their own kinds.
-- A tool end whose final message cannot be delivered answers `final_undelivered`; a later `end` or a restore delivers it exactly once.
+- A tool end whose final message cannot be delivered at the time still ends the line; restore delivers the message exactly once, and a repeated `end` answers `branch_ended`.
 - `directory` answers `default` and the lines from one read under a concurrent move or end; `line` answers an open, an ending and an ended line, and `unknown` for a reservation or an id the Session never had.
 - `read` answers an ended line at its fixed head with the same field selection as the live line, refuses a cutoff inside an atomic batch, and keeps the original cutoff across a continuation page.
 - Close cancels reservations, joins builds, closes every live scope and answers after the store's last batch; a late `TreeHandle` use answers `closed`.
@@ -350,8 +349,6 @@ pub enum LineError {
     BranchAlreadyDefault { line: String },
     #[error("line {line} cannot be the conversation line")]
     BranchNotSelectable { line: String },
-    #[error("line {line} ended but its final message is not delivered")]
-    FinalUndelivered { line: String },
     #[error("cutoff {cutoff} is past line {line}'s head {head}")]
     BeyondHead { line: String, head: u64, cutoff: u64 },
     #[error("cutoff {cutoff} is inside an atomic batch")]

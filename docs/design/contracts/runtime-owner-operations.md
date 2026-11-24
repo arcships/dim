@@ -4,7 +4,7 @@
 
 | Caller → owner | Final API |
 | --- | --- |
-| Line directory, lifecycle and history callers → `timelineTree` | The tree's face is [TimelineTree](../plugins/TimelineTree.md): `create`, `end`, `set_default`, `directory`, `line`, `read`. This table's `timelineTree` rows below, and the `timelineTree.call` operation, are superseded. |
+| Line directory, lifecycle and history callers → `timelineTree` | The tree's face is [TimelineTree](../plugins/TimelineTree.md): `create`, `end`, `set_default`, `directory`, `line`, `read`. A Session part reaches a branch owner by line id with `line_owner::<T>(line)`; no forwarding call exists. |
 | Language readers → PromptSources | `sessionLanguage.get`. |
 | Language updates → App Server | [`session.language.update`](session-access.md) accepts the existing language code or clear action. The owner serializes persistence, live-state replacement and Prompt adoption on main and loaded branches before replying. |
 | Prompt → PromptRegistry; guide and tool contributors → their registries | `initialPromptConfiguration.get`, `promptHost.load`, `guideEntries.register`, `toolRegistry.register`, `toolSourcesView.get/observe`. |
