@@ -104,6 +104,8 @@ The four operations hold no resource and wait for nothing; their rows cover only
 
 ## Exceptions with reasons
 
+- A profile that does not install this owner has no `contextFacts` name; a part that requires it fails at assembly. Profiles that do not compact therefore omit both `contextFacts` and `summaryStrategy` rather than binding an absent value.
+
 - `algorithm` is absent for a model whose count cannot be composed from contributions: reporting an algorithm it does not have would make `contributions` and `estimate` look available.
 - `estimate` takes the algorithm as data: a caller that saved contributions in a Timeline fact reads them back after a restart, and the saved algorithm is the only proof that the numbers share one rule.
 - `not_adopted` covers both a missing snapshot and a snapshot of another model: the caller's next step is the same, adopting the model again.

@@ -95,6 +95,8 @@ A strategy failure after model work is the `failed` outcome with its diagnostics
 
 ## Exceptions with reasons
 
+- A profile that does not compact installs neither this owner nor `contextFacts`; a part that requires `summaryStrategy` fails at assembly instead of reading an absent policy.
+
 - `describe` and `compact` take the model selection as data and ask `contextFacts` for the limits: a model object in the input made the strategy hold another owner's counter, and a number in the input would freeze the capacity the request actually has.
 - `failed` is an outcome rather than an error: the compaction fact reports the same diagnostics as a completion, and the caller writes that fact either way.
 - `prior` carries the earlier pass of a re-planned compaction: the caller re-plans when the first pass does not fit, and the second pass must continue the same request budget.

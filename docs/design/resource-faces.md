@@ -606,15 +606,17 @@ code the operation already uses, so one code vocabulary serves the local and the
 
 The repository and Timeline operations use two names on the daemon that owns the state: process
 `store` provides the repository operations (§5.2), retaining its existing Timeline `query`.
-The Session-scoped `timelineStore` and its completion notifications are replaced by the
-[SessionStore contract](https://github.com/arcships/dim/pull/2091) (#2018), which keeps the
-operations, the request and reply shapes and the notification shape. Both use the existing state
-owner; the split follows §9(6), without changing Session placement or the storage engine.
+The Session-scoped `timelineStore` and its completion notifications keep their operations and
+notification shape in the [SessionStore contract](https://github.com/arcships/dim/pull/2091)
+(#2018); SessionScope only installs the binding in the Session instance. On the Session face the
+Session id is the instance's identity, not a request field: a request that names another Session
+is `invalid`. Both use the existing state owner; the split follows §9(6), without changing Session
+placement or the storage engine.
 SessionTitle and FileAccess use the process repository operations in the [resource owner contract](contracts/resource-owner-operations.md).
 
 | Family | Operations |
 | --- | --- |
-| Timeline (`timelineStore`) | Replaced by the [SessionStore contract](https://github.com/arcships/dim/pull/2091) (#2018); #2091 adds the operations and the completion shape back there. |
+| Timeline (`timelineStore`) | The face stays and its owner is SessionStore; only the binding is installed in a Session instance ([SessionStore](https://github.com/arcships/dim/pull/2091), #2018). On the Session face the Session id is the instance's identity: the requests carry no `sessionId`, and a request that names another Session is `invalid`. |
 | Timeline completion (`timelineStore`) | Replaced by the [SessionStore contract](https://github.com/arcships/dim/pull/2091) (#2018). |
 | Session rows (`store`) | The repository operations listed in §5.2 |
 | Worktree association (`store`) | `associateWorktree`; [service faces](service-faces.md) §4.8 |

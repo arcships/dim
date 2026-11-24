@@ -299,6 +299,8 @@ loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: fa
 
 ### 4.8 旧主机端口：`agentConfig` 等五个
 
+`agentConfig`、`skillsConfig` 与 `collaborationConfig` 三个面由 [SessionScope 契约](plugins/SessionScope.md) 取代（#2093）：值是各自的安装函数提供的 `session_value`，面从目录移出；下面的形状只记录旧面。
+
 这五个端口的内容是配置或一次写入：所有者把操作绑定到端口类型上，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`collaborationSession` 的审批目标读取由 [Collaboration owner](subagent-tool-approval.md#31-data-face) 定义。
 
 ```text

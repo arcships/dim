@@ -8,7 +8,7 @@ SessionScope is the runtime's Session owner: the creation record and identity, t
 
 SessionScope owns:
 
-- **The creation record.** The Session's mount list, working directory, model selection, system prompt, permission preset, collaboration role, interactive flag, language seed and initial title, fixed when the Session is built. Every member is fixed for the Session's whole life; a caller reads the live reply language from `sessionLanguage`, never from this value.
+- **The creation record.** The Session's mount list, working directory, model selection, system prompt, permission preset, collaboration role, interactive flag, language seed, initial title and excluded tools, fixed when the Session is built. Every member is fixed for the Session's whole life; a caller reads the live reply language from `sessionLanguage`, never from this value.
 - **Identity.** The Session id and whether the Session was restored from the store.
 - **The phase.** Loading, Active, Closing, Closed, monotonic and never replaced by an earlier phase. `activated` and `closing` are the waits on the two transitions.
 - **Activity leases.** An accepted piece of work holds a lease so an idle release does not end the Session first. Every lease is bound to the calling row and the owner settles it at the row's unload, so no caller frees anything on an error path. `hold` answers an id for accepted work; the id is bound to the calling row and the owner settles it at the row's unload. A lease reports nothing and cancels nothing.
@@ -105,7 +105,7 @@ self.nodes.insert(id, branch);
 
 SessionScope injects nothing. The assembly gives the owner its creation record and the Session anchor; the trusted host installs the content definitions the Session may mount. SessionScope no longer publishes the Agent's configuration, the Skills or Collaboration factory texts, or the names of the five host ports (`historyRenderer`, `contextModelHost`, `prepareModelHost`, `prepareContextHost`, `compactionStrategyHost`); those names leave the catalog (delivery).
 
-The Session store constructs the Timeline engine and its Session-scope binding; SessionScope installs that binding in the Session instance and never hands it to a process caller. The operations are the engine's (#2018): the Session face publishes the per-line reads and the completion subscriptions, while `query` and `sessionConfig` stay on the process face `store` because an unloaded Session has no Session instance to host them. One engine, one operation set, one spelling per operation.
+The Session store constructs the Timeline engine and its Session-scope binding; SessionScope installs that binding in the Session instance and never hands it to a process caller. The operations are the engine's (#2018): the Session face publishes the per-line reads and the completion subscriptions, while `query` and `sessionConfig` stay on the process face `store` because an unloaded Session has no Session instance to host them. On the Session face the Session id is the instance's identity: its requests carry no `sessionId`, and a request that names another Session is `invalid`. One engine, one operation set, one spelling per operation.
 
 ### Operations
 
@@ -122,10 +122,10 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | `reportFault` | Record the fault that stopped the Session | `{fault}` | `{}` | None | None |
 | `failure` | The fault in force, if any | `{}` | `{fault?}` | None | None |
 | `mount` | Create a Session-owned content instance from a definition | `{group, definitionId, instanceData}` | `{instanceId}` | The caller drops the call; an instance it no longer waits for is shut down before the reply | `invalid`, `not_ready`, `cleanup`, `closed` |
-
-A registered Session extension definition must activate its instance rows; a host-added optional group keeps its optional rows, so a Pending row there is not `not_ready`.
 | `unmount` | Retire a content instance this Session owns | `{instanceId}` | `{}` | None; the owner completes the release | `unknown` when no live instance has the id; `cleanup`; `closed` |
 | `openBranch` (Rust-only, `#[rutis::service(skip)]`) | Construct a branch's runtime context for the branch tree | `{branchId, ancestors}` | the branch's runtime context (see Exceptions) | The caller drops the call; a construction the caller abandoned is shut down before the branch becomes visible | `closed`, `build` |
+
+A registered Session extension definition must activate its instance rows; a host-added optional group keeps its optional rows, so a Pending row there is not `not_ready`.
 
 `listener` is a callback by reference: it runs outside the owner's locks and outside the Timeline's commit lock. A lease id is an owner-issued token bound to the calling row; it carries no authority, the owner settles it at the row's unload, and a caller never has to free it on an error path.
 
@@ -147,13 +147,21 @@ A registered Session extension definition must activate its instance rows; a hos
 | Operation | Normal path | Caller cancels or unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- |
 | `hold` | The owner checks the phase, increments the hold count and registers the lease under the calling row | The row's unload releases every lease the row still holds | No new lease is issued once an idle release is decided; an existing lease never delays a close | SessionScope |
-| `observeFault` | The owner registers a listener under the calling row, calls it once with the fault in force (none included), then on every later report | The row's unload stops the listener and drops the registration | The listener stays until the generation unloads; a report after close is ignored | SessionScope; the listener's work by the calling row |
+| `observeFault` | The owner registers a listener under the calling row, calls it once with the fault in force (none included), then on every later report | The row's unload stops the listener and drops the registration | The listener stays until the generation unloads; a report after close is still written to the record but reaches no new subscriber | SessionScope; the listener's work by the calling row |
 | `release` | The owner removes the lease or subscription and disposes it | A dropped call leaves the lease in place; the row's unload settles it | An id of an unloaded generation is `closed` | SessionScope |
 | `mount` | The owner creates the instance in the Session subtree, waits for its required rows, then answers the id | A dropped call shuts the half-made instance down; a definition that never activates is shut down and answers `not_ready` | New mounts are refused; in-flight mounts settle, and every instance is shut down when the Session scope unloads | SessionScope |
 | `unmount` | The owner shuts the instance down, propagates a shutdown failure as `cleanup`, and forgets the id | A dropped call does not cancel the shutdown | The Session's unload shuts down every remaining instance | SessionScope |
 | `openBranch` | The owner admits the id, waits for the branch scope and its required parts, and hands the context to the tree | A dropped call settles the half-made branch before it is visible | `closed` once the Session is closing; a Construction in flight settles or ends `closed` | SessionScope creates; TimelineTree holds and closes (Exceptions) |
 
-### A branch's runtime context: the handover
+#### Delivery mapping: the current instance errors
+
+`SessionInstanceError::Create` today covers both a caller's bad definition and a runtime creation failure; the delivery splits it into `invalid` (the group is outside the Session's subtree, the definition is unknown) and `not_ready` (the definition's row failed to activate, with the row and its state). `remove` silently succeeds for an unknown id today; the delivery makes a repeated `unmount` answer `{}` and an id this Session never issued `unknown`.
+
+### Flows not listed below
+
+`config`, `identity`, `phase`, `activated`, `closing`, `reportFault` and `failure` hold no resource. A call in flight when the Session closes answers its value or ends: `activated` answers `{active: false}`, `closing` returns, `failure` keeps the last recorded fault, and `reportFault` keeps writing to the record after close.
+
+## A branch's runtime context: the handover
 
 `openBranch` hands one object between two owners. Both cite [lifecycle.md §1](../../architecture/rust-agent/lifecycle.md) for the scope tree, its close rights and the unload order, and [single-tree §Close](../../architecture/rust-agent/single-tree.md#关闭) for what a failed construction settles before its cause is reported.
 
@@ -174,7 +182,7 @@ A registered Session extension definition must activate its instance rows; a hos
 - `config` is the persisted record's serde form: `interactive` is omitted when true because only the native store writes that form. A caller that decodes the value must treat absence as true; the live reply language is `sessionLanguage`, not this record.
 - The failure record keeps only the first fault, and a storage failure supersedes a non-storage one: work that fails after the Session already stopped learns the original cause, not its own.
 - A fault listener that returns an error stops receiving: the owner drops the registration and the lease, and the fault record is unchanged.
-- `identity` carries no version: the id and the restored flag are fixed at creation.
+- `identity` carries no version: the id and the restored flag are fixed at creation. `failure` answers `{fault}` with the fault or none, matching the reply column.
 - A lease is a value, not a handle: it names nothing the caller can use except in `release`, and the owner releases every lease at the row's unload, so a caller that loses the id leaks nothing. `release` only lets an idle release happen sooner.
 - Content instance ids are the Session's, not the caller's: the Session's close shuts down every instance it mounted, so a part that never unmounts leaves obsolete content published until the Session ends, without breaking the owner.
 
@@ -230,7 +238,7 @@ This contract replaces the Session-scope paragraphs and rows that state these na
 - `docs/design/resource-faces.md` §5: the `timelineStore` rows and the Session-scope sentence, now pointers to this contract; the engine and its process face remain #2018's.
 - `docs/design/plugin-contract.md`: the `sessionIdentity`, `sessionLifecycle`, `sessionConfig` and `agentConfig` rows of the named-services table, the `session` row of the scope table, and R2's needed names.
 
-These documents still name the deleted Session services in dependencies; #2025's delivery updates them in the same change: `docs/design/session-typescript.md` (307, 320-322, 329, 373, 405, 470), `docs/design/contracts/session-boundary.md:560`, `docs/design/plugins/ShellInput.md:35`, `docs/design/plugins/Questions.md:50,575`, `docs/design/plugins/SessionTitle.md:75-76,126,408`, `docs/design/plugins/Collaboration.md:47,63`, `docs/design/plugins/Report.md:133`, `docs/design/plugins/Pursuit.md:46,184`, `docs/design/plugins/EventHub.md:399,597`, `docs/design/plugins/EnvironmentClients.md:155`, `docs/design/plugins/CodeMode.md:455` and `docs/design/thin-instances.md:281`.
+These documents still name the deleted Session services in dependencies; #2025's delivery updates them in the same change: `docs/design/session-typescript.md` (307, 320-322, 329, 373, 405, 470), `docs/design/contracts/session-boundary.md:560`, `docs/design/contracts/session-access.md:566`, `docs/design/appserver/session-files.md:449`, the design-tree pages `ShellInput.md:35`, `Questions.md:50,575`, `SessionTitle.md:75-76,126,408`, `Collaboration.md:47,63`, `Report.md:133`, `Pursuit.md:46,184`, `EventHub.md:399,597`, `EnvironmentClients.md:155`, `CodeMode.md:455`, `thin-instances.md:281`, and the implementation pages `WorkspaceTools.md`, `Skills.md`, `ToolRegistry.md`, `PromptSources.md`, `PromptSuggestion.md`, `Questions.md`, `ShellInput.md`, `Prompt.md`, `Permission.md`, `Hooks.md`, `BranchTool.md`, `Attachments.md` and `TimelineTree.md`, which list `S:SessionConfig`, `S:SessionIdentity`, `S:SessionLifecycle` or `S:SessionLoader` as injected services.
 
 Rule D: no client wire protocol or user-visible behavior changes; every change here is plugin-facing.
 

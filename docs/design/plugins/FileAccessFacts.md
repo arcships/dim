@@ -72,7 +72,7 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 
 | Operation | Normal path | Caller cancels or unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- |
-| `check` | The owner resolves the target, reads the owned file and the grants, and answers the facts | A dropped call ends the reads; nothing is decided | An in-flight call ends `closed` | The calling row; the owner holds no resource |
+| `check` | The owner answers the facts for the caller's resolved path, reading the owned file and the grants | A dropped call ends the reads; nothing is decided | An in-flight call ends `closed` | The calling row; the owner holds no resource |
 | `workspaceRoots` | The owner resolves the cwd, returns the workspace and the managed worktree roots | A dropped call ends the read | `closed` | The calling row |
 
 ## Exceptions with reasons
@@ -145,7 +145,7 @@ pub struct Check {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Facts {
+pub struct FileFactsReply {
     pub workspace: bool,
     pub system: bool,
     pub owned: bool,
@@ -183,7 +183,7 @@ impl PublicService for FileAccessFacts {}
 
 #[rutis::service(name = "fileAccessFacts")]
 impl FileAccessFacts {
-    pub async fn check(&self, request: Check, cancelled: CancelledFn) -> Result<Facts, FactsError> { /* ... */ }
+    pub async fn check(&self, request: Check, cancelled: CancelledFn) -> Result<FileFactsReply, FactsError> { /* ... */ }
     pub async fn workspace_roots(
         &self,
         request: WorkspaceRoots,

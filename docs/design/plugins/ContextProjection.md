@@ -34,7 +34,9 @@ Callers keep:
 let streamed = projection
     .rendered_stream(RenderedStreamRequest { through, batch: 256 })
     .await?;
-let request = settings.request(streamed.history.iter().map(|entry| entry.message.clone()).collect());
+let request = settings.request(
+    streamed.history.iter().map(|entry| std::sync::Arc::new(entry.message.clone())).collect(),
+);
 ```
 
 ```rust

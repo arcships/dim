@@ -59,7 +59,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- |
 | Process (root) | Host start | Host shutdown | — (process parts provide their own) |
 | Agent (`agent`) | Agents creates an Agent | Agent close, host shutdown | Host-internal |
-| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionScope` ([SessionScope](plugins/SessionScope.md)); the branch group is reached by line id, not through a Session service |
+| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionScope` ([SessionScope](plugins/SessionScope.md)); a Session's line directory is the TimelineTree part, and the branch group is reached by line id |
 | Branch (`branch`) | TimelineTree creates a branch | The branch ends, or its Session closes | `timeline`, `dispatcher`, `branchLifecycle`, `timelineIdentity` |
 
 Visibility follows the tree, as in [principles §2](../architecture/rust-agent/principles.md):
@@ -67,7 +67,7 @@ Visibility follows the tree, as in [principles §2](../architecture/rust-agent/p
 | Direction | How |
 | --- | --- |
 | Up (an enclosing instance, the process) | Inject the service by name |
-| Down (Session to branch) | `line_owner::<T>(line)`: any branch-group data face by line id ([ADR 027](https://github.com/arcships/dim/pull/2029)); branch creation is `timelineTree.create`. Never by injecting a branch service |
+| Down (Session to branch) | `line_owner::<T>(line)`: any branch-group data face by line id ([ADR 027](https://github.com/arcships/dim/pull/2029)), except registration points and lifecycle services; branch creation is `timelineTree.create`. Never by injecting a branch service |
 | Sideways (sibling branches, other Sessions) | Not visible. Go through a common ancestor's business service, such as `sessions` |
 
 The scope roots, the facades and their publication rules are mechanisms. Each Session and branch is
