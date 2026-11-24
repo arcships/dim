@@ -133,7 +133,7 @@ The four methods are asynchronous:
 | `read` | `{root, path}` | Bytes, received as `Uint8Array` by TypeScript |
 | `list` | `{root}` | Definition-directory entries `[{name, kind}]`, where `kind` is `file`, `directory` or `other` |
 | `replace` | `{root: {project: canonicalCwd}, path, bytes}` | `void`, after existing atomic replacement and durability check |
-| `createDirectory` | `{root: {project: canonicalCwd}}` | `void`, after ensuring `.dimcode`, then `.dimcode/workflows`, through existing non-recursive creates |
+| `createDirectory` | `{root: {project: canonicalCwd}}` | `void`, after ensuring `.dimcode`, then `.dimcode/workflows`, through `createDirectory` for each level |
 
 The plain Rust methods take serde request types. `read` returns
 `std::result::Result<rutis_bridge::session::Bytes, WorkflowFilesError>`;

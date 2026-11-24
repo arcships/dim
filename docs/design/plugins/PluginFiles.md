@@ -75,18 +75,18 @@ if (page.ok && page.value) {
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `open` | Open a scope bound to the calling row | — | scope | While the root is opened | `invalid_path`, `io`, `closed`, `internal` |
-| `withLock` | Change one text record under FileStorage's `update` | `{name}` and the `work` callback | the callback's own result | Before the replacement; the file is unchanged | `invalid_data`, `invalid_path`, `io`, `unsynced`, `closed`, `internal` |
-| `read` | One page of a file by path | `{name, offset, length}` | `{data, eof, size}` or none | Before the reply; nothing changes | `invalid_data`, `invalid_path`, `io`, `closed` |
-| `readBytes` | The whole file, envelope included, at most 8 MiB | `{name}` | bytes or none | Before the reply | `invalid_data`, `invalid_path`, `io`, `closed` |
-| `replaceBytes` | Replace the file with raw bytes, at most 8 MiB | `{name, bytes}` | unit | Before the replacement | `invalid_data`, `invalid_path`, `io`, `unsynced`, `closed` |
-| `writeStream` | Replace the file from a stream of chunks | `{name}` and the `next` callback | unit | Before the replacement; the old content stays | `invalid_path`, `io`, `unsynced`, `closed` |
-| `directory` | Make the work directory tree and return its absolute path | `{name}` | path | Between levels; created ancestors stay | `invalid_path`, `io`, `unsynced`, `closed` |
-| `list` | One level below `prefix` | `{prefix}` | entries | Before the reply | `invalid_path`, `io`, `closed` |
-| `remove` | Remove a file or a directory tree; an absent entry counts as removed | `{name}` | unit | Before the unlink; a tree can be partly removed, a retry is safe | `invalid_path`, `io`, `unsynced`, `closed` |
+| `withLock` | Change one text record under FileStorage's `update` | `{name}` and the `work` callback | the callback's own result | Before the replacement; the file is unchanged | `invalid_data`, `invalid_path`, `io`, `unsynced`, `cancelled`, `closed`, `internal` |
+| `read` | One page of a file by path | `{name, offset, length}` | `{data, eof, size}` or none | Before the reply; nothing changes | `invalid_data`, `invalid_path`, `io`, `cancelled`, `closed` |
+| `readBytes` | The whole file, envelope included, at most 8 MiB | `{name}` | bytes or none | Before the reply | `invalid_data`, `invalid_path`, `io`, `cancelled`, `closed` |
+| `replaceBytes` | Replace the file with raw bytes, at most 8 MiB | `{name, bytes}` | unit | Before the replacement | `invalid_data`, `invalid_path`, `io`, `unsynced`, `cancelled`, `closed` |
+| `writeStream` | Replace the file from a stream of chunks | `{name}` and the `next` callback | unit | Before the replacement; the old content stays | `invalid_path`, `io`, `unsynced`, `cancelled`, `closed` |
+| `directory` | Make the work directory tree and return its absolute path | `{name}` | path | Between levels; created ancestors stay | `invalid_path`, `io`, `unsynced`, `cancelled`, `closed` |
+| `list` | One level below `prefix` | `{prefix}` | entries | Before the reply | `invalid_path`, `io`, `cancelled`, `closed` |
+| `remove` | Remove a file or a directory tree; an absent entry counts as removed | `{name}` | unit | Before the unlink; a tree can be partly removed, a retry is safe | `invalid_path`, `io`, `unsynced`, `cancelled`, `closed` |
 | `quiesce` | Stop admitting work on the scope | — | unit | None; admitted work keeps its time | `closed` |
 | `close` | Stop the scope and settle admitted work | — | unit | None; the owner completes | `closed` |
 
-`withLock`'s `work` is a direct callback, not a request field. It receives the current text, or none when the file is absent, and returns the replacement text (none keeps the file unchanged) together with its own result. It only computes: an external wait, another owner or another PluginFiles call inside `work` holds the record for that whole wait. The owner runs `work` under FileStorage's `update`, so two processes cannot interleave; a repeated result is idempotent because the replacement is compared with the current text.
+`withLock`'s `work` is a direct callback, not a request field. It receives the current text, or none when the file is absent, and returns the replacement text (none keeps the file unchanged, mapped to FileStorage's `update` with a `None` replacement) together with its own result. It only computes: an external wait, another owner or another PluginFiles call inside `work` holds the record for that whole wait. The owner runs `work` under FileStorage's `update`, so two processes cannot interleave; a repeated result is idempotent because the replacement is compared with the current text.
 
 `read` returns a page of at most 64 KiB and the file's size; an offset equal to the size is an empty page with `eof`, an offset above it is `invalid_data`, and a missing file is none. `readBytes` and `replaceBytes` are one operation each and share the 8 MiB bound.
 
@@ -97,6 +97,7 @@ if (page.ok && page.value) {
 | `invalid_path` | After fixing the name | A relative path escaping the root, an absolute path, a reserved name, or a name that is not one component; nothing changed |
 | `invalid_data` | After fixing the data | A text file is not the version-1 envelope, a whole file is over 8 MiB, or a page offset is above the size; nothing changed |
 | `io` | Yes, after fixing the environment | A filesystem refusal or an unavailable root; the message says which; a read shows whether the earlier call changed anything |
+| `cancelled` | Yes, the same call | The caller's own cancellation ended the call before the replacement; nothing changed |
 | `unsynced` | Not as an unchanged write | The bytes are in place but durability is unconfirmed; a read shows them and a repeated call confirms |
 | `closed` | Yes, against a new scope | The provider or this scope is unloading; the operation did not run or its result is unknown past the replacement |
 | `internal` | No | The host worker failed; the message is diagnostic, and the caller reports it without retrying the side effect |
@@ -113,6 +114,12 @@ if (page.ok && page.value) {
 | `list`, `remove` | FileStorage `list`/`remove` on the resolved path | Before the reply or the unlink | The call ends `cancelled` | Pending calls end `closed` | FileStorage |
 | `open`, `quiesce`, `close` | Bind or stop the scope; `close` joins admitted work | None | The row's unload closes the scope | A new scope needs a new provider generation | The scope by the calling row; the provider by its owner |
 
+## Callers and migration
+
+- Workflow's run store has one commit point. A write first writes the new content to `workflow/runs/<token>.json` (a new file), then makes one `update` of `workflow/runs.version`: the callback compares the current token with the one read before the write; on a mismatch it returns `None`, the writer deletes its new file, rereads and retries; on a match it writes the new token. That pointer update is the only commit; after it the writer deletes the old data file, and a failed delete leaves an orphan. A reader reads `runs.version` and reads the data file only when the token changed; if the data file is gone (a later write deleted it), it rereads the token and retries. Startup deletes `runs/*.json` the token does not point to, and when `runs.version` is absent but the old `runs.json` exists, it migrates once. A data-file write failure and a pointer-update failure are both uncommitted and return an error; there is no committed-but-unreadable state. Acceptance: a warm reader plus a write that fails between the data file and the pointer sees the old consistent snapshot and the writer gets an error; two concurrent writers, one retries and succeeds.
+- Scheduler (jobs, runs, wakeups), EventHub (publish records) and Modality (adapter files) keep their record shapes and move to `withLock`, `readBytes`/`replaceBytes`, `writeStream` and `read`; each is checked in the delivery.
+- `runtime/fixtures/files-*.ts`, `workflow-package.ts` and `crates/dim-app-server/tests/plugin_files_flow.rs` move to the new flows.
+
 ## Exceptions with reasons
 
 - The scope is an object, not an id: it is the calling row's lifetime, `close` is registered with the row's effect, and the provider owns the root. The shared lifecycle is the process part's own; no caller holds it after its row unloads.
@@ -128,7 +135,7 @@ The `dimcode/plugin` SDK is visible to third-party trusted plugins. This contrac
 - `openRead` is replaced by `read(name, offset, length)`.
 - `remove` no longer returns `locked`; it waits for the key.
 - `FileError` drops `locked` and `exists` and adds `unsynced`.
-- `npm/plugin.d.ts` is updated in the same change; the migration for every caller is in the delivery tables on [#2016](https://github.com/arcships/dim/issues/2016).
+- `npm/plugin.d.ts` changes in the implementation delivery together with the provider and every caller; this contract states the face they implement. The migration rows are in the delivery tables on [#2016](https://github.com/arcships/dim/issues/2016).
 
 ## Supersedes
 
@@ -241,6 +248,8 @@ pub enum PluginFileError {
     Io { message: String },
     #[error("{message}")]
     Unsynced { message: String },
+    #[error("{message}")]
+    Cancelled { message: String },
     #[error("{message}")]
     Closed { message: String },
     #[error("{message}")]

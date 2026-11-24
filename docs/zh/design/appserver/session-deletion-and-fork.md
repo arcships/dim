@@ -411,7 +411,7 @@ S5c 与 S5a 一样只实现控制节点。在控制节点上，FileStorage 正�
 | [AcpGateway](../plugins/AcpGateway.md)、[RemoteGateway](../plugins/RemoteGateway.md) | 原文说分叉时重置预设，#26 已改为：预设随事实一起复制 |
 | [文档索引](../../../INDEX.md) | 链接到本页 |
 | [Session 文件](session-files.md) | §5.3 和 §12 原说节点离线时删除照样提交。这对其中的 Session 文件步骤成立；整个删除还会先在节点上移除命令输出（§11）。§5.2、§5.4 和 §6 不变，就是本页执行的步骤；§5.4 注明移除现在会同步 |
-| [FileStorage](../../../architecture/rust-agent/plugins/FileStorage.md) | 移除会同步被移除条目的父目录（§14） |
+| [FileStorage](../../../architecture/rust-agent/plugins/FileStorage.md) | 本节由 FileStorage 契约取代（§14）。 |
 | [单树装配](../../../architecture/rust-agent/single-tree.md) | `Agents` 重载一行：重载结算只停止重载中的 Session 所领导的成员（#127） |
 | [Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-字段) | 状态说明：分叉复制存储的 `SessionConfig` 文本，`interactive` 的省略规则随之保留 |
 
@@ -442,7 +442,7 @@ S5c 与 S5a 一样只实现控制节点。在控制节点上，FileStorage 正�
 
 | 对象 | 需求 | 状态 |
 | --- | --- | --- |
-| FileStorage | `remove` 在报告成功之前同步被移除条目的父目录（条目原本就不存在时也同步），同步失败时返回 `Unsynced`。Windows 没有目录同步，与 `replace` 一样依赖 NTFS 元数据日志。用于让删除的移除在提交之前落盘（§4） | 已在 S5c 中实现（[FileStorage](../../../architecture/rust-agent/plugins/FileStorage.md#listing-and-removal)） |
+| FileStorage | 本节由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md#listing-and-removal) 取代。 | 已在 S5c 中实现 |
 | Loop、InputQueue、BackgroundExec | 作用于固定切点的只读静止点检查：没有未结束的轮次，没有等着驱动轮次的 Queue 或 Steer 输入，每个后台任务都已结束且其唤醒已发出（§6.2）。某个能力的重载规则以后要从其他事实开始工作时，就把这些事实加入检查，分叉因此始终不会开始任何工作 | Agents 通过 Timeline 数据面查询这些能力的公开事实（§16 D1）。某条重载规则以后要从其他事实开始工作时，由其所有者扩展 [agents/fork.rs](../../../../crates/dim-app-server/src/agents/fork.rs) 中的检查。BackgroundExec 拥有包含代边界的共享唤醒谓词 |
 | Collaboration | 分支重建时，已送达但没有结果的请求以失败结算；只有成员关系指明本 Session 是 leader 时才停止该成员。一般地，重载结算只处理本 Session 持有的资源。原先重建会停止事实中指名的任何已加载 Session（[collaboration.rs](../../../../crates/dim-app-server/src/collaboration.rs) 的 `rebuild`），因此分叉一个 leader 会停止源的成员 | 已实现（[#127](https://github.com/arcships/dim/issues/127)）。#127 之前，这种重载会停止已加载的该成员；现在成员自身重载规则启动的工作会继续运行，leader 已把请求结算为失败，成员发给 leader 分叉的 `agent` 消息因没有成员关系而被拒绝（`TeamMemberNotFound`）（[#97 评审](https://github.com/arcships/dim/pull/97)）。重启后 Team 保留：关系由存储的 leader 重建（[Collaboration §6](../plugins/Collaboration.md#6-委派的所有权与寿命)）。验收第 7 条 |
 | Goal（P5，[#69](https://github.com/arcships/dim/issues/69)） | 复制来的目标不得在 F 中驱动轮次，也不是 F 的目标。分叉在其事务中、复制来的事实之后写 `session/forked`（§6.5）；Goal 从该事实之后折叠 `main`，并对复制来的生效目标清除一次（[Goal](../plugins/Goal.md) A11） | 随 Goal 验收实现（[#209](https://github.com/arcships/dim/pull/209)） |

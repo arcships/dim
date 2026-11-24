@@ -20,7 +20,7 @@ directly. The rutis binding dispatches its data arguments and returns its result
 | --- | --- |
 | FileScope.directory(name) → FileResult of node-absolute path | The file scope validates the scoped name, creates parents and returns the directory. Modality passes the node-local input filenames and work directory directly to its native adapter. OCR uses its current work/tmp/cache paths and grants. Existing exports use the recorded result filename. |
 | FileScope.read(name, offset, length) → FileResult of {data, eof, size} or null | The file scope reads one page through FileStorage's offset read; no reader id crosses. A scoped name never requires a caller-side root lookup. |
-| FileScope.writeStream(name, next) → FileResult of null | The file scope consumes a reader to EOF under the destination lease. A rutis callback supplies bytes or EOF for the native reader parameter. Preserve atomic replacement and cleanup on failure or caller shutdown. The existing bounded whole-file replaceBytes remains available for small files. |
+| FileScope.writeStream(name, next) → FileResult of null | The file scope consumes a reader to EOF and replaces the file through FileStorage's `write` with a source. A rutis callback supplies bytes or EOF for the native reader parameter. Preserve atomic replacement and cleanup on failure or caller shutdown. The bounded whole-file `replaceBytes` remains available for small files. |
 | settings.declaredBy({instanceId}) → SourceDeclaration[] | SettingsService.declared_by already selects live declarations by registering instance. PluginManager passes the loader's current instance ID. settings.sources lists declarations across owners and omits that identity. |
 
 The OS path and input reader above use a path value and a callback respectively; FileStorage's read is defined by its [contract](../../architecture/rust-agent/plugins/FileStorage.md). Existing local media submission/import, legacy node paths,
@@ -76,7 +76,7 @@ An admitted round is drained on shutdown. Losing the reply does not authorize re
 
 Settings decodes and validates the document. The writer checks the expected version before
 applying the decision and enqueues the change notice in commit order on a successful replace.
-First import emits no notice. File and project profiles retain their lease and notification paths.
+First import emits no notice. File and project profiles use FileStorage's `read` and `update`; their notification paths stay.
 
 ### Provider → sqliteStorage
 
