@@ -49,10 +49,11 @@ let JobReply { job } = jobs
             name: Some(name.into()),
             schedule: Some(schedule),
             prompt: Some(prompt),
-            target: Some(Target::Session { session_id, branch_id, input_mode }),
+            target: Some(Target::Session { session_id: session_id.clone(), branch_id: branch_id.clone(), input_mode }),
             ..JobInput::default()
         },
         revision: None,
+        caller: Some(Caller { session_id, branch_id }),
     })
     .await?;
 // The tool's list and history; the management namespace has the same reads.
@@ -124,8 +125,8 @@ The job, history and loop request and reply shapes are the shipped client shapes
 | --- | --- | --- | --- | --- | --- |
 | `list` | The jobs with their next window and last delivery | `{}` | `{jobs: [ScheduledJob]}` | None | `invalid_data`, `io`, `service_reloading`, `service_unavailable` |
 | `get` | One job | `{job_id}` | `{job}` | None | `schedule_not_found`, `invalid_data`, `io` |
-| `create` | Add one job from a patch | `{job: JobInput, revision?}` | `{job}` | None; the write completes before the reply | `schedule_invalid`, `schedule_conflict`, `session_closed`, `service_reloading`, `service_unavailable`, `rejected`, `invalid_data`, `io`, `locked` |
-| `update` | Patch one job; absent fields keep the stored value | `{job_id, job: JobInput, revision?}` | `{job}` | None; the write completes before the reply | `schedule_invalid`, `schedule_not_found`, `schedule_conflict`, `session_closed`, `service_reloading`, `service_unavailable`, `rejected`, `invalid_data`, `io`, `locked` |
+| `create` | Add one job from a patch | `{job: JobInput, revision?, caller?}` | `{job}` | None; the write completes before the reply | `schedule_invalid`, `schedule_conflict`, `session_closed`, `service_reloading`, `service_unavailable`, `rejected`, `invalid_data`, `io`, `locked` |
+| `update` | Patch one job; absent fields keep the stored value | `{job_id, job: JobInput, revision?, caller?}` | `{job}` | None; the write completes before the reply | `schedule_invalid`, `schedule_not_found`, `schedule_conflict`, `session_closed`, `service_reloading`, `service_unavailable`, `rejected`, `invalid_data`, `io`, `locked` |
 | `delete` | Remove one job and retire its terminal deliveries | `{job_id}` | `{job_id}` | None; the write completes before the reply | `schedule_not_found`, `schedule_conflict`, `invalid_data`, `io`, `locked` |
 | `setEnabled` | Enable or disable one job | `{job_id, enabled}` | `{job}` | None; the write completes before the reply | `schedule_not_found`, `schedule_conflict`, `invalid_data`, `io`, `locked` |
 | `runNow` | Record one manual window | `{job_id}` | `Run` | None; the window settles | `schedule_not_found`, `schedule_invalid`, `invalid_data`, `io` |
@@ -138,7 +139,7 @@ The job, history and loop request and reply shapes are the shipped client shapes
 | `stopLoop` | End a loop | `{sessionId, loopId}` | `{loop, settled}` | None | `loop_not_found`, `invalid_data`, `io`, `locked` |
 | `listLoops` | One Session branch's loops | `{sessionId, branchId?}` | `{loops}` | None | `invalid_params`, `session_closed`, `service_reloading`, `service_unavailable`, `invalid_data`, `io` |
 
-A job's target is the shipped shape: `{kind: "session", session_id, branch_id?, input_mode?}` or `{kind: "launch", cwd, agent_id?, policy?, max_run_minutes?}`. `branch_id` defaults to `main`; `input_mode` defaults to `queue`; `max_run_minutes` defaults to 60. Only a management create or update may set a launch target; the tool's create and update set the calling Session and branch. A job stores its revision; an update reads the stored job under the Settings change and patches the fields the caller sent. The job's submission ids are `scheduler:<runId>`, `wakeup:<wakeupId>` and `loop:<loopId>:<round>`.
+A job's target is the shipped shape: `{kind: "session", session_id, branch_id?, input_mode?}` or `{kind: "launch", cwd, agent_id?, policy?, max_run_minutes?}`. `branch_id` defaults to `main`; `input_mode` defaults to `queue`; `max_run_minutes` defaults to 60. Only a management create or update may set a launch target; the tool's create and update pass `caller: Caller` and the owner fills a session target from it, refusing a launch target with `schedule_invalid`. The management save omits `caller` and carries the target explicitly. A job stores its revision; an update reads the stored job under the Settings change and patches the fields the caller sent. The job's submission ids are `scheduler:<runId>`, `wakeup:<wakeupId>` and `loop:<loopId>:<round>`.
 
 The `scheduleJobs` face has these eight operations and no `call` action menu. The `schedule.*` namespace maps `list` → `list`, `save` → `create` or `update`, `delete` → `delete`, `set_enabled` → `setEnabled`, `run_now` → `runNow`, `history` → `history`; `watch` is removed. The `schedule` tool maps its `list`/`get`/`create`/`update`/`delete`/`set_enabled`/`run_now`/`history` actions to the same eight operations.
 
@@ -181,7 +182,7 @@ A delivery's target-gone answers are record outcomes, not job-operation errors: 
 | Wakeup fire | The pass reads the file, takes `scheduled` records inside the grace, writes one input, settles `fired` | A cancel that settles first prevents the input; one after the input reports `fired` | The record stays; the next load re-evaluates | In-flight writes settle; an uncertain reply keeps the record `scheduled` and retries within the grace; a past-grace record settles `expired` | Scheduler |
 | Wakeup cancel | Settle `cancelled` after the record write | — | — | — | Scheduler |
 | Wakeup expiry | A record past the grace is `expired` unless its submission id is found; a gone target is `cancelled` | — | — | The next load settles it | Scheduler |
-| Loop round | The pass reads the file, writes one queued input, advances the round or leaves the loop `waiting` | A stop settles the record; a pending round is not written | The record stays; the next load re-evaluates | In-flight writes settle; the next pass reads `sessions.pending` and leaves an inconclusive round for the next window | Scheduler |
+| Loop round | The pass reads the file, writes one queued input, advances the round or leaves the loop `waiting` | A stop settles the record; a pending round is not written | The record stays; the next load re-evaluates | The forward pass reads `sessions.pending` when it has `last_input_id`; the recovery pass settles a stored `delivering_round` by the read-only `lookup` with `loop:<loopId>:<round>` | Scheduler |
 | Loop stop | Settle `stopped`; a terminal record is returned unchanged | — | — | — | Scheduler |
 | Retention | Terminal records older than seven days are removed in the pass's write | — | — | The next load prunes | Scheduler |
 
@@ -189,13 +190,13 @@ Recovery is read-only and never repeats the input. A `delivering` record is sett
 
 The lookup acquires the target Session: a cold Session is restored by Agents, and the delivery's admission covers the restore and the lookup. Admission: the hold is taken before the record's external effect and released after the terminal record. A row unload does not release the old hold; it stays until process shutdown, and the next generation takes a separate hold per unsettled record and releases that one after the terminal record. The next generation reconstructs the unsettled set from the `delivering` records before its first window; `activated` gates the first pass. Scheduler never holds a Session handle across the lookup or the delivery.
 
-The loop pass does not use `lookup`: it reads `sessions.pending` for the loop's branch, and an inconclusive round is left for the next window; a pending round is not written again. A wakeup fire that gets a definite refusal settles `cancelled`; an uncertain reply keeps the record `scheduled` and retries within the grace; a record past the grace settles `expired` and is never replayed. A job window whose write is uncertain follows the delivery rule above.
+The forward loop pass reads `sessions.pending` for the loop's branch when it has `last_input_id`; a recovered `delivering_round` has no input id, so the recovery pass settles it by the read-only `lookup` with `loop:<loopId>:<round>`. An inconclusive forward round is left for the next window; a pending round is not written again. A wakeup fire that gets a definite refusal settles `cancelled`; an uncertain reply keeps the record `scheduled` and retries within the grace; a record past the grace settles `expired` and is never replayed. A job window whose write is uncertain follows the delivery rule above.
 
 A delivery or a job write takes a `processActivity` hold from before its external effect to its terminal record; a row unload does not release accepted work early. A disabled row starts no new windows, and its `delivering` records settle at the next load by the read-only `lookup` with the same submission id. A launch target started while the row was active is stopped at the next load if its deadline passed; the row does not start a new launch while disabled.
 
 ### 12. Loop
 
-A loop is a Scheduler record whose rounds are ordinary queued inputs of one branch. Two cadences share one record: `self_paced` continues only when the model calls `next`, and `every_seconds` has a fixed window. A tool `start` requires `delay_seconds` from 60 to 3600 and delivers nothing at the call; the user's entries start with the first round due now. A record expires seven days after creation; a terminal record is removed seven days after it settled. The operations are `startLoop`, `nextLoop`, `stopLoop` and `listLoops`; the Session part maps the `loop` tool and `session.loop.*` to them. `stop` returns `{loop, settled}`: `settled` is false while an accepted round's input may still be unsettled (the record carries `delivering_round`), and the next pass settles it; clients show "still settling" only for a non-terminal state with `settled: false`.
+A loop is a Scheduler record whose rounds are ordinary queued inputs of one branch. Two cadences share one record: `self_paced` continues only when the model calls `next`, and `every_seconds` has a fixed window. A tool `start` requires `delay_seconds` from 60 to 3600 and delivers nothing at the call; the user's entries start with the first round due now. A record expires seven days after creation; a terminal record is removed seven days after it settled. The operations are `startLoop`, `nextLoop`, `stopLoop` and `listLoops`; the Session part maps the `loop` tool and `session.loop.*` to them. `stop` returns `{loop, settled}`: `settled` is false while an accepted round's input may still be unsettled (the record carries `delivering_round`), and the recovery pass settles it by the read-only `lookup`; clients show "still settling" only for a non-terminal state with `settled: false`.
 
 ## Exceptions with reasons
 
@@ -228,6 +229,7 @@ Flow tests on the owner:
 - A loop round advances once, a self-paced loop waits without a fallback, a stop is idempotent, and an expired loop is not replayed.
 - A restart settles `delivering` records by the read-only `lookup`; a terminal record is never changed; `unknown`/`reloading`/`ambiguous`/transport keep it `delivering`, `attempts` persists, and the fifth answer settles `lost`.
 - A row reload with an accepted input in flight: the first lookup may answer `unknown`, the record stays `delivering`, and a later `accepted` settles `delivered`; the old hold stays until process shutdown and the next generation takes its own hold for the record.
+- A loop round crashes after its input commits: the record carries `delivering_round`, the recovery pass settles it by the read-only `lookup` with `loop:<loopId>:<round>`, and no second input is written.
 - `every` first window is one interval after `enabled_at`; a re-enabled job keeps or resets it per the contract; a DST gap and a missed window collapse to one `missed`; `at` disables after firing.
 - The 16-job, 8-loop, 32 KiB prompt and 4 KiB preview bounds; the 5-attempt lookup bound; the 100-record history; the CAS `schedule_conflict` retry; a legacy `schedule.json` and `runs.json` decode as written.
 - The `wakeup` tool creates, lists and cancels; `session.loop.*` starts, lists and stops; the `schedule` tool maps to the job operations.
@@ -256,7 +258,7 @@ Flow tests on the owner:
 | ADR 002 D4 | The `schedule` source is business configuration in Settings; the rows are structural. |
 | ADR 002 D5 | The contract is data and ids; the Rust binding is the appendix. |
 
-§7.2 is the rule text of [#2029](https://github.com/arcships/dim/pull/2029) (open, head `da6f4a950`); these contracts are reviewed against that head.
+§7.2 is the rule text of [#2029](https://github.com/arcships/dim/pull/2029) (open, head `a3c7c4d8a`); these contracts are reviewed against that head.
 
 ## Requirements raised to mechanism owners
 
@@ -619,11 +621,20 @@ pub struct ListJobs {}
 pub struct GetJob { pub job_id: JobId }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Caller {
+    pub session_id: String,
+    pub branch_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateJob {
     pub job: JobInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<Caller>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -633,6 +644,8 @@ pub struct UpdateJob {
     pub job: JobInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<Caller>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

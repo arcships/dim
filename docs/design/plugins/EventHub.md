@@ -27,7 +27,7 @@ Callers keep:
 | A producer publishes one event | No: the event id's per-branch idempotency, the guide refresh, the budget and the receipt are the owner's | `publish` |
 | A branch subscribes to types | No: the guide input and the record must commit in one order under the Session's lock | `subscribe` |
 | A branch removes one subscription | No: the record removal and the guide retire are one order | `unsubscribe` |
-| A caller reads a Session's subscriptions or every subscription | No: the records are the owner's | `list` |
+| The `events` tool reads its own Session's subscriptions | No: the records are the owner's | `list` |
 | A caller reads the declared catalog | No: the catalog is the owner's | `sources` |
 | A source's guide changes | No: the digest and the refresh at the next delivery are the owner's | inside `publish` |
 | A subscribed Session is deleted | No: the notice and the reconciliation are the owner's | internal |
@@ -138,7 +138,9 @@ The public producer face `eventHub` has `declare` and `publish`. The other four 
 | `too_large` / `invalid_event` | Fix the body or fields; the event was not delivered |
 | `limit_reached` | Remove a subscription first; 32 per Session, 1024 in total |
 | `session_closed` / `branch_missing` / `branch_ended` | The target cannot take input; fix the target |
-| `reloading` / `rejected` / `ambiguous` / `failed` / `transport` | The `sessions` call's answer; a committed guide stores the record and replies its id; `rejected` carries the `sessions` code in `reason` |
+| `publication_unknown` | The guide committed but its publication is unconfirmed: the record is stored and the call replies its id; if the reply was lost, read `list` |
+| `reloading` / `ambiguous` / `failed` / `transport` | The guide input's answer; nothing is stored; retry the subscribe or read `list` |
+| `rejected` | The guide input was refused; nothing is stored; act on the `sessions` code in `reason` |
 | `storage` | The subscription file was not written; the in-memory set is unchanged |
 | `cancelled` | The call stopped before the guide write; nothing was stored |
 | `subscription_unknown` | No such subscription of the calling Session; read `list` first |
@@ -211,11 +213,11 @@ Flow tests on the owner:
 | ADR 002 D4 | The row's enablement is PluginManager's; subscriptions are business state in the owner's file. |
 | ADR 002 D5 | The contract is data and ids; the Rust binding is the appendix. |
 
-§7.2 is the rule text of [#2029](https://github.com/arcships/dim/pull/2029) (open, head `da6f4a950`); this contract is reviewed against that head.
+§7.2 is the rule text of [#2029](https://github.com/arcships/dim/pull/2029) (open, head `a3c7c4d8a`); this contract is reviewed against that head.
 
 ## Requirements raised to mechanism owners
 
-- **Agents (#2020):** the `sessions` operations `input`, `lookup`, `exists` and `defaultBranchId` as data operations with the errors above, and the `agent/session-deleted {agentId, sessionId}` notice. EventHub does not take a `HostDispatch` object or decode the reply envelope.
+- **Agents (#2020):** the `sessions` operations `input`, `lookup`, `exists` and `defaultBranchId` as data operations with the errors above, and the `agent/session-deleted {agentId, sessionId}` notice. `sessions.input` answers `publication_unknown` when the guide committed and its publication is unconfirmed; EventHub stores the subscription and replies its id. EventHub does not take a `HostDispatch` object or decode the reply envelope.
 - **SessionFiles (#2018):** `put` answers the value the read tool opens for a Session file — a path, or a file id the read tool accepts. EventHub carries that value in the `dim-event` marker; `{fileId, size}` alone does not let the model read the body.
 - **PluginFiles (#2016):** the by-name text update and read for the owner's own file, with the lock held across the caller's change; no scope object.
 - **ServerControl (#2021):** `hold`/`release` ids for accepted publish and subscribe work, and `activated` for the reconciliation. EventHub does not hold a `ProcessHold` guard.

@@ -329,9 +329,9 @@ store.associateWorktree {sessionId, repository, root, subtree} -> {}
 
 ### 4.9 旧主机端口：`credentialVariablesHost` 等六个
 
-六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 手写 `HostDispatch`，因为 owner 的错误是带动态 `code` 的 struct，生成面会把 `code` 写成类型名。
+六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 是旧名；目标 EventHub 用 serde 枚举错误，生成面保留变体名作为 wire code；生产者面 `eventHub` 只有 `declare`/`publish`，订阅四操作由 `events` 工具在进程内调用。
 
-> `eventSubscriptions` 面已由 [EventHub](plugins/EventHub.md) 取代：四个操作在同一个 `eventHub` 面上。
+> `eventSubscriptions` 面已由 [EventHub](plugins/EventHub.md) 取代：生产者面 `eventHub` 只有 `declare`/`publish`；`sources`/`subscribe`/`unsubscribe`/`list` 是 `events` 工具的进程内操作；错误是 serde 枚举，生成面保留 wire code。
 
 ```text
 credentialVariablesHost.variables() -> {variables: [string]}
