@@ -15,6 +15,8 @@ FileReads owns:
 
 FileReads does not open, read or write files: the file tools own path resolution and the bytes. FileReads does not decide whether a call is admitted: Permission and Approval do.
 
+Targets: the line access is [ADR 027](https://github.com/arcships/dim/pull/2029) with the mechanism obligation [#2127](https://github.com/arcships/dim/issues/2127); the file-tool codec's mapping is a requirement on its owner (target, pending [#2103](https://github.com/arcships/dim/pull/2103)).
+
 Callers keep as business:
 
 - Which file a tool touches, its encoding override, and the tool's own result text.
@@ -31,34 +33,35 @@ An operation exists only where its row says No.
 
 ## Caller example
 
-The `write` tool asks before replacing an existing file, then records the operation it performed:
+The file tool resolves the path first, then asks and records with that canonical path:
 
 ```rust
+let canonical = resolve(request.path)?; // the tool's own resolution
 let binding = reads.binding(BindingRequest {
-    path: display.clone(),
+    path: canonical.clone(),
     purpose: Purpose::Write,
-}).await?; // Closed; the value says whether a binding is usable
-match binding.binding {
-    Some(binding) => { /* preserve encoding and line endings; check the revision */ }
-    None => {
-        let reason = binding.unavailable.expect("one of binding or unavailable");
+}).await?; // Closed, Failed
+match binding {
+    BindingReply::Bound(binding) => { /* preserve encoding and line endings; check the revision */ }
+    BindingReply::Unavailable(reason) => {
         return Ok(text_binding_required(reason)); // the model re-reads or edits
     }
 }
 // ... write the bytes ...
 reads.record(RecordRequest {
-    path: canonical.clone(),
+    path: canonical,
     binding: new_binding,
     established,
-}).await?; // Closed
+})?; // Closed, Failed
 ```
 
 The `edit` tool asks with the edit purpose, which ignores compaction:
 
 ```rust
-let binding = reads.binding(BindingRequest { path: display, purpose: Purpose::Edit }).await?;
-let Some(binding) = binding.binding else {
-    return Ok(text_binding_required(binding.unavailable.expect("read first")));
+let reply = reads.binding(BindingRequest { path: canonical, purpose: Purpose::Edit }).await?;
+let binding = match reply {
+    BindingReply::Bound(binding) => binding,
+    BindingReply::Unavailable { reason } => return Ok(text_binding_required(reason)),
 };
 ```
 
@@ -76,26 +79,27 @@ FileReads injects no other service. The Session's file tools reach this owner by
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `binding` | Whether a file may be replaced or edited, and on which binding | `{path, purpose}` | `{binding?}` or `{unavailable: never_read\|compacted}` | None; the owner completes the read | `closed` |
-| `record` | Note the binding an operation established, at the sequence the operation started | `{path, binding, established}` | `{}` | None | `closed` |
+| `binding` | Whether a file may be replaced or edited, and on which binding | `{path, purpose}` | `BindingReply` | None; the owner completes the read | `closed`, `failed` |
+| `record` | Note the binding an operation established, at the sequence the operation started | `{path, binding, established}` | `()` | None | `closed`, `failed` |
 
-`purpose` is `write` or `edit`; it selects the owner's rule, and a caller never evaluates compaction itself. `binding` is the value the file tool preserves: revision, encoding, encoding source, byte-order mark and line endings. `established` is the line's sequence when the operation started, taken by the caller after the call's fact committed; the owner compares it with the completed compaction's cut.
+`path` is the canonical path the file tool resolved; the owner keys bindings by it. `purpose` is `write` or `edit`; it selects the owner's rule, and a caller never evaluates compaction itself. `binding` is the value the file tool preserves; `established` is the line's sequence when the operation started, taken by the caller after the call's fact committed; the owner compares it with the completed compaction's cut.
 
 ### Errors
 
-| Kind | Operation | What the caller does next |
-| --- | --- | --- |
-| `closed` | `binding`, `record` | The line is closing or unloading; the tool call ends; the replacement generation rebuilds the bindings from the facts. |
+| Kind | Operation | Retryable | What the caller does next |
+| --- | --- | --- | --- |
+| `closed` | `binding`, `record` | No, in this generation | The line is closing or unloading; the tool call ends; the replacement generation rebuilds the bindings from the facts. |
+| `failed` | `binding`, `record` | Yes, by a later attempt | The line's facts could not be read or the binding could not be stored; nothing was decided or written; the owner reports a fault and the tool call ends. |
 
-"Never read" and "compacted" are values, not errors: the file tool turns either into the model-facing `text_binding_required` result, and the model's next step is to re-read or edit.
+"Never read" and "compacted" are values, not errors: the file tool turns either into the model-facing `text_binding_required` result, and the model's next step is to re-read or edit. A caller that matches the reply by hand does not fall through: every reply is one of the two variants.
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `binding` | Read the map; for `write`, check the latest completed compaction after the binding's sequence and whether the cut event still lies after it | None; the read is bounded | Nothing to release | Refused with `closed` | FileReads |
-| `record` | Replace the path's binding with the new one and its sequence | None | Nothing to release | The new generation rebuilds from the facts; a record not yet committed is lost with the generation | FileReads |
-| Load | Read the line's committed file-tool results at one cutoff, take each result's binding and its event sequence, and keep the latest per path | — | — | — | FileReads |
+| `record` | Replace the canonical path's binding with the new one and its sequence | None | Nothing to release | The new generation rebuilds from the facts; a record not yet committed is lost with the generation | FileReads |
+| Load | Read the line's committed file-tool results at one cutoff, map each result's binding and its event sequence, and keep the latest per path | — | — | — | FileReads |
 
 The rebuild uses the result event's sequence: no legal compaction cut separates a call from its result, so the result's position is equivalent to the operation's start for the context rule.
 
@@ -114,9 +118,10 @@ The rebuild uses the result event's sequence: no legal compaction cut separates 
 Flow tests on the owner:
 
 - A read binds a file; a `write` after a compaction that cut the read out is refused with `compacted`; a compaction that kept the read leaves the write admitted; an `edit` proceeds after either.
-- A write's binding replaces the read's for later operations; a failed offload does not bind.
+- A write's binding replaces the read's for later operations, keyed by the canonical path; a failed offload does not bind.
 - After a reload, the bindings are rebuilt from the line's facts and an existing file can be written without a new read; a file whose read a compaction cut out before the reload stays unavailable for `write`.
-- The face and the Rust call answer the same binding or reason.
+- A failed fact read answers `failed`; a closed line answers `closed`.
+- The face and the Rust call answer the same reply variants and errors.
 
 ## Rule check
 
@@ -144,10 +149,12 @@ Flow tests on the owner:
 | ADR 002 D3 | No dependency on callers; a composition without the file tools has no bindings. |
 | ADR 002 D4 | No configuration. |
 | ADR 002 D5 | Language-neutral operations and data. |
+| ADR 027 | The file tools reach a line's FileReads with `line_owner::<FileReads>(line)`; the path and purpose stay in the request. |
 
 ## Requirements raised to mechanism owners
 
-- **Session access ([#2025](https://github.com/arcships/dim/issues/2025)).** A Session part resolves a line's owner by line id: the mechanism named in [TimelineTree's route (#2092)](https://github.com/arcships/dim/pull/2092). The file tools use it to reach `binding` and `record`; FileReads adds no forwarding operation.
+- **Cross-scope access ([ADR 027](https://github.com/arcships/dim/pull/2029), [#2127](https://github.com/arcships/dim/issues/2127), target).** A Session part reaches a line's data face by line id with `line_owner::<T>(line)`. The file tools use it to reach `binding` and `record`; FileReads adds no forwarding operation.
+- **File-tool codec ([#2103](https://github.com/arcships/dim/pull/2103), target).** The codec's `TextEncoding`, `EncodingSource`, `Bom`, `Eol` and `TextFileBinding` are not wire data (`TextEncoding::Legacy` holds an `encoding_rs` reference and `raw_revision` is `[u8; 32]`). The codec owner provides the mapping to the DTOs below: the encoding label (`utf-8`, `utf-16le`, `utf-16be`, or the requested legacy name lowercased), the revision as lowercase hex, and the three enums as their snake-case names; or derives serde on them with the same wire values. This owner does not change the codec.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix
@@ -165,20 +172,50 @@ pub enum Purpose {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingRequest {
+    /// The canonical path the file tool resolved.
     pub path: String,
     pub purpose: Purpose,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextFileBinding {
-    pub revision: String, // SHA-256 of the raw bytes, lowercase hex
-    pub encoding: TextEncoding,
+    /// Lowercase hex of the SHA-256 of the raw file bytes.
+    pub revision: String,
+    /// The codec's label: "utf-8", "utf-16le", "utf-16be", or the requested
+    /// legacy name lowercased.
+    pub encoding: String,
     pub encoding_source: EncodingSource,
     pub bom: Bom,
     pub eol: Eol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EncodingSource {
+    Bom,
+    User,
+    Utf8Policy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Bom {
+    None,
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Eol {
+    None,
+    Lf,
+    Crlf,
+    Mixed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -189,27 +226,28 @@ pub enum Unavailable {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BindingReply {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub binding: Option<TextFileBinding>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unavailable: Option<Unavailable>,
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum BindingReply {
+    Bound { binding: TextFileBinding },
+    Unavailable { reason: Unavailable },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecordRequest {
+    /// The canonical path the file tool resolved.
     pub path: String,
     pub binding: TextFileBinding,
     pub established: u64,
 }
 
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum FileReadsError {
     #[error("the line is closing")]
     Closed,
+    #[error("the binding could not be read or stored: {reason}")]
+    Failed { reason: String },
 }
 
 impl PublicService for FileReads {}
@@ -220,5 +258,3 @@ impl FileReads {
     pub fn record(&self, request: RecordRequest) -> Result<(), FileReadsError> { /* ... */ }
 }
 ```
-
-`TextEncoding`, `EncodingSource`, `Bom` and `Eol` are the existing value types of the file-tool codec ([codec.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/codec.rs)); they cross as data and stay defined beside the codec, not here.

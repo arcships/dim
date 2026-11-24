@@ -15,6 +15,8 @@ Approval owns:
 
 Approval does not decide the policy (Permission does), run tools (ToolExecutor does), or notify clients: the client notifications are the App Server's projection of `approval/*` facts and its own attach ordering.
 
+Targets: `permission` is this PR's; the mechanism obligation for cross-scope access is [#2127](https://github.com/arcships/dim/issues/2127).
+
 Callers keep as business:
 
 - When a tool call is admitted, and what a refusal means for the turn.
@@ -39,24 +41,21 @@ approval.admit(AdmitRequest {
     source: BranchSource::Tool { turn_id, request_id, call_id },
     call: ApprovalCallData { name: call.name.clone(), input: call.input.clone() },
     risk: risk.clone(),
-}, cancelled.clone()).await?; // Denied { reason }, Cancelled, Closed
+}, cancelled.clone()).await?; // Denied, Cancelled, Failed, Closed
 ```
 
 A client answers one request; the answer is accepted only while the request is pending:
 
 ```rust
-approval.decide(DecideRequest {
-    approval_id: request.approval_id,
-    decision: ApprovalDecision::Allow,
-}).await?; // Unknown (answered, cancelled or never pending), Closed
+approval.decide(request.approval_id, ApprovalDecision::Allow).await?; // Unknown, Failed, Closed
 ```
 
 Collaboration lists a member line's pending approvals and answers the one it was asked about:
 
 ```rust
-for request in approval.pending().await?.requests {
+for request in approval.pending().await? {
     if request.approval_id == target {
-        approval.decide(DecideRequest { approval_id: target, decision }).await?;
+        approval.decide(target, decision).await?;
     }
 }
 ```
@@ -77,20 +76,21 @@ The policy value is a read-only view Permission publishes (§7); Approval takes 
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `admit` | Admit one call, asking the user when required | `{source, call, risk}` | `{}` | The caller drops the call: the pending request is cancelled and the call ends `cancelled` | `denied {reason}`, `cancelled`, `closed` |
-| `pending` | The requests no answer or cancellation ended, in request order | `{}` | `{requests}` | None | `closed` |
-| `decide` | Answer a pending request | `{approvalId, decision}` | `{}` | None: an accepted answer is committed | `unknown` (not pending: answered, cancelled or never existed), `closed` |
+| `admit` | Admit one call, asking the user when required | `{source, call, risk}` | `()` | The caller drops the call: the pending request is cancelled and the call ends `cancelled` | `denied`, `cancelled`, `failed`, `closed` |
+| `pending` | The requests no answer or cancellation ended, in request order | `()` | `ApprovalRequestData[]` | None | `closed` |
+| `decide` | Answer a pending request | `approvalId`, `decision` | `()` | None: an accepted answer is committed | `unknown` (not pending: answered, cancelled or never existed), `failed`, `closed` |
 
-`risk` is the tool owner's declaration for the call, or absent. `source` identifies the caller and is passed to Permission for the admission decision. The reply to `decide` means the branch dispatched the answer, not that the tool started.
+`risk` is the tool owner's declaration for the call, or absent. `source` identifies the caller and is passed to Permission for the admission decision. The reply to `decide` means the branch dispatched the answer, not that the tool started. Replies are positional, as the published face is.
 
 ### Errors
 
-| Kind | Operation | What the caller does next |
-| --- | --- | --- |
-| `denied` | `admit` | Do not run the call; the result carries the reason. |
-| `cancelled` | `admit` | The batch token was dropped or the batch was interrupted; do not run the call. |
-| `closed` | any | The generation is closing or reloading; stop. |
-| `unknown` | `decide` | The request is no longer pending; retire the prompt and do not retry the answer. |
+| Kind | Operation | Retryable | What the caller does next |
+| --- | --- | --- | --- |
+| `denied` | `admit` | No | Do not run the call; the result carries the reason. |
+| `cancelled` | `admit` | No | The batch token was dropped or the batch was interrupted; do not run the call. |
+| `failed` | `admit`, `decide` | Yes, by a later attempt | The request or response could not be committed (storage or fact failure); nothing is pending for the call, or the answer did not take; the owner reports a fault and the turn fails. A repeated call is a new admission or a fresh answer. |
+| `closed` | any | No, in this generation | The generation is closing or reloading; stop; a replacement generation serves the next request. |
+| `unknown` | `decide` | No | The request is no longer pending; retire the prompt and do not retry the answer. A repeated answer is `unknown` too. |
 
 ### Flows
 
@@ -99,10 +99,23 @@ The policy value is a read-only view Permission publishes (§7); Approval takes 
 | `admit` — allowed without a question | Ask Permission; an allow returns | The token is checked before the call starts | Nothing held | Refused with `closed` | Approval and Permission |
 | `admit` — a question is required | Commit `approval/request`, register the pending request, wait for the answer or a policy change; on an allow, recheck the policy and return; on a deny, return the refusal | The pending request is removed and `approval/cancelled` is written; the call ends `cancelled` | The pending request is cancelled with the same terminal | Every pending request of the generation is cancelled; an in-flight wait ends `closed` | Approval: the request, its terminal and the waiter |
 | `admit` — policy changed while waiting | Recheck through Permission; an allow without an advisor question ends the question with `approval/cancelled` and its reason; a deny ends it with the refusal; an ask keeps waiting | As above | As above | As above | Approval |
+| `admit` — the request commit fails | Nothing is pending; the call ends `failed`; the turn fails | — | — | — | Approval |
 | `decide` | Commit `approval/respond`, answer the waiter once the branch dispatched it; the admission rechecks before the call starts | — | A committed answer stays; the admission may end `closed` | A response to a request of a closed generation is `unknown` | Approval |
+| `decide` — the response commit fails | The request stays pending; the answer reports `failed`; a repeated answer is accepted | — | — | — | Approval |
 | `pending` | One consistent read under the owner's lock | — | — | Answered at the state observed | Approval |
 
 A call that a policy change no longer requires is not restarted; an explicit advisor question stays pending until answered. The owner never fabricates a user answer.
+
+## Client-visible changes
+
+The published `approval` face ([Permission plugin page](../../architecture/rust-agent/plugins/Permission.md#approval-data-face)) keeps `pending()` and `decide(requestId, decision)` positionally and keeps `ApprovalRequestData[]` as `pending`'s reply. It changes as follows, and the maintainer is asked to confirm:
+
+- `respond(requestId, decision)` is renamed `decide`; the callers are Hooks and the App Server's `approval.respond` built-in. The built-in keeps its name and settles through this operation; the client RPC is unchanged.
+- `replay()` is removed; `pending()` answers the same set, and the App Server orders its attach notifications itself.
+- Error codes change case with the standard binding spelling: `Unknown`/`Cancelled`/`Closed` become `unknown`/`cancelled`/`closed`; `denied` and `failed` are new. Callers match the codes by string; the change ships with the same release as the face.
+- `admit` is new (additive).
+
+No Timeline event, notification name, request field of the client protocol or model-visible text changes.
 
 ## Exceptions with reasons
 
@@ -121,6 +134,7 @@ Flow tests on the owner:
 - An allow without a question returns without a request; an ask writes one request, and the call starts only after the answer and the recheck.
 - A dropped admission removes its request and writes `approval/cancelled`; a policy change that allows the call ends it the same way and starts the call; a policy change that denies it returns the refusal.
 - An advisor's question stays pending across a policy change; only an answer settles it.
+- A request commit failure answers `failed`, leaves nothing pending and fails the turn; a response commit failure answers `failed`, leaves the request pending, and a repeated answer is accepted.
 - A second answer to the same request is `unknown`; an answer to a cancelled request is `unknown`.
 - The generation's close cancels every pending request; a reload cancels the historical requests and rebuilds an empty pending set.
 - The face and the Rust call answer the same requests and errors.
@@ -151,10 +165,12 @@ Flow tests on the owner:
 | ADR 002 D3 | Depends on Permission (branch) and the branch infrastructure. |
 | ADR 002 D4 | No configuration. |
 | ADR 002 D5 | Language-neutral operations and data. |
+| ADR 027 | Not applicable: the line's own part serves its callers; the Collaboration route uses the line access owned by ADR 027. |
 
 ## Requirements raised to mechanism owners
 
 - **Permission (#2028).** `decide` with the call's source and the published `PermissionState` are this board's own contract; see [Permission](Permission.md).
+- **Cross-scope mechanism ([#2127](https://github.com/arcships/dim/issues/2127), target).** The Collaboration route reaches a member line's `pending`/`decide` through the line access; this owner states the operations, not the mechanism.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix
@@ -167,33 +183,22 @@ use dim_agent_runtime::PublicService;
 use dim_agent_types::{ApprovalCallData, ApprovalDecision, ApprovalRequestData, BranchSource};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdmitRequest {
     pub source: BranchSource,
     pub call: ApprovalCallData,
     pub risk: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingReply {
-    pub requests: Vec<ApprovalRequestData>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DecideRequest {
-    pub approval_id: String,
-    pub decision: ApprovalDecision,
-}
-
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum ApprovalError {
     #[error("the call was denied: {reason}")]
     Denied { reason: String },
     #[error("the call was cancelled")]
     Cancelled,
+    #[error("the approval record could not be written: {reason}")]
+    Failed { reason: String },
     #[error("the approval service is closing")]
     Closed,
     #[error("the approval is absent or already resolved")]
@@ -205,7 +210,7 @@ impl PublicService for Approval {}
 #[rutis::service(name = "approval")]
 impl Approval {
     pub async fn admit(&self, request: AdmitRequest, cancelled: CancelledFn) -> Result<(), ApprovalError> { /* ... */ }
-    pub async fn pending(&self) -> Result<PendingReply, ApprovalError> { /* ... */ }
-    pub async fn decide(&self, request: DecideRequest) -> Result<(), ApprovalError> { /* ... */ }
+    pub async fn pending(&self) -> Result<Vec<ApprovalRequestData>, ApprovalError> { /* ... */ }
+    pub async fn decide(&self, approval_id: String, decision: ApprovalDecision) -> Result<(), ApprovalError> { /* ... */ }
 }
 ```

@@ -15,6 +15,8 @@ Permission owns:
 
 Permission does not ask the user, run tools, write approval facts or decide the model's declarations. Approval owns the question and the answer; ToolExecutor owns execution; ToolRegistry owns declarations.
 
+Targets: the file-access facts are a target, pending [#2093](https://github.com/arcships/dim/pull/2093); the command rules are a target, pending [#2094](https://github.com/arcships/dim/pull/2094); the creation record is a target, pending [#2093](https://github.com/arcships/dim/pull/2093); the mechanism obligation for cross-scope access is [#2127](https://github.com/arcships/dim/issues/2127).
+
 Callers keep as business:
 
 - What an ask means and when it is worth asking: Approval's admission and its recheck.
@@ -31,7 +33,7 @@ Callers keep as business:
 | Update the policy | No: the version check and the fact are one write | `update` |
 | Register tool advice | No: the registration is bound to the registering part's lifetime and asked by name order | `advise` |
 
-An advisor's failure counts as no advice: its code and message are not forwarded, and the owner decides on its own result. An operation exists only where its row says No.
+An operation exists only where its row says No.
 
 ## Caller example
 
@@ -42,26 +44,23 @@ let admission = permission.decide(DecideRequest {
     call: call.clone(),
     risk: risk.cloned(),
     source: Some(source.clone()),
-}, cancelled.clone()).await?; // Cancelled, Closed
+}, cancelled.clone()).await?; // Cancelled, Failed, Closed
 if admission.outcome == Outcome::Ask && !admission.advisor_question {
     // ask the user; later, after the answer:
     let recheck = permission.decide(DecideRequest { call, risk, source: None }, cancelled).await?;
 }
 ```
 
-Hooks registers advice for the lifetime of its branch part; the registration ends with the part:
+Hooks registers advice for the lifetime of its branch part; the registration ends with the part. `advise` is synchronous, `caller: &Ctx` is the calling row:
 
 ```rust
-permission.advise(&ctx, "hooks".into(), Arc::new(HookAdvice { branch: self.clone() })).await?; // Duplicate, Closed
+permission.advise(&ctx, "hooks".into(), Arc::new(HookAdvice { branch: self.clone() }))?; // Duplicate, Closed
 ```
 
 A client updates the policy with the version it read:
 
 ```rust
-let next = permission.update(UpdateRequest {
-    expected_version: read.version,
-    policy: next_policy,
-}).await?; // Conflict { current }, Closed
+let version = permission.update(UpdateRequest { expected_version: read.version, policy: next_policy }).await?; // Conflict, Failed, Closed
 ```
 
 ## Own contract
@@ -70,44 +69,55 @@ let next = permission.update(UpdateRequest {
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionScope` (Session, [#2093](https://github.com/arcships/dim/pull/2093)) | The creation record's permission preset and working directory. |
-| `S:PermissionRules` (Session, [#2094](https://github.com/arcships/dim/pull/2094)) | `permissionRules.rules` answers the user's command rules at decision time. |
-| `S:FileAccessFacts` (Session owner, [#2025](https://github.com/arcships/dim/issues/2025)) | `check({access, mode, path})` resolves the call's target and answers the workspace, system, owned and grant facts. |
+| `S:SessionScope` (Session, target, pending [#2093](https://github.com/arcships/dim/pull/2093)) | The creation record's permission preset and working directory. |
+| `P:PermissionRules` (process, target, pending [#2094](https://github.com/arcships/dim/pull/2094)) | `permissionRules.rules` answers the user's command rules at decision time. |
+| `S:FileAccessFacts` (Session, target, pending [#2093](https://github.com/arcships/dim/pull/2093)) | `check({access, mode, path})` resolves the call's target and answers the workspace, system, owned and grant facts. |
 | `B:Timeline`, `B:Dispatcher` | Fold `permission/changed`; commit an update. |
 
-The file-access facts operation that resolves the target is not defined yet; it is stated in Requirements.
+The file-access facts operation that resolves the target is a target of #2093; it is stated in Requirements.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `decide` | One call's outcome | `{call, risk?, source?}` | `{outcome: allow\|ask\|deny, reason?, advisorQuestion}` | The caller's token stops the facts or advice read; the decision is not made | `cancelled`, `closed` |
-| `update` | Versioned policy write | `{expectedVersion, policy}` | `{version}` | None; one commit | `conflict {current}`, `closed` |
-| `advise` | Register tool advice for the calling row's lifetime | `caller: &Ctx`, `name`, callback | `{}` | None | `duplicate`, `closed` |
+| `decide` | One call's outcome | `{call, risk?, source?}` | `DecisionReply` | The caller's token stops the facts or advice read; the decision is not made | `cancelled`, `failed`, `closed` |
+| `update` | Versioned policy write | `{expectedVersion, policy}` | `u64` (the new version) | None; one commit | `conflict`, `failed`, `closed` |
+| `advise` | Register tool advice for the calling row's lifetime | `caller: &Ctx`, `name`, callback | `()` | None | `duplicate`, `closed` |
 | `PermissionState` (published value) | Read the policy and its version | — | `{version, policy}` | None | — |
 
 `risk` is the tool owner's declaration (`read_filesystem`, `write_filesystem`, `execute_process`, `network`, `session`, or absent). `source` is present exactly for an admission; the owner asks the advisors only then, and `advisorQuestion` says whether an advisor required an explicit answer, so a policy change can end a policy question but never an advisor's.
 
-The policy is the preset and `allowedTools`/`disallowedTools`. A deny from the tool list, a file fact or a command rule wins over an allow; a command allow turns an ask into an allow for a command without shell separators; an absent `permissions` for a file call means the preset's access.
+The policy is the preset and `allowedTools`/`disallowedTools`. A deny from the tool list, a file fact or a command rule wins over an allow; a command allow turns an ask into an allow for a command without shell separators; an absent `permissions` for a file call means the preset's access. Replies are positional.
 
 ### Errors
 
-| Kind | Operation | What the caller does next |
-| --- | --- | --- |
-| `cancelled` | `decide` | The call's batch was cancelled; do not run the call. |
-| `closed` | any | The generation is closing or reloading; stop; a later generation serves. |
-| `conflict` | `update` | Re-read the version from `PermissionState` and decide whether to retry the update with the new base. |
-| `duplicate` | `advise` | The name is taken; pick another or withdraw the first registration. |
+| Kind | Operation | Retryable | What the caller does next |
+| --- | --- | --- | --- |
+| `cancelled` | `decide` | No | The call's batch was cancelled; do not run the call. |
+| `failed` | `decide`, `update` | Yes, by a later attempt | A fact or rule read failed, or the `permission/changed` fact could not be committed; nothing was decided or written; the owner reports a fault; `decide`'s caller does not run the call, and `update`'s caller re-reads the version and may retry. |
+| `closed` | any | No, in this generation | The generation is closing or reloading; stop; a later generation serves. |
+| `conflict` | `update` | Yes, after re-reading | Re-read the version from `PermissionState` and decide whether to retry the update with the new base. |
+| `duplicate` | `advise` | No | The name is taken; choose another name. The registration stays until the row unloads. |
 
-An unreadable fact or rule is not an error: the owner denies the call with its reason, because the caller's next step is the same as for any refusal.
+An unreadable fact or rule is not a decision: the owner reports `failed`, because the caller's next step is to retry or fail the turn, not to treat the call as denied. An advisor's failure counts as no advice: its code and message are not forwarded, and the owner decides on its own result.
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `decide` | Read the policy, resolve the target and read the facts, read the rules for a command, ask the advisors for an admission, combine and answer | The facts or advice read stops; `cancelled`; nothing changes | The decision's future is the caller's; no resource is held | Refused with `closed`; an in-flight decision ends `closed` | Permission; the facts read by the facts owner |
+| `decide` — a fact or rule read fails | Answer `failed`; nothing is decided | — | — | — | Permission |
 | `update` | Commit `permission/changed` when the expected version matches, answer the new version once dispatched | None | The write is admitted or not; nothing to release | Refused with `closed` | Permission and the Timeline |
 | `advise` | Register the callback under the name against the calling row | None | The row's unload withdraws the registration | Every registration of the generation is withdrawn | Permission |
+
+## Client-visible changes
+
+The published `permission` face ([Permission plugin page](../../architecture/rust-agent/plugins/Permission.md#permission-data-face)) publishes `check(call, risk, cancelled) -> {decision} | {decision, reason}` with errors `Failed`/`Cancelled`. It is replaced as follows, and the maintainer is asked to confirm:
+
+- `check` is removed; `decide({call, risk?, source?}, cancelled)` answers `{outcome: "allow"|"ask"|"deny", reason?, advisorQuestion}`. The admission case (advisors, source) moves into the same operation, so Approval no longer calls two operations.
+- `update` and `advise` are new on the face; `PermissionState` keeps its `{version, policy}` shape.
+- Error codes change case with the standard binding spelling: `Failed`/`Cancelled` become `failed`/`cancelled`; `conflict` and `duplicate` are new.
+- The only caller of `check` is Approval, which this PR migrates; no client RPC, notification name, request field or model-visible text changes.
 
 ## Exceptions with reasons
 
@@ -126,7 +136,8 @@ Flow tests on the owner:
 - Presets decide by risk; `allowedTools` and `disallowedTools` refine the preset and a deny wins; an explicit disallow, a deny rule and a file denial are not lifted by an allow.
 - A file call asks when its resolved target is outside the workspace; a read or write fact denial refuses the call; a command rule denies under every preset and an allow rule only answers an ask for a simple command.
 - An admission asks the advisors in name order; an ask refines an allow; a deny wins over an ask and an allow; a recheck asks no advisor; a registration is withdrawn when its part unloads; a second registration of the same name is `duplicate`.
-- An update with a stale version is `conflict` with the current version; a dispatched change is visible to the next decision and survives a reload.
+- An update with a stale version is `conflict` with the current version; a dispatched change is visible to the next decision and survives a reload; a failed append answers `failed` and writes nothing.
+- A failed fact read answers `failed`, not a denial.
 - The published value's version is the last local change; the face and the Rust call answer the same decision.
 
 ## Rule check
@@ -134,7 +145,7 @@ Flow tests on the owner:
 | Rule | Application |
 | --- | --- |
 | §1 parts and Capabilities | Permission is one branch part and a Capability: it injects `dispatcher` and `timeline` and folds `permission/changed`. |
-| §2 scopes | Branch: a line's policy and decisions; the creation record and the facts are Session state it reads. |
+| §2 scopes | Branch: a line's policy and decisions; the creation record and the facts are Session state it reads, the command rules are process state it reads. |
 | §3 orthogonality | Approval is a separate owner; the facts, rules and Session record are other owners' operations and values. |
 | §4 rule 1 | A policy update is a command event; the owner writes the outcome fact. |
 | §4 rule 2 | No handoff. |
@@ -152,15 +163,17 @@ Flow tests on the owner:
 | §7 responsibility split | The caller keeps the question and the turn; the owner keeps the policy, the facts' use and the advisors. |
 | ADR 002 D1 | Branch scope. |
 | ADR 002 D2 | No wiring part. |
-| ADR 002 D3 | Depends on Session capabilities; nothing depends on Permission's internals. |
+| ADR 002 D3 | Depends on Session capabilities (the creation record, the facts) and a process capability (the command rules); nothing depends on Permission's internals. |
 | ADR 002 D4 | The preset seed comes from the Session's creation record; no separate configuration. |
 | ADR 002 D5 | Language-neutral operations and data. |
+| ADR 027 | Not applicable: the decision is served to the line that runs the call; the facts and rules are reached by their owners' faces. |
 
 ## Requirements raised to mechanism owners
 
-- **File access facts ([#2025](https://github.com/arcships/dim/issues/2025)).** The Session owner publishes `check({access, mode, path}, cancelled) → {target, workspace, system, owned, grant, discoveryError?}` ([#2093](https://github.com/arcships/dim/pull/2093)), which resolves the call's path (`~`, cwd, `..`, links) and answers the facts under the effective access; `mode` is the grant mode the call asks for. Permission resolves the facts service at the Session instance; the Session id is not a request field. Errors are `invalid`, `unavailable`, `cancelled` and `closed`; a `discoveryError` is a field, not an error. Permission currently reads the owner's Rust object and a host `home` value; both disappear with this operation.
-- **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093)).** `config` is the target's operation; Permission's creation-record read (the preset seed and the working directory) uses it. `identity` is no longer needed: the facts service is Session-bound.
-- **Permission rules ([#2017](https://github.com/arcships/dim/issues/2017)).** `permissionRules.rules` ([#2094](https://github.com/arcships/dim/pull/2094)) is the command-rules operation Permission reads; the `commandRules` name is removed.
+- **File access facts ([#2093](https://github.com/arcships/dim/pull/2093), target).** The Session owner publishes `check({access, mode, path}, cancelled) → {target, workspace, system, owned, grant, discoveryError?}`, which resolves the call's path (`~`, cwd, `..`, links) and answers the facts under the effective access; `mode` is the grant mode the call asks for. Permission resolves the facts service at the Session instance; the Session id is not a request field. Errors are `invalid`, `unavailable`, `cancelled` and `closed`; a `discoveryError` is a field, not an error.
+- **Permission rules ([#2094](https://github.com/arcships/dim/pull/2094), target).** `permissionRules.rules` is the process-scope command-rules read; the `commandRules` name is removed.
+- **SessionScope ([#2093](https://github.com/arcships/dim/pull/2093), target).** `config` is the operation; Permission's creation-record read (the preset seed and the working directory) uses it.
+- **Cross-scope mechanism ([#2127](https://github.com/arcships/dim/issues/2127), target).** The facts and the rules are reached by their owners' faces; this owner states the operations, not the mechanism.
 - **None other.** No Timeline, Dispatcher, loader or runtime change.
 
 ## Binding appendix
@@ -182,7 +195,7 @@ pub enum Outcome {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecideRequest {
     pub call: ApprovalCallData,
     pub risk: Option<String>,
@@ -200,7 +213,7 @@ pub struct DecisionReply {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateRequest {
     pub expected_version: u64,
     pub policy: PermissionPolicy,
@@ -248,11 +261,13 @@ pub type AdviseFn = std::sync::Arc<
         + Sync,
 >;
 
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum PermissionError {
     #[error("the decision was cancelled")]
     Cancelled,
+    #[error("the decision could not be made: {reason}")]
+    Failed { reason: String },
     #[error("the permission service is closing")]
     Closed,
     #[error("permission version conflict; current version is {current}")]
