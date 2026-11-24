@@ -140,7 +140,7 @@ The public producer face `eventHub` has `declare` and `publish`. The other four 
 | `session_closed` / `branch_missing` / `branch_ended` | The target cannot take input; fix the target |
 | `publication_unknown` | The guide committed but its publication is unconfirmed: the record is stored and the call replies its id; if the reply was lost, read `list` |
 | `reloading` / `ambiguous` / `failed` / `transport` | The guide input's answer; nothing is stored; retry the subscribe or read `list` |
-| `rejected` | The guide input was refused; nothing is stored; act on the `sessions` code in `reason` |
+| `rejected` | The guide input was refused; nothing is stored; act on the input owner's code in `reason` |
 | `storage` | The subscription file was not written; the in-memory set is unchanged |
 | `cancelled` | The call stopped before the guide write; nothing was stored |
 | `subscription_unknown` | No such subscription of the calling Session; read `list` first |
@@ -195,8 +195,8 @@ Flow tests on the owner:
 | --- | --- |
 | §1 parts and Capabilities | EventHub is one process part and one Session part. It writes no Timeline fact and folds no state, so it is not a Capability. |
 | §2 scopes | The catalog, subscriptions and delivery are process state; the `events` tool and the guide entry are Session state. |
-| §3 orthogonality | EventHub reads no other plugin's state; it calls `sessions`, `sessionFiles` and `pluginFiles` operations and registers its own entries. |
-| §4 rule 1 | EventHub writes inputs through `sessions.input`; InputQueue and Loop decide what an input becomes. |
+| §3 orthogonality | EventHub reads no other plugin's state; it calls the line's input owner, Agents, TimelineTree, SessionFiles and PluginFiles operations and registers its own entries. |
+| §4 rule 1 | EventHub writes inputs through `line_owner::<InputQueue>(line)?.submit`; InputQueue and Loop decide what an input becomes. |
 | §4 rule 2 | A delivered input belongs to InputQueue; EventHub cannot withdraw it and keeps no copy. |
 | §4 rule 3 | No before callback. |
 | §4 rule 4 | The Timeline and the core carry no event meaning; the marker is the owner's text. |
@@ -217,7 +217,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **Agents (#2020):** the `sessions` operations `input`, `lookup`, `exists` and `defaultBranchId` as data operations with the errors above, and the `agent/session-deleted {agentId, sessionId}` notice. `sessions.input` answers `publication_unknown` when the guide committed and its publication is unconfirmed; EventHub stores the subscription and replies its id. EventHub does not take a `HostDispatch` object or decode the reply envelope.
+- **Agents (#2020) and the line's input owner (#2027):** Agents' `session` for a target's existence, `acquire` when a subscription's reconciliation must keep a Session loaded, the `agent/session-deleted {agentId, sessionId}` notice, and the input owner's `submit` reached by `(sessionId, branchId)` id, which answers `publication_unknown` when the guide committed and its publication is unconfirmed (targets pending [#2098](https://github.com/arcships/dim/pull/2098) and [#2102](https://github.com/arcships/dim/pull/2102)); TimelineTree's `directory` supplies an omitted branch. EventHub takes no `HostDispatch` object and decodes no reply envelope.
 - **SessionFiles (#2018):** `put` answers the value the read tool opens for a Session file — a path, or a file id the read tool accepts. EventHub carries that value in the `dim-event` marker; `{fileId, size}` alone does not let the model read the body.
 - **PluginFiles (#2016):** the by-name text update and read for the owner's own file, with the lock held across the caller's change; no scope object.
 - **ServerControl (#2021):** `hold`/`release` ids for accepted publish and subscribe work, and `activated` for the reconciliation. EventHub does not hold a `ProcessHold` guard.

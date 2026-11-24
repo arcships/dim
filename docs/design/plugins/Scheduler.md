@@ -31,8 +31,8 @@ Callers keep:
 | A client starts, lists or stops a loop of its Session | No: the record, the rounds and the timer are the owner's | the loop operations through `session.loop.*` |
 | A client reads a wakeup's state | No client ships; the model's tool covers it | out of target |
 | A client watches job or delivery changes | No client ships; `list` and `history` are the reads | out of target |
-| A job reaches its target branch | No: the write's submission id, lookup, record and guide are the owner's | the delivery flow; `sessions.input` |
-| A job launches a Session | No: the launch, stop time and retention are the owner's record | the launch flow; `sessions.launch`, `stop`, `delete` |
+| A job reaches its target branch | No: the write's submission id, lookup, record and guide are the owner's | the delivery flow; `line_owner::<InputQueue>(line)?.submit` |
+| A job launches a Session | No: the launch, stop time and retention are the owner's record | the launch flow; Agents' `create_session` and `delete_session`, Loop's `stop_turn` |
 | The job document is read or changed | No: the Settings source and its revision are Settings' | `settings.register`, `read`, `change` |
 
 An operation or parameter exists only where its row says No.
@@ -91,15 +91,14 @@ let own = loops.list(ListLoops { session_id, branch_id: None }).await?;
 A delivery writes one ordinary input. The owner keeps the record and the receipt; the branch owns the input.
 
 ```rust
-let receipt = sessions
-    .input(InputWrite {
-        session_id,
-        branch_id,
-        mode,
-        submission_id: format!("scheduler:{run_id}"),
-        raw_blocks: vec![marker(job_name, run_id)],
-        content: prompt,
-    })
+let receipt = line_owner::<InputQueue>(&branch_id)?
+    .submit(InputMessageData {
+        submission_id: Some(format!("scheduler:{run_id}")),
+        user: Some(prompt),
+        blocks: vec![marker(job_name, run_id)],
+        mode: Some(mode),
+        ..InputMessageData::default()
+    }, cancelled)
     .await?;
 ```
 
@@ -107,7 +106,10 @@ let receipt = sessions
 
 ### Dependencies
 
-- `sessions` ([#2020](https://github.com/arcships/dim/issues/2020)): `input` for a delivery, `lookup` for the submission id, `pending` for a busy branch, `launch`, `stop` and `delete` for a launch target, and `defaultBranchId` for an omitted branch.
+- Agents ([#2020](https://github.com/arcships/dim/issues/2020), target, pending [#2098](https://github.com/arcships/dim/pull/2098)): `create_session` for a launch target, `delete_session` at retention, `session` for a target's existence, and `acquire` when work must keep a Session loaded across calls.
+- The line's input owner, by `(sessionId, branchId)` id ([#2027](https://github.com/arcships/dim/issues/2027), target, pending [#2102](https://github.com/arcships/dim/pull/2102)): `submit` for a delivery, where a repeated `submissionId` answers the existing receipt, and `pending` for a busy branch.
+- TimelineTree ([#2024](https://github.com/arcships/dim/issues/2024), target, pending [#2092](https://github.com/arcships/dim/pull/2092)): `directory` when a job omits its branch.
+- Loop ([#2027](https://github.com/arcships/dim/issues/2027), target, pending [#2102](https://github.com/arcships/dim/pull/2102)): `stop_turn` to stop a launch target.
 - `settings` ([#2017](https://github.com/arcships/dim/issues/2017)): `register` for the `schedule` source, `read` for the document, and `change` for every job write.
 - `pluginFiles` ([#2016](https://github.com/arcships/dim/issues/2016)): the by-name text update and read for `scheduler/runs.json`, `scheduler/wakeups.json` and `scheduler/loops.json`, under each file's lock.
 - `processActivity` ([#2021](https://github.com/arcships/dim/issues/2021)): `activated` before background work, and `hold`/`release` around accepted deliveries.
@@ -178,19 +180,19 @@ A delivery's target-gone answers are record outcomes, not job-operation errors: 
 | Job write | The Settings change reads the document, applies the caller's fields, checks the target and the job revision, writes and publishes the fact | Before the write; the change is dropped | The call ends; an accepted write completes | In-flight changes settle; the next generation reads the document at its next tick | Settings holds the document; Scheduler owns the job semantics |
 | Job window | The timer reads the document, selects due jobs, records `delivering`, writes one input, settles the record, disables a gone target | The timer stops on unload; the record settles at the next load | — | In-flight deliveries finish; `delivering` records settle by the read-only `lookup` at the next start | Scheduler for the record; the target branch for the input |
 | `runNow` | Record a window and deliver it like a due window | The timer stops; the record settles later | — | As a window | Scheduler |
-| Launch window | `sessions.launch` with the stored policy, record the Session and stop time, write the input, stop at the deadline, delete at retention | The launch stops at its own deadline; a cancel does not stop the Session | The record keeps the deadline; the next generation's recovery stops the Session | New launches stop while the row is disabled; the next load stops an overdue Session | Agents owns the Session; Scheduler owns the deadline and the record |
+| Launch window | `create_session` with the stored policy, record the Session and stop time, write the input, stop at the deadline, delete at retention | The launch stops at its own deadline; a cancel does not stop the Session | The record keeps the deadline; the next generation's recovery stops the Session | New launches stop while the row is disabled; the next load stops an overdue Session | Agents owns the Session; Scheduler owns the deadline and the record |
 | Wakeup fire | The pass reads the file, takes `scheduled` records inside the grace, writes one input, settles `fired` | A cancel that settles first prevents the input; one after the input reports `fired` | The record stays; the next load re-evaluates | In-flight writes settle; an uncertain reply keeps the record `scheduled` and retries within the grace; a past-grace record settles `expired` | Scheduler |
 | Wakeup cancel | Settle `cancelled` after the record write | — | — | — | Scheduler |
 | Wakeup expiry | A record past the grace is `expired` unless its submission id is found; a gone target is `cancelled` | — | — | The next load settles it | Scheduler |
-| Loop round | The pass reads the file, writes one queued input, advances the round or leaves the loop `waiting` | A stop settles the record; a pending round is not written | The record stays; the next load re-evaluates | The forward pass reads `sessions.pending` when it has `last_input_id`; the recovery pass settles a stored `delivering_round` by the read-only `lookup` with `loop:<loopId>:<round>` | Scheduler |
+| Loop round | The pass reads the file, writes one queued input, advances the round or leaves the loop `waiting` | A stop settles the record; a pending round is not written | The record stays; the next load re-evaluates | The forward pass reads the input owner's `pending` when it has `last_input_id`; the recovery pass settles a stored `delivering_round` by the read-only `lookup` with `loop:<loopId>:<round>` | Scheduler |
 | Loop stop | Settle `stopped`; a terminal record is returned unchanged | — | — | — | Scheduler |
 | Retention | Terminal records older than seven days are removed in the pass's write | — | — | The next load prunes | Scheduler |
 
-Recovery is read-only and never repeats the input. A `delivering` record is settled by `sessions.lookup {sessionId, branchId, submissionId}`; the answer `accepted` settles `delivered` with the input's id and sequence. `unknown`, `reloading`, `ambiguous` and a transport failure carry no fact: the record stays `delivering`, and each answer counts toward a persisted five-attempt bound. `unknown` is final only for a write that returned before the lookup began; an admitted write whose reply was lost keeps running to its own outcome, so `unknown` cannot settle a record. Each pass persists the incremented `attempts` before it sends the lookup, and a crash between the persist and the lookup still counts that attempt. A record whose stored `attempts` is already five settles `lost` with `detail: lookup_budget_exhausted` before any lookup; the fifth answer without a fact settles `lost` with `detail` naming that answer. `session_closed`, `branch_missing` and `branch_ended` settle the record `failed` and disable the session-target job, cancel the wakeup or stop the loop. A launch record whose Session was never created settles `lost` with `detail: launch_reply_unknown`. The record's stored `job_revision` decides the target-gone disable; a record without it never disables its job. A row reload while an accepted input is in flight is the same case: the first lookup may answer `unknown`, the record stays `delivering`, and a later `accepted` settles it `delivered`; the verification covers it.
+Recovery is read-only and never repeats the input. A `delivering` record is settled by re-submitting the same `submissionId` to the line's input owner (`submit` answers the existing receipt, so no separate lookup operation exists); the answer `accepted` settles `delivered` with the input's id and sequence. `unknown`, `reloading`, `ambiguous` and a transport failure carry no fact: the record stays `delivering`, and each answer counts toward a persisted five-attempt bound. `unknown` is final only for a write that returned before the lookup began; an admitted write whose reply was lost keeps running to its own outcome, so `unknown` cannot settle a record. Each pass persists the incremented `attempts` before it sends the lookup, and a crash between the persist and the lookup still counts that attempt. A record whose stored `attempts` is already five settles `lost` with `detail: lookup_budget_exhausted` before any lookup; the fifth answer without a fact settles `lost` with `detail` naming that answer. `session_closed`, `branch_missing` and `branch_ended` settle the record `failed` and disable the session-target job, cancel the wakeup or stop the loop. A launch record whose Session was never created settles `lost` with `detail: launch_reply_unknown`. The record's stored `job_revision` decides the target-gone disable; a record without it never disables its job. A row reload while an accepted input is in flight is the same case: the first lookup may answer `unknown`, the record stays `delivering`, and a later `accepted` settles it `delivered`; the verification covers it.
 
-The lookup acquires the target Session: a cold Session is restored by Agents, and the delivery's admission covers the restore and the lookup. Admission: the hold is taken before the record's external effect and released after the terminal record. A row unload does not release the old hold; it stays until process shutdown, and the next generation takes a separate hold per unsettled record and releases that one after the terminal record. The next generation reconstructs the unsettled set from the `delivering` records before its first window; `activated` gates the first pass. Scheduler never holds a Session handle across the lookup or the delivery.
+The re-submission reaches the target Session by id: a cold Session answers `NoSession` at the route, the scheduler takes an Agents hold, and the next call after Agents loads the generation delivers; the delivery's admission covers the restore and the call. Admission: the hold is taken before the record's external effect and released after the terminal record. A row unload does not release the old hold; it stays until process shutdown, and the next generation takes a separate hold per unsettled record and releases that one after the terminal record. The next generation reconstructs the unsettled set from the `delivering` records before its first window; `activated` gates the first pass. Scheduler never holds a Session handle across the lookup or the delivery.
 
-The forward loop pass reads `sessions.pending` for the loop's branch when it has `last_input_id`; a recovered `delivering_round` has no input id, so the recovery pass settles it by the read-only `lookup` with `loop:<loopId>:<round>`. An inconclusive forward round is left for the next window; a pending round is not written again. A wakeup fire that gets a definite refusal settles `cancelled`; an uncertain reply keeps the record `scheduled` and retries within the grace; a record past the grace settles `expired` and is never replayed. A job window whose write is uncertain follows the delivery rule above.
+The forward loop pass reads the input owner's `pending` for the loop's branch when it has `last_input_id`; a recovered `delivering_round` has no input id, so the recovery pass settles it by the read-only `lookup` with `loop:<loopId>:<round>`. An inconclusive forward round is left for the next window; a pending round is not written again. A wakeup fire that gets a definite refusal settles `cancelled`; an uncertain reply keeps the record `scheduled` and retries within the grace; a record past the grace settles `expired` and is never replayed. A job window whose write is uncertain follows the delivery rule above.
 
 A delivery or a job write takes a `processActivity` hold from before its external effect to its terminal record; a row unload does not release accepted work early. A disabled row starts no new windows, and its `delivering` records settle at the next load by the read-only `lookup` with the same submission id. A launch target started while the row was active is stopped at the next load if its deadline passed; the row does not start a new launch while disabled.
 
@@ -240,8 +242,8 @@ Flow tests on the owner:
 | --- | --- |
 | §1 parts and Capabilities | Scheduler is one process part and one Session part. It writes no Timeline fact and folds no state, so it is not a Capability. |
 | §2 scopes | Jobs, deliveries, wakeups, loops and the timer are process state; the tools, methods and guide entry are Session state. |
-| §3 orthogonality | Scheduler reads no other plugin's state; it calls `sessions`, `settings` and `pluginFiles` operations and registers its own entries. |
-| §4 rule 1 | A delivery writes an input through `sessions.input`; InputQueue and Loop decide what it becomes. |
+| §3 orthogonality | Scheduler reads no other plugin's state; it calls the input owner's, Agents', TimelineTree's, Settings' and PluginFiles' operations and registers its own entries. |
+| §4 rule 1 | A delivery writes an input through the line's input owner; InputQueue and Loop decide what it becomes. |
 | §4 rule 2 | A delivered input belongs to the target branch; Scheduler cannot withdraw it. |
 | §4 rule 3 | No before callback. |
 | §4 rule 4 | The Timeline and the core carry no job, wakeup or loop meaning; the records are the owner's state. |
@@ -262,7 +264,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-- **Agents (#2020):** the `sessions` operations `input`, `lookup`, `pending`, `launch`, `stop`, `delete` and `defaultBranchId` as data operations, with `session_closed`, `branch_missing`, `branch_ended`, `reloading` and `transport` as the target-gone and retry answers. Scheduler does not take a `HostDispatch` object or decode the reply envelope.
+- **Agents (#2020), the line's input owner (#2027), TimelineTree (#2024) and Loop (#2027):** the operations the dependency list names, reached by id (ADR 027), with `session_closed`, `line_ended`, `NoLine` at the route, `reloading`, `publication_unknown` and `transport` as the target-gone and retry answers. Scheduler takes no `HostDispatch` object and decodes no reply envelope.
 - **Settings (#2017):** `register` for the `schedule` source, `read` and `change`; the change runs under the document's exclusion and carries no caller-held revision. Scheduler does not inject `settingsService`.
 - **PluginFiles (#2016):** the by-name text update and read for the three files, with the lock held across the caller's change; no scope object.
 - **ServerControl (#2021):** `activated`, `hold` and `release`; Scheduler does not hold a `ProcessHold` guard.
