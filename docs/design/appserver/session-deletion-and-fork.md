@@ -210,12 +210,12 @@ Every step tolerates an absent target, so a delete can be retried after any fail
 | `session_protocol_version` | Only for a Session recorded by a *newer* protocol version than the connection speaks; a delete never answers it | Removed from this method |
 | `session_active` (-32000) | `requireInactive` and S, or a Session the delete would remove with it, is in use (§3.2 step 1) | Unchanged: nothing is removed and nothing is closed. The message says why: a turn is running, a background task holds it, or how many requests and subscriptions use it. A line that failed or is closing is not a reason: it keeps no Session |
 | `product_integration_pending` | The profile does not serve Session execution | Unchanged |
-| `-32603` "Session operation failed" | Step 3 failed (`cancelled`, `unsynced`, `io`, node unavailable) or step 4 failed (SQLite) | If step 2 closed S, S is closed but not deleted, as after `session.close`: its rows remain, it is neither listed nor loaded again in this process, and the relations its close ended stay ended. After a restart it loads, possibly with part of its command output gone. A Session that was not loaded is unchanged. Retry |
+| `-32603` "Session operation failed" | Step 3 failed (`cancelled`, `unsynced`, `io`, `closed`, node unavailable) or step 4 failed (SQLite) | If step 2 closed S, S is closed but not deleted, as after `session.close`: its rows remain, it is neither listed nor loaded again in this process, and the relations its close ended stay ended. After a restart it loads, possibly with part of its command output gone. A Session that was not loaded is unchanged. Retry |
 | No reply | The connection or Rpc ended before the reply | Either state. Retry |
 
 A held key in step 3 comes only from a FileStorage writer outside the closed Session, such as a
-PowerShell child that outlived its shell and still writes through FileStorage. A process that
-merely holds the file open without FileStorage produces `io`, not a key wait. The removal waits
+PowerShell child that outlived its shell and still writes through FileStorage. On Windows, a process that
+merely holds the file open without FileStorage produces `io`, not a key wait; on Unix an open file does not block the key. The removal waits
 for the key; cancelling the delete ends that wait with `cancelled`. An `unsynced`, `io` or `closed` failure
 leaves the delete failed and retried.
 
