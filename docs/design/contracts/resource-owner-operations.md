@@ -27,14 +27,9 @@ The OS path, pinned reader and input reader above use a path value, an existing 
 and a callback respectively. Existing local media submission/import, legacy node paths,
 result settlement and result paging keep the [Modality contract](../plugins/Modality.md).
 
-## Persistent Agents → sqliteStorage
+## Persistent Agents → Agents
 
-| Caller in Agents | Repository API; IDs and records are data |
-| --- | --- |
-| Load the directory and Session ownership | agents({}) → AgentRecord[]; owners({}) → SessionOwner[]. Keep ordered results, invalid-profile rows, ownership errors and validation of the unique default. |
-| Install/forget a persisted Agent | save({id,profile,default,owner?}) and delete({id}) → void. |
-| Look up delegation and decide if removal is permitted | members({}) → ordered Session/leader pairs; ledMembers({leader}), ownedAgents({owner}), memberSessions({agent}) → ordered IDs; agentOwner({agent}) → owning Session ID or null. |
-| Startup repair | unfinishedOwned({}) → {incomplete,orphaned}. Preserve the existing single query and the two distinct cleanup paths. |
+The Agent and member records belong to [Agents](https://github.com/arcships/dim/pull/2098/files): Agents writes them in the same creation and answers `members`; the storage engine executes the transaction and carries no face for these rows. The old `sqliteStorage.agents/save/delete/agentOwner/ownedAgents/unfinishedOwned/members/ledMembers/memberSessions` calls are removed with that move.
 
 ## Native storage
 

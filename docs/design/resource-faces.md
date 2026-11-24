@@ -738,8 +738,9 @@ resolve paths, decide permission or create a second Session lifecycle.
 | `catalog` | `{request,agent?,version,hosts,closed}` | existing catalog page |
 | `query` | `{scope,query,page?}` | `{result,next}` |
 
-These are repository steps, not the client lifecycle workflows `sessions.delete` and
-`session.fork`. Trusted plugins may address any Session id; the process face does not apply
+These are repository steps, not the client lifecycle workflows `session.delete` and
+`session.fork`; their owner-side operations are Agents' `delete_session` and `fork_session`
+([Agents contract](https://github.com/arcships/dim/pull/2098/files)). Trusted plugins may address any Session id; the process face does not apply
 per-caller Session ownership or grant scoping. The lifecycle owner remains responsible for:
 
 - `createOwnedSession`: reserve the creation/admission identity, select a supported protocol,

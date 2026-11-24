@@ -109,7 +109,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 | 名字 | 数据兄弟 | 说明 |
 | --- | --- | --- |
-| `agentIndex` | `sessions` | 目录查询走 `sessions` |
+| `agentIndex` | `sessions` | 类型键删除；目录读走 `sessions` 的值，其余跨 Session 调用按 [ADR 027](https://github.com/arcships/dim/pull/2029/files) 直达目标所有者（[Agents 契约](https://github.com/arcships/dim/pull/2098/files)） |
 | `settingsService` | `settings` | GoalBranch 的取消契约见 §4.1。 |
 | `modelHost` | `modelHost` | 完整模型请求直接调用所选配置的执行入口；辅助请求使用 `providerService.complete`。 |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
@@ -336,8 +336,8 @@ listenAddresses.read() -> {unixPath?, pipeName?, websocketAddress?}
 reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]}
   -> {} | error {code: reserved, message}
   -- interruption/progress 只属于真实注册，不属于这个问题
-collaborationDirectory.relations() -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}
-  -- 只读：Team 关系的写入仍由 Collaboration 的准入决定，数据面不提供第二个写入者
+  -- collaborationDirectory 移出：Team 关系是 Collaboration 的进程状态，没有进程外读取
+  -- （[Collaboration 契约](https://github.com/arcships/dim/pull/2098/files)）
 eventSubscriptions.sources() -> sources
 eventSubscriptions.subscribe {sessionId, branchId?, types, match?, mode?} -> reply
 eventSubscriptions.unsubscribe {sessionId, subscriptionId} -> reply

@@ -238,14 +238,14 @@ model execution, Timeline and Dispatcher have no title routing policy. No additi
 
 ### 3.4 The title a Session's creation requested
 
-`sessions.launch` may carry `title`, the label its caller already knows for the Session
-([sessions service §6.1](../appserver/sessions-service.md#61-launch)). Agents stores it in the new Session's
+`sessions.create_session` may carry `title`, the label its caller already knows for the Session
+([Agents contract](https://github.com/arcships/dim/pull/2098/files)). Agents stores it in the new Session's
 fixed configuration as `initialTitle`; SessionTitle is still the title's one writer, so the store never receives a
 title written by the caller.
 
 ```mermaid
 sequenceDiagram
-  participant L as sessions.launch
+  participant L as sessions.create_session
   participant A as Agents
   participant ST as SessionTitle (in the Session)
   participant Meta as SessionStore metadata
