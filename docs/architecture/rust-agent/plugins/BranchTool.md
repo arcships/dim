@@ -55,7 +55,10 @@ line_owner::<InputQueue>(target.line.clone())?
 
 // read: the cursor is the calling line's, the page is the tool's rendering.
 let own = line_owner::<BranchLine>(&execution.branch_id)?.view(Some(target.clone())).await?;
-let after = input.after.unwrap_or_else(|| own.cursor.unwrap_or(cut));
+// Without `after` and without a cursor: a line the caller opened starts at 0,
+    // the line it was cut from at its own opening cut.
+    let start = if target.opened_by_caller { 0 } else { cut };
+    let after = input.after.unwrap_or_else(|| own.cursor.unwrap_or(start));
 let page = tree.read(ReadLines {
     line: target.line.clone(),
     from: Some(after + 1),
@@ -95,7 +98,7 @@ Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A 
 
 ### Errors
 
-The tool's coded refusals are the accepted set ([timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)); an argument error and every other ending are failed results without a code, so the model-visible result shape does not change. The pair check reads `line(id)` first: `unknown` there becomes `branch_not_kin`, never a separate code. A `NoLine` after the pair check succeeded means the target's instance closed in between, which each action reports as `branch_ended`. `SessionClosing` is a failed result without a code, and a Session part never receives `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [TimelineTree](TimelineTree.md#session-parts-reaching-a-lines-owners)).
+The tool's coded refusals are the accepted set ([timeline branches §11](../../../design/timeline-branches.md#11-the-branch-tool)); an argument error and every other ending are failed results without a code, so the model-visible result shape does not change. The pair check reads `line(id)` first: `unknown_branch` there becomes `branch_not_kin`, never a separate code. A `NoLine` after the pair check succeeded means the target's instance closed in between, which each action reports as `branch_ended`. `SessionClosing` is a failed result without a code, and a Session part never receives `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [TimelineTree](TimelineTree.md#session-parts-reaching-a-lines-owners)).
 
 Refusals, with the code in `structuredContent.error`:
 

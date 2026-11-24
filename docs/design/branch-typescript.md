@@ -1,6 +1,6 @@
 # Branch TypeScript binding
 
-The Session tree's binding is superseded by the [TimelineTree contract](../architecture/rust-agent/plugins/TimelineTree.md); references below to `treeCommands` describe the pre-redesign binding. A Session part cannot inject a single branch's service, but can read that branch-group data face by line id with `line_owner` ([ADR 027](https://github.com/arcships/dim/pull/2029)).
+The Session tree's binding is superseded by the [TimelineTree contract](../architecture/rust-agent/plugins/TimelineTree.md); references below to `treeCommands` describe the pre-redesign binding. A Session part cannot inject a single branch's service, but can read that branch-group data face by line id with `line_owner` ([ADR 027](../adr/027-cross-scope-access-by-id.md)).
 
 Status: implemented for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
 [#4](https://github.com/arcships/dim/issues/4), on rutis 0.16.0 `build::Exports`
@@ -151,7 +151,7 @@ same-module snapshots, online metadata, disablement and Pending apply unchanged.
 
 - ~~**A Session part reading a branch-owned service.**~~ Settled: a Session part cannot inject a
   single branch's service (ADR 002 D3), but it reads that branch-group data face by line id with
-  `line_owner` ([TimelineTree contract](../architecture/rust-agent/plugins/TimelineTree.md#session-parts-reaching-a-lines-owners); [ADR 027](https://github.com/arcships/dim/pull/2029)).
+  `line_owner` ([TimelineTree contract](../architecture/rust-agent/plugins/TimelineTree.md#session-parts-reaching-a-lines-owners); [ADR 027](../adr/027-cross-scope-access-by-id.md)).
 - **Generator limitations worked around.** rutis' generator resolves a generic alias's item type
   where the alias is defined, so the exported methods spell out `std::result::Result<_, AgentError>`
   instead of the runtime's `Result<_>` ([arcships/rutis#463](https://github.com/arcships/rutis/issues/463)); and, as documented, it

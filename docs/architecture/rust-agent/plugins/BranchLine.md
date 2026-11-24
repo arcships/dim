@@ -12,7 +12,7 @@ BranchLine is one line's view of itself and of the lines it opened. It folds the
 
 BranchLine owns:
 
-- **Its role and parent.** `main`, `tool`, `host` or `user`, and the line it was cut from, both read from the parent's `branch/create` at the line's opening cut — never parsed from rendered history.
+- **Its role and parent.** `main`, `tool`, `host` or `user`, and the line it was cut from, both read from the parent's `branch/create` at the line's `createdAt` (the create fact's own position), never at the inherited `cut` and never parsed from rendered history. A line cut at an older point than its creation would otherwise read the wrong fact.
 - **The tool lines it opened and their states.** The roster of open tool lines with the first line of each purpose, in opening order, retired when none is open.
 - **Its read cursors.** The `nextCursor` of its latest successful read of each target it may read.
 - **The parent block.** The head and cursor the line has reported to itself about the line it was cut from, and whether a block is currently held and undelivered.
@@ -47,7 +47,7 @@ match line.role {
 if line.ending {
     return refused("branch_ended", &execution.branch_id);
 }
-let after = line.cursor.unwrap_or(cut);
+let after = line.cursor.unwrap_or(if opened_by_caller { 0 } else { cut });
 ```
 
 ## Own contract
@@ -68,7 +68,7 @@ let after = line.cursor.unwrap_or(cut);
 
 | Operation | Intent | Request | Reply | Cancellation | Errors (codes) |
 | --- | --- | --- | --- | --- | --- |
-| `view` | One line's role, parent, end state and the read cursor for the target the caller asks about | `{target?}` (the operation runs on the line's own BranchLine) | `{role, parent?, ending, cursor?, blocked?}` | None: a read of the owner's folded state, or one bounded read of its own history for that target | `unknown` (the line has no directory record yet), `storage` (the read of its own history failed; retryable), `closed` |
+| `view` | One line's role, parent, end state and the read cursor for the target the caller asks about | `{target?}` (the operation runs on the line's own BranchLine) | `{role, parent?, ending, cursor?, blocked?}` | None: a read of the owner's folded state, or one bounded read of its own history for that target | `unknown_branch` (the line has no directory record yet), `storage` (the read of its own history failed; retryable), `closed` |
 
 `cursor` is the `nextCursor` of this line's latest successful read of the named target: retained from live results, and rebuilt on load from this line's own `step/tool-use` and `step/tool-result` for that target when the line has read it. It is absent when the target is omitted or this line never read it. `blocked` reports the held parent block: its target and the head it reported. The reply is a value, not a subscription: BranchTool reads it once per call, and the owner keeps it current from its own facts.
 
@@ -76,7 +76,7 @@ let after = line.cursor.unwrap_or(cut);
 
 | Kind (wire code) | What the caller does next |
 | --- | --- |
-| `unknown` | The line has no directory record yet; retry after it is published, or treat the line as unopened |
+| `unknown_branch` | The line has no directory record yet; retry after it is published, or treat the line as unopened |
 | `storage` | Retryable: the line's own history could not be read, so no cursor is known; retry the view, or read with no `after` |
 | `closed` | The Session is closing; the caller's own refusal follows |
 
@@ -180,7 +180,7 @@ pub struct LineView {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum LineViewError {
     #[error("line {line} has no directory record yet")]
-    Unknown { line: String },
+    UnknownBranch { line: String },
     #[error("the line's history could not be read")]
     Storage,
     #[error("the Session is closing")]
