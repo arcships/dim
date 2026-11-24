@@ -39,7 +39,7 @@ let settings = ModelSettings {
     metadata: defaults.metadata.map(|mut metadata| {
         metadata.session_id = Some(session_id);
         metadata.turn_id = Some(turn_id);
-        metadata.extensions.insert("requestId".into(), request_id); // per request, written by Loop
+        metadata.extensions.insert("requestId".into(), request_id.into()); // per request, written by Loop
         metadata
     }),
 };
@@ -116,8 +116,10 @@ Rule D: no client wire protocol or user-visible behavior changes; the aimux requ
 ## Binding appendix
 
 ```rust
-use dim_agent_runtime::{ModelId, ModelSelection, PublicService};
-use dim_agent_types::{ModelCapabilitySnapshot, ModelConfig, RequestMetadata, SystemPrompt};
+use dim_agent_runtime::PublicService;
+use dim_agent_types::{
+    ModelCapabilitySnapshot, ModelConfig, ModelSelection, RequestMetadata, SystemPrompt,
+};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,4 +144,4 @@ impl RequestSettings {
 }
 ```
 
-`ModelSelection`, `ModelId` and the reply's members are the crate's existing data; `settings` answers the value itself, as `agentConfig.get` did before this owner existed. The reply's members are the crate's existing data. Errors cross as `{code, message}`; this owner has none.
+`ModelSelection` and the reply's members are `dim_agent_types` data; `settings` answers the value itself. Errors: this owner has none.

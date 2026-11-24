@@ -47,6 +47,7 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 - `P:sessionFiles` — whether the Session owns the target file.
 - `S:sessionGrants` — the Session's file grants, read by `check` only.
 - `P:worktrees` — managed worktree roots that extend the workspace.
+- `P:hostPlatform` — the platform roots the `system` fact compares against.
 
 ### Operations
 
@@ -55,7 +56,7 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 | `check` | Resolve a call's target and answer the facts under the branch's access preset | `{access, mode, path}` | `{target, workspace, system, owned, grant, discoveryError?}` | The caller drops the call; the reads stop | `invalid`, `unavailable`, `cancelled`, `closed` |
 | `workspaceRoots` | The workspace and managed worktree roots a command may use | `{cwd}` | `{roots}` | The caller drops the call | `invalid`, `unavailable`, `cancelled`, `closed` |
 
-`access` is the branch's access preset (`dim_agent_types::FileAccess`: `read-only`, `workspace-read-write`, `unrestricted`); `mode` is the grant mode the call asks for (`dim_agent_types::GrantMode`: `read`, `write`); `path` is the path the call named. `target` is the resolved path, and it is what the caller passes to the file operation. A write grant is inert under `read-only` and active under `workspace-read-write` or `unrestricted`.
+`access` is the branch's access preset (`dim_agent_types::FileAccess`: `read-only`, `workspace-read-write`, `unrestricted`); `mode` is the grant mode the call asks for (`dim_agent_types::grant::GrantMode`: `read`, `write`); `path` is the path the call named. `target` is the resolved path, and it is what the caller passes to the file operation. A write grant is inert under `read-only` and active under `workspace-read-write`; `unrestricted` does not widen grants because it already allows every write.
 
 ### Errors
 
@@ -132,9 +133,8 @@ Rule D: no client wire protocol or user-visible behavior changes; the change is 
 ```rust
 use dim_agent_capabilities::host::CancelledFn;
 use dim_agent_runtime::PublicService;
-use dim_agent_types::{FileAccess, GrantMode};
-
-use dim_agent_types::{FileAccess, GrantMode};
+use dim_agent_types::grant::GrantMode;
+use dim_agent_types::FileAccess;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -168,16 +168,17 @@ pub struct Roots {
     pub roots: Vec<String>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum FactsError {
-    #[error("{0}")]
-    Invalid(String),
-    #[error("{0}")]
-    Unavailable(String),
-    #[error("the call was cancelled")]
-    Cancelled,
-    #[error("the facts owner is unloading")]
-    Closed,
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    Unavailable { message: String },
+    #[error("{message}")]
+    Cancelled { message: String },
+    #[error("{message}")]
+    Closed { message: String },
 }
 
 impl PublicService for FileAccessFacts {}

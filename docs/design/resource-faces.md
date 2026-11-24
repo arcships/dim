@@ -613,7 +613,7 @@ SessionTitle and FileAccess use the process repository operations in the [resour
 
 | Family | Operations |
 | --- | --- |
-| Timeline (`timelineStore`) | `createSession`, `sessionConfig`, `releaseSession`, `rollbackSession`, `append` (sync), `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot` |
+| Timeline (`timelineStore`) | Session face: `head`, `branches`, `readPage`, `readSegments`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot`; the process face `store` keeps `query` and `sessionConfig`; `createSession`, `releaseSession`, `rollbackSession` and `append` are the engine's own path ([SessionScope](plugins/SessionScope.md), #2093) |
 | Timeline completion (`timelineStore`) | `commits`, `closeCommits`; notifications `{subscriptionId, batchId, branchId, through, result}` |
 | Session rows (`store`) | The repository operations listed in §5.2 |
 | Worktree association (`store`) | `associateWorktree`; [service faces](service-faces.md) §4.8 |

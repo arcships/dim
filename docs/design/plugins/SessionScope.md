@@ -36,7 +36,7 @@ Callers keep as business:
 | Record a fault: Prompt on a prompt or recovery failure | No | `reportFault` |
 | Read the current fault | No | `failure` |
 | Subscribe to later faults: a part in another language | No: a subscription is the owner's, not a poll loop in the caller | `observeFault` |
-| Act on one line's owners by line id: any branch-group data face — `inputQueue.submit` or `withdraw`, `contextUsage.read`, `prompt.adoptedConfiguration`, `approval.pending` — except registration points and lifecycle services | No: a part cannot address a line's instance itself, and a forwarding operation here would be the facade §7 forbids | Not this owner: the mechanism resolves the branch-group service by line id (`line_owner::<T>(line)`), and the caller calls that owner's typed operation |
+| Act on one line's owners by line id: any branch-group data face — `inputQueue.submit` or `withdraw`, `contextUsage.read`, `prompt.adoptedConfiguration`, `approval.pending` — except registration points and lifecycle services ([ADR 027 D1 and D3](https://github.com/arcships/dim/pull/2029)) | No: a part cannot address a line's instance itself, and a forwarding operation here would be the facade §7 forbids | Not this owner: the runtime routes by line id ([#2127](https://github.com/arcships/dim/issues/2127)), and the caller calls that owner's typed operation |
 | Mount and retire Session content: Skills' content instances, MCP's connections | No: the Session's anchor and the group admission are the owner's knowledge | `mount`, `unmount` |
 | Open a branch's runtime context: TimelineTree | No: only the runtime constructs a branch's context, in its own subtree | `openBranch` |
 
@@ -47,7 +47,7 @@ An operation exists only where the row says No.
 Skills replaces content after publication, and stops when the Session closes:
 
 ```rust
-if !scope.activated().await?.active {
+if !scope.activated().await.active {
     return Ok(()); // the Session never published
 }
 let mounted = scope
@@ -71,8 +71,10 @@ the part releases it when the work ends only so an idle release may happen soone
 
 ```rust
 // ShellInput: the run's hold lives in the part's registry, not in the call.
-scope.phase()?; // closing or closed -> RpcError::closed()
-let lease = scope.hold().await?.lease_id;
+if !matches!(scope.phase().phase, Phase::Loading | Phase::Active) {
+    return Err(RpcError::closed());
+}
+let lease = scope.hold(ctx).await?.lease_id;
 self.runs.lock().unwrap().insert(run_id, lease);
 ```
 
@@ -88,8 +90,9 @@ const { leaseId } = await sessionScope.observeFault(async fault => {
 TimelineTree opens a branch after admitting it:
 
 ```rust
+// `openBranch` is the one Rust-only method; TimelineTree is the only caller.
 let branch = scope
-    .open_branch(OpenBranchRequest { branch_id: id, ancestors }, cancelled)
+    .open_branch(ctx, OpenBranchRequest { branch_id: id, ancestors }, cancelled)
     .await?;
 // The tree owns `branch` from here: it hands it to the branch's parts and closes it
 // before the Session scope unloads.
@@ -120,7 +123,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | `failure` | The fault in force, if any | `{}` | `{fault?}` | None | None |
 | `mount` | Create a Session-owned content instance from a definition | `{group, definitionId, instanceData}` | `{instanceId}` | The caller drops the call; an instance it no longer waits for is shut down before the reply | `invalid`, `not_ready`, `cleanup`, `closed` |
 | `unmount` | Retire a content instance this Session owns | `{instanceId}` | `{}` | None; the owner completes the release | `unknown` when no live instance has the id; `cleanup`; `closed` |
-| `openBranch` | Construct a branch's runtime context for the branch tree | `{branchId, ancestors}` | the branch's runtime context (see Exceptions) | The caller drops the call; a construction the caller abandoned is shut down before the branch becomes visible | `closed`, `build` |
+| `openBranch` (Rust-only, `#[rutis::service(skip)]`) | Construct a branch's runtime context for the branch tree | `{branchId, ancestors}` | the branch's runtime context (see Exceptions) | The caller drops the call; a construction the caller abandoned is shut down before the branch becomes visible | `closed`, `build` |
 
 `listener` and `work` are callbacks by reference: they run outside the owner's locks and outside the Timeline's commit lock. `work` returns nothing; its failure and its cleanup stay with the caller. A lease id is an owner-issued token bound to the calling row; it carries no authority, the owner settles it at the row's unload, and a caller never has to free it on an error path.
 
@@ -168,6 +171,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 - The Session-scoped `timelineStore` binding is assembly infrastructure: the store owns the engine and the operations, SessionScope installs the binding and states the spelling, and a process caller uses `store` (§2018's requirement).
 - `config` is the persisted record's serde form: `interactive` is omitted when true because only the native store writes that form. A caller that decodes the value must treat absence as true; the live reply language is `sessionLanguage`, not this record.
 - The failure record keeps only the first fault, and a storage failure supersedes a non-storage one: work that fails after the Session already stopped learns the original cause, not its own.
+- A fault listener that returns an error stops receiving: the owner drops the registration and the lease, and the fault record is unchanged.
 - `identity` carries no version: the id and the restored flag are fixed at creation.
 - A lease is a value, not a handle: it names nothing the caller can use except in `release`, and the owner releases every lease at the row's unload, so a caller that loses the id leaks nothing. `release` only lets an idle release happen sooner.
 - Content instance ids are the Session's, not the caller's: the Session's close shuts down every instance it mounted, so a part that never unmounts leaves obsolete content published until the Session ends, without breaking the owner.
@@ -177,10 +181,10 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 - `hold` answers `closed` once an idle release is decided; a lease taken before it keeps the Session loaded until released, and never refuses a close; a lost id is settled at the row's unload; another row's id is `invalid` on release.
 - `observeFault` delivers the fault in force and later reports; `release` answers `released: true` then `false`; another row's id is `invalid`; the row's unload stops delivery.
 - `reportFault` keeps the first fault; a storage fault after a non-storage one wins; a non-storage fault after a storage one loses.
-- `mount` answers `invalid` for a group outside the Session's subtree, `not_ready` for a definition whose row failed (and leaves no instance), and shuts down an abandoned mount; `unmount` answers `cleanup` when the shutdown fails and `invalid` for another Session's id.
+- `mount` answers `invalid` for a group outside the Session's subtree, `not_ready` for a definition whose row failed (and leaves no instance), and shuts down an abandoned mount; `unmount` answers `cleanup` when the shutdown fails and `unknown` for an id this Session never issued.
 - `activated` answers false when the Session closes before publishing; `closing` returns when the close starts.
 - `openBranch` answers `closed` during the Session's close; a failed construction settles the branch scope before the reply; the tree closes every branch before the Session scope unloads.
-- `config`, `identity` and `phase` do not change while the Session runs.
+- `identity` is fixed; `phase` only moves forward through the four phases; `config` is fixed except `config.language`, which the native store updates in place.
 
 ## Rule check
 
@@ -200,8 +204,8 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | §4 rule 9 | No Timeline fact: the phase and the fault record are runtime state, read live and never persisted as events. |
 | §7 values, ids and objects | The record, identity, phase and fault are values; a lease id and a content instance id are the owner's, bound to the calling row and settled at its unload; the one object is `openBranch`, with the handover design above. |
 | §7 no proxy lookup | The owner returns only its own state; the Agent's configuration and the Skills and Collaboration factory texts leave this face. |
-| §7 one interface | One name, `sessionScope`, on the owner type; the Rust binding and the wire call the same methods; no facade or wrapper type. |
-| §7 cross-language | Every operation is data, a callback by reference or an id; no method exists only for Rust. |
+| §7 one interface | One name, `sessionScope`, on the owner type; the wire calls every method except `openBranch`, which is marked `#[rutis::service(skip)]`; no facade or wrapper type. |
+| §7 cross-language | Every operation is data, a callback by reference or an id, except `openBranch`: it hands TimelineTree the branch's runtime context, which has no serde form, and the tree is a Rust part. That is the only Rust-only method, and it is marked skip. |
 | §7 one change | The implementation task deletes the old names and migrates every caller in one change. |
 | ADR 002 D1 | Session scope: the record, phase, leases, faults and mounts live and die with the Session. |
 | ADR 002 D2 | No wiring plugin: the operations are on the owner type; no adapter exists beside it. |
@@ -211,7 +215,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 
 ## Requirements raised to mechanism owners
 
-- [#2024](https://github.com/arcships/dim/issues/2024) and the runtime: resolve a branch group's service by line id (`line_owner::<T>(line)?`), so a Session part calls that owner's typed operation directly. No forwarding operation, operation-name routing or reply envelope is added to this owner; TimelineTree supplies the line id and the line's state, never the address.
+- [#2127](https://github.com/arcships/dim/issues/2127), owned by the dim runtime, and [#2024](https://github.com/arcships/dim/issues/2024): route by line id so a Session part resolves a branch-group data face with `line_owner::<T>(line)?` and calls that owner's typed operation, per [ADR 027 D1–D3](https://github.com/arcships/dim/pull/2029). The instance key never leaves the instance, the caller keeps no resolution between calls, and this owner adds no forwarding operation, operation-name routing or reply envelope. TimelineTree supplies the line id and the line's state, never the address.
 - The runtime's `Session` facade stops forwarding line operations: `end_branch`, `set_default_branch`, `branch`, `branches`, `directory`, `default_and_directory`, `ended_head`, `sequence`, `batch_end` and `query` are TimelineTree's, and the Session access surface must not restate them.
 - [#2018](https://github.com/arcships/dim/issues/2018): the Session store owns the Timeline engine and constructs the Session-scope binding; SessionScope installs it. The Session face publishes the per-line reads and the completion subscriptions; `query` and `sessionConfig` stay on `store`; `createSession`, `releaseSession`, `rollbackSession` and `append` are not on the Session face.
 
@@ -219,10 +223,10 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 
 This contract replaces the Session-scope paragraphs and rows that state these names; the delivery in #2025 carries the migration.
 
-- `docs/design/contracts/runtime-owner-operations.md`: the `sessionLifecycle` rows of "Retained operations" and "New rutis APIs on existing owners", the `sessionLoader` row, and the "Calls from a Session to a selected branch" section — a branch-group service is resolved by line id (`line_owner::<T>(line)`), and `timelineTree.call` is removed rather than kept.
-- `docs/design/contracts/service-faces.md`: §3.6's `timelineFactory` row and §3.2's `agentConfig`, `skillsConfig` and `collaborationConfig` rows; the Session-scoped `timelineStore` spelling in §3.4 is stated by this contract, with the engine's operations left to #2018.
-- `docs/design/plugin-contract.md`: the `sessionIdentity`, `sessionLifecycle`, `sessionConfig` and `agentConfig` rows of the named-services table.
-- `docs/design/contracts/resource-faces.md` §5: the Session-scoped `timelineStore` names this contract spells; the engine and its process face remain #2018's.
+- `docs/design/contracts/runtime-owner-operations.md`: the `sessionLifecycle` rows of "Retained operations" and "New rutis APIs on existing owners", the `sessionLoader` row, and the "Calls from a Session to a selected branch" section — a branch-group data face is resolved by line id, and `timelineTree.call` is removed rather than kept. `line_owner::<T>(line)` reaches any branch-group data face except registration points and lifecycle services ([ADR 027 D1 and D3](https://github.com/arcships/dim/pull/2029); the routing mechanism is [#2127](https://github.com/arcships/dim/issues/2127)).
+- `docs/design/service-faces.md`: §3.6's `timelineFactory` row, §3.2's `agentConfig`, `skillsConfig` and `collaborationConfig` rows, and §3.4's `timelineStore` row, which now spells the Session face and leaves `query` and `sessionConfig` on the process face `store`.
+- `docs/design/resource-faces.md` §5: the Timeline family row, updated to the same spelling; the engine and its process face remain #2018's.
+- `docs/design/plugin-contract.md`: the `sessionIdentity`, `sessionLifecycle`, `sessionConfig` and `agentConfig` rows of the named-services table, the `session` row of the scope table, and R2's needed names.
 
 Rule D: no client wire protocol or user-visible behavior changes; every change here is plugin-facing.
 
@@ -315,23 +319,24 @@ pub struct OpenBranchRequest {
 pub type FaultListener =
     Arc<dyn Fn(Option<SessionFault>) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>> + Send + Sync>;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum SessionScopeError {
-    #[error("{0}")]
-    Closed(String),
-    #[error("{0}")]
-    Invalid(String),
-    #[error("{0}")]
-    NotReady(String),
-    #[error("{0}")]
-    Cleanup(String),
-    #[error("{cause}")]
+    #[error("{message}")]
+    Closed { message: String },
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    NotReady { message: String },
+    #[error("{message}")]
+    Cleanup { message: String },
+    #[error("{message}")]
     Build {
-        cause: String,
+        message: String,
         cleanup: Option<String>,
     },
-    #[error("{0}")]
-    Unknown(String),
+    #[error("{message}")]
+    Unknown { message: String },
 }
 
 impl PublicService for SessionScope {}
@@ -358,6 +363,9 @@ impl SessionScope {
     ) -> Result<ReleaseReply, SessionScopeError> { /* ... */ }
     pub async fn mount(&self, definition: MountDefinition) -> Result<MountedInstance, SessionScopeError> { /* ... */ }
     pub async fn unmount(&self, request: UnmountRequest) -> Result<(), SessionScopeError> { /* ... */ }
+    /// The one Rust-only method: the branch's runtime context has no serde form,
+    /// and TimelineTree, which holds and closes it, is a Rust part.
+    #[rutis::service(skip)]
     pub async fn open_branch(
         &self,
         caller: &Ctx,
@@ -367,4 +375,4 @@ impl SessionScope {
 }
 ```
 
-`caller: &Ctx` and `cancelled: CancelledFn` are the binding's caller row and cancellation argument; the dispatch fills them and no caller sends or names a row. `LeaseId`, `InstanceId` and the ancestor pairs cross as strings and numbers. `cancelled` and `caller: &Ctx` are the binding's cancellation and caller-row arguments, not request fields; the dispatch fills them. Errors cross as `{code, message}`: `code` is the variant name in snake_case, `message` is `Display`, and a variant's own members (for example `build`'s `cleanup`) travel beside them.
+`caller: &Ctx` and `cancelled: CancelledFn` are the binding's caller-row and cancellation arguments, not request fields; the dispatch fills them and no caller sends or names a row. `LeaseId`, `InstanceId` and the ancestor pairs cross as strings and numbers. Errors derive `serde` with `#[serde(tag = "code", rename_all = "snake_case")]`, so the wire `code` is the variant name; `build` also carries `cleanup`. `openBranch` has no serde reply and is marked skip.

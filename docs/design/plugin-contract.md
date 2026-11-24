@@ -59,7 +59,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- |
 | Process (root) | Host start | Host shutdown | — (process parts provide their own) |
 | Agent (`agent`) | Agents creates an Agent | Agent close, host shutdown | Host-internal |
-| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionIdentity`, `sessionLifecycle`, `treeCommands` |
+| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionScope`, `treeCommands` |
 | Branch (`branch`) | TimelineTree creates a branch | The branch ends, or its Session closes | `timeline`, `dispatcher`, `branchLifecycle`, `timelineIdentity` |
 
 Visibility follows the tree, as in [principles §2](../architecture/rust-agent/principles.md):
@@ -359,12 +359,11 @@ design is merged. R4–R7 concern how Dim uses rutis and are in
   The row learns its Session id from the C4 setup rather than from a service.
 - **Existing mechanisms considered:** C4's per-row setup carries the id but not the phases.
   `branchLifecycle` already exists for branch rows.
-- **Needed:** `sessionLifecycle` (`activated`, `closing`, `hold`) and `sessionIdentity`
-  (`{sessionId, restored}`) as catalog services in `session`, with serde shapes, next to the existing
-  `branchLifecycle` and `timelineIdentity` in `branch`. `hold` returns a handle released by a call or
-  by the row's unload; in the serde form the handle is a hold id, which `release(id)` ends, and the
-  hold is a cleanup of the calling row. `sessionConfig` exposes the creation-time configuration the C4
-  setup carried, so the setup goes. The process scope gets none: process parts follow the host's
+- **Needed:** `sessionScope` (`activated`, `closing`, `hold`, `release`, the fault operations, and
+  the `config` and `identity` reads) as one catalog service in `session`, with serde shapes, next to
+  `branchLifecycle` and `timelineIdentity` in `branch`. `hold` answers a lease id bound to the
+  calling row, which `release` ends early and the row's unload settles. `config` exposes the
+  creation-time configuration the C4 setup carried, so the setup goes ([SessionScope](plugins/SessionScope.md)). The process scope gets none: process parts follow the host's
   start and shutdown through the rutis lifecycle.
 - **Effect:** none on the Timeline. It exposes the existing phases.
 - **Owner:** Dim runtime (SessionScope) and App Server (catalog). Delivered in phase 4

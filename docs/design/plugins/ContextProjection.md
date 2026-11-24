@@ -143,14 +143,16 @@ This contract replaces the `historyRenderer` value; the delivery in #2025 carrie
 
 - `docs/design/contracts/runtime-owner-operations.md`: the `Loop and ContextPreparation → HistoryRenderer` row of "Model preparation, history and tools".
 - `docs/design/service-faces.md`: §3.5's `historyRenderer` row.
+- `docs/design/plugins/ContextCompaction.md` §4.2 and the sections that name `HistoryRenderer`: the projection is this owner's, and the history renderer's name leaves the catalog.
 
 Rule D: no client wire protocol or user-visible behavior changes; `StreamedContext` keeps its fields and the model-visible text is unchanged.
 
 ## Binding appendix
 
 ```rust
+use dim_agent_capabilities::history::HistoryEntry;
 use dim_agent_runtime::{ContextHistory, PublicService};
-use dim_agent_types::{AgentEvent, HistoryEntry, ProjectionCheckpoint, RecoverySnapshot, TimelinePosition};
+use dim_agent_types::{AgentEvent, ProjectionCheckpoint, RecoverySnapshot, TimelinePosition};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -227,16 +229,17 @@ pub struct SnapshotFromCheckpointRequest {
     pub anchor: AgentEvent,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum ProjectionError {
-    #[error("{0}")]
-    FutureSequence(String),
-    #[error("{0}")]
-    Invalid(String),
-    #[error("{0}")]
-    Storage(String),
-    #[error("the projection owner is unloading")]
-    Closed,
+    #[error("{message}")]
+    FutureSequence { message: String },
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    Storage { message: String },
+    #[error("{message}")]
+    Closed { message: String },
 }
 
 impl PublicService for ContextProjection {}

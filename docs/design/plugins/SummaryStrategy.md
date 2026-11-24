@@ -149,11 +149,12 @@ Rule D: no client wire protocol or user-visible behavior changes; `completed`, `
 ## Binding appendix
 
 ```rust
-use dim_agent_capabilities::host::StrategyDiagnostics;
-use dim_agent_runtime::{ModelSelection, PublicService};
+use dim_agent_capabilities::history::HistoryEntry;
+use dim_agent_capabilities::host::{CompactionCut, StrategyDiagnostics};
+use dim_agent_runtime::PublicService;
 use dim_agent_types::{
-    AgentEvent, BaselineSource, CompactionCut, CompactionTrigger, HistoryEntry, Message,
-    ModelRequest, ProviderOutputBudgetFacts,
+    BaselineSource, CompactionTrigger, Message, ModelRequest, ModelSelection,
+    ProviderOutputBudgetFacts,
 };
 use std::sync::Arc;
 
@@ -221,16 +222,17 @@ pub struct CompactionReply {
     pub outcome: StrategyOutcome,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum StrategyError {
-    #[error("the compaction was cancelled")]
-    Cancelled,
-    #[error("the strategy owner is unloading")]
-    Closed,
-    #[error("{0}")]
-    Invalid(String),
-    #[error("{0}")]
-    NotAdopted(String),
+    #[error("{message}")]
+    Cancelled { message: String },
+    #[error("{message}")]
+    Closed { message: String },
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    NotAdopted { message: String },
 }
 
 impl PublicService for SummaryStrategy {}

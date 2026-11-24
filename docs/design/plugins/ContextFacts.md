@@ -29,25 +29,25 @@ Callers keep:
 
 ```rust
 // ContextPreparation: one request's budget.
-let facts = facts.describe(DescribeRequest { model: selection.clone() }).await?;
-let counted = facts.count(CountRequest { model: selection.clone(), request: request.clone() }).await?;
-let over = counted.tokens > facts.threshold_tokens;
+let limits = owner.describe(DescribeRequest { model: selection.clone() }).await?;
+let counted = owner.count(CountRequest { request: request.clone() }).await?;
+let over = counted.tokens > limits.threshold_tokens;
 ```
 
 ```rust
 // ContextUsage: the contributions of one request, when the model has an additive counter.
-let described = facts.describe(DescribeRequest { model: selection.clone() }).await?;
+let described = owner.describe(DescribeRequest { model: selection.clone() }).await?;
 let Some(algorithm) = described.algorithm else {
     return Err(UsageError::NotCountable); // the caller keeps complete-request counts only
 };
-let parts = facts.contributions(ContributionsRequest {
+let parts = owner.contributions(ContributionsRequest {
     model: selection.clone(),
     fixed: Some(Fixed { system, tools }),
     messages,
 }).await?;
 // Contributions are the counter's facts; the caller estimates them, now and after a restart.
 let total = match parts.fixed {
-    Some(fixed) => facts.estimate(EstimateRequest {
+    Some(fixed) => owner.estimate(EstimateRequest {
         model: selection.clone(),
         algorithm: parts.algorithm.clone(),
         contribution: fixed,
@@ -56,7 +56,7 @@ let total = match parts.fixed {
 } + {
     let mut sum = 0.0;
     for message in parts.messages {
-        sum += facts.estimate(EstimateRequest {
+        sum += owner.estimate(EstimateRequest {
             model: selection.clone(),
             algorithm: parts.algorithm.clone(),
             contribution: message,
@@ -155,8 +155,8 @@ Rule D: no client wire protocol or user-visible behavior changes; the statistics
 ## Binding appendix
 
 ```rust
-use dim_agent_runtime::{ModelSelection, PublicService};
-use dim_agent_types::{Message, ModelRequest, SystemPrompt, ToolDefinition};
+use dim_agent_runtime::PublicService;
+use dim_agent_types::{Message, ModelRequest, ModelSelection, SystemPrompt, ToolDefinition};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -225,16 +225,17 @@ pub struct EstimateRequest {
     pub contribution: Contribution,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum ContextFactsError {
-    #[error("{0}")]
-    NotAdopted(String),
-    #[error("{0}")]
-    Unsupported(String),
-    #[error("{0}")]
-    AlgorithmMismatch(String),
-    #[error("{0}")]
-    Closed(String),
+    #[error("{message}")]
+    NotAdopted { message: String },
+    #[error("{message}")]
+    Unsupported { message: String },
+    #[error("{message}")]
+    AlgorithmMismatch { message: String },
+    #[error("{message}")]
+    Closed { message: String },
 }
 
 impl PublicService for ContextFacts {}
@@ -251,4 +252,4 @@ impl ContextFacts {
 }
 ```
 
-`ContributionsReply.fixed` and `.messages` are the counter's facts, aligned with the request's messages; `estimate` turns one into tokens. `Contribution` stays the serialized-bytes and image facts the counter works from. `ContributionsReply.fixed` and `.messages` are the counter's facts, aligned with the request's messages; `estimate` turns one into tokens. Errors cross as `{code, message}`, `code` from the variant name.
+`ContributionsReply.fixed` and `.messages` are the counter's facts, aligned with the request's messages; `estimate` turns one into tokens. `Contribution` stays the serialized-bytes and image facts the counter works from. Errors derive `serde` with `#[serde(tag = "code", rename_all = "snake_case")]`, so the wire code is the variant name.
