@@ -133,7 +133,7 @@ Every operation takes one request object and answers one reply object. Writes ar
 
 #### Timeline face
 
-`timelineStore` is the same owner's Session-scoped Timeline face; SessionScope installs the binding at the Session instance (#2093). This contract owns the spellings. The face carries the line reads and the completion subscriptions; `createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and commit steps, and `sessionConfig`/`query` are the process `store` reads.
+`timelineStore` is the same owner's Session-scoped Timeline face; SessionScope installs the binding at the Session instance (#2093). This contract owns the spellings. The instance identity is the Session: every request's `sessionId` must equal it, and a mismatch answers `invalid`; that rule is part of every row's `invalid` below. The face carries the line reads and the completion subscriptions; `createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and commit steps, and `sessionConfig`/`query` are the process `store` reads.
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |

@@ -67,13 +67,13 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `put` | Store bytes under a new file id and commit ownership | `{sessionId, name, content}`, `content` is base64 | `{fileId, path, bytes}` | While the bytes land; a cancelled put leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `import` | Copy a regular host file into the Session namespace and commit ownership | `{sessionId, name, source}` | `{fileId, path, bytes}` | Before the replacement; a cancelled import leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, content}`, `content` is base64 | `{fileId, path, bytes}` | Before the replacement; the old bytes stay | `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
+| `put` | Store bytes under a new file id and commit ownership | `{sessionId, name, content}`, `content` is base64 | `{fileId, path, bytes}` | While the bytes land; a cancelled put leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `unsynced`, `missing_parent`, `cancelled`, `closed`, `storage` |
+| `import` | Copy a regular host file into the Session namespace and commit ownership | `{sessionId, name, source}` | `{fileId, path, bytes}` | Before the replacement; a cancelled import leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `unsynced`, `missing_parent`, `cancelled`, `closed`, `storage` |
+| `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, content}`, `content` is base64 | `{fileId, path, bytes}` | Before the replacement; the old bytes stay | `too_large`, `not_found`, `node_unavailable`, `unsynced`, `missing_parent`, `cancelled`, `closed`, `storage` |
 | `read` | One page of a Session file, at most 64 KiB | `{sessionId, fileId, offset}` | `{data, eof}`, `data` is base64 and `eof` is true exactly when it is empty | While the page is read; nothing changes | `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `register` | Record a caller-owned output path for the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `closed`, `storage` |
 | `owns` | Whether a path or file id belongs to the Session | `{sessionId, path}` | `{owned}` | While the path is resolved | `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal during close | `node_unavailable`, `closed`, `storage` |
+| `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal during close | `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `releaseSession` | Delete every ownership row of a deleted Session and schedule the sweep; a repeated call succeeds | `{sessionId}` | `{}` | None; the owner completes the release | `closed`, `storage` |
 | `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `closed`, `storage` |
 
@@ -87,6 +87,8 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `too_large` | Treat the file as not storable; store a smaller representation or refuse the attachment |
 | `not_found` | The Session has no such file, the file belongs to another Session, or the Session no longer exists; the caller refuses the request |
 | `node_unavailable` | The Session's resource node cannot be reached; retry later or report the node as unavailable |
+| `unsynced` | The bytes are in place but durability is unconfirmed; do not treat the write as failed or as committed. Read the file to confirm, then retry the same write; the replacement is idempotent |
+| `missing_parent` | The target path's parent is missing; this is the caller's path error. Create the directory or fix the path, then retry |
 | `cancelled` | The reservation and any copy are left to the sweep; no ownership row was committed, and the caller stops |
 | `closed` | This generation is unloading; call the replacement generation |
 | `storage` | The store or the file system failed; the caller reports the failure and keeps its own copy |
@@ -99,7 +101,7 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `import` | Open the source, check size, copy through FileStorage into a temporary file, commit ownership | The temporary file is removed; no owned row | The copy completes or is abandoned; the sweep removes what no row owns | As `put` | Source and temporary file by FileStorage; rows by SessionFiles |
 | `write` | Resolve the file id, write the new bytes through FileStorage under the same path, keep the row | Before the replacement: the old bytes stay | The write completes or is abandoned | As `put` | File and path by FileStorage; row by SessionFiles |
 | `read` | Resolve the file id, read one page at the offset; an offset at or past the end is an empty page | The page stops; nothing changes | The read stops | Pending reads end `closed` | FileStorage |
-| `remove` | Resolve the file id; an absent or foreign id answers success; remove the directory entry through FileStorage, delete the row | None | The call ends | A new call is refused `closed`; an admitted removal finishes | File and row by SessionFiles |
+| `remove` | Resolve the file id; an absent or foreign id answers success; remove the directory entry through FileStorage, delete the row | Before the unlink: nothing removed, `cancelled`; a tree can be partly removed and a retry is safe | The call ends | A new call is refused `closed`; an admitted removal finishes | File and row by SessionFiles |
 | `releaseSession` | Delete every ownership row of the Session, schedule the sweep; the bytes are deleted outside the transaction | None | The release continues under the owner's task | A new call is refused `closed`; an admitted release finishes | Rows by SessionFiles; bytes by the sweep |
 | `register` | Check the Session, record the path the caller resolved | None | The row stays; a later Session delete removes it | A new call is refused `closed`; rows stay for the next generation | SessionFiles |
 | `owns` | Resolve the path against the owner's directory, check the output row, else the file id row | The resolution stops | Nothing to release | Pending calls end `closed` | SessionFiles |
@@ -192,6 +194,10 @@ pub enum SessionFileError {
     NotFound { message: String },
     #[error("{message}")]
     NodeUnavailable { message: String },
+    #[error("{message}")]
+    Unsynced { message: String },
+    #[error("{message}")]
+    MissingParent { message: String },
     #[error("the call was cancelled")]
     Cancelled,
     #[error("the file service is unloading")]

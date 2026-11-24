@@ -126,7 +126,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 数据面 `execHost`：`start`/`wait`/`kill`/`settle`/`output`/`tail`/`removeOutputDirectory`/`shell`/`write`/`resize`/`info`/`confined`/`configured`（[resource and store data faces](resource-faces.md) §3，#1295）；`hostPlatform` 是提供方和它的 Rust binding |
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
 | `sqliteStorage` | 本节由 [SqliteStorage 契约](plugins/SqliteStorage.md) 取代。 | 本节由 [SqliteStorage 契约](plugins/SqliteStorage.md) 取代。 |
-| `timelineStore` | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 | 本节由 [SessionStore 契约](plugins/SessionStore.md) 取代。 |
+| `timelineStore` | Session 面由 [#2093](https://github.com/arcships/dim/pull/2093) 定义；进程 `store` 由 [#2091](https://github.com/arcships/dim/pull/2091) 定义；Timeline 操作由 [#2092](https://github.com/arcships/dim/pull/2092) 定义。 | 同上。 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
