@@ -8,6 +8,7 @@
 
 | 插件 | 进程部件 | Session 部件 | 分支部件 | 阶段 / issue |
 | --- | --- | --- | --- | --- |
+| [PromptGuide](../../../design/plugins/PromptGuide.md)（所有者契约） | — | `guideEntries`：输入指南的框架、生效的条目及其组合 | — | [#2026](https://github.com/arcships/dim/issues/2026) |
 | [Migration](../../../design/plugins/Migration.md) | 按需加载的导入任务、来源映射、进度与重试记录；结算后卸载 | — | — | [实施计划](../../../plan/analysis/legacy-migration.md) |
 | [Provider 管理](../appserver/provider-management.md) | 现有 Provider：配置、目录、客户端偏好与管理方法 | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` 工具、`session.question.respond`、运行中 `ask_user` 调用的等待者；没有事件 | — | M2；#262 |
@@ -20,7 +21,7 @@
 | [ModelRecovery（提案）](ModelRecovery.md) | — | — | 拟议的 Loop 处置方注册（端口尚未实现）；它写的 handover 输入 | [#1210](https://github.com/arcships/dim/issues/1210) |
 | [Web](Web.md) | — | `web_search`、`web_fetch` 工具 | — | P2；可选包 |
 | [ContextCompaction](ContextCompaction.md)（Loop 与 ContextPreparation 的补充） | — | `ContextModelHost`、摘要 `CompactionStrategyHost`、`session.context.*` | Loop 中的 `context/compact` 指令与压缩步骤；ContextPreparation 中的 K 轮切点与用量查询 | P2 |
-| [Prompt](Prompt.md) | — | `guideEntries`：输入指南的框架、生效的条目及其组合 | `Prompt`：它发布的配置所采用的 System 携带按生效条目组合出的指南；宿主准备的请求承载同一份组合，由 Loop 放置 | #548 |
+| [Prompt](Prompt.md) | — | 指南表归 [PromptGuide](../../../design/plugins/PromptGuide.md) | `Prompt`：它发布的配置所采用的 System 携带按生效条目组合出的指南；宿主准备的请求承载同一份组合，由 Loop 放置 | #548 |
 | [PromptSources](PromptSources.md) | — | 具名来源、它们在出厂配置里的策略文字，以及状态与规则两条条目 | — | #548 |
 | [Recall](Recall.md) | — | `recall` 工具（把分支历史讲给模型：轮次、一轮、一件事的全文、检索） | — | M2；#129 |
 | [EventHub](EventHub.md) | 已声明来源与事件类型的目录、订阅、发布与投递、`eventHub` 服务以及 `eventhub` 方法 | `events` 工具，以及 `dim-event` 与 `dim-event-guide` 的指南条目 | — | — |
@@ -45,5 +46,5 @@
 | 作用域 | 部分 |
 | --- | --- |
 | 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）、`CodeMode`（安装时）、light-ocr、EventHub；接入方宿主进程内的 AcpGateway |
-| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、EventHub、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表）、Code Mode(启用时) |
+| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、EventHub、Hooks、Scheduler、Workflow、PromptSources、PromptGuide、Code Mode(启用时) |
 | 分支部件 | Goal（含 Pursuit）、ModelRecovery（拟议）、Hooks、Prompt、Code Mode(启用时) |

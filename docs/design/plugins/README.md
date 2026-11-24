@@ -8,6 +8,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Plugin | Process part | Session part | Branch part | Phase / issue |
 | --- | --- | --- | --- | --- |
+| [PromptGuide](PromptGuide.md) (owner contract) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | — | [#2026](https://github.com/arcships/dim/issues/2026) |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
@@ -21,7 +22,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [ModelRecovery (proposal)](ModelRecovery.md) | — | — | proposed disposer registration (Loop port not implemented); the handover input it writes | [#1210](https://github.com/arcships/dim/issues/1210) |
 | [Web](Web.md) | — | `web_search`, `web_fetch` tools | — | P2; optional package |
 | [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation; [ContextUsage proposal](ContextUsage.md)) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
-| [Prompt](Prompt.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | `Prompt`: the System its publisher adopts carries the composition over the entries in force, and a host-prepared request carries the same composition, placed by Loop | #548 |
+| [Prompt](Prompt.md) | — | the guide table is [PromptGuide](PromptGuide.md)'s | `Prompt`: the System its publisher adopts carries the composition over the entries in force, and a host-prepared request carries the same composition, placed by Loop | #548 |
 | [PromptSources](PromptSources.md) | — | the named sources, their policy texts at the factory configuration, and the state and rule entries | — | #548 |
 | [EnvironmentClients](EnvironmentClients.md) | App Server read-only `sessionClientsHost` presence (Connection and UiHost) | — | presence snapshots as `<dim-state>` inputs at branch open and on `ClientsChanged` | #1019 |
 | [EnvironmentSettings](EnvironmentSettings.md) | — (reads each setting module's read port) | — | settings snapshots as `<dim-state>` inputs at branch open and on a Settings change | #1020 |
@@ -52,5 +53,5 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | Scope | Parts |
 | --- | --- |
 | Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, PromptGuide, Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
 | Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |

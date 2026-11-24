@@ -78,7 +78,7 @@ Owner: [prompt_guide.rs](../../../../crates/dim-agent-capabilities/src/prompt_gu
 Holds the Session's input-guide entries, the frame and the composition over
 them, and registers the two entries of the markers Prompt itself writes,
 `dim-state` and `dim-rule`, from its own `apply`
-([Prompt design §2 and §3](../../../design/plugins/Prompt.md#2-the-entry-route)).
+([PromptGuide design](../../../design/plugins/PromptGuide.md#the-entry-route)).
 Each other writer registers its own entries; the composition orders what is in
 force for a branch by `order` and first marker, so neither load order nor
 registration order enters.
