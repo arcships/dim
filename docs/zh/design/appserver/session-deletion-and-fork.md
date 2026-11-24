@@ -411,7 +411,7 @@ S5c 与 S5a 一样只实现控制节点。在控制节点上，FileStorage 正�
 | [AcpGateway](../plugins/AcpGateway.md)、[RemoteGateway](../plugins/RemoteGateway.md) | 原文说分叉时重置预设，#26 已改为：预设随事实一起复制 |
 | [文档索引](../../../INDEX.md) | 链接到本页 |
 | [Session 文件](session-files.md) | §5.3 和 §12 原说节点离线时删除照样提交。这对其中的 Session 文件步骤成立；整个删除还会先在节点上移除命令输出（§11）。§5.2、§5.4 和 §6 不变，就是本页执行的步骤；§5.4 注明移除现在会同步 |
-| [FileStorage](../../../architecture/rust-agent/plugins/FileStorage.md) | 本行由 FileStorage 契约取代（§14）。 |
+| [FileStorage](../../../architecture/rust-agent/plugins/FileStorage.md) | 本行由 FileStorage 契约取代。 |
 | [单树装配](../../../architecture/rust-agent/single-tree.md) | `Agents` 重载一行：重载结算只停止重载中的 Session 所领导的成员（#127） |
 | [Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-字段) | 状态说明：分叉复制存储的 `SessionConfig` 文本，`interactive` 的省略规则随之保留 |
 

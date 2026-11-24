@@ -399,6 +399,8 @@ like `session_file_owners`, so output stays readable after the source is deleted
 | `owns` | async | `{sessionId: string, path: string}` | `{owned: bool}` |
 | `owned_paths` | async | `{sessionId: string}` | `{paths: string[]}`, a Session file's directory and each output path |
 
+`read` stats the file first: an offset at or past its size answers an empty page with `eof: true`; only an offset below the size calls FileStorage's `read` with `offset` and the 64 KiB page. This keeps the existing `sessionFiles.read` and `attachment.read` EOF paging while FileStorage's offset-above-size stays `invalid`.
+
 `sessionFiles` is a data face: its catalog entry is shared and SessionStore publishes
 the same `SessionFiles` binding at its Rust type key and `host_key("sessionFiles")`.
 Native calls invoke the owner directly; wire calls decode and invoke the same operations.

@@ -81,7 +81,7 @@ OAuth 协议步骤来自工作区里已有的官方 Rust SDK：rmcp 的 `auth` f
 - **唯一写入者。** 只有 Mcp 写这个文件。
 - **自足。** 记录带有令牌端点、撤销端点和客户端的认证方式，因此刷新和登出不需要重新发现。
   记录在尝试完成时连同客户端和令牌一起写入；放弃的尝试不留下任何东西。
-- **写入路径。** 写入时先用 `claim(path, cancelled)` 取得文件的 marker，再执行一次 `update_claimed`：change 拿到当前内容，只替换自己 key 的条目后返回，owner 在持有的 marker 下以 0600 原子替换文件；写完释放 claim，成功与否都一样。Windows 上沿用 FileStorage 的 DACL 处理。替换已经生效、只是同步失败的写入算作已
+- **写入路径。** 写入时先用 `claim(caller, path, cancelled)` 取得文件的 marker（[FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md)），再执行一次 `update_claimed`：change 拿到当前内容，只替换自己 key 的条目后返回，owner 在持有的 marker 下以 0600 原子替换文件；写完释放 claim，成功与否都一样。Windows 上沿用 FileStorage 的 DACL 处理。替换已经生效、只是同步失败的写入算作已
   写入：读者已经看到它，崩溃时丢失它的结果与 §7 中进程被杀相同。
 - **令牌请求持有 claim。** 授权码交换、刷新和撤销在读取当前内容之前 claim marker，并一直持有到写回，
   与托管 OAuth 宿主相同。两个守护进程可能共用一个 home（例如 `--product-home` 相同而

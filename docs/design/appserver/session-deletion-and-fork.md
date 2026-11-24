@@ -647,7 +647,7 @@ unlike in a shared database directory, can attribute its entries.
 | [AcpGateway](../plugins/AcpGateway.md), [RemoteGateway](../plugins/RemoteGateway.md) | Their text said the preset is reset on fork, which #26 replaced: the preset is copied with the facts |
 | [Documentation index](../../INDEX.md) | Link to this page |
 | [Session files](session-files.md) | §5.3 and §12 said a delete commits while the node is offline. That holds for its Session-file step; the delete as a whole removes the command output on the node first (§11). §5.2, §5.4 and §6 are unchanged and are the steps this page runs; §5.4 notes that removal is now synced |
-| [FileStorage](../../architecture/rust-agent/plugins/FileStorage.md) | This row is superseded by the FileStorage contract (§14). |
+| [FileStorage](../../architecture/rust-agent/plugins/FileStorage.md) | This row is superseded by the FileStorage contract. |
 | [Single-tree assembly](../../architecture/rust-agent/single-tree.md) | The `Agents` reload row: reload settlement stops only members the reloading Session leads (#127) |
 | [Session access A.3](../contracts/session-access.md#a3-sessionconfig-fields) | Its status line: a fork copies the stored `SessionConfig` text, so `interactive`'s omission rule carries over |
 
