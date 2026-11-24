@@ -2,7 +2,7 @@
 
 状态：草案。总体设计：[总览 §3 集成](../overview.md#3-基于现有机制的集成)、[附录 B Rpc 与 ToolRegistry](../overview.md#附录-b-现有插件的补充)；规则：[ADR 002](../../adr/002-plugin-scope.md) D2、D3、D5。阶段：P0。语言：语言中立合同；Rust 绑定见[附录 F](#附录-f-rust-绑定)。[C4 绑定](../../../design/session-typescript.md) 已实现非 Rust Session 工具和方法子集；原生广播仍待定。
 
-本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；其方法接收并返回可序列化数据；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务，并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时读取这两张方法表，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 已实现逐次调用的 `progress`（C1）以及绑定连接的通知 `notify` 与 `closed`（#1158）；`takeFinalReply` 及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
+本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；其注册接收可序列化数据，Session 方法表的 `call` 是所有者进程内的操作（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务，并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时读取这两张方法表，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 已实现逐次调用的 `progress`（C1）以及绑定连接的通知 `notify` 与 `closed`（#1158）；`takeFinalReply` 及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
 
 | 服务 | 作用域 | 注册什么 | 注册方 | 读取方 |
 | --- | --- | --- | --- | --- |
@@ -58,7 +58,7 @@ flowchart LR
 | `managementMethods` | 从没有命名空间持有过该名称，或注册它的行已禁用或不存在时返回 `unknown_method`；其他情况下，已撤回的命名空间按该行的状态作答（§3.2） |
 | 工具注册 | Session 挂载列表列出但没有部件注册的工具不声明，并在诊断中报告；有部件注册后从下一个请求起声明（A.5） |
 
-本文定义的合同：这两张方法表及其注册、工具注册、列出方法的 `session.methods`、配套服务 `callChannel`（`progress`、`notify` 与 `closed` 已实现）、`ToolDeclaration`、`ToolCall`、`ToolResult` 及其效果声明、各入口获得的服务范围、命名、保留名、现有管理方法的迁移以及兼容性表。调用数据——`MethodDecl`、`MethodCall`、`MethodReply`、`MethodError`——归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。使用的合同：`SessionConfig`（[session-access](session-access.md#a3-sessionconfig-字段)）、来源输入约定（[session-access A.2](session-access.md#a2-来源输入约定)）、Rpc 命令信封以及 `appError` 码。
+本文定义的合同：两张方法表共用的注册、工具注册、列出方法的 `session.methods`、配套服务 `callChannel`（`progress`、`notify` 与 `closed` 已实现）、`ToolDeclaration`、`ToolCall`、`ToolResult` 及其效果声明、各入口获得的服务范围、命名、保留名、现有管理方法的迁移以及兼容性表。调用数据——`MethodDecl`、`MethodCall`、`MethodReply`、`MethodError`——归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。使用的合同：`SessionConfig`（[session-access](session-access.md#a3-sessionconfig-字段)）、来源输入约定（[session-access A.2](session-access.md#a2-来源输入约定)）、Rpc 命令信封以及 `appError` 码。
 
 ## 2. 数据与状态
 
@@ -117,7 +117,7 @@ sequenceDiagram
 | --- | --- | --- | --- |
 | Session 级提供方在调用中途重载 | call < reload | `report`：`operation_interrupted`；`drain`：调用自己的结果；提供方的卸载等待每个已受理的调用（AGENTS.md 规则 8） | 提供方 |
 | Session 的 Capability 重载期间调用 Session 方法 | — | `service_reloading` | Session 方法表 |
-| 命名空间已撤回、且注册它的部件已失败或无法运行时调用 Session 方法 | — | 该部件修复前返回 `service_unavailable`（A.1） | Rpc |
+| 命名空间已撤回、且注册它的部件已失败或无法运行时调用 Session 方法 | — | 该部件修复前返回 `service_unavailable`（A.1） | Session 方法表 |
 | 调用该 Session 从没有命名空间持有过的 Session 方法 | — | `unknown_method` | Session 方法表 |
 | 管理方法所有者重载 | — | 新一代重新注册前，调用其已撤回的命名空间返回 `service_reloading`；处于 Failed、Unresolved、Stopped 或 Disposed 的所有者返回 `service_unavailable`（§3.2）；已受理的调用属于提供方，按 `interruption` 处理；Rpc 不重载，连接保持打开 | Rpc |
 | 在带 `deviceId` 的连接上调用管理方法或 `daemon.shutdown` | — | `unknown_method` | Rpc |
@@ -141,7 +141,7 @@ sequenceDiagram
 | `sessionMethods.register(namespace, MethodDecl[], call)` | async | 注册一个 Session 方法命名空间，直到调用方部件卸载；注册行是绑定的 `&Ctx`，不是请求字段，形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) |
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | 注册一个管理命名空间，直到调用方部件卸载 |
 | `call(MethodCall, cancelled, progress) -> MethodReply`（注册部件自己的函数） | async | 执行该命名空间的方法 |
-| `sessionMethods.call {method, params, caller?}` | async | 分发一个 Session 方法；方法表回答 `unknown_method`、`reloading`、`unavailable`、`interrupted` 或 `closed`（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)） |
+| `sessionMethods.call {method, params, caller?}` | 进程内 | 分发一个 Session 方法；方法表回答 `unknown_method`、`reloading`、`unavailable`、`interrupted` 或 `closed`（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)） |
 | `sessionMethods.methods {}` | sync | 该 Session 现在注册的命名空间的声明 |
 | `session.methods {sessionId}`（线上方法，Rpc 内建） | async | 列出某个 Session 的方法（协议 v3） |
 | `callChannel.progress / notify / closed`（App Server） | sync / async | 逐次调用的进度与绑定连接的通知（已实现，附录 F） |
@@ -279,7 +279,7 @@ sequenceDiagram
 
 ### A.2 调用通道
 
-`progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现。App Server 以自己的 `CallChannel` 行向方法提供方提供进程服务 `callChannel`，因此声明该名字的行不会随 Rpc 重载；Rust 绑定是处理函数按调用获得的 `Progress` 与 `Caller`（附录 F）。
+`progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现。App Server 以自己的 `CallChannel` 行向方法提供方提供进程服务 `callChannel`，因此声明该名字的行不会随 Rpc 重载；Rust 绑定是处理函数按调用获得的 `Progress` 与 `Caller`（[SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
@@ -317,7 +317,7 @@ reply ----------> 回复与通知额度 ----------------+
                   已满：慢消费者，关闭连接
 ```
 
-通知是 JSON-RPC 通知 `{"jsonrpc":"2.0","method":"<声明的名称>","params":{...}}`，只写到发起调用的连接；该 Session 的其他客户端收不到。`params` 是 JSON 对象。`callId` 必填，指通知所报告工作所属的调用：即提供方收到的 `MethodCall` 的 `callId`。该调用的回复尚未写出时，它的通知按序暂存并在回复之后写出；回复写出后，或该 id 不在途时，直接写出。`connectionId` 是地址：未从该连接收到过调用的行返回 `gone`。只能发送服务过该连接的代际声明过、且位于其命名空间内的名称；其他名称返回 `undeclared`，不写任何内容。
+通知是 JSON-RPC 通知 `{"jsonrpc":"2.0","method":"<声明的名称>","params":{...}}`，只写到发起调用的连接；该 Session 的其他客户端收不到。`params` 是 JSON 对象。`callId` 必填，指通知所报告工作所属的调用：即提供方的处理函数收到的 `Caller` 携带的 id。该调用的回复尚未写出时，它的通知按序暂存并在回复之后写出；回复写出后，或该 id 不在途时，直接写出。`connectionId` 是地址：未从该连接收到过调用的行返回 `gone`。只能发送服务过该连接的代际声明过、且位于其命名空间内的名称；其他名称返回 `undeclared`，不写任何内容。
 
 一次调用的通知如何到达调用方：
 
@@ -494,7 +494,7 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 | Session 正在重载，或已撤回命名空间的注册行（或其在该 Session 中的副本）未运行且未失败（尚未启动、Pending、Loading，或新旧两代之间），或已撤回 Session 命名空间的副本处于 Active 或不存在 | `-32000`，`service_reloading`（可重试） |
 | 已撤回命名空间的注册行，或该行在该 Session 中的副本，处于 Failed、Unresolved、Disposed 或 Stopped | `-32000`，`service_unavailable`（不可重试） |
 | `report` 调用被中断 | `-32000`，`operation_interrupted` |
-| 提供方错误 | `-32000`，提供方的 `appError` |
+| 处理函数错误 | Rpc 为服务错误选择的码（`invalid_params` → -32602、`unknown_method` → -32601，其他为 -32000），并带处理函数的 `appError` |
 
 ## 附录 D. 验收
 
