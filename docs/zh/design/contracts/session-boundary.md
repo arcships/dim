@@ -144,7 +144,7 @@ sequenceDiagram
 | `sessionMethods.call {method, params, caller?}` | 进程内 | 分发一个 Session 方法；方法表回答 `unknown_method`、`reloading`、`unavailable`、`interrupted` 或 `closed`（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)） |
 | `sessionMethods.methods {}` | sync | 该 Session 现在注册的命名空间的声明 |
 | `session.methods {sessionId}`（线上方法，Rpc 内建） | async | 列出某个 Session 的方法（协议 v3） |
-| `callChannel.progress / notify / closed`（App Server） | sync / async | 逐次调用的进度与绑定连接的通知（已实现，附录 F） |
+| `callChannel.progress / notify / closed`（App Server） | sync / async | 逐次调用的进度与绑定连接的通知（已实现；`Progress` 与 `Caller` 归 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)） |
 | `toolRegistry.register(ToolDeclaration, execute)` | async | 注册一个工具，直到调用方部件卸载 |
 | `execute(ToolCall, cancelled) -> ToolResult`（注册部件自己的函数） | async | 工具执行 |
 
@@ -170,7 +170,7 @@ sequenceDiagram
 | ADR 002 D2 | 不新增端口或 Management 插件；方法命名空间注册到其作用域的方法表，工具注册到拥有本 Session 工具的 ToolRegistry。 |
 | ADR 002 D3 | 提供方只依赖自身或外层作用域，包括它注册时用的方法表。方法表与 ToolRegistry 跟随注册与撤回，不依赖注册的部件（A.1、A.5）；Rpc 既不依赖管理方法提供方（§3.2），也不依赖 Session 方法提供方（A.1），因此它们的重载只影响自己的命名空间。 |
 | ADR 002 D4 | 链接的管理方法导出是宿主本地的结构性配置；本文不定义业务配置。 |
-| ADR 002 D5 | 每个服务都有名称、作用域和纯数据方法，任何语言的部件都用同样的数据和自己的函数（`call`、`execute`）注册方法命名空间或工具；Rust 类型只出现在附录 F。已实现的绑定是这些结构的一个子集（A.1、附录 F）。 |
+| ADR 002 D5 | 每个服务都有名称、作用域和纯数据方法，任何语言的部件都用同样的数据和自己的函数（`call`、`execute`）注册方法命名空间或工具；Rust 类型只出现在各表自己的绑定里（Session 表见 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)）。已实现的绑定是这些结构的一个子集（A.1）。 |
 
 ## 9. 向机制所有者提出的需求
 
@@ -208,7 +208,7 @@ sequenceDiagram
 
 两张表的调用数据——`MethodCall`、`MethodReply`、处理函数自己的错误与方法表的错误种类——归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) 契约定义；本附录保留重构不改的客户端错误、中断与路由行为。
 
-`sessionMethods`（Session）与 `managementMethods`（进程）是方法表，具有同一个方法 `register`。部件把它提供的每个命名空间注册到其作用域的方法表，方法表回调该部件自己的 `call`。其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)），并进入附录 F 的原生调用受理。
+`sessionMethods`（Session）与 `managementMethods`（进程）是方法表，具有同一个方法 `register`。部件把它提供的每个命名空间注册到其作用域的方法表，方法表回调该部件自己的 `call`。其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)），并进入各表自己的绑定：Session 表的是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)，进程表的是它自己的契约（[#2021](https://github.com/arcships/dim/issues/2021)）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
@@ -226,7 +226,7 @@ sequenceDiagram
 // MethodCall、MethodReply 与方法表的错误：见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。
 ```
 
-目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（原生处理函数收到 A.2 的 `Caller`；当前线上是顶层 `callId` 与扁平的 `origin.connectionId`，目标把它们嵌套为 `origin.caller`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply` 是目标中的字段：今天的 `MethodDecl` 没有它，目标在交接落地前接受并忽略；回复交接、`origin.entry` 与 `origin.peer` 未实现。
+目前已实现（[SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（原生处理函数收到 A.2 的 `Caller`；当前线上是顶层 `callId` 与扁平的 `origin.connectionId`，目标把它们嵌套为 `origin.caller`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply` 是目标中的字段：今天的 `MethodDecl` 没有它，目标在交接落地前接受并忽略；回复交接、`origin.entry` 与 `origin.peer` 未实现。
 
 取消与中断：调用由提供方自己回复，不由 Rpc 回复。有两种情况会中断已受理的调用：提供方这一代卸载，以及受理该调用的 Rpc 装载卸载。任一发生时，处理函数的取消令牌都会触发，`drain` 调用也不例外。随后 `report` 调用立即回复 `operation_interrupted`（操作可能已经提交），之后再结算；`drain` 调用回复自己的结果。提供方的卸载等待它受理的每个调用，包括 `report` 调用。调用方断开不会取消任何东西。
 
