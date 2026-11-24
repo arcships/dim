@@ -46,5 +46,5 @@
 | 作用域 | 部分 |
 | --- | --- |
 | 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）、`CodeMode`（安装时）、light-ocr、EventHub；接入方宿主进程内的 AcpGateway |
-| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、EventHub、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表）、Code Mode(启用时) |
+| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、EventHub、Hooks、Scheduler、Workflow、PromptSources、SessionMethods、Prompt（条目表）、Code Mode(启用时) |
 | 分支部件 | Goal（含 Pursuit）、ModelRecovery（拟议）、Hooks、Prompt、Code Mode(启用时) |

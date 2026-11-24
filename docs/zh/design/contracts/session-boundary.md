@@ -226,7 +226,7 @@ sequenceDiagram
 // MethodCall、MethodReply 与方法表的错误：见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。
 ```
 
-目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（原生处理函数收到 A.2 的 `Caller`；当前线上是顶层 `callId` 与扁平的 `origin.connectionId`，目标把它们嵌套为 `origin.caller`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply`、回复交接、`origin.entry` 与 `origin.peer` 未实现。
+目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（原生处理函数收到 A.2 的 `Caller`；当前线上是顶层 `callId` 与扁平的 `origin.connectionId`，目标把它们嵌套为 `origin.caller`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply` 在回复交接落地前接受并忽略；回复交接、`origin.entry` 与 `origin.peer` 未实现。
 
 取消与中断：调用由提供方自己回复，不由 Rpc 回复。有两种情况会中断已受理的调用：提供方这一代卸载，以及受理该调用的 Rpc 装载卸载。任一发生时，处理函数的取消令牌都会触发，`drain` 调用也不例外。随后 `report` 调用立即回复 `operation_interrupted`（操作可能已经提交），之后再结算；`drain` 调用回复自己的结果。提供方的卸载等待它受理的每个调用，包括 `report` 调用。调用方断开不会取消任何东西。
 
@@ -317,7 +317,7 @@ reply ----------> 回复与通知额度 ----------------+
                   已满：慢消费者，关闭连接
 ```
 
-通知是 JSON-RPC 通知 `{"jsonrpc":"2.0","method":"<声明的名称>","params":{...}}`，只写到发起调用的连接；该 Session 的其他客户端收不到。`params` 是 JSON 对象。`callId` 必填，指通知所报告工作所属的调用：即提供方的处理函数收到的 `Caller` 携带的 id。该调用的回复尚未写出时，它的通知按序暂存并在回复之后写出；回复写出后，或该 id 不在途时，直接写出。`connectionId` 是地址：未从该连接收到过调用的行返回 `gone`。只能发送服务过该连接的代际声明过、且位于其命名空间内的名称；其他名称返回 `undeclared`，不写任何内容。
+通知是 JSON-RPC 通知 `{"jsonrpc":"2.0","method":"<声明的名称>","params":{...}}`，只写到发起调用的连接；该 Session 的其他客户端收不到。`params` 是 JSON 对象。`callId` 必填，指通知所报告工作所属的调用：即原生处理函数从 `Caller` 得到的 id，或另一种语言的处理函数收到的 `origin.caller.callId`。该调用的回复尚未写出时，它的通知按序暂存并在回复之后写出；回复写出后，或该 id 不在途时，直接写出。`connectionId` 是地址：未从该连接收到过调用的行返回 `gone`。只能发送服务过该连接的代际声明过、且位于其命名空间内的名称；其他名称返回 `undeclared`，不写任何内容。
 
 一次调用的通知如何到达调用方：
 
@@ -494,7 +494,7 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 | Session 正在重载，或已撤回命名空间的注册行（或其在该 Session 中的副本）未运行且未失败（尚未启动、Pending、Loading，或新旧两代之间），或已撤回 Session 命名空间的副本处于 Active 或不存在 | `-32000`，`service_reloading`（可重试） |
 | 已撤回命名空间的注册行，或该行在该 Session 中的副本，处于 Failed、Unresolved、Disposed 或 Stopped | `-32000`，`service_unavailable`（不可重试） |
 | `report` 调用被中断 | `-32000`，`operation_interrupted` |
-| 处理函数错误 | Rpc 为服务错误选择的码（`invalid_params` → -32602、`unknown_method` → -32601，其他为 -32000），并带处理函数的 `appError` |
+| 处理函数错误 | 处理函数自带的 JSON-RPC 码（返回 `RpcError` 的原生处理函数），否则为 Rpc 为服务错误选择的码（`invalid_params` → -32602、`unknown_method` → -32601，其他为 -32000），并带处理函数的 `appError` 与其所有者字段 |
 
 ## 附录 D. 验收
 
@@ -522,7 +522,7 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 
 | 语言中立服务 | Rust 类型 | Rust 中的注册 | 收集 | 状态 |
 | --- | --- | --- | --- | --- |
-| `managementMethods` | `ManagementMethods`，持有方法命名空间的进程服务，由 App Server 的 `ManagementMethodsPlugin` 行提供 | 进程部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作与线上形状归进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） | Rpc 依赖这张表并按调用读取（§3.2）；没有提供方在 Rpc 的 `Deps` 中 | 已实现（#14、#382） |
+| `managementMethods` | `ManagementMethods`，持有一个 `MethodTable` 的进程服务，由 App Server 的 `ManagementMethodsPlugin` 行提供 | 进程部件依赖 `Keyed<ManagementMethods>`，在其 `apply` 中调用 `methods.register(ctx, ns, Vec<MethodDecl>, Handler)` | Rpc 依赖这张表并按调用读取（`management_provider`，§3.2），行状态来自 `loader.get(row)`；没有提供方在 Rpc 的 `Deps` 中 | 已实现（#14、#382）；目标见进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） |
 | `sessionMethods` | `SessionMethods`，由 `SessionMethodsPlugin` 部件提供的 Session 服务；其检查是 App Server 提供的进程值 `ReservedMethods` | Session 部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作、值与线上形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | Rpc 在 `sessionId` 指定、经 `index.acquire` 获取的 Session 上调用 `call`，并为 `session.methods` 调用 `methods`；没有提供方在 Rpc 的 `Deps` 中 | 已实现（C1、#382）；目标操作见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) |
 | 工具注册 | `ToolContribution {definition, handler}`，注册到本 Session 的 `ToolRegistry`（`Keyed<ToolRegistry>`） | 在部件的 `apply` 中调用 `tools.register(ctx, ToolContribution)`；动态来源用 `tools.register_source(ctx, name, provider)` | 每次读取纳入已注册的内容；挂载列表中没有注册的名称被省略并记录诊断；每次注册是注册表自有的带版本集合（A.5，#241） | 已实现（#382） |
 | `callChannel` | `progress`：处理函数的 `Progress` 参数，每次调用一个；`notify` 与 `closed`：处理函数 `MethodCall.origin` 上的 `Caller`，每次调用一个；其他语言使用进程服务 `callChannel`。调用数据归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | — | Rpc 为每个已受理调用提供一个通向发起调用连接的 sink；索引按 `callId` 记录其他语言的调用直到其回复写出，并在连接关闭或卸载时删除该连接的条目 | `progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现 |
