@@ -5,7 +5,7 @@ Issue: [#1615](https://github.com/arcships/dim/issues/1615).
 
 This is an optional worked argument, not a required design format for other Capabilities.
 See the [design guide](../capability-design-arguments.md) for the default approach.
-The [Wait contract](../../architecture/rust-agent/plugins/Wait.md#waitbranch) remains authoritative.
+The [WaitBranch contract](../plugins/WaitBranch.md) remains authoritative.
 No event, runtime state, persistence format or recovery behavior is proposed here. The executable
 model is [WaitRecovery.tla](wait-model/WaitRecovery.tla), with [finite configuration](wait-model/WaitRecovery.cfg).
 
@@ -19,7 +19,7 @@ consume later events without losing or repeating their positions?
 | Facts have an immutable total sequence within one branch | [Time bus §1](../../architecture/rust-agent/time-bus.md#1-只认序号) |
 | A fixed-cutoff query observes that prefix, including the permitted publishing tail; errors fail recovery rather than mean empty history | [Property query §2–3](../timeline-property-query.md) |
 | Subscribe holds live delivery while rebuilding; live delivery then resumes strictly above the returned cutoff in order | [Plugin contract §5.2](../plugin-contract.md#52-consuming-facts) |
-| `turn/start` sets open; `turn/end` clears it; other facts do not change it | [WaitBranch](../../architecture/rust-agent/plugins/Wait.md#waitbranch) |
+| `turn/start` sets open; `turn/end` clears it; other facts do not change it | [wait.rs](../../../crates/dim-agent-capabilities/src/wait.rs) `consume`; target [WaitBranch](../plugins/WaitBranch.md) |
 | Reload restores open-turn status, not old arrival notifications | Same owner contract; no claim that pre-reload wait outcomes are reproduced |
 
 The model treats append as an eligible immutable fact, abstracting storage admission/publication

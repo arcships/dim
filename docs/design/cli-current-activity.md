@@ -136,22 +136,23 @@ Source reviewed against `077892025020a2875a559b432dfa3256878422ff`.
 
 ## Owner requirement for named waits
 
-To show “Waiting for task: CI checks” in #1659, ToolExecution needs an agreed
-public per-call activity contract with [Wait](../architecture/rust-agent/plugins/Wait.md).
-ToolExecution owns tool lifecycle and call identity. WaitBranch owns admission
-and settlement through the existing branch-local `wait` face. Tool handler start
-alone cannot establish that WaitBranch accepted a wait or supply its clock.
+To show “Waiting for task: CI checks” in #1659, the CLI reads a positive
+admission signal and its start from [WaitBranch](plugins/WaitBranch.md)'s
+`state` read. ToolExecution owns the tool's lifecycle and call identity;
+WaitBranch owns the line's admitted wait, its admission and its settlement. A
+tool handler's start alone cannot establish that WaitBranch accepted a wait or
+supply its clock.
 
-The owner decision must cover:
+The decision covers:
 
-- A scoped identity for the admitted wait: Session, branch, turn, request,
-  dispatch event ID and call ID, with an optional task ID. Publish a positive
-  admission signal and the authoritative admission time if elapsed time is
-  supported. Correlate the target by exact task identity in the same Session
-  and branch. Use the task projection’s existing title fallback.
-- Matching settlement for notices, steer, timeout, interruption and reload,
-  ordered against batch and turn completion. Handle rejected calls and
-  immediate outcomes without leaving a live wait claim. A timeout ends the
+- One admitted wait per line: `state()` answers `{waiting, startedAt?, taskId?}`,
+  with the optional task ID and the admission time. The reply carries no call
+  ID and no turn or request identity; the client correlates it with its own
+  turn and batch. Reading the task’s title uses the task projection’s existing
+  title fallback.
+- Settlement by the `wait` call’s result: notices, steer, timeout,
+  interruption and reload end it, ordered against batch and turn completion.
+  A refused call ends at once and leaves no live wait claim. A timeout ends the
   wait independently of the target’s outcome.
 - Evidence for any claim that the foreground is waiting on one object.
   A concurrent wait can share a step with calls such as `read`. Use the
@@ -159,16 +160,20 @@ The owner decision must cover:
   A confirmed untargeted wait can say “Waiting for a background task or
   new input”. A confirmed targeted wait with an unavailable task can say
   “Waiting for task: details unavailable”.
-- If exact reconnect restoration is required, a bounded owner read at a
-  fixed cutoff and an ordered handoff to live updates. A gap leaves the
-  relationship unknown. WaitBranch reload settles accepted calls and
-  rebuilds open-turn status, so a reload does not reconstruct an old wait.
+- Reconnect: a client reads `state` again and claims a wait only while it
+  answers one. WaitBranch reload settles accepted calls and rebuilds open-turn
+  status, so a reload does not reconstruct an old wait.
 
-The owners decide whether existing progress facts can contribute and what
-additional admission or settlement evidence is needed. The design with
-shipped facts adds no service face, Timeline event, stored format or flag
-change. The conditional status below depends on that owner decision and
-an admitted wait with an authoritative start.
+The design with shipped facts adds no Timeline event, stored format or flag
+change; the owner adds the `state` read. The App Server reads it by
+`(sessionId, branchId)` and answers a protocol v4 client through a method or
+notice that needs a maintainer decision, so the client-protocol addition is a
+separate decision. Until that lands, the status below has no client path.
+
+The former per-call requirement — a call ID, dispatch event ID, request
+identity and a per-call admission record — is dropped: the slot makes the
+line’s admitted wait unique, and the `wait` result settles it. Recorded in
+[WaitBranch](plugins/WaitBranch.md) § Use and scope.
 
 Conditional scrollback and fullscreen examples:
 
@@ -230,8 +235,10 @@ adopted inputs. Repainting adds zero RPCs, history scans or remote CI polls.
   Cover untargeted and unknown-target waits, colliding task IDs across
   scopes, immediate outcomes, active or unknown concurrent siblings and
   missing clock origins.
-  If exact reconnect becomes part of that contract, test owner cutoff,
-  live handoff, stale settlement and wait generation reload.
+  Reconnect is settled by [WaitBranch](plugins/WaitBranch.md)'s `state` read:
+  a client reads it again and claims a wait only while it answers one, and a
+  reload does not restore an old wait. Test that re-read, not owner cutoff,
+  live handoff or stale settlement.
 
 ## Ablation review
 
@@ -239,5 +246,5 @@ The existing composer, task strip and bounded projection suffice for
 batch-level display. Keep batch and task identities separate because
 their lifetimes diverge at handoff. A per-call tracker, an additional
 store or a timer read cannot establish admission from the default facts.
-Named waits depend on the owner contract. Exact restoration is a
-separate requirement for that contract to settle.
+Named waits read the owner contract's `state`. Reconnect restoration is
+settled there: the client re-reads `state` and an old wait is not restored.

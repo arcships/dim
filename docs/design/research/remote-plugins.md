@@ -360,7 +360,7 @@ leaf 是 rutis 里对端的一种角色，不是实例：
 | 已经是 leaf | WorkflowSession | 本来就是 TypeScript，`workflowRuns` 是 `call: async` 数据面；把 runtime 连接换成远程即可 |
 | 纯逻辑 leaf（今天） | Questions | inject 可借，只用 dispatched 方法，且不提供宿主按类型查的服务；移植到 TS/Python 或 Rust leaf host |
 | 用了 skipped/私有 API，需数据面 | Goal（`Changes` 捕获、`TreeCommands::get`）、Recall（`get`、`branch.sequence/query`）、BranchTool（`get`、`branch.service::<BranchLine>()`）、TreeTimeline（私有 tree）、SessionBroadcast（内部状态）、SessionBroadcastEnd（`SessionIdentity.unloading` 是 `#[serde(skip)]`） | 先给 `tree.info`/`tree.query`、`branchLine`、Goal 的 change 写入、SessionBroadcastEnd 的 idle release 补数据面，或把这些部件留在宿主；GoalBranch 的 `settingsService` 换现有的 `settings` |
-| 提供类型服务，需操作面 | Wait（`wait` 返回 `WaitResult`、收 `CancellationToken`）、BranchLine（`branchLine`）、InputQueue（`inputQueue`）、InputMethods（`submitChecks`）、PrepareModelHost（`prepareModelHost`） | 宿主用 `branch.service::<T>()` 或 `Key<T>` 查；先加操作面/数据面，或改由宿主自己跑 |
+| 提供类型服务，需操作面 | Wait（`wait` 收按引用传递的取消回调、返回 serde 的 `WaitResult`；目标面见 [WaitBranch](../plugins/WaitBranch.md)）、BranchLine（`branchLine`）、InputQueue（`inputQueue`）、InputMethods（`submitChecks`）、PrepareModelHost（`prepareModelHost`） | 宿主用 `branch.service::<T>()` 或 `Key<T>` 查；先加操作面/数据面，或改由宿主自己跑 |
 | 换现有数据面后可 leaf | SessionTitle（`settingsService` → `settings`，`sessionStore` → `sessionMetadata`，`auxiliaryModelHost` → `auxiliaryModel`）、SchedulerSession（`scheduleJobs`、`wakeups`）、Attachments（`sessionFilesHost`，目标名 `sessionFiles`）、PromptSuggestion（`modelHost`、`providerConnectionResolver`、`promptSuggestionSettingsHost`） | 把 Rust 类型键的注入换成已有数据面的名字；没有对应数据面的先加 |
 | 资源 leaf | HostPlatform、FileStorage、SqliteStorage、WorkspaceTools、ShellSession、SkillsCatalog、Mcp、Modality、ExternalAgent、PluginManager、RuntimeManager | 在资源所在机器上跑，本地 I/O，对外提供数据服务；现有 Rust 实现放进 Rust leaf host 复用 |
 | 不是 leaf | SessionScope、BranchScope、mounter、SessionLoader、Rpc、Transport、ServerControl、Connection | 它们定义实例和入口，是 leaf 被挂载、被服务的一方 |
@@ -524,7 +524,7 @@ flowchart TB
 | Goal | `GoalSession` 捕获 `Changes`、调 `TreeCommands::get`（skip）；`GoalBranch` 要 `settingsService` | `GoalBranch` 换现有的 `settings`；给 change 写入、`tree.info`/`tree.query` 补数据面，或留宿主 |
 | Recall、BranchTool | `TreeCommands::get`、`branch.sequence/query`、`branch.service::<BranchLine>()` | 补 `tree.info`/`tree.query` 和 `branchLine` 数据面，或留宿主 |
 | TreeTimeline、SessionBroadcast | 私有 tree / 内部状态 | 留宿主，或先设计数据面 |
-| Wait、BranchLine、InputQueue、InputMethods、PrepareModelHost | 提供 `wait`/`branchLine`/`inputQueue`/`submitChecks`/`prepareModelHost`；Wait 收 `CancellationToken`、返回 `WaitResult` | 先加操作面/数据面，或留宿主 |
+| Wait、BranchLine、InputQueue、InputMethods、PrepareModelHost | 提供 `wait`/`branchLine`/`inputQueue`/`submitChecks`/`prepareModelHost`；Wait 收取消回调、返回 serde 的 `WaitResult`（目标面见 [WaitBranch](../plugins/WaitBranch.md)） | 先加操作面/数据面，或留宿主 |
 | SchedulerSession | `scheduleJobs`、`wakeups` | 加两个数据面 |
 | PromptSuggestion | `modelHost`、`providerConnectionResolver`、`promptSuggestionSettingsHost` | 换 `auxiliaryModel`，其余加数据面或留宿主 |
 | Attachments | `sessionFilesHost`（当前名） | 加数据面；目标名 `sessionFiles` |
@@ -595,7 +595,7 @@ flowchart TB
 | 类型 | 名字 | 改法 |
 | --- | --- | --- |
 | 数据内容、未标记 | `executionSettingsHost`、`toolchainSourceHost`、`sessionFilesHost`、`historyRenderer`、`selectableModelsHost`、`auxiliaryModelHost`、`promptSuggestionSettingsHost`、`worktreeAssociations`、`listenAddresses`、`sessionClientsHost`、`hooksService`、`mcpService`、`skillsCatalog`、`uiExtensions`、`loader`、`agentIndex`、`collaborationDirectory`、`credentialVariablesHost`、`reservedMethods`、`agentConfig`、`collaborationConfig`、`skillsConfig`、`initialPromptConfiguration`、`promptRegistry`、`toolSourcesView`、`faultReporter`、`branchOpening`、`configurationPublisher`、`configureControl`、`fileReads` | 定义 serde 类型加 `#[rutis::service]`，catalog 标 `data`。带回调的（`submitChecks`、`uiExtensions` 的部分方法）回调按引用跨，但不能在锁里同步调用 |
-| 操作服务 / 类型面 | `wait`、`branchLine`、`submitChecks`、`prepareModelHost` | 先设计操作面（`start`/`wait`/`result`）或留宿主；`wait` 收 `CancellationToken`、返回 `WaitResult`，不是 serde 数据 |
+| 操作服务 / 类型面 | `wait`、`branchLine`、`submitChecks`、`prepareModelHost` | 先设计操作面（`start`/`wait`/`result`）或留宿主；`wait` 收取消回调、返回 serde 的 `WaitResult`（目标面见 [WaitBranch](../plugins/WaitBranch.md)） |
 | 对象→操作 | `hostPlatform`、`fileStorage`、`sqliteStorage`、`sessionStore`、`timelineStore`、`toolHost`、`sessionLoader`、`timelineFactory`、`mcpSession`、`collaborationSession`、`backgroundExec`、`approval`、`permission` | 发 id，拆成 `start`/`wait`/`kill`、`open`/`read`/`write`/`close`、`append`/`query`/`ack`、`decide`/`cancel`；实现留在所有者 |
 | 新接口直接按数据设计 | `execHost`、`fsHost`、`dbHost` | 资源 leaf 和远程 DB 不包旧对象，直接定义操作 |
 

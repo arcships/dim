@@ -8,6 +8,7 @@
 
 | 插件 | 进程部件 | Session 部件 | 分支部件 | 阶段 / issue |
 | --- | --- | --- | --- | --- |
+| [WaitBranch](../../../design/plugins/WaitBranch.md) | — | — | 到达记录、单次等待槽与已准入等待的读 | #2027 |
 | [Migration](../../../design/plugins/Migration.md) | 按需加载的导入任务、来源映射、进度与重试记录；结算后卸载 | — | — | [实施计划](../../../plan/analysis/legacy-migration.md) |
 | [Provider 管理](../appserver/provider-management.md) | 现有 Provider：配置、目录、客户端偏好与管理方法 | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` 工具、`session.question.respond`、运行中 `ask_user` 调用的等待者；没有事件 | — | M2；#262 |

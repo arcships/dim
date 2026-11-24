@@ -81,7 +81,7 @@
 - **转换**：open 回合内的合格通知或 Steer 可结束等待；匹配 task ID 取对应通知；turn/end 清通知；reload 终止旧调用并拒绝保留原生句柄的新调用。
 - **恢复**：`open=(last({turn/start,turn/end},c)=start)`；pending 通知和旧调用不恢复。工具结果归 ToolExecutor 写，不由 Wait 另写终态。
 - **性质/论证**：open 的最后边界等价于对边界规则的归纳；接纳和关闭共用锁，tracker 登记发生在解锁前，关闭后 drain 不会漏过新接纳；释放槽早于释放 tracker。进度仍依赖调用 future 被 poll 或 drop。
-- **对应**：[wait.rs](../../../crates/dim-agent-capabilities/src/wait.rs)、[Wait](../../architecture/rust-agent/plugins/Wait.md)、[#1619](https://github.com/arcships/dim/pull/1619)；复用 #1616 的有界恢复模型，当前 local_execution 的原生、face、完整工具 reload 流程验证新实现。
+- **对应**：[wait.rs](../../../crates/dim-agent-capabilities/src/wait.rs)、[WaitBranch](../plugins/WaitBranch.md)（当前实现见 [Wait](../../architecture/rust-agent/plugins/Wait.md)）、[#1619](https://github.com/arcships/dim/pull/1619)；复用 #1616 的有界恢复模型，当前 local_execution 的原生、face、完整工具 reload 流程验证新实现。
 
 ## 7. ContextPreparation
 

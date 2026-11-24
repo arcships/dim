@@ -3,7 +3,7 @@
 Scope: connect Wait's Timeline obligations to observable implementation behavior.
 Issue: [#1615](https://github.com/arcships/dim/issues/1615).
 
-The [Wait owner document](../../architecture/rust-agent/plugins/Wait.md) remains the contract.
+The [WaitBranch contract](../plugins/WaitBranch.md) remains the contract; the [Wait plugin page](../../architecture/rust-agent/plugins/Wait.md) describes the current implementation.
 The [usage-context review](wait-usage-context.md) grounds the environment in actual callers,
 producers and complete flows, and distinguishes broader test traces from reachable product traces.
 This extends the [recovery argument](wait-argument.md) with a coverage inventory and a concrete
@@ -18,7 +18,7 @@ implementation experiment. It does not make the Boolean projection a complete Wa
 | A task-specific call returns a matching task; a consumed arrival cannot be returned again | Wait tool and service contract | Notification argument; matching calls followed by draining calls |
 | Recovery uses the last boundary and connects to later consumption | WaitBranch plus Dispatcher/query contracts | Existing P1–P4 and TLC model; real queries held across later boundary/arrival writes |
 | Steer takes priority among currently pending arrivals, then the first matching task | Current `Wait::take` behavior, also referencing TS `takeMatchingInput` in its source | Explicit experimental selection policy below; not a new cross-plugin rule or a priority over future arrivals |
-| One wait per branch; caller cancellation/drop releases the slot | Wait service contract | Existing concurrency/stop flow; the [usage-context experiment](wait-usage-context.md#4-corrections-to-model-scope) identifies missing generation cancellation as a violation of the existing reload protocol |
+| One wait per line; caller cancellation releases the slot, a dropped native future releases it, and a bridge caller must cancel before abandoning its reply | [WaitBranch contract](../plugins/WaitBranch.md) | Existing concurrency/stop flow; the [usage-context experiment](wait-usage-context.md#4-corrections-to-model-scope) identifies missing generation cancellation as a violation of the existing reload protocol |
 | Timeout bounds, error text and tool result format | Wait tool contract | Existing timeout-boundary flow; no mathematical timing guarantee here |
 | Exact winner of simultaneous timeout, cancellation and arrival | No total priority specified by the owner contract | Do not infer one from a sequential experiment; an asynchronous model must permit the contracted outcomes |
 | External task execution and cancellation | BackgroundExec or the corresponding task owner | Dependency on its notification contract; outside Wait's proof |

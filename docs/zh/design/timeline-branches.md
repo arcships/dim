@@ -119,8 +119,8 @@ BranchLine 注入 `B:Dispatcher`、`B:TimelineIdentity`、`B:BranchLifecycle` �
 
 | 模式 | 对接收方的作用 | 何时用 |
 | --- | --- | --- |
-| `append`（默认） | 随接收方下一次模型请求一起送达。它从不开启新的一轮，也不唤醒 `wait` | 接收方在下一步应该知道的进展或背景 |
-| `steer` | 在接收方当前这一轮的下一步进入；接收方空闲时开启新的一轮。它会唤醒 `wait` | 接收方必须马上处理，或接收方处于空闲 |
+| `append`（默认） | 随接收方下一次模型请求一起送达。它从不开启新的一轮，也不唤醒 `wait`（[WaitBranch](../../design/plugins/WaitBranch.md)） | 接收方在下一步应该知道的进展或背景 |
+| `steer` | 在接收方当前这一轮的下一步进入；接收方空闲时开启新的一轮。它会唤醒 `wait`（[WaitBranch](../../design/plugins/WaitBranch.md)） | 接收方必须马上处理，或接收方处于空闲 |
 
 不开放 Queue。一条线给另一条线的唯一 Queue 输入是开启输入。
 
@@ -153,7 +153,7 @@ BranchLine 注入 `B:Dispatcher`、`B:TimelineIdentity`、`B:BranchLifecycle` �
   - 这条线还有待处理的驱动输入。
 
   第二条让一条已经是默认分支的线不再每轮都去唤醒开它的那条线：用户在它上面说话时，它在回答用户，不是在向开它的那条线汇报。再切走一次就自动恢复通知，因为这个条件读的是当前事实，不是某条说明。这样，一条线一声不响地停下时，开它的那条线不会一直等下去；已经 steer 过开线方的线，也不会重复通知它。通知带这一轮的状态（`completed`、`failed` 或 `cancelled`）。
-- **等待。** 开线方用现有的 `wait` 工具等它开的线。steer 消息、空闲通知或结束通知都会唤醒它（[wait.rs](../../../crates/dim-agent-capabilities/src/wait.rs)）。
+- **等待。** 开线方用现有的 `wait` 工具等它开的线。steer 消息、空闲通知或结束通知都会唤醒它（[WaitBranch](../../design/plugins/WaitBranch.md)）。
 
 ### 6.1 资源与限制
 

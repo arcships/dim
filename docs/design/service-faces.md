@@ -139,12 +139,12 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | `approval` | `pending()`、`decide(requestId, decision)` | 待处理请求、批次准入 |
 | `permission` | `check(call, risk, cancelled)` | 预设、权限状态、advisor |
 | `inputQueue` | `submit(input)`、`withdraw(command)` | 排序、恢复、InputSnapshot |
-| `wait` | `wait(taskId, timeoutMs, cancelled)` | 到达记录、单次等待槽 |
+| `wait` | `state()`、`wait(request, cancelled)` | 到达记录、单次等待槽、已准入等待 |
 
 形状与错误见所有者：[Permission](../architecture/rust-agent/plugins/Permission.md#permission-data-face)、
 [Approval](../architecture/rust-agent/plugins/Permission.md#approval-data-face)、
 [InputQueue](../architecture/rust-agent/plugins/InputQueue.md#data-face)、
-[Wait](../architecture/rust-agent/plugins/Wait.md#data-face) 与
+[WaitBranch](plugins/WaitBranch.md) 与
 [toolHost](../architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)。
 `inputQueue.withdraw` 只做普通撤回；Steer 必须走 `session.input.withdraw` 的校验与提交检查入口。
 

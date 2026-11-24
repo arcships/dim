@@ -32,7 +32,7 @@
 | [ToolExecutor](../../../architecture/rust-agent/plugins/ToolExecution.md#toolexecutor) | 执行段、排他、取消、单父调用的子效果 | claim 在提交前登记、未派发批次释放；resolve_write 后批准和执行同一个调用；两个父调用各收自己的子 effects；已有父返回效果不重复补入；progress/completed/batch-result 身份和顺序 | 不证明宿主副作用能回滚；也不新增排队后的二次授权。NestedSettlement 只有一个 parent，不能检查跨 parent 混入 |
 | [InputQueue](../../../architecture/rust-agent/plugins/InputQueue.md#inputqueue) | held/released、替代与删除同批、单输入首个控制 | 多条 Queue 的实际到达顺序；不同 turn 的 handover；普通 pending 排除 handover；notHeld 不产生替代；已接纳但发布未知的服务结果；多个 owed withdrawal 按命令序结算；observable snapshot 等结果提交后更新 | SubmitChecks 是 Session 入口的依赖，不重做检查；“检查通过不预留条目”仍须与条件接纳一起核对 |
 | [Loop](../../../architecture/rust-agent/plugins/Loop.md) | 单 turn/request、工具后下一步、reload 失败、局部 continuation | 已采用输入如何组成每轮请求；停止后旧未应用队列不被误启动；未执行工具身份逐项结算；预算恢复、输出上限、工具步骤、用户输入共同决定结束还是续行；failure chain 数值跨请求不重置 | 不检查模型回答质量；输入和失败链影响下一步选择，不能仅作为无结构布尔值丢掉 |
-| [WaitBranch](../../../architecture/rust-agent/plugins/Wait.md) | 槽/tracker、关闭 drain、task 匹配、最后回合边界恢复 | 通知资格、顺序、Steer 优先；不匹配通知保留；AlreadyWaiting/Reloading/Interrupted/Timeout 的可观察区别；已有通知立即取走与注册唤醒的交接；工具与服务的 timeout 边界不同。详见下一节 | 不负责后台任务执行完成；超时也不停止任务。无需模拟真实毫秒，但要有“到期”输入 |
+| [WaitBranch](../../../architecture/rust-agent/plugins/Wait.md)、[契约](../../plugins/WaitBranch.md) | 槽/tracker、关闭 drain、task 匹配、最后回合边界恢复 | 通知资格、顺序、Steer 优先；不匹配通知保留；AlreadyWaiting/Reloading/Interrupted/Timeout 的可观察区别；已有通知立即取走与注册唤醒的交接；工具与服务的 timeout 边界不同。详见下一节 | 不负责后台任务执行完成；超时也不停止任务。无需模拟真实毫秒，但要有“到期”输入 |
 | [ContextPreparation](../../../architecture/rust-agent/plugins/ContextPreparation.md) | prepare 结果互斥、内容 cut、compaction 返回后交接 | 预算超限先压缩、仍不适配则终止且不无限再恢复；最终请求被 host 改变后重新验证，不能沿用旧估计；Steer 在自动压缩中到达时延后替换；配置/guide 更新对同一 source 的采用 | 压缩文本质量及 codec 算法可外置；是否允许 model/call、是否重用估计是本次请求的状态责任 |
 | [ModelProvider](../../../architecture/rust-agent/plugins/ModelProvider.md#failure-chain) | 单请求输出终态、重试上限/等待预算 | continuation 继承 attempts/waited，预算耗尽时根本不调用；request-local backoff/malformed 额度重置与 chain 总额不重置；ToolStart 与完整 ToolUse 的不同错误结算；按 request 关联 usage/terminal | 流解析算法可外置，但“工具参数未完成”与“已完整但未执行”必须保留为不同交接状态 |
 | [Prompt](../../../architecture/rust-agent/plugins/Prompt.md) | source 单调采用、配置同批、退役记录同批 | configure 成功/失败/被 supersede 的结果；撤销缺失 source；首次 opening receipt 与后续动态变更的顺序；按完整 source/scope 身份恢复有效 entry。现有 Retirement 模型每 scope 一个集合成员，未覆盖多 source 的替换关系 | 未定位生产者的 context/scope 不当作已完成端到端路径；无需重写 PromptHost 内部加载 |
@@ -56,7 +56,7 @@
 先找队列中第一个 Steer，再找第一个匹配 task。无 taskId 时两个不同 task 都匹配。
 
 两段历史 `task A → task B` 与 `task B → task A` 在原模型中得到相同集合 `{A,B}`；
-但调用 `wait(null, ...)` 在代码中应分别取 A 和 B。因此原抽象不足以检查这个选择承诺。
+但调用 `wait(WaitRequest { task_id: None, timeout_ms }, cancelled)` 在代码中应分别取 A 和 B。因此原抽象不足以检查这个选择承诺。
 这不影响原模型对 tracker/drain 的检查，却限制了它能代表的 Wait 行为范围。
 这里依据的是方法注释和实现的现行选择行为，不另立新的公开 FIFO 规范；集合抽象对原先的生命周期命题仍可适用。
 

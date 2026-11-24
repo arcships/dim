@@ -1,6 +1,6 @@
 # Wait
 
-The Wait plugin registers Wait in every Session and WaitBranch in every branch.
+The Wait plugin registers Wait in every Session and WaitBranch in every branch. The branch part's target contract is [WaitBranch](../../../design/plugins/WaitBranch.md).
 
 ## Wait
 
@@ -82,18 +82,9 @@ Provides branch-local wait state recording eligible arrivals during an open turn
 | `B:Dispatcher` | Consume arrivals and turn boundaries in order. |
 | `B:Timeline` | Read the last `turn/start` or `turn/end` and the unpublished tail, so the rebuild knows whether a turn is open. |
 
-### Data face
+### Data face (current and target)
 
-`wait` is this part's service by name
-([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id)):
-
-```text
-wait.wait(taskId: string | null, timeoutMs: number, cancelled: () => void | Promise<void>)
-  -> {reason: "notification", taskIds, waitedMs}
-   | {reason: "user_steer", waitedMs} | {reason: "already_notified", taskIds, waitedMs}
-   | {reason: "timeout", waitedMs} | {reason: "interrupted", waitedMs}
-  -> error {code: "AlreadyWaiting" | "Reloading", message}
-```
+Current implementation: `wait(taskId, timeoutMs, cancelled)` in [wait.rs](../../../../crates/dim-agent-capabilities/src/wait.rs), answering `WaitResult` or `WaitCallError`. The target is [WaitBranch](../../../design/plugins/WaitBranch.md) § Operations, which takes `wait(request, cancelled)` and a `state()` read, and answers `WaitResult`, `WaitState` or `WaitCallError`.
 
 It is the same wait the tool call makes. `cancelled` is the call's own
 cancellation and ends it as `interrupted`, releasing the single-wait slot.

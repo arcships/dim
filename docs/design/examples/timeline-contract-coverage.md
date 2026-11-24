@@ -62,7 +62,7 @@ B 的后续查询范围证据见 [#1737](https://github.com/arcships/dim/pull/17
 
 | 所有者 | 设计/实现入口 | 已有模型与尚待闭合的前提 |
 | --- | --- | --- |
-| Wait | `plugins/Wait.md`；`wait.rs::rebuild` | `RecoveryBoundary/WaitRuntime`：只恢复 open-turn，丢弃通知/旧等待；固定 cut 与动态 consume 由 B/C 提供 |
+| WaitBranch | `plugins/WaitBranch.md`；`wait.rs::rebuild` | `RecoveryBoundary/WaitRuntime`：只恢复 open-turn，丢弃通知/旧等待；固定 cut 与动态 consume 由 B/C 提供 |
 | InputQueue | `plugins/InputQueue.md`；`input_queue/recovery.rs::rebuild` | `InputRecovery/InputOrdering`：成员、首个控制决定、handover/turn；先等 committed cut 发布再查询，不能只做 start-minus-end |
 | Approval、ToolExecutor、ModelProvider、ContextPreparation、Loop | [逐项分析 §2–8](timeline-capability-analysis.md#2-approval) 中链接的 owner 页与 rebuild/恢复查询 | `RecoverySelection` 仅适用于对应未结算身份子问题；effects、控制事件、旧 request/turn 及结算次序仍依赖各业务模型，D 不可只复用集合公式 |
 | Prompt、ToolBinding、ContextUsage | [逐项分析 §9–11](timeline-capability-analysis.md#9-prompt) 中链接的采用、projection/checkpoint、usage 入口 | `PromptRetirement/ToolRetirement/ContextUsage/UsageIdentity`：持久业务身份与当前资源身份不同；B 的选择与 D 的采用交接待闭合 |

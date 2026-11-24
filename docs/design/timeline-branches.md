@@ -135,8 +135,8 @@ A message is an `input/message` on the receiver's Timeline, written through `Tre
 
 | Mode | Effect on the receiver | When to use it |
 | --- | --- | --- |
-| `append` (default) | Rides with the receiver's next model request. It never starts a turn and does not wake `wait` | Progress or context the receiver should have at its next step |
-| `steer` | Enters the receiver's current turn at its next step, or starts a turn if the receiver is idle. It wakes `wait` | The receiver must act on it now, or the receiver is idle |
+| `append` (default) | Rides with the receiver's next model request. It never starts a turn and does not wake `wait` ([WaitBranch](plugins/WaitBranch.md)) | Progress or context the receiver should have at its next step |
+| `steer` | Enters the receiver's current turn at its next step, or starts a turn if the receiver is idle. It wakes `wait` ([WaitBranch](plugins/WaitBranch.md)) | The receiver must act on it now, or the receiver is idle |
 
 Queue is not exposed. The only Queue input one line gives another is the opening input.
 
@@ -169,7 +169,7 @@ These are Collaboration's message modes and words (`append`, `steer`), with the 
   - the line has a driving input pending.
 
   The second bullet keeps a line that has become the default branch from waking its opener every time the user talks to it there: it is answering the user, not reporting to its opener. A second move restores the notice without any write, because the rule is read from the current fact and not from a note. This way a line that stops without telling its opener never leaves the opener waiting on silence, and a line that already steered it does not notify it twice. The notice carries the turn's status (`completed`, `failed` or `cancelled`).
-- **Waiting.** An opener waits for its lines with the existing `wait` tool. A steer message, an idle notice or an ended notice wakes it ([wait.rs](../../crates/dim-agent-capabilities/src/wait.rs)).
+- **Waiting.** An opener waits for its lines with the existing `wait` tool. A steer message, an idle notice or an ended notice wakes it ([WaitBranch](plugins/WaitBranch.md)).
 
 ### 6.1 Resources and limits
 

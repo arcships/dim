@@ -11,7 +11,7 @@
 | [时间总线 §2、§4](../../architecture/rust-agent/time-bus.md)：生产方只按自身已消费状态复核；消费者拒绝中断后的迟到请求 | `AgentLoop::on_event` 在模型终态上写 tool-call；ToolExecutor 的 handler 记录 interrupt、拒绝批次；`InterruptHandoff.Deliver` | Dispatcher 单事实串行交付；允许在较早事实尚在派发时追加 interrupt。两个消费者进度分开，不引入全局取消位 |
 | ToolExecutor 在途工作先释放资源再写结果；Loop 等结果再结束 turn | [ToolExecution](../../architecture/rust-agent/plugins/ToolExecution.md) 的任务 join 与 result；`Invoke/Finish`、`TurnEndWaitsForResult` | 本模型将 host 结束作为动作机会；不证明 host 尊重取消或最终返回 |
 | [重载协议](../../architecture/rust-agent/single-tree.md#能力重载协议)：旧工作不重执行，各 owner 写自己的终态 | `WaitBranch` cleanup、ToolExecutor cleanup/rebuild、Loop rebuild/on_event；`GenerationHandoff` | 一个已持久化的 turn 和顶层 batch；一个调用、各 owner 最多一次正常换代，另允许一次进程崩溃 |
-| [Wait](../../architecture/rust-agent/plugins/Wait.md) 重载拒绝旧调用，并把 reload 交给工具结算 | `ReplyReload/Settle/ConsumeLoop`，`ReloadDoesNotContinue` | `Reloading` → HostError → result settlement 标记的转换来自代码；普通完成另有 `NormalReply`，不会预先假定所有结果都是重载失败 |
+| [WaitBranch](../plugins/WaitBranch.md) 重载拒绝旧调用，并把 reload 交给工具结算（当前实现见 [Wait](../../architecture/rust-agent/plugins/Wait.md)） | `ReplyReload/Settle/ConsumeLoop`，`ReloadDoesNotContinue` | `Reloading` → HostError → result settlement 标记的转换来自代码；普通完成另有 `NormalReply`，不会预先假定所有结果都是重载失败 |
 | 新代读完整固定 cut 后再消费后缀 | ToolExecutor `rebuild`、Loop `rebuild`；`CaptureTool/CaptureLoop` 与后续处理 | C 的暂存/串行算法作为既有接口前提；本模型不复制队列，而让 Loop 在重建前后读到终态 |
 | 失败不能伪装成功接管 | `RebuildTool(FALSE)/RebuildLoop(FALSE)` 保留 failed；`Settle(FALSE)`、`StorageFailure` 保留写入故障 | 查询失败与存储故障分开；required apply 失败的装配回滚不在模型中，见第 4 节。不能据此宣称分支继续健康运行 |
 
