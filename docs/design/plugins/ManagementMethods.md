@@ -33,12 +33,12 @@ A process part registers from `apply`:
 ```rust
 table.register(
     ctx,
-    RegisterRequest { namespace: "settings".into() },
+    "settings".into(),
     declarations,
     Arc::new(move |call: MethodCall, cancelled: CancellationToken, progress: Progress| {
         let owner = owner.clone();
         // The token fires on the provider's or the admitting Rpc load's unload (A.1).
-        Box::pin(async move { owner.handle(call, cancelled, progress).await }) // Result<CallOutcome, TableError>
+        Box::pin(async move { owner.handle(call, cancelled, progress).await }) // Result<MethodReply, MethodCallbackError>
     }),
 ).await?;
 ```
@@ -47,15 +47,13 @@ Rpc dispatches:
 
 ```rust
 // `service_reloading` and `service_unavailable` are answered from the registering row's status.
-let reply = table.call(CallRequest {
-    method: method.into(),
+let reply = table.call(
+    method.into(),
     params,
-    caller: Some(CallerRef { connection_id, call_id }),
-}, cancelled).await?;
-match reply {
-    CallOutcome::Reply { reply } => answer_reply(reply),
-    CallOutcome::Error { error } => answer_error(error.code, error.app_error, error.message),
-}
+    Some(CallerRef { connection_id, call_id }),
+    cancelled,
+).await?;
+answer_reply(reply) // MethodReply: the handler's value or its own {code, message}
 ```
 
 ## Own contract
@@ -68,14 +66,14 @@ The loader's row status (`rutis/loader`), read when a withdrawn namespace answer
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `register` | Publish a namespace for the registering row's lifetime | `{namespace, declarations, call}` + `caller: &Ctx` | `{}` | None; the owner completes it | `reserved`, `duplicate`, `invalid_params` |
-| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `CallOutcome`: the handler's `MethodReply` or its own `MethodError` | The calling load's token (A.1); a caller disconnect stops delivery only and does not cancel the accepted call | `unknown_method`, `service_reloading`, `service_unavailable`, `operation_interrupted`, `invalid_params` |
+| `register` | Publish a namespace for the registering row's lifetime | `{namespace, declarations}` and a call callback | `{}` | None; the owner completes it | `reserved`, `duplicate`, `invalid` |
+| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}`: the handler's `MethodReply` | The calling load's token (A.1); a caller disconnect stops delivery only and does not cancel the accepted call | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `invalid`, `closed` |
 
 `caller` is `{connectionId, callId}`: the connection the call arrived on and the call id the reply ordering uses. It is absent for an in-process call. The table passes it to the handler unchanged; a handler that notifies uses it with `callChannel`.
 
-The handler's own failure is `MethodError` data inside `CallOutcome::Error` (A.1's `{code, appError, message}`), never a table error; the table returns only its routing failures.
+The handler's own failure is `MethodReply`'s error data (A.1's `{code, appError, message}`), never a table error; the table returns only its routing failures. The operations, `MethodCall`, `MethodReply` and `MethodError` are the [SessionMethods](https://github.com/arcships/dim/pull/2103#own-contract) contract's (#2103), the same shape both tables serve.
 
-`register`'s `call` is a callback parameter, not a request field, and the registration is bound to `caller`'s row: the table removes it when that row unloads. The callback runs on the registering row and is never called inside a commit lock. Its handler signature is A.1's `(MethodCall, CancellationToken, Progress)`, so the token fires on either unload, `drain` calls included; `CancellationToken` is the runtime's cancellation token and `Progress` is A.1's per-call progress sink (Appendix F). The handler returns `CallOutcome` with `TableError: From<rutis::host::CallError>`.
+`register`'s `call` is a callback parameter, not a request field, and the registration is bound to `caller`'s row: the table removes it when that row unloads. The callback runs on the registering row and is never called inside a commit lock. Its handler signature is A.1's `(MethodCall, CancellationToken, Progress)`, so the token fires on either unload, `drain` calls included; `CancellationToken` is the runtime's cancellation token and `Progress` is A.1's per-call progress sink (Appendix F). The handler returns `MethodReply` with `MethodCallbackError: From<rutis::host::CallError>`.
 
 ### Errors
 
@@ -85,11 +83,12 @@ The wire codes are the existing ones from the methods contract.
 | --- | --- | --- |
 | `reserved` | — (registration, in-process) | The namespace or a name is the host's; pick another name |
 | `duplicate` | — (registration, in-process) | The namespace is registered already; the registering row must not register twice |
-| `invalid_params` | `invalid_params` | The namespace or declaration is outside the name grammar, or the request is malformed |
+| `invalid` | `invalid_params` | The namespace or declaration is outside the name grammar, or the request is malformed |
 | `unknown_method` | `unknown_method` | No registered or withdrawn namespace holds the name; the client sees an unknown method |
-| `service_reloading` | `service_reloading` | The registering row is starting or reloading; retry after it is Active |
-| `service_unavailable` | `service_unavailable` | The registering row failed or cannot run; the client sees the service as unavailable |
-| `operation_interrupted` | `operation_interrupted` | The provider unloaded while the call ran; the call may have committed, so read the current state before retrying |
+| `reloading` | `service_reloading` | The registering row is starting or reloading; retry after it is Active |
+| `unavailable` | `service_unavailable` | The registering row failed or cannot run; the client sees the service as unavailable |
+| `interrupted` | `operation_interrupted` | The provider unloaded while the call ran; the call may have committed, so read the current state before retrying |
+| `closed` | — | This generation is unloading; the next generation serves the call |
 
 ### Flows
 
@@ -100,7 +99,7 @@ The wire codes are the existing ones from the methods contract.
 
 ## Exceptions with reasons
 
-- The table remembers the registering row per namespace: a withdrawn namespace must answer `service_reloading` or `service_unavailable` rather than fall through to a parent namespace.
+- The table remembers the registering row per namespace: a withdrawn namespace must answer `reloading` or `unavailable` rather than fall through to a parent namespace.
 - `call` takes the caller as data, not as a connection handle: the reply ordering belongs to Connection, and the table never writes a socket.
 
 ## Supersedes
@@ -132,100 +131,17 @@ The checks below cite [design rules §7, PR #2029](https://github.com/arcships/d
 
 ## Binding appendix
 
+The operation shapes and their data types are the [SessionMethods](https://github.com/arcships/dim/pull/2103#own-contract) contract's (#2103): `MethodDecl`, `MethodCall`, `MethodReply`, `MethodCallbackError`, `MethodError`, `CallerRef` and `Interruption`. `Progress` is the per-call sink in the methods contract's Appendix F. This contract adds only the process table's binding; it declares no second copy of those types.
+
 ```rust
 use crate::host::CancelledFn;
+use crate::methods::{
+    CallerRef, MethodCall, MethodCallbackError, MethodDecl, MethodError, MethodReply, Progress,
+};
 use rutis::Ctx;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CallerRef { pub connection_id: String, pub call_id: String }
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterRequest { pub namespace: String }
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CallRequest {
-    pub method: String,
-    pub params: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller: Option<CallerRef>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MethodError {
-    pub code: i32,
-    pub app_error: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum MethodReply {
-    Value { value: serde_json::Value },
-    HandedOff,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum CallOutcome {
-    Reply { reply: MethodReply },
-    Error { error: MethodError },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Interruption { Report, Drain }
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MethodDecl {
-    pub name: String,
-    pub mutating: bool,
-    pub interruption: Interruption,
-    #[serde(default)]
-    pub notifications: Vec<String>,
-    #[serde(default)]
-    pub progress: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MethodCall {
-    pub method: String,
-    pub params: serde_json::Value,
-    pub caller: Option<CallerRef>,
-}
-
-#[derive(Debug, serde::Serialize, thiserror::Error, serde::Deserialize)]
-#[serde(tag = "code", rename_all = "snake_case")]
-pub enum TableError {
-    #[error("{message}")]
-    Reserved { message: String },
-    #[error("{message}")]
-    Duplicate { message: String },
-    #[error("{message}")]
-    InvalidParams { message: String },
-    #[error("Unknown method")]
-    UnknownMethod,
-    #[error("Service is reloading; retry")]
-    ServiceReloading,
-    #[error("Service is unavailable until it is fixed or restarted")]
-    ServiceUnavailable,
-    #[error("Service reloaded; the call may have committed")]
-    OperationInterrupted,
-}
-
-impl From<rutis::host::CallError> for TableError {
-    fn from(error: rutis::host::CallError) -> Self {
-        Self::InvalidParams { message: error.message().to_owned() }
-    }
-}
-
 pub type HandlerFn = Arc<
-    dyn Fn(MethodCall, CancellationToken, Progress) -> BoxFuture<'static, Result<CallOutcome, TableError>>
+    dyn Fn(MethodCall, CancellationToken, Progress) -> BoxFuture<'static, Result<MethodReply, MethodCallbackError>>
         + Send + Sync,
 >;
 
@@ -233,19 +149,24 @@ pub type HandlerFn = Arc<
 /// with a hand-written `HostDispatch` at `host_key("managementMethods")`: the handler
 /// carries a cancellation token and a progress sink, which are not serde data, so the
 /// marked-service macro cannot bind `register`. Rust callers use this trait directly;
-/// other languages register through the dispatch, as the current `ForeignMethods` does.
+/// other languages register through the same dispatch.
 pub trait ManagementTable {
     fn register(
         &self,
         caller: &Ctx,
-        request: RegisterRequest,
+        namespace: String,
         declarations: Vec<MethodDecl>,
         call: HandlerFn,
-    ) -> BoxFuture<'static, Result<(), TableError>>;
+    ) -> BoxFuture<'static, Result<(), MethodError>>;
 
-    fn call(&self, request: CallRequest, cancelled: CancelledFn)
-        -> BoxFuture<'static, Result<CallOutcome, TableError>>;
+    fn call(
+        &self,
+        method: String,
+        params: serde_json::Value,
+        caller: Option<CallerRef>,
+        cancelled: CancelledFn,
+    ) -> BoxFuture<'static, Result<MethodReply, MethodError>>;
 }
 ```
 
-`ManagementTable` is the native spelling; the catalog name is `managementMethods` and the foreign registration uses the hand-written dispatch, because a handler's token and progress sink are not data. A native part implements the trait; the same table serves `call` in process and on the wire.
+`ManagementTable` is the native spelling; the catalog name is `managementMethods`. The same table serves `call` in process and on the wire.
