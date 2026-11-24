@@ -219,14 +219,14 @@ The calls `sessions` serves today and where each goes; a row that names a line o
 | Today's call | Target |
 | --- | --- |
 | `sessions.launch` | `create_session` |
-| `sessions.input` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s submit: `{inputData} → {inputId, sequence}` by `(session, line)` id |
+| `sessions.input` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s submit: `{input} → {inputId, sequence}` by `(session, line)` id |
 | `sessions.lookup` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s submit re-sent with the caller's `submissionId`: a duplicate answers the existing `{inputId, sequence}` (requirement below); no separate lookup exists |
 | `sessions.stop` | [Loop](https://github.com/arcships/dim/pull/2102/files)'s `stop_turn({turnId, reason})` by `(session, line)` id, after reading its published running state for the current turn id; a turn that already ended writes nothing |
 | `sessions.withdraw` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s `withdraw({inputId, reason})` by `(session, line)` id |
-| `sessions.pending` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s `pending({inputId, through?, includeBlockPresence?})` by `(session, line)` id; the owner's published head applies when the caller names no `through` |
+| `sessions.pending` | [InputQueue](https://github.com/arcships/dim/pull/2102/files)'s `pending({inputId, publishedCutoff?}) → {pending}` by `(session, line)` id; the owner's published head applies when the caller names no `publishedCutoff` |
 | `sessions.history` | [TimelineTree](https://github.com/arcships/dim/pull/2092/files)'s `read(line, from, through, limit)` by `(session, line)` id |
 | `sessions.defaultBranchId` | [TimelineTree](https://github.com/arcships/dim/pull/2092/files)'s `directory` for the Session; the default line is in the reply |
-| `sessions.exists` | `session.state`: `deleted` answers false, `closed` and `loaded` answer true |
+| `sessions.exists` | `session.state`: `deleted` and `unknown` answer false, `closed` and `loaded` answer true |
 | `sessions.delete` | `delete_session` |
 | `sessions.idle` | Deleted: no product caller; a run ends with the stop operation and its own records |
 
@@ -236,7 +236,7 @@ Three process events stay, because their consumers see state `observe` cannot re
 
 ### Session access
 
-No `Session`, `Agent` or lease object crosses this face. A caller that must run an operation on a Session's own owners resolves the target's data face by id and calls that owner's operation: `sessionId` for any Session-group data face, `(sessionId, line)` for any branch-group data face — not only input writes and published-value reads; registration points and lifecycle services are excluded ([ADR 027](../../adr/027-cross-scope-access-by-id.md) D1, D3). `acquire`'s lease keeps the addressed generation loaded for the caller's row; the lease decides loading and grants no access (ADR 027 D5). Rpc's Session methods, Provider's adoption read, Scheduler's pending and default-line reads, Workflow's history read, EventHub's input, receipt and delete cleanup all use this path. A Session-scope owner reached across Sessions (the leader's `collaborationSession` value from a member) is reached by `sessionId` the same way.
+No `Session`, `Agent` or lease object crosses this face. A caller that must run an operation on a Session's own owners resolves the target's data face by id and calls that owner's operation: `sessionId` for any Session-group data face, `(sessionId, line)` for any branch-group data face — not only input writes and published-value reads; registration points and lifecycle services are excluded ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1, D3). `acquire`'s lease keeps the addressed generation loaded for the caller's row; the lease decides loading and grants no access ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D5). Rpc's Session methods, Provider's adoption read, Scheduler's pending and default-line reads, Workflow's history read, EventHub's input, receipt and delete cleanup all use this path. A Session-scope owner reached across Sessions (the leader's `collaborationSession` value from a member) is reached by `sessionId` the same way.
 
 ## Exceptions with reasons
 
@@ -272,8 +272,8 @@ No `Session`, `Agent` or lease object crosses this face. A caller that must run 
 
 ## Requirements raised to mechanism owners
 
-1. **Route by id; the instance key never goes to the caller.** The mechanism must route a call to the Session group's data faces by `sessionId` and to the branch group's data faces by `(sessionId, line)`, so a caller reaches the owner's own operation without a facade, a forwarding object or an instance key ([ADR 027](../../adr/027-cross-scope-access-by-id.md) D2, D4; [#2127](https://github.com/arcships/dim/issues/2127)). Registration points (`sessionMethods`, `toolRegistry`) and lifecycle services are excluded (D3). The path must be available through rutis sessions to language runtimes and leaves, as other data faces are (D3); clients keep using Rpc. This is the same requirement TimelineTree records ([TimelineTree](https://github.com/arcships/dim/pull/2092/files)); Rpc, Provider, Collaboration, Scheduler, Workflow and EventHub depend on it.
-2. **The input owner answers a duplicate submission with the existing receipt, and Loop's stop takes a turn id.** A caller that lost a reply verifies a write by re-sending the same `submissionId`; `inputQueue.submit` must answer the existing `{inputId, sequence}` instead of a bare duplicate error, so no separate lookup exists on any face. `inputQueue.pending` must answer with the input id and accept the owner's published-cutoff default. Loop's published running state must carry the current turn id and `stop_turn` must take it. Raised with [#2027](https://github.com/arcships/dim/issues/2027).
+1. **Route by id; the instance key never goes to the caller.** The mechanism must route a call to the Session group's data faces by `sessionId` and to the branch group's data faces by `(sessionId, line)`, so a caller reaches the owner's own operation without a facade, a forwarding object or an instance key ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D2, D4; [#2127](https://github.com/arcships/dim/issues/2127)). Registration points (`sessionMethods`, `toolRegistry`) and lifecycle services are excluded (D3). The path must be available through rutis sessions to language runtimes and leaves, as other data faces are (D3); clients keep using Rpc. This is the same requirement TimelineTree records ([TimelineTree](https://github.com/arcships/dim/pull/2092/files)); Rpc, Provider, Collaboration, Scheduler, Workflow and EventHub depend on it.
+2. **The input owner answers a duplicate submission with the existing receipt, and Loop's stop takes a turn id.** A caller that lost a reply verifies a write by re-sending the same `submissionId`; `inputQueue.submit` must answer the existing `{inputId, sequence}` instead of a bare duplicate error, so no separate lookup exists on any face. `inputQueue.pending` must answer `{pending}` for `{inputId, publishedCutoff?}`: the input id, and the owner's published head when the caller names no `publishedCutoff`. Loop's published running state must carry the current turn id and `stop_turn` must take it. Raised with [#2027](https://github.com/arcships/dim/issues/2027).
 3. **SessionStore's `query` answers for a loaded Session.** Rpc's `session.summaries` reads a preview and activity for loaded Sessions; SessionStore's contract describes `query` as a read for an unloaded Session. The data owner is the store, so the store's operation must serve both with one cutoff. Raised with [#2018](https://github.com/arcships/dim/issues/2018).
 
 ## Supersedes
@@ -301,7 +301,6 @@ use dim_agent_capabilities::host::CancelledFn;
 use dim_agent_runtime::{PublicService, SessionConfig};
 use dim_agent_types::{AgentProfile, PermissionPolicy, ModelSelection};
 use rutis::Ctx;
-use dim_agent_runtime::PublicService;
 use rutis::host::BoxFuture;
 use std::future::Future;
 use std::sync::Arc;
@@ -325,7 +324,7 @@ pub struct AgentsReply { pub agents: Vec<AgentEntry> }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateAgent {
-    pub profile: crate::protocol::AgentProfile,
+    pub profile: AgentProfile,
     #[serde(default)]
     pub owner_session_id: Option<String>,
 }
@@ -482,9 +481,15 @@ pub struct MembersReply { pub members: Vec<MemberLink> }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstanceReply { pub instance_id: String }
 
+fn is_zero(value: &u32) -> bool { *value == 0 }
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct QuiesceReply { pub paused: bool, #[serde(default)] pub running: u32 }
+pub struct QuiesceReply {
+    pub paused: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub running: u32,
+}
 
 /// Kinds by what the caller can do next; `code` is the wire name in the error table above.
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]

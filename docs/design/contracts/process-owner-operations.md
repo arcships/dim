@@ -22,7 +22,7 @@ The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelection
 
 | Caller → owner | Methods and replies |
 | --- | --- |
-| Permission consumers → Permission and Agents | A line's current policy is Permission's published value, read by `(sessionId, branchId)` id ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1); there is no `sessions.permission`. `sessions.permissionDefaults({})` reads the current creation default without creating a Session. |
+| Permission consumers → Permission and Agents | A line's current policy is Permission's published value, read by `(sessionId, branchId)` id ([ADR 027](https://github.com/arcships/dim/pull/2029/files) D1); there is no `sessions.permission`. `sessions.permissionDefaults` reads the current creation default without creating a Session. |
 | Dialogue, summary and suggestion → active invocation owner | `modelHost.invoke(request, mode, consume, cancelled, hooks?) → value`. Full `ModelRequest` with pinned tools, configuration, cached prefix and capability snapshot. Attempt contract below. |
 | Session configuration → `providerService` (managed profile) | `configuration(explicit?, cwd?, preferences) → ModelSelection`; `applyPreferences(current, update) → ModelSelection`. Bind the existing Provider operations. |
 | Session creation/adoption and Collaboration → `providerService` (managed profile) | `prepareStartup(request) → {model, admissionId?}`, `checkStartup(source) → void`, `retainStartup({sessionId, generation, model, admissionId?}) → void`, `releaseStartup({admissionId}) → void`. Reuse the pending startup binding ID. Retain on success for that Session generation; release on failure or caller unload. |

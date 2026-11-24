@@ -23,6 +23,8 @@ Keeping a target loaded is Agents' operation: a process caller that needs a Sess
 
 ## 2. Attach expectations
 
+The native `session.attach.expectedCwd` capability permits an optional `expectedCwd` on `session.attach`. The boundary canonicalizes that one path and checks the target Session's stored or live cwd by Session ID under its acquire gate, before project authorization, Session restore or plugin activation. A mismatch fails without attaching or running that project's configuration. Omitting it preserves existing callers. Attach already returns cwd and title metadata; a checked attach never lists all Sessions to find its target.
+
 `session.attach.expectedConfig` advertises an optional `expectedConfig` on `session.attach`. After authorization and acquisition, attach checks the specified fields against the Session's current default line, at the published sequence the reply's own `defaultBranch` cursor carries, before registering or replacing the subscription. An expectation can name `modelId` (an exact adopted ID), `permissionPreset`, and `reasoningEffort` (an exact adopted value, or `{action:"clear"}` to expect the model’s supported declared default at the cutoff, represented by absence when the declaration has no supported default). Model and effort read what that line adopted; the preset reads the last `permission/changed` on its ancestor chain, so a line that inherited a change and wrote none of its own answers the inherited policy. Omitted fields impose no condition. A mismatch returns `session_config_mismatch` with code `-32602`. The check makes no configuration write. Changes published after that sequence remain ordinary live changes. Fork uses [the same expectation](../appserver/session-deletion-and-fork.md#61-method) at its inherited cut, which stays on `main`: a fork copies the root's configuration, not the default line's.
 
 ## 3. Security
@@ -195,3 +197,95 @@ The fixed-prefix read fixes `through` as the line's published head at call time.
 ### A.6 Errors
 
 Each owner defines its own kinds; see [Agents](https://github.com/arcships/dim/pull/2098/files#errors), [InputQueue](https://github.com/arcships/dim/pull/2102/files#errors) and [TimelineTree](https://github.com/arcships/dim/pull/2092/files#errors).
+
+## Superseded anchors
+
+Every heading below is kept as an anchor for links across the docs tree; each points at the content now.
+
+## 1. Structure
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## 2. Data and state
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## 3. Flows
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+### 3.1 Launch, write, wait
+
+Superseded by the owners' operations; the withdrawal conventions are in [A.4](#a4-withdrawal).
+
+### 3.2 Withdrawal
+
+Superseded by the owners' operations; the withdrawal conventions are in [A.4](#a4-withdrawal).
+
+## 4. Timing and conflicts
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## 5. Context mapping
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## 6. Interfaces (summary)
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## 7. Security
+
+Superseded by [§3 Security](#3-security).
+
+## 8. Rule check
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## 9. Requirements raised to mechanism owners
+
+Superseded by [§5 Requirements raised to mechanism owners](#5-requirements-raised-to-mechanism-owners).
+
+### 9.1 Runtime services exposed by name (#4)
+
+Superseded by [§5 Requirements raised to mechanism owners](#5-requirements-raised-to-mechanism-owners).
+
+### 9.2 Fixed-prefix read
+
+Superseded by [§5 Requirements raised to mechanism owners](#5-requirements-raised-to-mechanism-owners).
+
+### 9.3 Caller source fixed from plugin identity
+
+Superseded by [§5 Requirements raised to mechanism owners](#5-requirements-raised-to-mechanism-owners).
+
+### 9.4 Optional parts per enabled plugin
+
+Superseded by [§5 Requirements raised to mechanism owners](#5-requirements-raised-to-mechanism-owners).
+
+#5, used by the offline rows, in [ExternalAgent §9](../plugins/ExternalAgent.md#9-requirements-raised-to-mechanism-owners). The optional `reason` on `input/withdraw` and the `LaunchRequest.agent` default are changes of InputQueue and Agents, listed in [overview Appendix B](../overview.md#appendix-b-supplements-to-existing-plugins).
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## Appendix A. Interface details
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+### A.1 The sessions service
+
+Superseded: the `sessions` methods are in the [Agents contract](https://github.com/arcships/dim/pull/2098/files); the conventions that remain are in Appendix A.
+
+## Appendix B. Full conflict table
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## Appendix C. Acceptance
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## Appendix D. Assumptions
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).
+
+## Appendix E. Rust binding
+
+Superseded by the owners in the block table of [§1](#1-cross-scope-access-by-id).

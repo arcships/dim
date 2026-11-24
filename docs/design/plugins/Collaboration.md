@@ -43,7 +43,7 @@ The Session part establishing a member when the leader's branch commits a `reque
 let member = collaboration.establish(
     Establish {
         leader_session_id: leader.clone(),
-        target: Target::Agent(agent_id),   // or Target::Profile(profile) for a temporary Agent
+        target: Target::Agent { agent_id },   // or Target::Profile { profile } for a temporary Agent
         adopted_model,
         policy,                            // sampled from the requesting line
     },
@@ -169,7 +169,7 @@ No catalog face. The interface exists on the `Collaboration` type for this owner
 
 ```rust
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[serde(untagged)]
 pub enum Target { Agent { agent_id: String }, Profile { profile: crate::protocol::AgentProfile } }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -195,3 +195,67 @@ impl Collaboration {
     pub fn leader_of(&self, request: MemberRef) -> Option<Leader> { /* … */ }
 }
 ```
+
+## Superseded anchors
+
+Every heading below is kept as an anchor for links across the docs tree; each points at the content now.
+
+## 1. Model-facing texts
+
+Superseded by [CollaborationSession](CollaborationSession.md).
+
+### Task title
+
+Superseded by [CollaborationSession](CollaborationSession.md).
+
+## 2. The guide entries
+
+Superseded by [CollaborationSession](CollaborationSession.md).
+
+## 3. Policy at the factory configuration
+
+Superseded by [CollaborationSession](CollaborationSession.md).
+
+## 4. Rule check
+
+Superseded by [CollaborationSession](CollaborationSession.md).
+
+## 5. Requirements raised to mechanism owners
+
+Superseded by [CollaborationSession](CollaborationSession.md).
+
+## 6. Delegation ownership and lifetime
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+### 6.1 Durable facts
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+### 6.2 Who may address what
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+### 6.3 Lifetime
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+### 6.4 Errors
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+### 6.5 Requirements raised to other owners
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+### 6.6 What this removes
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+### 6.7 Stopping a member from the client
+
+Superseded by [Delegation lifetime](#delegation-lifetime) and [CollaborationTimeline](CollaborationTimeline.md).
+
+## 7. The models a member can run
+
+Superseded by [CollaborationSession](CollaborationSession.md).
