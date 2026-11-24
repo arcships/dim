@@ -242,7 +242,7 @@ sequenceDiagram
   ST->>ST: interactive leader Session without a title only
   ST->>PR: complete(model, adopted text)
   PR-->>ST: title
-  ST->>SS: typed write: title, source auto, revision check
+  ST->>SS: setTitle(id, change)
   SS-->>BC: title notice for clients
 ```
 

@@ -28,7 +28,7 @@ App Server 测试不依赖 SessionTitle，仅覆盖通用宿主行为。验证�
 
 | 边界 | 当前合同与 Ready 决策 |
 | --- | --- |
-| 观察 | 从 `sessionIdentity` 读取 Session id，从 `sessionConfig` 读取创建配置，从 `sessionLifecycle` 读取 closing（[插件契约](../plugin-contract.md#9-向机制所有者提出的需求) R2），然后读取自身 Session 的 `session/{sessionId}` 通道记录。C4 广播 #180 已交付；#63/#168 已关闭。 |
+| 观察 | 从 SessionScope 的 `identity` 读取 Session id，从 `config` 读取创建配置，从 `closing` 读取关闭状态（[插件契约](../plugin-contract.md#9-向机制所有者提出的需求) R2），然后读取自身 Session 的 `session/{sessionId}` 通道记录。C4 广播 #180 已交付；#63/#168 已关闭。 |
 | 历史 | 使用已实现的进程 sessions.history，不读取私有 TimelineTree，也不使用分支（C5）绑定。 |
 | 配置 | 沿用具名 Settings 和原行来源声明，仅用户作用域（A.3/A12）。每次决定读取 settings.read({source:"session-title",scope:"user"})，直接使用已校验并补默认值的文档。 |
 | 元数据/通知 | 「本行由 [SessionStore 契约](../../../design/plugins/SessionStore.md#operations) 取代。」v3 列表字段为 `title`/`titleSource`/`titleRevision`；每次提交后 SessionStore 调用 `session_broadcast::notify`，Rpc 把记录以 `session.notice {sessionId, source, kind, data}` 转发给已附加的 v3 客户端（C6 #49/#85，[Session 广播通知](../appserver/session-notices.md)）。 |
@@ -50,8 +50,7 @@ atLeast 与 through，直接使用原生 HistoryPage/AgentEvent。S2 稳定目�
 `sessionMethods`，并在 `apply` 中把 `session.rename` 注册到它；它不提供服务。
 插件仅依赖 Settings 与 `store` 的既有公开 Rust 绑定；历史回复在本插件的命名服务边界解析一次。插件行为与跨插件标题流程位于插件 crate 的 tests，使用公开客户端与宿主 API；App Server 测试不依赖该 crate，也不隐式安装标题插件。`apply` 读取 Session 标识和创建配置，
 登记观察/清理，不启动异步初始化任务；创建配置不可变。同一部分注入必需依赖：进程服务
-`sessions`、`settings`、`store` 和 `auxiliaryModel`，以及 Session 服务 `sessionIdentity`、
-`sessionConfig`、`sessionLifecycle` 和 `sessionMethods`。可选的 `sessionTitleGenerator`
+`sessions`、`settings`、`store` 和 `auxiliaryModel`，以及 SessionScope 的 `identity`、`config`、`activated`、`closing` 和 `sessionMethods`。可选的 `sessionTitleGenerator`
 遵循[必需/可选绑定契约](../rutis-usage.md#3-按名字的服务)，在使用时按名字读取，不注入，也不影响 Ready。
 产品装配独立于外语插件行安装原生插件。
 必需服务的提供者缺失时，依照既有依赖规则仅影响 SessionTitle 的可用性，不影响 Session 的执行能力。
@@ -96,7 +95,7 @@ flowchart LR
 | 部件 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
 | `session-title` | 进程 | Settings 和部件注册表 | 注册 Settings 来源及 Session 部分 |
-| `SessionTitle` | Session | Session 服务 `sessionIdentity`、`sessionConfig`、`sessionLifecycle` 和 `sessionMethods`；进程 sessions 历史、Settings、标题元数据 `store`（S5b）和必需的 `auxiliaryModel`（提供者缺失使整行 Pending）；按需读取可选的 `sessionTitleGenerator` | 把 session.rename 注册到 sessionMethods |
+| `SessionTitle` | Session | SessionScope 的 `identity`、`config`、`activated`、`closing` 和 `sessionMethods`；进程 sessions 历史、Settings、标题元数据 `store`（S5b）和必需的 `auxiliaryModel`（提供者缺失使整行 Pending）；按需读取可选的 `sessionTitleGenerator` | 把 session.rename 注册到 sessionMethods |
 
 依赖位于 Session 或外层进程。C4/S2/Settings 已提供观察、前缀读取和配置；S5b 提供标题元数据，C6 提供通知；该配置的模型选择所有者提供具名辅助模型操作。插件的行在其 apply 中登记来源。真实提供者重载会取消该行工作（ADR 002 D3），S2 索引重载不会。业务数据更新不重载插件（D4）。
 
@@ -336,7 +335,7 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 
 | 步骤 | 路径 |
 | --- | --- |
-| 监听 | 该部分在每个 Session 的副本于 `apply` 中监听自身 Session 的 `session/{sessionId}`，筛选 main input/applied，登记自持任务后返回；`sessionLifecycle.closing()` 或副本清理结束自持工作 |
+| 监听 | 该部分在每个 Session 的副本于 `activated()` 后监听自身 Session 的 `session/{sessionId}`，筛选 main input/applied，登记自持任务后返回；`sessionLifecycle.closing()` 或副本清理结束自持工作 |
 | 资格 | C4 创建快照：`interactive !== false && collaborationRole === "leader"`（用于生成）；原生省略值表示 true。创建时请求的初始标题（`initialTitle`，§3.4）对交互与非交互 Session 都写入：它不需要模型，文本属于调用方 |
 | 触发 | 收到位于 `N` 的 `input/applied` 时：若不具资格、已禁用、有在途生成或失败次数 ≥ 3（A5）则跳过；否则启动一个归属插件生命周期的生成任务 |
 | 检查 | `store.title({id})`：change 从当前标题与 revision 决定；`rejected` 时丢弃 |
@@ -441,8 +440,8 @@ A1–A12 是首版实现采用的策略。
 ```rust
 // SessionMetadataService (S5b; named service `store`)
 async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
-fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Title>)
-    -> impl Future<Output = Result<u64, MetadataError>>; // Conflict | NotFound | Storage; the call is the handover
+fn set_title(&self, id: &str, change: ChangeFn)
+    -> impl Future<Output = Result<u64, StoreError>>; // Rejected | NotFound | Closed | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct Title { pub text: String, pub source: TitleSource }   // Auto | Manual
 // AuxiliaryModel（该配置的模型选择所有者）

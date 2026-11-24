@@ -88,7 +88,7 @@ The sequence diagrams show the change callback: `setTitle(id, change)`; the owne
 
 Cancellation before setTitle handover stops work without writing. The handover is the setTitle call
 itself: from then on SessionStore settles its own atomic operation, and a lost reply does not authorize
-repeating or undoing it ([S5b §6](../appserver/session-title-metadata.md#6-handover-cancellation-and-settlement)). No rollback or
+repeating or undoing it ([SessionStore](SessionStore.md#operations)). No rollback or
 coordination mechanism.
 Generation takes no Session activity hold ([idle unload D10](../appserver/idle-unload.md#3-decisions));
 idle unload follows the same cancellation and store-handover rules.

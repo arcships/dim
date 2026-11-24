@@ -92,7 +92,7 @@ pub fn notify(ctx: &Ctx, session_id: &str, notice: SessionNotice);
 SessionStore's `setTitle` (S5b), for example, commits the new revision and then calls
 `notify(&ctx, session_id, SessionNotice { source: "SessionStore".into(), kind: "title".into(), data })` inside its
 serialization of title writes, where `data` is `{title, titleSource, titleRevision}`
-([S5b §5, §7](session-title-metadata.md#7-the-title-notice)).
+([SessionStore](../plugins/SessionStore.md#operations) and [S5b §7](session-title-metadata.md#7-the-title-notice)).
 
 ## 5. Rpc forwarding
 

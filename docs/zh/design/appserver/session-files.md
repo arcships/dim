@@ -281,7 +281,7 @@ CREATE INDEX session_file_owners_by_file ON session_file_owners(file_id)
 
 **S5c 不需要为 Session 文件再改格式。** 它的分叉步骤只插入 `session_file_owners` 行（§4），删除步骤只删除这些行（§5.3），清扫读取 `session_files`；这些步骤读写的内容 v15 都已具备。v16 只可能来自 S5c 对它自己的 Session 记录的改动，不会来自 Session 文件。
 
-**宿主输出是 v29 的第二张表。** [ADR 013](../../adr/013-command-output-ownership.md) 为命令输出、转存的 `read` 结果和 shell 日志新增 `session_output_owners(session_id, path)` 及其索引。它不是 Session 文件表：这些路径没有 `session_files` 行或 id，目录由最后一个拥有它的 Session 删除时移除。分叉像复制 `session_file_owners` 一样复制它的行，因此源 Session 删除后输出仍可读。
+**宿主输出是 v29 的第二张表。** [ADR 013](../../../adr/013-command-output-ownership.md) 为命令输出、转存的 `read` 结果和 shell 日志新增 `session_output_owners(session_id, path)` 及其索引。它不是 Session 文件表：这些路径没有 `session_files` 行或 id，目录由最后一个拥有它的 Session 删除时移除。分叉像复制 `session_file_owners` 一样复制它的行，因此源 Session 删除后输出仍可读。
 
 ## 9. 接口
 

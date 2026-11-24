@@ -13,18 +13,18 @@ fields. Consumer: SessionTitle.
 
 ## 1. Summary
 
+The Write and Binding bullets are superseded by [the SessionStore contract](../plugins/SessionStore.md#operations); the Data, Notice, Lists, Lifecycle and Format bullets remain in force.
+
 SessionStore keeps one title per Session with a per-Session revision. The title changes only through `setTitle`, whose
 change decides the next title under the owner's serialization. After each committed change SessionStore announces the new title on the Session's broadcast
 channel ([C6](session-notices.md)), and Rpc shows the title in protocol v3 Session lists.
 
 - **Data.** A revision counter (0 means never written) and either no title or a title `{text, source}` with source
   `auto` or `manual`. Clearing keeps the counter, so a revision never repeats.
-This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 - **Notice.** After each commit, `{source: "SessionStore", kind: "title", data: {title, titleSource,
   titleRevision}}`, in commit order.
 - **Lists.** Protocol v3 `session.summaries` entries carry `title`, `titleSource` and
   `titleRevision`.
-This section is superseded by [the SessionStore contract](../plugins/SessionStore.md#operations).
 - **Lifecycle.** A delete removes the title in S5c's delete transaction; a fork does not copy it (SessionTitle A7);
   a restart keeps it. Reading or writing a title never loads the Session.
 - **Format.** Native store v16: one new table, upgraded in place from v15, and from v13 through v15's step.
