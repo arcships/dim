@@ -323,9 +323,8 @@ entry's name relative to the authorized root and its kind; a name is the stored
 components joined by `/`, ready to pass to another operation, and on Unix a
 backslash is part of a name while on Windows it is a separator. `remove(name)`
 removes a file or a directory tree and returns `locked` while a lease holds it
-or a file beneath it. Use `scope.openRead(name)` for larger files. A missing file returns null;
-a present file returns its size and a pinned reader ID for `fsHost.readAt` and
-`fsHost.closeRead`. The opening row's unload closes outstanding readers.
+or a file beneath it. Use `scope.read(name, offset, length)` for larger files; it returns a page's bytes, size and
+`eof`, and no reader id crosses.
 `scope.writeStream(name, next)` pulls chunks until null and preserves the old file
 on failure or cancellation. `scope.directory(name)` creates the work directory
 and returns its node-local path. A text `replace` whose serialized record would
