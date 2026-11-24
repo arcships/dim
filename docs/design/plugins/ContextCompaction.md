@@ -174,7 +174,6 @@ methods are declared with `interruption: report`, `progress: false`, `notificati
   in-flight compaction.
 - It maps the outcome: `completed` → `{status: "completed", sequence}`;
   `skipped` → `{status: "skipped", reason}`; `failed` → `compaction_failed`;
-  `cancelled` → `compaction_cancelled`;
   `cancelled` → `compaction_cancelled`.
 
 The reply keeps that shape. A completed compaction's cost and its insufficient-space mark are
@@ -491,7 +490,6 @@ impl ContextPolicy { async fn compact_step(&self, step: CompactionStep, cancel: 
 // dim-agent-capabilities/src/context_preparation.rs
 impl ContextPreparation { pub async fn compact(&self, request: CompactionRequest, cancelled: CancelledFn)
                               -> Result<CompactionOutcome, PreparationError>; }
-impl PublicService for ContextPreparation {}
 impl PublicService for ContextPreparation {}
 
 // The parts below belong to their owners' contracts (#2025, #2027); this sketch records the F1
@@ -850,9 +848,9 @@ Without a provider baseline the full local estimate and its error remain (#128).
 ```
       step/model-start {T, R1} ... step/model-output-end {T, R1, completed}
  k    context/compact {}                          writer: ContextPreparation (compact)
-      -- Loop consumes k: a request is in flight -> pending
+      -- ContextPreparation consumes k: a request is in flight -> pending
       step/tool-call {T, R1} ... step/tool-result {T, R1}
-      -- Loop consumes the tool result (boundary b): pending -> compaction step
+      -- Loop consumes the tool result (boundary b): the pending command starts in ContextPreparation
  s    context/compaction-start {turn_id: T,       writer: ContextPolicy (ContextPreparation's step)
         command: k, through: b, trigger: manual, strategy: "summary"}
  m    context/compaction {turn_id: T, command: k,  writer: ContextPolicy (ContextPreparation's step)
@@ -866,7 +864,7 @@ Without a provider baseline the full local estimate and its error remain (#128).
 
 ```
  k    context/compact {}                          writer: ContextPreparation (compact)
-      -- Loop consumes k: no request in flight -> compaction step at once
+      -- ContextPreparation consumes k: no request in flight -> compaction step at once
  s    context/compaction-start {command: k, through: k,      writer: ContextPolicy
                                 trigger: manual, strategy: "summary"}
  m    context/compaction {command: k, start: s, through: k, outcome}   writer: ContextPolicy
@@ -889,8 +887,8 @@ Without a provider baseline the full local estimate and its error remain (#128).
 **Scheduling rules:**
 
 - **Boundary.** A step boundary is where the Loop would prepare the next request (`next_model`
-  without a budget-retry source) or where the turn ends. A pending step starts at the first
-  boundary.
+  without a budget-retry source) or where the turn ends. ContextPreparation starts a pending step
+  at the first boundary; the Loop does not advance across it.
   - If the turn ends instead, the step runs right after `turn/end`, with no turn.
   - A budget retry belongs to its request and is not a boundary.
 - **Through.** `through` is the sequence of the event whose consumption started the step.
@@ -925,8 +923,8 @@ All in `crates/dim-agent-capabilities/src/context_preparation.rs`:
    the step waiting, and starts it at once if no request is in flight. Another command consumed
    while one is outstanding is skipped (§5.4).
 4. **Boundaries.**
-   - The Loop's `next_model` (except with a budget-retry source) and `turn/end` start a pending step instead
-     of advancing.
+   - The Loop's `next_model` (except with a budget-retry source) and `turn/end` are the boundaries at which
+     ContextPreparation starts a pending step; the Loop does not advance across them.
    - The Loop's `next_model` and `try_start` do nothing while a step runs.
 5. **The step task.** It is tracked like the preparation task, builds the request as
    `start_preparation` does, and calls `ContextPolicy::compact_step`.
@@ -1235,8 +1233,8 @@ A `failed` fact carries the same cost diagnostics as a completed one whenever th
 
 | Part | Relationship |
 | --- | --- |
-| Loop | Supplement (§5.5). Budget recovery becomes active in the product profile |
-| ContextPreparation, ContextPolicy | Supplement (§5.3, §5.6): `compact_step`, retention rule, validation of any strategy, `usage` |
+| Loop | Starts no request while a compaction step runs; budget recovery is unchanged |
+| ContextPreparation, ContextPolicy | Supplement (§5.3–§5.6): the manual command, the single-flight slot and the step, `compact_step`, the retention rule and validation of any strategy |
 | Projection (`history.rs`), snapshots | One replay rule using `replacement` and `retain_from`; `HistoryEntry.source`; cut validation and the snapshot state become event-based (interpreter version bump); the decode callback checks the anchor event (#130) |
 | Timeline core, memory and SQLite stores | Snapshot anchoring becomes structural only (#130, §4.3) |
 | `HistoryRenderer` | Render-time projections that run on every request without a record are not compaction. An example is truncating old tool output by a fixed rule. They belong to the existing injectable `HistoryRenderer`, not to a strategy |

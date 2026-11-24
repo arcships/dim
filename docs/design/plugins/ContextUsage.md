@@ -2,7 +2,7 @@
 
 Scope: branch. Issue: #2027.
 
-ContextUsage owns the numbers of a line's effective context: what each source contributed, the cumulative totals, the compaction cuts and the provider's measured baseline. The counting rules are decided in [ADR 023](../../adr/023-context-usage.md); the saved formats are this contract's (below). The compaction interaction is [ContextCompaction §5](ContextCompaction.md#5-usage-and-the-compaction-cut). This document is the owner's target contract.
+ContextUsage owns the numbers of a line's effective context: what each source contributed, the cumulative totals, the compaction cuts and the provider's measured baseline. The counting rules are decided in [ADR 023](../../adr/023-context-usage.md); the saved formats are this contract's (below). The compaction interaction is [ContextCompaction §5.7](ContextCompaction.md#57-compaction-state-for-clients). This document is the owner's target contract.
 
 ## Use and scope: responsibility split
 

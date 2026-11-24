@@ -529,8 +529,8 @@ while the first write is still unpublished.
 | `input` | `Session::input(InputMessageData, branch)` (existing; returns the committed input for an id the branch already holds); a key is `InputBlock::Raw { key: Some(name), retire }` |
 | `lookup` | `Session::lookup(branch, submission_id)`, shared with `session.input_lookup`: a query of the branch's committed input identities; waits for the found input's publication |
 | `history` | `Session::sequence(branch)`, failing `future_sequence` below `at_least`, then `AgentIndex::history_page(id, branch, after, limit, through)` |
-| `withdraw` | `line_owner::<InputQueue>(line)?.withdraw(WithdrawRequest { input_id, reason, steer }) -> Result<Withdrawal, InputQueueError>`; the queue runs the submit checks for a Steer and returns `Deleted { sequence }` or `NotHeld`. See [InputQueue](../plugins/InputQueue.md) (A.4). |
-| `pending` | Capture `Session::publication(branch).sequence()`, wait through it with `Session::dispatch_watch(branch)` while observing publication closure, then `Session::service::<InputQueue>(branch)` and `InputQueue::pending(input_id) -> bool`: the branch's queue answers §2's rule; an id it does not hold is `false` |
+| `withdraw` | `line_owner::<InputQueue>(line)?.withdraw(WithdrawInput { input_id, reason, steer }) -> Result<Withdrawal, InputQueueError>`; the queue runs the submit checks for a Steer and returns `Deleted { sequence }` or `NotHeld`. See [InputQueue](../plugins/InputQueue.md) (A.4). |
+| `pending` | `line_owner::<InputQueue>(line)?.pending(PendingRequest { input_id, published_cutoff: None }) -> Pending`: the owner applies its published-cutoff default and answers §2's rule; an id it does not hold is `false` |
 | `stop`, `idle` | `Session::stop`, `Session::idle` (existing) |
 | `delete` | `AgentIndex::delete(id)` (S5c, crate-internal): admission gate, close, `SessionStore::delete_session`, forget |
 | `SessionConfig` | Rust struct below |

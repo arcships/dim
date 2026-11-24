@@ -96,7 +96,7 @@ match outcome {
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `prepare` | Admit a step's request, build it at its fixed cutoff and publish the handoff facts | `{source, projection}` | `{}` once `model/call` is committed | The caller's cancel before admission writes nothing; after admission the owner settles the request | `invalid` (malformed source data or a projection from another cutoff), `cancelled`, `closed` |
+| `prepare` | Admit a step's request, build it at its fixed cutoff and publish the handoff facts | `{source, projection}` | `{}` once `model/call` or the failure terminal is committed | The caller's cancel before admission writes nothing; after admission the owner settles the request | `invalid` (malformed source data or a projection from another cutoff), `cancelled`, `closed` |
 | `validate` | Confirm the final request fits the budget, reusing the estimate when it still matches | `{request}` | `{}` | The caller's cancel stops the check; nothing changes | `over_budget` (the request is too large; the caller fails the turn or recovers), `invalid` (missing or foreign capability snapshot), `cancelled`, `closed` |
 | `compact` | Run one manual compaction step and answer its outcome | `{}` | `{outcome}`: `completed{sequence}`, `skipped{reason}`, `failed{reason}` or `cancelled{reason}` | The command is written before the first await; the caller's cancel or a dropped wait stops only the wait, and a later call joins the committed step | `cancelled` (the wait stopped; the step continues), `closed` |
 

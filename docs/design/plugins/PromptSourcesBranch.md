@@ -38,8 +38,11 @@ for target in checked {
     let LoadReply { entry } = prompt_sources
         .load(target.source.clone(), target.scope, cancelled.clone())
         .await?;
-    let adopted = entries.iter().find(|entry| entry.source == target.source && entry.scope == target.scope);
-    if entry.as_ref().map(|entry| &entry.version) != adopted.map(|entry| &entry.version) {
+    let adopted = entries
+        .iter()
+        .find(|(source, _)| source == &target.source)
+        .map(|(_, entry)| &entry.version);
+    if entry.as_ref().map(|entry| &entry.version) != adopted {
         changed.extend(entry);
     }
 }

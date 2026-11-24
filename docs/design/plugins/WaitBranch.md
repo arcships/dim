@@ -77,7 +77,7 @@ let text = match reason {
 
 The `wait` data face takes one request object instead of positional arguments: `wait({taskId?, timeoutMs}, cancelled)` replaces `wait(taskId, timeoutMs, cancelled)` in the generated TypeScript declarations. The reply is `WaitReply {reason, taskIds, waitedMs}` with the existing reason values, and the error codes stay `already_waiting` and `closed`; a caller migrates by passing the two fields as one object.
 
-
+## Exceptions with reasons
 
 - A reload ends an accepted wait with an error rather than replaying an arrival: a cancelled background task emits no wake, and an arrival from the previous generation is not a wake the model can still act on.
 - The wait's timeout belongs to the call, not to the owner: the owner has no policy on how long a caller may park, and the tool is the one place a model-facing bound is stated.
