@@ -804,6 +804,67 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "Em execução…",
         "Save ZIP" => "Guardar ZIP",
         "Saved ZIP" => "ZIP guardado",
+        "Diagnostics only; no conversation." => "Apenas diagnóstico; sem conversa.",
+        "No conversation excerpts in this plan." => "Este plano não inclui excertos de conversa.",
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "Conversa incluída; Ocultar não remove todo o texto sensível."
+        }
+        "Conversation included without redaction." => "Conversa incluída sem Ocultar.",
+        "Conversation requested; check the updated preview." => {
+            "Conversa pedida; verifique a pré-visualização atualizada."
+        }
+        "Report plan included conversation without permission." => {
+            "O plano do relatório incluiu conversa sem autorização."
+        }
+        "[ ] Include conversation" => "[ ] Incluir conversa",
+        "[x] Include conversation" => "[x] Incluir conversa",
+        "Check the preview for sensitive text before sharing." => {
+            "Verifique a pré-visualização para detetar texto sensível antes de partilhar."
+        }
+        "Preview ZIP files" => "Pré-visualizar ficheiros do ZIP",
+        "Preview pending" => "Pré-visualização pendente",
+        "Preview unavailable" => "Pré-visualização indisponível",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn deslocar · Esc voltar",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn detalhes · ↑↓ mover · Enter selecionar · Esc fechar"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "Os ficheiros gerados diferem da pré-visualização do plano. O e-mail não está disponível."
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "O e-mail não está disponível sem pré-visualizações correspondentes do plano e do ZIP."
+        }
+        "(o) Investigation only" => "(o) Apenas investigação",
+        "( ) Investigation only" => "( ) Apenas investigação",
+        "(o) Team-internal regression of this ZIP only" => {
+            "(o) Apenas regressão interna da equipa deste ZIP"
+        }
+        "( ) Team-internal regression of this ZIP only" => {
+            "( ) Apenas regressão interna da equipa deste ZIP"
+        }
+        "Local attachment preview" => "Pré-visualização do anexo local",
+        "Email is for investigating this report only, not evaluation." => {
+            "O e-mail serve apenas para investigar este relatório, não para avaliação."
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "Apenas regressão interna da equipa deste ZIP. Sem fornecedores externos, treino ou publicação."
+        }
+        "Open email draft" => "Abrir rascunho de e-mail",
+        "Email details" => "Detalhes do e-mail",
+        "To: {email}" => "Para: {email}",
+        "Subject: {subject}" => "Assunto: {subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "Anexe o ZIP guardado manualmente. Se nenhum rascunho abrir, use estes detalhes. Nada foi enviado."
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "Não foi possível abrir o e-mail. Escreva a mensagem manualmente e anexe o ZIP guardado."
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "Escreva a mensagem manualmente e anexe o ZIP guardado. Nada foi enviado."
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "O ZIP guardado está ausente, ilegível ou foi alterado. Guarde uma nova cópia."
+        }
         "Session model" => "Modelo da sessão",
         "Skills instructions" => "Instruções de competências",
         "Some options were unsupported." => "Algumas opções não são suportadas.",

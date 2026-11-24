@@ -804,6 +804,67 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "Läuft…",
         "Save ZIP" => "ZIP speichern",
         "Saved ZIP" => "ZIP gespeichert",
+        "Diagnostics only; no conversation." => "Nur Diagnosedaten; kein Gespräch.",
+        "No conversation excerpts in this plan." => "Dieser Plan enthält keine Gesprächsauszüge.",
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "Gespräch einbezogen; Schwärzen entfernt nicht den gesamten sensiblen Text."
+        }
+        "Conversation included without redaction." => "Gespräch ohne Schwärzung einbezogen.",
+        "Conversation requested; check the updated preview." => {
+            "Gespräch angefordert; prüfe die aktualisierte Vorschau."
+        }
+        "Report plan included conversation without permission." => {
+            "Der Berichtsplan enthielt ein Gespräch ohne Berechtigung."
+        }
+        "[ ] Include conversation" => "[ ] Gespräch einbeziehen",
+        "[x] Include conversation" => "[x] Gespräch einbeziehen",
+        "Check the preview for sensitive text before sharing." => {
+            "Prüfe vor dem Teilen die Vorschau auf sensiblen Text."
+        }
+        "Preview ZIP files" => "ZIP-Dateien anzeigen",
+        "Preview pending" => "Vorschau wird vorbereitet",
+        "Preview unavailable" => "Vorschau nicht verfügbar",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn scrollen · Esc zurück",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn Details · ↑↓ bewegen · Enter auswählen · Esc schließen"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "Erzeugte Dateien weichen von der Planvorschau ab. E-Mail ist nicht verfügbar."
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "E-Mail ist ohne übereinstimmende Plan- und ZIP-Vorschauen nicht verfügbar."
+        }
+        "(o) Investigation only" => "(o) Nur zur Fehlersuche",
+        "( ) Investigation only" => "( ) Nur zur Fehlersuche",
+        "(o) Team-internal regression of this ZIP only" => {
+            "(o) Nur teaminterne Regression dieses ZIPs"
+        }
+        "( ) Team-internal regression of this ZIP only" => {
+            "( ) Nur teaminterne Regression dieses ZIPs"
+        }
+        "Local attachment preview" => "Lokale Anhangsvorschau",
+        "Email is for investigating this report only, not evaluation." => {
+            "E-Mail dient nur der Untersuchung dieses Berichts, nicht der Evaluierung."
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "Nur teaminterne Regression dieses ZIPs. Keine externen Anbieter, kein Training, keine Veröffentlichung."
+        }
+        "Open email draft" => "E-Mail-Entwurf öffnen",
+        "Email details" => "E-Mail-Angaben",
+        "To: {email}" => "An: {email}",
+        "Subject: {subject}" => "Betreff: {subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "Hänge das gespeicherte ZIP manuell an. Wenn kein Entwurf geöffnet wird, nutze diese Angaben. Es wurde nichts gesendet."
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "E-Mail konnte nicht geöffnet werden. Verfasse die Nachricht manuell und hänge das gespeicherte ZIP an."
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "Verfasse die Nachricht manuell und hänge das gespeicherte ZIP an. Es wurde nichts gesendet."
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "Gespeichertes ZIP fehlt, ist nicht lesbar oder wurde geändert. Speichere eine neue Kopie."
+        }
         "Session model" => "Sitzungsmodell",
         "Skills instructions" => "Skills-Anweisungen",
         "Some options were unsupported." => "Einige Optionen werden nicht unterstützt.",

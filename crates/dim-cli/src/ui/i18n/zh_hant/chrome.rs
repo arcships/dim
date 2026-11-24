@@ -712,6 +712,63 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "執行中…",
         "Save ZIP" => "儲存 ZIP",
         "Saved ZIP" => "ZIP 已儲存至",
+        "Diagnostics only; no conversation." => "僅包含診斷資訊，不包含對話。",
+        "No conversation excerpts in this plan." => "此報告計畫沒有對話片段。",
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "已包含對話片段；遮蔽無法去除所有敏感內容。"
+        }
+        "Conversation included without redaction." => "已包含對話片段，未開啟遮蔽。",
+        "Conversation requested; check the updated preview." => {
+            "已選擇包含對話，請檢查更新後的預覽。"
+        }
+        "Report plan included conversation without permission." => {
+            "報告計畫未經允許包含了對話，已拒絕。"
+        }
+        "[ ] Include conversation" => "[ ] 包含對話",
+        "[x] Include conversation" => "[x] 包含對話",
+        "Check the preview for sensitive text before sharing." => {
+            "分享前請檢查預覽中是否仍有敏感內容。"
+        }
+        "Preview ZIP files" => "預覽 ZIP 內的檔案",
+        "Preview pending" => "正在準備預覽",
+        "Preview unavailable" => "目前無法預覽",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn 捲動 · Esc 返回",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn 詳情 · ↑↓ 切換 · Enter 選擇 · Esc 關閉"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "產生的檔案與計畫預覽不一致，無法起草郵件。"
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "計畫與 ZIP 的預覽必須一致，才能起草郵件。"
+        }
+        "(o) Investigation only" => "(o) 僅排查問題",
+        "( ) Investigation only" => "( ) 僅排查問題",
+        "(o) Team-internal regression of this ZIP only" => "(o) 本附件僅限團隊內部回歸",
+        "( ) Team-internal regression of this ZIP only" => "( ) 本附件僅限團隊內部回歸",
+        "Local attachment preview" => "本機附件預覽",
+        "Email is for investigating this report only, not evaluation." => {
+            "僅排查本報告所述問題，不授權評測。"
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "僅限團隊內部使用此 ZIP 做回歸評測；不允許交給外部模型供應商、用於訓練或公開。"
+        }
+        "Open email draft" => "開啟郵件草稿",
+        "Email details" => "郵件資訊",
+        "To: {email}" => "收件者：{email}",
+        "Subject: {subject}" => "主旨：{subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "請手動附上已儲存的 ZIP。若未開啟草稿，請按下方資訊手動撰寫。未傳送任何內容。"
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "未能開啟郵件應用程式。請按下方資訊撰寫郵件並手動附上已儲存的 ZIP。"
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "請手動撰寫郵件並附上已儲存的 ZIP。未傳送任何內容。"
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "已儲存的 ZIP 不存在、無法讀取或已被修改。請重新儲存一份。"
+        }
         "Session model" => "工作階段模型",
         "Skills instructions" => "技能說明",
         "Some options were unsupported." => "部分選項不受支援。",

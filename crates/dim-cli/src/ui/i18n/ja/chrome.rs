@@ -766,6 +766,63 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "実行中…",
         "Save ZIP" => "ZIP を保存",
         "Saved ZIP" => "ZIP を保存しました",
+        "Diagnostics only; no conversation." => "診断情報のみ。会話は含まれません。",
+        "No conversation excerpts in this plan." => "このレポート計画に会話の抜粋はありません。",
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "会話を含みます。秘匿してもすべての機密テキストは除去されません。"
+        }
+        "Conversation included without redaction." => "会話を秘匿なしで含みます。",
+        "Conversation requested; check the updated preview." => {
+            "会話が要求されました。更新されたプレビューを確認してください。"
+        }
+        "Report plan included conversation without permission." => {
+            "レポート計画に許可なく会話が含まれていました。"
+        }
+        "[ ] Include conversation" => "[ ] 会話を含める",
+        "[x] Include conversation" => "[x] 会話を含める",
+        "Check the preview for sensitive text before sharing." => {
+            "共有する前にプレビューで機密テキストを確認してください。"
+        }
+        "Preview ZIP files" => "ZIP 内のファイルをプレビュー",
+        "Preview pending" => "プレビュー待機中",
+        "Preview unavailable" => "プレビューを利用できません",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn スクロール · Esc 戻る",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn 詳細 · ↑↓ 移動 · Enter 選択 · Esc 閉じる"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "生成されたファイルがレポート計画のプレビューと一致しません。メールは利用できません。"
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "レポート計画と ZIP のプレビューが一致しないとメールを利用できません。"
+        }
+        "(o) Investigation only" => "(o) 調査のみ",
+        "( ) Investigation only" => "( ) 調査のみ",
+        "(o) Team-internal regression of this ZIP only" => "(o) この ZIP のチーム内部回帰のみ",
+        "( ) Team-internal regression of this ZIP only" => "( ) この ZIP のチーム内部回帰のみ",
+        "Local attachment preview" => "ローカル添付ファイルのプレビュー",
+        "Email is for investigating this report only, not evaluation." => {
+            "メールはこのレポートの調査専用で、評価には使用しません。"
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "この ZIP のチーム内部回帰のみ。外部プロバイダー、トレーニング、公開には使用しません。"
+        }
+        "Open email draft" => "メールの下書きを開く",
+        "Email details" => "メールの詳細",
+        "To: {email}" => "宛先: {email}",
+        "Subject: {subject}" => "件名: {subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "保存した ZIP を手動で添付してください。下書きが開かない場合は、この詳細を使用してください。何も送信されていません。"
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "メールを開けませんでした。手動で作成し、保存した ZIP を添付してください。"
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "手動で作成し、保存した ZIP を添付してください。何も送信されていません。"
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "保存した ZIP が見つからないか、読み取れないか、変更されています。新しいコピーを保存してください。"
+        }
         "Session model" => "セッションモデル",
         "Skills instructions" => "スキル指示",
         "Some options were unsupported." => "一部のオプションはサポートされていません。",

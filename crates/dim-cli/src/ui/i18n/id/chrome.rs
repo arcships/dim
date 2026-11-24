@@ -784,6 +784,69 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "Berjalan…",
         "Save ZIP" => "Simpan ZIP",
         "Saved ZIP" => "ZIP tersimpan",
+        "Diagnostics only; no conversation." => "Hanya diagnostik; tanpa percakapan.",
+        "No conversation excerpts in this plan." => {
+            "Tidak ada kutipan percakapan dalam rencana ini."
+        }
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "Percakapan disertakan; penyamaran tidak menghapus semua teks sensitif."
+        }
+        "Conversation included without redaction." => "Percakapan disertakan tanpa penyamaran.",
+        "Conversation requested; check the updated preview." => {
+            "Percakapan diminta; periksa pratinjau yang diperbarui."
+        }
+        "Report plan included conversation without permission." => {
+            "Rencana laporan menyertakan percakapan tanpa izin."
+        }
+        "[ ] Include conversation" => "[ ] Sertakan percakapan",
+        "[x] Include conversation" => "[x] Sertakan percakapan",
+        "Check the preview for sensitive text before sharing." => {
+            "Periksa pratinjau untuk teks sensitif sebelum membagikan."
+        }
+        "Preview ZIP files" => "Pratinjau file ZIP",
+        "Preview pending" => "Pratinjau tertunda",
+        "Preview unavailable" => "Pratinjau tidak tersedia",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn gulir · Esc kembali",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn detail · ↑↓ pindah · Enter pilih · Esc tutup"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "File yang dihasilkan berbeda dari pratinjau rencana. Email tidak tersedia."
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "Email tidak tersedia tanpa pratinjau rencana dan ZIP yang cocok."
+        }
+        "(o) Investigation only" => "(o) Hanya investigasi",
+        "( ) Investigation only" => "( ) Hanya investigasi",
+        "(o) Team-internal regression of this ZIP only" => {
+            "(o) Hanya regresi internal tim untuk ZIP ini"
+        }
+        "( ) Team-internal regression of this ZIP only" => {
+            "( ) Hanya regresi internal tim untuk ZIP ini"
+        }
+        "Local attachment preview" => "Pratinjau lampiran lokal",
+        "Email is for investigating this report only, not evaluation." => {
+            "Email hanya untuk menyelidiki laporan ini, bukan untuk evaluasi."
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "Hanya regresi internal tim untuk ZIP ini. Tanpa penyedia eksternal, pelatihan, atau publikasi."
+        }
+        "Open email draft" => "Buka draf email",
+        "Email details" => "Detail email",
+        "To: {email}" => "Kepada: {email}",
+        "Subject: {subject}" => "Subjek: {subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "Lampirkan ZIP yang tersimpan secara manual. Jika draf tidak terbuka, gunakan detail ini. Tidak ada yang dikirim."
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "Tidak dapat membuka email. Tulis pesan secara manual dan lampirkan ZIP yang tersimpan."
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "Tulis pesan secara manual dan lampirkan ZIP yang tersimpan. Tidak ada yang dikirim."
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "ZIP yang tersimpan hilang, tidak dapat dibaca, atau berubah. Simpan salinan baru."
+        }
         "Session model" => "Model sesi",
         "Skills instructions" => "Instruksi skill",
         "Some options were unsupported." => "Sebagian opsi tidak didukung.",

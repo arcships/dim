@@ -369,6 +369,14 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "ZIP contents: report.md, diagnostics.json" => "ZIP 内容：report.md、diagnostics.json",
         "Model · Generate locally" => "模型 · 本地生成",
         "Local generation makes zero model requests." => "本地生成不会调用模型。",
+        "Default: current-session diagnostics only." => "默认只打包当前会话的诊断信息。",
+        "Email the ZIP to {email}" => "可将 ZIP 作为附件发送至 {email}",
+        "Redact is off. The ZIP may contain sensitive text from recent messages." => {
+            "脱敏已关闭。ZIP 可能包含近期对话中的敏感内容。"
+        }
+        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
+            "只有主动关闭脱敏，才会将近期用户和助手正文附加到 ZIP；可能含敏感信息。"
+        }
         "Diagnostics only; no conversation." => "仅包含诊断信息，不包含对话。",
         "No conversation excerpts in this plan." => "此报告计划没有对话片段。",
         "Conversation included; redaction does not remove all sensitive text." => {

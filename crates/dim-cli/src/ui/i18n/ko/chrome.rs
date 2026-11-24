@@ -746,6 +746,63 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "실행 중…",
         "Save ZIP" => "ZIP 저장",
         "Saved ZIP" => "ZIP 저장됨",
+        "Diagnostics only; no conversation." => "진단 정보만 포함되며 대화는 없습니다.",
+        "No conversation excerpts in this plan." => "이 보고서 계획에는 대화 발췌가 없습니다.",
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "대화가 포함되었습니다. 가리기를 해도 모든 민감한 텍스트가 제거되지는 않습니다."
+        }
+        "Conversation included without redaction." => "대화가 가리기 없이 포함되었습니다.",
+        "Conversation requested; check the updated preview." => {
+            "대화가 요청되었습니다. 업데이트된 미리보기를 확인하세요."
+        }
+        "Report plan included conversation without permission." => {
+            "보고서 계획에 권한 없이 대화가 포함되었습니다."
+        }
+        "[ ] Include conversation" => "[ ] 대화 포함",
+        "[x] Include conversation" => "[x] 대화 포함",
+        "Check the preview for sensitive text before sharing." => {
+            "공유하기 전에 미리보기에서 민감한 텍스트를 확인하세요."
+        }
+        "Preview ZIP files" => "ZIP 파일 미리보기",
+        "Preview pending" => "미리보기 대기 중",
+        "Preview unavailable" => "미리보기를 사용할 수 없음",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn 스크롤 · Esc 뒤로",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn 세부 정보 · ↑↓ 이동 · Enter 선택 · Esc 닫기"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "생성된 파일이 보고서 계획 미리보기와 다릅니다. 이메일을 사용할 수 없습니다."
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "보고서 계획과 ZIP 미리보기가 일치해야 이메일을 사용할 수 있습니다."
+        }
+        "(o) Investigation only" => "(o) 조사 전용",
+        "( ) Investigation only" => "( ) 조사 전용",
+        "(o) Team-internal regression of this ZIP only" => "(o) 이 ZIP의 팀 내부 회귀 전용",
+        "( ) Team-internal regression of this ZIP only" => "( ) 이 ZIP의 팀 내부 회귀 전용",
+        "Local attachment preview" => "로컬 첨부 파일 미리보기",
+        "Email is for investigating this report only, not evaluation." => {
+            "이메일은 이 보고서 조사용이며 평가용이 아닙니다."
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "이 ZIP의 팀 내부 회귀 전용입니다. 외부 제공자, 학습, 공개에 사용하지 마세요."
+        }
+        "Open email draft" => "이메일 초안 열기",
+        "Email details" => "이메일 세부 정보",
+        "To: {email}" => "받는 사람: {email}",
+        "Subject: {subject}" => "제목: {subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "저장한 ZIP을 직접 첨부하세요. 초안이 열리지 않으면 이 세부 정보를 사용하세요. 아무것도 전송되지 않았습니다."
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "이메일을 열지 못했습니다. 직접 작성하고 저장한 ZIP을 첨부하세요."
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "직접 작성하고 저장한 ZIP을 첨부하세요. 아무것도 전송되지 않았습니다."
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "저장한 ZIP이 없거나, 읽을 수 없거나, 변경되었습니다. 새 복사본을 저장하세요."
+        }
         "Session model" => "세션 모델",
         "Skills instructions" => "스킬 지침",
         "Some options were unsupported." => "일부 옵션은 지원되지 않습니다.",
