@@ -156,6 +156,9 @@ The internal `McpSession` connection operations (`open`, `tools`, `observe`, `cl
 | `timeout` | The probe did not finish; the owner settled it; report the result |
 | `mount_failed` | The child rows did not activate; the owner shut them down; report the binding failure |
 | `cancelled` | Nothing was committed; the read or the flow stopped |
+| `mcp_invalid_config` | Fix the MCP document or entry; the client sees the current invalid-config code |
+| `mcp_settings_read` | Retry after Settings is readable, or report the failure |
+| `service_reloading`, `operation_interrupted` | Retry after the row is active, or re-read the current state |
 | `closed` | The owner is unloading; use the replacement generation |
 
 ### Flows
@@ -232,7 +235,7 @@ impl McpSession {
 }
 ```
 
-`session.mcp_temporary.attach/renew/detach` are `SessionMethods` registrations; `attach` takes `caller: &Ctx` and the binding id is bound to the caller's Session row. Current types: `McpPluginDocument`, `McpPluginRefusal`, `McpWidgetResult` and the `mcp/management.rs`/`mcp/session.rs` request and reply structs; `PublishedTool` is private, so the target exposes a public `PublishedToolRef` value instead. Target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. The current `McpAppError` is a non-serializable `thiserror` enum and is marked target. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check was blocked by the workspace rust-version (`dim-agent-runtime` requires rustc 1.100; the environment has 1.97.1), not by the appendix spelling.
+`session.mcp_temporary.attach/renew/detach` are `SessionMethods` registrations; `attach` takes `caller: &Ctx` and the binding id is bound to the caller's Session row. Current types: `McpPluginDocument`, `McpPluginRefusal`, `McpWidgetResult` and the `mcp/management.rs`/`mcp/session.rs` request and reply structs; `PublishedTool` is private, so the target exposes a public `PublishedToolRef` value instead. Target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. The current `McpAppError` is a non-serializable `thiserror` enum and is marked target. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check with rustc 1.100.0 passed; every target error enum carries `#[error("...")]` for `Display`.
 
 ```rust
 #[rutis::service(name = "mcpService")]

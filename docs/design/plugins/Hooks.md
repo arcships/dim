@@ -115,6 +115,9 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 | `deny`, `ask`, `allow` | Permission's advice result; `deny` blocks the call, `ask` asks the user, `allow` lets it run |
 | `block`, `warnings`, `proceed` | The submit check's result; `block` stops the input, `warnings` and `proceed` continue |
 | `cancelled` | The operation stopped; nothing was written |
+| `hooks_invalid` | Fix the hook document; the client sees the current invalid code |
+| `hooks_conflict` | Re-read the revision and retry |
+| `hooks_failed` | Report the failed write; retry after the owner is available |
 | `closed` | The Session or owner is unloading; use the replacement generation |
 
 #### Flows
@@ -189,7 +192,7 @@ impl HooksSettings {
 }
 ```
 
-Current types: `HookRefusal`, `HookSourcesSnapshot`, `HooksContentError` and the `hooks_settings.rs`/`hooks/sources.rs` structs; the target uses the same names and adds `Serialize` to the wire values. The target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check was blocked by the workspace rust-version (`dim-agent-runtime` requires rustc 1.100; the environment has 1.97.1), not by the appendix spelling.
+Current types: `HookRefusal`, `HookSourcesSnapshot`, `HooksContentError` and the `hooks_settings.rs`/`hooks/sources.rs` structs; the target uses the same names and adds `Serialize` to the wire values. The target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check with rustc 1.100.0 passed; every target error enum carries `#[error("...")]` for `Display`.
 
 The Session and branch parts keep their internal types; `hooksService.sources`' request and reply are `{cwd}` and `HookSources`.
 
@@ -388,6 +391,9 @@ These headings are kept so inbound links resolve; the content is replaced by the
 
 ### 3.1 PreToolUse through Permission
 See `Permission.advise` in the target contract.
+
+### 3.3 UserPromptSubmit at the operator-input entries
+See `submitChecks` and `hooksService.sources` in the target contract.
 
 ### 3.5 Loading and reads at hook points
 See `hooksService.sources` in the target contract.

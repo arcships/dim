@@ -125,6 +125,10 @@ The `SkillsCatalog`'s management methods are registered through #2095; the `skil
 | `unknown`, `disabled`, `unavailable` | Report the Skill view or tool error |
 | `block`, `warnings`, `proceed` | The check's result; `block` stops the input |
 | `cancelled` | Nothing was committed; the read or preview stopped |
+| `skills_invalid_source`, `skills_fetch_failed`, `skills_too_large` | Fix the source or retry the fetch |
+| `skills_preview_stale` | Re-preview; the source moved |
+| `skills_install_exists`, `skills_install_unmanaged`, `skills_install_unknown` | Re-read the record and choose an id/selection |
+| `skills_write_failed` | Report the partial state; retry update/remove |
 | `closed` | The owner is unloading; use the replacement generation |
 
 #### Flows

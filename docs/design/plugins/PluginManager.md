@@ -94,6 +94,11 @@ if let Some(reason) = refusal {
 | `content_refused` | The content owner refused; the package record is rolled back or the content is left out as the owner states |
 | `write_failed` | The record or files could not settle; report the partial state and its recovery |
 | `usage` | Fix the tool command |
+| `plugin_not_found` | Re-read the list; the package is gone |
+| `plugin_exists` | Choose another name/version |
+| `plugin_locked` | Use another name or unlock the package |
+| `invalid_params` | Fix the install/update parameters |
+| `invalid_id`, `path_outside_plugins` | Fix the id or path; the path check failed |
 | `closed` | The owner is unloading; use the replacement generation |
 
 #### Flows
@@ -164,7 +169,7 @@ tool_registry.register(
 );
 ```
 
-`manager` is the process owner's operation/callback, not the `Manager` object. The current `PluginError` is a struct; the target replaces it with `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`, one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The `PluginTools` `manager` field is deleted; the install/update/remove result values remain. The temporary-crate check was blocked by the workspace rust-version (`dim-agent-runtime` requires rustc 1.100; the environment has 1.97.1), not by the appendix spelling.
+`manager` is the process owner's operation/callback, not the `Manager` object. The current `PluginError` is a struct; the target replaces it with `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`, one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The `PluginTools` `manager` field is deleted; the install/update/remove result values remain. The temporary-crate check with rustc 1.100.0 passed; every target error enum carries `#[error("...")]` for `Display`.
 
 
 ## Supersedes
