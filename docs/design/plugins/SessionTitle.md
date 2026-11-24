@@ -36,7 +36,7 @@ only outcome and duration.
 
 | Boundary | Current contract and Ready decision |
 | --- | --- |
-| Observation | Read the Session id from `sessionIdentity`, the creation configuration from `sessionConfig` and closing from `sessionLifecycle` ([plugin contract](../plugin-contract.md#9-requirements-raised-to-mechanism-owners) R2), then the records on its Session's `session/{sessionId}` channel. C4 broadcast #180 is delivered; #63/#168 are closed. |
+| Observation | Read the Session id, the creation configuration and closing from SessionScope's `identity`, `config` and `closing` ([#2093](https://github.com/arcships/dim/pull/2093), target, pending; [plugin contract](../plugin-contract.md#9-requirements-raised-to-mechanism-owners) R2), then the records on its Session's `session/{sessionId}` channel. C4 broadcast #180 is delivered; #63/#168 are closed. |
 | Timeline reads | Use the Session’s branch query facade on `main`, with a fixed published cutoff. Read only the adopted input identity, its user content or Goal objective, and the adopted model fields (§0.1). |
 | Configuration | Existing named Settings and row source declaration, user scope only (A.3/A12). Read settings.read({source:"session-title",scope:"user"}) at each decision and use its validated/defaulted document directly. |
 | Metadata/notice | The process `store` face provides `title` and `setTitle(id, change)`; `setTitle` commits the title the change returns and answers the revision, with errors `rejected`/`not_found`/`storage` ([SessionStore](SessionStore.md)); the v3 list fields are `title`/`titleSource`/`titleRevision`. After each commit SessionStore calls `session_broadcast::notify`, and Rpc forwards the record to attached v3 clients as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). |
@@ -72,8 +72,8 @@ it does not start an asynchronous initialization job. Its creation configuration
 The plugin depends on the existing public Rust Settings and `store` bindings; it does not expose or alter their implementations. Plugin behavior and cross-plugin title flows live in this crate's tests and use the public client and host APIs. App Server tests have no dependency on this crate and install no title plugin implicitly.
 
 The part injects its required dependencies: the process services
-`settings`, `store` and `auxiliaryModel`, and the Session services branch queries, `sessionIdentity`,
-`sessionConfig`, `sessionLifecycle` and `sessionMethods`. The optional `sessionTitleGenerator`
+`settings`, `store` and `auxiliaryModel`, and the Session services branch queries, SessionScope's
+`identity`, `config`, `activated` and `closing`, and `sessionMethods` ([#2093](https://github.com/arcships/dim/pull/2093), target, pending). The optional `sessionTitleGenerator`
 is read by name when used, without injection or a readiness gate, under the
 [required/optional binding contract](../rutis-usage.md#3-services-by-name).
 The product assembly installs the native
@@ -125,7 +125,7 @@ flowchart LR
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
 | `session-title` | Process | Settings and part registry | Registers the Settings source and Session part |
-| `SessionTitle` | Session | Session services `sessionIdentity`, `sessionConfig`, `sessionLifecycle` and `sessionMethods`; Session branch queries; process Settings, the title operations `store` and required `auxiliaryModel` (a profile without an owner of model selection keeps the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
+| `SessionTitle` | Session | Session services SessionScope's `identity`, `config`, `activated` and `closing`, and `sessionMethods` ([#2093](https://github.com/arcships/dim/pull/2093), target, pending); Session branch queries; process Settings, the title operations `store` and required `auxiliaryModel` (a profile without an owner of model selection keeps the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
 
 Dependencies stay in the Session or enclosing process. Session observation, branch queries and Settings supply observation, field reads and configuration; S5b supplies title metadata and C6 the notices; the profile's model-selection owner supplies the named auxiliary operation. The plugin's row registers its source in its `apply`. Real provider reloads cancel the row's work (ADR 002 D3); SessionStore index reload does not. Business data changes never reload the plugin (D4).
 
@@ -407,7 +407,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 
 | Step | Path |
 | --- | --- |
-| Listen | The Session's copy of the part listens to its Session's `session/{sessionId}` from `apply`, filters main input/applied, registers an owned task and returns; `sessionLifecycle.closing()` or copy cleanup ends owned work |
+| Listen | The Session's copy of the part listens to its Session's `session/{sessionId}` from `apply`, filters main input/applied, registers an owned task and returns; SessionScope's `closing()` or copy cleanup ends owned work |
 | Eligibility | C4 creation snapshot: `interactive !== false && collaborationRole === "leader"` for generation; native omission means true. A requested initial title (`initialTitle`, §3.4) is written for interactive and non-interactive Sessions alike: it needs no model, and it is the caller's own text |
 | Trigger | On `input/applied` at `N`: skip if not eligible, disabled, in flight or failed attempts ≥ 3 (A5); otherwise start a generation task owned by the plugin's lifetime |
 | Check | `store.title({id})`: the change decides from the current title and revision; a `rejected` change discards |
@@ -504,7 +504,7 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 | Neutral | Rust |
 | --- | --- |
 | Namespace `session.rename` registered with `sessionMethods` | The Session part calls `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` on a `Key<SessionMethods>` dependency |
-| Published branch properties | Required `Key<TreeCommands>`; `TreeCommands::query("main", TimelineQuery)` with branch scope, `include_publishing: false` and one-row `QuerySelect::Fields` results. Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
+| Published branch properties | The Session's `timelineTree` service: `read({line: "main", from?, through, fields, limit})` with the published cutoff, which answers `{through, rows}` ([#2092](https://github.com/arcships/dim/pull/2092), target, pending). Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
 | Title metadata | `store.title` and `store.setTitle(id, change)` |
 | Auxiliary call | `AuxiliaryModel.0.complete` with its cancellation token |
 | Optional generation | `ctx.get_at(&host_key("sessionTitleGenerator"))` at use; `HostDispatch.generate` with a cancellable callback promise, using the request/reply types exported by `dim-session-title` |

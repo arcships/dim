@@ -76,7 +76,7 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal during close | `node_unavailable`, `closed`, `storage` |
 | `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `storage` |
 
-`path` is absolute on the Session's resource node; `bytes` is the stored length. `offset` at the file size answers an empty `data` with `eof`; an offset above the size is clamped to the size before the page read, because FileStorage refuses an offset above it with `invalid`. A `fileId` outside the Session, or a name that is not one component, is `not_found` for reads and writes and `invalid` for a name `put` or `import` receives.
+`path` is absolute on the Session's resource node; `bytes` is the stored length. `offset` at the file size answers an empty `data` with `eof`; an offset above the size is clamped to the size before the page read, because FileStorage refuses an offset above it with `invalid`. The rule is stated once in both documents: at `size` an empty page with `eof`, above `size` `invalid` at FileStorage; this owner clamps so its own callers keep the empty page their client contract states. A `fileId` outside the Session, or a name that is not one component, is `not_found` for reads and writes and `invalid` for a name `put` or `import` receives.
 
 ### Errors
 
