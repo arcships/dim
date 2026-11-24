@@ -93,7 +93,9 @@ Every reply is text; `read` carries a structured `{items, nextCursor, done}`. A 
 
 ### Errors
 
-Every kind the owners answer maps onto one code here; a refusal writes nothing. The table covers every ending of the four actions, including an ended or protected target and a cancelled create. The route adds no code of its own: `NoLine` from `line_owner` is `branch_ended`, and `SessionClosing` is `closed`; `NoSession` never reaches a Session part, so the tool has no code for it ([#2127](https://github.com/arcships/dim/issues/2127); [TimelineTree](../../architecture/rust-agent/plugins/TimelineTree.md#session-parts-reaching-a-lines-owners)).
+The tool's coded refusals are the accepted set ([timeline branches §11](../../design/timeline-branches.md#11-the-branch-tool)) plus the argument error; every other ending of the four actions is a failed result without a code, so the model-visible result shape does not change. The route adds no code of its own: `NoLine` from `line_owner` is reported as `branch_ended`, `SessionClosing` as a failed result without a code, and a Session part never receives `NoSession` ([#2127](https://github.com/arcships/dim/issues/2127); [TimelineTree](../../architecture/rust-agent/plugins/TimelineTree.md#session-parts-reaching-a-lines-owners)).
+
+Refusals, with `structuredContent.code`:
 
 | Code | What the model does next |
 | --- | --- |
@@ -103,15 +105,20 @@ Every kind the owners answer maps onto one code here; a refusal writes nothing. 
 | `branch_not_tool_line` | A plugin line follows its creator's protocol; a plugin line reads only the line it was cut from |
 | `branch_ended` | The target's own end is recorded, or the calling line's own end is: read the line instead. Not retryable; an owed last word is delivered by restore |
 | `branch_cannot_end` | Not retryable as is: only a tool line ends itself, and not while its chain holds the conversation line |
-| `invalid_cut` | This request's own start cannot be a cut; report it, do not retry |
-| `beyond_head` | The target's head moved below `after`; read the record again |
-| `not_batch_boundary` | Pick the head from `line` again; the page must start at a batch boundary |
-| `continuation_without_cutoff` | Send `after` with the target's record; a bare continuation needs the original cutoff |
-| `branch_target_protected` | Not retryable now: an ancestor is being ended, or a cascade is ending the target without its own end recorded yet; read the line and report the state |
-| `unknown` | The id is not a line of this Session: report `branch_not_kin` for a pair that does not exist, and never retry the same call |
-| `closed` | The Session is closing; stop |
-| `cancelled` | The admitted creation publishes without a waiter; the tool call has no result and the line exists |
 | `invalid` | Fix the action's fields |
+
+Endings without a code, reported as a failed result:
+
+| Ending | What the model does next |
+| --- | --- |
+| The read's `after` is past the target's head | Re-read `line` and start at or below its head; retry once |
+| The page's cutoff is inside an atomic batch | Start at the record's head, which ends a batch |
+| A continuation arrived without its `after` | Resend `after` with the current record |
+| The tool's own start is not a usable cut | Report it; do not retry |
+| The target's id is not a line of this Session | Report `branch_not_kin` at the pair check; never retry the same call |
+| The tree answers `branch_target_protected` (a cascade is ending the target) | Read the line and report the state; do not retry the same end |
+| `SessionClosing` or a closing Session | Stop; nothing more happens in this generation |
+| An admitted creation cancelled by its caller | The line publishes without a waiter and the call has no result |
 
 ### Flows
 

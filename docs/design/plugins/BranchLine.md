@@ -82,7 +82,7 @@ let after = line.cursors.iter().find(|c| c.target == target).map(|c| c.cursor).u
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `view` | Read the cached role and cursors; a missing cursor reads that target's facts once | Nothing to release | Nothing to release | Refused `closed` for a closing Session; a reloaded line rebuilds from its own facts | BranchLine |
-| internal writes | A fact of the line's own arrives, the fold decides, one keyed block is written into its own line through the line's input entry; the idle and ended notices steer the opener through `line_owner::<InputQueue>(opener)` | The write belongs to the line, not to a caller; a cancelled turn writes nothing more | The line's writes stop with the line | The branch scope closes after its last write; a restored line rebuilds its blocks and writes only what is owed | BranchLine writes; the line's input owner admits; TimelineTree settles the scope |
+| internal writes | A fact of the line's own arrives, the fold decides, one keyed block is written into its own line through the line's input entry; only the idle notice steers the opener through `line_owner::<InputQueue>(opener)`, while the ended notice and the roster retirement are written on the line's own line when this line folds `branch/ended` as the opener | The write belongs to the line, not to a caller; a cancelled turn writes nothing more | The line's writes stop with the line | The branch scope closes after its last write; a restored line rebuilds its blocks and writes only what is owed | BranchLine writes; the line's input owner admits; TimelineTree settles the scope |
 
 ## Exceptions with reasons
 
