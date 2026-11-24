@@ -157,9 +157,13 @@ Flow tests through the entry's public interfaces and the branch owner:
 
 ## Client-visible changes
 
-- `session.goal.*` replies keep their fields: `{sequence}` is the committed command input's sequence, the same value returned today; `session.goal.get` keeps `{branchId, through, goal?}` with `{objective, status, evaluator}`. Every error code above is one the client already receives. The write requests gain an optional `submissionId`; a client that sends none keeps today's behavior, and a retrying client sends the same id to be accepted once.
-- An ended line no longer answers `session.goal.get` with its last goal: the entry has no live owner to read, and folding the line's facts in the entry is what this contract removes. `session.goal.get` answers `service_reloading` and a client shows no goal. Affected: `dim-cli`'s `/goal` and `sessions.status` projection (`crates/dim-cli/src/goal_command.rs`, `session_host.rs`) and the TUI's goal panel, which read the value. Migration: read the line's facts (`goal/state`) for an ended line, or show no goal; the CLI change ships with the implementation.
-- The `goal:state` record no longer shares one batch with the command. The model sees the command input first and the state record from the next request; the record's text format is unchanged. Affected: the prompt-evaluation tests that assert the command and record order, and `Goal-state-read.md`'s ordering rule.
+Three changes reach clients; everything else keeps its field names, codes and notifications.
+
+- **`session.goal.get` on an ended line answers `service_reloading`.** Today the entry folds the line's facts and answers its last `GoalRead`; after this contract the line has no live owner to read and the entry no longer folds. Affected: `dim-cli`'s `/goal` (`crates/dim-cli/src/goal_command.rs`), the `sessions.status` projection (`crates/dim-cli/src/session_host.rs`) and the TUI goal panel. Migration: read the line's facts (`goal/state`) for an ended line, or show no goal; the client change ships with the implementation.
+- **The `goal:state` record follows the command.** The command input is written first and the state record after the business fact, so the model sees the command in that request and the record from the next one; the record's text format is unchanged. Affected: the prompt-evaluation tests that assert the command and record order, and `Goal-state-read.md`'s ordering rule; they are updated with the implementation.
+- **The write requests gain an optional `submissionId`.** A client that sends none keeps today's behavior; a retrying client sends the same id to be accepted once.
+
+`session.goal.*` replies keep their fields: `{sequence}` is the committed command input's sequence, the same value returned today, and `session.goal.get` keeps `{branchId, through, goal?}` with `{objective, status, evaluator}`.
 
 ## Rule check
 
