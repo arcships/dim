@@ -20,7 +20,7 @@ directly. The rutis binding dispatches its data arguments and returns its result
 | Target and signature | Existing operation and consumer |
 | --- | --- |
 | FileScope.directory(name) → FileResult of node-absolute path | The file scope validates the scoped name, creates parents and returns the directory. Modality passes the node-local input filenames and work directory directly to its native adapter. OCR uses its current work/tmp/cache paths and grants. Existing exports use the recorded result filename. |
-| FileScope.openRead(name) → FileResult of {readId,size} or null | The file scope opens a pinned file by relative name and returns None if missing. Bind that reader to the existing fsHost reader identity for the caller on the same node. Use fsHost.readAt/closeRead and the existing caller-unload cleanup. A scoped name never requires a caller-side root lookup. |
+| FileScope.openRead(name) → FileResult of {readId,size} or null | This row is superseded by the PluginFiles contract (#2016, batch 2); the target reads a page by relative name, so no reader ID or `fsHost.readAt/closeRead` crosses. |
 | FileScope.writeStream(name, next) → FileResult of null | The file scope consumes a reader to EOF under the destination lease. A rutis callback supplies bytes or EOF for the native reader parameter. Preserve atomic replacement and cleanup on failure or caller shutdown. The existing bounded whole-file replaceBytes remains available for small files. |
 | settings.declaredBy({instanceId}) → SourceDeclaration[] | SettingsService.declared_by already selects live declarations by registering instance. PluginManager passes the loader's current instance ID. settings.sources lists declarations across owners and omits that identity. |
 

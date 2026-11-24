@@ -122,7 +122,7 @@ are Rust methods over the native store, not services: only Agents calls them.
    `SessionHold`, a Scheduler run through the `sessions` service takes a lease) or appends after the close, which the
    branch refuses.
 2. **Close.** If S is loaded, Agents closes it as `session.close` does: a business close, not an unload. Its
-   capabilities settle their accepted work, write their terminal facts and release processes, FileStorage's keys and claims, and
+   capabilities settle their accepted work, write their terminal facts and release processes, FileStorage's keys, claims and in-flight calls, and
    member requests. A close that reports cleanup errors is logged and the delete continues: the facts it could not
    write are removed with the rest. From the close on, S's slot is closed: S does not load again in this process,
    whether or not its rows go (step 6).
@@ -565,7 +565,7 @@ delete against loading.
 | Delete of a member | The leader's requests to it settle as member closed, as today |
 | Two forks of one source | Independent Sessions, each owning the shared files |
 
-**S6 review notes.** "SessionStore must close the Session and release its keys and claims first": step 2 comes before any
+**S6 review notes.** "SessionStore must close the Session and release its keys, claims and in-flight calls first": step 2 comes before any
 removal. "`attachment.put` racing a delete should expect `cancelled`, `unsynced`, `io` or `closed`": a put's directory belongs
 to no Session (S5a), the delete never removes it, and S5a's sweep removes only unowned, non-pending files, so neither
 meets a put's key. The command output removal waits for a key held by a writer outside the

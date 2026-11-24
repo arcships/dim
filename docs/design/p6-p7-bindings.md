@@ -169,7 +169,7 @@ A name that cannot be represented as UTF-8 is `invalid_data`, never a lossy
 alias. `missing_parent`, `too_large` and `rejected` never cross this binding: a
 missing parent is `invalid_path`, an over-limit definition is `invalid_data`,
 and the binding passes no source or change callback that could reject. `locked`
-is absent because removal waits for the key. `unsynced` means a mutation may
+is absent because FileStorage waits for the key instead of failing. `unsynced` means a mutation may
 already be visible: do not retry it as an unchanged write. `replace` keeps native
 permission behavior, with no chmod API.
 `read` and `replace` reject definition files above 8 MiB as `invalid_data`. Reads take the length from FileStorage's `stat` before allocating and enforce the cap on each `read` page to cover concurrent growth. An over-limit read returns no partial bytes; an over-limit replacement leaves the existing file untouched. This ceiling leaves room for base64 bytes and the JSON envelope within the existing 16 MiB bridge frame. Workflow checks serialized project-save bytes before issuing a binary call. Workflow's own decoded-definition admission (1 MiB compact JSON) and run-store payload (8 MiB) bounds apply after this port returns bytes; committed run snapshots keep their existing decoder. The port uses FileStorage's page loop; it adds no separate chunking or shared transport change.
