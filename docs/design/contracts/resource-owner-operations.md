@@ -8,7 +8,7 @@ directly. The rutis binding dispatches its data arguments and returns its result
 | Dependency | Caller and contract |
 | --- | --- |
 | `hostPlatform` | Exec and Shell use the task and PTY operations in [execHost §3](../resource-faces.md#3-exechost). Hooks calls configured(request); OCR calls confined(request). Both return the result of that call. Process handles remain with the platform. |
-| `fileStorage`, `mentionIndex` | Storage clients use the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md): `addRoot`, `rootPath`, `stat`, `read`, `write`, `import`, `update`, `createDirectory`, `list`, `remove`, `claim` and `release`, with no lease or reader id. File tools and workspace completion keep the tool family under [#1297](https://github.com/arcships/dim/issues/1297). |
+| `fileStorage`, `mentionIndex` | This row is superseded by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md). File tools and workspace completion keep the tool family under [#1297](https://github.com/arcships/dim/issues/1297). |
 | `sessionStore` | Session repository, metadata, attachments, Timeline and worktree associations use store, store.readMetadata/setTitle, sessionFiles, timelineStore and store.associateWorktree respectively. Session construction binds the existing Session-scoped timelineStore. Path import and fileId reads use the [Session files contract](../appserver/session-files.md). |
 | `pluginFiles` | Scheduler uses pluginFiles.open(). EventHub retains a caller-managed scope through settlement of admitted publishes across row restarts. Both use scope.withLock and lease.read/replace for the same atomic text update. Scope.list/remove and lease.readBytes/replaceBytes have their existing contracts. |
 | `settingsService` | Declared sources use settings.register/read/update/projects. PluginManager uses the owner-write form for CAS edits and applies its existing writeOnly redaction. SettingsMethods retains the local client-write path. [Settings contract](../appserver/settings-service.md#42-service-settings-owner-path). |
@@ -23,8 +23,7 @@ directly. The rutis binding dispatches its data arguments and returns its result
 | FileScope.writeStream(name, next) → FileResult of null | The file scope consumes a reader to EOF under the destination lease. A rutis callback supplies bytes or EOF for the native reader parameter. Preserve atomic replacement and cleanup on failure or caller shutdown. The existing bounded whole-file replaceBytes remains available for small files. |
 | settings.declaredBy({instanceId}) → SourceDeclaration[] | SettingsService.declared_by already selects live declarations by registering instance. PluginManager passes the loader's current instance ID. settings.sources lists declarations across owners and omits that identity. |
 
-The OS path and input reader above use a path value and a callback respectively; a file read
-uses FileStorage's offset read and crosses no reader id. Existing local media submission/import, legacy node paths,
+The OS path and input reader above use a path value and a callback respectively; FileStorage's read is defined by its [contract](../../architecture/rust-agent/plugins/FileStorage.md). Existing local media submission/import, legacy node paths,
 result settlement and result paging keep the [Modality contract](../plugins/Modality.md).
 
 ## Persistent Agents → sqliteStorage

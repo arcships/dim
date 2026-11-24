@@ -464,8 +464,8 @@ before the file changes, while the row and the file store stay up. Since rutis
 a rejected write leaves the previous contents intact. A call argument that no Dim
 face limits is no longer refused by the runtime at the 16 MiB boundary.
 `scope.directory(name)` creates missing parents and returns the node-local work path.
-`scope.read(name, offset, length)` reads one page through FileStorage's offset read and
-returns its bytes, size and `eof`; no reader id crosses and nothing outlives the call.
+`scope.read(name, offset, length)` reads one page; FileStorage's read is defined by its
+[contract](../architecture/rust-agent/plugins/FileStorage.md) and crosses no reader id.
 `scope.writeStream(name, next)` consumes byte chunks until null and replaces the file atomically.
 Source failure or cancellation discards the partial replacement.
 

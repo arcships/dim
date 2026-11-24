@@ -20,7 +20,7 @@ owner's design; the storage binding does not implement either business package.
 | Consumer | Required behavior | Existing mechanism | Missing repository work |
 | --- | --- | --- | --- |
 | Scheduler launching under a preset | Cap the saved preset against the live host bound at launch | S2's `sessions.launch` admission takes `policy?`, caps it and replies with the effective policy ([S2 D4/D6](appserver/sessions-service.md#3-decisions)) | None: Scheduler stores the preset and reads no permission state ([Scheduler §3.3](plugins/Scheduler.md#33-permission-of-a-run)) |
-| Workflow definitions | Read user, project and installed-package definitions; save project definitions within file authority | Settings owner reads/CAS and project authorization; `FileStorage` read/list/write/create-directory | A native, row-scoped file binding restricted to definition directories |
+| Workflow definitions | Read user, project and installed-package definitions; save project definitions within file authority | Settings owner reads/CAS and project authorization; FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) | A native, row-scoped file binding restricted to definition directories |
 | Workflow report recovery | Retry a report whose reply was lost without writing it twice | S2 input with the branch accepting each `submissionId` once | Retain admitted native input work through settlement; verify resubmission across row and runtime replacement in actual Node flows |
 
 Creation configuration is not live Permission state. Published history is not a
@@ -152,10 +152,7 @@ also an authorized FileStorage root. Directory creation ensures only the two
 fixed project ancestors, without creating siblings or replacing non-directories.
 
 These are new binding authorization checks, not existing FileStorage guarantees.
-Root registration and root paths are host values under the [FileStorage
-contract](../architecture/rust-agent/plugins/FileStorage.md), not a path-to-index lookup. Use the
-project indices Settings already owns and package indices from trusted assembly;
-the workflow binding exposes neither root lookup nor registration. Reserved resources,
+This paragraph is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). Reserved resources,
 symlinks, generation validity and mutation locking remain FileStorage's checks.
 Root registration stays with the trusted host. Selectors and internal indices
 are not persisted definition identities.
@@ -171,7 +168,7 @@ raw numeric root, is refused by generated decoding before the method runs.
 A name that cannot be represented as UTF-8 is `invalid_data`, never a lossy
 alias. `unsynced` means a mutation may already be visible: do not retry it as an
 unchanged write. `replace` keeps native permission behavior, with no chmod API.
-`read` and `write` reject definition files above 8 MiB as `invalid_data`. Reads take the length from `stat` before allocating and enforce the cap on each `read` page to cover concurrent growth. An over-limit read returns no partial bytes; an over-limit replacement leaves the existing file untouched. This ceiling leaves room for base64 bytes and the JSON envelope within the existing 16 MiB bridge frame. Workflow checks serialized project-save bytes before issuing a binary call. Workflow's own decoded-definition admission (1 MiB compact JSON) and run-store payload (8 MiB) bounds apply after this port returns bytes; committed run snapshots keep their existing decoder. This port adds no chunking or shared transport change.
+`read` and `replace` reject definition files above 8 MiB as `invalid_data`. Reads take the length from FileStorage's `stat` before allocating and enforce the cap on each `read` page to cover concurrent growth. An over-limit read returns no partial bytes; an over-limit replacement leaves the existing file untouched. This ceiling leaves room for base64 bytes and the JSON envelope within the existing 16 MiB bridge frame. Workflow checks serialized project-save bytes before issuing a binary call. Workflow's own decoded-definition admission (1 MiB compact JSON) and run-store payload (8 MiB) bounds apply after this port returns bytes; committed run snapshots keep their existing decoder. This port adds no chunking or shared transport change.
 
 No deletion, arbitrary root registration, lock API or S10 envelope is exported.
 

@@ -16,7 +16,7 @@ Resource and state operations use these public data faces:
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
-| `fsHost` | the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md) operations: `addRoot`, `rootPath`, `stat`, `read`, `claim`, `release`, `write`, `import`, `update`, `createDirectory`, `list`, `remove` | the file-storage owner | #2016 |
+| `fsHost` | This section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). | the file-storage owner | #2016 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
 
@@ -362,10 +362,7 @@ Tool family — the file-tools face's operations, one call each (not `fsHost`):
 | `grep` | async | `{pattern, path, include?, outputMode?, lineNumbers?, limit?, multiline?, literal?, timeoutMs?}` | `{result: ToolResult}` |
 | `mentions` | async | `{path, query, limit?}` | `{candidates}` |
 
-Storage family — the raw operations the other file owners use: [FileStorage
-contract](../architecture/rust-agent/plugins/FileStorage.md) § Own contract. The owner's face is `addRoot`, `rootPath`,
-`stat`, `read`, `claim`, `release`, `write`, `import`, `update`, `createDirectory`, `list` and
-`remove`.
+Storage family — the raw operations the other file owners use: this section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md).
 
 Only `resolve` takes an unresolved `path`; every other operation takes the node-absolute `path`
 its caller holds (§2 rule 3). `resolve` is what the file facts owner and process preparation
@@ -551,17 +548,13 @@ grant, and tool approval still follows the preset
 
 ### 4.6 Session files and exec output
 
-`sessionFiles.put` uses `createDirectory` and `write` with `permissions: "privateReadOnly"` to
-store the file on the resource node. It returns a node path and owns the rows under the
+Session files' FileStorage operations are superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). It returns a node path and owns the rows under the
 [Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
 and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 
 ### 4.7 Errors
 
-The storage face's error kinds are defined by the [FileStorage
-contract](../architecture/rust-agent/plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own
-`isError` with the code the operation already uses, so one code vocabulary serves the local and the
-remote path.
+This section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own `isError` with the code the operation already uses.
 
 ## 5. `store` and `timelineStore`
 
@@ -805,7 +798,7 @@ original path argument and ownership exclusion.
 | Old name | Face | What the name is now |
 | --- | --- | --- |
 | `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
-| `fileStorage` | `fsHost` | The [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md): roots, keys and generations are internals; the face is the contract's operations |
+| `fileStorage` | `fsHost` | This row is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). |
 | `sqliteStorage` | `sqliteStorage.storageReport({})` | SQLite file, WAL and reclaimable bytes ([native storage](appserver/native-storage-format.md)). Session repository operations belong to `store`. |
 | `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
 
@@ -820,13 +813,13 @@ The owners that read node files or start node processes, and the operations they
 | Owner | Operations |
 | --- | --- |
 | WorkspaceTools file tools | `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions` |
-| SessionStore Session files and command output | `createDirectory`, `write`, `import`, `list`, `remove`, `execHost.removeOutputDirectory` |
-| Settings sources and their CAS writes | `read`, `update`, `createDirectory`, `write` |
-| MCP auth store, managed OAuth and OAuth token stores | `read`, `update`, `write`, `claim`, `release` |
-| Hooks project file (`.dimcode/hooks.json`) | `read` |
-| PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `read` |
-| UI extension resources | `read` with `offset` and `length` |
-| Migration ledger and snapshots | `createDirectory`, `write`, `update`, `read`, `list`, `remove` |
+| SessionStore Session files and command output | `execHost.removeOutputDirectory`; FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| Settings sources and their CAS writes | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| MCP auth store, managed OAuth and OAuth token stores | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| Hooks project file (`.dimcode/hooks.json`) | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`); FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| UI extension resources | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
+| Migration ledger and snapshots | FileStorage per its [contract](../architecture/rust-agent/plugins/FileStorage.md) |
 | Hooks configuration commands | `execHost.configured` |
 | Worktree association | `store.associateWorktree` |
 

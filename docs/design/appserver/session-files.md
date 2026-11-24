@@ -20,7 +20,7 @@ history quotes it and history never changes.
   rows instead of copying bytes. Deleting a Session removes its rows.
 - **Removal.** A background sweep removes files whose last owner row is gone, and anything in the
   directory that no row records.
-- **FileStorage.** The storage operations are defined by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md); the Session-file layout uses `create_directory`, `write`, `import`, `list` and `remove`. Sharing needs no link operation.
+- **FileStorage.** This section is superseded by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md). Sharing needs no link operation.
 - **Format.** The native store moves to version 15, with two new tables. A v13 store is upgraded
   in place at startup.
 - **Interface.** Attachments reaches the store through the process service `sessionFiles`.
@@ -247,7 +247,7 @@ also removes the Session's command output on the node first
    2 remove: for each row on node N with writer IS NULL and no owner:
                FileStorage(N).remove(<sf>/<file_id>)          absent counts as removed
                  ok                -> txn: delete the row if it is still unowned
-                 cancelled, unsynced, I/O error -> keep the row, record a diagnostic; the next sweep retries
+                 cancelled, unsynced, io -> keep the row, record a diagnostic; the next sweep retries
                  node unavailable  -> stop; the next sweep retries
    3 list:   FileStorage(N).list(<sf>), then read the rows for those names
                every entry with no row -> FileStorage(N).remove(<sf>/<name>)
@@ -309,12 +309,7 @@ creates the fork. SQLite orders those transactions, so no in-memory lock is need
 
 ## 7. FileStorage additions
 
-The storage operations the Session-file layout uses are defined by the [FileStorage
-contract](../../architecture/rust-agent/plugins/FileStorage.md): one recursive `create_directory` for `<db>.session-files` and
-the file's directory, `write` with the read-only attribute for the put and for an import from a
-host path (`import`), and `list` and `remove` for the sweep. FileStorage needs no link,
-reference-count or lease operation for Session files; the put holds no FileStorage key after it
-returns.
+This section is superseded by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md).
 
 ## 8. Storage format
 

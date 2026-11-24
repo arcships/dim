@@ -78,6 +78,7 @@ Settings' compare-and-set: the change runs under the owner's file key, sees the 
 
 ```rust
 storage.update(
+    ctx,
     path,
     Arc::new(move |current: Option<Bytes>| {
         Box::pin(async move {
@@ -111,6 +112,7 @@ let current = storage.read(auth_path.clone(), None, None, cancelled.clone()).awa
 // The backup is a business copy; the rewrite starts only after the copy is durable.
 storage.write(backup_path, once(current.clone()), Some(Permissions::PrivateReadOnly), cancelled.clone()).await?;
 storage.update(
+    ctx,
     auth_path,
     Arc::new(move |stored: Option<Bytes>| {
         Box::pin(async move {
@@ -150,7 +152,9 @@ let directory = format!("{home}/model-log"); // the recorder owns this file
 
 The public face has no lease. Managed OAuth composes its exclusion from `claim`, `release` and `update`; Migration and PluginFiles compose theirs from `update`, and the owner keeps the guarantee that one `update` is exclusive across processes.
 
-**Managed OAuth, with a rotating refresh token.** The refresh runs under the published account marker, so no other process refreshes at the same time. The caller claims the marker with `claim(path)`, which creates `auth.json.lock` with its process id, creation time and nonce and returns a claim id. The caller reads the record and judges freshness. The winner performs the HTTP refresh outside the file key but while it holds the marker, then writes the rotated record with one `update(path, change, claim_id)`: the owner checks that the marker still carries this claim's nonce (a reclaimed claim answers `rejected` with reason `claim-lost`), and the change compares the record's `credentialRevision` with the one it read, refusing with `conflict` when another write advanced it. The caller then releases the claim. If the refresh fails, the caller releases the claim, re-reads the record and adopts it when `credentialRevision` advanced; otherwise it reports the failure. A waiter's `claim` waits for the marker; when it is released, the waiter re-reads the record, adopts it when `credentialRevision` advanced, and otherwise claims and refreshes itself. Another writer that follows the marker waits while the claim is held. The flow tests assert `refreshes == 1` with two callers and a rotating token, a write between claim and commit, a failed refresh with a waiting loser, and an external marker-following writer blocked during the refresh.
+**Managed OAuth, with a rotating refresh token.** `auth.json.lock` is the one exclusive lock for `auth.json`; there is no separate file key. The caller claims it with `claim(path)`, which creates the marker with its process id, creation time and nonce and returns a claim id. The caller reads the record and judges freshness. The winner performs the HTTP refresh while it holds the marker, then writes the rotated record with one `update(path, change, claim_id)`: the owner checks that the marker still carries this claim's nonce (a reclaimed claim answers `rejected` with reason `claim-lost`) and runs the change under that same hold without taking the lock again; the change compares the record's `credentialRevision` with the one it read, refusing with `conflict` when another write advanced it. The caller then releases the claim. If the refresh fails, the caller releases the claim, re-reads the record and adopts it when `credentialRevision` advanced; otherwise it reports the failure. A waiter's `claim` waits for the marker; when it is released, the waiter re-reads the record, adopts it when `credentialRevision` advanced, and otherwise claims and refreshes itself. A `write` or `update` without a claim takes the same lock for its call, so another writer waits while the claim is held.
+
+Managed OAuth owns the refresh it issued. Before unload it finishes admitted work, and a cancellation waits for the disk write before returning. On row unload or owner close, FileStorage waits for this row's admitted claim-carrying `update` to settle (the write or an explicit failure) before releasing the claim, so a provider rotation cannot outlive the local claim. The flow tests assert `refreshes == 1` with two callers and a rotating token, a write between claim and commit, a failed refresh with a waiting loser, an external marker-following writer blocked during the refresh, and a row unload between the refresh and its write that settles before the claim is released.
 
 **Migration snapshot run.** The run claim is a file whose content carries the run id, the owning process id and its start time. The claim is created by one `update` whose change writes the content only when the file is absent and otherwise refuses with a `rejected` error whose reason is `held`. A later run that finds a claim checks the recorded process with the account marker's rule: the process id is alive and its start time is not later than the claim's creation. Alive and not later means the claim stands; gone or a reused pid means the change replaces the stale claim inside the same `update`. A process that exits leaves the claim behind, and the next run reclaims it by that liveness check; no key is held while a run copies files.
 
@@ -166,18 +170,18 @@ None. FileStorage injects no service and reads no other owner's state. The host 
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `add_root` | Make an existing absolute directory addressable | `{path}` | `root`; an existing root answers its id | Before the directory handle is opened | `invalid`, `closed`, `cancelled` |
+| `add_root` | Make an existing absolute directory addressable | `{path}` | `root`; an existing root answers its id | Before the directory handle is opened | `invalid`, `io`, `closed`, `cancelled` |
 | `root_path` | A root's absolute directory for another module | `{root}` | `path` | None; the owner completes the read | `invalid`, `closed` |
-| `stat` | A path's kind and size | `{path}` | `Stat`; `missing` is a kind, not an error | Before the reply | `invalid`, `closed`, `cancelled` |
-| `read` | Read a whole document, or one page of a file | `{path, offset?, length?}` | `ReadReply {data, eof, size}` or none | Before the reply; nothing changes | `invalid`, `too_large`, `closed`, `cancelled` |
-| `claim` | Hold the account marker for `auth.json` | `{path}` | `claim_id`; the marker carries this caller's nonce | While the marker is held | `invalid`, `closed`, `cancelled` |
-| `release` | Remove the account marker this caller holds | `{claim_id}` | unit | None; the owner completes the removal | `invalid`, `closed` |
-| `write` | Replace a file's bytes atomically from a source the owner pulls to its end | `{path, permissions?}` and the `source` callback | `size` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `rejected`, `unsynced`, `closed`, `cancelled` |
-| `import` | Copy a regular host file into a root atomically | `{path, source, max_bytes?, permissions?}` | `size` | Before the replacement; the temporary file is removed | `invalid`, `too_large`, `missing_parent`, `unsynced`, `closed`, `cancelled` |
-| `update` | Change a file's content while the owner holds the file across the caller's decision | `{path, claim_id?, permissions?}` and the `change` callback | `UpdateReply {applied}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `too_large`, `rejected`, `unsynced`, `closed`, `cancelled` |
-| `create_directory` | Make the path an existing directory tree | `{path}` | `path` | Between levels; created ancestors stay, a retry is safe | `invalid`, `unsynced`, `closed`, `cancelled` |
-| `list` | One level of a directory | `{path}` | `entries` or none when the directory is absent | Before the reply | `invalid`, `closed`, `cancelled` |
-| `remove` | Make a file or a directory tree absent; an absent entry counts as removed | `{path}` or `{parent, name}` | unit | Before the entry is unlinked; a tree can be partly removed, a retry is safe | `invalid`, `unsynced`, `closed`, `cancelled` |
+| `stat` | A path's kind and size | `{path}` | `Stat`; `missing` is a kind, not an error | Before the reply | `invalid`, `io`, `closed`, `cancelled` |
+| `read` | Read a whole document, or one page of a file | `{path, offset?, length?}` | `ReadReply {data, eof, size}` or none | Before the reply; nothing changes | `invalid`, `too_large`, `io`, `closed`, `cancelled` |
+| `claim` | Hold the account marker for `auth.json` | `{path}` | `claim_id`; the marker carries this caller's nonce | While the marker is held | `invalid`, `io`, `closed`, `cancelled` |
+| `release` | Remove the account marker this caller holds | `{claim_id}` | unit | None; the owner completes the removal | `invalid`, `io`, `closed` |
+| `write` | Replace a file's bytes atomically from a source the owner pulls to its end | `{path, permissions?}` and the `source` callback | `size` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `rejected`, `io`, `unsynced`, `closed`, `cancelled` |
+| `import` | Copy a regular host file into a root atomically | `{path, source, max_bytes?, permissions?}` | `size` | Before the replacement; the temporary file is removed | `invalid`, `too_large`, `missing_parent`, `io`, `unsynced`, `closed`, `cancelled` |
+| `update` | Change a file's content while the owner holds the file across the caller's decision | `{path, claim_id?, permissions?}` and the `change` callback | `UpdateReply {applied}` | Before the replacement; the temporary file is removed | `invalid`, `missing_parent`, `too_large`, `rejected`, `io`, `unsynced`, `closed`, `cancelled` |
+| `create_directory` | Make the path an existing directory tree | `{path}` | `path` | Between levels; created ancestors stay, a retry is safe | `invalid`, `io`, `unsynced`, `closed`, `cancelled` |
+| `list` | One level of a directory | `{path}` | `entries` or none when the directory is absent | Before the reply | `invalid`, `io`, `closed`, `cancelled` |
+| `remove` | Make a file or a directory tree absent; an absent entry counts as removed | `{path}` or `{parent, name}` | unit | Before the entry is unlinked; a tree can be partly removed, a retry is safe | `invalid`, `io`, `unsynced`, `closed`, `cancelled` |
 
 `read` without `offset` and `length` reads the whole document up to 8 MiB and answers `too_large` above it; with both, it reads one page of at most 64 KiB (`length` above the page is clamped), `size` is the file's length and `eof` is true when the page reaches the end; one of the two alone is `invalid`. An offset equal to `size` reads an empty page with `eof`; an offset above `size` is `invalid`, and a `length` of 0 is `invalid` (the client paging contract depends on the distinction). An absent file answers none. `Bytes` crosses as base64 text, so 8 MiB of bytes fits the 16 MiB bridge frame with the JSON envelope.
 
@@ -195,7 +199,8 @@ None. FileStorage injects no service and reads no other owner's state. The host 
 | `missing_parent` | After creating the parent | Call `create_directory` or fix the path; the owner changed nothing |
 | `too_large` | Yes, in pages | Read it with `offset` and `length`, or treat it as not a document; no partial bytes were returned |
 | `rejected` | Depends on `reason` | The `change` or `source` refused with its own `reason` and `message`, or the claim was reclaimed (`claim-lost`); act on `reason`, for example re-read and retry the business step on `conflict` or re-claim after `claim-lost` |
-| `unsynced` | Not as an unchanged write | The bytes are in place but durability is unconfirmed; a `read` or `stat` shows them, and a repeated call confirms the content; do not assume the earlier call failed |
+| `io` | Yes, after fixing the environment | The filesystem refused the operation: a permission, a device, a network or an unsupported-filesystem error. The message and optional path say which; a `read` or `stat` shows whether the earlier call changed anything |
+| `unsynced` | Not as an unchanged write | The bytes or the entry are in place but durability is unconfirmed; a `read` or `stat` shows them, and a repeated call confirms; `write`, `import` and `update` after the rename and `create_directory` and `remove` all return it |
 | `cancelled` | Yes, the same call | `read`, `write` and `update` changed nothing before the replacement; `create_directory` and `remove` follow their cancellation columns: created ancestors stay, a tree can be partly removed |
 | `closed` | Yes, against the replacement generation | This generation is unloading; the operation did not run or its result is unknown past the replacement, and a `read` or `stat` answers which |
 
@@ -205,13 +210,13 @@ None. FileStorage injects no service and reads no other owner's state. The host 
 | --- | --- | --- | --- | --- | --- |
 | `add_root` | Open the directory handle, append the root; an existing root answers its id | Before the handle is opened or appended; nothing is appended | The call ends `cancelled` | New calls are refused; the append-only root table stays for the next generation, so a root id stays valid | Directory handle and root table by FileStorage |
 | `root_path` | Read the root's directory from the root table | None; the call completes | The call completes | A later call is `closed`; a root id stays valid across the reload | Value by FileStorage |
-| `claim` | Open the account file's directory, create `auth.json.lock` exclusively with this process's id, creation time and nonce; a live marker waits, a stale one is reclaimed | Before the marker is created; nothing is held | The row's claim is released; the marker is removed | Pending claims end `closed`; a claim the owner still holds is removed | Marker by FileStorage; the claim id's lifetime by the calling row |
+| `claim` | Open the account file's directory, create `auth.json.lock` exclusively with this process's id, creation time and nonce; a live marker waits, a stale one is reclaimed | Before the marker is created; nothing is held | The row's admitted claim-carrying updates settle first, then the claim is released and the marker removed | Pending claims end `closed`; a claim the owner still holds is removed | Marker by FileStorage; the claim id's lifetime by the calling row |
 | `release` | Remove the marker whose owner record matches the claim | None; the owner completes the removal | The row's claim is released | A later call is `closed`; the marker is removed | Marker by FileStorage |
 | `stat` | Open the parent and the entry without following links, read the kind and size, release | Before the reply; nothing changes | The call ends `cancelled` | Pending calls end `closed` | Descriptor by FileStorage |
 | `read` | Open the parent and the file without following links, read the whole document or the page, report `size` and `eof`, release | Before the reply; nothing changes | The call ends `cancelled` | Pending calls end `closed` | Descriptor by FileStorage |
 | `write` | Parent handle, file key, temporary file, pull the source to its end, flush, rename, sync parent, release key | The pull stops, the temporary file is removed, the target is unchanged, `cancelled` | The source callback is revoked; the pull fails; the temporary file is removed, `cancelled` | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Temporary file and key by FileStorage; the source's future by the calling row |
 | `import` | Open the source without following links, require a regular file within the limit, copy into a temporary file, rename, sync parent | The temporary file is removed, the target is unchanged, the source closes | The call ends `cancelled` | Pending calls end `closed` | Source descriptor and temporary file by FileStorage |
-| `update` | Parent handle, file key, a `claim_id` is checked against the marker's nonce first (the marker is the `auth.json` key; a write or update without a claim takes it for the call), read the current content within the document limit, call `change`, write the temporary file, flush, rename, sync parent, release key | Before the rename: temporary file removed, target unchanged, key released, `cancelled`. After the rename: success or `unsynced`, the write is not undone | The change callback is revoked; the call ends `cancelled`; the same release applies | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Key and temporary file by FileStorage; the change's future by the calling row |
+| `update` | With `claim_id`, check the marker's nonce and run under that hold without taking the lock again; without it, take the marker for the call. Read the current content within the document limit, call `change`, write the temporary file, flush, rename, sync parent, release | Before the rename: temporary file removed, target unchanged, key released, `cancelled`. After the rename: success or `unsynced`, the write is not undone | The change callback is revoked; the call ends `cancelled`; the same release applies | New calls are refused; in-flight calls finish or end `closed`; the generation releases every key and temporary file | Key and temporary file by FileStorage; the change's future by the calling row |
 | `create_directory` | One level at a time below the held parent, mode 0700, sync the parent | Between levels; created ancestors stay | The call ends `cancelled` | Pending calls end `closed` | Created directories by FileStorage |
 | `list` | Open the directory, read one level, sort by name | Before the reply | The call ends `cancelled` | Pending calls end `closed` | Directory handle by FileStorage |
 | `remove` | Parent handle, the entry's key, remove depth first without following links, sync the parent | Before the unlink: nothing removed; a tree can be partly removed, a retry is safe | The call ends `cancelled` | Pending waits end `closed`; the generation releases keys | Entry removal by FileStorage |
@@ -222,24 +227,22 @@ None. FileStorage injects no service and reads no other owner's state. The host 
 - The account marker `auth.json.lock` is the published exclusion for `auth.json`: every writer of the file, in this process or another, holds the same marker. The marker is a file carrying the holder's process id, creation time and nonce; a marker older than 30 seconds without a live process at its creation is reclaimed, and a marker this process failed to release is reclaimed at once by its next claim. It coordinates the two Rust writers of `auth.json` — the DimOAuth store and managed OAuth; the TypeScript plugin no longer writes the file ([runtime contract](../../../../crates/dim-oauth/docs/runtime-contract.md) line 32), so this is not a cross-language protocol.
 - `Rejected` carries only `reason` and `message`: a callback error must cross languages, so it comes back as data; `From<CallError>` recovers the wire error's own code into `reason`, and the caller keeps its business error type inside its own callback.
 - A file another plugin owns under a root — SQLite's database, the model-log recorder's JSONL, the UI extension cache — is not FileStorage's data; FileStorage does not track ownership and cannot refuse a `remove` of it. The convention that a plugin removes only its own files is the caller's, and a root is not an ownership boundary.
-- `claim` and `release` take `caller: &Ctx`, the dispatch's calling row, because a claim is bound to that row; it is not caller-supplied data and no caller sends it.
+- `claim`, `release` and a claim-carrying `update` take `caller: &Ctx`, the dispatch's calling row, because the claim is bound to that row; it is not caller-supplied data and no caller sends it.
 - `add_root` and `root_path` are trusted-host values, not authority: FileStorage is not a sandbox, a root only says which directories are addressable, and Permission and Approval decide what an agent action may read or write. The host registers the roots it assembles with and each Session's workspace; a process part registers a runtime directory it owns.
 
 ## Client-visible changes
 
-None. This contract changes the plugin-facing `fsHost` surface only. Client protocol error codes, notification names, `session.ui.resources.read` (its request, `total` and `bytes`), Session file offset paging, the import reply's `path`, model-visible text, and disconnect and progress behavior are unchanged. UiResources pages by path through `read`'s offset and length; its contract (#2095) records the size at publish, requires a publisher to keep a published path unchanged, and owns the replace-between-pages acceptance, so a rewrite under a published reference is its contract violation, not a change here.
+None. This contract changes the plugin-facing `fsHost` surface only. Client protocol error codes, notification names, `session.ui.resources.read` (its request, `total` and `bytes`), Session file offset paging, the import reply's `path`, model-visible text, and disconnect and progress behavior are unchanged. UiResources pages by path through `read`'s offset and length; its contract (#2095) records the size at publish and requires a publisher to keep a published path unchanged. A rewrite under a published reference is a UiResources contract violation; UiResources must add the replace-between-pages acceptance that proves the prohibition.
 
 ## Supersedes
 
-- `docs/design/resource-faces.md`: the `fsHost` row of §1, the storage family and error table of §4, and the `fileStorage` row and FileStorage caller rows of §6. The tool family (`resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`) is the file-tools face's and is not part of `fsHost`; [#1297](https://github.com/arcships/dim/issues/1297) settles its name.
-- `docs/design/contracts/resource-owner-operations.md`: the `fileStorage` row and its operation list, the `pluginFiles` row's read, the `authorize_project` row and the file-backed Settings row.
+- `docs/design/resource-faces.md`: the `fsHost` row of §1, the storage family of §4.1, §4.6, the error table of §4.7, and the `fileStorage` row and FileStorage caller rows of §6.
+- `docs/design/contracts/resource-owner-operations.md`: the `fileStorage` row and the "OS path, pinned reader and input reader" paragraph.
 - `docs/design/service-faces.md`: the `fileStorage` row of §3.4 and the `fileStorage` sentence in the paragraph after the table.
-- `docs/design/appserver/session-files.md`: the FileStorage operation names and the `Locked` handling in §3, §5, §6, §7, §9, §10 and §13. SessionStore's own rows, paging and admission are unchanged.
-- `docs/design/p6-p7-bindings.md`: the FileStorage `replace` in §3 and the opened-handle length check in §3.4.
-- `docs/design/plugins/Modality.md`: the `fsHost.readAt`/`closeRead` dependency.
-- `docs/design/process-typescript.md`: `scope.openRead` and `fsHost.readAt`/`closeRead`.
-
-The sibling contracts that call this face use these operations: #2091 SessionFiles uses `root_path`, `create_directory`, `write`, `import`, `list`, `remove` and `read`; #2093 FileAccessFacts uses `stat`; #2094 Settings uses `add_root`, `read` and `update`, and ModelLog uses `root_path`; #2095 UiResources uses `read`'s `size` and offset pages. The page-past-end rule is one rule in both documents: an offset equal to `size` answers an empty page with `eof`, an offset above `size` is `invalid`, and #2091 SessionFiles clamps an offset above `size` to `size` before calling `read`, so its own callers keep the empty page its client contract states.
+- `docs/design/appserver/session-files.md`: the FileStorage bullet of §3 and §7.
+- `docs/design/p6-p7-bindings.md`: the Workflow definitions row of §3, the root registration paragraph and the definition-file paragraph of §3.4.
+- `docs/design/plugins/Modality.md`: the FileStorage clause of the dependency table.
+- `docs/design/process-typescript.md`: the FileScope read paragraph.
 
 ## Verification
 
@@ -445,6 +448,12 @@ pub enum FileError {
     #[error("{reason}: {message}")]
     Rejected { reason: String, message: String },
     #[error("{message}")]
+    Io {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    #[error("{message}")]
     Unsynced { message: String, path: String },
     #[error("{message}")]
     Cancelled { message: String },
@@ -514,6 +523,7 @@ impl FileStorage {
 
     pub async fn update(
         &self,
+        caller: &Ctx,
         path: String,
         change: ChangeFn,
         claim_id: Option<String>,
@@ -545,7 +555,7 @@ impl FileStorage {
 }
 ```
 
-`CancelledFn` is the crate's existing cancellation argument ([`host::CancelledFn`](../../../../crates/dim-agent-capabilities/src/host.rs)). `Bytes` crosses as base64 text; `Name` as a string or the native `{Unix: …}`/`{Windows: …}` object; root ids and sizes as strings and numbers. `claim` and `release` take `caller: &Ctx` because the claim is bound to the calling row; the dispatch fills it, and it is not a request field. Requests carry callbacks by reference only where the operation needs the caller's own step — the write source and the update change — plus the cancellation argument; every other argument and reply is data.
+`CancelledFn` is the crate's existing cancellation argument ([`host::CancelledFn`](../../../../crates/dim-agent-capabilities/src/host.rs)). `Bytes` crosses as base64 text; `Name` as a string or the native `{Unix: …}`/`{Windows: …}` object; root ids and sizes as strings and numbers. `claim`, `release` and a claim-carrying `update` take `caller: &Ctx` because the claim is bound to the calling row; the dispatch fills it, and it is not a request field. Requests carry callbacks by reference only where the operation needs the caller's own step — the write source and the update change — plus the cancellation argument; every other argument and reply is data.
 
 ## Current implementation
 
