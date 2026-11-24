@@ -82,7 +82,7 @@ storage.update(
     Arc::new(move |current: Option<Bytes>| {
         Box::pin(async move {
             let current = decode(current.as_ref().map(|bytes| bytes.0.as_slice()))?; // business format
-            let next = check_and_update(current, document)?; // business rules, including the document's own revision
+            let next = check_and_update(current, document.clone())?; // business rules, including the document's own revision
             Ok(Some(Bytes(encode(next)?)))
         })
     }),
@@ -232,20 +232,21 @@ None. FileStorage injects no service and reads no other owner's state. The host 
 
 ## Client-visible changes
 
-None at the client protocol. This contract changes the plugin-facing `fsHost` surface: `read(path, offset, length)` replaces the pinned reader, `add_root` and `root_path` are operations returning addressability values, `update`/`update_claimed` take `keep_replaced_as`, and a credential record's `claim`/`update_claimed` replaces a lease. PluginFiles' `FileScope` changes are that owner's contract in the same issue ([#2016](https://github.com/arcships/dim/issues/2016)). Client protocol error codes, notification names, `session.ui.resources.read` (its request, `total` and `bytes`), Session file offset paging, the import reply's `path`, model-visible text, and disconnect and progress behavior are unchanged. UiResources pages by path through `read`'s offset and length; its contract (#2095) records the size at publish and requires a publisher to keep a published path unchanged. A rewrite under a published reference is a UiResources contract violation. The pinned reader is deleted and UiResources moves to path paging in the same delivery; until #2095's replace-between-pages acceptance lands, UiResources' existing version guarantee stays as it is, and the acceptance is an upper alignment item.
+None at the client protocol. This contract changes the plugin-facing `fsHost` surface: `read(path, offset, length)` replaces the pinned reader, `add_root` and `root_path` are operations returning addressability values, `update`/`update_claimed` take `keep_replaced_as`, and a credential record's `claim`/`update_claimed` replaces a lease. PluginFiles' `FileScope` changes are that owner's contract in the same issue ([#2016](https://github.com/arcships/dim/issues/2016)). Client protocol error codes, notification names, `session.ui.resources.read` (its request, `total` and `bytes`), Session file offset paging, the import reply's `path`, model-visible text, and disconnect and progress behavior are unchanged. UiResources pages by path through `read`'s offset and length; its contract ([#2021](https://github.com/arcships/dim/issues/2021)) records the size at publish and requires a publisher to keep a published path unchanged. A rewrite under a published reference is a UiResources contract violation. The pinned reader is deleted and UiResources moves to path paging in the same delivery; until #2021's replace-between-pages acceptance lands, UiResources' existing version guarantee stays as it is, and the acceptance is an upper alignment item.
 
 ## Supersedes
 
 - `docs/design/resource-faces.md`: the status header, the `fsHost` row of §1, §2 rules 3–4, §3.2, §3.4, §4.1 (the storage-family table and the tool-family note), §4.2.1, §4.3, §4.6, §4.7, §6 (the `fileStorage` row, its caller rows at `:817-823` and the introduction that maps `fsHost`) and §10.
 - `docs/design/contracts/resource-owner-operations.md`: the `fileStorage` row, the resource-caller row, the "OS path and input reader" paragraph and the file-backed Settings sentences.
 - `docs/design/service-faces.md`: the `fileStorage` row of §3.4 and the `fileStorage` sentence in the paragraph after the table.
-- `docs/design/appserver/session-files.md` and its `docs/zh` mirror: the FileStorage bullet of §1, the §2 diagram, §5.1, §5.4, §6, §7, §10, §12, §13, §15, the `create_directory` acceptance of §16 item 8, §17 D1 and Appendix A's `create_directory` signature.
+- `docs/design/appserver/session-files.md` and its `docs/zh` mirror: the FileStorage bullet of §1, the §2 diagram and §3.1, §5.1, §5.4, §6, §7, §10, §12, §13, §15, the `create_directory` acceptance of §16 item 8, §17 D1 and Appendix A's `create_directory` signature.
 - `docs/design/p6-p7-bindings.md`: the Workflow definitions row of §1, and the `createDirectory` row, root-registration paragraph, private-type sentence, definition-read paragraph and error distinctions of §3.1.
 - `docs/architecture/rust-agent/plugins/README.md`: the FileStorage index row.
+- `docs/architecture/README.md` and `docs/architecture/rust-agent/single-tree.md`: the lease sentences of the FileStorage generation.
 - `docs/design/overview.md` and its `docs/zh` mirror: the B.1 FileStorage supplement row.
 - `docs/design/plugins/Modality.md` and its `docs/zh` mirror: the file-read clause of the dependency table.
 - `crates/dim-oauth/docs/runtime-contract.md`: the account record and login paragraphs' lease, lock and reset-backup sentences.
-- `docs/design/appserver/session-deletion-and-fork.md` and its `docs/zh` mirror: the FileStorage lease, key and `replace` references, §3.5, the error table, §12 and the §14 row.
+- `docs/design/appserver/session-deletion-and-fork.md` and its `docs/zh` mirror: the FileStorage key and `replace` references, §3.5, the error table, §12 and the §14 row.
 - `docs/architecture/rust-agent/plugins/Hooks.md`: the `readBytes` sentence.
 - `docs/design/plugins/Hooks.md` and its `docs/zh` mirror: the `.dimcode/hooks.json` binding row.
 - `docs/architecture/rust-agent/plugins/HostPlatform.md`: the lease sentence.
@@ -255,6 +256,8 @@ None at the client protocol. This contract changes the plugin-facing `fsHost` su
 Handed to PluginFiles in the same issue ([#2016](https://github.com/arcships/dim/issues/2016), batch 2): the `pluginFiles` row and the `FileScope.openRead`/`writeStream` rows of `docs/design/contracts/resource-owner-operations.md`, `docs/design/process-typescript.md` §5.2, `docs/typescript-plugin-authoring.md`, and the trusted-plugin storage section of `crates/dim-app-server/README.md`.
 
 ## Verification
+
+The caller examples compile against the binding in a temporary crate outside the repository; the organizer runs that check.
 
 Flow tests on the owner:
 

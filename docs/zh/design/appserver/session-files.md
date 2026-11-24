@@ -1,7 +1,7 @@
 # SessionStore Session 文件
 
 状态：已实现。路线图工作项 S5a（[#59](https://github.com/arcships/dim/issues/59)、[#95](https://github.com/arcships/dim/pull/95)），在 S6（[#51](https://github.com/arcships/dim/issues/51)）之后。使用它的分叉与删除方法属于 S5c（§13）；§17 列出实现所做的变更。
-总体设计：[附录 B.2](../overview.md#b2-app-server-进程插件) 的 SessionStore 与 FileStorage 行。作用域：
+总体设计：[附录 B.1](../overview.md#b1-session-与分支-capability)（FileStorage）与 [B.2](../overview.md#b2-app-server-进程插件)（SessionStore）。作用域：
 [ADR 002](../../adr/002-plugin-scope.md) 进程作用域，位于现有的 SessionStore 插件内。
 使用方：[Attachments](../plugins/Attachments.md)（P2），以及 Session 的分叉与删除（S5c）。
 
@@ -12,7 +12,7 @@ SessionStore 为 Session 保存不可变文件。调用方为某个 Session 交�
 - **位置。** 文件位于原生数据库 `<db>`（默认 `dimcode.sqlite`）旁边的 `<db>.session-files/<fileId>/<name>`。这个目录属于该数据库，不属于任何单个 Session。
 - **所有权。** 所有权是控制节点原生存储中的一组行。分叉只增加行，不复制字节；删除 Session 就删除它的行。
 - **移除。** 后台清扫移除最后一个所有者行已消失的文件，以及目录中没有任何行记录的东西。
-- **FileStorage。** 本节由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 取代。共享不需要建链接的操作。
+- **FileStorage。** 本条由 [FileStorage 契约](../../../architecture/rust-agent/plugins/FileStorage.md) 取代。共享不需要建链接的操作。
 - **格式。** 原生存储升级到 15 版，新增两张表；v13 存储在启动时原地升级。
 - **接口。** Attachments 通过进程服务 `sessionFiles` 使用它。
 - **读取。** 模型像读其他文件一样用 `read` 读取这些文件：所有权无需授权即可满足文件范围，但不绕过工具准入（§11）。
@@ -265,7 +265,7 @@ CREATE INDEX session_file_owners_by_file ON session_file_owners(file_id)
 
 **S5c 不需要为 Session 文件再改格式。** 它的分叉步骤只插入 `session_file_owners` 行（§4），删除步骤只删除这些行（§5.3），清扫读取 `session_files`；这些步骤读写的内容 v15 都已具备。v16 只可能来自 S5c 对它自己的 Session 记录的改动，不会来自 Session 文件。
 
-**宿主输出是 v29 的第二张表。** [ADR 013](../../adr/013-command-output-ownership.md) 为命令输出、转存的 `read` 结果和 shell 日志新增 `session_output_owners(session_id, path)` 及其索引。它不是 Session 文件表：这些路径没有 `session_files` 行或 id，目录由最后一个拥有它的 Session 删除时移除。分叉像复制 `session_file_owners` 一样复制它的行，因此源 Session 删除后输出仍可读。
+**宿主输出是 v29 的第二张表。** [ADR 013](../../../adr/013-command-output-ownership.md) 为命令输出、转存的 `read` 结果和 shell 日志新增 `session_output_owners(session_id, path)` 及其索引。它不是 Session 文件表：这些路径没有 `session_files` 行或 id，目录由最后一个拥有它的 Session 删除时移除。分叉像复制 `session_file_owners` 一样复制它的行，因此源 Session 删除后输出仍可读。
 
 ## 9. 接口
 
@@ -423,7 +423,7 @@ SessionStore 从两张所有权表回答"S 拥有哪些文件"（ADR 013）：Se
 | 文档 | 本 PR 中的修改 |
 | --- | --- |
 | [Attachments](../plugins/Attachments.md) | 布局改为 `<db>.session-files/<fileId>/<name>`，`attachmentId = fileId`；A1 细化为不属于任何单个 Session 的目录；分叉与删除顺序的行指向本文；离线相关的行不再依赖已撤回的 #5，因为 SessionStore 每次调用时查找 FileStorage（#38）。`attachment.put` 的客户端契约在本 PR 中不变；它的 `storage_failed` 码在 P2 的设计复核中加入（§15）。§7 不再说分叉只读取其历史引用的文件，改为指向 §11 说明读取如何准入 |
-| [总体设计 B.2](../overview.md#b2-app-server-进程插件) | FileStorage 行增加目录创建 |
+| [总体设计 B.1](../overview.md#b1-session-与分支-capability) | FileStorage 行指向其所有者契约 |
 | [原生存储格式](../../../design/appserver/native-storage-format.md) | 计划中的 v15 决定 |
 
 S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.delete`，并通过 RPC 覆盖它们。S5a 实现这些步骤，并在 SessionStore 的 Rust API 上测试。
@@ -456,7 +456,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 | 对象 | 需求 | 状态 |
 | --- | --- | --- |
 | FileStorage | `create_directory`，按其[契约](../../../architecture/rust-agent/plugins/FileStorage.md) | 在 S5a 的实现中加入，已在 S6 评审中同意 |
-| App Server 装配（lib.rs 中的 `serve`） | 数据库目录还不是 FileStorage 根时注册它，并把索引交给 `SessionStorePlugin`（§3.1） | S5a 实现中的几行改动，像其他登记一样在装配线的工作之后追加 |
+| App Server 装配（lib.rs 中的 `serve`） | 数据库目录还不是 FileStorage 根时注册它，并把根 id 交给 `SessionStorePlugin`（§3.1） | S5a 实现中的几行改动，像其他登记一样在装配线的工作之后追加 |
 | Attachments（P2 设计细化） | 把 `sessionFiles` 的 `storage` 映射为 `attachment.put` 的某个码。Attachments 目前没有；SessionTitle 把 SessionStore 的 `storage` 映射为 `storage_failed` | 已决定：`storage_failed`，记录在 [#66](https://github.com/arcships/dim/issues/66)；在 P2 的设计复核中落实 |
 | S5c | 在删除事务内、关闭 Session 之后、删除 `agent_sessions` 之前删除所有者行；在分叉事务内复制所有者行；删除后安排清扫 | S5c 的合同（§5.2、§5.3） |
 | 首先按路径限定文件访问的那一项（进程方面为 F5 [#76](https://github.com/arcships/dim/issues/76)；进程内文件工具为 [ADR 014](../../../adr/014-file-access-facts.md)） | §11.2：Session 自有文件无需范围审批；由所有权决定，从不是整个 Session 文件目录、数据库目录或产品目录。工具审批仍独立 | S5a 不需要。ADR 014 为读写读取 `sessionFiles.owns`；§11.1 按路径准入文件工具读取 |
@@ -514,7 +514,7 @@ pub struct SessionFiles(pub Arc<dyn SessionFilesService>);
 
 `register` 保存解析后的输出路径；生产者已按自己的根检查过它。`owns` 接收解析后的绝对路径并读取两张所有权表：`session_output_owners` 的精确行，或路径位于 `<db>.session-files/<fileId>/` 内且 `session_file_owners` 拥有该 fileId。查询失败是错误，会导致拒绝访问。`owned_paths` 列出拥有的 fileId 目录和输出路径。
 
-`SessionStorePlugin` 接收数据库目录的根索引，提供 `SessionFiles`，并在每次调用时用 `ctx.get_as` 读取 `FileStorage`。分叉、释放和清扫步骤是 SessionStore 基于原生存储连接的方法，供 S5c 使用。
+`SessionStorePlugin` 接收数据库目录的根 id，提供 `SessionFiles`，并在每次调用时用 `ctx.get_as` 读取 `FileStorage`。分叉、释放和清扫步骤是 SessionStore 基于原生存储连接的方法，供 S5c 使用。
 
 FileStorage：
 

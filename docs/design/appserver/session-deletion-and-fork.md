@@ -213,10 +213,11 @@ Every step tolerates an absent target, so a delete can be retried after any fail
 | `-32603` "Session operation failed" | Step 3 failed (`cancelled`, `unsynced`, `io`, node unavailable) or step 4 failed (SQLite) | If step 2 closed S, S is closed but not deleted, as after `session.close`: its rows remain, it is neither listed nor loaded again in this process, and the relations its close ended stay ended. After a restart it loads, possibly with part of its command output gone. A Session that was not loaded is unchanged. Retry |
 | No reply | The connection or Rpc ended before the reply | Either state. Retry |
 
-A held key in step 3 comes only from a writer outside the closed Session, such as a PowerShell
-child that outlived its shell or another process holding a file open. The removal waits for the
-key; cancelling the delete ends that wait with `cancelled`. An `unsynced` or `io` failure leaves
-the delete failed and retried.
+A held key in step 3 comes only from a FileStorage writer outside the closed Session, such as a
+PowerShell child that outlived its shell and still writes through FileStorage. A process that
+merely holds the file open without FileStorage produces `io`, not a key wait. The removal waits
+for the key; cancelling the delete ends that wait with `cancelled`. An `unsynced` or `io` failure
+leaves the delete failed and retried.
 
 ## 4. Crash convergence
 
@@ -841,7 +842,7 @@ impl SessionStore {
 pub const COMMAND_OUTPUT_DIRECTORY: &str = "command-output";
 ```
 
-`SessionStorePlugin` already takes the database directory's root index (S5a). SessionStore removes `command-output/<id>`
+`SessionStorePlugin` already takes the database directory's root id (S5a). SessionStore removes `command-output/<id>`
 under that root, the directory the daemon gives WorkspaceTools as its output root
 ([main.rs](../../../crates/dim-app-server/src/main.rs)); `COMMAND_OUTPUT_DIRECTORY` is the one definition of its name. The creation rollback
 path (`TimelineStore::rollback_session`) calls the same row removal as `delete_session`.

@@ -282,13 +282,13 @@ Rust 和 TypeScript Session part 均可使用此服务。路径由已持有文�
 - **时序影响：** 仅有类型与客户端调用边界，不改变业务准入、中断或重放。
 - **Owner / issue：** 公共协议与 npm 类型发布 owner，[#1136](https://github.com/arcships/dim/issues/1136)。
 
-### R5. FileStorage：受授权根约束的原生只读流
+### R5. FileStorage：受授权根约束的按路径分页读
 
 - **阻塞与规则：** §3.2 和 §6 需要有界复制与按字节区间读取；[FileStorage](../architecture/rust-agent/plugins/FileStorage.md) 的按路径偏移读满足分页（`read` 的 offset/length），不提供文件句柄或背压流；撤下与在途页竞争时只返回整页或 `resource_gone`。
 - **考虑的机制：** 整块读取使内存随媒体大小增长；在 UI owner 中重写根约束和安全打开逻辑会复制文件边界；文本事务不能表达二进制流。
 - **所需通用能力：** FileStorage 的 `stat` 返回只读文件长度，`read(path, offset, length)` 由调用方自己携带偏移分页读取；保留原有防越界打开、取消、generation 准入与收尾保证，不由读取请求扩大根授权。没有读取资源或文件句柄跨出所有者。
 - **时序影响：** UiResources 保证已发布路径在撤下前不被改写，因此同一引用的分页来自同一版本；取消或 owner 关闭停止读取。无 Timeline、格式或写事务变更。
-- **Owner / issue：** FileStorage，[#2016](https://github.com/arcships/dim/issues/2016)；UiResources 对齐 [#2095](https://github.com/arcships/dim/issues/2095)。实现与根约束、关闭流程验证在 FileStorage 内完成。
+- **Owner / issue：** FileStorage，[#2016](https://github.com/arcships/dim/issues/2016)；UiResources 对齐 [#2021](https://github.com/arcships/dim/issues/2021)。实现与根约束、关闭流程验证在 FileStorage 内完成。
 
 ## 9. 实施顺序与波及面
 

@@ -131,7 +131,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | `-32603` "Session operation failed" | 第 3 步失败（`cancelled`、`unsynced`、`io`、节点不可用）或第 4 步失败（SQLite） | 若第 2 步关闭了 S，S 已关闭但未删除，与 `session.close` 之后相同：行还在，本进程内不再列出、不再加载，关闭结束的关系也不恢复。重启后它照常加载，命令输出可能已部分移除。没有加载的 Session 不变。重试 |
 | 没有回复 | 回复之前连接或 Rpc 已结束 | 两种状态之一。重试 |
 
-第 3 步被持有的键只来自已关闭 Session 之外的写入方，例如比 shell 活得更久的 PowerShell 子进程，或打开着文件的其他进程。移除会等待该键；取消删除则等待以 `cancelled` 结束。`unsynced` 或 `io` 失败让删除失败并重试。
+第 3 步被持有的键只来自已关闭 Session 之外经 FileStorage 写入的进程，例如比 shell 活得更久的 PowerShell 子进程。仅打开文件而不经 FileStorage 的进程产生 `io`，不是等待键。移除会等待该键；取消删除则等待以 `cancelled` 结束。`unsynced` 或 `io` 失败让删除失败并重试。
 
 ## 4. 崩溃收敛
 
@@ -532,7 +532,7 @@ impl SessionStore {
 pub const COMMAND_OUTPUT_DIRECTORY: &str = "command-output";
 ```
 
-`SessionStorePlugin` 已经接收数据库目录的根索引（S5a）。SessionStore 在该根下移除 `command-output/<id>`，这就是守护进程交给 WorkspaceTools 作为输出根的目录（[main.rs](../../../../crates/dim-app-server/src/main.rs)）；`COMMAND_OUTPUT_DIRECTORY` 是这个名字唯一的定义。创建回滚路径（`TimelineStore::rollback_session`）调用与 `delete_session` 相同的行删除。
+`SessionStorePlugin` 已经接收数据库目录的根 id（S5a）。SessionStore 在该根下移除 `command-output/<id>`，这就是守护进程交给 WorkspaceTools 作为输出根的目录（[main.rs](../../../../crates/dim-app-server/src/main.rs)）；`COMMAND_OUTPUT_DIRECTORY` 是这个名字唯一的定义。创建回滚路径（`TimelineStore::rollback_session`）调用与 `delete_session` 相同的行删除。
 
 ### Worktree 关联端口
 

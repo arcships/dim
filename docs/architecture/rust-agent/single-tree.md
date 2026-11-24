@@ -134,7 +134,7 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | Plugin | 拥有 | 提供 | `Deps` |
 | --- | --- | --- | --- |
 | `ServerControlPlugin` | 就绪门闩、正常/强制关闭意图、监听器故障 | `ServerControl` | — |
-| `FileStoragePlugin` | 文件操作准入、锁租约、在途 I/O 和原子替换清理 | `FileStorage` | — |
+| `FileStoragePlugin` | 文件操作准入、锁与凭据 marker、在途 I/O 和原子替换清理 | `FileStorage` | — |
 | `SqliteStoragePlugin` | 共享数据库连接、事务、原生 schema 门禁、文件维护锁与关停 | `SqliteStorage` | —；启动参数固定数据库路径 |
 | `SessionStorePlugin` | 原生会话目录、Timeline 落盘/恢复及写入任务 | `store` 数据接口、`sessionFiles`、`sessionMetadata`、`worktreeAssociations`，以及原生 `SessionStore` / `TimelineStore` 绑定 | `SqliteStorage` |
 | `SettingsPlugin` | Generic BusinessDocument sources and per-source CAS; no domain interpretation, approvals, connections or discovery | `SettingsService` | `FileStorage`, `When<SqliteStorage>` |

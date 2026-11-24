@@ -17,7 +17,7 @@ Resource and state operations use these public data faces:
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
-| `fsHost` | This section is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). | the file-storage owner | #2016 |
+| `fsHost` | This row is superseded by the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md). | the file-storage owner | #2016 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
 

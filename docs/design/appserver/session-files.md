@@ -2,7 +2,7 @@
 
 Status: Implemented. Roadmap item S5a ([#59](https://github.com/arcships/dim/issues/59), [#95](https://github.com/arcships/dim/pull/95)), after S6 ([#51](https://github.com/arcships/dim/issues/51)). The fork and delete
 methods that use it are S5c's (§13); §17 lists what the implementation changed.
-Overview: [Appendix B.2](../overview.md#b2-app-server-process-plugins), SessionStore and FileStorage rows. Scope:
+Overview: [Appendix B.1](../overview.md#b1-session-and-branch-capabilities) (FileStorage) and [B.2](../overview.md#b2-app-server-process-plugins) (SessionStore). Scope:
 [ADR 002](../../adr/002-plugin-scope.md) process scope, inside the existing SessionStore plugin.
 Consumers: [Attachments](../plugins/Attachments.md) (P2) and Session fork and deletion (S5c).
 
@@ -20,7 +20,7 @@ history quotes it and history never changes.
   rows instead of copying bytes. Deleting a Session removes its rows.
 - **Removal.** A background sweep removes files whose last owner row is gone, and anything in the
   directory that no row records.
-- **FileStorage.** This section is superseded by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md). Sharing needs no link operation.
+- **FileStorage.** This bullet is superseded by the [FileStorage contract](../../architecture/rust-agent/plugins/FileStorage.md). Sharing needs no link operation.
 - **Format.** The native store moves to version 15, with two new tables. A v13 store is upgraded
   in place at startup.
 - **Interface.** Attachments reaches the store through the process service `sessionFiles`.
@@ -625,7 +625,7 @@ Rejected alternatives:
 | Document | Change in this PR |
 | --- | --- |
 | [Attachments](../plugins/Attachments.md) | Layout `<db>.session-files/<fileId>/<name>` with `attachmentId = fileId`; A1 refined to a directory no single Session owns; fork and delete ordering rows point here; the offline rows no longer depend on the withdrawn #5, because SessionStore looks FileStorage up per call (#38). The client contract of `attachment.put` is unchanged here; its `storage_failed` code lands in P2's design review (§15). §7 points to §11 for how reads are admitted, instead of saying a fork reads only the files its history references |
-| [Overview B.2](../overview.md#b2-app-server-process-plugins) | FileStorage row gains directory creation |
+| [Overview B.1](../overview.md#b1-session-and-branch-capabilities) | The FileStorage row points at its owner contract |
 | [Native storage format](native-storage-format.md) | Planned v15 decision |
 
 S5c builds `session.fork` and `session.delete` on §5.2, §5.3 and §5.4 and covers them through
@@ -659,7 +659,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
 | To | Requirement | Status |
 | --- | --- | --- |
 | FileStorage | `create_directory` per its [contract](../../architecture/rust-agent/plugins/FileStorage.md) | Added in S5a's implementation, agreed in the S6 review |
-| App Server assembly (`serve` in lib.rs) | Register the database directory as a FileStorage root when it is not one, and pass its index to `SessionStorePlugin` (§3.1) | A few lines in S5a's implementation, appended after the assembly lane's work like other registrations |
+| App Server assembly (`serve` in lib.rs) | Register the database directory as a FileStorage root when it is not one, and pass its root id to `SessionStorePlugin` (§3.1) | A few lines in S5a's implementation, appended after the assembly lane's work like other registrations |
 | Attachments (P2 design refinement) | Map `sessionFiles` `storage` to an `attachment.put` code. Attachments lists none today; SessionTitle maps SessionStore `storage` to `storage_failed` | Decided: `storage_failed`, recorded in [#66](https://github.com/arcships/dim/issues/66); applied in P2's design review |
 | S5c | Delete owner rows inside the delete transaction, after closing the Session and before `agent_sessions`; copy owner rows inside the fork transaction; schedule a sweep after a delete | Contract for S5c (§5.2, §5.3) |
 | The item that first scopes file access by path (F5 [#76](https://github.com/arcships/dim/issues/76) for processes; [ADR 014](../../adr/014-file-access-facts.md) for in-process file tools) | §11.2: a Session's owned files need no scope approval; ownership decides, never the Session-files directory as a whole, the database directory or the product home. Tool admission still follows the preset and tool lists | S5a needed none. ADR 014 reads `sessionFiles.owns` for reads and writes; §11.1 admits a file-tool read by path |
@@ -747,7 +747,7 @@ pub struct SessionFiles(pub Arc<dyn SessionFilesService>);
 in `<db>.session-files/<fileId>/`. A query failure is an error that denies access.
 `owned_paths` lists the owned file-id directories and output paths.
 
-`SessionStorePlugin` takes the database directory's root index, provides `SessionFiles`, and
+`SessionStorePlugin` takes the database directory's root id, provides `SessionFiles`, and
 reads `FileStorage` with `ctx.get_as` on each call. The fork, release and sweep steps are
 SessionStore methods over the native store connection, used by S5c.
 
