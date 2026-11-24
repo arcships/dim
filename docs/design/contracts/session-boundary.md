@@ -141,7 +141,7 @@ Methods have no model-visible effect. A method that changes model context does s
 | `sessionMethods.register(namespace, MethodDecl[], call)` | async | Register a Session method namespace until the calling part unloads; the registering row is the binding's `&Ctx`, not a request field, and the shape is [SessionMethods](../plugins/SessionMethods.md#own-contract) |
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | Register a management namespace until the calling part unloads |
 | `call(MethodCall, cancelled, progress) -> MethodReply` (the registering part's function) | async | Execute a method of the namespace |
-| `sessionMethods.call {method, params, caller?}` | in-process | Dispatch one Session method; the table answers `unknown_method`, `reloading`, `unavailable`, `interrupted` or `closed` ([SessionMethods](../plugins/SessionMethods.md#own-contract)) |
+| `sessionMethods.call {method, params, caller?}` | in-process | Dispatch one Session method; the table answers `unknown_method`, `reloading`, `unavailable` or `closed`, and an interruption answers in its reply ([SessionMethods](../plugins/SessionMethods.md#own-contract)) |
 | `sessionMethods.methods {}` | sync | The declarations of the namespaces the Session registered now |
 | `session.methods {sessionId}` (wire, Rpc built-in) | async | List a Session's methods (protocol v3) |
 | `callChannel.progress / notify / closed` (App Server) | sync / async | Per-call progress and connection-bound notifications (implemented; `Progress` and `Caller` are [SessionMethods](../plugins/SessionMethods.md#binding-appendix)'s) |

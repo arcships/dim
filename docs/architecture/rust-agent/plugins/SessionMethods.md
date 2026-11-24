@@ -25,7 +25,7 @@ contract ([SessionMethods §4 rule 8](../../../design/plugins/SessionMethods.md#
 
 ## Events and lifetime
 
-No Timeline events or I/O. The table tracks the calls each registration accepted, so that registration's unload can interrupt them and wait. A part depends on `sessionMethods` and
+No Timeline events or I/O. Each registration tracks the calls it accepted, so its unload can interrupt them and wait. A part depends on `sessionMethods` and
 calls `register(ctx, namespace, declarations, call)` from its own `apply`, with the part's own function as `call`;
 the registration is withdrawn when that part unloads, and a namespace registered
 already fails
