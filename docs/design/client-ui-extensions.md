@@ -194,7 +194,7 @@ UiResources 提供通用的**已完成文件发布**：受信任的后端 Sessio
 - 发布只接受 App Server 所在文件系统可读的有限长度普通文件，不接受目录、设备、socket 或网络 URL。远端浏览器不需要访问该文件系统；不共享文件系统的后端执行节点不是首期文件发布来源。
 - 发布参数 `path` 是 App Server 文件系统上的 canonical 绝对路径，且须位于 FileStorage 的既有授权根内。相对路径以 `invalid_params` 拒绝；绝对路径没有匹配的授权根、越界或指向链接时以 `resource_unavailable` 拒绝。UiResources 在可信后端发布边界解析到根相对路径，不因 UI 请求扩大授权。所需的原生文件读取能力见 R5。
 - 发布调用是后端命名服务，不是浏览器 Session RPC。浏览器没有“路径换 URL”、任意文件读取、上传或 URL 代理方法。业务 owner 在自己的外部输入边界决定哪些文件可以发布，不能直接把客户端传来的路径当成发布许可。
-- 生产者必须在文件完成后发布，并保证发布期间字节不变。UiResources 按路径分页读取文件，记录长度和 MIME，不持有读取资源；它不复制业务缓存、不接管下载或转码。替换内容要发布新引用，不能修改已发布文件。
+- 生产者必须在文件完成后发布，并保证发布期间字节不变。UiResources 按路径分页读取文件，记录长度和 MIME，不持有读取资源；它不复制业务缓存、不接管下载或转码。替换内容要发布新引用，不能修改已发布文件；同尺寸改写无法由分页发现，发布者的这一规则是唯一的版本保证。
 - 引用绑定 Session、发布者的本次注册与资源 ID。它不是 bearer 凭据，也不是持久业务 ID。一个资源可被同一 Session 的多个面板读取；每个客户端仍需通过服务入口和 Session 访问授权。
 - 注册属于发布者的生命周期；显式撤下、发布者卸载和 Session closing 都停止准入，取消在途读取并等待在途页结束。撤下完成后，生产者才可删除缓存文件。Session 未发布前不接受读取。
 - UI 关闭只取消自己的读取，不撤下别的面板仍可能使用的资源。资源过期后由业务方法显式取得新引用，不自动下载或重放具有副作用的操作。
@@ -287,7 +287,7 @@ Rust 和 TypeScript Session part 均可使用此服务。路径由已持有文�
 - **阻塞与规则：** §3.2 和 §6 需要有界复制与按字节区间读取；[FileStorage](../architecture/rust-agent/plugins/FileStorage.md) 的按路径偏移读满足分页（`read` 的 offset/length），不提供文件句柄或背压流；撤下与在途页竞争时只返回整页或 `resource_gone`。
 - **考虑的机制：** 整块读取使内存随媒体大小增长；在 UI owner 中重写根约束和安全打开逻辑会复制文件边界；文本事务不能表达二进制流。
 - **所需通用能力：** FileStorage 的 `stat` 返回只读文件长度，`read(path, offset, length)` 由调用方自己携带偏移分页读取；保留原有防越界打开、取消、generation 准入与收尾保证，不由读取请求扩大根授权。没有读取资源或文件句柄跨出所有者。
-- **时序影响：** UiResources 保证已发布路径在撤下前不被改写，因此同一引用的分页来自同一版本；取消或 owner 关闭停止读取。无 Timeline、格式或写事务变更。
+- **时序影响：** UiResources 记录发布时的 `size`，逐页比较 `ReadReply.size`，变化时回答 `resource_gone`；同尺寸改写无法由按路径分页发现，因此发布者不得改写已发布路径是唯一的版本保证，改写是 UiResources 的契约违规。取消或 owner 关闭停止读取。无 Timeline、格式或写事务变更。
 - **Owner / issue：** FileStorage，[#2016](https://github.com/arcships/dim/issues/2016)；UiResources 对齐 [#2021](https://github.com/arcships/dim/issues/2021)。实现与根约束、关闭流程验证在 FileStorage 内完成。
 
 ## 9. 实施顺序与波及面
