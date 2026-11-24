@@ -167,11 +167,13 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `MethodDecl` and `RpcError` are the capabilities crate's types; `MethodCall`, `Origin`, `CallerRef` and `Progress` are the methods contract's (Appendix F); `MethodReply` and `MethodError` are defined below, and the process table ([ManagementMethods](https://github.com/arcships/dim/pull/2095)) uses the same types. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field. A handler's error is `MethodReply` data, so the table returns it unchanged.
+The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `MethodDecl`, `Interruption` and `RpcError` are the capabilities crate's types; `MethodCall`, `Origin`, `CallerRef` and `Progress` are the methods contract's (Appendix F); `MethodReply` and `MethodError` are defined below, and the process table ([ManagementMethods](https://github.com/arcships/dim/pull/2095)) uses the same types. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field. A handler's error is `MethodReply` data, so the table returns it unchanged.
 
 ```rust
 use crate::host::CancelledFn;
-use crate::methods::{CallerRef, MethodCall, MethodDecl, Progress, RpcError};
+use crate::methods::{CallerRef, Interruption, MethodCall, MethodDecl, Progress, RpcError};
+// Interruption, CallerRef, MethodCall and Progress are defined once in the methods
+// contract ([session boundary](../contracts/session-boundary.md) Appendix F).
 use rutis::host::{BoxFuture, CallError};
 use rutis::Ctx;
 use tokio_util::sync::CancellationToken;
@@ -203,14 +205,6 @@ pub enum MethodReply {
     Value { value: serde_json::Value },
     Error { code: i32, app_error: String, message: String },
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Interruption { Report, Drain }
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CallerRef { pub connection_id: String, pub call_id: String }
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
