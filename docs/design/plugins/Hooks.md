@@ -1,6 +1,6 @@
 # Hooks
 
-Status: Ready ([#143](https://github.com/arcships/dim/issues/143)); maintainer decisions of 2026-10-22 and 2026-10-31 are applied (§10). Overall design: [overview](../overview.md) (Hooks). Phase: M1 (user, project and plugin sources). Language: Rust. Scope: [ADR 002](../../adr/002-plugin-scope.md) (process + Session + branch).
+Status: Ready ([#143](https://github.com/arcships/dim/issues/143)); maintainer decisions of 2026-10-22 and 2026-10-31 are applied (the target contract). Overall design: [overview](../overview.md) (Hooks). Phase: M1 (user, project and plugin sources). Language: Rust. Scope: [ADR 002](../../adr/002-plugin-scope.md) (process + Session + branch).
 
 ## Target contract
 
@@ -12,7 +12,7 @@ The owners are `HooksSettings` (process), `HooksSession` (Session) and `HooksBra
 
 `HooksSettings` owns:
 
-- **Sources.** The Settings documents `hooks` (user), `hooks-projects` and `hooks-plugins`; `.dimcode/hooks.json` is read through FileStorage under the project root Settings authorizes.
+- **Sources.** The Settings documents `hooks` (user), `hooks-projects` and `hooks-plugins`; `.dimcode/hooks.json` is read through FileStorage under the project root Settings authorizes. The `hooksService.sources` data face is the only reader; there is no agent-crate port.
 - **Content registration.** The hook document a plugin package carries, the holding plugin and its refusal.
 - **One reader.** `sources(cwd)` resolves the user, project and plugin sources into the value a hook point reads. The management methods and the agent-crate port use this same reader.
 - **Client operations.** `hooks.catalog`, `hooks.save` and `hooks.set_enabled`.
@@ -92,9 +92,9 @@ branch.input(source, HookInput::observation(text));
 | `hooksService.plugins` | The packages holding hook content | `{}` | `{plugins}` | None | `closed` |
 | `hooksService.refusal` | The refusal of a package | `{plugin}` | `{reason?}` | None | `closed` |
 | `hooksService.sources` | The merged hook sources for a cwd | `{cwd}` | `{sources, project?}` | The read can be cancelled | `unreadable`, `closed`, `cancelled` |
-| `hooks.catalog` | The client's hook catalog | `{project?}` | `{sources, entries}` | The read can be cancelled | `invalid`, `closed`, `cancelled` |
-| `hooks.save` | Save the user document at a revision | `{revision, document}` | `{revision}` | Accepted write is not cancelled | `invalid`, `conflict`, `settings_write`, `closed` |
-| `hooks.set_enabled` | Enable or disable a project source | `{project, enabled}` | `{}` | Accepted write is not cancelled | `invalid`, `conflict`, `closed` |
+| `hooks.catalog` | The client's hook catalog | `{cwd?}` | `{userRevision, userDocument, projectsRevision, disableAllHooks, sources, hooks}` | The read can be cancelled | `hooks_invalid`, `hooks_failed`, `closed`, `cancelled` |
+| `hooks.save` | Save the user document at a revision | `{expectedRevision, document}` | `{revision}` | Accepted write is not cancelled | `hooks_invalid`, `hooks_conflict`, `hooks_failed`, `closed` |
+| `hooks.set_enabled` | Enable or disable a project source | `{cwd, enabled, expectedRevision}` | `{}` | Accepted write is not cancelled | `hooks_invalid`, `hooks_conflict`, `hooks_failed`, `closed` |
 | `HooksSession` runner | Run one hook command with a payload | `{hook, payload}` | `{decision, output}` | The Session's cancel kills the process tree; the owner settles | `failed`, `timeout`, `block`, `cancelled`, `closed` |
 | `HooksSession` submit check | Check operator input before it is written | `{input}` | `{context?}` or block | The entry's call cancel stops the check and its command | `block`, `warnings`, `proceed` |
 | `HooksBranch` advice | Advise a tool admission | `{call, source}` | deny/ask/allow | The admission's cancel stops the advisor | `deny`, `ask`, `allow`; failures map to allow/ask |
@@ -112,7 +112,8 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 | `settings_write`, `settings_conflict` | Retry after Settings is available, or report the conflict |
 | `failed` | The hook command failed; apply `onFailure` |
 | `timeout` | The handler exceeded its timeout; apply `onFailure` |
-| `block` | The hook blocked the operation; report its reason |
+| `deny`, `ask`, `allow` | Permission's advice result; `deny` blocks the call, `ask` asks the user, `allow` lets it run |
+| `block`, `warnings`, `proceed` | The submit check's result; `block` stops the input, `warnings` and `proceed` continue |
 | `cancelled` | The operation stopped; nothing was written |
 | `closed` | The Session or owner is unloading; use the replacement generation |
 
@@ -138,7 +139,7 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 
 ### Client-visible changes
 
-None. `hooks.*` and the six hook points keep their client-visible behavior; `hooksService.sources` is a plugin-facing owner operation, `HookSourcesHost` was agent-crate-private, and `Permission.advise`/`Approval.decide` are #2028's contract names.
+None. `hooks.*` and the six hook points keep their client-visible behavior; `hooksService.sources` is a plugin-facing owner operation, `HookSourcesHost` was agent-crate-private, and `Permission.advise`/`Approval.decide` are #2100's contract names.
 
 ### Rule check
 
@@ -188,7 +189,7 @@ impl HooksSettings {
 }
 ```
 
-`HooksDocument`, `HooksRefusal`, `HookSources` and `HookSourceError` are the types in `hooks_settings.rs` and `hooks/sources.rs`; `HooksContentError` and `HookSourceError` are `#[serde(rename_all = "snake_case")]` enums serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error table. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field.
+Current types: `HookRefusal`, `HookSourcesSnapshot`, `HooksContentError` and the `hooks_settings.rs`/`hooks/sources.rs` structs; the target uses the same names and adds `Serialize` to the wire values. The target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check was blocked by the workspace rust-version (`dim-agent-runtime` requires rustc 1.100; the environment has 1.97.1), not by the appendix spelling.
 
 The Session and branch parts keep their internal types; `hooksService.sources`' request and reply are `{cwd}` and `HookSources`.
 
@@ -205,7 +206,7 @@ Hooks never hooks infrastructure. The withdrawn design ([#21](https://github.com
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionStart` | Context after a tool result, after a turn, at Session start | InputQueue (inputs) | Hooks writes branch input with source `hooks` (existing) |
 | `Notification` | An approval waiting for the user | — (observation) | Nothing reaches an owner (existing) |
 
-`UserPromptSubmit` is not a Timeline hook point: Session input is not necessarily the user's (Goal, Scheduler, Collaboration, ShellInput and Hooks itself write inputs), so the command runs only where operator input enters, before anything is written. Commands run through HostPlatform (the Session's resource node); a hook command waits only in Hooks' own tasks or in the caller's own task (Permission's admission decision runs in ToolExecutor's per-call admission task; a submit check runs in the Rpc call), never in a Dispatcher handler or under the commit lock. Contracts are given in neutral form ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding is Appendix H.
+`UserPromptSubmit` is not a Timeline hook point: Session input is not necessarily the user's (Goal, Scheduler, Collaboration, ShellInput and Hooks itself write inputs), so the command runs only where operator input enters, before anything is written. Commands run through HostPlatform (the Session's resource node); a hook command waits only in Hooks' own tasks or in the caller's own task (Permission's admission decision runs in ToolExecutor's per-call admission task; a submit check runs in the Rpc call), never in a Dispatcher handler or under the commit lock. Contracts are given in neutral form ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding is the binding appendix above.
 
 
 ## Supersedes
@@ -299,7 +300,7 @@ Event fields:
 
 `DIMCODE_HOME` is the product home the App Server that runs the Session is configured with, not the daemon's inherited environment: a product daemon always has one and sets it, while a development profile (`--model-config`, `--mock-model`) has no product home and sets none, so a hook that archives there passes `dimcode export --database PATH` itself. `DIM_PLUGIN_ROOT` is the `dir` a plugin source was registered with (A.2); user and project sources have none.
 
-**Archiving.** A hook that needs the Session's history reads the Session's Timeline with `dimcode export "$DIM_SESSION_ID"` ([Timeline export](../appserver/timeline-export.md)), which reads the home `DIMCODE_HOME` names ([ADR 005](../../adr/005-observability.md) D3). There is no `transcript_path` (decision 8).
+**Archiving.** A hook that needs the Session's history reads the Session's Timeline with `dimcode export "$DIM_SESSION_ID"` ([Timeline export](../appserver/timeline-export.md)), which reads the home `DIMCODE_HOME` names ([ADR 005](../../adr/005-observability.md) D3). There is no `transcript_path` (the target contract).
 
 ### A.4 Outcomes
 
@@ -343,7 +344,7 @@ Dim does not read Claude or Codex files and has no import command. To migrate, c
 | `PostToolUse` | `PostToolUse` | `PostToolUse` | Non-error results; `updatedToolOutput` ignored |
 | `PostToolUseFailure` | — | `PostToolUseFailure` | Error results |
 | `UserPromptSubmit` | `UserPromptSubmit` | `UserPromptSubmit` at the submit entries | Text only; a block is an `input_blocked` error |
-| `Stop` | `Stop` | `Stop` → Queue follow-up | Bounded (A8) |
+| `Stop` | `Stop` | `Stop` → Queue follow-up | Bounded (the target contract) |
 | `SessionStart` | `SessionStart` | `SessionStart` → keyed Append | `startup` only |
 | `Notification` | — | `Notification` on `approval/request` | `permission_prompt` only |
 | `PreCompact`, `PostCompact`, `SessionEnd`, `Subagent*`, others | `PreCompact`, `PostCompact`, `SessionEnd`, `Interrupt`, `Subagent*` | Unsupported | Listed `unsupported` in the catalog. `PreCompact`/`PostCompact`: blocking would need a compaction-admission port in ContextCompaction; an observation-only form needs no owner change and can be added later. Compaction removes nothing from the Timeline, and `Stop` runs after every completed turn, so archiving loses nothing. `SessionEnd`: Session close is lifecycle, including idle unload, and work must settle before services are removed (AGENTS rule 8); a command at close would delay close. `SubagentStart`/`SubagentStop`: a Collaboration member is its own Session, which gets its own `SessionStart` and `Stop`, with `collaboration_role: "member"` on their stdin (A.3) |
@@ -380,3 +381,31 @@ Codex `apply_patch` has no alias: its input is a patch, while Dim's `write` and 
 | `PermissionRequest` deny | Claude/Codex show `message` | Approval's generic text |
 | `UserPromptSubmit` block | Prompt erased, reason shown | `session.submit` fails with `input_blocked`; ACP `refusal` |
 | Output fields | `continue`, `stopReason`, `systemMessage`, `suppressOutput`, … | Ignored with a diagnostic (A.4) |
+
+## Superseded anchors
+
+These headings are kept so inbound links resolve; the content is replaced by the target contract above.
+
+### 3.1 PreToolUse through Permission
+See `Permission.advise` in the target contract.
+
+### 3.5 Loading and reads at hook points
+See `hooksService.sources` in the target contract.
+
+### A.6.1 Tool advice in Permission
+See `Permission.advise` (target, pending #2100).
+
+### A.6.2 Submit check at the operator-input entries
+See `submitChecks` (target, pending #2103).
+
+### A.6.3 Process start with an initial stdin
+See HostPlatform (target, pending #2032).
+
+### A.7 Management methods
+See `hooks.*` in the target contract.
+
+## 10. Decisions
+See the target contract's responsibility split.
+
+## Appendix H. Rust binding
+See the binding appendix above.

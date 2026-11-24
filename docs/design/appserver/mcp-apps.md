@@ -1,3 +1,5 @@
+> **Superseded public surface.** The `mcpSession` data face in §4.4 is replaced by [Mcp.md](../../design/plugins/Mcp.md#target-contract); its client request and reply shapes stay as recorded there.
+
 # MCP Apps host contract
 
 Status: Draft.

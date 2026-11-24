@@ -1,3 +1,5 @@
+> **Superseded public surface.** The temporary-binding operations are replaced by [Mcp.md](Mcp.md#target-contract); the client `session.mcp_temporary.attach` request and reply keep their current shape.
+
 # Temporary MCP
 
 Scope: Session. Owner: the MCP feature. A separate `TemporaryMcp` part accepts

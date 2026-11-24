@@ -1,3 +1,5 @@
+> **Superseded public surface.** The `mcpService` content face and the `mcp.*` connection/lease descriptions in this document are replaced by [Mcp.md](../../design/plugins/Mcp.md#target-contract). The client methods keep their current requests, replies and error codes; the old face descriptions are historical.
+
 # MCP configuration management
 
 Status: Draft.

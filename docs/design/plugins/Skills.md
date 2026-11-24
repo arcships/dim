@@ -91,7 +91,7 @@ if list.generation != seen {
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `skillsCatalog.register` | Register a package's Skill root | `{plugin, dir, document}` | `{}` or `{issues}` | Accepted write is not cancelled | `invalid_manifest`, `unreadable`, `settings_write`, `settings_conflict`, `closed` |
+| `skillsCatalog.register` | Register a package's Skill root | `{plugin, dir}` | `{issues}` | Accepted write is not cancelled | `invalid_manifest`, `unreadable`, `settings_write`, `settings_conflict`, `closed` |
 | `skillsCatalog.withdraw` | Withdraw a package's root | `{plugin}` | `{}` | Accepted write is not cancelled | `closed` |
 | `skillsCatalog.plugins` | The packages holding Skill roots | `{}` | `{plugins}` | None | `closed` |
 | `skillsCatalog.issues` | The scan issues of a package | `{plugin}` | `{issues}` | None | `closed` |
@@ -99,8 +99,8 @@ if list.generation != seen {
 | `skills.catalog` | The client catalog | `{project?}` | `{skills, projects, invalid}` | The read can be cancelled | `invalid`, `closed`, `cancelled` |
 | `skills.set_enabled` | Enable or disable a Skill or project | `{id, enabled, project?}` | `{}` | Accepted write is not cancelled | `missing`, `invalid`, `conflict`, `closed` |
 | `skills.refresh` | Rescan the roots | `{}` | `{generation}` | None; the scan is the owner's | `closed` |
-| `skills.preview` | Preview a local or Git source | `{source, selection}` | `{token, entries, invalid}` | The read can be cancelled; the token expires | `invalid_source`, `fetch_failed`, `too_large`, `cancelled`, `closed` |
-| `skills.install` | Install the selected entries | `{token, selection}` | `{installed}` | Accepted work is not cancelled; it settles or restores | `expired`, `invalid_selection`, `exists`, `conflict`, `write_failed`, `closed` |
+| `skills.preview` | Preview a local or Git source | `{source, skills}` | `{source, skills, conflicts, shadows, issues}` | The read can be cancelled | `skills_invalid_source`, `skills_fetch_failed`, `skills_too_large`, `cancelled`, `closed` |
+| `skills.install` | Install the selected entries | `{source, id?, skills, overwrite}` | `{installation, previous?}` | Accepted work is not cancelled; it settles or restores | `skills_preview_stale`, `skills_install_exists`, `skills_install_unmanaged`, `skills_install_unknown`, `skills_write_failed`, `closed` |
 | `skills.update` | Update installed entries | `{id, revision?}` | `{installed}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `conflict`, `write_failed`, `closed` |
 | `skills.remove` | Remove installed entries | `{id}` | `{}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `delete_failed`, `closed` |
 | `skills.installations` | The install records | `{}` | `{installations}` | None | `closed` |
@@ -200,14 +200,12 @@ impl SkillsCatalog {
 }
 ```
 
-`SkillDocument` and `SkillIssues` are the types in `skills/catalog.rs`; `SkillContentError` and `SkillListError` are `#[serde(rename_all = "snake_case")]` enums serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error table. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field. `skillsBranch.list` takes `caller: &Ctx` and returns the current `SessionSkills` value.
+`SkillIssue` and `SkillsError` are the current types; `SkillDocument` is the catalog's private installation record. The target type names are marked in `skills/catalog.rs`; `SkillContentError` and `SkillListError` are `#[serde(rename_all = "snake_case")]` enums serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error table. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field. `skillsBranch.list` takes `caller: &Ctx` and returns the current `SessionSkills` value.
 
-`SkillsBranch`'s list is a data face; the request is empty and the reply is the current `SessionSkills` value. A branch part may call any data face of the branch group with `line_owner::<T>(line)`, except registration and lifecycle services (ADR 027); `SkillsBranch` calls the Prompt owner that way. The install and management operations are the typed requests and replies in `skills/catalog.rs`; the install token and installation id are values.
+`SkillsBranch`'s list is a data face; the request is empty and the reply is the current `SessionSkills` value. A branch part may call any data face of the branch group with `line_owner::<T>(line)` (target, pending #2093; mechanism #2127), except registration and lifecycle services (ADR 027); `SkillsBranch` calls the Prompt owner that way. The install and management operations are the typed requests and replies in `skills/catalog.rs`; the install token and installation id are values.
 
 
-Scope: process.
-Issue: [#740](https://github.com/arcships/dim/issues/740).
-Rules: [design rules](../../architecture/rust-agent/principles.md), [ADR 002](../../adr/002-plugin-scope.md).
+
 
 
 ## Supersedes

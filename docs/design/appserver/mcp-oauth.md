@@ -1,3 +1,5 @@
+> **Superseded public surface.** The credential operations are replaced by [Mcp.md](../../design/plugins/Mcp.md#target-contract); `McpAuth` is private.
+
 # MCP OAuth
 
 Status: Implemented on the daemon side (maintainer review on [#111](https://github.com/arcships/dim/pull/111)) and in the native CLI (§13). Roadmap item F4

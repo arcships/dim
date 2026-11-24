@@ -1,6 +1,6 @@
 # PluginManager
 
-Status: Draft, aligned with the maintainer on 2026-10-27. Requirements: [plugin management](../plugin-management.md) ([#432](https://github.com/arcships/dim/issues/432)). Issues: [#3](https://github.com/arcships/dim/issues/3), [#384](https://github.com/arcships/dim/issues/384). Scope: [ADR 002](../../adr/002-plugin-scope.md) (process: installation is per host). Language: Rust. Milestone: M1 for the parts marked in §0.
+Status: Draft. Requirements: [plugin management](../plugin-management.md) ([#432](https://github.com/arcships/dim/issues/432)). Issues: [#3](https://github.com/arcships/dim/issues/3), [#384](https://github.com/arcships/dim/issues/384). Scope: process and Session (the `plugin` tool); installation is per host. Language: Rust.
 
 ## Target contract
 
@@ -73,13 +73,13 @@ if let Some(reason) = refusal {
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `plugin.list` | The installed packages and their state | `{}` | `{packages}` | None | `closed` |
-| `plugin.install` | Install a local path or Git source | `{source, name?, lock?}` | `{package, progress?}` | Accepted install settles or rolls back | `invalid_source`, `invalid_manifest`, `exists`, `load_failed`, `content_refused`, `restart_required`, `write_failed`, `closed` |
-| `plugin.enable` | Make one installed package the name's active package | `{name, version?}` | `{}` | Accepted operation settles | `missing`, `load_failed`, `content_refused`, `restart_required`, `closed` |
-| `plugin.disable` | Turn a package name off | `{name}` | `{}` | Accepted operation settles | `missing`, `restart_required`, `closed` |
-| `plugin.reload` | Reload a package's rows | `{name}` | `{}` | Accepted operation settles | `missing`, `load_failed`, `content_refused`, `closed` |
-| `plugin.update` | Update a package to a source revision | `{name, source?, lock?}` | `{package, progress?}` | Accepted update settles or rolls back | `missing`, `invalid_source`, `load_failed`, `content_refused`, `write_failed`, `closed` |
-| `plugin.remove` | Remove a package | `{name, version?}` | `{}` | Accepted remove settles or restores | `missing`, `load_failed`, `write_failed`, `closed` |
+| `plugin.list` | The installed packages and their state | `{}` | bare array of package status maps `{id, name, enabled, locked, skipped, refused, restartRequired}` | None | `plugin_not_found`, `closed` |
+| `plugin.install` | Install a local path or Git source | `{source, name?, lock?}` | status map `{id, name, enabled, locked, skipped, refused, restartRequired}` | Accepted install settles or rolls back | `plugin_exists`, `invalid_params`, `invalid_id`, `path_outside_plugins`, `load_failed`, `content_refused`, `restart_required`, `closed` |
+| `plugin.enable` | Make one installed package the name's active package | `{name, version?}` | status map `{id, name, enabled, locked, skipped, refused, restartRequired}` | Accepted operation settles | `plugin_not_found`, `plugin_locked`, `load_failed`, `content_refused`, `restart_required`, `closed` |
+| `plugin.disable` | Turn a package name off | `{name}` | status map `{id, name, enabled, locked, skipped, refused, restartRequired}` | Accepted operation settles | `plugin_not_found`, `plugin_locked`, `restart_required`, `closed` |
+| `plugin.reload` | Reload a package's rows | `{name}` | status map `{id, name, enabled, locked, skipped, refused, restartRequired}` | Accepted operation settles | `plugin_not_found`, `plugin_locked`, `load_failed`, `content_refused`, `closed` |
+| `plugin.update` | Update a package to a source revision | `{name, source?, lock?}` | status map `{id, name, enabled, locked, skipped, refused, restartRequired}` | Accepted update settles or rolls back | `plugin_not_found`, `plugin_locked`, `invalid_params`, `load_failed`, `content_refused`, `closed` |
+| `plugin.remove` | Remove a package | `{name, version?}` | `{}` | Accepted remove settles or restores | `plugin_not_found`, `plugin_locked`, `load_failed`, `closed` |
 | Startup reconcile | Remove directories and records that are not installed; restore the default configuration | internal | — | None | `record_read`, `record_write`, `cleanup` |
 | Content registration | Register or withdraw a package's MCP, Hooks, Skills and UI content | internal | `refusal` | The owner's content call can be cancelled | the content owners' refusals are values |
 | `plugin` tool | Map one model command to a process operation | `{command, args}` | tool result content | The tool call's cancel stops the operation | `usage`, the owner's errors |
@@ -164,7 +164,7 @@ tool_registry.register(
 );
 ```
 
-`manager` is the process owner's operation/callback, not the `Manager` object. The request, reply and error types are the typed structures in `plugin_manager.rs` and the management module; `PluginError` is a `#[serde(rename_all = "snake_case")]` enum serialized as `{code, data}` with `message` in `data`; the wire `code` is the variant name and matches the error table. `From<CallError>` keeps the callback's own `code` and `message`. `CancelledFn` is the binding's cancellation argument, never a request field. The `PluginTools` `manager` field is deleted; the install/update/remove result values remain.
+`manager` is the process owner's operation/callback, not the `Manager` object. The current `PluginError` is a struct; the target replaces it with `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`, one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The `PluginTools` `manager` field is deleted; the install/update/remove result values remain. The temporary-crate check was blocked by the workspace rust-version (`dim-agent-runtime` requires rustc 1.100; the environment has 1.97.1), not by the appendix spelling.
 
 
 ## Supersedes
@@ -198,7 +198,7 @@ A plugin is a directory with `dim-plugin.json` at its root. The keys present say
 | `name` | — | The plugin's name. Plugins with the same name replace each other. |
 | `version` | — | The plugin's own version, three dot-separated numbers, each one or more digits. Optional, and required for an optional plugin (§2.3), where it names the install directory. |
 | `code` | code | The rutis row fields ([rutis usage §2](../rutis-usage.md#2-plugins-are-rows-instances-mount-their-parts)) except `id` and `name`: `entry` is a path inside the directory; `inject`, `provides` and `instanceNames` are copied into the row; `config` is the row's configuration, with the host's patch for that plugin name deep-merged over it (below). |
-| `dependencies` | code | The package manager whose dependencies the plugin declares. The only value today is `"npm"`: the directory carries `package.json` and `package-lock.json`, and the locked dependencies are installed into the plugin's own directory at acquisition (§3.2, §7). A manifest declaring it without either file is refused `invalid_manifest`. |
+| `dependencies` | code | The package manager whose dependencies the plugin declares. The only value today is `"npm"`: the directory carries `package.json` and `package-lock.json`, and the locked dependencies are installed into the plugin's own directory at acquisition (§7 and the target install flow). A manifest declaring it without either file is refused `invalid_manifest`. |
 | `skills` | skills | A directory inside the plugin of Skill documents, registered with SkillsCatalog. |
 | `mcp` | MCP | A file inside the plugin holding MCP server entries, registered with Mcp. |
 | `hooks` | hooks | A file inside the plugin holding a hooks document, registered with Hooks. |
@@ -210,7 +210,7 @@ Code, skills, MCP and hooks paths are relative, resolved inside the directory af
 
 **Data directory.** The plugin files root is the root an embedding host names, else the product home, else the execution home the host was started with (`--home`). A host started with only a database file has none of them, so it has no plugin files root and runs no PluginManager; the root is never the database's directory or the working directory. When a plugin with code is turned on, PluginManager creates `<pluginFiles root>/<id>/` if it does not exist: `<id>` is the installed id, or a default plugin's name, both checked by the id rule (§7). It never deletes the directory, on turning off or on remove, as Settings documents stay in the home. An existing entry is used only if it is a directory, not a symbolic link, that resolves to itself inside the root; otherwise nothing is created and the plugin's file operations fail as they would without it. A plugin writes only under its own id directory through `pluginFiles` ([process TypeScript §5.2](../process-typescript.md#52-public-pluginfiles-binding)).
 
-A plugin's business configuration (its Settings sources) is not in the manifest: the plugin's code registers its sources with Settings when it starts (§9 R1). The `settings` member of today's TypeScript rows goes away.
+A plugin's business configuration (its Settings sources) is not in the manifest: the plugin's code registers its sources with Settings when it starts (the target requirements). The `settings` member of today's TypeScript rows goes away.
 
 The repository's own TypeScript plugins (`runtime/plugins/*`) get a `dim-plugin.json` in place of their row files (`web.json`, `process.json`, `settings.json`). SessionTitle is a built-in plugin, not a TypeScript package.
 
@@ -266,7 +266,7 @@ new manifest readable by an old binary.
 | `installed[].id` | Unique among installed plugins; the key of the record and the name of the clone directory. Matches `[a-z0-9_-]{1,64}` (lowercase, so two ids never name one directory on a case-insensitive file system) and is not `builtin` or `default` (§7). When the caller gives none, the id is the manifest name lowercased (`Hooks` → `hooks`); a collision after lowercasing is `plugin_exists`, and the caller then gives another id. The example's `hooks-plus` was given by the caller (`--id hooks-plus`). |
 | `installed[].name` | The manifest name at install or last reload. |
 | `installed[].source` | `{path}` for a local directory, used in place and never copied; `{git, ref?, commit}` for Git; `{optional}` for a plugin the default configuration file ships optionally (§2.3), copied from its shipped directory. |
-| `installed[].dir` | The directory that is loaded: the local path itself, the clone under `<home>/plugins/<id>/<commit>+<suffix>`, or the copy under `<home>/plugins/<id>/<version>+<suffix>` (§3.2, §7). A record written before suffixes existed names its directory without one; nothing is migrated. |
+| `installed[].dir` | The directory that is loaded: the local path itself, the clone under `<home>/plugins/<id>/<commit>+<suffix>`, or the copy under `<home>/plugins/<id>/<version>+<suffix>` (§7 and the target install flow). A record written before suffixes existed names its directory without one; nothing is migrated. |
 | `installed[].kinds` | The kinds the manifest carried at install or last reload. |
 | `installed[].version` | The installed version of an `{optional}` source, from its manifest; absent for other sources. |
 | `names.<name>.use` | Which plugin the name uses: an installed id, `"builtin"` or `"default"`. Absent: the built-in plugin of that name if there is one, else the default plugin of that name. |
@@ -316,7 +316,7 @@ Shipped with Dim, read-only, given to the App Server with `--defaults PATH` (the
 ```
 
 - `plugins` maps each default plugin's name to its directory, relative to this file. A default plugin is a plugin directory like any other (§2.1).
-- `optional` maps an optional plugin's name to its directory, relative to this file. An optional plugin is shipped but is not installed and not turned on: nothing reads it until the user installs it, and `plugin.list` shows it so a client can offer it (§3.6). `plugin.install {source: {optional: "<name>"}}` copies the directory — never `node_modules` — into `<home>/plugins/<id>/<version>+<suffix>` and installs its declared dependencies there (§3.2, §7); the shipped directory stays untouched and read-only. A newer release ships a new `version`: at the next start an installed copy is re-acquired in the background (§3.1), the old copy stays in use and on disk until that succeeds, and the next start after the switch deletes it. `enable` defaults to true, `plugin.enable` and `plugin.disable` then work as for any installed plugin, and an optional plugin's name records no `off` state until it is installed: `plugin.list` reports it off (§3.6).
+- `optional` maps an optional plugin's name to its directory, relative to this file. An optional plugin is shipped but is not installed and not turned on: nothing reads it until the user installs it, and `plugin.list` shows it so a client can offer it (§3.6). `plugin.install {source: {optional: "<name>"}}` copies the directory — never `node_modules` — into `<home>/plugins/<id>/<version>+<suffix>` and installs its declared dependencies there (§7 and the target install flow); the shipped directory stays untouched and read-only. A newer release ships a new `version`: at the next start an installed copy is re-acquired in the background (§3.1), the old copy stays in use and on disk until that succeeds, and the next start after the switch deletes it. `enable` defaults to true, `plugin.enable` and `plugin.disable` then work as for any installed plugin, and an optional plugin's name records no `off` state until it is installed: `plugin.list` reports it off (§3.6).
 - Built-in SessionTitle, Scheduler and Goal are installed by the native product profile and have no entry in this file.
 - A name cannot appear in both `plugins` and `optional`, and an optional plugin's name cannot be a built-in plugin's: each is a startup error naming both. An optional plugin's item has no candidates (§3.6), so it would hide the plugin shipped under that name.
 - `locked` lists names that cannot be turned off and whose plugin cannot be switched. Other plugins of a locked name may still be installed. Locking is product configuration; PluginManager applies it.
@@ -343,8 +343,42 @@ Installing and turning on are host configuration done through management methods
 - **Paths.** One rule covers every operation that touches the file system for a plugin: install (staging, clone, rename), update, remove and the startup cleanup. Before any file system change, PluginManager checks that the id, whether the caller gave it or it came from the manifest name, matches `[a-z0-9_-]{1,64}` and is not `builtin` or `default`, and that every directory it is about to create, rename or delete resolves to exactly one of `<home>/plugins/.staging/<random>`, `<home>/plugins/.python`, `<home>/plugins/<id>`, `<home>/plugins/<id>/<key>` or `<home>/plugins/<id>/<key>+<16 lowercase hex characters>` (`.staging` and `.python` cannot be ids, since an id has no dot). A `<key>` without a suffix is accepted only as a directory an existing record names and for the cleanup. The Python links in `.python` are replaced or removed as links; what they point to is never touched. A failed check refuses the operation with `invalid_id` or `path_outside_plugins` and changes nothing: no directory, no `plugins.json` write, no loader command. A local-path plugin's own directory is never created, renamed or deleted, so the rule does not apply to it.
 - **No copy is deleted while the process runs.** Install, update, the background re-acquisition and remove leave every replaced directory in place; only the startup cleanup deletes a directory no installed entry refers to, and it runs before any acquisition in that start (§3.1). A task that read a description therefore names a directory that exists until the process exits, even when the plugin was updated or removed after it started. The cost is disk: replaced copies stay until the next start. A lease from Modality to PluginManager was rejected: Modality would have to address PluginManager's state, which [principles §4 rule 7](../../architecture/rust-agent/principles.md) forbids, and a crash would still leave the copy to the startup cleanup.
 - A clone goes to `<home>/plugins/.staging/<random>` and is renamed into place only after its manifest and paths are checked. A failure deletes the staging directory; startup deletes leftovers and clones or copies no entry refers to.
-- A plugin's dependencies come only from its own `package-lock.json`, installed by RuntimeManager in the staging directory with `npm ci --omit=dev --ignore-scripts --no-audit --no-fund --workspaces=false`, so no package lifecycle script runs and no dependency outside the lock is resolved. The registry is RuntimeManager's rule (`DIMCODE_NPM_REGISTRY`, then `npmRegistries`, §9 R5). The shipped optional directory is never installed in place and is never modified.
+- A plugin's dependencies come only from its own `package-lock.json`, installed by RuntimeManager in the staging directory with `npm ci --omit=dev --ignore-scripts --no-audit --no-fund --workspaces=false`, so no package lifecycle script runs and no dependency outside the lock is resolved. The registry is RuntimeManager's rule (`DIMCODE_NPM_REGISTRY`, then `npmRegistries`, the target requirements). The shipped optional directory is never installed in place and is never modified.
 - No manifest path may leave the plugin directory after following symbolic links; a symbolic link inside a Git clone that points outside it is refused.
 - `plugins.json` is written atomically (§2.2).
 
 The acquisition and link-check code behind these rules is one crate-internal implementation, `crates/dim-app-server/src/plugin_manager/acquire.rs`, shared with the Skills installation ([Skills](Skills.md) §4), which reads a local directory or clones a repository for its own destination, staging directory and record. The rules above are stated once because there is one implementation.
+
+## Superseded anchors
+
+These headings are kept so inbound links resolve; the content is replaced by the target contract above.
+
+### 2.4 State PluginManager does not keep
+See the target contract's responsibility split.
+
+### 2.5 Runtimes
+See RuntimeManager (target, pending #2019).
+
+### 3. Flows
+See the target contract's flows.
+
+### 3.1 Startup
+See the target contract's startup reconcile.
+
+### 3.2 Install
+See `plugin.install` in the target contract.
+
+## 4. Timing and conflicts
+See the target contract's flows.
+
+## 6. Interfaces (summary)
+See the target contract's operations.
+
+## 9. Requirements raised to mechanism owners
+See the target contract's requirements.
+
+### A.1 Methods (managementMethods, namespace plugin)
+See `plugin.*` in the target contract.
+
+## Appendix C. Acceptance (M1)
+See the delivery comment's acceptance.
