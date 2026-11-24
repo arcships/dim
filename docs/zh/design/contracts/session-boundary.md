@@ -2,7 +2,7 @@
 
 状态：草案。总体设计：[总览 §3 集成](../overview.md#3-基于现有机制的集成)、[附录 B Rpc 与 ToolRegistry](../overview.md#附录-b-现有插件的补充)；规则：[ADR 002](../../adr/002-plugin-scope.md) D2、D3、D5。阶段：P0。语言：语言中立合同；Rust 绑定见[附录 F](#附录-f-rust-绑定)。[C4 绑定](../../../design/session-typescript.md) 已实现非 Rust Session 工具和方法子集；原生广播仍待定。
 
-本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；其注册接收可序列化数据，Session 方法表的 `call` 是所有者进程内的操作（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务（方法表或注册表），并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时分发各张方法表的 `call`，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 已实现逐次调用的 `progress`（C1）以及绑定连接的通知 `notify` 与 `closed`（#1158）；`takeFinalReply` 及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
+本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；注册接收命名空间及其声明的数据，以及调用方的函数回调；Session 方法表的 `call` 是所有者进程内的操作（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务（方法表或注册表），并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时分发各张方法表的 `call`，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 已实现逐次调用的 `progress`（C1）以及绑定连接的通知 `notify` 与 `closed`（#1158）；`takeFinalReply` 及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
 
 | 服务 | 作用域 | 注册什么 | 注册方 | 读取方 |
 | --- | --- | --- | --- | --- |
@@ -54,7 +54,7 @@ flowchart LR
 
 | 服务 | 缺失时 |
 | --- | --- |
-| `sessionMethods` | 该 Session 从没有命名空间持有过此名称时返回 `unknown_method`；持有它的命名空间已撤回时，注册它的部件正在启动或重载则返回 `service_reloading`，已失败或无法运行则返回 `service_unavailable`（A.1） |
+| `sessionMethods` | 该 Session 从没有命名空间持有过此名称时返回 `unknown_method`；注册其已撤回命名空间的行已禁用或不存在时同样返回 `unknown_method`；持有它的命名空间已撤回时，注册它的部件正在启动或重载、或其在本 Session 中没有副本则返回 `service_reloading`，已失败或无法运行则返回 `service_unavailable`（A.1） |
 | `managementMethods` | 从没有命名空间持有过该名称，或注册它的行已禁用或不存在时返回 `unknown_method`；其他情况下，已撤回的命名空间按该行的状态作答（§3.2） |
 | 工具注册 | Session 挂载列表列出但没有部件注册的工具不声明，并在诊断中报告；有部件注册后从下一个请求起声明（A.5） |
 
@@ -89,7 +89,7 @@ sequenceDiagram
   Rpc-->>CL: 结果
 ```
 
-名称属于该 Session 中持有它的最长已注册命名空间（A.1）。如果该 Session 从没有命名空间持有过此名称（例如其插件未对该 Session 启用），结果为 `unknown_method`；如果持有它的命名空间已撤回，注册它的部件正在启动或重载时结果为 `service_reloading`，该部件已失败或无法运行时结果为 `service_unavailable`（A.1）。Session 方法没有级别：获得 Session 方法的连接获得全部 Session 方法，包括 `shell.*`。
+名称属于该 Session 中持有它的最长已注册命名空间（A.1）。如果该 Session 从没有命名空间持有过此名称（例如其插件未对该 Session 启用），结果为 `unknown_method`；如果持有它的命名空间已撤回，注册它的部件正在启动或重载、或其在本 Session 中没有副本时结果为 `service_reloading`，该部件已失败或无法运行时结果为 `service_unavailable`；注册它的行已禁用或不存在时结果为 `unknown_method`（A.1）。Session 方法没有级别：获得 Session 方法的连接获得全部 Session 方法，包括 `shell.*`。
 
 ### 3.2 管理方法
 

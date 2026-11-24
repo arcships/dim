@@ -10,7 +10,7 @@ SessionMethods owns:
 
 - **Registrations.** One namespace per registration, its declarations and its call callback; a row may register several namespaces, and a registration ends when its row unloads.
 - **Admission.** One call: the name's owner, the interruption kind its declaration names, the caller identity, and the settlement of the calls a registration accepted.
-- **Withdrawn namespaces.** The last row that held each namespace, so a call after a withdrawal answers `reloading` or `unavailable` instead of falling through to a parent namespace.
+- **Withdrawn namespaces.** The last row that held each namespace, so a call after a withdrawal answers `reloading` or `unavailable` from that row instead of falling through to a parent namespace; a row that is disabled or absent is `unknown_method`.
 - **Reserved names.** The host's own roots, built-ins and their notification names are refused at registration; a management namespace does not stop a Session namespace from registering (A.1 namespace collisions). The host supplies the check as a process face.
 - **The method list.** The declarations of the namespaces registered now, each under its owning namespace.
 
@@ -75,8 +75,8 @@ Ok(match reply {
 `session.methods` composes the value with the process table's held namespaces:
 
 ```rust
-// A.1's longest-namespace rule: a declaration whose name equals or lies inside
-// a held management namespace is routed to management, never listed for the Session.
+// A.1's routing precedence: a declaration whose name equals or lies inside a
+// held management namespace is routed to management, never listed for the Session.
 let Ok(held) = management.held_namespaces() else {
     return Err(RpcError::service("service_unavailable", "The process is closing"));
 };
@@ -99,7 +99,7 @@ let listed = declarations.into_iter().filter(|decl| {
 | `P:reservedMethods` (optional) | The host's reserved names, consulted at registration. It is an `Option<Key<ReservedMethods>>` the factory fills only when the assembly names it; a host that names none reserves only the name grammar. |
 | `P:loaderRows` (proposed dim-owned process face) | The loader row that registered a withdrawn namespace: `status {row}` answers `{found, status?, copies?}`. `found: false` when no row has that id, which the table answers as `unknown_method`; otherwise `status` is the row's own state and `copies: [{instance, status}]` gives each copy's state with its instance, from which the table picks this Session's copy before answering `reloading` or `unavailable`. The face does not exist yet; §4 rule 8 raises it, and App Server's loader row is its provider. |
 
-The process table (#2021) serves the same `MethodCall`, `MethodReply` and `MethodError` data — its `call` takes the admission's `CallSite` and its `MethodCall.origin` carries the `Caller`, with this contract, recorded on #2021 — and answers `held_namespaces` so Rpc routes a name and filters `session.methods` by A.1's longest-namespace rule.
+The process table (#2021) serves the same `MethodCall`, `MethodReply` and `MethodError` data — its `call` takes the admission's `CallSite` and its `MethodCall.origin` carries the `Caller`, with this contract, recorded on #2021 — and answers `held_namespaces` so Rpc routes a name and filters `session.methods` by A.1's routing precedence.
 
 ### Operations
 
@@ -113,7 +113,7 @@ The process table (#2021) serves the same `MethodCall`, `MethodReply` and `Metho
 
 `register` is data plus the caller's function on the wire, `methods` is data, and `call` is the owner's in-process operation. In Rust each reply is a `Result`: `register` is `Result<(), MethodError>`, `call` is `Result<MethodReply, MethodError>`, and `methods` is `Result<Vec<MethodDecl>, MethodError>`. `{}` is the empty reply, `{methods}` the declaration vector, and `{reply}` the `MethodReply`. Rpc wraps a `MethodError` in its envelope; `MethodReply`'s own error is the handler's data and is not a table failure.
 
-`caller` is `{connectionId}`: the connection the call arrived on, absent for an in-process call. In Rust Rpc passes the admission's site (`CallSite`, below), which holds the connection and the call's close signal. The handler receives the caller as `MethodCall.origin.caller`, A.2's `Caller`. The table writes no socket. It mints a call id for a call served by a registration of another language, and that id is what its `origin.caller.callId` and its notifications carry; a native call has none, because `Caller::notify` needs no id. Progress is the sink Rpc passes, which addresses the call by Rpc's own request id. It hands the handler a `Progress` over the call's sink; Rpc passes its connection's sink, and an in-process call passes one whose sends are dropped. The call callback is a direct parameter; it never runs inside the Timeline's commit lock; the handler's token fires on the provider's generation unload and on the admitting Rpc load's unload, which `cancelled` reports.
+`caller` is `{connectionId}`: the connection the call arrived on, absent when no client connection made the call. In Rust Rpc passes the admission's site (`CallSite`, below), which holds the connection and the call's close signal. The handler receives the caller as `MethodCall.origin.caller`, A.2's `Caller`. The table writes no socket. It mints a call id for a call served by a registration of another language, and that id is what its `origin.caller.callId` and its notifications carry; a native call has none, because `Caller::notify` needs no id. Progress is the sink Rpc passes, which addresses the call by Rpc's own request id. It hands the handler a `Progress` over the call's sink; Rpc passes its connection's sink, and an in-process call passes one whose sends are dropped. The call callback is a direct parameter; it never runs inside the Timeline's commit lock; the handler's token fires on the provider's generation unload and on the admitting Rpc load's unload, which `cancelled` reports.
 
 A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own error as `{code, message, ...owner fields}`. The table adds no meaning. The client sees the handler's failure in the Rpc envelope's error: `appError` is the handler's `code`, the message is the handler's `message`, and the handler's `data` fields sit beside `appError` — the table and Rpc preserve them without interpreting them ([Appendix C](../contracts/session-boundary.md#appendix-c-errors-and-recovery)). The JSON-RPC code is the handler's `wire` code when it carries one, and otherwise the service-error rule (`invalid_params` → -32602, `unknown_method` → -32601, otherwise -32000); a handler of another language's own reply data carries no wire code, so its errors take the rule; an error it rethrows from a nested call keeps the code Rpc gives it.
 
@@ -201,7 +201,7 @@ Flow tests on the owner:
 - [session boundary A.1](../contracts/session-boundary.md#a1-method-contributions): the `MethodTable`/`MethodProvider`/`Accepted` shapes and the Session table's `owner`/`provider`/`holds`/`listed` readers are replaced by `register`, `call` and `methods`; `Caller`, `CallSite` and `Callers` stay the binding's, stated below and in A.2; the `MethodCall`, `MethodReply` and `MethodError` shapes of A.1's interface block are defined in `crate::methods` as stated here, and A.1 links to them.
 - [session boundary Appendix F](../contracts/session-boundary.md#appendix-f-rust-binding): its method-table paragraphs — `Handler`, `MethodProvider`, `Check`, `Owner`, `MethodTable`, the `SessionMethods` deref, the `MethodCall`/`Origin` block and the foreign `register` decode — are the binding below; Appendix F links here and keeps only what CallChannel and ToolRegistry bind.
 
-No client-visible method, error kind or application code changes: a handler's `code` is the client's `appError` today and stays so, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Two request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`; and the owner fields a native handler attaches to its failure now reach the client, where today the `{code, message}` decode rejects a foreign reply that carries them.
+No client-visible method, error kind or application code changes: a handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. A native handler's failure that carried no application code now carries `appError: "failed"`. Three request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`; its handler's owner fields now reach the client, where today the `{code, message}` decode rejects a reply that carries them; and a declaration may carry a `reply` field, accepted and ignored.
 
 ## Binding appendix
 
@@ -214,9 +214,9 @@ use rutis::host::{BoxFuture, CallError};
 use tokio_util::sync::CancellationToken;
 
 /// One declared method of a namespace. A declaration from another language
-/// carries `name`, `mutating`, `interruption`, `progress`, its `notifications`
-/// and an ignored `reply`; the listing another language reads is
-/// `{name, mutating}`.
+/// carries `name`, `mutating`, `interruption` and `progress`, may carry its
+/// `notifications`, and may carry an ignored `reply`; the listing another
+/// language reads is `{name, mutating}`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MethodDecl {
