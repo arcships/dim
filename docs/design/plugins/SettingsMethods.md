@@ -82,12 +82,12 @@ No service. Two management methods, registered with `managementMethods`:
 
 | Method | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `settings.read` | The user's draft base for one declared document | `{source, scope}` | `{revision, document}` | The call is dropped; nothing changes | invalid params, `settings_unknown_source`, `settings_failed`, `operation_interrupted`, reloading |
-| `settings.update` | Replace a declared document with the draft at the revision read | `{source, scope, expectedRevision, document}` | `{revision, document}` | An admitted write commits or ends `settings_unsynced`; a wait dropped before admission changes nothing | invalid params, `settings_unknown_source`, `settings_conflict`, `settings_unsynced`, `settings_failed`, `operation_interrupted`, reloading |
+| `settings.read` | The user's draft base for one declared document | `{source, scope}` | `{revision, document}` | A cancelled call has no reply and changes nothing | invalid params, `settings_unknown_source`, `settings_failed`, `operation_interrupted`, reloading |
+| `settings.update` | Replace a declared document with the draft at the revision read | `{source, scope, expectedRevision, document}` | `{revision, document}` | A cancelled wait changes nothing before admission; an admitted write commits or ends `settings_unsynced` | invalid params, `settings_unknown_source`, `settings_conflict`, `settings_unsynced`, `settings_failed`, `operation_interrupted`, reloading |
 
 Invalid params covers a malformed request, an unknown field, a missing revision, a document that is not an object, and a document the source's schema refuses; for a schema refusal the message is the validator's, and the client shows it as an input error.
 
-`settings_conflict` means the draft is stale: the client reads again and lets the user decide. `settings_unsynced` means the bytes are in place with unconfirmed durability: read again instead of repeating the write. `operation_interrupted` means the call was cancelled or its part is unloading; the client re-reads before retrying. `reloading` means the daemon is restarting.
+`settings_conflict` means the draft is stale: the client reads again and lets the user decide. `settings_unsynced` means the bytes are in place with unconfirmed durability: read again instead of repeating the write. `operation_interrupted` means this part unloaded while the call was pending; a caller-cancelled call has no reply. The client re-reads before retrying. `reloading` means the daemon is restarting.
 
 ### Errors
 
@@ -98,7 +98,7 @@ Invalid params covers a malformed request, an unknown field, a missing revision,
 | `settings_conflict` | Read again; the user's draft is stale |
 | `settings_unsynced` | Read again; the write is in place |
 | `settings_failed` | Read again before retrying; the store failed without a code the client can act on |
-| `operation_interrupted` | The call was cancelled or its part is unloading; read again before retrying |
+| `operation_interrupted` | The part unloaded while the call was pending; read again before retrying |
 | reloading | The daemon is restarting; retry after it is back |
 
 ### Flows

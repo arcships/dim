@@ -53,7 +53,7 @@ decision by an LLM. `agent` means the existing request/profile selection behavio
 | Identify the requesting branch | `CollaborationSession::request` already receives `branch_id`; pass it within Collaboration, without changing an event or tool request |
 | Read the adopted leader model | `Session::get<PromptSnapshot>(branch_id)` while consuming `collaboration/request`, before starting its delivery task |
 | Resolve an explicit model | The existing `AgentIndex` model-selection host and configured/non-catalog profile paths |
-| Persist and edit policy | [CollaborationModelPolicy](../plugins/CollaborationModelPolicy.md): the `collaboration` source, its `policy` value read and the `collaboration.*` methods |
+| Persist and edit policy | [CollaborationModelPolicy](plugins/CollaborationModelPolicy.md): the `collaboration` source, its `policy` value read and the `collaboration.*` methods |
 | Start/restore and retain members | Existing Agents/Collaboration Session creation, usage holds and cleanup, including idle unloading |
 
 Do not use `leader.config().model` or `session.summaries` as the adopted leader model:

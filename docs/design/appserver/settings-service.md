@@ -198,16 +198,11 @@ plugin unloads. Nothing else is new. Nothing enters the Timeline.
 
 ### 4.1 Common shapes
 
-| Shape | JSON |
-| --- | --- |
-| `Scope` | `"user"` or `{"project": <root>}`. `root` is the project root number Settings assigns in this process (`SettingsScope::Project`). It is not a durable identity and is never persisted |
-| `Snapshot` | `{revision: string, document: object}` |
-| `Error` | `{code, message}` |
-| `Sources` | The `settings.sources` reply (§4.3): `{dialect: string, sources: [{source, schema, scopes, userOnly, writeOnly}]}`. `dialect` is exactly `https://json-schema.org/draft/2020-12/schema`, the draft every `schema` is compiled in (§3.1). `schema` is the registered schema verbatim, `default` members included. `scopes` is `["user"]`, or `["user", "project"]` when the source declares a project file. `userOnly` is the registered pointer list. `writeOnly` hints that the schema root itself or a member reachable through `properties` is marked `writeOnly: true`. A root-level `writeOnly` counts for this hint but is not a hidden member: the redaction (§1.2) removes members reached through `properties` only, so such a source lists `writeOnly: true` and hides nothing. Neither rule scans `items`, `$defs` or `anyOf`, so a client reads `schema` itself for the rest. No item carries a document, a file name or an owner |
+Superseded by the Data and binding sections of [Settings](../plugins/Settings.md): `Scope`, `Document`, the declarations, the project table and the error shapes are defined there.
 
 ### 4.2 Service `settings` (owner path)
 
-Superseded by [Settings](../plugins/Settings.md): one service on the `Settings` type, one source id per registration, a value read, a change callback, the user draft path and the agent path. §4.1 and §4.4 stay in force.
+Superseded by [Settings](../plugins/Settings.md): one service on the `Settings` type, one source id per registration, a value read, a change callback, the user draft path and the agent path. §4.4 stays in force.
 
 ### 4.3 Management methods `settings.*` (client path)
 
@@ -245,72 +240,15 @@ Permission does).
 
 ### 4.5 Rust binding
 
-Superseded by the binding appendix of [Settings](../plugins/Settings.md). The error variants, events, security boundary and state descriptions of this document stay in force.
+Superseded by the binding appendix of [Settings](../plugins/Settings.md). §4.4 events, §7 security, §8.1 and §9 stay in force.
 
 ## 5. Flows
 
-### 5.1 Owner reads and updates
-
-```
- TS owner                 settings (HostDispatch)      SettingsService            storage
-   | read {web, "user"} ---->| decode request           |                          |
-   |                         | read_declared ---------->| file / user/web row ---->|
-   |                         |                          | defaults, schema check   |
-   |<-- {revision r1, document} -------------------------|                          |
-   | update {web, "user", r1, doc'} ->| update_declared(Owner)                       |
-   |                         |                          | defaults, schema         |
-   |                         |                          | user-only diff vs current|
-   |                         |                          |   differs: user_only_field
-   |                         |                          | CAS r1 ------------------>| replace
-   |                         |                          | emit settings.changed {web, "user", r2}
-   |<-- {revision r2, document} -------------------------|                          |
-```
-
-The user-only diff is checked under the same lease (or native transaction) as CAS, against the
-document it replaces.
-
-### 5.2 Client edits a user-only field
-
-```
- Client            Rpc              Settings (managementMethods)
-   | settings.read {web, "user"} ---->| {r2, doc}
-   | settings.update {web, "user", r2, doc with searchService} -> update_declared(Client)
-   |<-- {r3, doc}                     | emit settings.changed {web, "user", r3}
- TS owner (its tool asks to change searchService)
-   | update {web, "user", r3, doc with another searchService} -> user_only_field, nothing written
-```
-
-### 5.3 Registration
-
-```
- owner row apply                  settings (HostDispatch)      SettingsService
-   | register(declaration) ------->| caller = calling row       |
-   |                               | register_declared -------->| parse (unknown fields rejected)
-   |                               |                            | check name, files, pointers
-   |                               |                            | compile schema; {} with defaults valid
-   |                               |                            | name or file registered? refuse
-   |                               |                            | record; withdrawal = caller's unload
-   |<-- resolved (or rejected: the row's apply fails) ----------|
- owner row unloads -> its sources are withdrawn; their documents stay in the home
-```
-
-Settings is built whenever there is a product or target home, as before; a plugin that registers
-a source needs it.
+Superseded by the Flows and Exceptions sections of [Settings](../plugins/Settings.md). The persistence profiles' behavior in §3 stays in force.
 
 ## 6. Errors
 
-| Code (service / wire) | When | Retry |
-| --- | --- | --- |
-| `unknown_source` / `settings_unknown_source` | No source of that name is registered, or (on these paths) it is a Rust source | After its owner registers it |
-| `invalid_scope` / invalid params | Project scope for a source without `projectFile`, or a root not authorized | After authorizing the project |
-| `invalid_document` / invalid params | Schema violation or a non-object document | No; nothing written |
-| `invalid_document` / `settings_failed` | The persisted file or row is invalid (on read) | After the user repairs it |
-| `user_only_field` | An owner write changes a user-only field | No; the user changes it through the client |
-| `conflict` / `settings_conflict` | Stale `expectedRevision` | Read and retry |
-| `unsynced` / `settings_unsynced` | The new content is in place and announced, but could not be synced | Read before retrying |
-| `failed` / `settings_failed` | Storage, persistence or worker failure | Read before retrying |
-| `closed` / reloading | Settings is unloading | Yes |
-| `cancelled` | Call dropped or cancelled | Caller's choice |
+Superseded by the Errors table of [Settings](../plugins/Settings.md): `user_only`, `invalid`, `failed` and the other kinds are defined there, with what the caller does next.
 
 ## 7. Security
 
@@ -403,38 +341,7 @@ question 2); that is no new requirement on dim runtime or rutis.
 
 ## 11. Acceptance (flow tests)
 
-App Server flow tests (`crates/dim-app-server/tests/settings_flow.rs` and a TypeScript row loaded
-through C4's path):
-
-1. A TypeScript test package registers source `example` (user file, project file, schema with a
-   `default`, one user-only pointer). Its first `read` returns the default document with revision
-   `missing`. An `update` with that revision stores the document and returns a new revision. A
-   stale revision fails with `conflict`. A schema violation fails and writes nothing.
-2. A client `settings.update` changes the user-only field. The owner's next `update` that changes
-   it fails with `user_only_field`; one that keeps it succeeds.
-3. A Rust listener on `settings_changes("example")` receives `{source, scope, revision}` after
-   each successful write on both paths, and none after a rejected one. The payload serializes to
-   the §4.4 JSON shape.
-4. Native profile: the user scope persists in row `user/example`; existing v13 rows are unchanged.
-   Project scope on an unauthorized root fails with `invalid_scope`.
-5. `settings.read` of `mcp` returns `settings_unknown_source`. A row registering `mcp`, a second
-   registration of one source, or a malformed declaration fails the registering row. A source
-   appears when its owner registers it and is `unknown_source` once the owner unloads, while its
-   document stays in the home.
-6. ~~Credential references through a shared `credentials` store.~~ Withdrawn (§1.2).
-7. A paired-device connection is not served `settings.read` or `settings.sources`.
-8. An authenticated Web entry connection is answered `unknown_method` for `settings.sources`
-   and is served the allowlisted `settings.read` for `model-log`.
-9. `settings.sources` replies `{dialect, sources: []}` when nothing is registered, lists a
-   registered declared source with its schema verbatim, its scopes, its user-only pointers and
-   its `writeOnly` hint, never lists a Rust source, and drops a declared source's entry the
-   moment its owner unloads, when `settings.read` answers `settings_unknown_source` again.
-10. `settings.projects` replies `{projects: []}` before anything is authorized, then lists the
-    root `session.create` authorized with its canonical cwd, and that root serves
-    `settings.read` with `{project: root}`; a second authorization of the same cwd adds no item,
-    a root this process never authorized is invalid params, and a root a client authorized
-    through `hooks.catalog` for a cwd with no Session is listed too. The list starts empty again
-    after a daemon restart on the same home.
+Superseded by the delivery's flow tests on [#2017](https://github.com/arcships/dim/issues/2017): the owner read/change path, the user draft path, the agent path, the project table and the declared registry are tested there instead of against the deleted `settings.sources`/`settings.projects` methods.
 
 ## 12. Implementation status
 

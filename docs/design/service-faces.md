@@ -92,7 +92,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
 | `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
 | `sessionFiles` | `sessionFiles.put/import/read/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFiles` 是进程内绑定。 |
-| `commandRules` | `commandRules.read` | Session 命令规则读取，按 [命令规则](appserver/permission-command-rules.md#41-language-neutral-adr-002-d5) §4.1。 |
+| `commandRules` | 已删除 | 规则由 [PermissionRules](plugins/PermissionRules.md) 的 `permissionRules.rules` 提供。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
 | `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
@@ -209,12 +209,9 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 每批处理同一个 owner 的相关操作。
 
-PromptSettings 的三个只读端口按 [prompt overrides §3.1](appserver/prompt-overrides.md#31-data-operations)
-提供 `basePromptSettingsHost.base({})`、`skillsInstructionsSettingsHost.instructions({})` 和
-`summaryPromptSettingsHost.systemPrompt({})`，回复为字符串或 `null`。它们共享现有 owner，
-原生与跨语言入口调用同一读取方法；配置优先级、读取时机和失败回退保持 owner 契约。
+PromptSettings 的一个服务按 [PromptSettings](plugins/PromptSettings.md) 提供 `promptSettings.base({})`、`promptSettings.summary({})` 和 `promptSettings.skills({})`，回复为 `{text}` 或 none；capability 侧各依赖自己的端口 trait。配置优先级、读取时机和失败回退保持 owner 契约。
 
-### 4.1 `settingsService`：保留调用取消
+### 4.1 `settingsService`：已被 Settings 取代
 
 已由 [Settings](plugins/Settings.md) 与 [SettingsMethods](plugins/SettingsMethods.md) 取代：所有者按 source id 读值，调用方的取消随读取结束；GoalBranch 的读取改走该绑定。
 
@@ -355,11 +352,11 @@ eventSubscriptions.list {sessionId} -> reply
 这些读取操作持有 owner 的闭包，Rust 绑定直接调用类型化操作；dispatcher 只在跨语言边界解码请求、调用同一个操作并编码回复，不写第二份业务逻辑。Rust 调用不经过 JSON，也不为读取另起桥接任务。每次异步调用持有独立的子取消 token：取消或丢弃调用会取消该次 owner 读取，不取消调用方的父 token。跨语言回复使用 `cancellable_future`，放弃等待会丢弃同一个读取；owner 的生命周期仍约束其工作。
 
 ```text
-executionSettingsHost.read({}) -> {sandbox, network}
+executionSettings.read({}) -> {sandbox, network}
   -> error {code: failed, message}
 toolchainSourceHost.list({}) -> {toolchains: [{bin, root}]}          # sync
   -> error {code: failed, message}
-promptSuggestionSettingsHost.read({}) -> {enabled, maxChars}
+promptSuggestionSettings.read({}) -> {enabled, maxChars}
   -> error {code: failed, message}
 providerService.selectableModels({}) -> {models: [ModelCapabilitySnapshot]}
 providerService.selectableForModality({}) -> {models: [ModalityModelSnapshot]}

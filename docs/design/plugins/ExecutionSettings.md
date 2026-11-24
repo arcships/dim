@@ -40,7 +40,7 @@ let switches = execution_settings.read(cancelled.clone()).await.map_err(|error| 
 ### Dependencies
 
 - [Settings](Settings.md): `register` for the `execution` source and `read` for its value.
-- The Rust port, for consumers outside the App Server: the trait `ExecutionSettingsRead` and the reply type `ExecutionSettings` live in `dim-agent-capabilities` ([`execution_settings`](../../../crates/dim-agent-capabilities/src/execution_settings.rs)). HostPlatform and the `settings` tool depend on the trait; the App Server's `ExecutionSettings` implements it and serves the same read on the wire.
+- The Rust port, for consumers outside the App Server: the trait `ExecutionSettingsRead` and the reply type `Switches` live in `dim-agent-capabilities` ([`execution_settings`](../../../crates/dim-agent-capabilities/src/execution_settings.rs)). HostPlatform and the `settings` tool depend on the trait; the App Server's `ExecutionSettings` implements it and serves the same read on the wire.
 
 ### Operations
 
@@ -68,7 +68,7 @@ let switches = execution_settings.read(cancelled.clone()).await.map_err(|error| 
 
 ## Supersedes
 
-- [ADR 011](../../adr/011-execution-settings.md) D1's port name `executionSettingsHost`: the decision is unchanged, the port is `executionSettings` and its Rust binding is `ExecutionSettingsRead`.
+- [ADR 011](../../adr/011-execution-settings.md) D1's type `ExecutionSettingsHost` and its service name `executionSettingsHost`: the decision is unchanged. The type is replaced by the owner type `ExecutionSettings`, which implements the port trait `ExecutionSettingsRead`; the wire service is `executionSettings`.
 - [Service faces](../service-faces.md) §3.2's and §4.10's `executionSettingsHost` entries.
 
 ## Rule check
@@ -103,6 +103,7 @@ None new. HostPlatform's read at process preparation is unchanged in shape; only
 ## Binding appendix
 
 ```rust
+use dim_agent_capabilities::host::{CancelledFn, HostFuture};
 use dim_agent_runtime::PublicService;
 use rutis::host::BoxFuture;
 
@@ -119,6 +120,11 @@ pub struct Switches {
 pub enum ExecutionSettingsError {
     #[error("{message}")]
     Failed { message: String },
+}
+
+// The Rust port, in dim-agent-capabilities; the App Server's ExecutionSettings implements it.
+pub trait ExecutionSettingsRead: Send + Sync + 'static {
+    fn read(&self, cancelled: CancelledFn) -> HostFuture<'_, Result<Switches, ExecutionSettingsError>>;
 }
 
 impl PublicService for ExecutionSettings {}

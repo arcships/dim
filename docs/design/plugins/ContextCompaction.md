@@ -1980,7 +1980,7 @@ otherwise — is pinned by `a_length_sentence_needs_one_target_placeholder` in
 
 **The product's user override.** The App Server may supply the operator's summary prompt from
 its `prompts` setting ([prompt overrides](../appserver/prompt-overrides.md)). The port is
-`SummaryPromptSettingsHost`, optional and read while the Session's strategy part applies: the
+`SummaryPromptSettings` (the port trait in `dim-agent-capabilities`), optional and read while the Session's strategy part applies: the
 factory `system_prompt` outranks it, a read failure keeps `SYSTEM`, and the value applies to
 Sessions loaded after the change. The length sentence and the target rule stay factory-only, so
 a user override changes the prompt and not the size rule.

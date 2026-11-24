@@ -28,7 +28,7 @@ Callers keep:
 PromptSuggestion reads the value before it decides.
 
 ```rust
-let settings = settings_host.read(token.clone()).await?;
+let settings = prompt_suggestion_settings.read(token.clone()).await?;
 if !settings.enabled {
     return Ok(Decision::Refused("disabled"));
 }

@@ -28,8 +28,12 @@ Callers keep:
 The recorder reads the destination while it starts a request.
 
 ```rust
-let destination = model_log.recording().await.ok().flatten();
-if let Some(directory) = destination.directory {
+let destination = model_log
+    .recording()
+    .await
+    .ok()
+    .and_then(|view| view.directory);
+if let Some(directory) = destination {
     // aimux owns the file under this directory.
 }
 ```
@@ -40,7 +44,7 @@ if let Some(directory) = destination.directory {
 
 - [Settings](Settings.md): `register` for the `model-log` source and `read` for its value.
 - The Rust port, for the consumer outside the App Server: the trait `RecordingDestination` lives in `dim-agent-aimux` where the recorder is, and the App Server's `ModelLog` implements it and serves the same read on the wire.
-- FileStorage: `root_path` for the home root, once, to build the destination directory.
+- The assembly provides the home directory as a host value; the recorder's destination is `<home>/model-log`. FileStorage is not involved.
 
 ### Operations
 

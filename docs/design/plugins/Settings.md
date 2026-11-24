@@ -11,8 +11,8 @@ Settings owns:
 - **Sources.** The registry of named documents: each source's file names, project scope, the members only the user changes, and how its content is checked — a JSON Schema or a Rust document type. A registration belongs to the registering row and ends when that row unloads.
 - **Documents and revisions.** The user document (a file, or a row in the native store) and the project document (a file under an authorized project); the opaque revision that changes on every committed write; one writer at a time per document.
 - **Change application.** Running a caller's change against the current document under the owner's exclusion, checking the result, writing it, publishing the fact, and reporting whether durability is confirmed.
-- **Authority.** An owner change and an agent change may not alter a user-only member; a user edit may. Members marked `writeOnly` are never returned to the agent, and the agent may not set them.
-- **Authorized projects.** The cwd → project table, the directory opened for each authorized project, and the fact announcing a new one.
+- **Authority.** An owner change and an agent change may not alter a user-only member; a user edit may. Every member marked `writeOnly` that is reachable through `properties` is withheld from the agent, and the agent may not set it; the rule does not scan `items`, `$defs` or `anyOf`.
+- **Authorized projects.** The cwd → project table, the host-registered project root each authorized cwd denotes, and the fact announcing a new one.
 - **Facts.** `settings/<source>` with `{source, scope, revision}` after a commit, and `settings/projects` with `{root, cwd}` after a new authorization.
 
 Callers keep:
@@ -88,7 +88,7 @@ The plugin tool reads a plugin's configuration for the agent, and sets one membe
 let view = settings
     .agent_read(AgentRead { source: "web".into() }, cancelled.clone())
     .await?;
-// `view.writeOnly` lists the members withheld from the agent.
+// `view.write_only` lists the members withheld from the agent.
 settings
     .agent_set(
         AgentSet { source: "web".into(), member: "/proxyDns".into(), value: true.into() },
@@ -114,9 +114,9 @@ let bytes = storage.read(definitions, cancelled).await?; // FileStorage's operat
 
 ### Dependencies
 
-- [FileStorage](https://github.com/arcships/dim/pull/2080): `add_root` for an authorized project, `read` and `update` for a document stored as a file, and `create_directory` for the project's directory under `.dimcode`. Settings passes no path outside an authorized root.
+- [FileStorage](https://github.com/arcships/dim/pull/2080): `read` and `update` for a document stored as a file, with an absolute path. Settings holds no root: the assembly gives it the home directory as a host value, and the host registers the project directory as a root when it creates the Session, so an authorized cwd is already addressable and its path is the document's base. Settings passes no path outside those two bases.
 - The storage engine ([#2018](https://github.com/arcships/dim/issues/2018)) as the native profile's crate-private implementation: it executes this owner's transactions over the `settings_documents` rows. The rows and their request, reply and error shapes are this contract's ([Native-profile row operations](#native-profile-row-operations)); the engine answers no Settings read or write on its public face.
-- The caller's row: a source id and the registration are bound to the row that registered them; an id from another row is `invalid`.
+- The caller's row: a source id and the registration are bound to the row that registered them. `read` and `change` check the caller's row and answer `invalid` for another row's id; the user path (`read_user`, `replace_user`) and the agent path (`agent_read`, `agent_set`) do not check the caller's row, and the user path is served to [SettingsMethods](SettingsMethods.md) and to a Rust owner's own namespace.
 
 ### Operations
 
@@ -129,19 +129,19 @@ let bytes = storage.read(definitions, cancelled).await?; // FileStorage's operat
 | `replace_user` | Replace a document with the draft the user edited at the revision read | `{id, scope, expectedRevision, document}` | `{revision, document}` | Before the write; an admitted write still commits | `invalid`, `invalid_document`, `conflict`, `too_large`, `unsynced`, `failed`, `closed`, `cancelled` |
 | `agent_read` | A declared document for the agent, `writeOnly` members withheld | `{source}` | `{document, writeOnly}` | While the document is read | `unknown_source`, `invalid_document`, `too_large`, `failed`, `closed`, `cancelled` |
 | `agent_set` | Set one member of a declared document for the agent | `{source, member, value}` | `{document, writeOnly}` | Before the write | `unknown_source`, `invalid`, `user_only`, `invalid_document`, `too_large`, `unsynced`, `failed`, `closed`, `cancelled` |
-| `declared_sources` | The declared sources, by name: all of them, or those a live row registered | `{instance?}` | `{sources: [{id, source, schema, scopes, userOnly, writeOnly}]}` | None; the owner completes the read | None |
-| `authorize_project` | Admit a cwd as a project root; the same cwd answers the same number | `{cwd}` | `{root}` | While FileStorage opens the directory | `invalid`, `failed`, `closed`, `cancelled` |
+| `declared_sources` | The declared sources, by name: all of them, or those a live row registered | `{instance?}` | `{sources: [{id, source, schema, scopes, userOnly, writeOnlyHint}]}` | None; the owner completes the read | None |
+| `authorize_project` | Record a cwd as an authorized project; the same cwd answers the same number | `{cwd}` | `{root}` | None; the table is written before the reply | None |
 | `authorized_projects` | The projects authorized in this process generation | `{}` | `{projects: [{root, cwd}]}` | None | None |
 
 Data:
 
-- `SourceId` is the id `register` assigns; it is bound to the row that registered it, and a caller from another row is `invalid`. `declared_sources` lists only declared sources; a Rust source's id is not listed.
+- `SourceId` is the id `register` assigns. `read` and `change` check that the calling row registered it; an id from another row is `invalid` there. The user path does not check the row: `SettingsMethods` reaches a declared source's id after resolving the client's name, and a Rust owner reaches its own id. `declared_sources` lists only declared sources; a Rust source's id is not listed.
 - `Document` is one JSON object; a missing user document reads as its default document.
 - `Scope` is `"user"` or `{"project": <number>}`. The number is this process's project number, assigned by `authorize_project`; it is not durable and it is not FileStorage's root id.
 - `userOnly` lists JSON Pointers to members only the user changes. Each pointer must name a member reachable through the schema's `properties`; otherwise `register` is `invalid`.
 - `ChangeFn` is `Fn(Option<Document>) -> Result<Document, ChangeRefused>`: it is called once, under the document's exclusion, with the current document, and returns the next document or its own refusal. It must only compute; waiting on another owner or on I/O inside the change holds the document for that whole wait.
 - `Revision` is an opaque value that changes on every committed write. Only the user path carries it, as the draft base the client holds: a business concurrency control between the user's read and write. An owner change carries no revision; the owner's exclusion and any waiting stay inside `change`.
-- `writeOnly` lists the JSON Pointers of members withheld from the agent and holding a value.
+- `writeOnly` lists the JSON Pointers of members, reachable through `properties`, that are withheld from the agent when they hold a value. `writeOnlyHint` in a declaration is true when the source declares at least one such member; it is a hint, not the pointer list.
 
 ### Native-profile row operations
 
@@ -172,8 +172,8 @@ A fact is published after the commit and never carries a document. A failed fact
 | `invalid` | Fix the input: a declaration whose name or file is taken, whose schema is refused, or whose user-only pointer names no reachable member; a source id from another row; an unknown project; a project scope for a source without a project file; a member pointer that names no member |
 | `unknown_source` | The declared source is not registered now, or it is a Rust source that the client and agent paths do not serve: retry after its owner registers it, or report that the feature is off |
 | `invalid_document` | The document as stored, or the one the change produced, fails its check; repair the user's document or fix the change |
-| `user_only` | The change or the agent named a member only the user changes; ask the user, or leave the member as it is |
-| `rejected` | The change refused with its own `code` and `message`; act on that code |
+| `user_only` | The change or the agent named a member only the user changes, including a `writeOnly` member the agent tried to set; ask the user, or leave the member as it is |
+| `rejected` | The change refused with its own `reason` and `message`; act on `reason` |
 | `conflict` | The user's draft is stale; read again and let the user decide |
 | `too_large` | The document exceeds the document limit; the caller must not treat the value as a document |
 | `unsynced` | The document is in place but its durability is unconfirmed; read it and do not repeat a change without reading |
@@ -187,8 +187,9 @@ A fact is published after the commit and never carries a document. A failed fact
 | --- | --- | --- | --- | --- | --- |
 | `change` | Take the document's exclusion, read the current document, call the change, check the result, write it, publish, release | Before the write: the change's future is dropped, the document is unchanged, the exclusion is released, `cancelled` | The row's `apply` future ends; the same release applies | New calls are refused; an in-flight change finishes or ends `closed`; the generation releases its exclusions | Exclusion by Settings; the change's future by the calling row |
 | `replace_user` | Take the exclusion, read the current revision, refuse a stale base, check and write the document, publish, release | An admitted write still commits or ends `unsynced`; a wait dropped before admission changes nothing | The admitted write completes; the reply may be lost | In-flight calls finish or end `closed` | Exclusion by Settings; the admitted write by Settings |
-| `read`, `read_user`, `agent_read`, `declared_sources`, `authorized_projects` | Open the document through its profile or read the registry, check it, return the value | Before the reply; nothing changes | The call ends `cancelled` | Pending calls end `closed` | File handle or row read by Settings |
-| `authorize_project` | Open the directory through FileStorage's `add_root`, append to the project table, publish the fact | Before the directory is opened or the row is appended | The call ends `cancelled`; a later call for the same cwd completes the authorization | The table is generation state: a new generation starts empty and a cwd is authorized again at admission | Directory by FileStorage; the project table by Settings |
+| `read`, `read_user`, `agent_read` | Open the document through its profile, check it, return the value | Before the reply; nothing changes | The call ends `cancelled` | Pending calls end `closed` | File handle or row read by Settings |
+| `declared_sources`, `authorized_projects` | Read the registry or the project table and return the value; no cancellation and nothing to release | Not applicable | Not applicable | The generation answers from its own memory | Settings |
+| `authorize_project` | Insert the cwd in the project table when absent, publish the fact for a new one, return the number | Not cancellable; the insert is one step | The insert completes; the reply may be lost | The table is generation state: a new generation starts empty and a cwd is authorized again at admission | The project table by Settings; the directory root by the host |
 | `register` | Check the declaration, insert under the calling row, return the id | Not cancellable; a failed `apply` ends the row | The registration is withdrawn with the row; its documents stay | The new generation starts with no registrations; the documents stay | Registration lifetime by the calling row |
 
 ## Exceptions with reasons
@@ -196,12 +197,12 @@ A fact is published after the commit and never carries a document. A failed fact
 - The user path carries a draft revision and the owner path does not: the client's business decides whether a write still applies to the document the user read, while an owner change always applies to the current document; the revision is not a version the owner checks on the owner path.
 - `unsynced` reports a write that is in place with unconfirmed durability: a read sees it, and a repeated change applies again, so the caller reads before repeating.
 - On the native profile the first read imports the user file into the row when the row is absent: the import is internal state migration, not an operation, and the file stays where it is.
-- The project table is process-generation state: a project number is not durable and does not survive a Settings reload; a caller that needs a project after a reload resolves its cwd again at admission, which re-authorizes it.
+- The project table is process-generation state: the number is Settings' own, not FileStorage's root id, and not durable. The host registers the project directory as a FileStorage root when it creates the Session; after a Settings reload the table starts empty and a cwd is authorized again at admission.
 - A client write is admitted when it starts: a disconnected client does not undo it, so the reply may be lost while the document is written or `unsynced`.
 
 ## Supersedes
 
-- [Settings service](../appserver/settings-service.md) §4.2 (the `settings` service) and §4.5 (the Rust binding); §4.3 is [SettingsMethods](SettingsMethods.md)'s. The document's §3 state, §4.1 shapes, §4.4 events, §6 errors' state meanings, §7 security and §11 acceptance stay in force; §4.1's `Scope` is the `Scope` below and §4.4's `project_authorized` payload keeps `{root, cwd}`.
+- [Settings service](../appserver/settings-service.md) §4.1 (common shapes: `Snapshot`, `Sources`, `SettingsScope`), §4.2 (the `settings` service), §4.5 (the Rust binding), §5 (the operations' flows), §6 (the error codes) and §11 (acceptance). §4.3 is [SettingsMethods](SettingsMethods.md)'s. The document's §3 state, §4.4 events, §7 security, §8.1, §9 and §10 stay in force; §4.4's `project_authorized` payload keeps `{root, cwd}`, and the new acceptance is the delivery's flow tests.
 - [Settings service](../appserver/settings-service.md) §8.1's note that Rust owners keep their own methods stays; the methods' shapes are in each owner's contract.
 - [Resource owner operations](../contracts/resource-owner-operations.md) §Settings.
 - [Service faces](../service-faces.md) §3.3's `settingsService` row, §3.2's host-port sentence for the three prompt ports, and §4.1's `settingsService` paragraph.
@@ -231,7 +232,7 @@ Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d74417
 | §7 no proxy | No operation answers another owner's data: a value is requested from the part that owns it, and workflow definition bytes come from FileStorage for the Workflow plugin. |
 | §7 one face | One service on the `Settings` type; no facade, no wrapper type, no second name. |
 | §7 cross-language | Every operation's request, reply and errors are data; the Rust binding is the appendix. |
-| §7 caller complexity | The revision, exclusion, retry and durability stay inside Settings; the caller handles `conflict`, `user_only`, `rejected` and `unsynced` only. |
+| §7 caller complexity | The revision, exclusion, retry and durability stay inside Settings; the caller handles the business outcomes (`conflict`, `user_only`, `rejected`, `unsynced`) and the ordinary failures (`invalid`, `unknown_source`, `invalid_document`, `too_large`, `failed`, `closed`, `cancelled`). |
 | §7 one change | The old `settings`/`settingsService` surfaces and their callers are migrated in one change; PluginManager, SettingsMethods and every source owner appear in the delivery table. |
 | ADR 002 D1 | Process scope; documents and the project table outlive Sessions. |
 | ADR 002 D2 | No wiring plugin; the service is on the owner type. |
@@ -293,24 +294,24 @@ impl Scope {
     }
 }
 
-/// One document's replacement from the change callback: its own `code` and `message`.
+/// One document's replacement from the change callback: its own `reason` and `message`.
 #[derive(Debug, thiserror::Error)]
 #[error("{code}: {message}")]
 pub struct ChangeRefused {
-    pub code: String,
+    pub reason: String,
     pub message: String,
 }
 
-/// A callback's refusal arrives as the wire's own error; its code and message are kept.
+/// A callback's refusal arrives as the wire's own error; its code becomes `reason`.
 impl From<rutis::host::CallError> for ChangeRefused {
     fn from(error: rutis::host::CallError) -> Self {
-        let code = error
+        let reason = error
             .raw()
             .and_then(|raw| raw.downcast_ref::<rutis_bridge::session::Error>())
             .and_then(rutis_bridge::session::Error::code)
             .unwrap_or("rejected")
             .to_owned();
-        Self { code, message: error.to_string() }
+        Self { reason, message: error.to_string() }
     }
 }
 
@@ -382,7 +383,7 @@ pub struct Declaration {
     pub schema: Value,
     pub scopes: Vec<String>,
     pub user_only: Vec<String>,
-    pub write_only: bool,
+    pub write_only_hint: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -403,7 +404,7 @@ pub struct Authorized {
     pub root: ProjectId,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub root: ProjectId,
@@ -416,60 +417,31 @@ pub struct AuthorizedProjects {
     pub projects: Vec<Project>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum SettingsError {
-    #[error("{0}")]
-    Invalid(String),
-    #[error("{0}")]
-    UnknownSource(String),
-    #[error("{0}")]
-    InvalidDocument(String),
-    #[error("{0}")]
-    UserOnly(String),
-    #[error("{code}: {message}")]
-    Refused(ChangeRefused),
-    #[error("the settings revision is stale")]
-    Conflict,
-    #[error("{0}")]
-    TooLarge(String),
-    #[error("{0}")]
-    Unsynced(String),
-    #[error("{0}")]
-    Failed(String),
-    #[error("the settings service is unloading")]
-    Closed,
-    #[error("the settings call was cancelled")]
-    Cancelled,
-}
-
-impl SettingsError {
-    /// The wire `code`; a refused change keeps the callback's own code.
-    pub fn code(&self) -> &str {
-        match self {
-            Self::Invalid(_) => "invalid",
-            Self::UnknownSource(_) => "unknown_source",
-            Self::InvalidDocument(_) => "invalid_document",
-            Self::UserOnly(_) => "user_only",
-            Self::Refused(refused) => &refused.code,
-            Self::Conflict => "conflict",
-            Self::TooLarge(_) => "too_large",
-            Self::Unsynced(_) => "unsynced",
-            Self::Failed(_) => "failed",
-            Self::Closed => "closed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
-/// The wire error's `{code, message}` shape; derived tags cannot carry the callback's code.
-impl serde::Serialize for SettingsError {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut out = serializer.serialize_struct("SettingsError", 2)?;
-        out.serialize_field("code", self.code())?;
-        out.serialize_field("message", &self.to_string())?;
-        out.end()
-    }
+    #[error("{message}")]
+    Invalid { message: String },
+    #[error("{message}")]
+    UnknownSource { message: String },
+    #[error("{message}")]
+    InvalidDocument { message: String },
+    #[error("{message}")]
+    UserOnly { message: String },
+    #[error("{reason}: {message}")]
+    Rejected { reason: String, message: String },
+    #[error("{message}")]
+    Conflict { message: String },
+    #[error("{message}")]
+    TooLarge { message: String },
+    #[error("{message}")]
+    Unsynced { message: String },
+    #[error("{message}")]
+    Failed { message: String },
+    #[error("{message}")]
+    Closed { message: String },
+    #[error("{message}")]
+    Cancelled { message: String },
 }
 
 impl PublicService for Settings {}

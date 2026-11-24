@@ -29,7 +29,11 @@ Callers keep:
 PromptSources reads the base text once, while its Session part applies.
 
 ```rust
-let base = prompt_settings.base(cancelled.child_token()).await.ok().flatten();
+let base = prompt_settings
+    .base(cancelled.child_token())
+    .await
+    .ok()
+    .and_then(|view| view.text);
 let text = factory.base.or(base).unwrap_or_else(|| BUILT_IN.into());
 ```
 
@@ -69,7 +73,7 @@ A read returns the member as stored after the schema check; an absent member is 
 
 ## Supersedes
 
-- [Prompt overrides](../appserver/prompt-overrides.md) §3.1: the three services and their bare string replies are replaced by `promptSettings` and `{text}`. The precedence rules above and §4's client entry stay in force.
+- [Prompt overrides](../appserver/prompt-overrides.md) §3 and §3.1 (the three ports), §7 (the three-host binding appendix) and §4's `settings.sources` sentence: one `promptSettings` service and `{text}`, with each capability depending on its own port trait. The precedence rules above and the rest of §4 stay in force.
 
 ## Rule check
 

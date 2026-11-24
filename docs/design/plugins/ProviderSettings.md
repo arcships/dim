@@ -29,7 +29,11 @@ Callers keep:
 Provider reads the value when it builds a request.
 
 ```rust
-let configured = provider_settings.user_agent().await.ok().flatten();
+let configured = provider_settings
+    .user_agent()
+    .await
+    .ok()
+    .and_then(|view| view.user_agent);
 let user_agent = configured.unwrap_or_else(|| dim_user_agent());
 ```
 

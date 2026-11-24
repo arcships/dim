@@ -36,14 +36,14 @@ adopted.
 ```text
                        App Server process row: PromptSettings
                          registers Settings source "prompts"
-                         provides three ports from the same document
+                         owns one promptSettings service
                                         |
-             +--------------------------+--------------------------+
-             |                          |                          |
-  BasePromptSettingsHost   SkillsInstructionsSettingsHost   SummaryPromptSettingsHost
-             |                          |                          |
-     PromptSources part            Skills part          ProductSummaryStrategy part
-        (dim/base)             (dim/skills/instructions)      (summary prompt)
+                     +------------------+------------------+
+                     |                  |                  |
+              base()             skills()            summary()
+                     |                  |                  |
+             PromptSources part     Skills part    ProductSummaryStrategy part
+                (dim/base)    (dim/skills/instructions)  (summary prompt)
              \                          |                          /
               read once while the Session part applies
 ```
@@ -80,13 +80,10 @@ are its normal surface; in the file-backed profile it is `prompts.json` under th
 
 ## 3. Host ports and precedence
 
-Each owner declares its own port, so a capability depends only on its own text:
-
-| Owner | Port | Reads |
-| --- | --- | --- |
-| PromptSources | `BasePromptSettingsHost` | `base` |
-| Skills | `SkillsInstructionsSettingsHost` | `skills` |
-| ContextCompaction | `SummaryPromptSettingsHost` | `summary` |
+Each capability reads only its own text. The owner service is [PromptSettings](../plugins/PromptSettings.md); a
+capability outside the App Server depends on the port trait in `dim-agent-capabilities` for its text:
+`BasePromptSettings` for PromptSources, `SkillsInstructionsSettings` for Skills and
+`SummaryPromptSettings` for ContextCompaction.
 
 - The port is optional (`Option<Key<…>>`): an assembly that does not register the name, such as
   the capability tests or a host without Settings, injects nothing and keeps its built-in text.
@@ -105,8 +102,8 @@ Superseded by [PromptSettings](../plugins/PromptSettings.md): one service `promp
 ## 4. Client entry
 
 The settings methods are the primitive: `settings.read` and `settings.update` with
-`source: "prompts"`, `scope: "user"`. `settings.sources` publishes the schema, and both methods
-are management methods, so only a local connection can edit the texts.
+`source: "prompts"`, `scope: "user"`. The client knows the three member names; `settings.sources`
+is deleted. Both methods are management methods, so only a local connection can edit the texts.
 
 The native client presents each field as plain text rather than JSON:
 
@@ -172,37 +169,18 @@ Rules: [design rules](../../architecture/rust-agent/principles.md) §1 and §4, 
 
 | Rule | How this design complies |
 | --- | --- |
-| §1 Plugins and capabilities bounded | Each text stays in its owner; the App Server owns only the Settings document and the ports |
+| §1 Plugins and capabilities bounded | Each text stays in its owner; the App Server owns the document and the one service, and each capability depends on its own port trait |
 | §4 rule 4 No business meaning in core | No core type gains a prompt text; the ports are capability-level contracts |
 | §4 rule 6 Context from consumed events | The text reaches the model through the existing adopted prompt sources; no new context path |
-| §4 rule 7 Public events and services | No new event, client method or Timeline fact; the existing Settings methods and three optional process services are used |
+| §4 rule 7 Public events and services | No new event, client method or Timeline fact; the existing Settings methods and one optional process service are used |
 | §4 rule 8 Infrastructure unchanged | No change to Timeline, Dispatcher, rutis or the assembly mechanism |
 | ADR 002 D1 Scope | The document and ports live at the process scope where the shared configuration is; the texts live in their Session parts |
 | ADR 002 D4 Configuration | Business configuration stays with its owner; the document is the App Server's source, as `execution` and `prompt-suggestion` are |
 | ADR 007 D5 Owner registration | A dedicated App Server row registers the source; Settings and the assembly declare none |
 | ADR 008 D2 No delivery status | This document states the design; the issue tracks delivery |
-| ADR 008 D3 Own scope only | The owner documents state their own port; this page states the product setting and the client entry |
+| ADR 008 D3 Own scope only | The owner contract states the service and the ports; this page states the product setting and the client entry |
 
 ## 7. Binding appendix
 
-```rust
-pub trait BasePromptSettings: Send + Sync + 'static {
-    fn base(&self, cancel: CancellationToken) -> HostFuture<'_, Option<Arc<str>>>;
-}
-pub struct BasePromptSettingsHost(pub Arc<dyn BasePromptSettings>);
-
-pub trait SkillsInstructionsSettings: Send + Sync + 'static {
-    fn instructions(&self, cancel: CancellationToken) -> HostFuture<'_, Option<Arc<str>>>;
-}
-pub struct SkillsInstructionsSettingsHost(pub Arc<dyn SkillsInstructionsSettings>);
-
-pub trait SummaryPromptSettings: Send + Sync + 'static {
-    fn system_prompt(&self, cancel: CancellationToken) -> HostFuture<'_, Option<Arc<str>>>;
-}
-pub struct SummaryPromptSettingsHost(pub Arc<dyn SummaryPromptSettings>);
-```
-
-The App Server row registers the `prompts` declaration and provides the three hosts from one
-`PromptDocument`; each host reads only its field. Each binding is provided at its Rust type key and
-`host_key` for its service name. Its dispatcher calls the same owner method; native
-callers invoke that method directly without JSON conversion.
+Superseded by the binding appendix of [PromptSettings](../plugins/PromptSettings.md); the three
+`*SettingsHost` types are deleted.
