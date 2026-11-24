@@ -154,7 +154,7 @@ The internal `McpSession` connection operations (`open`, `tools`, `observe`, `cl
 | `settings_write`, `settings_conflict` | Retry after the Settings row is available, or report the conflict |
 | `refused`, `unsupported`, `not_callable`, `unknown_server`, `unavailable`, `unknown`, `absent` | Report the MCP view or tool error; the generation is unchanged |
 | `timeout` | The probe did not finish; the owner settled it; report the result |
-| `mount_failed` | The child rows did not activate; the owner shut them down; report the binding failure |
+| `mount_failed` (wire code `mcp_binding_failed`) | The child rows did not activate; the owner shut them down; report the binding failure in the code clients already receive |
 | `cancelled` | Nothing was committed; the read or the flow stopped |
 | `mcp_invalid_config` | Fix the MCP document or entry; the client sees the current invalid-config code |
 | `mcp_settings_read` | Retry after Settings is readable, or report the failure |
@@ -175,7 +175,7 @@ The internal `McpSession` connection operations (`open`, `tools`, `observe`, `cl
 
 ## Client-visible changes
 
-None. `mcp.inspect` keeps `{cwd?, id, source}` and `{enabled, configuration, connections}`, now re-sourced from the report registry; `mcp.catalog`, `mcpSession.state`, `session.mcp_temporary.attach`, `mcp.import.sources` and `mcp.temporary.capabilities` keep their current requests, replies and codes. The removed `mcpSession.subscribe` is Rust-only and never crossed the client protocol.
+None. `mcp.inspect` keeps `{cwd?, id, source}` and `{enabled, configuration, connections}`, now re-sourced from the report registry; `mcp.catalog`, `mcpSession.state`, `session.mcp_temporary.attach`, `mcp.import.sources` and `mcp.temporary.capabilities` keep their current requests, replies and codes. Internal kinds map onto the codes clients already receive: `mount_failed` is `mcp_binding_failed`, `invalid` is `invalid_params` where the method answered it before, and `missing` is the existing not-found code of each method. The removed `mcpSession.subscribe` is Rust-only and never crossed the client protocol.
 
 ## Exceptions with reasons
 

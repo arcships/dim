@@ -121,7 +121,7 @@ if let Some(reason) = refusal {
 
 ### Client-visible changes
 
-None. `plugin.*` and the `plugin` tool keep their commands, results and errors; the `Manager` handoff was a Session-part implementation detail.
+None. `plugin.*` and the `plugin` tool keep their commands, results and errors; the `Manager` handoff was a Session-part implementation detail. The owner's kinds map onto the codes clients receive today: `exists` is `plugin_exists`, `missing` is `plugin_not_found`, `load_failed` and `restart_required` are `acquire_failed`, `content_refused` is `refused`, `write_failed` is `record_unreadable`, `usage` is `invalid_params`, and `invalid_source`, `invalid_manifest`, `invalid_id`, `path_outside_plugins`, `plugin_locked` and `invalid_params` keep their names.
 
 ### Rule check
 
