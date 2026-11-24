@@ -82,7 +82,8 @@ depends on SessionStore, the core part; SessionStore names no consumer.
   `--database`. In the product profile that is `~/.dimcode/rust`, not the product home
   `~/.dimcode` that `native_home` names ([lib.rs](../../../crates/dim-app-server/src/lib.rs)).
   `serve` registers the database directory as a FileStorage root when it is not one already
-  (with `--home` it already is) and passes its index to `SessionStorePlugin`. SessionStore
+  (with `--home` it already is) and passes its root id to `SessionStorePlugin`; SessionStore
+  reads the directory with `root_path`. SessionStore
   provides `sessionFiles` wherever it is loaded; a host without native storage has no
   SessionStore and no Session files.
 - The returned path is `root_path(root)/<db>.session-files/<fileId>/<name>`. Roots are canonical
@@ -278,9 +279,9 @@ safe because FileStorage removal can be retried.
 **Order against Session close and keys.** S5c closes the Session first, then commits its
 delete transaction, then SessionStore sweeps. No FileStorage key outlives a put: `write`
 holds its key only while it writes. The sweep never removes a pending file of the live
-generation. A deletion therefore never waits on a key or meets a non-empty directory because of a
-put. If it does because of something outside SessionStore, the row stays and the next sweep
-retries.
+generation. A deletion never meets a key held by a put; if a writer outside SessionStore holds
+one, `remove` waits, and cancelling the sweep ends the wait with `cancelled`, leaving the row for
+the next sweep.
 
 **Serializing put against delete and fork.** All three decide at a write transaction of the one
 native store connection. Txn 2 checks that the Session still exists. S5c's delete removes the

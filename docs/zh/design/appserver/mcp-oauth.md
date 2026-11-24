@@ -33,7 +33,7 @@ OAuth 协议步骤来自工作区里已有的官方 Rust SDK：rmcp 的 `auth` f
 | [rmcp 版本](../../../../crates/dim-app-server/Cargo.toml)，feature `auth`（`src/transport/auth.rs`） | `auth` 模块覆盖元数据发现、DCR 与 CIMD 客户端选择、PKCE 与 `state`、带 `resource` 和 `iss` 的授权码交换，以及带轮换的刷新。`CredentialStore` 与 `StateStore` trait 可替换。它与传输层共用同一个 reqwest 0.13 | 协议引擎；缺口见附录 A |
 | Claude Code（`/mcp`、`claude mcp login`、[文档](https://code.claude.com/docs/en/mcp)） | `.mcp.json` 中的 `oauth` 对象：`clientId`、`callbackPort`、`authServerMetadataUrl`、`scopes`。重定向为 `http://localhost:PORT/callback`；曾改成 `127.0.0.1`，使按注册 URI 精确匹配的服务器失败，后已改回。重定向失败时粘贴回调 URL。客户端密钥不进配置。遇到 `401` 先刷新，再重试一次 | `oauth` 的字段名和类型、重定向形式、粘贴兜底、密钥不进配置 |
 | MCP TypeScript 与 Python SDK（`OAuthClientProvider`、`TokenStorage`） | 存储与重定向处理由宿主注入。凭据带 issuer 标记，不匹配时丢弃。`invalid_client` 清除注册，`invalid_grant` 清除令牌 | 所有者提供的存储、issuer 绑定、清除规则 |
-| Dim 账号登录（`account.login.browser.begin/complete`、`managed_oauth.rs`、`dim-cli/src/login.rs`） | 守护进程返回 `{attemptId, authorizationUrl, expiresAt}`。客户端把粘贴的回调 URL 送回，输入时隐藏回显。令牌存于 home 根目录的 `auth.json`，经 FileStorage 的 `claim`/`update_claimed` 原子替换为 0600 | 尝试的形状、粘贴输入、存储方式 |
+| Dim 账号登录（`account.login.browser.begin/complete`、`managed_oauth.rs`、`dim-cli/src/login.rs`） | 守护进程返回 `{attemptId, authorizationUrl, expiresAt}`。客户端把粘贴的回调 URL 送回，输入时隐藏回显。令牌存于 home 根目录的 `auth.json`；登录用一次 `update` 提交，刷新先 claim marker 再用 `update_claimed` 写回，原子替换为 0600 | 尝试的形状、粘贴输入、存储方式 |
 
 ## 3. 结构
 

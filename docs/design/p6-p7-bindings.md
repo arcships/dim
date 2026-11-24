@@ -133,15 +133,14 @@ The four methods are asynchronous:
 | `read` | `{root, path}` | Bytes, received as `Uint8Array` by TypeScript |
 | `list` | `{root}` | Definition-directory entries `[{name, kind}]`, where `kind` is `file`, `directory` or `other` |
 | `replace` | `{root: {project: canonicalCwd}, path, bytes}` | `void`, after existing atomic replacement and durability check |
-| `createDirectory` | `{root: {project: canonicalCwd}}` | `void`, after ensuring `.dimcode`, then `.dimcode/workflows`, with FileStorage's `create_directory` |
+| `createDirectory` | `{root: {project: canonicalCwd}}` | `void`, after one recursive `create_directory` for `<root>/.dimcode/workflows` |
 
 The plain Rust methods take serde request types. `read` returns
 `std::result::Result<rutis_bridge::session::Bytes, WorkflowFilesError>`;
 `list` returns `std::result::Result<Vec<WorkflowFileEntry>, WorkflowFilesError>`
 (UTF-8 `name` and the `kind` above); `replace` and `create_directory` return
 `std::result::Result<(), WorkflowFilesError>`. Their generated TS methods use the
-table's shapes; Bytes becomes `Uint8Array` and `()` becomes `void`. `WorkflowRoot`,
-resolved paths, root indices and `CancellationToken` stay private. Dropping a call follows the
+table's shapes; Bytes becomes `Uint8Array` and `()` becomes `void`. Root indices, resolved paths and `CancellationToken` stay private. Dropping a call follows the
 existing generated future cancellation; it does not undo a committed mutation.
 
 The native binding constructs fixed prefixes after checking the selector; it
@@ -167,8 +166,12 @@ file boundary. Unknown/unauthorized selectors, package mutations and invalid
 filenames throw `invalid_path` before I/O. Malformed request data, including a
 raw numeric root, is refused by generated decoding before the method runs.
 A name that cannot be represented as UTF-8 is `invalid_data`, never a lossy
-alias. `unsynced` means a mutation may already be visible: do not retry it as an
-unchanged write. `replace` keeps native permission behavior, with no chmod API.
+alias. `missing_parent`, `too_large` and `rejected` never cross this binding: a
+missing parent is `invalid_path`, an over-limit definition is `invalid_data`,
+and the binding passes no source or change callback that could reject. `locked`
+is absent because removal waits for the key. `unsynced` means a mutation may
+already be visible: do not retry it as an unchanged write. `replace` keeps native
+permission behavior, with no chmod API.
 `read` and `replace` reject definition files above 8 MiB as `invalid_data`. Reads take the length from FileStorage's `stat` before allocating and enforce the cap on each `read` page to cover concurrent growth. An over-limit read returns no partial bytes; an over-limit replacement leaves the existing file untouched. This ceiling leaves room for base64 bytes and the JSON envelope within the existing 16 MiB bridge frame. Workflow checks serialized project-save bytes before issuing a binary call. Workflow's own decoded-definition admission (1 MiB compact JSON) and run-store payload (8 MiB) bounds apply after this port returns bytes; committed run snapshots keep their existing decoder. This port adds no chunking or shared transport change.
 
 No deletion, arbitrary root registration, lock API or S10 envelope is exported.

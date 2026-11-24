@@ -60,7 +60,7 @@ SessionStore 仍只依赖 SqliteStorage，不依赖 FileStorage：它在每次�
 ```
 
 - 目录位于拥有它的那个数据库旁边，并以数据库文件命名，就像 SQLite 的 `-wal` 和 FileStorage 的 `.lock` 伴随文件一样。因此每个数据库都有自己的目录，即使两个数据库位于同一目录（两个 `--database` 文件）。复制数据库文件不会复制它的 Session 文件。
-- 控制节点上，数据库目录是 `--home` 目录，或 `--database` 所在的目录。产品配置中它是 `~/.dimcode/rust`，而不是 `native_home` 指向的产品 home `~/.dimcode`（[lib.rs](../../../../crates/dim-app-server/src/lib.rs)）。数据库目录还不是 FileStorage 根时，由 `serve` 注册（使用 `--home` 时已经是），并把索引交给 `SessionStorePlugin`。只要 SessionStore 已加载就提供 `sessionFiles`；没有原生存储的宿主没有 SessionStore，也就没有 Session 文件。
+- 控制节点上，数据库目录是 `--home` 目录，或 `--database` 所在的目录。产品配置中它是 `~/.dimcode/rust`，而不是 `native_home` 指向的产品 home `~/.dimcode`（[lib.rs](../../../../crates/dim-app-server/src/lib.rs)）。数据库目录还不是 FileStorage 根时，由 `serve` 注册（使用 `--home` 时已经是），并把根 id 交给 `SessionStorePlugin`；SessionStore 用 `root_path` 读取该目录。只要 SessionStore 已加载就提供 `sessionFiles`；没有原生存储的宿主没有 SessionStore，也就没有 Session 文件。
 - 返回的路径是 `root_path(root)/<db>.session-files/<fileId>/<name>`。根都是规范化的绝对路径，所以 `read` 解析到同一个文件。
 - 在 P3 的资源节点上，目录以同样的名字位于该节点 FileStorage 注册的 home 根下。按节点查找属于 P3（#38）。一个资源节点只服务一个控制节点，因为总体设计 §6.3 不设计跨控制节点的使用。S5a 只实现控制节点，因为 P3 之前没有 `SessionConfig.resourceNode`；但每个文件都记下节点，P3 不需要再改格式。
 
@@ -197,7 +197,7 @@ put 作为 SessionStore 自己的任务运行：调用方不再等待就会取�
 
 ## 6. 删除、崩溃恢复与串行化
 
-**与 Session 关闭和键的顺序。** S5c 先关闭 Session，再提交删除事务，然后 SessionStore 清扫。FileStorage 键不会比一次写入活得更久：`write` 只在写入期间持有键。清扫从不移除当前代次的 pending 文件。因此删除不会因为写入而等待键或遇到非空目录；如果因为 SessionStore 以外的原因遇到，该行保留，下次清扫重试。
+**与 Session 关闭和键的顺序。** S5c 先关闭 Session，再提交删除事务，然后 SessionStore 清扫。FileStorage 键不会比一次写入活得更久：`write` 只在写入期间持有键。清扫从不移除当前代次的 pending 文件。删除不会遇到 put 持有的键；如果 SessionStore 之外的写入方持有键，`remove` 会等待，取消清扫则以 `cancelled` 结束等待，把该行留给下次清扫。
 
 **写入与删除、分叉的串行化。** 三者都在同一个原生存储连接的写事务上做决定：txn 2 检查 Session 是否仍存在；S5c 的删除同时删除所有者行和 Session 行；分叉在创建它的事务里复制所有者行。SQLite 给这些事务排序，所以不需要内存锁：
 
