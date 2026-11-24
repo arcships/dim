@@ -13,8 +13,8 @@ HTTP to these owners, while the Web client owns mounting and selection.
 
 | Part | Scope | Dependencies | Provides |
 | --- | --- | --- | --- |
-| UiExtensions | process | managementMethods, partRegistry, fileStorage | uiExtensions |
-| UiResources | Session | sessionIdentity, sessionLifecycle, fileStorage | uiResources |
+| UiExtensions | process | managementMethods, partRegistry, fsHost | uiExtensions |
+| UiResources | Session | sessionIdentity, sessionLifecycle, fsHost | uiResources |
 
 PluginManager registers UI content independently of code rows. UiExtensions
 copies regular files through FileStorage into a private generation directory,

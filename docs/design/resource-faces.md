@@ -23,7 +23,6 @@ Resource and state operations use these public data faces:
 
 The tool family (`resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`) is the file-tools owner's operations and is not part of `fsHost`; [#1297](https://github.com/arcships/dim/issues/1297) tracks that design. `fsHost` is the storage face of the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md).
 
-
 ```text
  control node                                        resource leaf (mounted per #1296)
    WorkspaceTools          ── file tools ─ data ─────►  file operations on node files
