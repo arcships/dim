@@ -23,7 +23,7 @@ The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelection
 | Caller → owner | Methods and replies |
 | --- | --- |
 | Permission consumers → Agent directory | `sessions.permission({sessionId,branchId})` and `sessions.permissionDefaults({})` retain the existing policy replies. The first holds the Session lease; the second reads the current default without creating a Session. |
-| Dialogue, summary and suggestion → `providerService` | `invoke(request, mode, consume, admit?, cancelled) → {accepted}`. Full `ModelRequest` with pinned tools, configuration, cached prefix and capability snapshot; retries and credential recovery stay with the owner, see [Provider](../plugins/Provider.md). |
+| Dialogue, summary and suggestion → `providerService` | `invoke(request, mode, consume, admit, cancelled) → {accepted, chain?}`. Full `ModelRequest` with pinned tools, configuration, cached prefix and capability snapshot; retries and credential recovery stay with the owner, see [Provider](../plugins/Provider.md). |
 | Session configuration → `providerService` (managed profile) | `resolve({target?, cwd?}) → ModelSelection`; `preferences({selection, update}) → ModelSelection`, see [Provider](../plugins/Provider.md). |
 | Session creation/adoption and Collaboration → `providerService` (managed profile) | `prepare_startup(request) → ModelSelection`, `retain_startup({session, model})`, `release_startup({model})`. The source is bound to the calling row until a Session retains it; a missed release settles with the row, a retained source with the Session, see [Provider](../plugins/Provider.md). |
 | Session creation / worktree management → ManagedWorktrees | `create({source, base?, branch?}) → CreatedWorktreeReply`, `discard(created) → void`, `list({}) → WorktreeView[]`, `pruneSelection({olderThanMs?, keep?, force}) → PruneSelection`, `remove({taskId, force}) → boolean`. Bind the existing operations. Failed Session creation discards the created worktree on its node. |
@@ -52,9 +52,10 @@ The target removes `sessionPermissions`, `selectableModelsHost`, `modelSelection
 
 | Input | Contract |
 | --- | --- |
-| `mode` | `once` for suggestions; `recovering` accepts an optional existing FailureChain. Dialogue supplies the replay decision. |
-| `consume(next, cancelled)` | `next` yields one chunk, end or typed host error. Return `{kind: returned, value, replaySafe}` or `{kind: failed, error, replaySafe}`. The reader expires when the consumer settles. Accepted output prevents unsafe replay. |
-| `hooks?` | `prepare(protocol or null) → ModelConfig or null` runs once after resolution. `beforeAttempt() → admitted or {rejected: message}` checks the summary budget before each attempt. `waiting(progress or null)` reports the existing retry schedule. |
-| Completion | Cancellation or driver shutdown releases a suspended consumer and joins accepted work. Invalid wire input returns `invalid_request`. Consumer exceptions remain consumer errors. |
+| `mode` | `Dialogue { chain? }` continues the failure chain a caller holds; `Once` makes one request with no retry and no model substitution. Both are [Provider](../plugins/Provider.md)'s `Mode`. |
+| `consume` | A direct callback `impl Fn(ProviderChunk) -> BoxFuture<'static, Result<Consumed, CallError>>`; it answers `Continue`, `End`, `CredentialRejected` or `Failed { retryable }`. Output accepted before a failure prevents replay, and `InvokeReply.accepted` says whether any was accepted. |
+| `admit` | A required direct callback `impl Fn() -> BoxFuture<'static, Result<Admitted, CallError>>`; it answers `Admitted` or `Rejected { message }` before each attempt, and `admit_all` is the exported callback that admits every attempt. |
+| Retry display | Provider reports waits as `Retrying { attempt, delay_ms }` chunks to `consume`. |
+| Completion | Cancellation or owner shutdown releases the suspended consumer and joins accepted work. A failed request returns `provider_failed { failure, chain }` with the runtime `ModelFailure` and the updated `FailureChain`; ModelProvider writes both to `step/model-output-end`. |
 
 The full-request consumer injects only `providerService`. The managed profile registers Provider at that name; the API-key profile registers ConfiguredModels; standalone local configuration registers the local host. Each profile registers exactly one dispatcher at `providerService`. Aimux supplies the native driver and owns its pool and unload signal without a catalog name. The selected owner resolves the credential with the account owner, invokes its driver and settles the retries; the caller receives output or a typed error.

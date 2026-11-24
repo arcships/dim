@@ -1054,15 +1054,15 @@ contained in the persisted static record, so executing it requires that owner's 
 this offline judgment. Static records are the contract's input; the account owner's
 catalog remains authoritative for managed models.
 
-**Relation to §3.6.** The selectable-model read is a process host port with no input. It
-enumerates what Provider would serve now, including managed account catalogs, and returns
-capability snapshots for routing. This contract takes one persisted static record and one
-explicit model, reads no account or store, and returns the route with the snapshot. They
-share `static_catalog`, `ProviderCatalog::selectable` and `capability_snapshot`; for a
-stored static-authority record both can see, a target appears in the §3.6 reply exactly
-when this contract accepts it. The two differ in scope, not in rules: §3.6 answers "what
-is available now", this contract answers "can this stored selection execute". Neither is
-a management method or an RPC.
+**Relation to §3.6.** `providerService.selectable({use})` takes the use and enumerates what
+Provider would serve now, including managed account catalogs, with capability snapshots for
+routing. This contract takes one persisted static record and one explicit model, reads no
+account or store, and returns the route with the snapshot. They share `static_catalog`,
+`ProviderCatalog::selectable` and `capability_snapshot`; for a stored static-authority record
+both can see, a target appears in the `selectable` reply exactly when this contract accepts
+it. The two differ in scope, not in rules: `selectable` answers "what is available now",
+this contract answers "can this stored selection execute". Neither is a management method or
+an RPC.
 
 **Consumer and migration.** Migration reads the target record with Provider's parser and
 converts legacy selections through Provider's frozen selection conversion. That conversion

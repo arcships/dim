@@ -38,8 +38,20 @@ Web declares its search tool only while the relay account is signed in:
 ```rust
 let AccountAvailability { signed_in, .. } = dim_account.availability(cancelled.clone()).await?;
 if signed_in {
-    let mut changes = dim_account.subscribe(cancelled.clone()).await?;
-    // declare web_search; withdraw it when changes report signed_out
+    // The owner calls `notify` once with the current value, then on every change;
+    // the registration ends with this Session part's row or the owner's close.
+    dim_account
+        .subscribe(
+            &self.ctx,
+            Arc::new(|availability: AccountAvailability| {
+                Box::pin(async move {
+                    // Declare web_search from `availability.signed_in`.
+                    Ok(())
+                })
+            }),
+            cancelled.clone(),
+        )
+        .await?;
 }
 ```
 

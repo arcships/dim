@@ -153,16 +153,16 @@ All operations are marked on `Provider` and provided under `providerService`; re
 | `resolve` | The model one request resolves to | `{target?, cwd?}` | `Selection` | The caller cancels; no timeout | `invalid`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed` |
 | `preferences` | Apply a patch to an adopted selection | `{selection, update}` | `Selection` | None; completes immediately | `invalid` |
 | `selectable` | The models that can run a use, and the default | `{use: "chat" \| {modality}}` | `{models, default?}` | The caller cancels; no timeout | `invalid`, `cancelled`, `closed`, `failed` |
-| `prepare_startup` | Admit a temporary connection under the calling row and select its model | `{target?, cwd?, preferences, connection?, limits?}` | `{selection}` | The caller cancels before admission | `invalid`, `invalid_connection`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed` |
+| `prepare_startup` | Admit a temporary connection under the calling row and select its model | `{target?, cwd?, preferences, connection?, limits?}` | `ModelSelection` | The caller cancels before admission | `invalid`, `invalid_connection`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed` |
 | `retain_startup` | Bind the temporary connection the model carries to a Session | `{session, model}` | `{}` | None; completes immediately | `not_found` (the model carries no source, or the source is not bound), `closed` |
 | `release_startup` | Release a source the calling row owns | `caller`, `{model}` | `{}` | None; completes immediately | `not_found` (already retained by a Session, or another row's), `closed` |
-| `invoke` | Run one model request | `request`, `mode`, and the `consume` / `admit` callbacks as direct parameters | `{accepted}` | The caller cancels; the request stops and the consumer is released. No owner timeout; a request may wait on the transport through its configured HTTP timeout | `invalid`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed`, `provider_failed {retryable}` |
+| `invoke` | Run one model request | `request`, `mode`, and the `consume` / `admit` callbacks as direct parameters | `{accepted, chain?}` | The caller cancels; the request stops and the consumer is released. No owner timeout; a request may wait on the transport through its configured HTTP timeout | `invalid`, `not_found`, `unavailable`, `auth_required`, `cancelled`, `closed`, `failed`, `provider_failed {failure, chain}` |
 | `media_route` | A media model's route and the owner of its credential | `{target, operation}` | `{protocol, base_url, headers, realtime?, credential: Owner}` | The caller cancels; no timeout | `invalid`, `not_found`, `unavailable`, `cancelled`, `closed`, `failed` |
 | `credential` | A static model's connection facts for one request | `{provider, model}` | `{protocol, base_url, headers, bearer, generation: none}` | The caller cancels; no timeout | `not_found`, `unavailable`, `cancelled`, `closed`, `failed` |
 
 `prepare_startup` admits the source under the calling row; the row's unload releases it, so a missed `retain_startup` or `release_startup` settles with the row. `retain_startup({session, model})` moves the source to the Session named by the caller and the model's metadata; the Session's close releases it, so a missed failure-path release settles with the Session. `release_startup({model})` is the optional early release for a creation that failed; it answers `not_found` once a Session retains the source. A member Session that inherits the leader's model retains the same source by value. A connection never crosses. `Selection` is the adopted provider, model, configuration, capability snapshot and metadata. `Credential` is [ManagedAccount](ManagedAccount.md)'s value: static credentials carry no generation; an account owner's carry the grant's. `invoke` calls the account owner's `credential`, sends, and on a refusal calls `rejected` with the refused generation before retrying within its own failure chain.
 
-`invoke`'s `mode` is `Dialogue { chain? }` or `Once`. `Dialogue` continues the failure chain when given one and reports retry waits as `Retrying` chunks; `Once` makes exactly one request with no retry and no model substitution, which is what a caller sending one paid request needs (Report's model generation). `consume(chunk)` reports `Continue`, `End`, `CredentialRejected` (the provider refused the credential, so `invoke` calls the account owner's `rejected` once and retries) or `Failed { retryable }`; output accepted before a failure prevents replay, and the reply's `accepted` says whether any output was accepted. `admit` runs before each attempt and answers `Admitted` or `Rejected { message }`; a caller without its own budget passes `admit_all`, the binding's default that admits every attempt. Both callbacks are direct parameters, so the request data stays serde-only. A request for `openai-chatgpt` requires a client-origin Session: Provider reads the Session's creation record (`creationRecord`) and answers `invalid` for a non-client Session.
+`invoke`'s `mode` is `Dialogue { chain? }` or `Once`. `Dialogue` continues the failure chain when given one and reports retry waits as `Retrying` chunks; `Once` makes exactly one request with no retry and no model substitution, which is what a caller sending one paid request needs (Report's model generation). `consume(chunk)` reports `Continue`, `End`, `CredentialRejected` (the provider refused the credential, so `invoke` calls the account owner's `rejected` once and retries) or `Failed { retryable }`; output accepted before a failure prevents replay, and the reply's `accepted` says whether any output was accepted. `admit` runs before each attempt and answers `Admitted` or `Rejected { message }`; a caller without its own budget passes the exported `admit_all`. Both callbacks are direct parameters, so the request data stays serde-only. A request for `openai-chatgpt` requires a client-origin Session: Provider reads the Session's creation record (`creationRecord`) and answers `invalid` for a non-client Session. A failed request returns `provider_failed` with the `ModelFailure` facts and the updated `FailureChain`; a completed request returns the updated chain in the reply, so ModelProvider writes both into `step/model-output-end`.
 
 ### Errors
 
@@ -176,7 +176,7 @@ All operations are marked on `Provider` and provided under `providerService`; re
 | `cancelled` | Yes, by calling again | Nothing changed; the call stopped where it was cancelled |
 | `closed` | Against the next generation | This generation is unloading; call the replacement generation |
 | `failed` | Yes, after the store recovers | Provider's storage or a catalog read failed; retry the read |
-| `provider_failed {retryable}` | When `retryable` | The request failed after the owner's retries; `retryable` says whether a new `invoke` can succeed |
+| `provider_failed {failure, chain}` | When `failure.retry_forbidden` is false | The request failed after the owner's retries; `failure` carries the runtime kind, status, provider code, cause and attempt totals, `chain` the updated retry budget; ModelProvider writes both to `step/model-output-end` |
 
 ### Flows
 
@@ -243,7 +243,7 @@ use dim_agent_capabilities::host::{
     CancelledFn, ModelProtocol, ModelStopReason, RealtimeDeclaration,
 };
 use dim_agent_runtime::PublicService;
-use dim_agent_types::FailureChain;
+use dim_agent_types::{FailureChain, ModelFailure};
 use dim_agent_types::{
     MessagePart, ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId, ModelPreferences,
     ModelRequest, ModelSelection, ToolCall, Usage,
@@ -344,9 +344,14 @@ pub enum Consumed { Continue, End, CredentialRejected, Failed { retryable: bool 
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Admitted { Admitted, Rejected { message: String } }
 
+/// The default admit callback: admits every attempt.
+pub fn admit_all() -> BoxFuture<'static, Result<Admitted, CallError>> {
+    Box::pin(async { Ok(Admitted::Admitted) })
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InvokeReply { pub accepted: bool }
+pub struct InvokeReply { pub accepted: bool, pub chain: Option<FailureChain> }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -383,7 +388,8 @@ pub enum ProviderError {
     #[error("cancelled")] Cancelled,
     #[error("provider is unloading")] Closed,
     #[error("{0}")] Failed(String),
-    #[error("{message}")] ProviderFailed { retryable: bool, message: String },
+    #[error("the model request failed")]
+    ProviderFailed { failure: ModelFailure, chain: FailureChain },
 }
 
 impl PublicService for Provider {}
@@ -410,3 +416,14 @@ impl Provider {
 ```
 
 The `provider` client namespace keeps its published method names and request shapes; handlers call the operations above and the management operations. No management operation is also published on `providerService`.
+
+## Supersedes
+
+- `service-faces.md`: the `modelHost` row and §4.2; the `providerService` and `providerConnectionResolver` rows; the `managedSearch` row where it names Provider; the Provider selection block in §4.10.
+- `contracts/process-owner-operations.md`: the model selection, session configuration, session creation/adoption, model invocation and auxiliary rows, and the `modelHost` paragraph.
+- `contracts/resource-owner-operations.md`: § Provider → sqliteStorage, whose record operations move to Provider.
+- `appserver/provider-management.md`: the surface-table rows for `ModelSelectionHost`, `SelectableModelsHost`, `ProviderConnectionResolver`, `ModalityConnectionHost` and `auxiliaryModel.complete`, the port sections §3.6 and §3.8, and the `provider` settings-source row in §2.
+- `appserver/auxiliary-model.md`: the `auxiliaryModel` interface in §4; sections 5–11 are historical.
+- `plugins/Modality.md`: the dependency rows, §9.2's selectable read and §9.3/§9.4's connection resolution, which name `SelectableModelsHost`, `SelectableModelsHost.selectableModels`, `selectableForModality`, `ModalityConnectionHost` and provider-management §3.6.
+- `plugins/ImageUnderstanding.md`: the paragraphs that name `auxiliaryModel`, `selectableModels` and `selectableForModality`.
+- Deleted names: `modelHost`, `modelSelectionHost`, `selectableModelsHost`, `providerConnectionResolver`, `modalityConnectionHost`, `auxiliaryModel`, the `modelHost.invoke` operation and `ProviderConnectionResolver`.

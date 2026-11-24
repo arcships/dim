@@ -73,7 +73,7 @@ The `auxiliaryModel` face is deleted. See [Provider](../plugins/Provider.md) for
 
 ### 4.1 Language-neutral (ADR 002 D5)
 
-Superseded: there is no `auxiliaryModel` service. A caller runs `providerService.invoke(request, Mode::Once, consume, None, cancelled)` and collects the text in its consumer.
+Superseded: there is no `auxiliaryModel` service. A caller runs `providerService.invoke(request, Mode::Once, consume, admit_all, cancelled)` and collects the text in its consumer.
 
 ### 4.2 Rust binding
 
