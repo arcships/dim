@@ -20,6 +20,11 @@ runtime assembly and scripted model hosts: a newly assembled capability needs it
 entry here. Excluded rows can still appear as providers or consumers in the generated blocks. A service
 dependency is not necessarily a plugin with the same name.
 
+The Session-scope owner contracts have no page here because their parts are infrastructure or
+scripted rows: [SessionScope](../../../design/plugins/SessionScope.md), [Request settings](../../../design/plugins/RequestSettings.md),
+[Context facts](../../../design/plugins/ContextFacts.md), [Context projection](../../../design/plugins/ContextProjection.md),
+[Summary strategy](../../../design/plugins/SummaryStrategy.md) and [File access facts](../../../design/plugins/FileAccessFacts.md) (#2025).
+
 ## Index
 
 | Plugin | Process | Session parts | Branch parts |

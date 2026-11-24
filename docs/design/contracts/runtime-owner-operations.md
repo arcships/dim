@@ -44,8 +44,8 @@ before calling again ([#2127](https://github.com/arcships/dim/issues/2127)).
 
 For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
 and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in
-conversation extraction call `timelineTree.query` with the same explicit `through`,
-existing bounded window and `include_publishing: false`. Zero yields an empty window.
+conversation extraction call `timelineTree.read` with `{line: "main", through: conversationThrough, limit: <the bounded window>}`;
+the read answers committed facts at that cutoff only, so there is no publishing flag and zero rows yield an empty window.
 A draft without a captured cutoff does not fetch a conversation. Plan generation never
 substitutes a newer head.
 
