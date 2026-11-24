@@ -37,7 +37,10 @@ line id: `line_owner::<T>(line)?.op(..)` resolves the branch-group service at th
 runtime built for that line, and the caller calls that owner's typed operation. Any branch-group
 data face is reachable this way except registration points and lifecycle services; there is no
 generic operation-name dispatch and no `timelineTree.call`. A line that is not live answers
-`ended` or `unknown`, and a closing Session answers `closed`.
+`NoLine`; a Session that is closing answers `SessionClosing`. `NoLine` is final for that line:
+the caller takes no hold and does not retry it. `SessionClosing` ends the Session part's work. A
+Session part never receives `NoSession`: only a process caller does, and it takes a hold from Agents
+before calling again.
 
 For a live main branch, Report captures its published head once at draft capture (`directory({id:"main"}).head`)
 and stores it as `conversationThrough` on that draft. Activity evidence and later opt-in

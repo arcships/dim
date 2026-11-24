@@ -23,7 +23,7 @@ Callers keep as business:
 - What a fault means for their work; the failure record says only that the Session stopped.
 - Which definitions to mount and when to retire them.
 - Which branches exist, their ids and their ancestors: TimelineTree owns the branch directory (#2024).
-- Acting on a line's owners: the mechanism resolves a branch-group service by line id (`line_owner::<T>(line)`), and the caller calls that owner's typed operation. Any branch-group data face is reachable this way except registration points and lifecycle services. SessionScope publishes no operation, request or reply for that path.
+- Acting on a line's owners: the mechanism resolves a branch-group service by line id (`line_owner::<T>(line)`), and the caller calls that owner's typed operation. Any branch-group data face is reachable this way except registration points and lifecycle services. The route answers `SessionClosing` when this Session is closing, which ends the part's work, and `NoLine` when the line is not live, which is final for that line. `NoSession` never reaches a Session part. SessionScope publishes no operation, request or reply for that path.
 
 | Requirement (caller) | Compose from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
