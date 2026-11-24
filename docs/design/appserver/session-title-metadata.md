@@ -103,7 +103,8 @@ The `store` face, process scope, control node only, no instance key, provided by
 | --- | --- | --- |
 | `not_found` | The store holds no record of the Session: never created, deleted, or rolled back. A stored Session that is closed or not loaded is found | Unchanged |
 | `rejected` | The change refused with its own `code` and `message`; the manual-title rule is the change's | Unchanged, no notice. Act on the change's code |
-| `storage` | The transaction failed, or the call arrived after SessionStore started closing (§6) | Unchanged, no notice |
+| `storage` | The transaction or the file write failed | Unchanged, no notice |
+| `closed` | The call arrived after SessionStore started closing (§6) | Unchanged, no notice; retry on the replacement generation |
 
 ### 4.2 Rust
 
@@ -121,7 +122,7 @@ adds no asynchronous wrapper before handover, cancellation point, read, or secon
 ```text
  caller                  SessionStore                                     SQLite             Session channel
  ------                  -----------------------------------------------  -----------------  ---------------
- setTitle(S, r, T) ----> SessionStore closing? -> storage at once, nothing written
+ setTitle(S, C) ----> SessionStore closing? -> closed at once, nothing written
                          admit: start the write task   <== handover (the call)
                            |  (SessionStore owns the task; dropping the
                            |   call from here on only loses the reply)
@@ -150,10 +151,10 @@ This settles the boundary that SessionTitle §0 left to S5b.
 | Point | Rule |
 | --- | --- |
 | Before the call | The caller's own work. Cancelling it before the call writes nothing |
-| The call | The handover is SessionStore receiving the call: before it returns, `setTitle` admits the write and starts it as SessionStore's own task, or, once SessionStore is closing, fails `storage` without writing. In Rust `set_title` is a plain function that does this and returns a future of the reply. That future only awaits the task, so dropping it detaches the reply, never the write. The named service calls it inside `invoke`, so a JavaScript call is handed over once the host receives it |
+| The call | The handover is SessionStore receiving the call: before it returns, `setTitle` admits the write and starts it as SessionStore's own task, or, once SessionStore is closing, fails `closed` without writing. In Rust `set_title` is a plain function that does this and returns a future of the reply. That future only awaits the task, so dropping it detaches the reply, never the write. The named service calls it inside `invoke`, so a JavaScript call is handed over once the host receives it |
 | After the call | SessionStore settles the write itself: it commits and announces, or fails and writes nothing. Dropping the call, unloading the calling row or losing the reply neither cancels nor undoes it. `setTitle` has no cancel action |
 | Lost reply | The caller reads with `title`. It does not repeat the write blindly: a second change would commit another revision ([SessionTitle Appendix C](../plugins/SessionTitle.md#appendix-c-errors-and-recovery)) |
-| SessionStore unload | Its disposer first stops admission: from then on a call fails `storage` at once and writes nothing. It then waits until every admitted write, the one in its turn and those waiting for theirs, has committed and announced or failed. Only then does it close Session files and the Timeline writer, and SqliteStorage, which unloads after SessionStore, closes the connection. The notices follow C6 delivery: once the Session is no longer loaded, nobody listens and they are dropped. Nothing is retried after a reload |
+| SessionStore unload | Its disposer first stops admission: from then on a call fails `closed` at once and writes nothing. It then waits until every admitted write, the one in its turn and those waiting for theirs, has committed and announced or failed. Only then does it close Session files and the Timeline writer, and SqliteStorage, which unloads after SessionStore, closes the connection. The notices follow C6 delivery: once the Session is no longer loaded, nobody listens and they are dropped. Nothing is retried after a reload |
 
 Rejected: a cancel action that works until the transaction starts. It would only move the uncertainty, since a caller
 that drops the call still has to read to learn the outcome; and a JavaScript caller cannot cancel a host call in rutis
@@ -349,7 +350,7 @@ None. S5b uses C6's `notify`, the existing service catalog and `HostDispatch`, a
     client receives the notice (`node_` test, run by CI's Node step).
 11. A `setTitle` request without `title` is rejected; the plugin SDK type check covers the call shapes.
 12. Unload: writes admitted before SessionStore starts closing, one in its turn and one waiting for it, commit and
-    reply with their revisions while shutdown waits for them; a call after closing starts fails `storage` at once and
+    reply with their revisions while shutdown waits for them; a call after closing starts fails `closed` at once and
     is not in the store after a restart (§6).
 
 Tests: items 1 to 8, 10 and 12 are in [titles.rs](../../../crates/dim-app-server/tests/transport_flow/titles.rs), through

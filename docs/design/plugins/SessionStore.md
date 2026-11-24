@@ -175,7 +175,7 @@ None. The client methods (`session.rename`, `sessions.list`, `session.delete`, `
 - [Resource faces §5, §5.1 and §5.2](../resource-faces.md): the `store`/`timelineStore` split, the admission and drain steps, the Session row operations, the Rust `Store` binding and the metadata and association rows.
 - [Service faces §3.3 and §3.4](../service-faces.md): the `sessionStore` row and the `store` and `timelineStore` rows.
 - [Resource owner operations](../contracts/resource-owner-operations.md): the `SessionStore → sqliteStorage` rows and the Session row paragraphs.
-- [Session title metadata](../appserver/session-title-metadata.md): the `readMetadata` and `setTitle` shapes.
+- [Session title metadata](../appserver/session-title-metadata.md): the `title` and `setTitle(id, change)` shapes.
 - [SessionTitle](SessionTitle.md): the paragraph that writes a title under an expected revision.
 
 ## Verification
@@ -209,7 +209,7 @@ Material uncertainty: a process death during the caller's removal step leaves th
 | §4 rule 8 | No infrastructure change; requirements are listed below. |
 | §4 rule 9 | The store publishes no Timeline fact of its own; the attached worktree stays a process fact. |
 | §7.2 ids and values | Requests and replies are data; the title change and the worktree removal step cross as callbacks by reference. No object crosses. |
-| §7.2 one public face | The service is marked on the SessionStore type under the existing `store` name; `Store`, `SessionMetadata` and `WorktreeAssociations` do not exist beside it. |
+| §7.2 one public face | The `store` face is the owner's own hand-written `HostDispatch` on `SessionStore`; `Store`, `SessionMetadata` and `WorktreeAssociations` do not exist beside it. |
 | §7.2 caller mechanisms | The exclusion, the title admission and the record settlement stay inside the owner; callers handle business errors only. |
 | ADR 002 D1 | Process scope: the Session row set and its records outlive a Session. |
 | ADR 002 D2 | No wiring plugin: one service on the owner type. |
@@ -416,7 +416,10 @@ impl SessionStore {
     }
 }
 
-#[rutis::service(name = "store")]
+/// The `store` face is a hand-written `HostDispatch` on the owner: one provider, one method table.
+/// `invoke` decodes one request object, calls the method and returns the reply; `setTitle` calls
+/// `set_title` eagerly before returning its wait, so a wire caller that drops the reply still
+/// commits the write. The marked-service spelling of the other three owners does not apply here.
 impl SessionStore {
     pub async fn create(
         &self,
@@ -455,6 +458,30 @@ impl SessionStore {
         cancelled: CancelledFn,
     ) -> Result<Removed, StoreError> {
         // ...
+    }
+}
+impl rutis_bridge::session::HostDispatch for SessionStore {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "create":"async", "delete":"async", "fork":"async", "creationRecord":"async",
+            "owner":"async", "hasRecords":"async", "sessionConfig":"async", "catalog":"async",
+            "query":"async", "grants":"async", "addGrant":"async", "removeGrant":"async",
+            "setLanguage":"async", "title":"async", "setTitle":"async",
+            "associateWorktree":"async", "worktrees":"async", "worktreeUsages":"async",
+            "sessionsUnder":"async", "removeWorktree":"async",
+            "removeUnregisteredDirectory":"async"
+        }))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        // Decode one request object, call the method, return its reply. `setTitle` calls
+        // `set_title` eagerly here, before the reply future is returned.
+        let _ = (method, args);
+        todo!()
     }
 }
 ```

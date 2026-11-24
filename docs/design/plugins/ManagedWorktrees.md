@@ -107,7 +107,7 @@ A process death between `create` and `store.create` leaves an unregistered direc
 ## Exceptions with reasons
 
 - A branch is kept when `remove` deletes an adopted worktree: committed content must not disappear with the directory. Only the default `dim/<taskId>` branch of a never-adopted worktree is deleted with the directory.
-- `discard` is not cancellable: a cancelled Session creation still has to settle what the owner made. A store refusal (`closed` or `storage`) leaves the directory and branch in place; the caller reports it, and the preparation stays for a retry on the replacement generation.
+- `discard` is not cancellable: a cancelled Session creation still has to settle what the owner made. A store refusal (`closed` or `storage`) leaves the directory and branch in place; the caller reports it. The preparation is dropped with the generation, so the directory is unregistered and `remove` by task id is the retry path on the replacement generation.
 - Unregistered directories are never pruned: the owner has no record to age, so only an explicit `remove` by task id deletes them.
 - A branch outlives a creation that was never adopted: a process death between `create` and `store.create` leaves the branch. `remove` on an unregistered directory deletes the directory and, when the owner created the default `dim/<taskId>` branch for a worktree that was never adopted, deletes that branch too; an explicit branch from the request is retained and reported, so a name the operator chose is never deleted.
 - Git is the owner's process resource: the owner starts each call, bounds it (10s read, 30s write) and reaps it on cancellation.

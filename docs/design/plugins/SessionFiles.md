@@ -73,10 +73,10 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `read` | One page of a Session file, at most 64 KiB | `{sessionId, fileId, offset}` | `{data, eof}`, `data` is base64 and `eof` is true exactly when it is empty | While the page is read; nothing changes | `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `register` | Record a caller-owned output path for the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `storage` |
 | `owns` | Whether a path or file id belongs to the Session | `{sessionId, path}` | `{owned}` | While the path is resolved | `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal | `node_unavailable`, `storage` |
+| `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal during close | `node_unavailable`, `closed`, `storage` |
 | `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `storage` |
 
-`path` is absolute on the Session's resource node; `bytes` is the stored length. `offset` at or beyond the end answers an empty `data` with `eof`. A `fileId` outside the Session, or a name that is not one component, is `not_found` for reads and writes and `invalid` for a name `put` or `import` receives.
+`path` is absolute on the Session's resource node; `bytes` is the stored length. `offset` at the file size answers an empty `data` with `eof`; an offset above the size is clamped to the size before the page read, because FileStorage refuses an offset above it with `invalid`. A `fileId` outside the Session, or a name that is not one component, is `not_found` for reads and writes and `invalid` for a name `put` or `import` receives.
 
 ### Errors
 
@@ -98,7 +98,7 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `import` | Open the source, check size, copy through FileStorage into a temporary file, commit ownership | The temporary file is removed; no owned row | The copy completes or is abandoned; the sweep removes what no row owns | As `put` | Source and temporary file by FileStorage; rows by SessionFiles |
 | `write` | Resolve the file id, write the new bytes through FileStorage under the same path, keep the row | Before the replacement: the old bytes stay | The write completes or is abandoned | As `put` | File and path by FileStorage; row by SessionFiles |
 | `read` | Resolve the file id, read one page at the offset; an offset at or past the end is an empty page | The page stops; nothing changes | The read stops | Pending reads end `closed` | FileStorage |
-| `remove` | Resolve the file id; an absent or foreign id answers success; remove the directory entry through FileStorage, delete the row | None | The call ends | Rows stay for the next generation | File and row by SessionFiles |
+| `remove` | Resolve the file id; an absent or foreign id answers success; remove the directory entry through FileStorage, delete the row | None | The call ends | A new call is refused `closed`; an admitted removal finishes | File and row by SessionFiles |
 | `register` | Check the Session, record the path the caller resolved | None | The row stays; a later Session delete removes it | Rows stay for the next generation | SessionFiles |
 | `owns` | Resolve the path against the owner's directory, check the output row, else the file id row | The resolution stops | Nothing to release | Pending calls end `closed` | SessionFiles |
 | `ownedPaths` | Read both ownership rows, map file ids to the directory | None | Nothing to release | Rows stay | SessionFiles |

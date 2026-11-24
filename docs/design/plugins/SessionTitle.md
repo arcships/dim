@@ -383,7 +383,7 @@ Registered with `sessionMethods` (Session, namespace `session.rename`) with one 
 | Service | Method | Kind | Request | Reply and errors |
 | --- | --- | --- | --- | --- |
 | SessionStore `store` | `title` | async | `{id}` | `{revision, title: {text, source: "auto" \| "manual"} \| null}`; errors `not_found`, `closed`, `storage` ([SessionStore](SessionStore.md)) |
-| SessionStore `store` | `setTitle` | async | `{sessionId}` plus a change that receives `{revision, title}` and returns the next title or `null` | `{revision}`; errors `rejected`, `not_found`, `storage`. The call is the handover; after a commit SessionStore emits the title notice |
+| SessionStore `store` | `setTitle` | async | `{id}` plus a change that receives `{revision, title}` and returns the next title or `null` | `{revision}`; errors `rejected`, `not_found`, `closed`, `storage`. The call is the handover; after a commit SessionStore emits the title notice |
 | SessionStore (S5b) | title notice | Session broadcast notice (C6 record, §9) | — | `{source: "SessionStore", kind: "title", data: {title, titleSource, titleRevision}}` on the Session's broadcast channel; no sequence number, not replayed |
 | `AuxiliaryModel` (the profile's model-selection owner) | `complete` | async | `{model: {providerId, modelId}, request: {system, messages: [{role: "user", content: text}]}}`, optional `cancelled: () => Promise<void>` ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)) | `{text, stopReason, usage}`; rejects with the existing error code/message. Resolve the cancellation reference on timeout or closing and await the original call's settlement |
 
@@ -413,7 +413,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | Check | `store.title({id})`: the change decides from the current title and revision; a `rejected` change discards |
 | Read | The four field queries in §0.1 share published T >= N. No adopted eligible input/text means no title (A8/A10). |
 | Generate | Route and fall back under §3.3 within the shared 30 s budget (A4); normalize the first line, remove quotes and trailing punctuation, collapse whitespace, cut at `maxLength`, trim again |
-| Write | `setTitle({sessionId}, change)` where the change returns the generated title or `null`; a `rejected` change discards |
+| Write | `setTitle({id}, change)` where the change returns the generated title or `null`; a `rejected` change discards, and `closed` retries on the replacement generation |
 | Timeline | No writes, no Dispatcher registration, no `StateCell` |
 | Reload / unload | Cancel before store handover; the owner settles an admitted mutation. Events in the gap are not replayed |
 
@@ -505,7 +505,7 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 | --- | --- |
 | Namespace `session.rename` registered with `sessionMethods` | The Session part calls `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` on a `Key<SessionMethods>` dependency |
 | Published branch properties | Required `Key<TreeCommands>`; `TreeCommands::query("main", TimelineQuery)` with branch scope, `include_publishing: false` and one-row `QuerySelect::Fields` results. Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
-| Title metadata | `SessionMetadataService::read` and `SessionMetadataService::set_title` |
+| Title metadata | `store.title` and `store.setTitle(id, change)` |
 | Auxiliary call | `AuxiliaryModel.0.complete` with its cancellation token |
 | Optional generation | `ctx.get_at(&host_key("sessionTitleGenerator"))` at use; `HostDispatch.generate` with a cancellable callback promise, using the request/reply types exported by `dim-session-title` |
 | Session broadcast listener | Listener on `session_channel(session_id)` for `Event` records, removed by `ctx.effect` |
@@ -513,7 +513,7 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 
 ```rust
 // the `store` face; `setTitle` stays on the hand-written method table
-async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+async fn title(&self, id: &str) -> Result<SessionMetadata, StoreError>; // NotFound | Closed | Storage
 fn set_title(&self, id: &str, change: ChangeFn)
     -> impl Future<Output = Result<u64, StoreError>>; // Rejected | NotFound | Closed | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
