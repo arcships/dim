@@ -8,7 +8,6 @@ The owner answers what one call's target path is and which file-access facts hol
 
 The owner answers:
 
-- **The resolved target.** The path a call names with `~`, the working directory, `..` and links resolved, as the workspace sees it.
 - **The facts.** Workspace, system, owned and grant membership under the branch's effective access preset and the grant mode the call asks for, plus the reason a workspace discovery failed when it did.
 - **The confirmed roots.** The workspace and the managed worktree roots a command's process boundary may use.
 
@@ -20,7 +19,7 @@ Callers keep:
 
 | Requirement (caller) | Compose from the operations below without breaking the owner's invariants? | Handling |
 | --- | --- | --- |
-| Permission resolves a file call's target and decides with the facts under the branch's access preset | No: `~`, cwd, `..` and link resolution are the workspace's knowledge, the grant rule reads the preset, and the owned and grant facts come from two owners the caller would otherwise each hold | `check` |
+| Permission decides a file call with the facts under the branch's access preset | No: the grant rule reads the preset, and the owned and grant facts come from two owners the caller would otherwise each hold | `check`; Permission keeps resolving the target, as ADR 014 D3 assigns it |
 | A command's preparation needs the confirmed workspace boundary | No: the workspace and the managed worktree roots are validated against the Session's workspace; a caller that composed them could start a process outside the boundary | `workspaceRoots` |
 
 ## Caller example
@@ -28,7 +27,7 @@ Callers keep:
 ```rust
 // Permission: one file call's target and facts under the requested access.
 let facts = access
-    .check(Check { access: FileAccess::WorkspaceReadWrite, mode: GrantMode::Write, path }, cancelled)
+    .check(Check { access: FileAccess::WorkspaceReadWrite, mode: GrantMode::Write, path: resolved }, cancelled)
     .await?;
 let inside = facts.workspace || facts.system || facts.owned || facts.grant;
 ```
@@ -53,10 +52,10 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `check` | Resolve a call's target and answer the facts under the branch's access preset | `{access, mode, path}` | `{target, workspace, system, owned, grant, discoveryError?}` | The caller drops the call; the reads stop | `invalid`, `unavailable`, `cancelled`, `closed` |
+| `check` | Answer the facts of one resolved path under the branch's access preset | `{access, mode, path}` | `{workspace, system, owned, grant, discoveryError?}` | The caller drops the call; the reads stop | `invalid`, `unavailable`, `cancelled`, `closed` |
 | `workspaceRoots` | The workspace and managed worktree roots a command may use | `{cwd}` | `{roots}` | The caller drops the call | `invalid`, `unavailable`, `cancelled`, `closed` |
 
-`access` is the branch's access preset (`dim_agent_types::FileAccess`: `read-only`, `workspace-read-write`, `unrestricted`); `mode` is the grant mode the call asks for (`dim_agent_types::grant::GrantMode`: `read`, `write`); `path` is the path the call named. `target` is the resolved path, and it is what the caller passes to the file operation. A write grant is inert under `read-only` and active under `workspace-read-write`; `unrestricted` does not widen grants because it already allows every write.
+`access` is the branch's access preset (`dim_agent_types::FileAccess`: `read-only`, `workspace-read-write`, `unrestricted`); `mode` is the grant mode the call asks for (`dim_agent_types::grant::GrantMode`: `read`, `write`); `path` is the path the caller already resolved, as ADR 014 D3 assigns resolution to Permission. A write grant is inert under `read-only` and active under `workspace-read-write`; `unrestricted` does not widen grants because it already allows every write.
 
 ### Errors
 
@@ -85,7 +84,7 @@ let roots = access.workspace_roots(WorkspaceRoots { cwd }, cancelled).await?;
 
 ## Verification
 
-- `check` resolves `~`, `..` and a link before answering; the target is absolute; a write grant under `read-only` answers `grant: false`.
+- `check` answers the four facts for the resolved path; a write grant under `read-only` answers `grant: false`; a relative path is `invalid`.
 - An owned Session file and a granted path each answer their fact under the requested mode; a path outside every fact answers all false.
 - A failed discovery answers `workspace: false` with `discoveryError` and no error.
 - `workspaceRoots` answers the workspace plus the managed worktree roots; `unavailable` when the workspace cannot be read.
@@ -123,7 +122,7 @@ None.
 
 This contract replaces the object shape of the file-access facts; the delivery in #2025 carries the migration.
 
-- [ADR 014](../../adr/014-file-access-facts.md): the query is stated here as a Session-scoped operation `check`, with the Session instance supplying the session id and `FileAccess` and `GrantMode` as the same query arguments the ADR names.
+- [ADR 014](../../adr/014-file-access-facts.md): the query is stated here as a Session-scoped operation `check`, with the Session instance supplying the session id and `FileAccess` and `GrantMode` as the same query arguments the ADR names. Resolution stays with Permission, as ADR 014 D3 assigns it; the reply carries the four facts and no `target`.
 - `crate::file_access::ReadFileAccessFacts` and the `FileAccessFacts` wrapper: the two reads replace the trait and the object.
 
 Rule D: no client wire protocol or user-visible behavior changes; the change is plugin-facing.
@@ -147,7 +146,6 @@ pub struct Check {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Facts {
-    pub target: String,
     pub workspace: bool,
     pub system: bool,
     pub owned: bool,

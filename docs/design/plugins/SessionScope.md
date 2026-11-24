@@ -8,7 +8,7 @@ SessionScope is the runtime's Session owner: the creation record and identity, t
 
 SessionScope owns:
 
-- **The creation record.** The Session's mount list, working directory, model selection, system prompt, permission preset, collaboration role, interactive flag, language seed and initial title, fixed when the Session is built. Every member is fixed except `language`, which the native store updates in place; a caller reads the live reply language from `sessionLanguage`, never from this value.
+- **The creation record.** The Session's mount list, working directory, model selection, system prompt, permission preset, collaboration role, interactive flag, language seed and initial title, fixed when the Session is built. Every member is fixed for the Session's whole life; a caller reads the live reply language from `sessionLanguage`, never from this value.
 - **Identity.** The Session id and whether the Session was restored from the store.
 - **The phase.** Loading, Active, Closing, Closed, monotonic and never replaced by an earlier phase. `activated` and `closing` are the waits on the two transitions.
 - **Activity leases.** An accepted piece of work holds a lease so an idle release does not end the Session first. Every lease is bound to the calling row and the owner settles it at the row's unload, so no caller frees anything on an error path. `hold` answers an id for accepted work; the id is bound to the calling row and the owner settles it at the row's unload. A lease reports nothing and cancels nothing.
@@ -122,6 +122,8 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | `reportFault` | Record the fault that stopped the Session | `{fault}` | `{}` | None | None |
 | `failure` | The fault in force, if any | `{}` | `{fault?}` | None | None |
 | `mount` | Create a Session-owned content instance from a definition | `{group, definitionId, instanceData}` | `{instanceId}` | The caller drops the call; an instance it no longer waits for is shut down before the reply | `invalid`, `not_ready`, `cleanup`, `closed` |
+
+A registered Session extension definition must activate its instance rows; a host-added optional group keeps its optional rows, so a Pending row there is not `not_ready`.
 | `unmount` | Retire a content instance this Session owns | `{instanceId}` | `{}` | None; the owner completes the release | `unknown` when no live instance has the id; `cleanup`; `closed` |
 | `openBranch` (Rust-only, `#[rutis::service(skip)]`) | Construct a branch's runtime context for the branch tree | `{branchId, ancestors}` | the branch's runtime context (see Exceptions) | The caller drops the call; a construction the caller abandoned is shut down before the branch becomes visible | `closed`, `build` |
 
@@ -131,7 +133,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 
 | Kind | Operation | What the caller does next |
 | --- | --- | --- |
-| `closed` | `hold`, `observeFault`, `release`, `mount`, `unmount`, `openBranch` | The Session is closing or unloading; stop starting work; a later generation serves the next Session |
+| `closed` | `hold`, `observeFault`, `release`, `mount`, `unmount`, `openBranch` | The Session is closing or unloading, or an idle release is decided; stop starting work. An idle-release decision can be withdrawn while `phase` is still `active`, so a lease holder that must continue retries `hold` after the next publication |
 | `invalid` | `release`, `mount` | Fix the id or the definition: an id of another row, a group outside this Session's subtree, an unknown definition |
 | `unknown` | `unmount` | The id names no live instance of this Session; nothing to retire |
 | `not_ready` | `mount` | Act on the reported row and state: the definition's rows did not activate; the instance was shut down and nothing is left to release |
@@ -184,7 +186,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 - `mount` answers `invalid` for a group outside the Session's subtree, `not_ready` for a definition whose row failed (and leaves no instance), and shuts down an abandoned mount; `unmount` answers `cleanup` when the shutdown fails and `unknown` for an id this Session never issued.
 - `activated` answers false when the Session closes before publishing; `closing` returns when the close starts.
 - `openBranch` answers `closed` during the Session's close; a failed construction settles the branch scope before the reply; the tree closes every branch before the Session scope unloads.
-- `identity` is fixed; `phase` only moves forward through the four phases; `config` is fixed except `config.language`, which the native store updates in place.
+- `identity` and every member of `config` are fixed; `phase` only moves forward through the four phases. A reply-language change never touches this value: the live language is `sessionLanguage`.
 
 ## Rule check
 
@@ -202,7 +204,7 @@ The Session store constructs the Timeline engine and its Session-scope binding; 
 | §4 rule 7 | Callers use these operations; no caller reads the hold count, the fault slot or an instance's fiber. |
 | §4 rule 8 | No infrastructure change. SessionScope is the runtime's Session part and its shape is the runtime's decision; the operations above are the data face those decisions already require. |
 | §4 rule 9 | No Timeline fact: the phase and the fault record are runtime state, read live and never persisted as events. |
-| §7 values, ids and objects | The record, identity, phase and fault are values; a lease id and a content instance id are the owner's, bound to the calling row and settled at its unload; the one object is `openBranch`, with the handover design above. |
+| §7 values, ids and objects | The record, identity, phase and fault are values; a lease id is bound to the calling row and settled at its unload; a content instance id belongs to the Session and is settled by `unmount` or the Session's end; the one object is `openBranch`, with the handover design above. |
 | §7 no proxy lookup | The owner returns only its own state; the Agent's configuration and the Skills and Collaboration factory texts leave this face. |
 | §7 one interface | One name, `sessionScope`, on the owner type; the wire calls every method except `openBranch`, which is marked `#[rutis::service(skip)]`; no facade or wrapper type. |
 | §7 cross-language | Every operation is data, a callback by reference or an id, except `openBranch`: it hands TimelineTree the branch's runtime context, which has no serde form, and the tree is a Rust part. That is the only Rust-only method, and it is marked skip. |
@@ -228,11 +230,13 @@ This contract replaces the Session-scope paragraphs and rows that state these na
 - `docs/design/resource-faces.md` §5: the `timelineStore` rows and the Session-scope sentence, now pointers to this contract; the engine and its process face remain #2018's.
 - `docs/design/plugin-contract.md`: the `sessionIdentity`, `sessionLifecycle`, `sessionConfig` and `agentConfig` rows of the named-services table, the `session` row of the scope table, and R2's needed names.
 
+These documents still name the deleted Session services in dependencies; #2025's delivery updates them in the same change: `docs/design/session-typescript.md` (307, 320-322, 329, 373, 405, 470), `docs/design/contracts/session-boundary.md:560`, `docs/design/plugins/ShellInput.md:35`, `docs/design/plugins/Questions.md:50,575`, `docs/design/plugins/SessionTitle.md:75-76,126,408`, `docs/design/plugins/Collaboration.md:47,63`, `docs/design/plugins/Report.md:133`, `docs/design/plugins/Pursuit.md:46,184`, `docs/design/plugins/EventHub.md:399,597`, `docs/design/plugins/EnvironmentClients.md:155`, `docs/design/plugins/CodeMode.md:455` and `docs/design/thin-instances.md:281`.
+
 Rule D: no client wire protocol or user-visible behavior changes; every change here is plugin-facing.
 
 ## Binding appendix
 
-The service is marked on the owner type under one name; the existing names `sessionConfig`, `sessionIdentity`, `sessionLifecycle`, `sessionLoader` and `timelineFactory` stop existing.
+The service is marked on the owner type under one name; the Session-scope entries for `sessionConfig`, `sessionIdentity`, `sessionLifecycle`, `sessionLoader` and `timelineFactory` stop existing (`store.sessionConfig` remains the store's process read).
 
 ```rust
 use dim_agent_runtime::{PublicService, SessionConfig, SessionFault, TimelineContext};

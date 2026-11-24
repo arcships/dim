@@ -110,14 +110,17 @@ provider must not depend on `TreeCommands`, which the branch tree provides.
 
 ### 2.1 Where the manual step lives
 
+The manual compaction step is ContextPreparation's; the paragraphs that assign the command, the
+single-flight slot and the steps to Loop are superseded by ContextPreparation's contract (#2027).
+The text below records the earlier arrangement.
+
 The Loop runs the manual compaction step itself, in a tracked task, by calling
 `ContextPolicy::compact_step`. It does not drive ContextPreparation through an event. The reasons:
 
-- **The Loop already holds what the step needs.** Its `Deps` already inject `Timeline`,
-  `HistoryRenderer` and `ContextModelHost`
-  ([agent_loop.rs](../../../crates/dim-agent-capabilities/src/agent_loop.rs) `LoopPlugin::Deps`);
-  F1 adds `CompactionStrategyHost` beside them. The Loop already builds the request from the
-  latest `context/configured` in `start_preparation`.
+- **The Loop already holds what the step needs.** Its `Deps` inject `Timeline`, the context
+  projection and the model facts ([agent_loop.rs](../../../crates/dim-agent-capabilities/src/agent_loop.rs)
+  `LoopPlugin::Deps`); the summary policy is `summaryStrategy` ([Summary strategy](SummaryStrategy.md)).
+  The Loop already builds the request from the latest `context/configured` in `start_preparation`.
 - **Nothing is handed over.** `context/prepare` hands a request to ContextPreparation and then to
   ModelProvider. A manual step makes no model request, so a handoff would only add a second
   command and a second single-flight slot (ContextPreparation's `current`).
@@ -195,12 +198,9 @@ disconnect cancels nothing.
 
 ### 4.2 Ports (Rust, runtime-internal)
 
-The existing `ContextModel` port is split in two. Each comes from its own Session value.
-
-| Port | Session value | Methods | F1 implementation |
-| --- | --- | --- | --- |
-| `ContextModel` (narrowed) | `ContextModelHost(Option<Arc<dyn ResolveContextModel>>)` (existing) | `context_window`, `output_tokens`, `threshold_tokens`, `count_tokens`; `compact` moves out | `ProductContextModel` (§5.1) |
-| `CompactionStrategy` (new) | `CompactionStrategyHost(Option<Arc<dyn CompactionStrategy>>)` | `name`, `replacement_size(model)`, `compact(input, cancel) -> Completed {retain_from, replacement, strategy, diagnostics} \| Skipped {reason, diagnostics} \| Failed {error, diagnostics} \| Err(HostError)` | `ProductSummaryStrategy` (§5.2) |
+The model facts and the summary policy are the `contextFacts` and `summaryStrategy` operations;
+the profile that compacts installs both owners' parts. §4.2's object ports are replaced by the
+[Context facts](ContextFacts.md) and [Summary strategy](SummaryStrategy.md) contracts (#2025).
 
 Both values are bound explicitly in every profile, as `ContextModelHost` is today. The policy
 exists when both are `Some`. One `Some` without the other is an assembly defect that
@@ -508,14 +508,8 @@ pub struct ProductSummaryStrategyPlugin { host: DepKey<CompactionStrategyHost> }
 pub struct ContextMethodsPlugin;
 //   Deps = (Keyed<TreeCommands>, Keyed<SessionMethods>); methods.register(ctx, "session.context", ..)
 
-// dim-app-server/src/cli.rs, defaults::install_compaction, the one install of every profile
-// that compacts; the product profile passes ProductContextModel and its product home,
-// the --models profile passes AimuxModels and its --home:
-builder.session_value(Arc::new(ContextModelHost(Some(model))))
-       .require_feature(Feature::new("ContextCompaction")
-           .session("ProductSummaryStrategy", |names| names.part(ProductSummaryStrategyPlugin::new(names)?))
-           .session("ContextMethods", |names| names.part(ContextMethodsPlugin)));
-// The mock profile binds ContextModelHost(None) and CompactionStrategyHost(None).
+// The binding shapes of these two parts are stated by the Context facts and Summary strategy
+// contracts (#2025); this document keeps only the plugin row that installs them.
 ```
 
 ## 5. Flows

@@ -607,14 +607,15 @@ code the operation already uses, so one code vocabulary serves the local and the
 The repository and Timeline operations use two names on the daemon that owns the state: process
 `store` provides the repository operations (§5.2), retaining its existing Timeline `query`.
 The Session-scoped `timelineStore` and its completion notifications are replaced by the
-[SessionScope contract](plugins/SessionScope.md) (#2093). Both use the existing state owner; the
-split follows §9(6), without changing Session placement or the storage engine.
+[SessionStore contract](https://github.com/arcships/dim/pull/2091) (#2018), which keeps the
+operations, the request and reply shapes and the notification shape. Both use the existing state
+owner; the split follows §9(6), without changing Session placement or the storage engine.
 SessionTitle and FileAccess use the process repository operations in the [resource owner contract](contracts/resource-owner-operations.md).
 
 | Family | Operations |
 | --- | --- |
-| Timeline (`timelineStore`) | Replaced by the [SessionScope contract](plugins/SessionScope.md) (#2093). |
-| Timeline completion (`timelineStore`) | Replaced by the [SessionScope contract](plugins/SessionScope.md) (#2093). |
+| Timeline (`timelineStore`) | Replaced by the [SessionStore contract](https://github.com/arcships/dim/pull/2091) (#2018); #2091 adds the operations and the completion shape back there. |
+| Timeline completion (`timelineStore`) | Replaced by the [SessionStore contract](https://github.com/arcships/dim/pull/2091) (#2018). |
 | Session rows (`store`) | The repository operations listed in §5.2 |
 | Worktree association (`store`) | `associateWorktree`; [service faces](service-faces.md) §4.8 |
 

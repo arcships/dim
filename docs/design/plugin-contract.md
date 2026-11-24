@@ -59,7 +59,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- |
 | Process (root) | Host start | Host shutdown | — (process parts provide their own) |
 | Agent (`agent`) | Agents creates an Agent | Agent close, host shutdown | Host-internal |
-| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionScope`, `treeCommands` |
+| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionScope` ([SessionScope](plugins/SessionScope.md)); the branch group is reached by line id, not through a Session service |
 | Branch (`branch`) | TimelineTree creates a branch | The branch ends, or its Session closes | `timeline`, `dispatcher`, `branchLifecycle`, `timelineIdentity` |
 
 Visibility follows the tree, as in [principles §2](../architecture/rust-agent/principles.md):
@@ -67,7 +67,7 @@ Visibility follows the tree, as in [principles §2](../architecture/rust-agent/p
 | Direction | How |
 | --- | --- |
 | Up (an enclosing instance, the process) | Inject the service by name |
-| Down (Session to branch) | `treeCommands`: input by branch id, branch creation. Never by injecting a branch service |
+| Down (Session to branch) | `line_owner::<T>(line)`: any branch-group data face by line id ([ADR 027](https://github.com/arcships/dim/pull/2029)); branch creation is `timelineTree.create`. Never by injecting a branch service |
 | Sideways (sibling branches, other Sessions) | Not visible. Go through a common ancestor's business service, such as `sessions` |
 
 The scope roots, the facades and their publication rules are mechanisms. Each Session and branch is
@@ -114,7 +114,6 @@ R4). This table says what each name Dim defines is for.
 | `workflowFiles` | process | App Server | yes | Marked `#[rutis::service]` |
 | `eventHub` | process | EventHub | designed, not implemented | A producer declares a source and publishes an event; EventHub delivers it to the Sessions subscribed, through Agents' `sessions` ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
-| `treeCommands` | `session` | TimelineTree | yes | `input` by branch id, `create`, `list`, `info` |
 | `sessionScope` | `session` | SessionScope | yes, except `openBranch` | `config`, `identity`, `phase`, `activated`, `closing`, `hold`, `release`, `reportFault`, `failure`, `observeFault`, `mount`, `unmount`; `openBranch` is Rust-only (`#[rutis::service(skip)]`) because the branch's runtime context has a shared lifecycle but no serde form ([SessionScope](plugins/SessionScope.md), #2093) |
 | `timeline` | `branch` | BranchScope | yes, except `before` | `append`, the published sequence and the event query (§5.4); the query reaches other languages with its declaration |
 | `dispatcher` | `branch` | BranchScope | yes, `consume`, `listen` and reads; their Rust forms are the same `consume` and `subscribe`, which is Rust-only | Ordered consumption (§5.2) |

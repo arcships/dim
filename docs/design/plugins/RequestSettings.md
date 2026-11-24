@@ -36,12 +36,13 @@ let settings = ModelSettings {
     config: defaults.config,
     system: Some(guide.compose_system(&branch, defaults.system)),
     tools: Some(binding.definitions(&request_id)?),
-    metadata: defaults.metadata.map(|mut metadata| {
+    metadata: {
+        let mut metadata = defaults.metadata.unwrap_or_default();
         metadata.session_id = Some(session_id);
         metadata.turn_id = Some(turn_id);
         metadata.extensions.insert("requestId".into(), request_id.into()); // per request, written by Loop
-        metadata
-    }),
+        Some(metadata)
+    },
 };
 ```
 

@@ -61,7 +61,7 @@ match outcome.outcome {
 - `S:contextFacts` — the limits and the token count the plan and the chunk budget need.
 - `P:modelHost` — the summarizer's model calls, under the existing failure and credential policy.
 - `P:providerConnectionResolver` — the connection each summarizer request uses; the connection lives only inside the call.
-- `S:summaryPromptSettingsHost` — optional: the operator's system prompt override, read once when the owner loads.
+- `P:summaryPromptSettingsHost` — optional: the operator's system prompt override, read once when the owner loads.
 - `S:guideEntries` — the `<dim-summary>` entry, registered until the owner unloads.
 
 ### Operations
@@ -142,7 +142,7 @@ This contract replaces the `compactionStrategyHost` object; the delivery in #202
 
 - `docs/design/contracts/runtime-owner-operations.md`: the `Loop and ContextPreparation → CompactionStrategyHost` row of "Model preparation, history and tools".
 - `docs/design/service-faces.md`: §3.5's `compactionStrategyHost` row.
-- `docs/design/plugins/ContextCompaction.md` §4.2's ports table: `CompactionStrategyHost` becomes this owner's two operations, and `CompactionInput.model` leaves the input.
+- `docs/design/plugins/ContextCompaction.md` §4.2's ports table: `CompactionStrategyHost` becomes this owner's two operations, and `CompactionInput.model` leaves the input; the document's remaining mentions of the object ports are descriptive, and the delivery removes them.
 
 Rule D: no client wire protocol or user-visible behavior changes; `completed`, `skipped` and `failed` keep their fact shapes and the summary's model-visible text is unchanged.
 
