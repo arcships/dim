@@ -21,10 +21,10 @@ never matches message text.
 | `quota_exhausted` | 402; the conditions `insufficient_quota`, `quota_exceeded`, `billing_error`, `credit_exhausted` | no | the account has no quota left | check the plan or billing |
 | `not_found` | 404 | no | the provider did not find the model or endpoint | check the model and the provider's base URL |
 | `context_too_long` | 413; the conditions `context_length_exceeded`, `context_too_long` | no | the conversation is longer than the model accepts | compact the conversation or start a new session |
-| `content_filtered` | the conditions `content_policy_violation`, `safety_block`, `moderation_block` | no | the provider's content filter blocked the response | rephrase the request |
+| `content_filtered` | the conditions `content_policy_violation`, `safety_block`, `moderation_block`; the content-filter finish reason | no | the provider's content filter blocked the response | rephrase the request |
 | `invalid_request` | local transport refusal; 400, 409, 422, 501, 505, other 4xx; the label `invalid_request_error`; the condition `max_tokens_exceeded`; `InvalidArgument`, `InvalidPrompt`, `UnsupportedFunctionality` | no | the request was rejected | see the details |
 | `output_limit` | the `max_tokens` stop | no | the model stopped at its output limit | increase the output token limit and retry |
-| `unknown` | anything else | no | the model request failed | see the details |
+| `unknown` | anything else, including a provider generation error and an unrecognized finish reason | no | the model request failed | see the details |
 
 A timeout of the HTTP connection or of the stream reaches the bridge as a
 transport `ApiCall` and is `network`. `AiMuxError::Timeout` has no producer in a
@@ -151,7 +151,17 @@ ModelFailure {
   section).
 - Tool arguments that never complete write
   `failure.kind = malformed_response`, the kind `InvalidToolInput` carries for
-  the same defect.
+  the same defect. A content filter the stream reports after the interrupted
+  call is the exception: the known filter terminal is authoritative, so the
+  reply writes `content_filtered` and the started call is closed as failed
+  instead of being announced as a tool call. A stream that stops without that
+  terminal keeps `malformed_response`. Every request enables strict streaming,
+  which holds each client call until the finish part and releases it directly
+  before the terminal, so the bridge reaches the terminal on the read right
+  after the failed call even when the adapter queued them in separate events,
+  as the Responses adapter does. The bridge reads only the parts the stream
+  has already delivered there, so a failure never waits for a part that may
+  never arrive.
 - A reply that stops with an end-turn finish and carries no non-whitespace text
   and no tool call writes `failure.kind = malformed_response` with the reason
   "the response had no text and no tool call". Thinking alone is not an answer,
@@ -170,6 +180,13 @@ ModelFailure {
   attempt brings its own thinking.
   The rule holds for every turn, driven Loop and Goal turns included: an empty
   reply is not a step there either.
+- A reply a finish reason fails carries no provider error either, so its reason
+  is a fixed sentence and quotes no response content. A content filter is
+  `content_filtered` with "the stream ended on a content-filter finish reason";
+  a provider generation error and an unrecognized reason are both `unknown`,
+  with "the provider reported a generation error" and "the stream ended on an
+  unsupported finish reason". The kind decides the continuation: `unknown` is a
+  kind a new request can settle and `content_filtered` is not.
 - A failure from a host with no provider boundary gets kind `unknown` and the
   message it already carried.
 

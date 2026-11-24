@@ -3,33 +3,47 @@ mod network;
 
 use crate::{
     managed_provider::{ManagedSearch, ManagedSearchError, WebSearchRequest},
-    settings::{Settings, SettingsScope, SourceDeclaration},
+    settings::{Settings, SettingsChanged, SettingsScope, SourceDeclaration, settings_changes},
 };
 use content::{convert, plain_text, redact};
 use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
-    tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
+    tool_registry::{
+        ToolConcurrency, ToolContribution, ToolHandler, ToolProvider, ToolProviderChanged,
+        ToolRegistry, ToolSourceSet, tool_provider_changes,
+    },
 };
-use dim_agent_runtime::{Names, PartRegistry, PartScope};
+use dim_agent_runtime::{
+    Names, PartRegistry, PartScope, SESSION_GROUP, SessionConfig, SessionLifecycle,
+};
 use dim_agent_types::{ToolCall, ToolContent, ToolDefinition, ToolResult, ToolSource};
 use network::{
     DOWNLOAD_LIMIT, Diagnostic, NetworkConfig, WebError, domain, get, hostname, parse_url,
 };
 use rutis::Ctx;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use url::Url;
+use uuid::Uuid;
 
 const CACHE_LIMIT: usize = 50 * 1024 * 1024;
 const CACHE_TTL_MS: u64 = 15 * 60_000;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+/// The `web` Settings source and the name the `web_search` source registers
+/// under.
+const SOURCE: &str = "web";
+const SEARCH_TOOL: &str = "web_search";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -179,6 +193,9 @@ pub struct WebSessionPlugin {
     settings: Key<Settings>,
     tools: Key<ToolRegistry>,
     managed: Key<ManagedSearch>,
+    config: Key<SessionConfig>,
+    lifecycle: Key<SessionLifecycle>,
+    session: InstanceId,
 }
 
 impl WebSessionPlugin {
@@ -187,6 +204,9 @@ impl WebSessionPlugin {
             settings: names.key()?,
             tools: names.key()?,
             managed: names.key()?,
+            config: names.key()?,
+            lifecycle: names.key()?,
+            session: names.instance(SESSION_GROUP)?,
         })
     }
 }
@@ -201,6 +221,8 @@ impl DynPlugin for WebSessionPlugin {
             self.settings.erase(),
             self.tools.erase(),
             self.managed.erase(),
+            self.config.erase(),
+            self.lifecycle.erase(),
         ]
     }
 
@@ -209,56 +231,193 @@ impl DynPlugin for WebSessionPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let tools = ctx.require_at(&self.tools)?;
             let managed = ctx.require_at(&self.managed)?;
+            let config = ctx.require_at(&self.config)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let cancel = ctx.cancellation_token();
+            let mounted = config
+                .tools
+                .as_ref()
+                .is_none_or(|names| names.iter().any(|name| name == SEARCH_TOOL));
             let state = Arc::new(SessionState {
                 settings,
-                managed,
+                managed: managed.clone(),
+                mounted,
                 cache: Mutex::new(PageCache::default()),
                 closing: CancellationToken::new(),
                 inflight: TaskTracker::new(),
             });
             let cleanup_state = state.clone();
+            let tasks = TaskTracker::new();
+            let drain = tasks.clone();
             ctx.effect(move || async move {
                 cleanup_state.closing.cancel();
                 cleanup_state.inflight.close();
+                drain.close();
+                drain.wait().await;
                 cleanup_state.inflight.wait().await;
                 cleanup_state.cache.lock().unwrap().clear();
                 Ok(())
             })?;
-            for (name, description, schema) in [
-                (
-                    "web_search",
-                    "Search the web. Returns numbered titles, URLs and snippets.",
-                    search_schema(),
-                ),
-                (
-                    "web_fetch",
-                    "Read a public web page as text. Use start_char to continue at the returned final URL.",
-                    fetch_schema(),
-                ),
-            ] {
-                let runner = state.clone();
-                tools.register(
-                    ctx,
-                    ToolContribution {
-                        definition: ToolDefinition {
-                            name: name.into(),
-                            description: description.into(),
-                            input_schema: serde_json::from_value(schema)
-                                .expect("valid tool schema"),
-                            source: ToolSource::Extension,
-                            risk: Some("network".into()),
-                            file_changes: None,
-                            metadata: None,
-                        },
-                        handler: Arc::new(WebToolHandler {
-                            name,
-                            state: runner,
-                        }),
-                    },
-                )?;
-            }
+            let runner = state.clone();
+            tools.register(
+                ctx,
+                ToolContribution {
+                    definition: definition(
+                        "web_fetch",
+                        "Read a public web page as text. Use start_char to continue at the returned final URL.",
+                        fetch_schema(),
+                    ),
+                    handler: Arc::new(WebToolHandler {
+                        name: "web_fetch",
+                        state: runner,
+                    }),
+                },
+            )?;
+            let wake = Arc::new(watch::Sender::new(()));
+            let waking = wake.clone();
+            ctx.listen::<SettingsChanged>()
+                .name(settings_changes(SOURCE))
+                .on(move |_, _| {
+                    waking.send_replace(());
+                    async { Ok(None) }
+                })?;
+            let mut settings_wake = wake.subscribe();
+            let mut usable_changes = managed.subscribe_usable();
+            let document = state.document(&cancel).await;
+            let needed = mounted && document.as_ref().is_ok_and(managed_search_needed);
+            let signed_in = if needed {
+                managed.refresh_usable(&cancel).await
+            } else {
+                false
+            };
+            let available = mounted
+                && match &document {
+                    Ok(document) => search_configured(document, signed_in),
+                    Err(_) => false,
+                };
+            let source = SearchSource::new(state.clone(), needed);
+            source.set_available(available);
+            tools.register_source(ctx, SOURCE, source.clone())?;
+            let task_cancel = cancel;
+            let task_ctx = ctx.clone();
+            let session = self.session;
+            tasks.spawn(async move {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => return,
+                    active = lifecycle.activated() => if !active { return },
+                }
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = task_cancel.cancelled() => return,
+                        _ = settings_wake.changed() => {}
+                        _ = usable_changes.changed() => {}
+                    }
+                    source.reconcile(&task_cancel, session, &task_ctx).await;
+                }
+            });
             Ok(Effect::Done)
         })
+    }
+}
+
+fn definition(name: &str, description: &str, schema: Value) -> ToolDefinition {
+    ToolDefinition {
+        name: name.into(),
+        description: description.into(),
+        input_schema: serde_json::from_value(schema).expect("valid tool schema"),
+        source: ToolSource::Extension,
+        risk: Some("network".into()),
+        file_changes: None,
+        metadata: None,
+    }
+}
+
+/// The dynamic source that offers `web_search` while a search service is
+/// usable. It owns the set and the tool; the Session state owns no reference
+/// back, so neither outlives the registration.
+struct SearchSource {
+    state: Arc<SessionState>,
+    tool: Arc<ToolContribution>,
+    set: Mutex<Option<Arc<ToolSourceSet>>>,
+    /// Whether the Session's current managed-search need already asked the
+    /// owner for its one observation. Cleared when the configuration stops
+    /// needing the managed account, so a later switch observes again.
+    observed: AtomicBool,
+}
+
+impl SearchSource {
+    fn new(state: Arc<SessionState>, observed: bool) -> Arc<Self> {
+        let tool = Arc::new(ToolContribution {
+            definition: definition(
+                SEARCH_TOOL,
+                "Search the web. Returns numbered titles, URLs and snippets.",
+                search_schema(),
+            ),
+            handler: Arc::new(WebToolHandler {
+                name: SEARCH_TOOL,
+                state: state.clone(),
+            }),
+        });
+        Arc::new(Self {
+            state,
+            tool,
+            set: Mutex::new(None),
+            observed: AtomicBool::new(observed),
+        })
+    }
+
+    /// Offers or withdraws the set, returning whether it changed. A new set
+    /// carries a new version; an unchanged declaration keeps its version, so
+    /// adoption does not repeat.
+    fn set_available(&self, available: bool) -> bool {
+        let mut set = self.set.lock().unwrap();
+        if available == set.is_some() {
+            return false;
+        }
+        *set = available.then(|| {
+            Arc::new(ToolSourceSet {
+                key: SOURCE.into(),
+                version: Uuid::new_v4().to_string(),
+                tools: vec![self.tool.clone()],
+            })
+        });
+        true
+    }
+
+    /// Re-evaluates the declaration from configuration and the managed
+    /// account, announcing the source when the offered set changed. The first
+    /// evaluation that needs the managed account observes it once through the
+    /// owner, so another process's login or logout is visible without an
+    /// account RPC; afterwards that provider's watch is the source.
+    async fn reconcile(&self, cancel: &CancellationToken, session: InstanceId, ctx: &Ctx) {
+        let Ok(document) = self.state.document(cancel).await else {
+            return;
+        };
+        let needed = self.state.mounted && managed_search_needed(&document);
+        let observe = needed && !self.observed.swap(true, Ordering::SeqCst);
+        if !needed {
+            self.observed.store(false, Ordering::SeqCst);
+        }
+        let signed_in = if observe {
+            self.state.managed.refresh_usable(cancel).await
+        } else {
+            self.state.managed.usable()
+        };
+        let available = self.state.mounted && search_configured(&document, signed_in);
+        if self.set_available(available)
+            && let Err(error) = ctx.emit(ToolProviderChanged {
+                name: tool_provider_changes(session),
+            })
+        {
+            tracing::warn!(%error, "failed to publish the Web tool source change");
+        }
+    }
+}
+
+impl ToolProvider for SearchSource {
+    fn sets(&self) -> Vec<Arc<ToolSourceSet>> {
+        self.set.lock().unwrap().clone().into_iter().collect()
     }
 }
 
@@ -358,12 +517,27 @@ struct Hit {
 struct SessionState {
     settings: Arc<Settings>,
     managed: Arc<ManagedSearch>,
+    /// Whether the Session's mount list names `web_search`.
+    mounted: bool,
     cache: Mutex<PageCache>,
     closing: CancellationToken,
     inflight: TaskTracker,
 }
 
 impl SessionState {
+    /// Reads the business document a declaration decision or a call uses.
+    async fn document(&self, cancel: &CancellationToken) -> Result<WebDocument, WebError> {
+        let snapshot = self
+            .settings
+            .read(SOURCE, SettingsScope::User, cancel)
+            .await
+            .map_err(|_| {
+                WebError::new("settings_unavailable", "Web settings could not be read.")
+            })?;
+        serde_json::from_value(snapshot.document)
+            .map_err(|_| WebError::new("settings_unavailable", "Web settings are invalid."))
+    }
+
     async fn execute(
         self: &Arc<Self>,
         name: &'static str,
@@ -418,17 +592,7 @@ impl SessionState {
                 Err(WebError::new("cancelled", "Call cancelled."))
             }
             res = tokio::time::timeout(timeout_duration, async {
-                let snapshot = self
-                    .settings
-                    .read("web", SettingsScope::User, &call_cancel)
-                    .await
-                    .map_err(|_| {
-                        WebError::new("settings_unavailable", "Web settings could not be read.")
-                    })?;
-                let document: WebDocument =
-                    serde_json::from_value(snapshot.document).map_err(|_| {
-                        WebError::new("settings_unavailable", "Web settings are invalid.")
-                    })?;
+                let document = self.document(&call_cancel).await?;
                 secret = document
                     .search_service
                     .as_ref()
@@ -842,6 +1006,31 @@ impl SessionState {
             );
         }
         Ok(ok_result(content, Some(structured)))
+    }
+}
+
+/// Whether a `web_search` call would have a service to use: the signed-in
+/// managed account for the default or `dim-oauth` configuration, or an adapter
+/// with its API key for `brave`. An adapter's call-time configuration errors
+/// (an unparsable endpoint or proxy) keep it declared and are reported by the
+/// call.
+fn search_configured(document: &WebDocument, signed_in: bool) -> bool {
+    match document.search_service.as_ref() {
+        None => signed_in,
+        Some(service) if service.kind == "brave" => service.api_key.is_some(),
+        Some(_) => managed_search_needed(document) && signed_in,
+    }
+}
+
+/// Whether deciding the declaration needs the managed account: the default
+/// service, or `dim-oauth` without an endpoint or key. An explicit adapter or
+/// an unusable `dim-oauth` configuration answers without an account read.
+fn managed_search_needed(document: &WebDocument) -> bool {
+    match document.search_service.as_ref() {
+        None => true,
+        Some(service) => {
+            service.kind == "dim-oauth" && service.endpoint.is_none() && service.api_key.is_none()
+        }
     }
 }
 

@@ -25,6 +25,7 @@ use std::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const OPENAI_CODEX_PRESET: &str = "openai-codex";
+pub(crate) const OPENAI_CHATGPT_PRESET: &str = "openai-chatgpt";
 /// The vendor packages the compatible protocol builds by name: their
 /// provider-option namespace is mapped in [`request::reasoning`], and neither
 /// has a registry row. Every other accepted name is a registry row.
@@ -505,6 +506,7 @@ fn build_model(
                 base_url: Some(base_url.clone()),
                 headers: Some(identity_headers(None)),
                 fetch: Some(fetch),
+                transform_request_body: request::tool_result_status_rewrite(protocol, model_id),
                 ..AmazonBedrockProviderSettings::default()
             })?;
             Ok(Arc::new(provider.chat(model_id)))

@@ -713,6 +713,90 @@ fn acp_loop_commands_keep_native_ids_and_require_an_unambiguous_branch_target() 
     );
 }
 
+/// `/loop` lists each prompt on its line, one line and at most 120
+/// characters; a record without one still prints without a separator.
+#[test]
+fn acp_loop_list_shows_the_prompt_on_one_line() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[METHODS, &["session.methods"]].concat());
+        wire.created();
+        let methods = [
+            "session.loop.start",
+            "session.loop.list",
+            "session.loop.stop",
+        ];
+        let mut listed = 0;
+        loop {
+            let request = wire.frame();
+            match request["method"].as_str() {
+                Some("session.attach") => wire.reply(&request, json!({})),
+                Some("session.history") => wire.reply(
+                    &request,
+                    json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                ),
+                Some("session.methods") => wire.reply(
+                    &request,
+                    json!({"methods":methods
+                        .iter()
+                        .map(|name| json!({"name":name,"mutating":!name.ends_with(".list")}))
+                        .collect::<Vec<_>>()}),
+                ),
+                Some("session.turn.get") => wire.reply(
+                    &request,
+                    json!({"branchId":"main","through":8,"turn":null,"output":null}),
+                ),
+                Some("session.loop.list") => {
+                    listed += 1;
+                    let loops = if listed == 1 {
+                        json!([
+                            {"loopId":"paced","state":"running","round":2,"nextAt":"2026-11-13T09:41:00.000Z","prompt":"check\nthe deploy"},
+                            {"loopId":"long","state":"waiting","round":1,"prompt":"z".repeat(150)},
+                            {"loopId":"old","state":"stopped","round":4}
+                        ])
+                    } else {
+                        json!([{"loopId":"old","state":"waiting","round":1}])
+                    };
+                    wire.reply(&request, json!({"loops": loops}));
+                    if listed == 2 {
+                        break;
+                    }
+                }
+                other => panic!("unexpected request {other:?}"),
+            }
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert!(peer.response(2).get("error").is_none());
+    assert_eq!(peer.commands(), ["loop"]);
+
+    let line = |shown: &str, id: &str| {
+        shown
+            .lines()
+            .find(|line| line.contains(id))
+            .unwrap_or_else(|| panic!("{id} is listed: {shown}"))
+            .to_owned()
+    };
+    let shown = peer.command(3, "session", "/loop");
+    assert_eq!(
+        line(&shown, "paced"),
+        "paced · running · round 2 · next 2026-11-13T09:41:00.000Z · check the deploy"
+    );
+    assert_eq!(
+        line(&shown, "long"),
+        format!("long · waiting · round 1 · {}", "z".repeat(120))
+    );
+    assert_eq!(line(&shown, "old"), "old · stopped · round 4");
+
+    let shown = peer.command(4, "session", "/loop");
+    assert_eq!(line(&shown, "old"), "old · waiting · round 1");
+    peer.close();
+    daemon.join().unwrap();
+}
+
 #[test]
 fn acp_compact_commands_report_each_native_outcome_once_and_cancel_without_submission() {
     for outcome in ["completed", "skipped", "failed", "cancelled"] {
@@ -1266,6 +1350,55 @@ fn acp_stdio_does_not_repeat_creation_when_the_native_reply_is_lost() {
 }
 
 #[test]
+fn acp_stdio_reconnects_after_an_unchanged_provider_disable() {
+    let home = Home::new();
+    let endpoint = home.0.join("rust/daemon.sock");
+    let listener = UnixListener::bind(&endpoint).unwrap();
+    fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600)).unwrap();
+    let (disconnect, acknowledged) = std::sync::mpsc::sync_channel(0);
+    let daemon = thread::spawn(move || {
+        let mut features = METHODS.to_vec();
+        features.extend([
+            "provider.routes.list",
+            "provider.routes.set",
+            "provider.routes.disable",
+        ]);
+        let mut wire = accept_native(&listener);
+        wire.hello(&features);
+        let disable = wire.read("provider.routes.disable");
+        wire.reply(&disable, json!(false));
+        acknowledged.recv_timeout(PATIENCE).unwrap();
+        drop(wire);
+        let mut wire = accept_native(&listener);
+        wire.hello(&features);
+        let list = wire.read("session.list");
+        wire.reply(&list, json!([]));
+        detached_eof(&mut wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "providers/disable", json!({"providerId":"unknown"}));
+    assert_eq!(peer.response(2)["result"], json!({}));
+    disconnect.send(()).unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "Native restoration did not become ready"
+        );
+        peer.send(3, "session/list", json!({}));
+        let list = peer.response(3);
+        if list.get("error").is_none() {
+            assert_eq!(list["result"]["sessions"], json!([]));
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
 fn acp_stdio_temporary_mcp_rebinds_expired_resources_before_submission() {
     let home = Home::new();
     let (submitted, accepted) = std::sync::mpsc::sync_channel(0);
@@ -1694,11 +1827,6 @@ impl Peer {
         );
         let response = self.response(1);
         assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
-        assert!(
-            response["result"]["agentCapabilities"]
-                .get("providers")
-                .is_none()
-        );
     }
 
     fn close(self) {
@@ -3254,7 +3382,7 @@ fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_write
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         let mut methods = METHODS.to_vec();
-        methods.push("provider.models.query");
+        methods.extend(["provider.models.query", "session.fork", "session.turn.get"]);
         wire.hello(&methods);
 
         let catalog = wire.read("provider.models.query");
@@ -3271,6 +3399,7 @@ fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_write
             create["params"]["permissionPolicy"],
             json!({"preset":"workspace-write"})
         );
+        assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":"high"}));
         let attach = wire.read("session.attach");
         wire.reply(&attach, json!({}));
         let history = wire.read("session.history");
@@ -3282,7 +3411,7 @@ fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_write
     });
     let mut peer = Peer::start(&home);
     peer.initialize();
-    peer.send(2,"session/new",json!({"cwd":home.0,"mcpServers":[],"_meta":{"lody":{"sessionConfig":{"version":1,"modelId":"chosen","configOptionValues":{"model":"ignored","mode":"workspace-write"}}}}}));
+    peer.send(2,"session/new",json!({"cwd":home.0,"mcpServers":[],"_meta":{"lody":{"sessionConfig":{"version":1,"modelId":"chosen","configOptionValues":{"model":"ignored","mode":"workspace-write","effort":"high"}}}}}));
     assert_eq!(peer.response(2)["result"]["sessionId"], "session");
     peer.send(3,"session/resume",json!({"sessionId":"session","cwd":home.0,"_meta":{"lody":{"sessionConfig":{"version":1,"configOptionValues":{"model":"chosen"}}}}}));
     assert_eq!(
@@ -3377,6 +3506,754 @@ fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_write
         peer.close();
         daemon.join().unwrap();
     }
+}
+
+#[test]
+fn acp_stdio_lody_config_round_trips_with_the_product_daemon() {
+    let home = Home::new();
+    let socket = home.0.join("rust/daemon.sock");
+    let _daemon = OwnedDaemon(socket.clone());
+    let ready = home.command().args(["mcp", "list"]).output().unwrap();
+    assert!(
+        ready.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ready.stderr)
+    );
+    let stream = UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(PATIENCE)).unwrap();
+    let mut native = Wire::new(stream);
+    let mut next = 0;
+    let mut call = |method: &str, params: Value| {
+        next += 1;
+        native.send(json!({"jsonrpc":"2.0","id":next,"method":method,"params":params}));
+        loop {
+            let mut line = String::new();
+            assert_ne!(native.0.read_line(&mut line).unwrap(), 0);
+            let reply: Value = serde_json::from_str(&line).unwrap();
+            if reply["id"] == next {
+                assert!(reply.get("result").is_some(), "{method}: {reply}");
+                break reply["result"].clone();
+            }
+        }
+    };
+    call("hello", json!({"protocolVersion":4,"clientKind":"cli"}));
+    let settings = call(
+        "settings.read",
+        json!({"source":"session-title","scope":"user"}),
+    );
+    call(
+        "settings.update",
+        json!({"source":"session-title","scope":"user","expectedRevision":settings["revision"],"document":{"enabled":false}}),
+    );
+
+    let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = endpoint.local_addr().unwrap();
+    let provider = "018ec73f-0000-7000-8000-000000000092";
+    let mut capabilities = dim_agent_types::CatalogCapabilities::with_limits(32_000, 1024);
+    capabilities.reasoning = true;
+    let created_provider = call(
+        "provider.create",
+        json!({"providerId":provider,"displayName":"ACP effort fixture", "enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":format!("http://{address}/v1"),"auth":{"type":"anonymous"}},
+        "models":[{"modelId":"acp-effort","displayName":"ACP effort","status":"active","capabilities":capabilities,
+            "metadata":{"reasoning":{"supported":true,"effort":"medium","effortOptions":["low","medium","high"]}}}]}),
+    );
+    call(
+        "provider.preferences.update",
+        json!({"providerId":provider,"expectedVersion":created_provider["version"],"modelId":"acp-effort",
+        "patch":{"reasoningEffort":{"action":"set","value":"low"}}}),
+    );
+    call(
+        "provider.select",
+        json!({"providerId":provider,"modelId":"acp-effort"}),
+    );
+
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    let config = |mode: &str, effort: &str| json!({"lody":{"sessionConfig":{"version":1,"modelId":"acp-effort","configOptionValues":{"mode":mode,"effort":effort}}}});
+    let selected = config("workspace-write", "high");
+    peer.send(
+        2,
+        "session/new",
+        json!({"cwd":home.0,"mcpServers":[],"_meta":selected}),
+    );
+    let response = peer.response(2);
+    assert_eq!(effort(&response)["currentValue"], "high");
+    let source = response["result"]["sessionId"].as_str().unwrap();
+
+    endpoint.set_nonblocking(true).unwrap();
+    let model = thread::spawn(move || {
+        let deadline = Instant::now() + PATIENCE;
+        let mut request = loop {
+            match endpoint.accept() {
+                Ok((stream, _)) => break BufReader::new(stream),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("no model request: {error}"),
+            }
+        };
+        request.get_ref().set_read_timeout(Some(PATIENCE)).unwrap();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            assert_ne!(request.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        request.read_exact(&mut body).unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let data = "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"acp-effort\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ACP_EFFORT_OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        write!(request.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}", data.len()).unwrap();
+        body
+    });
+    peer.send(
+        3,
+        "session/prompt",
+        json!({"sessionId":source,"prompt":[{"type":"text","text":"check startup effort"}]}),
+    );
+    assert_eq!(peer.response(3)["result"]["stopReason"], "end_turn");
+    let request = model.join().unwrap();
+    assert_eq!(request["reasoning_effort"], "high", "{request}");
+    let anchor = peer
+        .updates
+        .iter()
+        .find_map(|frame| frame.pointer("/params/update/_meta/lody/turnId"))
+        .unwrap()
+        .clone();
+
+    let mut reopen = Peer::start(&home);
+    reopen.initialize();
+    for (id, method) in [(2, "session/load"), (3, "session/resume")] {
+        reopen.send(
+            id,
+            method,
+            json!({"sessionId":source,"cwd":home.0,"mcpServers":[],"_meta":selected}),
+        );
+        let reply = reopen.response(id);
+        assert_eq!(effort(&reply)["currentValue"], "high");
+        assert_eq!(reply["result"]["modes"]["currentModeId"], "workspace-write");
+    }
+    call(
+        "session.model.update",
+        json!({"sessionId":source,"modelPreferences":{"reasoningEffort":"low"}}),
+    );
+    reopen.send(
+        4,
+        "session/resume",
+        json!({"sessionId":source,"cwd":home.0,"_meta":selected}),
+    );
+    assert_eq!(
+        reopen.response(4)["error"]["data"]["nativeAppError"],
+        "session_config_mismatch"
+    );
+    reopen.send(
+        9,
+        "session/load",
+        json!({"sessionId":source,"cwd":home.0,"mcpServers":[],"_meta":config("full-access", "low")}),
+    );
+    let mismatch = reopen.response(9);
+    assert_eq!(
+        mismatch["error"]["data"]["nativeAppError"], "session_config_mismatch",
+        "{mismatch}"
+    );
+    assert_eq!(
+        mismatch["error"]["message"],
+        "Session configuration differs: permissionPreset"
+    );
+
+    let mut fork_from = selected.clone();
+    fork_from["lody"]["forkAtTurn"] = json!({"version":1,"turnId":anchor});
+    reopen.send(
+        5,
+        "session/fork",
+        json!({"sessionId":source,"cwd":home.0,"mcpServers":[],"_meta":fork_from}),
+    );
+    let forked = reopen.response(5);
+    assert_eq!(effort(&forked)["currentValue"], "high");
+    assert_ne!(forked["result"]["sessionId"], source);
+    reopen.send(
+        6,
+        "session/fork",
+        json!({"sessionId":source,"cwd":home.0,"mcpServers":[],"_meta":selected}),
+    );
+    let mismatch = reopen.response(6);
+    assert_eq!(
+        mismatch["error"]["data"]["nativeAppError"], "session_config_mismatch",
+        "{mismatch}"
+    );
+    let catalog = call("session.summaries", json!({}));
+    assert_eq!(catalog.as_array().unwrap().len(), 2, "{catalog}");
+
+    reopen.send(
+        7,
+        "session/new",
+        json!({"cwd":home.0,"mcpServers":[],"_meta":config("read-only", "provider-default")}),
+    );
+    let cleared = reopen.response(7);
+    assert_eq!(effort(&cleared)["currentValue"], "medium");
+    reopen.send(10, "session/resume", json!({"sessionId":cleared["result"]["sessionId"],"cwd":home.0,"_meta":config("read-only", "provider-default")}));
+    assert_eq!(effort(&reopen.response(10))["currentValue"], "medium");
+    reopen.send(8, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert_eq!(effort(&reopen.response(8))["currentValue"], "low");
+    reopen.close();
+    peer.close();
+}
+
+#[test]
+fn acp_provider_routes_are_isolated_between_processes_sharing_a_daemon() {
+    let home = Home::new();
+    let socket = home.0.join("rust/daemon.sock");
+    let _daemon = OwnedDaemon(socket.clone());
+    let ready = home.command().args(["mcp", "list"]).output().unwrap();
+    assert!(
+        ready.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ready.stderr)
+    );
+    let mut native = BufReader::new(UnixStream::connect(&socket).unwrap());
+    native.get_ref().set_read_timeout(Some(PATIENCE)).unwrap();
+    let mut id = 0;
+    let mut native_call = |method: &str, params: Value| {
+        id += 1;
+        writeln!(
+            native.get_mut(),
+            "{}",
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        )
+        .unwrap();
+        loop {
+            let mut line = String::new();
+            assert_ne!(native.read_line(&mut line).unwrap(), 0);
+            let response: Value = serde_json::from_str(&line).unwrap();
+            if response["id"] == id {
+                assert!(response.get("result").is_some(), "{method}: {response}");
+                break response["result"].clone();
+            }
+        }
+    };
+    native_call("hello", json!({"protocolVersion":3,"clientKind":"cli"}));
+    let settings = native_call(
+        "settings.read",
+        json!({"source":"session-title","scope":"user"}),
+    );
+    native_call(
+        "settings.update",
+        json!({"source":"session-title","scope":"user",
+        "expectedRevision":settings["revision"],"document":{"enabled":false}}),
+    );
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let shared = format!("http://{address}/shared/v1");
+    let first = format!("http://{address}/first/v1");
+    let second = format!("http://{address}/second/v1");
+    let provider = "018ec73f-0000-7000-8000-000000000093";
+    let record = native_call(
+        "provider.create",
+        json!({"providerId":provider,"displayName":"ACP routing fixture","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":shared,"auth":{"type":"bearer"},
+            "credential":{"action":"set","value":"fixture-shared-only"},"headers":{"X-Route-Marker":"shared"}},
+        "models":[{"modelId":"acp-route-fixture","displayName":"Routing fixture","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(32_000,1024)}]}),
+    );
+    native_call(
+        "provider.select",
+        json!({"providerId":provider,"modelId":"acp-route-fixture"}),
+    );
+    let stored = native_call("session.create", json!({"cwd":home.0}))["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    listener.set_nonblocking(true).unwrap();
+    let model = thread::spawn(move || {
+        let (completed, observations) = std::sync::mpsc::channel();
+        let mut seen = Vec::new();
+        let mut deadline = Instant::now() + PATIENCE;
+        while seen.len() < 6 {
+            if let Ok(observation) = observations.try_recv() {
+                seen.push(observation);
+                deadline = Instant::now() + PATIENCE;
+                continue;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "missing model call after {seen:?}"
+            );
+            let (stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("accept model call: {error}"),
+            };
+            let completed = completed.clone();
+            thread::spawn(move || {
+                stream.set_read_timeout(Some(PATIENCE)).unwrap();
+                let mut request = BufReader::new(stream);
+                let mut line = String::new();
+                if !matches!(request.read_line(&mut line), Ok(size) if size != 0) {
+                    return;
+                }
+                let path = line.split_whitespace().nth(1).unwrap().to_owned();
+                let mut headers = std::collections::HashMap::new();
+                loop {
+                    line.clear();
+                    assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let (name, value) = line.split_once(':').unwrap();
+                    headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+                }
+                let mut bytes = vec![0; headers["content-length"].parse().unwrap()];
+                request.read_exact(&mut bytes).unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["model"], "acp-route-fixture");
+                let data = "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"acp-route-fixture\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ROUTE_OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+                completed
+                    .send((
+                        path,
+                        headers.remove("authorization"),
+                        headers.remove("x-route-marker"),
+                    ))
+                    .unwrap();
+                write!(request.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}", data.len()).unwrap();
+            });
+        }
+        seen
+    });
+
+    let mut a = Peer::start(&home);
+    let mut b = Peer::start(&home);
+    let mut acp_id = 0;
+    let mut call = |peer: &mut Peer, method: &str, params: Value| {
+        acp_id += 1;
+        peer.send(acp_id, method, params);
+        peer.response(acp_id)
+    };
+    let provider_row = |listed: Value| {
+        listed["result"]["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["providerId"] == provider)
+            .unwrap()
+            .clone()
+    };
+    let create = json!({"cwd":home.0,"mcpServers":[]});
+    let acp_init = json!({"protocolVersion":1,"clientCapabilities":{}});
+    for peer in [&mut a, &mut b] {
+        let initialized = call(peer, "initialize", acp_init.clone());
+        assert_eq!(
+            initialized["result"]["agentCapabilities"]["providers"],
+            json!({})
+        );
+    }
+    let jointly_attached = call(&mut b, "session/new", create.clone());
+    let jointly_attached = &jointly_attached["result"]["sessionId"];
+    let loaded = call(
+        &mut a,
+        "session/load",
+        json!({"sessionId":jointly_attached,"cwd":home.0,"mcpServers":[]}),
+    );
+    assert!(loaded.get("result").is_some(), "{loaded}");
+    let current = provider_row(call(&mut a, "providers/list", json!({})));
+    assert_eq!(
+        current["current"],
+        json!({"apiType":"openai","baseUrl":shared})
+    );
+    let invalid = call(
+        &mut a,
+        "providers/set",
+        json!({"providerId":provider,"apiType":"openai",
+        "baseUrl":format!("{first}?key=fixture-invalid")}),
+    );
+    assert_eq!(invalid["error"]["code"], -32602);
+    assert!(!invalid.to_string().contains("fixture-invalid"));
+    let changed = call(
+        &mut a,
+        "providers/set",
+        json!({"providerId":provider,"apiType":"openai","baseUrl":first,
+        "headers":{"Authorization":"Bearer fixture-acp-only","X-Route-Marker":"first"}}),
+    );
+    assert_eq!(changed["result"], json!({}), "{changed}");
+    let a_row = provider_row(call(&mut a, "providers/list", json!({})));
+    assert_eq!(
+        a_row["current"],
+        json!({"apiType":"openai","baseUrl":first})
+    );
+    assert_eq!(
+        provider_row(call(&mut b, "providers/list", json!({}))),
+        current
+    );
+    let selected = call(
+        &mut a,
+        "session/set_config_option",
+        json!({"sessionId":jointly_attached,"configId":"model","value":"acp-route-fixture"}),
+    );
+    assert_eq!(
+        selected["error"]["data"]["nativeAppError"], "provider_route_conflict",
+        "{selected}"
+    );
+
+    let a_new = call(&mut a, "session/new", create.clone());
+    assert!(
+        a_new["result"]["configOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["id"] == "model" && option["currentValue"] == "acp-route-fixture"),
+        "{a_new}"
+    );
+    let a_id = a_new["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{a_new}"));
+    let foreign = call(
+        &mut b,
+        "session/resume",
+        json!({"sessionId":a_id,"cwd":home.0}),
+    );
+    assert_eq!(
+        foreign["error"]["data"]["nativeAppError"], "provider_route_conflict",
+        "{foreign}"
+    );
+    let b_new = call(&mut b, "session/new", create.clone());
+    let b_id = b_new["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{b_new}"));
+    let in_use = call(
+        &mut a,
+        "session/load",
+        json!({"sessionId":b_id,"cwd":home.0,"mcpServers":[]}),
+    );
+    assert_eq!(
+        in_use["error"]["data"]["nativeAppError"], "provider_route_conflict",
+        "{in_use}"
+    );
+    for (peer, session_id) in [(&mut a, a_id), (&mut b, b_id)] {
+        let reply = call(
+            peer,
+            "session/prompt",
+            json!({"sessionId":session_id,"prompt":[{"type":"text","text":"Check route"}]}),
+        );
+        assert_eq!(reply["result"]["stopReason"], "end_turn", "{reply}");
+    }
+    let loaded = call(
+        &mut a,
+        "session/load",
+        json!({"sessionId":stored,"cwd":home.0,"mcpServers":[]}),
+    );
+    assert!(loaded.get("result").is_some(), "{loaded}");
+    let reply = call(
+        &mut a,
+        "session/prompt",
+        json!({"sessionId":stored,"prompt":[{"type":"text","text":"Check loaded route"}]}),
+    );
+    assert_eq!(reply["result"]["stopReason"], "end_turn", "{reply}");
+
+    let replaced = call(
+        &mut a,
+        "providers/set",
+        json!({"providerId":provider,"apiType":"openai","baseUrl":second}),
+    );
+    assert_eq!(replaced["result"], json!({}), "{replaced}");
+    let inherited = call(
+        &mut a,
+        "session/fork",
+        json!({"sessionId":a_id,"cwd":home.0,"mcpServers":[]}),
+    );
+    assert_eq!(
+        inherited["error"]["data"]["nativeAppError"], "provider_route_conflict",
+        "{inherited}"
+    );
+    let replaced_session = call(&mut a, "session/new", create.clone());
+    let replacement = replaced_session["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{replaced_session}"));
+    let reply = call(
+        &mut a,
+        "session/prompt",
+        json!({"sessionId":replacement,"prompt":[{"type":"text","text":"Check replaced route"}]}),
+    );
+    assert_eq!(reply["result"]["stopReason"], "end_turn", "{reply}");
+
+    let disabled = call(&mut a, "providers/disable", json!({"providerId":provider}));
+    assert_eq!(disabled["result"], json!({}), "{disabled}");
+    let unknown = call(
+        &mut a,
+        "providers/disable",
+        json!({"providerId":"not-a-provider"}),
+    );
+    assert_eq!(unknown["result"], json!({}), "{unknown}");
+    assert!(provider_row(call(&mut a, "providers/list", json!({})))["current"].is_null());
+    assert_eq!(
+        provider_row(call(&mut b, "providers/list", json!({}))),
+        current
+    );
+    let rejected = call(&mut a, "session/new", create.clone());
+    assert_eq!(
+        rejected["error"]["data"]["nativeAppError"], "provider_route_disabled",
+        "{rejected}"
+    );
+    let before_forks = native_call("session.summaries", json!({}))
+        .as_array()
+        .unwrap()
+        .len();
+    for session in [a_id, b_id] {
+        let refused = call(
+            &mut a,
+            "session/fork",
+            json!({"sessionId":session,"cwd":home.0,"mcpServers":[]}),
+        );
+        assert_eq!(
+            refused["error"]["data"]["nativeAppError"], "provider_route_disabled",
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        native_call("session.summaries", json!({}))
+            .as_array()
+            .unwrap()
+            .len(),
+        before_forks
+    );
+    let another_b = call(&mut b, "session/new", create);
+    for (peer, session_id) in [
+        (&mut a, a_id),
+        (&mut b, another_b["result"]["sessionId"].as_str().unwrap()),
+    ] {
+        let reply = call(
+            peer,
+            "session/prompt",
+            json!({"sessionId":session_id,"prompt":[{"type":"text","text":"Check route after disable"}]}),
+        );
+        assert_eq!(reply["result"]["stopReason"], "end_turn", "{reply}");
+    }
+    let observed = model.join().unwrap();
+    assert_eq!(
+        observed,
+        [
+            (
+                "/first/v1/chat/completions".into(),
+                Some("Bearer fixture-acp-only".into()),
+                Some("first".into())
+            ),
+            (
+                "/shared/v1/chat/completions".into(),
+                Some("Bearer fixture-shared-only".into()),
+                Some("shared".into())
+            ),
+            (
+                "/first/v1/chat/completions".into(),
+                Some("Bearer fixture-acp-only".into()),
+                Some("first".into())
+            ),
+            ("/second/v1/chat/completions".into(), None, None),
+            (
+                "/first/v1/chat/completions".into(),
+                Some("Bearer fixture-acp-only".into()),
+                Some("first".into())
+            ),
+            (
+                "/shared/v1/chat/completions".into(),
+                Some("Bearer fixture-shared-only".into()),
+                Some("shared".into())
+            ),
+        ]
+    );
+
+    let proxy_home = Home::new();
+    let (persisted, fork_committed) = std::sync::mpsc::sync_channel(1);
+    let proxy = proxy_home.daemon(move |wire| {
+        let mut native = UnixStream::connect(socket).unwrap();
+        native.set_read_timeout(Some(HANG_GUARD)).unwrap();
+        let mut gateway = wire.0.get_ref().try_clone().unwrap();
+        let responses = BufReader::new(native.try_clone().unwrap());
+        let order = Mutex::new((None, None, false));
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut held = None;
+                for line in responses.lines() {
+                    let line = line.unwrap();
+                    let response: Value = serde_json::from_str(&line).unwrap();
+                    let (fork, list, _) = order.lock().unwrap().clone();
+                    if response
+                        .get("id")
+                        .is_some_and(|id| Some(id) == fork.as_ref())
+                    {
+                        assert!(response.get("result").is_some(), "{response}");
+                        held = Some(line);
+                        persisted.send(()).unwrap();
+                        continue;
+                    }
+                    writeln!(gateway, "{line}").unwrap();
+                    if response
+                        .get("id")
+                        .is_some_and(|id| Some(id) == list.as_ref())
+                    {
+                        writeln!(gateway, "{}", held.take().unwrap()).unwrap();
+                    }
+                }
+            });
+            for line in (&mut wire.0).lines() {
+                let line = line.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let mut order = order.lock().unwrap();
+                match request["method"].as_str() {
+                    Some("session.fork") => order.0 = request.get("id").cloned(),
+                    Some("provider.routes.list") => order.1 = request.get("id").cloned(),
+                    Some("session.attach") => order.2 = true,
+                    Some("provider.routes.disable") => assert!(order.2, "{request}"),
+                    _ => {}
+                }
+                drop(order);
+                writeln!(native, "{line}").unwrap();
+            }
+            native.shutdown(std::net::Shutdown::Both).unwrap();
+        });
+    });
+    let mut concurrent = Peer::start(&proxy_home);
+    concurrent.initialize();
+    let database = rusqlite::Connection::open_with_flags(
+        home.0.join("rust/dimcode.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let child_count = || {
+        database
+            .query_row("SELECT count(*) FROM agent_sessions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    let before = child_count();
+    concurrent.send(
+        2,
+        "session/fork",
+        json!({"sessionId":b_id,"cwd":home.0,"mcpServers":[]}),
+    );
+    fork_committed.recv_timeout(PATIENCE).unwrap();
+    assert_eq!(child_count(), before + 1);
+    concurrent.send(3, "providers/disable", json!({"providerId":provider}));
+    concurrent.send(4, "providers/list", json!({}));
+    let mut replies = std::collections::HashMap::new();
+    while replies.len() < 3 {
+        let frame = concurrent.frame();
+        if let Some(id) = frame["id"].as_i64() {
+            assert!(matches!(id, 2..=4), "{frame}");
+            assert!(replies.insert(id, frame).is_none());
+        }
+    }
+    let fork = &replies[&2];
+    assert!(fork["result"]["sessionId"].is_string(), "{fork}");
+    assert_eq!(replies[&3]["result"], json!({}));
+    assert_eq!(
+        provider_row(replies.remove(&4).unwrap())["current"]["baseUrl"],
+        shared
+    );
+    assert_eq!(child_count(), before + 1);
+    concurrent.close();
+    proxy.join().unwrap();
+
+    a.close();
+    let mut restarted = Peer::start(&home);
+    restarted.initialize();
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let expired = call(
+            &mut restarted,
+            "session/resume",
+            json!({"sessionId":a_id,"cwd":home.0}),
+        );
+        let code = &expired["error"]["data"]["nativeAppError"];
+        if code == "provider_route_unavailable" {
+            break;
+        }
+        assert!(
+            code == "provider_route_conflict" && Instant::now() < deadline,
+            "{expired}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let refused = call(
+        &mut restarted,
+        "session/set_config_option",
+        json!({"sessionId":b_id,"configId":"model","value":"acp-route-fixture"}),
+    );
+    assert_eq!(
+        refused["error"]["data"]["nativeAppError"], "provider_route_not_expired",
+        "{refused}"
+    );
+    let restored = call(
+        &mut restarted,
+        "session/set_config_option",
+        json!({"sessionId":a_id,"configId":"model","value":"acp-route-fixture"}),
+    );
+    assert!(
+        restored["result"]["configOptions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{restored}"))
+            .iter()
+            .any(|option| option["id"] == "model" && option["currentValue"] == "acp-route-fixture")
+    );
+    let resumed = call(
+        &mut restarted,
+        "session/resume",
+        json!({"sessionId":a_id,"cwd":home.0}),
+    );
+    assert!(
+        resumed["result"]["configOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["id"] == "model" && option["currentValue"] == "acp-route-fixture"),
+        "{resumed}"
+    );
+    assert_eq!(
+        native_call("provider.management", json!({"providerId":provider}))["providers"][0],
+        record
+    );
+    let stored_config: String = database
+        .query_row(
+            "SELECT config FROM agent_sessions WHERE session_id = ?1",
+            [a_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!stored_config.contains("fixture-acp-only"));
+    restarted.close();
+
+    let changed = call(
+        &mut b,
+        "providers/set",
+        json!({"providerId":provider,"apiType":"openai","baseUrl":second}),
+    );
+    assert_eq!(changed["result"], json!({}), "{changed}");
+    let disabled = native_call(
+        "provider.update",
+        json!({"providerId":provider,"expectedVersion":record["version"],"patch":{"enabled":false}}),
+    );
+    let cleared = call(&mut b, "providers/disable", json!({"providerId":provider}));
+    assert_eq!(cleared["result"], json!({}), "{cleared}");
+    native_call(
+        "provider.update",
+        json!({"providerId":provider,"expectedVersion":disabled["version"],"patch":{"enabled":true}}),
+    );
+    assert!(provider_row(call(&mut b, "providers/list", json!({})))["current"].is_null());
+    b.close();
 }
 
 #[test]
@@ -4649,8 +5526,6 @@ fn acp_load_and_resume_report_unavailable_sessions_without_listing_history() {
             let attach = wire.read("session.attach");
             assert_eq!(attach["params"]["expectedCwd"], json!(cwd));
             wire.send(json!({"jsonrpc":"2.0","id":attach["id"],"error":{"code":-32001,"message":"missing is closed","data":{"appError":"session_closed"}}}));
-            let detach = wire.read("session.detach");
-            wire.reply(&detach, json!({}));
         }
         detached_eof(wire);
     });

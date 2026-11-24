@@ -3,7 +3,7 @@
 //! `dim_goal::install`, no TypeScript row. Each flow keeps its scenario and
 //! compares Goal's writes with the literal texts of support/texts.rs byte for
 //! byte.
-mod support;
+use crate::support;
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -19,7 +19,8 @@ use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{BranchOptions, Session};
 use dim_agent_types::{
     BranchSource, ContextBaselineEntry, ContextCompactData, ContextCompactionData,
-    ContextCompactionResult, EventKind, Message, MessageContent, ModelRequest, Role, ToolCall,
+    ContextCompactionResult, EventKind, InputMode, Message, MessageContent, ModelRequest, Role,
+    ToolCall,
 };
 use serde_json::{Value, json};
 use support::texts;
@@ -2164,4 +2165,211 @@ async fn goal_each_change_answers_with_one_newest_state_record() {
         "a retired record leaves no live entry: {entries:#?}"
     );
     fixture.close().await;
+}
+
+/// §20.22: `session.goal.*` with no `branchId` follows the line the Session's
+/// conversation is on, and a goal on the root is untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_change_without_a_branch_reaches_the_default_branch() {
+    let mut fixture = Fixture::start().await;
+    let id = fixture
+        .new_session(&["goal_update", "wait", "branch"])
+        .await;
+    let session = fixture.agent.get_session(&id).unwrap();
+    let before: std::collections::BTreeSet<String> = session
+        .branches()
+        .iter()
+        .map(|info| info.id.clone())
+        .collect();
+    fixture
+        .submit_on(
+            &id,
+            "main",
+            r#"tool:branch {"action":"create","prompt":"the line"}"#,
+        )
+        .await;
+    let line = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(id) = session
+                .branches()
+                .into_iter()
+                .map(|info| info.id)
+                .find(|id| !before.contains(id))
+            {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("main opens the line");
+    fixture.idle_on(&id, "main").await;
+    fixture.idle_on(&id, &line).await;
+    session
+        .set_default_branch(
+            &line,
+            BranchSource::User {
+                operation_id: "switch".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(session.default_branch().unwrap(), line);
+
+    fixture
+        .goal_on(&id, "set", json!({"objective":"on the line"}))
+        .await
+        .unwrap();
+    wait_goal(&session, &line, "<dim-goal ").await;
+    assert!(
+        !fixture
+            .writes("main")
+            .await
+            .iter()
+            .any(|block| block.text.contains("<dim-goal ")),
+        "the root holds no goal of the move"
+    );
+    fixture.close().await;
+}
+
+/// #1989: Goal decides to continue on the set turn's end, the report's input
+/// and turn commit behind that decision, and the stale continuation is not
+/// written after the request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_continuation_is_not_written_after_the_report_turn_starts() {
+    let (model, held) = HeldEvaluator::held();
+    let mut fixture = Fixture::start_with(model).await;
+    fixture.set_limit(5).await;
+    let id = fixture.new_session(&["goal_update", "wait"]).await;
+    let session = fixture.agent.get_session(&id).unwrap();
+
+    let mut gate = dim_goal::testing::hold_write(&id, "main");
+    fixture
+        .goal_on(
+            &id,
+            "set",
+            json!({"objective": "make the tests pass", "judge": "evaluator"}),
+        )
+        .await
+        .unwrap();
+    let set_end = tokio::time::timeout(Duration::from_secs(15), gate.arrived())
+        .await
+        .expect("the set turn's continuation reached its write in time");
+    assert!(set_end > 0, "the set turn's continuation reaches its write");
+
+    let report = session
+        .submit(
+            format!(
+                "tool:goal_update {}",
+                json!({"status":"completed","summary":"all tests pass"})
+            ),
+            InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap()
+        .sequence;
+    wait_turn_start_after(&session, report).await;
+    gate.release();
+
+    wait_event(&session, "main", |kind| {
+        matches!(kind, EventKind::BranchCreate(_))
+    })
+    .await;
+    fixture.idle_on(&id, "main").await;
+
+    let writes = settled_goal_writes(&session).await;
+    let request = writes
+        .iter()
+        .find(|block| block.marker.contains(r#"kind="goal" op="completed""#))
+        .unwrap_or_else(|| panic!("the worker's request: {writes:#?}"));
+    assert!(
+        writes
+            .iter()
+            .filter(|block| block.sequence > request.sequence)
+            .all(|block| !block.marker.contains("continuation")),
+        "a completion request must wait for its evaluator: {writes:#?}"
+    );
+    held.send_replace(true);
+    fixture.close().await;
+}
+
+/// Echoes every turn but keeps the evaluator's answer open, so main's
+/// continuations run while the evaluation is still waiting.
+struct HeldEvaluator(tokio::sync::watch::Receiver<bool>);
+impl HeldEvaluator {
+    fn held() -> (Arc<Self>, tokio::sync::watch::Sender<bool>) {
+        let (release, held) = tokio::sync::watch::channel(false);
+        (Arc::new(Self(held)), release)
+    }
+}
+impl ModelDriver for HeldEvaluator {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        if !is_evaluator(&request) {
+            return EchoModel.invoke(request, connection, cancel);
+        }
+        let mut release = self.0.clone();
+        Box::pin(async move {
+            while !*release.borrow_and_update() {
+                if release.changed().await.is_err() {
+                    break;
+                }
+            }
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "evaluation".into(),
+                }),
+                Ok(ModelChunk::Text(
+                    "Read the tests and ran them.\nDONE: all tests pass".into(),
+                )),
+                Ok(ModelChunk::TextEnd),
+                Ok(ModelChunk::MessageStop {
+                    message_id: "evaluation".into(),
+                    reason: ModelStopReason::EndTurn,
+                }),
+            ])) as ModelStream)
+        })
+    }
+}
+
+/// The Goal writes on the flow's `main` once they stop changing.
+async fn settled_goal_writes(session: &Session) -> Vec<Block> {
+    let mut last = Vec::new();
+    let mut stable = 0;
+    for _ in 0..1200 {
+        let writes = goal_writes(session, "main").await;
+        if !writes.is_empty() && writes.len() == last.len() {
+            stable += 1;
+            if stable >= 10 {
+                return writes;
+            }
+        } else {
+            stable = 0;
+        }
+        last = writes;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    last
+}
+
+/// Waits until a turn starts on `main` after `after`.
+async fn wait_turn_start_after(session: &Session, after: u64) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let events = branch_events(session, "main", ..).await.unwrap();
+            if events.iter().any(|event| {
+                matches!(event.kind, EventKind::TurnStart(_)) && event.sequence > after
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a turn starts after the report input");
 }

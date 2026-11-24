@@ -9,7 +9,7 @@ description = "Client-host ACP gateway over Dim's public RPC v3"
 
 [dependencies]
 tempfile = "3"
-agent-client-protocol = { version = "=3.5.0", features = ["unstable_session_fork"] }
+agent-client-protocol = { version = "=3.5.0", features = ["unstable_session_fork", "unstable_llm_providers"] }
 dim-client.workspace = true
 dim-agent-types.workspace = true
 rutis.workspace = true

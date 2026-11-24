@@ -156,6 +156,7 @@ not cancellation. No new bridge protocol or detached cancellation task is needed
     |                       |<-- model config | model_unavailable          |
     |                       | build ModelRequest (system, messages, max_tokens, no tools)
     |                       | resolve connection (credentials stay here)    |
+    |                       | reject an image the destination does not take |
     |                       | invoke(request, connection, cancel) --------->|
     |                       |<------------ chunks: Text, Usage, MessageStop |
     |<-- {text, stopReason, usage}                                          |
@@ -183,7 +184,7 @@ written anywhere.
 
 | Code | When | Retry |
 | --- | --- | --- |
-| `invalid_request` | `messages` empty, `maxOutputTokens = 0` | No (caller defect) |
+| `invalid_request` | `messages` empty, `maxOutputTokens = 0`, or a message image in a format the resolved destination does not take as pixels | No (caller defect) |
 | `model_unavailable` | The model is not selectable, or its Provider or catalog is missing | After the user fixes the consumer's setting or the catalog |
 | `failed` | Connection resolution, transport, HTTP or stream error after the shared policy; a tool stop | Consumer's choice |
 | `cancelled` | Call dropped, cancel token fired, or Provider unloading (its stop token) | Consumer's choice |

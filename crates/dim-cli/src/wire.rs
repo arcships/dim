@@ -266,6 +266,23 @@ pub fn workflow_report(text: &str) -> Option<(String, WorkflowState)> {
     Some((unescape(run), status))
 }
 
+/// A `session.submit` receipt: the input the branch wrote, and the checks'
+/// warnings.
+#[derive(Deserialize)]
+pub struct SubmissionReceipt {
+    pub event: SubmittedInput,
+    #[serde(default)]
+    pub warnings: Vec<dim_agent_types::SubmitWarning>,
+}
+
+/// The `input/message` event a submission wrote.
+#[derive(Deserialize)]
+pub struct SubmittedInput {
+    /// The written input's id; empty when the reply names none.
+    #[serde(default)]
+    pub id: String,
+}
+
 /// The warnings a reply carries: the submit checks' work that did not happen
 /// (Hooks A.6.2). An absent list is no warning.
 pub fn warnings(reply: &Value) -> Vec<dim_agent_types::SubmitWarning> {

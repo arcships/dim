@@ -18,7 +18,7 @@ mod timeline;
 
 pub use backup::{backup_store, restore_store};
 pub use catalog::initialize_session_catalog;
-pub(crate) use catalog::{ACTIVITY_KINDS, truncate_preview};
+pub(crate) use catalog::{ACTIVITY_KINDS, activity_time, truncate_preview};
 #[cfg(feature = "testing")]
 pub use codec::NodeLoads;
 pub use dim_agent_capabilities::file_access::WorktreeDirectory;
@@ -36,14 +36,16 @@ pub use prompt_migration::{Migrated, migrate_prompt_references};
 pub use query::{QueryStatementStats, sqlite_memory};
 pub use reclaim::Reclaimed;
 pub(crate) use sqlite::AssemblyProgress;
-#[cfg(feature = "testing")]
-pub use sqlite::set_upgrade_report_delay;
 pub use sqlite::{
     FORMAT as STORE_FORMAT, SqliteStorage, SqliteStoragePlugin, StorageReport, Vacuumed,
     vacuum_store,
 };
 pub(crate) use sqlite::{ImportUser, ReplaceUser, UserDecision, UserDocument, UserWriteError};
+#[cfg(feature = "testing")]
+pub use sqlite::{set_upgrade_report_delay, take_upgrade_steps};
 pub use text::initialize_session_text_index;
+#[cfg(feature = "testing")]
+pub use timeline::testing as timeline_testing;
 /// Derives every text candidate from the stored rows, in order: what an upgrade
 /// from a format before the index ran. A flow test compares a per-row rebuild
 /// against it. Feature `testing` only.

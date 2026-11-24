@@ -18,6 +18,8 @@ const toast = useToastStore()
 const view = computed(() => chat.views[props.sessionId])
 const tabs = computed(() => ui.lineTabs[props.sessionId] ?? [])
 const active = computed(() => ui.activeLineTab[props.sessionId])
+/** The centre: the line the Session's conversation is on, which a new line is cut from. */
+const centred = computed(() => view.value?.defaultBranchId ?? ROOT_BRANCH_ID)
 const lineCount = computed(() => view.value?.lines.filter((line) => line.id !== ROOT_BRANCH_ID).length ?? 0)
 
 function line(branchId: string) {
@@ -63,7 +65,7 @@ function newLine(): void {
     toast.push({ tone: "info", title: t("lines.noFinishedTurn") })
     return
   }
-  ui.requestNewLine({ sessionId: props.sessionId, parentBranchId: ROOT_BRANCH_ID, at, text: "" })
+  ui.requestNewLine({ sessionId: props.sessionId, parentBranchId: centred.value, at, text: "" })
 }
 
 function onKeydown(event: KeyboardEvent): void {

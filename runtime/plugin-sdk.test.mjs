@@ -93,7 +93,8 @@ void management.register('fixture', [], typedHandler);
 void methods.register('fixture', [], async () => initialReply);
 void management.register('fixture', [], async () => configuredReply);
 void methods.register('fixture', [], async (call, cancelled, progress) => {
-  progress(configured);
+  const sent: Promise<void> = progress(configured);
+  await sent;
   progress(entry);
   progress({});
   // @ts-expect-error progress carries data, not callbacks.
@@ -120,7 +121,7 @@ void management.register('fixture', [], async () => ({ kind: 'other', value: con
 
 const declarations: MethodDeclaration[] = [{ name: 'example.status', mutating: false, interruption: 'report', progress: false }];
 void management.register('example', declarations, handler);
-void handler({ callId: 'call', method: 'example.status', params: [1, true] }, Promise.resolve(), () => {});
+void handler({ callId: 'call', method: 'example.status', params: [1, true] }, Promise.resolve(), async () => {});
 // @ts-expect-error a declaration states its interruption and progress.
 void management.register('example', [{ name: 'example.status', mutating: false }], handler);
 const at = { sessionId: 'session', branchId: 'main' };
@@ -240,11 +241,11 @@ void execute({
 }, Promise.resolve());
 void methods.register('session.example', [{ name: 'session.example.echo', mutating: false, interruption: 'drain', progress: true }], sessionHandler);
 void sessionHandler({ callId: 'call', method: 'session.example.echo', params: { sessionId: 'session' } },
-  Promise.resolve(), () => {});
+  Promise.resolve(), async () => {});
 // @ts-expect-error a Session method call names its Session.
-void sessionHandler({ callId: 'call', method: 'session.example.echo', params: {} }, Promise.resolve(), () => {});
+void sessionHandler({ callId: 'call', method: 'session.example.echo', params: {} }, Promise.resolve(), async () => {});
 void handler({ callId: 'call', method: 'example.status', params: [1, true],
-  origin: { connectionId: 'connection' } }, Promise.resolve(), () => {});
+  origin: { connectionId: 'connection' } }, Promise.resolve(), async () => {});
 const notificationOrigin: MethodDeclaration = { name: 'example.status', mutating: false,
   interruption: 'report', progress: false, notifications: ['example.changed'] };
 void notificationOrigin;

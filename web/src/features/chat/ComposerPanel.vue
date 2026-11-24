@@ -16,15 +16,17 @@ import { quoteInto } from "./quote"
 
 /** The Session commands the menu lists, each only when given. Errors are reported by the callee. */
 type SessionCommands = {
-  compact?: () => Promise<void>
-  usage?: () => Promise<void>
+  /** Compacts the line the command was typed on. */
+  compact?: (branchId: string) => Promise<void>
+  /** Reports the context window the line the command was typed on is using. */
+  usage?: (branchId: string) => Promise<void>
   fork?: () => Promise<void>
-  /** Receives the words after `/goal`; empty shows the goal. */
-  goal?: (words: string) => Promise<void>
-  /** Receives the words after `/loop`; empty lists the line's loops. */
-  loop?: (words: string) => Promise<void>
-  /** Receives the words after `/effort`; empty lists the choices. */
-  effort?: (words: string) => Promise<void>
+  /** Receives the words after `/goal` and the line the draft was written on; empty shows the goal. */
+  goal?: (words: string, branchId: string) => Promise<void>
+  /** Receives the words after `/loop` and the line the draft was written on; empty lists the line's loops. */
+  loop?: (words: string, branchId: string) => Promise<void>
+  /** Receives the words after `/effort` and the line the draft was written on; empty lists the choices. */
+  effort?: (words: string, branchId: string) => Promise<void>
 }
 
 /**
@@ -38,6 +40,14 @@ type SessionCommands = {
 const props = withDefaults(defineProps<{
   running: boolean
   stopping?: boolean
+  /** The line this composer writes to; the send-now gesture belongs to it from start to finish. */
+  branchId?: string
+  /**
+   * The centre as it is now, read at dispatch: a prompt that took the composer's
+   * place caches it, so its props keep the line it was hidden on while the page
+   * knows the live one.
+   */
+  centre?: () => string
   model: ModelId | undefined
   /**
    * The new Session's model resolution: the state the menu shows and the two
@@ -46,8 +56,8 @@ const props = withDefaults(defineProps<{
   modelPreview?: ModelMenuPreview
   /** False when this connection may not change the model; the menu then only names it. */
   modelSelectable: boolean
-  /** Sends the text and the draft's attachments in `mode`; resolves once the server accepted it. */
-  send: (text: string, attachments: DraftAttachments, mode: SubmitMode) => Promise<void>
+  /** Sends the text and the draft's attachments in `mode`, to `branchId` when the caller names the line the draft was written on; resolves once the server accepted it. */
+  send: (text: string, attachments: DraftAttachments, mode: SubmitMode, branchId?: string) => Promise<void>
   /** False where a draft cannot carry attachments, as on a new Session's page. */
   attachments?: boolean
   /** True when the Session stores long pastes through `attachment.put`. */
@@ -56,14 +66,14 @@ const props = withDefaults(defineProps<{
   searchFiles?: (query: string) => Promise<FileCandidate[]>
   /** The Session policy and its independent controls; absent where permission methods are unavailable. */
   permission?: { policy: PermissionPolicy | undefined; select: (preset: PermissionPreset) => Promise<void> }
-  stop?: () => Promise<void>
+  stop?: (branchId?: string) => Promise<void>
   /**
    * The messages the server holds for this branch, oldest first: the composer
    * recalls them into the draft through `withdrawHeld`.
    */
   held?: readonly QueuedInput[]
   /** Withdraws one held message; absent where the Session serves no `session.input.withdraw`. */
-  withdrawHeld?: (input: QueuedInput) => Promise<WithdrawResult["status"]>
+  withdrawHeld?: (input: QueuedInput, branchId?: string) => Promise<WithdrawResult["status"]>
   /** The Session whose stored image files a recalled message names, for its thumbnail. */
   sessionId?: string
   selectModel: (model: ModelId) => Promise<void> | void
@@ -443,6 +453,15 @@ async function submit(sendMode: SubmitMode = primaryMode.value): Promise<void> {
     error.value = t("composer.stillStopping")
     return
   }
+  // Every branch-scoped submit — a message, a recalled draft, a `/goal`,
+  // `/loop` or `/effort` — belongs to the line it was written on. A prompt can
+  // cache this composer while the centre moves, so the live centre is asked
+  // once here, before a command parses or a draft is cleared; a refusal keeps
+  // the draft whole (design §14).
+  if (props.centre !== undefined && props.branchId !== undefined && props.centre() !== props.branchId) {
+    error.value = t("composer.sendNowMoved")
+    return
+  }
   if (commandMode.value) {
     const row = menuRows.value[activeIndex.value]
     if (row?.kind === "skill") completeSkill(row.name.slice(SKILL_TOKEN_PREFIX.length))
@@ -450,6 +469,7 @@ async function submit(sendMode: SubmitMode = primaryMode.value): Promise<void> {
     return
   }
   const message = text.value
+  const line = props.branchId
   if (!dismissed.value && connection.supports("schedule.list") && /^\/schedule(?:d)?\s*$/i.test(message)) {
     await runCommand("scheduled")
     return
@@ -465,7 +485,7 @@ async function submit(sendMode: SubmitMode = primaryMode.value): Promise<void> {
     text.value = ""
     await nextTick()
     resize()
-    await goal(goalCommand[1]?.trim() ?? "")
+    await goal(goalCommand[1]?.trim() ?? "", line ?? "")
     return
   }
   const loop = props.sessionCommands?.loop
@@ -474,7 +494,7 @@ async function submit(sendMode: SubmitMode = primaryMode.value): Promise<void> {
     text.value = ""
     await nextTick()
     resize()
-    await loop(loopCommand[1]?.trim() ?? "")
+    await loop(loopCommand[1]?.trim() ?? "", line ?? "")
     return
   }
   const effort = props.sessionCommands?.effort
@@ -483,7 +503,7 @@ async function submit(sendMode: SubmitMode = primaryMode.value): Promise<void> {
     text.value = ""
     await nextTick()
     resize()
-    await effort(effortCommand[1]?.trim() ?? "")
+    await effort(effortCommand[1]?.trim() ?? "", line ?? "")
     return
   }
   sending.value = true
@@ -512,7 +532,7 @@ async function submit(sendMode: SubmitMode = primaryMode.value): Promise<void> {
         cursor = offset
       }
       body += linkMentions(message.slice(cursor), sentMentions)
-      await props.send(body, { images: sentImages.map((image) => image.file), pastes: sentPastes.map((paste) => paste.text), ...(gaps.length === 0 ? {} : { restored: gaps }), onProgress: (percent) => { uploadProgress.value = percent } }, sendMode)
+      await props.send(body, { images: sentImages.map((image) => image.file), pastes: sentPastes.map((paste) => paste.text), ...(gaps.length === 0 ? {} : { restored: gaps }), onProgress: (percent) => { uploadProgress.value = percent } }, sendMode, line)
       fileMentions.value = fileMentions.value.filter((mention) => !sentMentions.includes(mention))
       sentImages.forEach((image) => URL.revokeObjectURL(image.url))
       images.value = images.value.filter((image) => !sentImages.includes(image))
@@ -543,7 +563,9 @@ async function submitAlternate(): Promise<void> {
  * reply says the turn has settled. A submit written before the last interrupt
  * cannot start a run after it, so the order is the point. A stop that fails
  * keeps the whole draft, and a second trigger during the same stop sends
- * nothing: one reply decides one submit.
+ * nothing: one reply decides one submit. The gesture belongs to the line it
+ * started on: if the centre moves before it finishes, it stops without
+ * submitting and keeps the draft.
  */
 async function sendNowAndStop(): Promise<void> {
   if (sendNow.value || composing.value) return
@@ -555,28 +577,45 @@ async function sendNowAndStop(): Promise<void> {
   sendNow.value = true
   error.value = ""
   destination.value = undefined
+  const line = props.branchId
   recallBatch++
   let at = 0
   for (const item of held.value) {
     if (props.withdrawHeld === undefined) break
     try {
-      if (await props.withdrawHeld(item) === "deleted") at = recall(item, at)
+      if (await props.withdrawHeld(item, line) === "deleted") at = recall(item, at)
     } catch (cause) {
       // A message that stays held is not recalled and so is not sent twice;
       // the reason is reported and the gesture goes on, as the TUI's Esc does.
       error.value = cause instanceof Error ? cause.message : String(cause)
     }
+    if (props.branchId !== line) {
+      sendNow.value = false
+      error.value = t("composer.sendNowMoved")
+      return
+    }
   }
   await nextTick()
   resize()
+  if (props.branchId !== line) {
+    sendNow.value = false
+    error.value = t("composer.sendNowMoved")
+    return
+  }
   try {
-    await props.stop?.()
+    await props.stop?.(line)
   } catch (cause) {
     sendNow.value = false
     error.value = t("composer.sendNowFailed", { error: cause instanceof Error ? cause.message : String(cause) })
     return
   }
   sendNow.value = false
+  // The centre moved while the stop was out: the draft belongs to the line the
+  // gesture started on, so it is kept rather than written to the new one.
+  if (props.branchId !== line) {
+    error.value = t("composer.sendNowMoved")
+    return
+  }
   await submit("queue")
   // This draft opens the run after the stopped one, so neither destination
   // above describes it.
@@ -587,7 +626,7 @@ async function stop(): Promise<void> {
   if (sendNow.value) return
   error.value = ""
   try {
-    await props.stop?.()
+    await props.stop?.(props.branchId)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   }
@@ -620,6 +659,10 @@ function completeSkill(name: string): void {
 async function runCommand(name: typeof availableCommands.value[number]["name"]): Promise<void> {
   if (composing.value) return
   error.value = ""
+  // A command belongs to the line the draft was written on: the line is read
+  // here, before the tick that lets the menu close, so a move that completes
+  // while the command opens cannot retarget it (design §14).
+  const line = props.branchId ?? ""
   const argument = name === "branch" || name === "goal" || name === "loop" || name === "effort"
   text.value = argument ? `/${name} ` : ""
   await nextTick()
@@ -638,7 +681,8 @@ async function runCommand(name: typeof availableCommands.value[number]["name"]):
       error.value = cause instanceof Error ? cause.message : String(cause)
     }
   } else if (name === "permissions") permissionMenu.value?.open()
-  else if (name === "compact" || name === "usage" || name === "fork") await props.sessionCommands?.[name]?.()
+  else if (name === "compact" || name === "usage") await props.sessionCommands?.[name]?.(line)
+  else if (name === "fork") await props.sessionCommands?.fork?.()
 }
 
 function onKeydown(event: KeyboardEvent): void {

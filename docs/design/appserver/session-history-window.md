@@ -383,7 +383,11 @@ Desktop, opening main (H = the sequence from session.attach)
 The attach reply carries the pinned `through` for `main`
 (`SessionInfo.sequence`, [protocol.rs:913](../../../crates/dim-app-server/src/protocol.rs#L913)).
 Events after the pin arrive as `session.event`; the client applies them after the
-window pages, as it already does after forward pages.
+window pages, as it already does after forward pages. That field stays the root's cutoff whatever line the
+Session's conversation is on: a client built before the branch move reads it as the `main` window's `through`
+and as the root model-update watermark, and it keeps that meaning. The line the conversation is on travels
+beside it as `defaultBranch {branchId, sequence}` (timeline branches §14): a client that follows the default
+branch resumes that line from the cursor, and one that predates the field ignores it.
 
 ## 7. Compatibility
 

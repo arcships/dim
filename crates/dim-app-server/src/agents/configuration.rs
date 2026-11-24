@@ -1,5 +1,6 @@
 use super::{AgentIndex, SESSION_NAMESPACE};
 use crate::connection::{configuration_outcome, port_error};
+use crate::protocol::BranchCursor;
 use dim_agent_capabilities::{
     host::ModelSelectionRequest,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
@@ -8,13 +9,125 @@ use dim_agent_capabilities::{
     prompt_state::PromptSnapshot,
     timeline_tree::TreeCommands,
 };
-use dim_agent_runtime::{Names, PromptSourceTarget};
-use dim_agent_types::{DEFAULT_BRANCH_ID, ModelSelection, PromptScope};
+use dim_agent_runtime::{
+    Names, PromptSourceTarget, QueryOutput, QueryPick, Session, SessionConfig, TimelineQueryScope,
+};
+use dim_agent_types::{
+    AgentEvent, EventKind, ModelSelection, PromptScope, SessionConfigExpectation,
+};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+/// Checks an attach's or a fork's `expectedConfig` against one line at that
+/// line's own published sequence: attach names the current default branch and
+/// its cursor, so a client that follows the default line reconnects against
+/// the configuration it shows; a fork names the root and its inherited cut,
+/// which is the configuration a fork copies. The configuration and the
+/// permission policy are read from the line's published facts, so a line that
+/// ends after an attach captured its cursor still answers with what it had.
+pub(crate) async fn check_configuration(
+    session: &Session,
+    initial: &SessionConfig,
+    line: &BranchCursor,
+    expected: &SessionConfigExpectation,
+) -> Result<(), RpcError> {
+    let mismatch = |field| {
+        RpcError::app(
+            -32602,
+            "session_config_mismatch",
+            format!("Session configuration differs: {field}"),
+        )
+    };
+    let tree = session.session_service::<TreeCommands>()?;
+    if expected.model_id.is_some() || expected.reasoning_effort.is_some() {
+        let (model, _) = tree
+            .adopted_configuration(line.branch_id.clone(), Some(line.sequence))
+            .await?;
+        let (id, config, metadata, snapshot) = match &model {
+            Some(model) => (
+                &model.model_id,
+                &model.config,
+                &model.metadata,
+                &model.capability_snapshot,
+            ),
+            None => (
+                &initial.model.model_id,
+                &initial.model.config,
+                &initial.model.metadata,
+                &initial.model.capability_snapshot,
+            ),
+        };
+        if expected
+            .model_id
+            .as_ref()
+            .is_some_and(|expected| expected != id)
+        {
+            return Err(mismatch("modelId"));
+        }
+        if let Some(expected) = &expected.reasoning_effort {
+            let actual =
+                crate::provider::adopted_selection_preferences(config.as_ref(), metadata.as_ref())
+                    .and_then(|preferences| preferences.reasoning_effort);
+            let declared;
+            let expected = match expected {
+                dim_agent_types::PreferenceUpdate::Value(value) => Some(value),
+                dim_agent_types::PreferenceUpdate::Clear(_) => {
+                    declared = crate::provider::declared_reasoning_effort(
+                        snapshot.as_ref(),
+                        metadata.as_ref(),
+                    );
+                    declared.as_ref()
+                }
+            };
+            if actual.as_ref() != expected {
+                return Err(mismatch("reasoningEffort"));
+            }
+        }
+    }
+    if let Some(expected) = expected.permission_preset {
+        // The line's policy is the last change on its ancestor chain: a line
+        // that inherited its parent's change and wrote none of its own reads
+        // that change, not its creation configuration. The read stays at the
+        // cursor the attach captured, in the tree's published history, so the
+        // line may end while the check runs and still answer.
+        let event = published_permission_change(&tree, line).await?;
+        let actual = match event.as_deref().map(|event| &event.kind) {
+            Some(EventKind::PermissionChanged(changed)) => changed.policy.preset,
+            _ => initial.permission_policy.preset,
+        };
+        if expected != actual {
+            return Err(mismatch("permissionPreset"));
+        }
+    }
+    Ok(())
+}
+
+/// The last `permission/changed` on `line`'s ancestor chain at its pinned
+/// sequence, read from the tree's published history: a line that ended after
+/// the cursor was captured keeps the facts it published.
+async fn published_permission_change(
+    tree: &TreeCommands,
+    line: &BranchCursor,
+) -> Result<Option<Arc<AgentEvent>>, RpcError> {
+    let reply = tree
+        .query(
+            line.branch_id.clone(),
+            super::fork::one_event(
+                TimelineQueryScope::Chain,
+                line.sequence,
+                super::fork::in_field("kind", &["permission/changed"]),
+                QueryPick::Last,
+            ),
+        )
+        .await?;
+    let QueryOutput::Events { events } = reply.result else {
+        unreachable!("event selection returns events")
+    };
+    Ok(events.into_iter().next().map(|row| row.event))
+}
 
 /// Agents' Session entry adopts profile configuration on the addressed branch
 /// and reads back the profile the branch's configuration was adopted from.
@@ -101,7 +214,8 @@ fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError
 }
 
 /// `session.agent.update`: adopts the named profile's prompt and optional
-/// model on `main`. The configuration it publishes records the profile, so
+/// model on the line the call names, and on the default branch when it names
+/// none (design §20.23). The configuration it publishes records the profile, so
 /// the record is the adopted configuration's own metadata.
 async fn adopt_profile(
     index: Arc<AgentIndex>,
@@ -114,7 +228,8 @@ async fn adopt_profile(
     struct Params {
         #[serde(rename = "sessionId")]
         _session_id: String,
-        branch_id: String,
+        #[serde(default)]
+        branch_id: Option<String>,
         agent_id: String,
     }
     let Params {
@@ -122,10 +237,12 @@ async fn adopt_profile(
         agent_id,
         ..
     } = params(value)?;
-    if branch_id != DEFAULT_BRANCH_ID {
-        return Err(RpcError::invalid(
-            "Agent configuration updates only support main",
-        ));
+    let branch_id = match branch_id {
+        Some(branch_id) => branch_id,
+        None => tree.default_branch()?,
+    };
+    if branch_id.is_empty() {
+        return Err(RpcError::invalid("branchId must not be empty"));
     }
     let branch = tree.get(&branch_id)?;
     let profile = index

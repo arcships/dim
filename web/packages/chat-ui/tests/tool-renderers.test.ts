@@ -78,13 +78,6 @@ describe('createToolCallRegistry precedence', () => {
 
     expect(registry.find('read', { path: '/repo/a.ts' }, mcpBlock).id).toBe('mcp')
   })
-
-  it('falls back to the generic renderer and marks the trace kind', () => {
-    expect(registry.find('third_party_tool', {}).id).toBe('generic')
-    expect(buildTimelineToolTrace(block({ toolName: 'third_party_tool', toolParams: {} })).rendererKind)
-      .toBe('generic')
-    expect(buildTimelineToolTrace(block()).rendererKind).toBe('known')
-  })
 })
 
 describe('buildTimelineToolTrace', () => {

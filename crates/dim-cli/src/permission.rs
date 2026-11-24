@@ -1,7 +1,7 @@
 //! The permission operations of the CLI's clients, over existing App Server
-//! methods: the `main` branch preset (`session.permission.get/update`), the
-//! user's command rules (`permission.rules/set_rules`) and "always allow"
-//! (F2 §5.4). Nothing here reads the terminal or prints: each operation
+//! methods: the preset of the line the Session's conversation is on
+//! (`session.permission.get/update`), the user's command rules
+//! (`permission.rules/set_rules`) and "always allow" (F2 §5.4). Nothing here reads the terminal or prints: each operation
 //! returns what happened and the caller shows it. The App Server decides and
 //! enforces every call; a client only selects and writes.
 //!
@@ -21,7 +21,7 @@ use crate::{
 };
 use dim_agent_types::{
     ApprovalCallData, COMMAND_SEPARATORS, CommandMatch, CommandRule, CommandRuleDecision,
-    DEFAULT_BRANCH_ID, PermissionChangedData, PermissionPolicy, PermissionPreset,
+    PermissionChangedData, PermissionPolicy, PermissionPreset,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -60,6 +60,7 @@ pub fn creation_policy(options: &crate::args::Options) -> Option<Value> {
 pub async fn select_preset(
     client: &mut Client,
     session_id: &str,
+    branch_id: &str,
     selection: PresetSelection,
 ) -> Result<PermissionPolicy> {
     #[derive(Deserialize)]
@@ -67,7 +68,7 @@ pub async fn select_preset(
         #[serde(rename = "version")]
         _version: u64,
     }
-    let mut state = read(client, session_id).await?;
+    let mut state = read(client, session_id, branch_id).await?;
     for _ in 0..ATTEMPTS {
         let preset = selection.resolve(state.policy.preset);
         if state.policy.preset == preset {
@@ -76,11 +77,11 @@ pub async fn select_preset(
         state.policy.preset = preset;
         match client.typed::<Updated>(
             "session.permission.update",
-            json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"expectedVersion":state.version,"policy":state.policy}),
+            json!({"sessionId":session_id,"branchId":branch_id,"expectedVersion":state.version,"policy":state.policy}),
         ).await {
             Ok(_) => return Ok(state.policy),
             Err(error) if client::app_error(&error) == Some("permission_conflict") => {
-                state = read(client, session_id).await?;
+                state = read(client, session_id, branch_id).await?;
             }
             Err(error) => return Err(error),
         }
@@ -107,18 +108,18 @@ pub fn name(preset: PermissionPreset) -> &'static str {
     }
 }
 
-/// The dispatched policy of `main` and the version a change must expect.
+/// The dispatched policy of `branch_id` and the version a change must expect.
 #[derive(Deserialize)]
 pub struct State {
     pub version: u64,
     pub policy: PermissionPolicy,
 }
 
-pub async fn read(client: &mut Client, session_id: &str) -> Result<State> {
+pub async fn read(client: &mut Client, session_id: &str, branch_id: &str) -> Result<State> {
     client
         .typed(
             "session.permission.get",
-            json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID}),
+            json!({"sessionId":session_id,"branchId":branch_id}),
         )
         .await
 }
@@ -127,6 +128,7 @@ pub async fn read(client: &mut Client, session_id: &str) -> Result<State> {
 async fn update(
     client: &mut Client,
     session_id: &str,
+    branch_id: &str,
     state: &State,
     preset: PermissionPreset,
 ) -> Result<u64> {
@@ -141,7 +143,7 @@ async fn update(
     let updated: Updated = client
         .typed(
             "session.permission.update",
-            json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"expectedVersion":state.version,"policy":policy}),
+            json!({"sessionId":session_id,"branchId":branch_id,"expectedVersion":state.version,"policy":policy}),
         )
         .await?;
     Ok(updated.version)
@@ -149,46 +151,48 @@ async fn update(
 
 /// What [`switch`] did.
 pub enum Switch {
-    /// `main` already had the preset; nothing was written.
+    /// The line already had the preset; nothing was written.
     Unchanged,
-    /// `main` has the preset from this version on.
+    /// The line has the preset from this version on.
     Switched(u64),
-    /// `main` changed after the state the user saw; nothing was written.
+    /// The line changed after the state the user saw; nothing was written.
     /// Its state now.
     Conflict(State),
 }
 
-/// Switches `main` from `seen`, the state the user decided on, so a version
-/// conflict is reported with the state read after it, never retried.
+/// Switches `branch_id` from `seen`, the state the user decided on, so a
+/// version conflict is reported with the state read after it, never retried.
 pub async fn switch(
     client: &mut Client,
     session_id: &str,
+    branch_id: &str,
     seen: &State,
     preset: PermissionPreset,
 ) -> Result<Switch> {
     if seen.policy.preset == preset {
         return Ok(Switch::Unchanged);
     }
-    match update(client, session_id, seen, preset).await {
+    match update(client, session_id, branch_id, seen, preset).await {
         Ok(version) => Ok(Switch::Switched(version)),
         Err(error) if client::app_error(&error) == Some("permission_conflict") => {
-            Ok(Switch::Conflict(read(client, session_id).await?))
+            Ok(Switch::Conflict(read(client, session_id, branch_id).await?))
         }
         Err(error) => Err(error),
     }
 }
 
-/// Selects `preset` for `main` whatever it was before, as a startup choice
-/// does: the preset does not depend on the read, so a version conflict reads
-/// again and retries.
+/// Selects `preset` for `branch_id` whatever it was before, as a startup
+/// choice does: the preset does not depend on the read, so a version conflict
+/// reads again and retries.
 pub async fn select(
     client: &mut Client,
     session_id: &str,
+    branch_id: &str,
     preset: PermissionPreset,
 ) -> Result<PermissionPolicy> {
-    let mut state = read(client, session_id).await?;
+    let mut state = read(client, session_id, branch_id).await?;
     for _ in 0..ATTEMPTS {
-        match switch(client, session_id, &state, preset).await? {
+        match switch(client, session_id, branch_id, &state, preset).await? {
             Switch::Conflict(current) => state = current,
             Switch::Unchanged | Switch::Switched(_) => {
                 state.policy.preset = preset;

@@ -100,12 +100,17 @@ pub(super) fn connection(
     {
         headers.insert("APP-Code".into(), "WHVL9885".into());
     }
-    let preset = if protocol == ModelProtocol::OpenaiCompatible
-        && matches!(driver, "deepseek" | "moonshotai" | "aihubmix" | "zenmux")
-    {
-        Some(driver.to_owned())
-    } else {
-        None
+    // The vendor package the compatible protocol builds by name. The managed
+    // Grok subscription serves xAI itself, so it names the xai package rather
+    // than its own driver.
+    let preset = match driver {
+        "xai-grok-build" => Some("xai".to_owned()),
+        "deepseek" | "moonshotai" | "aihubmix" | "zenmux"
+            if protocol == ModelProtocol::OpenaiCompatible =>
+        {
+            Some(driver.to_owned())
+        }
+        _ => None,
     };
     HttpModelConnection {
         protocol,
@@ -115,5 +120,28 @@ pub(super) fn connection(
         bearer: None,
         api_key: None,
         preset,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A compatible connection names the vendor package whose rules it follows:
+    /// the managed Grok subscription is xAI itself, while the generic driver
+    /// and an unrelated endpoint name none.
+    #[test]
+    fn a_compatible_connection_names_the_vendor_package_its_driver_builds() {
+        let named = |driver| {
+            connection(
+                driver,
+                ModelProtocol::OpenaiCompatible,
+                "https://api.x.ai/v1",
+                HashMap::new(),
+            )
+            .preset
+        };
+        assert_eq!(named("xai-grok-build").as_deref(), Some("xai"));
+        assert_eq!(named("openai-compatible"), None);
     }
 }

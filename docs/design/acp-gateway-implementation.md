@@ -20,7 +20,7 @@
 | Lody Core | [0.2.0，`11e0708d`](https://github.com/LodyAI/acp-extension-core/tree/11e0708df0669568f44e287f17626a3944921dc5/src) | 每项独立 version 1；方法、元数据和计数语义 |
 | Lody Codex adapter | [`df464ab9`](https://github.com/LodyAI/acp-extension-codex/tree/df464ab94e3028ce49a95ae0a9377957c54d8b93/src) | Core 列出的参考实现；用于理解临时 Provider routing 和 startup config，不取代 Core/RFD 合同，也不复制其进程重启策略 |
 
-ACP 协议版本固定为 1，不能把 SDK 包版本当成协议版本。[v2](https://agentclientprotocol.com/protocol/v2/overview) 是另一个生命周期合同，首版不启用。Cargo.lock 固定 SDK 3.5.0 / schema 1.12.0，二者许可证均为 Apache-2.0；只启用所需的 unstable session fork。
+ACP 协议版本固定为 1，不能把 SDK 包版本当成协议版本。[v2](https://agentclientprotocol.com/protocol/v2/overview) 是另一个生命周期合同，首版不启用。Cargo.lock 固定 SDK 3.5.0 / schema 1.12.0，二者许可证均为 Apache-2.0；启用所需的 unstable session fork 和 LLM providers。
 
 下表“可接”表示已实现的现有接口映射；“条件可接”表示只有公开能力存在时提供；“不支持”表示首版不声明、不调用，收到已知但不支持的控制参数时在写入前报错。实际客户端验收不能从方法覆盖推定，见验收记录。
 
@@ -107,7 +107,7 @@ Zed 保持原有启动入口：npm 包的 `dim` 与 `dimcode` 别名指向同一
 
 必需：`hello`、`session.create`、`session.attach`、`session.detach`、`session.submit`、`session.input_lookup`、`session.history`、`session.stop`。先验证协议 v3 及执行 profile 的 create/history/input_lookup flags；缺失时 initialize 失败。hello.features 不是完整方法目录：attach/detach/submit/stop/list/close 属于已协商 v3 的基础调用，没有逐项重复列出，不能据其未列出而判断不支持。可选管理方法和新能力仍按实际 flags / Session methods 判断。
 
-可选：`session.list` / `session.summaries`、`session.close`、`session.delete`、`session.fork`、`session.permission.get/update`、`approval.respond`；临时 MCP 使用 `mcp.temporary.capabilities`、`session.mcp_temporary.attach/renew/detach`；每 Session 用 `session.methods` 发现 `session.input.withdraw`、`session.question.respond`、`session.context.usage` 和 `attachment.put`。缺少撤回时取消直接走现有 `session.stop`，并披露已接收输入可能保留的限制。
+可选：`session.list` / `session.summaries`、`session.close`、`session.delete`、`session.fork`、`session.permission.get/update`、`approval.respond`；临时 MCP 使用 `mcp.temporary.capabilities`、`session.mcp_temporary.attach/renew/detach`；每 Session 用 `session.methods` 发现 `session.input.withdraw`、`session.question.respond`、`session.context.usage` 和 `attachment.put`；`attachment.import` 和 `attachment.read` 由 Gateway 直接调用，调用前不查 `session.methods`。缺少撤回时取消直接走现有 `session.stop`，并披露已接收输入可能保留的限制。
 
 模型选择通过 `provider.models.query` 的 `selectableOnly:true` 获取可用模型页，按 `next` 继续读取，组成 ACP 要求的完整选项列表；过滤条件由 Provider 拥有方执行。Provider 管理已有独立插件和公开读写接口，接线及尚未满足的 ACP 合同见 §4.5；首版不通过这些接口写入共享产品配置。账户认证只允许 §4.4 列出的 `account.providers/status` 和属于当前连接的 login attempt 调用；§4.7 的 `/usage` 额外允许当前模型 provider 的 `account.usage` 安全读取。不开放 `account.*` 代理、recover/logout、settings、持久 MCP 配置、插件管理或凭据接口。也不把 ACP 方法名直接转成原生 RPC 方法名。
 
@@ -125,7 +125,7 @@ Zed 保持原有启动入口：npm 包的 `dim` 与 `dimcode` 别名指向同一
 | `initialize` | 可接 | 先 `hello {protocolVersion:3, clientKind:"other", clientName:"AcpGateway"}`。按 SDK 协商 ACP 1；记录 client capabilities；读取现有 account discovery/status，按 §4.4 生成真实可执行的 authMethods。initialize 不自动开始登录；无 managed provider 时不强制登录。重复 initialize 拒绝 |
 | `authenticate` | 条件可接 | 仅接受本连接已发布的 agent-type methodId；`account.status` 确认已登录则返回 `{}`，否则走现有 browser begin → 宿主 callback capture → browser complete → status。OAuth 和 token 交换由原插件完成，不由本地 RPC transport 的身份校验代替 |
 | `logout` | 不支持 | 不映射到账户登出，不声明 logout capability |
-| `session/new` | 可接 | 校验绝对 `cwd`，只接受空/缺失 additional directories；按 §8.3 验证 startup config 后，在同一 `session.create {cwd, agentId?, model?, permissionPolicy?}` 中传入 → `session.attach {sessionId}` → 读取 main 固定历史头和 Session methods / permission / adopted model → 按 §4.6 绑定 mcpServers。初始化及初始工具注册完成才返回 id、可用 modes/configOptions |
+| `session/new` | 可接 | 校验绝对 `cwd`，只接受空/缺失 additional directories；按 §8.3 验证 startup config 后，在同一 `session.create {cwd, agentId?, model?, permissionPolicy?, modelPreferences?}` 中传入 → `session.attach {sessionId}` → 读取 main 固定历史头和 Session methods / permission / adopted model → 按 §4.6 绑定 mcpServers。初始化及初始工具注册完成才返回 id、可用 modes/configOptions |
 | `session/load` | 可接 | 从 `session.summaries` 或 `session.list` 获取真实 cwd，检查一致；attach → 固定头 main history 从 0 回放 → 接上 live → 返回。重复 load 复用 runtime，不重复建立订阅；在 prompt 中拒绝重放 |
 | `session/resume` | 可接 | 同 load 的准备和状态恢复，但历史只用于内部关联/去重，不向客户端发送旧消息；先返回，再发送准备期间缓存的真正 live updates |
 | `session/list` | 条件可接 | `session.summaries {agentId?}`；不存在时用 `session.list {agentId?}` 并省略不可得的 updatedAt。按 ACP cwd 在内存过滤；毫秒时间转 ISO 8601。返回完整的一页，不声明原生分页，不制造 nextCursor；非空未知 cursor 报错。原生全量响应超过 frame limit 就报错，不循环扫描凑页 |
@@ -163,13 +163,13 @@ new/load/resume/fork 通过独立的 [TemporaryMcp](plugins/TemporaryMcp.md) Ses
 | 表面 | 首版 | 原生路径 / 缺口 |
 | --- | --- | --- |
 | `session/fork` | 仅在原生同时声明 `session.fork` 与 `session.turn.get` 时提供；单独启用 SDK `unstable_session_fork` | 无锚点时固定 main head；有 Lody turnId 时定位该真实 turn 的 `turn/end` sequence。`session.fork {sessionId,at}` → 新 id → attach。原生 rest-point 检查决定能否 fork；活动 turn 内的切点失败，不偷偷改成早一点的切点 |
-| `providers/list` | 读取可复用；整组语义待选择 | `provider.management.list {after?,limit?}` 逐页读取安全可配置 Provider 概要；ACP 的 providers capability 同时承诺三个方法，不能只凭 list 可读就声明，见 §4.5 |
-| `providers/set` | 编辑可复用；共享设置或临时覆盖待选择 | `provider.management {providerId}` → 同版本 `provider.update` 是共享设置的路径；全量 headers、固定 driver/auth 和凭据归属须准确转换。临时覆盖另缺采用接口，见 §4.5 |
-| `providers/disable` | 禁用可复用；共享设置或临时覆盖待选择 | 同版本 `provider.update {patch:{enabled:false}}` 是持久化禁用，不是 CLI disconnect、delete、logout 或清除临时 override；不能混淆，见 §4.5 |
+| `providers/list` | 条件可接 | `provider.routes.list`，返回本进程的安全路由视图，见 §4.5 |
+| `providers/set` | 条件可接 | `provider.routes.set`，替换本进程的完整路由，见 §4.5 |
+| `providers/disable` | 条件可接 | `provider.routes.disable`，仅排除本进程后续采用，见 §4.5 |
 | `mcp/message` | 不支持 | 没有现成 MCP-over-ACP 入口 |
 | `session/set_model`、`document/didOpen`、`document/didChange`、`document/didClose`、`document/didSave`、`document/didFocus` | 不支持 | 历史 SDK 的入口不在固定稳定方法表；模型走 config options，文档通知不伪装成已维护 buffer |
 | `text` / `resource_link` | 可接 | 映射到 UserInput text；resource_link 为 `@<uri>` 引用，不自行下载或赋予路径访问权 |
-| `image` | 可接 | 在 ACP 输入边界检查 MIME/base64，再映射现有 image ContentBlock，经 `session.submit.user` 发送；是否为模型支持由 ModelProvider 决定，不走 attachment.put |
+| `image` | 可接 | 在 ACP 输入边界检查 MIME 和 base64，解码后写入临时文件，调 `attachment.import {sessionId,path,image:true}`，把返回的文件引用作为 image block 随 `session.submit.user` 提交；是否为模型支持由 ModelProvider 决定。导入时的图片校验与缩放见 [Attachments](plugins/Attachments.md) |
 | 文本 embedded `resource` | 条件可接 | UTF-8 ≤32 KiB 作为 `<uri>\n<text>`；更大文本调用 `attachment.put {sessionId,name?,text}`，再提交返回路径的引用。最大 10 MiB 且须满足完整 JSON frame 16 MiB；多项提交前逐项预检，避免无效 prompt 已上传部分文件 |
 | `audio`、二进制 resource、超限 frame | 不支持 | 写入前报 `unsupported_content` / 参数或大小错误；不把二进制当文本，不绕过上限 |
 | ACP v2 / HTTP / WebSocket transport | 不支持 | 不用默认生产 WS endpoint 执行；首版只有 stdio 和现有本地 RPC transport |
@@ -237,36 +237,7 @@ EOF、插件卸载、用户取消或 `$/cancel_request` 结束本地认证等待
 
 ### 4.5 Provider 管理与现有插件
 
-Provider 业务已经由 daemon 的 [ProviderPlugin](../../crates/dim-app-server/src/provider.rs) 拥有，并通过 [management methods](../../crates/dim-app-server/src/provider/management.rs) 发布。现有 [CLI Provider flow](../../crates/dim-cli/src/session_host.rs) 调用 `provider.management`、`provider.probe`、`provider.create` 和 `provider.update`。Gateway 应复用这些公开方法；不新增 ACP Provider 插件、registry、数据库或与 ProviderPlugin 平行的模型路由所有者。字段、版本、secret 和 action 的权威合同是 [Provider management](appserver/provider-management.md)，对应 #329 / #349；下表只描述 ACP 边界转换。
-
-#### 已有调用与边界转换
-
-| ACP 方法 | 可复用的原生调用 | 必须保留的语义 |
-| --- | --- | --- |
-| `providers/list {}` | `provider.management.list {after?,limit?}` → `{drivers,providers,errors,next}`，按 `next` 读完所请求列表 | `providerId` 保留原值；只列能兑现配置合同的记录。静态连接的 driver/实际 endpoint 决定 `supported` 和 `current.apiType`；enabled=false 才投影 `current:null`，不能把未登录、缺凭据或缺模型伪装成禁用。只返回非秘密 `apiType/baseUrl`，不返回 headers、credential、secret ref、账户或 proxy 身份。损坏记录按原生 errors 处理，不能伪装为已禁用记录 |
-| `providers/set {providerId,apiType,baseUrl,headers?}` | 先 `provider.management {providerId}`，取得当前 `version/connection/actions`；再 `provider.update {providerId,expectedVersion,patch}` | 已知 id、可编辑记录、可表达的协议和认证方式才能进入写入；patch 组合 `baseUrl`、`enabled:true`、完整 header 操作及必要的 credential 操作，在原生一次 CAS 事务中提交。成功只返回 ACP `{}`，不返回原生管理快照 |
-| `providers/disable {providerId}` | 同样读取管理快照，再 `provider.update {providerId,expectedVersion,patch:{enabled:false}}` | 保留凭据、路由、模型和 Provider 身份；禁用后仍可发现且 `current:null`。明确未知 id 按草案幂等返回 `{}`；已存在但受限、损坏或管理读取失败不是未知 id。required=true 必须拒绝，不能以当前模型选中了该 Provider 就推导 required |
-
-`apiType` 不是 `driverKind` 的别名。原生 update 不允许改变 driver/auth；同一 Provider 只能列出其现有 driver 和实际模型路由确实支持的协议，不能把 `drivers` 全局目录当成每项的 `supported`。例如 `openai-compatible` / `custom` 的单一 OpenAI-compatible 路由、`anthropic` 的单一 Anthropic 路由可以明确映射；不能因字段相似便把 Gemini 当作 Vertex，或把 New API 多协议路由当作可整体切换的单协议 Provider。不存在的 Provider 在 set 时返回 invalid_params，不把 set 改造成 create，不生成新 UUID，也不悄悄换成另一个 Provider id。
-
-ACP set 的 `headers` 是**完整替换**，省略等同空 map；原生 patch 的省略则保留已有值。转换必须在外部协议边界完成：
-
-1. 从同一管理快照的 `headerNames` 得到已有名字；按 HTTP header 大小写不敏感比较，拒绝输入中重复名字。对输入未包含的旧名字生成 remove，对输入中的普通 header 生成 set；不需要读取旧值。
-2. 原生 Bearer / ApiKey / CustomHeader 的认证 header 归 credential 字段所有，不能同时写入普通 headers。只有输入可被既定 auth 的 header/prefix 无损表达时，才转换成已有 `credential:{action:"set",value}`；省略该 header 必须明确 clear，不能保留旧 credential 或 secret ref。清空后若该固定 auth 不允许启用无凭据记录，就属于当前原生合同不支持的路由，不能用旧密钥补齐，也不能伪造匿名认证。
-3. 原生 AwsBedrock 签名、managed account 连接、需要改变 driver/auth 的配置不能借普通 headers 绕过所有者。`connection:null`、`enabled:null` 或缺 version 也不能补默认值。账户插件的登录仍走 §4.4；它不自动获得 route override 能力。
-4. 不改未由 ACP 表达的 model catalog、selection、preferences、proxy 或 timeout；不调用 probe/refresh 后才承认 set 成功。版本冲突返回真实冲突，不重新读取后自动覆盖；已发送的 Drain 写入即使取消等待、EOF 或丢失回复仍可能提交。不得重发或在卸载时写回旧快照；安全管理读取也无法证明未回显的 secret header 值。
-
-CLI 的 Disconnect 是 `{credential:{action:"clear"},enabled:false}`，不适合 ACP disable；不能直接复用 UI action 而改变协议含义。管理写入也不等于为现有 Session 采用新模型；模型配置的后续采用仍归现有 Session/Provider 所有者。
-
-#### 首版作用域与能力声明
-
-固定基线的 [Configurable LLM Providers RFD](https://github.com/agentclientprotocol/agent-client-protocol/blob/66ff8076ec2320d85e84fedc83cb779e9d906a89/docs/rfds/custom-llm-endpoint.mdx) 写明配置为 process-scoped，并 **SHOULD NOT** 持久化；后者是推荐而非禁止。RFD 没有为代理加共享 daemon 的架构指定该进程必须是哪一个，更没有要求每 ACP connection / Session 隔离。Lody Core 本身不定义 `providers/*`，也没有改写此处作用域。独立 Gateway 进程并不自动构成必须隔离配置的协议要求。
-
-当前原生 `provider.update` 将版本化记录写入产品 home 的数据库，重启后仍在，共享该 home/daemon 的其他客户端后续模型请求也可能受影响。**若产品选择 ACP 管理 Dim 的共享设置，上表读写路径可复用，持久化本身不构成关闭 capability 的充分理由**；但必须明确共享影响及与 RFD 推荐的差异。**若产品选择仅本次 ACP 运行的临时路由覆盖，当前公开接口没有对应合同**，不能以 Gateway 本地 map 改 list 结果却继续使用旧模型连接，也不能暂存/还原共享记录。
-
-参考实现 [CodexAcpClient](https://github.com/LodyAI/acp-extension-codex/blob/df464ab94e3028ce49a95ae0a9377957c54d8b93/src/CodexAcpClient.ts) 将 ACP set 保存为内存 `gatewayConfig`，通过 `mergeGatewayConfig` 合入原生 Session 建立参数；[CodexAcpServer](https://github.com/LodyAI/acp-extension-codex/blob/df464ab94e3028ce49a95ae0a9377957c54d8b93/src/CodexAcpServer.ts) 在必要时排空并替换其自有 app-server。Dim 不拥有共享 daemon，不能复制该重启路径。该适配器的 disable 清除 override、恢复 native routing，list 随后仍有 current；这与 RFD 所述禁用后 current:null 不一致，不能把参考实现的行为当成协议授权，或等同于 Dim 停用持久化 Provider。
-
-两种产品语义仍待选择；当前不发布 `agentCapabilities.providers`、不启用 SDK `unstable_llm_providers`，不是协议禁止持久化的裁定。无论选择哪种，都复用现有 Provider 所有者；临时覆盖需要在实际模型连接采用处具备合同，不新增第二个路由业务所有者。相关公开流程复用现有 Provider fixture，覆盖完整 headers 替换/省略清空、auth header 分离、协议不匹配、managed 记录拒绝、未知 id、disable 保留 credential、CAS 冲突和 Drain 回复丢失，并验证真实模型调用的路由。产品语义未确定前，先验证 capability 缺席、调用不支持方法不修改隔离 home 的 Provider 记录。
+[Provider](appserver/provider-management.md#connection-scoped-provider-routes) 拥有路由校验、连接采用和清理。Gateway 通过受保护本地 RPC 调用 `provider.routes.list`、`provider.routes.set`、`provider.routes.disable`，并将原生 `ModelProtocol` 映射到 ACP wire 的协议标识。三者均可用时才声明整组能力。Gateway 不通过 ACP 修改共享的 `provider.update`、`provider.select` 或凭据记录。作用域和公开行为见 [§13.4](#134-provider-向导)。
 
 ### 4.6 临时 MCP 接线
 
@@ -349,7 +320,7 @@ native reply、事件和 live progress 可以先后任意到达。先登记 subm
 
 ### 5.3 提交不确定性
 
-`submissionId` 是查询关联键，不是服务端的 exactly-once 保证。不得自动重发已送出的 create、fork、delete、attachment.put、configuration update 或 approval response。
+`submissionId` 是查询关联键，不是服务端的 exactly-once 保证。不得自动重发已送出的 create、fork、delete、attachment.put、attachment.import、configuration update 或 approval response；重发 import 会多存一份文件。
 
 submit 的拒绝/不确定性遵循 [现有提交合同](../../crates/dim-app-server/README.md#session-submission-errors)：明确保证未提交的错误才是 rejection；其他错误、断线和 `submission_unknown` 都不能报告“未发送”。重连后 `session.input_lookup {sessionId,branchId:"main",submissionId}` 返回 accepted 时继续关联同一个 input；unknown 时可能原调用仍未完成，不立即重发。恢复窗口内继续查询提交标识；已接受的输入通过现有 session.turn.get 的 inputId 定位消费轮次和终态，不从历史页推断。仍无证据则返回 `submission_unknown`，提示客户端 load 检查，禁止自动生成新 submissionId 重试。
 
@@ -396,7 +367,7 @@ ACP responses 和主动通知由单 writer 保序。可靠业务输出按序列�
 | 情况 | 必须行为 |
 | --- | --- |
 | ACP EOF / writer failure / signal / plugin unload | 关闭本地准入，释放本地请求和 subscriptions；按 §4.4 尽力取消自己的 pending login attempt，尽力 session.detach 后断开 RPC。不调用 session.stop/close、daemon.shutdown、Agent close 或 logout；共享执行和已被插件接受的登录交换继续 |
-| RPC 连接丢失、ACP 仍在线 | 暂停新变更请求，保留已知关联；重连、submission lookup 和有界窗口准备共用从断线起算的 30 秒截止点。按 0.25/0.5/1/2 秒封顶间隔重连同一受保护 endpoint，不启动第二个 daemon。每次 hello 核验协议/profile/instance，再 checked attach、读取有界窗口和当前 inventories；排队 call 与异步结果均核验 generation |
+| RPC 连接丢失、ACP 仍在线 | 暂停新变更请求，保留已知关联；重连、submission lookup 和有界窗口准备共用从断线起算的 30 秒截止点。按 0.25/0.5/1/2 秒封顶间隔重连同一受保护 endpoint，不启动第二个 daemon。每次 hello 核验协议/profile/instance，再 checked attach、读取有界窗口和当前 inventories；排队 call 与异步结果均核验 generation。已发起临时路由变更时按 §13.4 结束连接 |
 | 恢复后 instance id 未变 | 接回当前 runtime；read/attach/history 可重试，已送出的变更只查询结果 |
 | daemon instance id 改变 | 旧 RPC ids 和非持久 progress 失效；Session identity 仍用持久 id。按已接受 inputId/已知 turnId 定位该轮终态，不恢复旧执行；未知 permission id 不擅自重发旧答案，等待 attach 的真实 pending replay |
 | 无法在恢复窗口内恢复 | 已收到 cancel 的 prompt 仍 best-effort 返回 cancelled，并记录无法确认 native stop 的诊断；其他在途请求返回 daemon_unavailable，随后关闭 ACP 连接。不报告原生执行已经取消 |
@@ -419,11 +390,11 @@ cancel 到达 submit reply 之前时保留 cancel 标志，等拿到 input id �
 | 原生数据 | ACP 输出 / 首版处理 |
 | --- | --- |
 | main `session.model.progress` 与 `step/text` / `step/thinking` | agent message/thought chunks；每 request 维护已发 Unicode scalar 区间。committed delta 是事实，progress 是可替换预览；重放、重连及 emoji 不重复、不截断。每个 chunk 带 `messageId`：assistant 文本/思考用产生它的 model request id，实时流与 `session/load` 重放同一条消息得到同一个 id |
-| main `input/message` + applied/consumed/deleted | 有效 user message chunks；raw-only inputs 不显示，deleted 输入不进入有效回放；自己发出的 prompt 不重复 echo。chunk 的 `messageId` 是该输入自己的 Timeline event id，加载的 Skill 那一行属于操作者的这条消息 |
+| main `input/message` + applied/consumed/deleted | 有效 user message chunks；raw-only inputs 不显示，deleted 输入不进入有效回放；自己发出的 prompt 不重复 echo。chunk 的 `messageId` 是该输入自己的 Timeline event id，加载的 Skill 那一行属于操作者的这条消息；输入里的 image block 也投影为 image chunk：带 `fileId` 或内联 `data` 的图片才投影，只有 URL 的图片省略，引用附件的图片由 Gateway 调 `attachment.read` 逐张读取字节填入 `data`，每张解码后最多 16 MiB |
 | Gateway 自己产生的文本（submit check 的拒绝、命令失败） | 仍是 agent message chunk，`messageId` 由产生它的那次操作决定，放在 `gateway` 命名空间下，因此不可能是 model request id 或 input event id：拒绝用 `["gateway","refusal",<submissionId>]`，命令失败用 `["gateway","command",<commandId>]`。这两条都不是某个模型答复的延续，id 只承诺同一操作稳定、不同操作不同，客户端据此把提示归到发起它的操作 |
 | `step/tool-use-start`、`step/tool-use`、`step/tool-call`、`step/tool-start` | tool_call / tool_call_update，真实工具名、输入、位置和 pending/in_progress；ACP toolCallId 由 `(branchId,requestId,callId)` 确定性编码，避免模型在后续 request 重用 callId。native 回答仍用原始身份，显示 id 不充当 task id。title 命名工具作用的对象而非工具名：`read`/`write`/`edit` 用路径（`read` 给了范围时带行区间），`glob`/`grep` 用模式加被搜索路径，`web_fetch` 用 URL，`exec` 用模型自己的 `title` 或压成一行的命令，`web_search` 用其 `query`；kind 按工具映射到 `ToolKind`；带路径调用输出 `locations`，`read` 带起始行。Dim 在模型开始写调用时就发 `tool-use-start`，此时参数未知，因此第一条消息只命名工具，携带 `rawInput` 的那条消息才带 title/kind/locations |
 | `step/tool-completed` | 工具已执行的预览；不能提前宣称 tool batch 已提交到上下文 |
-| `step/tool-result` | 对应 tool_call_update completed/failed；编辑类工具的文件变更作为 `ToolCallContent::Diff` 前置：`edit` 每个替换各一条，带它自己的 `oldText`/`newText`；`write` 只有 `newText`（整文件写没有旧文本），失败结果不带 diff；随后只读 ToolResult.content 作为文本，最多 16 KiB；保留失败标记，不把 structuredContent 当模型结果 |
+| `step/tool-result` | 对应 tool_call_update completed/failed；编辑类工具的文件变更作为 `ToolCallContent::Diff` 前置：`edit` 每个替换各一条，带它自己的 `oldText`/`newText`；`write` 只有 `newText`（整文件写没有旧文本），失败结果不带 diff；随后按块投影 `ToolResult.content`：每个文本块最多 16 KiB 的 UTF-8 文本前缀，截断标记另计；引用 Session 附件的图片由 Gateway 调 `attachment.read` 按 offset 逐次读取字节填入 `data`，每张解码后最多 16 MiB，读完后去掉 `_meta.fileId`；无附件引用但带内联 `data` 的图片按 MIME 和 `data` 投影；既无附件引用也无内联 `data` 的图片（只有 URL）被省略；保留失败标记，不把 structuredContent 当模型结果 |
 | `approval.request`、`approval.resolved`、`approval.cancelled` | permission 请求和本地 waiter 结算；all branches 的审批均转交。显式保留 branchId/requestId，不能用 callId 单独关联 |
 | `SessionStore` title notice / native list metadata | 标准 session_info_update；按 revision 更新。manual 可映射 explicit；auto 不足以区分 generated/fallback，省略不可靠的 titleSource |
 | `session.context.usage` | 有值时 `usage_update {used:ceil(estimatedInputTokens),size:floor(contextWindow)}`，两个字段按 ACP 的 `u64` 输出 JSON 整数。这是估算上下文量。缺数据时不发送，未知 cost 省略，不能写 cost:0。不要把累计 token 消耗当上下文占用 |
@@ -447,7 +418,7 @@ Agent 在 initialize response 的 `agentCapabilities._meta.lody` 按项声明；
 
 Core README 在 capability catalog 中提到 sessionConfig，但固定版本的 `LodyExtensionCapabilities` 未列该字段；实际 DTO 是 `LodySessionMeta.sessionConfig`。首版按明确 metadata DTO 处理，不自创 `sessionConfig:{version:1}` capability。对这个上游文档/类型差异不作兼容字段猜测。
 
-首版计划接入 `sessionHistory` version 2（有界单页）、`compaction`、条件提供的 `forkAtTurn`、后台 exec 的 `tasks:{version:1,background:true}`，以及双向协商的最小 `subagentEvents` 状态流。新会话的 startup config 走已有创建参数。完整 task/subagent 控制、计量和 Goal 不由这些声明隐含获得。
+首版计划接入 `sessionHistory` version 2（有界单页）、`compaction`、条件提供的 `forkAtTurn`、后台 exec 的 `tasks:{version:1,background:true}`，以及双向协商的最小 `subagentEvents` 状态流。新会话的 startup config 走创建参数，恢复和分叉的等价选项走原生配置检查。完整 task/subagent 控制、计量和 Goal 不由这些声明隐含获得。
 
 ### 8.2 逐项映射
 
@@ -456,7 +427,7 @@ Core README 在 capability catalog 中提到 sessionConfig，但固定版本的 
 | `_lody/session/history/read` / sessionHistory | 有 history | 已登记 Session；请求必须指定 version:2；拒绝本连接 prompt 在途。一次只输出一个有界展示页，返回 through/before/complete；不累积完整历史，旧完整读取合同明确报错。其他客户端仍可能运行，按固定头处理，不假定 Session 全局静止 |
 | `_meta.lody.forkAtTurn` / forkAtTurn | 有 native turn id、turn/end、session.fork | 只接有终态的真实 main turn，按 §4.3 调用；锚点未知、非 main、未结束均报错。标准更新带真实 turnId；不拿 tool call id 或 request id 冒充 turnId |
 | compaction / `_meta.lody.activity` | 有完整 compaction facts | §7；声明了 `session.compaction` 的客户端收标准 `compaction_update`，其余收 §7 的 `_meta.lody.activity` 工具活动 |
-| `_lody/session/usage_update` / usage / usageScopeId | 有 model/usage；aimux 保留输入/输出总量、可选 cache，丢失 reasoning/text 分区，cost/currency 为 None | 首版不支持。costUSD、reasoningOutputTokens、cacheCreationInputTokens 是可选，不因缺费用而禁用。实际缺口是必填 outputTokens 必须排除 reasoning，cacheReadInputTokens 也必填；上游未知分区不能补零或把总 completion 当文本。后续按 §8.4 从真实事实投影，无需新累计 RPC |
+| `_lody/session/usage_update` / usage / usageScopeId | 有 model/usage；aimux 保留输入/输出总量、可选 cache 和 reasoning，cost/currency 为 None | 首版不支持。costUSD、reasoningOutputTokens、cacheCreationInputTokens 是可选。必填 outputTokens 必须排除 reasoning，cacheReadInputTokens 也必填；上游未知分区不能补零或把总 completion 当文本。后续按 §8.4 从真实事实投影，无需新累计 RPC |
 | `_lody/rate_limits/get`、`_lody/rate_limits/update` / rateLimits | 有 account.usage；窗口能表达部分 quota，credits 是单位而非货币，完整 account/model 过滤尚未定义 | 首版暂不接，属于接线/交付范围，不能宣称 App Server 没有额度能力。以后复用真实 usage windows，cap>0 才算百分比，durationHours 转秒，过期时间转 epoch 秒；同长度窗口保留各自项，wallet 缺币种/金额时省略。get 是非 Session 绑定读取，不能强制要求 sessionId；不得造空列表掩盖读取失败 |
 | `_lody/session/steer`、`_lody/session/steer_applied`、prompt steer / steering | mode=steer 存在，但不能原子限定目标活跃 turn；空闲 steer 可驱动新 turn | 首版不支持。Core 允许 request/prompt、same/handoff、active/apply，不能把仅缺 same-turn 当作整个协议绝对不可实现。当前也没有已接入的“原生换 turn、同一 ACP prompt 继续承接并确认 injected”的 handoff 路径；不能把下一次 Queue 或闲时新 turn 冒充 handoff。请求报 method-not-found，prompt steer 控制在提交前报 unsupported |
 | `_lody/session/goal`、prompt goalControl、goal snapshot / goal | 有 session.goal.* 写入口与 goal.get 状态读取；自动继续跨原生 turns | 不支持 Lody 控制。标准 `/goal` 按 §4.7 确认操作和读取状态，不承诺与单 ACP prompt 对应的 Goal 完整结算；不能按第一次 turn/end 宣称目标结束 |
@@ -467,7 +438,7 @@ Core README 在 capability catalog 中提到 sessionConfig，但固定版本的 
 | `_lody/session/activity_update` / sessionActivity | 有 branch running 和各类后台 facts，没有已接入的完整 requires_action/backgroundTaskCount 投影 | 不支持。不能把 main running=false 当作整个 Session idle |
 | sessionTitle / `_meta.lody.titleSource` | 有标准标题通知；当前 auto/manual 不能证明 generated/fallback，初始化也不能保证每 Session 安装标题插件 | 不声明 title ownership；标准标题照常投影，不拦截 Lody 的 title-agent，不加专用环境变量 |
 | worktreeProject | 没有相同的逻辑项目归属合同 | 不支持；不把 cwd 当 originProjectPath |
-| `_meta.lody.sessionConfig` | session.create 可接 model、modelPreferences、permissionPolicy；attach/fork 没有同等 startup override | new 可接 model 和 mode 选择；显式 modelId 优先于 configOptionValues.model，模型使用本 Gateway 发布的候选映射，不能自行拆 provider id。mode 选择映射到同一 create 的 permissionPolicy.preset。缺 metadata 保持默认。其他配置项、load/resume/fork 的非空覆盖在变更前拒绝；不能先 attach/fork 后 update 冒充建立前采用，见 §8.3 |
+| `_meta.lody.sessionConfig` | create 采用显式配置；checked attach/fork 可核对原生配置 | new 支持 model、mode、effort。load/resume/fork 接受省略或等价配置；不同值在 attach/fork 的原生边界拒绝，见 §8.3 |
 | Lody elicitation metadata | Questions 可表达部分表单字段 | 仅实际 question/options/multiSelect/allowCustom；不声明 answerNotes，不合成 secret/preview/自动应答 |
 | toolName / notice / messagePhase / plan_mode / proposal plan | 标准工具名和真实错误已有；独立计划模式等来源不完整 | 标准 name/title 保留真实工具名；Lody toolName 仅可写 LODY_TOOL_NAMES 的 ImageGeneration/CronCreate/CronDelete/CronList/ScheduleWakeup，且必须有对应真实 flow，不能写任意 native name。notice 只展示真实诊断。messagePhase、独立 boolean plan_mode、提案计划不支持，plan_mode 不得替代 Permission preset |
 | `_dimcode/rewind-files/preview`、`_dimcode/rewind-files`、`_dimcode/reapply-files`、`_dimcode/file-undo-state` | native 没有历史实现中的文件回滚合同 | 不支持，不以 session.fork 冒充文件回滚 |
@@ -476,7 +447,9 @@ Core README 在 capability catalog 中提到 sessionConfig，但固定版本的 
 
 ### 8.3 首版具体接线与生命周期
 
-**Startup config**：在任何 native 写入之前解析 `{version:1,modelId?,configOptionValues}`。接受 model 和 mode 两个选项；未知选项以参数错误拒绝，错误信息及 data.field 指明配置路径。modelId 若存在即为唯一模型选择，否则取 configOptionValues.model；被覆盖的 model 选项不再参与选择，但整个 DTO 仍须合法。通过安全 catalog 和生成 ACP model option 时保留的映射取得 `{provider,modelId}`，放入同一 `session.create` 请求的 `model`。mode 只接受 `read-only`、`workspace-write`、`full-access`，放入同一请求的 `permissionPolicy:{preset:mode}`，沿用原生显式创建策略；未提供 mode 时不发送 permissionPolicy，保留原生默认。两项可以单独提供，不调用 provider.select/update 或创建后的 permission.update，不改共享默认值。显式模型选择要求 catalog 能解析唯一目标，不能退回默认。load/resume/fork 若携带有效非空选择，在 attach/fork 之前拒绝；空配置无副作用。native 建立成功后才从实际响应生成 config options。
+**Startup config**：在 native 写入之前解析 `{version:1,modelId?,configOptionValues}`，支持 model、mode、effort。未知选项返回参数错误，data.field 指明路径。modelId 优先于 configOptionValues.model，省略选项保留原生默认或既有采用值。new 用 Gateway 的候选目录解析唯一显式模型，在同一次 create 传入模型、permissionPolicy.preset 和 modelPreferences.reasoningEffort。effort 由模型所有者校验；provider-default 映射到 [原生创建 clear](model-configuration.md#clearing-one-preference)，要求 daemon 声明该输入。create 以及后续 config options 都沿用模型实际采用值。
+
+load/resume 的非空配置走 [checked attach](contracts/session-access.md#3-flows)，按 attach 回复 `defaultBranch` 游标所指那条线（Session 当前默认线）的发布序号核对；fork 走 [checked fork](appserver/session-deletion-and-fork.md#61-method)，按 main 上实际继承的 cut 核对。modelId 用已采用的精确 ID 比较，mode 用许可 preset，effort 用已采用的偏好值；provider-default 对照该位置已采用的模型声明与协议核对声明默认 effort。声明无法提供可用默认值时，核对该位置未采用 effort。不同值返回 session_config_mismatch，缺少相应 daemon feature 则返回 unsupported_control。等价配置不触发 setter 或 Provider 写入。相同检查条件的并发 load/resume 可合并；不同条件走 session_busy。回复使用原生实际配置。空 metadata 的建立与断线恢复沿用普通调用。
 
 **Background exec**：直接消费已提交的 `exec/started` / `exec/ended`，来源是现有 [BackgroundExec](../../crates/dim-agent-capabilities/src/workspace_tools/background.rs)，不另造 task 业务服务。开始时生成与发起工具不同的稳定 ACP toolCallId，并以 parentToolCallId 关联；这样原工具因转后台返回 completed 后，不会被重新改成 in_progress。任务状态开始为 in_progress，原生 completed → completed，failed/cancelled → failed 并保留真实原因，不能造 Core 不存在的 task cancelled 状态。结束通知允许发生在 prompt response 之后；不因此延长或重新打开那个 prompt。固定头回放重建投影并去重，live 后续仅处理新的 sequence。EOF/卸载只丢弃显示关联，不停止原生后台任务。
 
@@ -486,7 +459,7 @@ Core README 在 capability catalog 中提到 sessionConfig，但固定版本的 
 
 ### 8.4 计量和控制的真实缺口
 
-[usage.ts](https://github.com/LodyAI/acp-extension-core/blob/11e0708df0669568f44e287f17626a3944921dc5/src/usage.ts) 定义 inputTokens/outputTokens/cacheReadInputTokens 为必填且 bucket 不重叠；reasoning、cache creation 和 cost 是可选。当前 aimux 的 input/output total 不足以保证这种分区，未知 cache read 也不能写 0；这是边界保真问题。累计读取 API 并非硬性前置：有完整真实计数时，可以按已提交 model/usage 的 request 身份去重投影 modelUsage，用新的 usageScopeId 区分观察生命周期，继承回放不作为新 delta，compaction/换模型不重置 scope；delta 已包含在 modelUsage，不能双加。未知费用省略，不估造价格。Core accumulator 明确为 process-local，客户端计量投影不等同于原生业务账本；首版不为它添加数据库。
+[usage.ts](https://github.com/LodyAI/acp-extension-core/blob/11e0708df0669568f44e287f17626a3944921dc5/src/usage.ts) 定义 inputTokens/outputTokens/cacheReadInputTokens 为必填且 bucket 不重叠；reasoning、cache creation 和 cost 是可选。aimux 在适配器提供 `reasoningTokens` 时保留该分量。缺任一构成必填分桶的分量时，总量不足以完成换算。计数齐全时可以按已提交 model/usage 的 request 身份去重投影 modelUsage，用新的 usageScopeId 区分观察生命周期，继承回放不作为新 delta，compaction/换模型不重置 scope；delta 已包含在 modelUsage，不能双加。未知费用省略，不估造价格。Core accumulator 明确为 process-local，客户端计量投影不等同于原生业务账本；首版不为它添加数据库。
 
 Steering 的 handoff 允许上游换 turn，并不允许脱离 ACP prompt 槽启动无人承接的运行；确认 injected 和 steer_applied 必须有真实采用依据。Goal 的可选统计字段可省略，不能因缺 tokenBudget 就一概拒绝；owner 已提供 goal.get 状态读取，Lody 接线仍缺控制动作不启动 turn 的保证，以及 set/resume 对应的多 turn ACP prompt 完成合同。标准 `/goal` 的操作确认不能代替这些要求。临时 Provider 覆盖和原生配置写入则按 §4.5 分别讨论，不从 Lody 的 Session 配置元数据推导共享 Provider 更新授权。
 
@@ -542,10 +515,10 @@ D 的消融复核：Lody 只是同一投影的 metadata 和受协商约束的通
 5. 审批 allow/deny、其他客户端先答、native cancel 后迟答；Questions 单选/多选/custom/decline、重复 callId 的不同 request、断线和关闭。
 6. RPC 断线/重连/daemon 重启、丢失 mutation reply、lookup unknown 后原请求迟到；确认没有重复 submit/new/fork/attachment/config/approval。
 7. EOF、signal、插件 unload 只 detach；从另一客户端观察 turn 继续。显式 close 才结算 Session；其他 Session/daemon 不受影响。可靠输出队列溢出结束连接而不无声丢消息。
-8. 标准 model/mode 选项反映真实采用状态；无 catalog/Questions/Attachments 的 profile 只失去对应功能。startup config 的显式 modelId 优先，公布的 mode 可回传到新会话建立参数；无 metadata 保留默认，歧义/未知模型、非法 mode/类型、未知选项/version 报错；new 在同一 create 采用，load/resume/fork 非空覆盖在变更前拒绝；不修改 Provider selection 或共享配置。
+8. 标准 model/mode 选项反映真实采用状态；无 catalog/Questions/Attachments 的 profile 只失去对应功能。startup config 的显式 modelId 优先，公布的 mode 可回传到新会话建立参数；无 metadata 保留默认，歧义/未知模型、非法 mode/类型、未知选项/version 报错；new 在同一 create 采用 effort，显式 default 跳过已保存的 effort；load/resume/fork 接受在原生固定位置等价的选项，拒绝不同选项；不修改 Provider selection 或共享配置。
 9. history、终态 turn fork、compaction skipped/failed/cancelled；后台 exec 开始/终态使用独立 toolCallId，原工具转后台完成不等于 task 完成，取消保留真实原因；终态可发生在 prompt response 之后。普通客户端兼容，Lody capability 和 wire 输出一致。
 10. 通过公开 ManagedProvider 测试装配模拟 browser/device：无插件/API-key profile 不被其他账户阻塞、method 只按实际能力发布、已登录 authenticate 不重复 begin、callback 匹配、端口冲突、过期、取消/EOF、complete reply 丢失不重发。terminal method 不能走 authenticate；helper 保留同一 executable/home/profile，完成后重新检查 native 账户状态。断言 native 通用 -32000 错误不会变成 ACP auth_required。复用 callback capture 时保留既有 MCP/TUI 的安全与公开流程回归。
-11. Provider 管理插件存在时仍不虚报整组 providers capability；三个 ACP 管理方法不修改 Provider 记录。可复用调用与后续启用后的流验证见 §4.5，不能以 list 可读替代 set/disable 的作用域验收。
+11. 两个 Gateway 共用 daemon 时分别 list/set/disable，按 §13.6 检查实际请求、进程隔离和共享 Provider 记录。旧 daemon 缺整组方法时不声明 capability。
 12. subagentEvents 双向 version 1 才发送；从同一 member Session 发起的两次委派得到不同 opaque runId，最小 snapshot support 不声称输出/查询/取消。验证 request/delivery/result 关联、回放去重、迟到终态、断线 unknown/outputIncomplete、重连新 activation；不向普通 ACP 或错误 version 客户端发送自定义通知。toolName 只允许有真实 flow 的 Core canonical ID，不能以任意 native 工具名触发客户端特殊处理。
 
 公开流程的实际结果见验收记录；此清单定义所需语义，不能将未单独触发的每个分支都记作测试通过。共享 RPC 提取复用现有 CLI 回归，合并前完整检查仍遵循 AGENTS.md。
@@ -618,8 +591,85 @@ acpx --agent "$ACP_TEST_COMMAND" --cwd "$ACP_TEST_ROOT/workspace" \
 | Goal 已有状态读取，Lody 跨轮 prompt 完成仍无现成合同 | 由 Goal 定义提交/终态关联；不在 Gateway 拥有第二个 Goal fold | 完成不能早于 owner 的决定；Goal，含 #422 的边界 |
 | usage 缺 reasoning 明细，费用可能未知 | 由 Usage/模型适配保留真实计数；累计显示仍从已有事实投影 | 持久化兼容需单独决定；ModelProvider/aimux/types |
 | 未保存 buffer / client terminal 没有资源生命周期合同 | 沿既有 HostPlatform 方案明确资源所有权与启用方式；客户端 MCP 已由 TemporaryMcp 承接 | 断线不能泄漏进程或赋予权限；HostPlatform/#5 |
-| Provider 共享设置与 ACP 临时覆盖的产品语义尚未选择；只有后者缺现成覆盖接口，driver/auth 也固定 | 选择共享设置时复用已有管理合同；选择临时覆盖时才需明确模型连接覆盖的作用域、认证归属、采用时点和关闭语义 | 在实际模型连接采用处生效，退出不能覆盖其他写入；Provider/ModelHost 所有者。首版不提出变更要求 |
+| 现有 Session 级直连接口缺少 Gateway 进程级路由采用和禁用 | Provider 按 §13.4 定义连接覆盖的实际采用、认证归属及退出语义 | 在实际模型连接采用处生效，退出不能覆盖其他写入；Provider/ModelHost 所有者。首版不提出变更要求 |
 | 新建 Session 已有模型参数，load/resume/fork 没有同等建立前配置覆盖 | 若需要该行为，由 Session 建立/恢复所有者明确允许覆盖的配置及采用原子性，不能先启用旧配置后补 update | 配置须在 native establishment 前采用；Session/ModelHost 所有者。首版仅接 new 的 model 选择 |
 | Lody 非 Session 绑定的 rateLimits 过滤语义未定义 | 明确已有安全 usage read 在该扩展中的访问范围与过滤语义；标准 `/usage` 按 §4.7 绑定当前 provider | 不扩展为任意管理透传；Provider 所有者 |
 
 消融：保留一个 Gateway 插件、一个共享 RPC 实现和必要的连接/投影状态；不建 ACP daemon、第二套 Session store、业务账本、通用扩展注册框架、定时 quota poller、每个协议字段一个插件或 daemon 内的接线插件。共享 RPC crate 用于消除实现复制；每 Session slot/cursor、在途请求、writer 队列分别用于并发准入、history/live 合流、结果关联和可靠输出，不能删除其职责。
+
+## 13. Lody 兼容性扩展提案
+
+### 13.1 对照范围
+
+以 `v0.1.0-alpha.27`、同一 Gateway 源码的 `main` `b48595585`、旧 TypeScript CLI 的 ACP 实现和 [§2 的协议基线](#2-核对基线和协议清单)为准。旧 CLI 的能力声明用于识别迁移缺口，wire 形状与语义以协议为准。
+
+| 场景 | Rust Alpha | 旧 TypeScript CLI |
+| --- | --- | --- |
+| 新建、加载、恢复、分叉携带 `sessionConfig` | `new` 采用 `model` / `mode`；带非空选项的 `load` / `resume` / `fork` 在建立前拒绝 | 建立方法未消费该 metadata；创建走默认选择，恢复走原生 Session 配置 |
+| 起步时选择 `effort` | Session options 已发布 `effort`，标准 setter 可采用；startup 校验拒绝该键 | 使用会话配置选项入口；`sessionConfig` 没有对应采用路径 |
+| Steering、Goal、usage、rate limits、subagent 查询及控制 | 当前 Lody 面缺这五项；`/goal` 和 `/usage` 是标准 ACP 命令。`subagentEvents` 已有双方协商后的快照 | 五项均有 handler 或投影；steer 绑定活跃 run，subagent 接口依赖旧 child-session API |
+| Provider 设置向导 | `providers/list`、`providers/set`、`providers/disable` 均无 handler | 同样无 handler；Lody 内置 Agent 的行为不能从这套旧 CLI 推断 |
+| 历史与标题 | `sessionHistory` v2 有界读取，标准标题通知；已有 compaction、后台 exec task、条件式 `forkAtTurn` | `sessionHistory` v1 全量 replay，声明 `sessionTitle`，用带来源的标准标题通知 |
+
+Core [v0.3.0](https://github.com/LodyAI/acp-extension-core/releases/tag/v0.3.0) 另增 `promptSuggestions`。`sessionActivity`、`worktreeProject`、scheduled tasks、elicitation answer notes 和旧 DimCode 文件撤销各自按 [§8](#8-lody-方法和能力逐项决策)评估，独立于本次恢复会话、扩展控制和 Provider 向导的验收。用真实 Lody 握手和读取请求确定所需的 history 版本。需要支持 v1 时，复用固定头和有界页逐页发送，按旧合同回复 `{}`；保留 v2 请求及响应的分页语义。标题 ownership 等待 SessionTitle 所有者提供可区分 `generated` / `fallback` 的来源及创建时可用性；继续使用标准标题更新。
+
+### 13.2 会话建立
+
+四个方法在同一 ACP 边界解析 Core v1 `sessionConfig`。字段必须属于对应操作可接受的 `model`、`mode`、`effort`。`modelId` 优先于 `configOptionValues.model`，目标从 Gateway 的公开 Model 选项解析。未知键继续返回 `-32602` / `unsupported_control` 和具体 `data.field`；错误类型、空标识和不受支持的版本按参数错误返回。回复中的配置取原生最终状态。
+
+| 方法 | 配置语义 |
+| --- | --- |
+| `session/new` | 同一次 `session.create` 携带显式模型、`permissionPolicy.preset` 和 `modelPreferences.reasoningEffort`。Reasoning 值由所选模型的所有者校验；切模型时以新目标为准。`provider-default` 是显示值，其清除语义与标准 setter 一致。创建时的清除跳过已保存的 effort 并采用声明默认。省略字段使用原生默认与已保存偏好。 |
+| `session/load`、`session/resume` | 缺省或与原生已采用值等价的选项沿用保存配置，支持 Lody 重发选择。采用不同配置须由 Session / 模型 / 权限所有者在建立时完成，保留 checked attach、同 Session 并发准入及原有授权；忙碌或冲突时明确失败。原生仅按独立 setter 提供的变化不得在 Gateway 串联成一次原子操作。load 回放、resume 无回放仍按 §5.2。 |
+| `session/fork` | 缺省选项沿用原生 fork 的继承结果。显式选项与子 Session 建立一起采用；校验失败不建立子 Session。fork 来源不发生配置写入，`forkAtTurn` 仍使用原生已终结的锚点。 |
+
+创建 effort 与等价配置检查见 [§8.3](#83-首版具体接线与生命周期)。不同配置的路径遵循 [模型启动采用](model-configuration.md#temporary-startup-adoption)的边界，增加的要求见 §13.5。
+
+```text
+Lody [Open / Resume / Fork]
+  -> sessionConfig (optional) -> validate -> native establishment
+                                 invalid -> field-specific error
+                                            established -> actual options
+```
+
+### 13.3 控制与计量
+
+现有标准 `usage_update` 继续报告上下文占用和窗口大小。
+
+| Lody 面 | 拟采用合同 |
+| --- | --- |
+| `steering` | 首选 `transport:request`、`upstreamTurn:same`、`configPolicy:active`。`_lody/session/steer` 只投给同连接拥有且活跃的 ACP prompt 所关联的原生 turn；转换内容后仍由原生原子判定目标。`injected` 以写入成功为依据；`_lody/session/steer_applied` 以该 `steerId` 的采用事实为依据。保留相同 ID 的在途和不确定结果关联，避免重复投递。目标结束、取消或已换轮时不得将内容加入下一轮。 |
+| `goal` | `pause` / `clear` 可走 `_lody/session/goal`，由 Goal 保证不启动 turn。`set` / `resume` 走 `prompt._meta.lody.goalControl`，同一 ACP prompt 持有由该操作启动的 turns，等 owner 对该执行结算后返回。采用后的快照通过 `session_info_update._meta.lody.goal` 投影。只声明可兑现的 actions 与 transport，取消按发起身份结算，不停止无关 turn。 |
+| `rateLimits` | `_lody/rate_limits/get` 的 `sessionId` 可省略；有 Session 则约束到其采用的 provider，`modelId` 从可用目录唯一解析并与 Session 条件一致。没有可核实的公开账户标识时拒绝 `accountId`。复用 [Provider 的账户用量读取](appserver/provider-management.md#33-probe-preference-adoption-and-usage)；同时用窗长和提供方窗口身份保留同长度的不同额度。百分比限于协议范围，仅从可解释的窗口计算；无匹配与查询失败给出不同结果。成功查询以相同快照回应并发送 `_lody/rate_limits/update`。 |
+| `usage` | 从已提交的 `model/usage` 投影 `_lody/session/usage_update`。Alpha.27 已保留部分模型回报的 `reasoningTokens`，该字段及 cached input 仍可能缺失。仅按 provider 的计数合同构造互斥分桶，保持未知与明确零的区别；无法支持必填分桶的来源需先确定门控。按请求去重，既有回放不产生新 delta；换模型和压缩延续当前累计范围，新的累计生命周期使用新 `usageScopeId`。没有真实 USD 费用时省略 `costUSD`。 |
+| `subagents` | `list`、`cancel`、`output` 按各自可兑现的权限声明。以一次 Collaboration request 的身份约束父 Session、branch 和 member。`activeOnly` 取该执行状态；输出使用该次执行授权范围内的有界文本及 `tail`。取消须在原生 owner 按该执行身份判定；目前的 [member 寻址取消](plugins/Collaboration.md#67-stopping-a-member-from-the-client)不足以防止迟到调用停掉下一次委派。保留 `subagentEvents` 的独立双向协商。 |
+
+### 13.4 Provider 向导
+
+采用 ACP Gateway 进程内的临时作用域。Gateway 通过唯一的受保护本地 RPC 连接调用 [Provider 临时路由入口](appserver/provider-management.md#connection-scoped-provider-routes)。三个入口都可用时，initialize 声明 `agentCapabilities.providers`。路由修改已经生效或仍在途时，RPC 断开会结束 ACP 连接，避免重连后把会话绕回共享路由。已明确失败的写入和未改变状态的 disable 保留普通重连行为。list 读取调用时的路由快照。客户端需要确认变更时，先等待 set 或 disable 的回复。
+
+`list` 发布可配置的启用中静态 Provider，须已具备普通模型选择所需凭据或使用匿名连接。协议为 `openai`（OpenAI-compatible Chat）、`openai-responses` 或 `anthropic`，按现有驱动取其中一个。列表回显协议、安全地址和 `required:false`。本进程禁用后仍可发现，`current` 省略。`set` 整体替换 headers，省略等同空 map。`disable` 对未知 ID 幂等。
+
+新建、首次加载或恢复空闲且未被其他客户端占用的 Session 时采用当前连接的路由。配置相等断言先于路由采用。所选 Provider 被禁用时返回明确错误，客户端可以选择其他模型。已建立的 Session 保留采用时的路由，显式切换模型时重新采用目标的当前路由。模型选项使用会话采用的目录 Provider 身份，临时连接身份仍用于执行。试图从其他连接续用临时路由、或连接结束后恢复该路由，均明确失败。过期后，ACP 客户端可在尚未建立 Session 时调用 `session/set_config_option`，以 `configId: "model"` 显式选择共享目录模型，再调用 load 或 resume。Gateway 使用 [原生过期路由恢复](model-configuration.md#model-parameters)，成功后读取实际配置。fork 继续核对其继承切点。同一 Gateway 的路由写入与 new、fork 建立按顺序执行。原生建立到新 Session 首次 attach 使用同一份路由设置。协议边界见 [ACP Provider RFD](https://github.com/agentclientprotocol/agent-client-protocol/blob/66ff8076ec2320d85e84fedc83cb779e9d906a89/docs/rfds/custom-llm-endpoint.mdx#behavior)。
+
+### 13.5 向所有者提出的要求
+
+参照 [AcpGateway Rule check](plugins/AcpGateway.md#6-rule-check)。Gateway 继续通过已声明的公开 RPC、通知和已提交事实工作，负责请求槽、关联和输出投影。该提案不增加 rutis service face 或 Capability。Owner 侧新增公开接口时须在原设计中定义数据面、错误和 wire 合同。
+
+| 所有者 | 现有合同的缺口与请求 | 顺序、取消与恢复 |
+| --- | --- | --- |
+| Session / 模型配置 / Permission | checked attach / fork 可核对等价配置。采用不同值仍需通用建立入口支持明确且获授权的变化。单独 model/permission setter 有各自的采用边界。[原生 fork](appserver/session-deletion-and-fork.md#6-fork)继承权限，允许变化的范围由 Permission 确认 | 成功回复前完成检查与采用；分叉只影响子 Session；并发或丢失回复沿用 owner 的冲突和恢复规则 |
+| InputQueue / Loop | 普通 steer 在无活跃 turn 时可启动新轮；需要按指定活跃 turn 原子接收入队的通用约束 | 接收与目标校验同一次决定，`input/applied` 后才通知 Lody；换轮、取消和掉线按原生结果结算 |
+| Goal | `get` 能给快照，但既有操作确认不足以拥有整个 Goal 执行；需要明确操作身份、所属 turns 及结算/取消结果 | `set` / `resume` 的首轮至终态归同一身份；`pause` / `clear` 不启动 turn；重连不能重新发起未知结果的操作 |
+| Usage / Provider | `model/usage` 的部分分桶依赖真实上报；额度读取需要可表达的目录和过滤边界 | 计量使用已提交事实。进程级路由通过 [Provider 临时路由入口](appserver/provider-management.md#connection-scoped-provider-routes) 在 Session 建立时采用 |
+| Collaboration | member 寻址的取消无法给外部 task ID 提供执行条件；需要执行身份校验及对应的已提交输出读取 | 与 request 替换线性化；恢复后旧 ID 不能取消新 request，输出范围与该 request 的始末一致 |
+
+### 13.6 验收顺序
+
+1. 复用 [ACP stdio 流程](../../crates/dimcode/tests/cli_flow/acp.rs)，测 `model` + `mode` + `effort` 同发、无效选项的错误字段、默认值与已保存 effort 并存、旧聊天 load/resume/fork 回传配置、终态锚点和多客户端竞态。对照实际第一次模型请求及会话回复。
+2. 额度使用可控账户窗口 fixture，检查无会话查询、过滤、零值、有多个等长窗口和读取失败。计量检查正数、显式零、缺分区、重复提交、换模型、压缩和重放；保留已有历史与协商流程。
+3. 在同一公开流程验证 steer 采纳前后与换轮竞态、Goal 跨轮结算及取消、同 member 的旧 task 对新 task 的隔离，并覆盖未声明能力的握手。
+4. 两个 Gateway 共用一个隔离 daemon，通过实际模型请求验证 set 后的目标和完整 headers、disable 后的路由排除、原生客户端作用域、进程退出及恢复、凭据不进入回包、日志和持久化。
+5. 按 §10.2 固定 Lody 版本和 `dimcode` 构建，以隔离 home 实测新建、重开、续聊、分叉及各已声明扩展，并记录实际请求/通知。
+
+消融：首批配置改动复用现有选项解析、建立槽和原生 create，额度复用按需读取。扩展只增加实际需要的请求关联与协议投影。保留执行身份约束和临时路由作用域，分别用于防止命中后续委派及修改共享配置。

@@ -621,6 +621,396 @@ async fn mcp_scope_move_preserves_withheld_values_and_enablement() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// A source removal that fails after the destination committed answers
+/// `mcp_move_partial`; the destination is complete and the documented
+/// into-user recovery removes the project source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_into_user_partial_keeps_the_complete_user_entry_and_remove_finishes_the_move() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct ReadonlyProject(std::path::PathBuf, std::fs::Permissions);
+
+    impl ReadonlyProject {
+        fn new(project: &std::path::Path) -> Self {
+            let writable = std::fs::metadata(project).unwrap().permissions();
+            std::fs::set_permissions(project, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Self(project.to_path_buf(), writable)
+        }
+    }
+
+    impl Drop for ReadonlyProject {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, self.1.clone());
+        }
+    }
+
+    let home =
+        std::path::PathBuf::from("/tmp").join(format!("dm-move-partial-{}", uuid::Uuid::new_v4()));
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = std::fs::canonicalize(&project).unwrap();
+    std::fs::write(
+        project.join(".mcp.json"),
+        json!({"mcpServers":{}}).to_string(),
+    )
+    .unwrap();
+    let (server, _) = launch_with_agent(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("native")),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    assert_ok(
+        &client
+            .rpc(
+                "mcp.save",
+                json!({
+                    "source":"user",
+                    "id":"github",
+                    "expectedVersion":catalog["result"]["userRevision"],
+                    "configuration":{"command":"echo","args":["--token","secret-arg"],"env":{"TOKEN":"secret-env"}}
+                }),
+            )
+            .await,
+    );
+    // The entry's public skeleton moves into the project and its withheld
+    // values into the workspace's record.
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    assert_ok(
+        &client
+            .rpc(
+                "mcp.move",
+                json!({"id":"github","from":"user","to":"project","cwd":project,"expectedFromVersion":catalog["result"]["userRevision"],"expectedToVersion":catalog["result"]["projectRevision"]}),
+            )
+            .await,
+    );
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    assert_ok(
+        &client
+            .rpc(
+                "mcp.set_enabled",
+                json!({"source":"project","id":"github","cwd":project,"expectedVersion":catalog["result"]["projectRevision"],"enabled":true}),
+            )
+            .await,
+    );
+
+    // The project source cannot be rewritten, so the move's last step fails
+    // after its destination write committed.
+    let readonly = ReadonlyProject::new(&project);
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    let partial = client
+        .rpc(
+            "mcp.move",
+            json!({"id":"github","from":"project","to":"user","cwd":project,"expectedFromVersion":catalog["result"]["projectRevision"],"expectedToVersion":catalog["result"]["userRevision"]}),
+        )
+        .await;
+    assert_eq!(
+        partial["error"]["data"]["appError"],
+        json!("mcp_move_partial"),
+        "{partial}"
+    );
+    assert_eq!(
+        partial["error"]["message"],
+        json!("MCP move is partial: remove the project source entry"),
+        "{partial}"
+    );
+
+    let user = client
+        .rpc("mcp.configuration", json!({"source":"user","id":"github"}))
+        .await;
+    assert_ok(&user);
+    assert_eq!(
+        user["result"]["secretsInUserScope"], false,
+        "the user entry carries the withheld values"
+    );
+    assert_eq!(user["result"]["configuration"]["argsCount"], 2);
+    assert_eq!(
+        user["result"]["configuration"]["envNames"],
+        json!(["TOKEN"])
+    );
+    assert_eq!(
+        user["result"]["enabled"], true,
+        "the destination keeps the project entry's effective enablement"
+    );
+    assert!(!user.to_string().contains("secret-arg"));
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    assert_eq!(catalog["result"]["servers"][0]["source"], json!("project"));
+    assert_eq!(
+        catalog["result"]["servers"][0]["enabled"], false,
+        "the cleared record leaves the project entry disabled"
+    );
+    let stored: Value =
+        serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    assert!(
+        stored["mcpServers"].get("github").is_some(),
+        "the source removal wrote nothing: {stored}"
+    );
+    assert!(
+        !stored.to_string().contains("secret-arg"),
+        "the project skeleton carries no withheld value: {stored}"
+    );
+
+    drop(readonly);
+    assert_ok(
+        &client
+            .rpc(
+                "mcp.remove",
+                json!({"source":"project","id":"github","cwd":project,"expectedVersion":catalog["result"]["projectRevision"]}),
+            )
+            .await,
+    );
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    let servers = catalog["result"]["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 1, "one entry serves the id after recovery");
+    assert_eq!(servers[0]["source"], json!("user"));
+    assert_eq!(servers[0]["enabled"], true);
+    let stored: Value =
+        serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    assert!(
+        stored["mcpServers"].get("github").is_none(),
+        "the recovered project source is gone: {stored}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A source removal that fails after the destination committed answers
+/// `mcp_move_partial`; the user source is intact and the documented
+/// into-project recovery removes the destination and retries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_into_project_partial_keeps_the_user_source_and_remove_finishes_the_move() {
+    struct HoldsUserSource(rusqlite::Connection);
+
+    impl HoldsUserSource {
+        fn new(native: &std::path::Path) -> Self {
+            let database = rusqlite::Connection::open(native.join("dimcode.sqlite")).unwrap();
+            database
+                .execute_batch(
+                    "CREATE TRIGGER move_holds_user_source BEFORE UPDATE ON settings_documents
+                     WHEN OLD.source = 'user/mcp'
+                     BEGIN SELECT RAISE(ABORT, 'held for the test'); END;",
+                )
+                .unwrap();
+            Self(database)
+        }
+    }
+
+    impl Drop for HoldsUserSource {
+        fn drop(&mut self) {
+            let _ = self
+                .0
+                .execute_batch("DROP TRIGGER IF EXISTS move_holds_user_source");
+        }
+    }
+
+    let home =
+        std::path::PathBuf::from("/tmp").join(format!("dm-move-partial-{}", uuid::Uuid::new_v4()));
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = std::fs::canonicalize(&project).unwrap();
+    std::fs::write(
+        project.join(".mcp.json"),
+        json!({"mcpServers":{}}).to_string(),
+    )
+    .unwrap();
+    let (server, _) = launch_with_agent(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("native")),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    assert_ok(
+        &client
+            .rpc(
+                "mcp.save",
+                json!({
+                    "source":"user",
+                    "id":"github",
+                    "expectedVersion":catalog["result"]["userRevision"],
+                    "configuration":{"command":"echo","args":["--token","secret-arg"],"env":{"TOKEN":"secret-env"}}
+                }),
+            )
+            .await,
+    );
+
+    // A trigger refuses the user source's rewrite, so the move's last step
+    // fails after its destination write committed.
+    let holds = HoldsUserSource::new(&home.join("native"));
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    let partial = client
+        .rpc(
+            "mcp.move",
+            json!({"id":"github","from":"user","to":"project","cwd":project,"expectedFromVersion":catalog["result"]["userRevision"],"expectedToVersion":catalog["result"]["projectRevision"]}),
+        )
+        .await;
+    assert_eq!(
+        partial["error"]["data"]["appError"],
+        json!("mcp_move_partial"),
+        "{partial}"
+    );
+    assert_eq!(
+        partial["error"]["message"],
+        json!("MCP move is partial: remove the destination entry and retry"),
+        "{partial}"
+    );
+    drop(holds);
+
+    let destination = client
+        .rpc(
+            "mcp.configuration",
+            json!({"source":"project","id":"github","cwd":project}),
+        )
+        .await;
+    assert_ok(&destination);
+    assert_eq!(
+        destination["result"]["secretsInUserScope"], true,
+        "the destination committed with its withheld record"
+    );
+    assert_eq!(
+        destination["result"]["enabled"], false,
+        "a project destination starts disabled"
+    );
+    assert_eq!(destination["result"]["configuration"]["argsCount"], 2);
+    assert_eq!(
+        destination["result"]["configuration"]["envNames"],
+        json!(["TOKEN"])
+    );
+    assert!(!destination.to_string().contains("secret-arg"));
+    let stored: Value =
+        serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored["mcpServers"]["github"],
+        json!({"command":"echo"}),
+        "the destination holds the public skeleton: {stored}"
+    );
+    assert!(!stored.to_string().contains("secret-arg"));
+    assert!(!stored.to_string().contains("secret-env"));
+    let source = client
+        .rpc("mcp.configuration", json!({"source":"user","id":"github"}))
+        .await;
+    assert_ok(&source);
+    assert_eq!(
+        source["result"]["secretsInUserScope"], false,
+        "the failed source removal leaves the complete user entry"
+    );
+    assert_eq!(source["result"]["configuration"]["argsCount"], 2);
+    assert_eq!(
+        source["result"]["configuration"]["envNames"],
+        json!(["TOKEN"])
+    );
+    assert_eq!(
+        source["result"]["enabled"], true,
+        "the user source keeps the entry as saved"
+    );
+    assert!(!source.to_string().contains("secret-arg"));
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    let servers = catalog["result"]["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 1, "{catalog}");
+    assert_eq!(servers[0]["source"], json!("project"));
+    assert_eq!(servers[0]["enabled"], false);
+
+    // The documented into-project recovery: remove the destination, then
+    // resend the move.
+    assert_ok(
+        &client
+            .rpc(
+                "mcp.remove",
+                json!({"source":"project","id":"github","cwd":project,"expectedVersion":catalog["result"]["projectRevision"]}),
+            )
+            .await,
+    );
+    assert_eq!(
+        client
+            .rpc(
+                "mcp.configuration",
+                json!({"source":"project","id":"github","cwd":project})
+            )
+            .await["error"]["data"]["appError"],
+        "mcp_unknown_server"
+    );
+    let database = rusqlite::Connection::open(home.join("native").join("dimcode.sqlite")).unwrap();
+    let document: String = database
+        .query_row(
+            "SELECT document FROM settings_documents WHERE source='user/mcp-secrets'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let secrets: Value = serde_json::from_str(&document).unwrap();
+    assert!(
+        secrets["entries"].get(project.to_str().unwrap()).is_none(),
+        "the recovery removes the destination's withheld record: {secrets}"
+    );
+    drop(database);
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    let servers = catalog["result"]["servers"].as_array().unwrap();
+    assert_eq!(
+        servers.len(),
+        1,
+        "the user source serves the id alone: {catalog}"
+    );
+    assert_eq!(servers[0]["source"], json!("user"));
+
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    assert_ok(
+        &client
+            .rpc(
+                "mcp.move",
+                json!({"id":"github","from":"user","to":"project","cwd":project,"expectedFromVersion":catalog["result"]["userRevision"],"expectedToVersion":catalog["result"]["projectRevision"]}),
+            )
+            .await,
+    );
+    let destination = client
+        .rpc(
+            "mcp.configuration",
+            json!({"source":"project","id":"github","cwd":project}),
+        )
+        .await;
+    assert_ok(&destination);
+    assert_eq!(destination["result"]["secretsInUserScope"], true);
+    assert_eq!(destination["result"]["configuration"]["argsCount"], 2);
+    assert_eq!(
+        destination["result"]["configuration"]["envNames"],
+        json!(["TOKEN"])
+    );
+    let stored: Value =
+        serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(stored["mcpServers"]["github"], json!({"command":"echo"}));
+    assert!(!stored.to_string().contains("secret-arg"));
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    let servers = catalog["result"]["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0]["source"], json!("project"));
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_connection_tests_are_disposable_preserve_drafts_and_respect_project_authority() {
     let home = std::path::PathBuf::from("/tmp").join(format!("dm-test-{}", uuid::Uuid::new_v4()));
@@ -1142,6 +1532,21 @@ async fn local_product_management_starts_without_configuration_and_isolates_inva
         local.rpc("account.grok.status", json!({})).await["result"],
         managed_empty
     );
+    let chatgpt = local
+        .rpc(
+            "provider.management.list",
+            json!({"providerId":"openai-chatgpt"}),
+        )
+        .await;
+    assert_ok(&chatgpt);
+    let descriptor = &chatgpt["result"]["providers"][0];
+    assert_eq!(descriptor["account"]["namespace"], "account.chatgpt");
+    assert_eq!(descriptor["account"]["loginMethods"], json!(["browser"]));
+    assert!(descriptor["account"]["state"].get("account").is_none());
+    assert_eq!(
+        local.rpc("account.chatgpt.profiles", json!({})).await["result"],
+        json!([])
+    );
     let codex = local
         .rpc("account.codex.login.browser.begin", json!({}))
         .await;
@@ -1172,6 +1577,32 @@ async fn local_product_management_starts_without_configuration_and_isolates_inva
             )
             .await["error"]["data"]["appError"],
         "login_attempt_closed"
+    );
+    assert_ok(&local.rpc("account.codex.logout", json!({})).await);
+    let legacy = local
+        .rpc(
+            "provider.management.list",
+            json!({"accountsOnly":true,"query":"openai-codex"}),
+        )
+        .await;
+    assert_ok(&legacy);
+    assert_eq!(legacy["result"]["providers"], json!([]));
+    let legacy_models = local
+        .rpc("provider.models.query", json!({"query":"openai-codex"}))
+        .await;
+    assert_ok(&legacy_models);
+    assert_eq!(legacy_models["result"]["models"], json!([]));
+    assert_eq!(legacy_models["result"]["empty"], json!([]));
+    let explicit_legacy = local
+        .rpc(
+            "provider.management.list",
+            json!({"providerId":"openai-codex"}),
+        )
+        .await;
+    assert_ok(&explicit_legacy);
+    assert_eq!(
+        explicit_legacy["result"]["providers"][0]["providerId"],
+        "openai-codex"
     );
     assert_eq!(
         local
@@ -1236,6 +1667,8 @@ async fn local_product_management_starts_without_configuration_and_isolates_inva
         "account.codex.logout",
         "account.grok.status",
         "account.grok.logout",
+        "account.chatgpt.status",
+        "account.chatgpt.logout",
         "provider.refresh",
     ] {
         assert_eq!(
@@ -2100,8 +2533,9 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
                 "session.agent.update",
                 json!({"sessionId":sid,"branchId":"other","agentId":profile_id})
             )
-            .await["error"]["code"],
-        -32602
+            .await["error"]["data"]["appError"],
+        "session_invalid_input",
+        "an unknown line answers the Session's own error, as every other call does"
     );
     assert_eq!(adopted(), before);
 

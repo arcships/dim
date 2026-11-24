@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Session-owned automatic titles and manual rename as a rutis plugin"
+autotests = false
+
+[[test]]
+name = "session_title_flow"
+path = "tests/session_title_flow.rs"
 
 [dependencies]
 dim-agent-capabilities.workspace = true

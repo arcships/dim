@@ -11,7 +11,9 @@ the opt-in [block-presence read](../../../design/input-state-read.md#block-prese
 `session.input.withdraw` for every branch of its Session, served through that
 branch's InputQueue. It also provides the Session table `submitChecks`
 ([`SubmitChecks`](../../../../crates/dim-agent-capabilities/src/input_queue.rs)):
-Session parts register submit checks with it from their own `apply` and the
+Session parts call `submitChecks.register(name, check)` from their own `apply`.
+Native and cross-language callers use `submitChecks.check({entry, branchId, user?, mode}, cancelled)`
+to run the same registered checks. The
 registration is withdrawn when that part unloads. A `session.input.withdraw`
 with `steer` validates the operator's content and calls each check registered
 now, in name order, before admitting its command;
@@ -64,7 +66,7 @@ covers the table and the Rpc entries.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `S:SessionMethods`、`S:TreeCommands` |
-| 提供 | `S:SubmitChecks` |
+| 提供 | `S:SubmitChecks`、`S:dyn HostDispatch#submitChecks` |
 | 被注入于 | `HooksSession`、`Skills` |
 <!-- /generated -->
 

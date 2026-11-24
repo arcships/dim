@@ -119,6 +119,7 @@ mod tests {
                 "Message queued",
                 "Ctrl+Enter interrupt and send now: the draft and every held message, as one message",
                 "Send now failed: {error}; the draft was kept",
+                "Send now failed: {error}",
                 "Send now cancelled; the draft was kept",
                 "Send now is still stopping the run; the draft was kept",
                 "Send now is stopping the run; paste again when the draft is sent",
@@ -462,6 +463,8 @@ mod tests {
                 "Update now",
                 "To update, exit DimCode and run: {command}",
                 "Finish or stop the current work first (a running turn, shell command, or pending prompt).",
+                "Waiting for this Session's state after the switch.",
+                "Waiting for the Session switch to finish.",
                 "Checking for updates…",
                 "DimCode {version} is up to date.",
             ] {
@@ -604,6 +607,45 @@ mod tests {
             }
         }
         set(previous);
+    }
+
+    /// Every key the Simplified Chinese areas hold resolves in every locale
+    /// through that locale's own `lookup`, so an area dropped from a locale's
+    /// chain fails here while its file stays on disk.
+    #[test]
+    fn every_simplified_chinese_key_resolves_in_every_locale() {
+        let mut keys = Vec::new();
+        let areas = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui/i18n/zh_cn"));
+        for entry in std::fs::read_dir(areas).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().is_some_and(|name| name != "mod.rs") {
+                let area = table_keys(&std::fs::read_to_string(&path).unwrap());
+                assert!(!area.is_empty(), "{}: no key read", path.display());
+                keys.extend(area);
+            }
+        }
+        assert!(!keys.is_empty(), "no Simplified Chinese key was read");
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in &keys {
+                assert!(table(locale, key).is_some(), "{code} lacks {key:?}");
+            }
+        }
+    }
+
+    /// The keys one area table tests, before each ` =>`.
+    fn table_keys(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|line| line.trim_start().strip_prefix('"'))
+            .filter_map(|line| line.split_once("\" =>").map(|(key, _)| key))
+            .map(|key| {
+                key.replace("\\\"", "\"")
+                    .replace("\\n", "\n")
+                    .replace("\\\\", "\\")
+            })
+            .collect()
     }
 
     #[test]

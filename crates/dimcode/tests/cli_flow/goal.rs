@@ -482,8 +482,8 @@ fn tui_goal_shows_the_state_and_marks_the_status_area() {
     command.arg("--scrollback");
     sized(&mut command, 100, 32);
     let mut terminal = Terminal::resume_tui(command);
-    terminal.until("⏵⏵ Workspace write");
     terminal.until("test / model");
+    terminal.until("⏵⏵ Workspace write");
 
     terminal.write(b"/goal Ship it\r");
     terminal.until("Goal set on main · active");

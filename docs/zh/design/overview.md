@@ -489,7 +489,7 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | ToolRegistry | 补充 | 任何语言的部件向 `toolRegistry` 注册工具（[方法 A.5](contracts/session-boundary.md#a5-工具贡献)） | 非 Rust 的 Session 工具 |
 | Agent 装配 | 补充 | 收集每个已安装插件在 `provides` 中声明的具名服务；可选的 Session 与分支部分按已启用插件安装 | 所有 Session 插件 |
 | Permission | 补充 | 命令规则在使用时读取（不新增风险类别：未知风险按未分类处理，#45） | `/approvals` |
-| ModelProvider | 补充 | 构建请求时发送用户内容或工具结果中的图像，模型不支持图像或请求无法携带时改为文本占位；历史不变（从 Rpc 移出） | Attachments |
+| ModelProvider | 补充 | 构建请求时把用户内容或工具结果中的图像发给支持视觉的模型或能力未知的请求；模型不支持图像或图片无法发送时改为 `img:` 引用或文本占位；历史不变（从 Rpc 移出） | Attachments |
 | Prompt, PromptSources | 补充 | Prompt 发布的已采纳模型配置；使用 PromptSources 现有的 `dim/session` System 条目，原子采纳 profile 的提示词和可选模型 | `/effort`、`/fast`、`/agent` |
 | PromptSources | 补充 | 提示词语言来源 | Session 的回复语言（`session.language.*`） |
 | ContextPreparation | 补充 | 用量查询；手动压缩；实现 `ResolveContextModel` 的生产环境压缩宿主 | `/usage`、`/compact` |

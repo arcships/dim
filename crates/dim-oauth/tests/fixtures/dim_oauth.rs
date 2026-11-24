@@ -35,6 +35,9 @@ pub struct Service {
     pub issued: AtomicUsize,
     pub refreshes: AtomicUsize,
     pub refresh_wait: AtomicBool,
+    /// Signalled when a held refresh request has started and holds the account
+    /// lease.
+    pub refresh_started: tokio::sync::Notify,
     pub refresh_release: tokio::sync::Notify,
     pub reject_refresh: AtomicBool,
     /// `expires_in` of the next issued token only; absent means one hour.
@@ -158,6 +161,7 @@ pub async fn start() -> Fixture {
                     "refresh_token" => {
                         s.refreshes.fetch_add(1, Ordering::SeqCst);
                         if s.refresh_wait.load(Ordering::SeqCst) {
+                            s.refresh_started.notify_one();
                             s.refresh_release.notified().await;
                         }
                         if s.reject_refresh.load(Ordering::SeqCst) {

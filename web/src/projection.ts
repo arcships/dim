@@ -46,10 +46,14 @@ type InputProgress = { kind: "held" } | { kind: "applied" } | { kind: "consumed"
 /** A request's reasoning or answer while it is still arriving. */
 type Stream = {
   index: number
-  /** The request's committed deltas so far. */
+  /** The request's committed deltas this stream drew. */
   written: string
-  /** Unicode scalar values in `written`, the unit of progress offsets. */
-  writtenChars: number
+  /**
+   * Unicode scalar values the request committed after `written`: progress
+   * offsets count from the request's start, so a stream that opens again after
+   * a tool call carries on from the segments before it.
+   */
+  committed: number
   /** The latest unwritten tail and the offset it follows. */
   progress?: { text: string; offset: number }
 }
@@ -76,7 +80,8 @@ export class Projection {
   private held = new Map<string, QueuedInput>()
   goal: Goal | undefined
   private controlCursor = 0
-  private output: { requestId: string; textCharacters: number; thinkingCharacters: number } | undefined
+  /** The characters each request committed in its answer and its thought, which progress offsets count in. */
+  private committed = new Map<string, { text: number; thinking: number }>()
   /** Requests whose text, thinking or tool row already showed. */
   private showedOutput = new Set<string>()
   /** The error of the model failure the latest turn end may repeat. */
@@ -119,11 +124,13 @@ export class Projection {
   }
 
   activeOutput(output: { requestId: string; textCharacters: number; thinkingCharacters: number }): void {
-    this.output = output
+    const committed = this.requestChars(output.requestId)
+    committed.text = output.textCharacters
+    committed.thinking = output.thinkingCharacters
     const answer = this.answers.get(output.requestId)
     const thought = this.thoughts.get(output.requestId)
-    if (answer !== undefined) answer.writtenChars = output.textCharacters
-    if (thought !== undefined) thought.writtenChars = output.thinkingCharacters
+    if (answer !== undefined) answer.committed = committed.text
+    if (thought !== undefined) thought.committed = committed.thinking
   }
 
   /** Applies one event; false when it was already applied. */
@@ -330,7 +337,7 @@ export class Projection {
   private openThinking(requestId: string): Stream {
     let thought = this.thoughts.get(requestId)
     if (thought === undefined) {
-      thought = { index: this.push({ kind: "thinking", key: `thinking-${requestId}-${this.rows.length}`, text: "", streaming: true }), written: "", writtenChars: this.output?.requestId === requestId ? this.output.thinkingCharacters : 0 }
+      thought = { index: this.push({ kind: "thinking", key: `thinking-${requestId}-${this.rows.length}`, text: "", streaming: true }), written: "", committed: this.requestChars(requestId).thinking }
       this.thoughts.set(requestId, thought)
     }
     return thought
@@ -339,10 +346,20 @@ export class Projection {
   private openAnswer(requestId: string): Stream {
     let answer = this.answers.get(requestId)
     if (answer === undefined) {
-      answer = { index: this.push({ kind: "assistant", key: `assistant-${requestId}-${this.rows.length}`, text: "", streaming: true }), written: "", writtenChars: this.output?.requestId === requestId ? this.output.textCharacters : 0 }
+      answer = { index: this.push({ kind: "assistant", key: `assistant-${requestId}-${this.rows.length}`, text: "", streaming: true }), written: "", committed: this.requestChars(requestId).text }
       this.answers.set(requestId, answer)
     }
     return answer
+  }
+
+  /** The characters a request committed, which both its rows and its progress frames count in. */
+  private requestChars(requestId: string): { text: number; thinking: number } {
+    let committed = this.committed.get(requestId)
+    if (committed === undefined) {
+      committed = { text: 0, thinking: 0 }
+      this.committed.set(requestId, committed)
+    }
+    return committed
   }
 
   /** A thought settles when the request moves on: progress never written (an interrupted thought) goes, and its duration spans its first event to `closedAt`. */
@@ -350,6 +367,7 @@ export class Projection {
     const thought = this.thoughts.get(requestId)
     if (thought === undefined) return
     this.thoughts.delete(requestId)
+    this.requestChars(requestId).thinking = thought.committed
     const start = this.thoughtStarts.get(requestId)
     this.thoughtStarts.delete(requestId)
     this.update(thought.index, { text: thought.written, streaming: false, ...(start === undefined ? {} : { elapsedMs: Math.max(0, closedAt - start) }) })
@@ -359,6 +377,7 @@ export class Projection {
     const answer = this.answers.get(requestId)
     if (answer === undefined) return
     this.answers.delete(requestId)
+    this.requestChars(requestId).text = answer.committed
     this.update(answer.index, { text: answer.written, streaming: false })
   }
 
@@ -463,7 +482,7 @@ function elementBody(text: string, close: string): string {
 
 function commit(stream: Stream, delta: string): void {
   stream.written += delta
-  stream.writtenChars += [...delta].length
+  stream.committed += [...delta].length
 }
 
 /**
@@ -473,7 +492,7 @@ function commit(stream: Stream, delta: string): void {
 function shown(stream: Stream): string {
   const progress = stream.progress
   if (progress === undefined) return stream.written
-  const overlap = stream.writtenChars - progress.offset
+  const overlap = stream.committed - progress.offset
   if (overlap < 0) return stream.written
   const tail = [...progress.text]
   if (overlap >= tail.length) {

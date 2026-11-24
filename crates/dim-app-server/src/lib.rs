@@ -202,6 +202,16 @@ pub enum ShutdownReason {
     Forced,
 }
 
+/// Feature `testing`: a hold on one unregistered worktree removal after its
+/// content check and before the store's final Session check. It notifies
+/// `reached` once held and returns once `release` is notified.
+#[cfg(feature = "testing")]
+#[derive(Default)]
+pub struct UnregisteredRemovalHold {
+    pub reached: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+
 /// Feature `testing`: a hold on one subscription's `follow` task. It notifies
 /// `waiting` once it is held, `cancelled` once retirement cancels it, and
 /// returns once `release` is notified.
@@ -211,6 +221,49 @@ pub struct FollowHold {
     pub waiting: tokio::sync::Notify,
     pub cancelled: tokio::sync::Notify,
     pub release: tokio::sync::Notify,
+}
+
+/// Feature `testing`: a hold on one `session.branches` read before it takes
+/// its tree snapshot. It notifies `entered` once the read is held and answers
+/// once `release` is notified.
+#[cfg(feature = "testing")]
+#[derive(Default)]
+pub struct BranchesHold {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+
+/// Feature `testing`: a hold on one attach's `expectedConfig` check after the
+/// reply's record is captured. It notifies `entered` once the check is held and
+/// answers once `release` is notified.
+#[cfg(feature = "testing")]
+#[derive(Default)]
+pub struct AttachCheckHold {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+
+/// Feature `testing`: a hold on the business close of one Session. It
+/// notifies `admission` once the close stopped the Session's restoration in
+/// this process, `waiting` once its runtime close returned and before the close
+/// is recorded, and returns from `wait` once `release` is notified.
+#[cfg(feature = "testing")]
+#[derive(Default)]
+pub struct CloseHold {
+    pub admission: tokio::sync::Notify,
+    pub waiting: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+#[cfg(feature = "testing")]
+impl CloseHold {
+    /// Notifies `waiting`, then waits for `release`.
+    pub async fn wait(&self) {
+        self.waiting.notify_one();
+        self.release.notified().await;
+    }
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
 }
 
 pub struct RunningServer {
@@ -302,6 +355,15 @@ impl RunningServer {
             .get::<AgentIndex>()
             .map(|index| index.idle_admitted())
     }
+    /// Holds the next unregistered worktree removal after its content check,
+    /// so a test can create a Session before the store's final check. Feature
+    /// `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn hold_next_unregistered_removal(&self) -> Option<Arc<UnregisteredRemovalHold>> {
+        self.root
+            .get::<worktrees::ManagedWorktrees>()
+            .map(|managed| managed.hold_next_unregistered_removal())
+    }
     /// Holds the next subscription's `follow` task open until `release`, so a
     /// test can keep an attach or detach in flight at a known point. Feature
     /// `testing` only.
@@ -310,6 +372,24 @@ impl RunningServer {
         self.root
             .get::<ConnectionHub>()
             .map(|hub| hub.hold_next_follow())
+    }
+    /// Holds the next `session.branches` read before its tree snapshot until
+    /// `release`, so a test can move the default and end the former default at
+    /// a known point. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn hold_next_branches(&self) -> Option<Arc<BranchesHold>> {
+        self.root
+            .get::<ConnectionHub>()
+            .map(|hub| hub.hold_next_branches())
+    }
+    /// Holds the next attach's `expectedConfig` check after its record is
+    /// captured until `release`, so a test can move the default away and end
+    /// the former default at a known point. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn hold_next_attach_check(&self) -> Option<Arc<AttachCheckHold>> {
+        self.root
+            .get::<ConnectionHub>()
+            .map(|hub| hub.hold_next_attach_check())
     }
     /// Makes the next attach fail before it registers its listener. Feature
     /// `testing` only.
@@ -326,6 +406,24 @@ impl RunningServer {
         self.root
             .get::<AgentIndex>()
             .map_or(0, |index| index.uses(session_id))
+    }
+    /// Holds the next business close of a Session after its runtime close
+    /// returns and before the close is recorded. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn hold_next_close(&self) -> Option<Arc<CloseHold>> {
+        self.root
+            .get::<AgentIndex>()
+            .map(|index| index.hold_next_close())
+    }
+    /// The business close of Session `session_id`, as `session.close` and
+    /// Collaboration's member close run it. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub async fn close_session(&self, session_id: &str) -> dim_agent_runtime::Result<()> {
+        self.root
+            .get::<AgentIndex>()
+            .expect("the Agents index")
+            .close_session(session_id)
+            .await
     }
     pub async fn join(mut self) -> Result<ShutdownReason> {
         self.task.take().expect("server task").await?
@@ -428,7 +526,42 @@ impl Processes {
         )
         .await
         .err()
-        .unwrap_or_else(|| AgentError::Build("process assembly timed out".into()))
+        .unwrap_or_else(|| AgentError::Build(timed_out_message(root)))
+    }
+}
+
+const INACTIVE_ROW_LIMIT: usize = 8;
+
+/// The message for a process assembly that stopped making progress while its
+/// required rows are Active: it names every row that is not Active, up to
+/// [`INACTIVE_ROW_LIMIT`], and counts the rest.
+fn timed_out_message(root: &Ctx) -> String {
+    let mut inactive: Vec<_> = root
+        .diagnostics()
+        .plugins
+        .into_iter()
+        .filter(|plugin| plugin.state != rutis::host::FiberState::Active)
+        .map(|plugin| {
+            let unmet: Vec<_> = plugin
+                .injects
+                .iter()
+                .filter(|dependency| {
+                    dependency.status != rutis::host::diagnostics::DependencyStatus::Ready
+                })
+                .map(|dependency| format!("{} {:?}", dependency.key.describe(), dependency.status))
+                .collect();
+            format!("{} {:?} [{}]", plugin.name, plugin.state, unmet.join(", "))
+        })
+        .collect();
+    if inactive.len() > INACTIVE_ROW_LIMIT {
+        let hidden = inactive.len() - INACTIVE_ROW_LIMIT;
+        inactive.truncate(INACTIVE_ROW_LIMIT);
+        inactive.push(format!("and {hidden} more"));
+    }
+    if inactive.is_empty() {
+        "process assembly timed out".to_owned()
+    } else {
+        format!("process assembly timed out: {}", inactive.join("; "))
     }
 }
 
@@ -829,9 +962,12 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             } else {
                 None
             };
-            Ok(Box::new(managed_provider::ManagedProvidersPlugin::new(
-                account,
-            )))
+            let owner = managed_provider::ManagedProvidersPlugin::new(account);
+            let owner = match product_root {
+                Some(root) => owner.with_chatgpt(names.key()?, root),
+                None => owner,
+            };
+            Ok(Box::new(owner))
         },
     )?);
     if let Some(home_root) = plugin_root {
@@ -1486,7 +1622,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("promptSourcesBranch", "hot-path"),
         ("agentIndex", "owner-api"),
         ("agentLoop", "hot-path"),
-        ("branchOpening", "hot-path"),
         ("compactionStrategyHost", "hot-path"),
         ("configurationPublisher", "hot-path"),
         ("configureControl", "hot-path"),
@@ -1494,7 +1629,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextModelHost", "hot-path"),
         ("contextPreparation", "hot-path"),
         ("contextUsage", "hot-path"),
-        ("faultReporter", "hot-path"),
         ("fileReads", "hot-path"),
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
@@ -1513,10 +1647,8 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("providerConnectionResolver", "host-resource"),
         ("providerService", "secret"),
         ("serverControl", "control"),
-        ("sessionLoader", "control"),
         ("sessionStore", "owner-api"),
         ("settingsService", "owner-api"),
-        ("submitChecks", "hot-path"),
         ("timelineFactory", "control"),
         ("timelineTree", "owner-api"),
         ("timelineTreeControl", "owner-api"),

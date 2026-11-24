@@ -6,7 +6,9 @@ use dim_agent_capabilities::permission::{
 };
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::{Agent, Session};
-use dim_agent_types::{InputBlock, InputMessageData, PermissionPolicy, UserInput};
+use dim_agent_types::{
+    AgentEvent, InputBlock, InputMessageData, InterruptScope, PermissionPolicy, UserInput,
+};
 use dim_app_server::methods::ManagementMethods;
 use rutis::host::{CtxHost, Key};
 use rutis_bridge::session::HostDispatch;
@@ -180,6 +182,7 @@ struct Setup {
     model: Option<Arc<dyn dim_agent_capabilities::host::ModelDriver>>,
     creation: Option<managed_launch::CreationControl>,
     dispatch_gate: Option<Arc<PendingDispatchGate>>,
+    close_gate: Option<Arc<PendingCloseGate>>,
 }
 
 #[derive(Default)]
@@ -227,6 +230,58 @@ impl rutis::host::DynPlugin for PendingDispatchPart {
         })
     }
 }
+
+/// Holds the next branch `stop/interrupt` at dispatch, so a close can be
+/// observed between writing its interrupt and settling. Later interrupts, such
+/// as the server's own shutdown, pass.
+#[derive(Default)]
+struct PendingCloseGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    passed: AtomicBool,
+}
+
+struct PendingClosePart {
+    gate: Arc<PendingCloseGate>,
+    dispatcher: Key<dim_agent_runtime::Dispatcher>,
+}
+
+impl rutis::host::DynPlugin for PendingClosePart {
+    fn name(&self) -> &str {
+        "pending-close-gate"
+    }
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        vec![self.dispatcher.erase()]
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            let gate = self.gate.clone();
+            ctx.require_at(&self.dispatcher)?.subscribe(
+                ctx,
+                "pending-close-gate",
+                &["stop/interrupt"],
+                move |event| {
+                    let gate = gate.clone();
+                    Box::pin(async move {
+                        if matches!(&event.kind,
+                            EventKind::StopInterrupt(data) if data.scope == InterruptScope::Branch)
+                            && !gate.passed.swap(true, Ordering::SeqCst)
+                        {
+                            gate.entered.notify_one();
+                            gate.release.notified().await;
+                        }
+                        Ok(())
+                    })
+                },
+            )?;
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+
 pub(super) async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
     serve_with(Setup {
         database,
@@ -323,6 +378,17 @@ async fn serve_with(setup: Setup) -> Served {
             "pending-dispatch-gate",
             move |names| {
                 Ok(Box::new(PendingDispatchPart {
+                    gate: gate.clone(),
+                    dispatcher: names.key()?,
+                }))
+            },
+        ));
+    }
+    if let Some(gate) = setup.close_gate {
+        builder.require_feature(Feature::new("pending-close-gate").branch(
+            "pending-close-gate",
+            move |names| {
+                Ok(Box::new(PendingClosePart {
                     gate: gate.clone(),
                     dispatcher: names.key()?,
                 }))
@@ -864,7 +930,47 @@ async fn idle_covers_written_turns_and_waits_on_a_pending_approval_until_stop() 
             .any(|event| matches!(event.kind, EventKind::TurnEnd(_))),
         "its turn ended by the cutoff"
     );
-    assert_eq!(sessions.ok("idle", at.clone()).await["sequence"], cutoff);
+    let second = sessions.ok("idle", at.clone()).await["sequence"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        second >= cutoff,
+        "the idle branch never goes back: {second} < {cutoff}"
+    );
+    let presence = format!(
+        "<dim-state source=\"{}\">",
+        dim_agent_capabilities::environment_clients::CLIENTS
+    );
+    let snapshot = |kind: &EventKind| {
+        matches!(kind, EventKind::InputMessage(data)
+            if data.user.is_none()
+                && matches!(data.blocks.as_slice(), [InputBlock::Raw { text, .. }]
+                    if text.starts_with(&presence)))
+    };
+    let extra = branch_events(&session, "main", (cutoff + 1)..=second)
+        .await
+        .unwrap();
+    assert!(
+        extra.is_empty()
+            || (extra.len() == 2
+                && snapshot(&extra[0].kind)
+                && matches!(extra[1].kind, EventKind::InputApplied(_))),
+        "the idle branch only takes the client presence snapshot: {:?}",
+        extra
+            .iter()
+            .map(|event| event.kind.key())
+            .collect::<Vec<_>>()
+    );
+    let page = sessions
+        .ok(
+            "history",
+            json!({"sessionId":session.id(),"branchId":"main","through":second}),
+        )
+        .await;
+    assert_eq!(
+        page["through"], second,
+        "the idle cutoff ends an atomic batch"
+    );
 
     let session = awaiting_approval(&sessions, &agent).await;
     let at = json!({"sessionId":session.id(),"branchId":"main"});
@@ -1104,6 +1210,290 @@ async fn a_consumer_launches_writes_waits_and_withdraws_by_input_id() {
         1
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Waits for the branch's event after `after` to be published and returns it.
+async fn published_after(session: &Session, after: u64) -> Arc<AgentEvent> {
+    let publication = session.publication("main").unwrap();
+    let mut watch = publication.watch();
+    let published = tokio::time::timeout(
+        Duration::from_secs(5),
+        watch.wait_for(|&(published, _)| published > after),
+    )
+    .await
+    .expect("the next event is published")
+    .expect("the branch's timeline is open");
+    let sequence = published.0;
+    branch_events(session, "main", sequence..=sequence)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+}
+
+/// Sessions §6.6: a withdraw whose command was written before a close starts
+/// is decided by that branch's InputQueue, not by the close. Dispatch is held
+/// before the command, so the close's `stop/interrupt` is published ahead of
+/// the deletion: the reply is `deleted` with the deletion's sequence, a retry
+/// after the close fails `session_closed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withdraw_is_decided_when_its_command_precedes_a_close() {
+    let gate = Arc::new(PendingDispatchGate::default());
+    let close_gate = Arc::new(PendingCloseGate::default());
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        dispatch_gate: Some(gate.clone()),
+        close_gate: Some(close_gate.clone()),
+        ..Default::default()
+    })
+    .await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let session = awaiting_approval(&sessions, &agent).await;
+    sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "pending:dispatch-gate",
+                json!([{"type":"text","text":"hold dispatch"}]),
+            ),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+        .await
+        .unwrap();
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:held",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    let written = held["sequence"].as_u64().unwrap();
+    let input_id = held["inputId"].as_str().unwrap();
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]});
+    let dispatch = session.dispatch_watch("main").unwrap();
+    let waiting = tokio::spawn({
+        let sessions = sessions.clone();
+        let request = request.clone();
+        async move { sessions.call("withdraw", request).await }
+    });
+    let command = published_after(&session, written).await;
+    assert!(
+        matches!(command.kind, EventKind::InputWithdraw(_)),
+        "{command:?}"
+    );
+    assert!(
+        dispatch.borrow().sequence < command.sequence,
+        "InputQueue has not decided the command: {command:?}"
+    );
+    let close = session.close();
+    let interrupt = published_after(&session, command.sequence).await;
+    assert!(
+        matches!(&interrupt.kind, EventKind::StopInterrupt(data)
+            if data.scope == InterruptScope::Branch),
+        "{interrupt:?}"
+    );
+    assert!(
+        dispatch.borrow().sequence < command.sequence,
+        "the close started before InputQueue decided the command: {interrupt:?}"
+    );
+    gate.release.notify_one();
+    let reply = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the withdraw replies while the close waits for its interrupt")
+        .unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["value"]["status"], "deleted", "{reply}");
+    let deleted = reply["value"]["sequence"].as_u64().unwrap();
+    assert!(
+        deleted > interrupt.sequence,
+        "the deletion follows the close's own interrupt: {reply}"
+    );
+    let event = branch_events(&session, "main", deleted..=deleted)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(
+        matches!(&event.kind, EventKind::InputDeleted(data) if data.input_id == input_id),
+        "{event:?}"
+    );
+    close_gate.release.notify_one();
+    close.await.unwrap();
+    assert_eq!(sessions.error("withdraw", request).await, "session_closed");
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Sessions §6.6: a close that starts after the command was written replies
+/// neither `reloading` nor `session_closed` when InputQueue decides the command
+/// `notHeld` either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withdraw_replies_not_held_when_its_command_precedes_a_close() {
+    let gate = Arc::new(PendingDispatchGate::default());
+    let close_gate = Arc::new(PendingCloseGate::default());
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        dispatch_gate: Some(gate.clone()),
+        close_gate: Some(close_gate.clone()),
+        ..Default::default()
+    })
+    .await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let session = awaiting_approval(&sessions, &agent).await;
+    let applied = sessions
+        .ok(
+            "lookup",
+            json!({"sessionId":session.id(),"branchId":"main","submissionId":"test:confirm"}),
+        )
+        .await;
+    sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "pending:dispatch-gate",
+                json!([{"type":"text","text":"hold dispatch"}]),
+            ),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+        .await
+        .unwrap();
+    let written = session.sequence("main").unwrap();
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":applied["inputId"]});
+    let dispatch = session.dispatch_watch("main").unwrap();
+    let waiting = tokio::spawn({
+        let sessions = sessions.clone();
+        let request = request.clone();
+        async move { sessions.call("withdraw", request).await }
+    });
+    let command = published_after(&session, written).await;
+    assert!(
+        matches!(command.kind, EventKind::InputWithdraw(_)),
+        "{command:?}"
+    );
+    assert!(
+        dispatch.borrow().sequence < command.sequence,
+        "InputQueue has not decided the command: {command:?}"
+    );
+    let close = session.close();
+    let interrupt = published_after(&session, command.sequence).await;
+    assert!(
+        matches!(&interrupt.kind, EventKind::StopInterrupt(data)
+            if data.scope == InterruptScope::Branch),
+        "{interrupt:?}"
+    );
+    assert!(
+        dispatch.borrow().sequence < command.sequence,
+        "the close started before InputQueue decided the command: {interrupt:?}"
+    );
+    gate.release.notify_one();
+    let reply = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the withdraw replies while the close waits for its interrupt")
+        .unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["value"], json!({"status":"notHeld"}), "{reply}");
+    close_gate.release.notify_one();
+    close.await.unwrap();
+    assert_eq!(sessions.error("withdraw", request).await, "session_closed");
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Sessions §6.6: after the command was written, an index unload during the
+/// call replies `reloading` and leaves the outcome to InputQueue, which decides
+/// the command from history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withdraw_replies_reloading_when_the_index_unloads_after_its_command() {
+    let gate = Arc::new(PendingDispatchGate::default());
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        dispatch_gate: Some(gate.clone()),
+        ..Default::default()
+    })
+    .await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let session = awaiting_approval(&sessions, &agent).await;
+    sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "pending:dispatch-gate",
+                json!([{"type":"text","text":"hold dispatch"}]),
+            ),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+        .await
+        .unwrap();
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:held",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    let written = held["sequence"].as_u64().unwrap();
+    let input_id = held["inputId"].as_str().unwrap();
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]});
+    let dispatch = session.dispatch_watch("main").unwrap();
+    let waiting = tokio::spawn({
+        let sessions = sessions.clone();
+        async move { sessions.call("withdraw", request).await }
+    });
+    let command = published_after(&session, written).await;
+    assert!(
+        matches!(command.kind, EventKind::InputWithdraw(_)),
+        "{command:?}"
+    );
+    assert!(
+        dispatch.borrow().sequence < command.sequence,
+        "InputQueue has not decided the command: {command:?}"
+    );
+    server.restart("Agents").await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the withdraw replies on the index unload")
+        .unwrap();
+    assert_eq!(reply["error"]["code"], "reloading", "{reply}");
+    assert_eq!(reply["error"]["retryable"], true, "{reply}");
+    gate.release.notify_one();
+    event_written(&session, "input/deleted").await;
+    let decided = branch_events(&session, "main", command.sequence..)
+        .await
+        .unwrap();
+    assert!(
+        decided.iter().any(|event| event.sequence > command.sequence
+            && matches!(&event.kind, EventKind::InputDeleted(data) if data.input_id == input_id)),
+        "InputQueue decides the command from history: {decided:?}"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -1708,6 +2098,17 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
     );
     let starter = client_session(&mut client, &agent, json!({"preset":"full-access"})).await;
     let at = json!({"sessionId":starter.id(),"branchId":"main"});
+    let mut inputs = starter
+        .on::<dim_agent_runtime::InputSnapshot>("main")
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        inputs.wait_for(|state| state.queued == 2),
+    )
+    .await
+    .expect("client presence and execution settings inputs are published")
+    .unwrap();
     let before = starter.sequence("main").unwrap();
     let initial = client.rpc("permissions.branch", at.clone()).await;
     assert_ok(&initial);
@@ -2258,6 +2659,261 @@ async fn node_crash_resubmission_gets_the_original_receipt() {
     let recovered = sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:crash:append"})).await;
     assert_eq!(recovered["inputId"], receipt["value"]["inputId"]);
     assert_eq!(branch_events(&target, "main", ..).await.unwrap().iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some("settlement:crash:append"))).count(), 1);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn temporary_route_adoption_requires_inputs_to_finish_dispatching() {
+    let store = Store::new();
+    let gate = Arc::new(PendingDispatchGate::default());
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        home: Some(store.0.clone()),
+        dispatch_gate: Some(gate.clone()),
+        ..Default::default()
+    })
+    .await;
+    super::process_typescript::select_model(&mut client).await;
+    let session = client_session(&mut client, &agent, host_policy()).await;
+    session.idle("main").await.unwrap();
+
+    let mut routed = Client::new_version(&server, false, 4).await;
+    assert_ok(
+        &routed
+            .rpc(
+                "provider.routes.set",
+                json!({"providerId":session.config().model.provider_id,
+                    "connection":{"apiFormat":"openai-compatible","baseUrl":"http://localhost/routed/v1"}}),
+            )
+            .await,
+    );
+    let mut queued = input(
+        &session,
+        "pending:dispatch-gate",
+        json!([{"type":"text","text":"Wait for dispatch"}]),
+    );
+    queued["mode"] = json!("append");
+    sessions.ok("input", queued).await;
+    tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+        .await
+        .unwrap();
+    assert!(!session.state("main").unwrap().running);
+
+    let attach = json!({"sessionId":session.id()});
+    let refused = routed.rpc("session.attach", attach.clone()).await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "provider_route_conflict",
+        "{refused}"
+    );
+
+    gate.release.notify_one();
+    session.idle("main").await.unwrap();
+    assert_ok(&routed.rpc("session.attach", attach).await);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn routed_model_update_restores_the_previous_model_on_disconnect() {
+    let store = Store::new();
+    let Served {
+        server,
+        agent,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        home: Some(store.0.clone()),
+        ..Default::default()
+    })
+    .await;
+    super::process_typescript::select_model(&mut client).await;
+    let session = client_session(&mut client, &agent, host_policy()).await;
+    let before = session.idle("main").await.unwrap();
+    let provider = &session.config().model.provider_id;
+    let mut routed = Client::new_version(&server, false, 4).await;
+    assert_eq!(
+        routed
+            .rpc("provider.routes.disable", json!({"providerId":"missing"}))
+            .await["result"],
+        false
+    );
+    assert_ok(
+        &routed
+            .rpc(
+                "provider.routes.set",
+                json!({"providerId":provider,
+                    "connection":{"apiFormat":"openai-compatible","baseUrl":"http://localhost/routed/v1"}}),
+            )
+            .await,
+    );
+    let publication = session.publication("main").unwrap();
+    let lock = rusqlite::Connection::open(store.database()).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    routed
+        .send(
+            "session.model.update",
+            json!({"sessionId":session.id(),"branchId":"main","providerId":provider,"modelId":"fixture"}),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !publication.has_pending() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let Transport::Unix(stream) = &mut routed.transport else {
+        unreachable!();
+    };
+    stream.get_mut().shutdown().await.unwrap();
+    let mut eof = String::new();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), stream.read_line(&mut eof))
+            .await
+            .unwrap()
+            .unwrap(),
+        0,
+        "{eof}"
+    );
+    lock.execute_batch("COMMIT").unwrap();
+
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":session.id()}))
+        .await;
+    assert_ok(&attached);
+    assert_eq!(attached["result"]["model"]["providerId"], *provider);
+    let models: Vec<_> = branch_events(&session, "main", (before + 1)..)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextConfigured(config) => Some(config.settings.provider_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(models.len(), 2, "{models:?}");
+    assert_ne!(&models[0], provider);
+    assert_eq!(&models[1], provider);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// `session.model.get` names the catalog Provider an adoption was selected
+/// from when a temporary route made the route its execution identity, on the
+/// default line and on the root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn model_get_names_the_catalog_provider_of_a_routed_adoption() {
+    let store = Store::new();
+    let Served {
+        server,
+        agent,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        home: Some(store.0.clone()),
+        ..Default::default()
+    })
+    .await;
+    super::process_typescript::select_model(&mut client).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":std::env::temp_dir(),"tools":["confirm","branch"],
+                "permissionPolicy":host_policy()}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+    session.idle("main").await.unwrap();
+    let provider = session.config().model.provider_id.clone();
+
+    // The line the conversation is on, opened from the idle root.
+    let head = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":id,"branchId":"main","after":0,"limit":256}),
+        )
+        .await;
+    assert_ok(&head);
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId":id,"parentBranchId":"main",
+                "at":head["result"]["through"],"prompt":"worker work"}),
+        )
+        .await;
+    assert_ok(&opened);
+    let line = opened["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    session.idle(&line).await.unwrap();
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":id,"branchId":line}),
+            )
+            .await,
+    );
+
+    let mut routed = Client::new_version(&server, false, 4).await;
+    assert_ok(
+        &routed
+            .rpc(
+                "provider.routes.set",
+                json!({"providerId":provider,
+                    "connection":{"apiFormat":"openai-compatible","baseUrl":"http://localhost/routed/v1"}}),
+            )
+            .await,
+    );
+
+    for branch in [line.as_str(), "main"] {
+        let updated = routed
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":id,"branchId":branch,"providerId":provider,"modelId":"fixture"}),
+            )
+            .await;
+        assert_ok(&updated);
+        let route = updated["result"]["model"]["providerId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(
+            route, provider,
+            "the temporary route is the execution identity: {updated}"
+        );
+        let read = client
+            .rpc(
+                "session.model.get",
+                json!({"sessionId":id,"branchId":branch}),
+            )
+            .await;
+        assert_ok(&read);
+        let configuration = &read["result"]["configuration"];
+        assert_eq!(configuration["model"]["providerId"], json!(route), "{read}");
+        assert_eq!(configuration["model"]["modelId"], "fixture", "{read}");
+        assert_eq!(
+            configuration["catalogProviderId"],
+            json!(provider),
+            "{read}"
+        );
+    }
+
+    drop(routed);
+    drop(client);
+    drop(agent);
     server.shutdown();
     server.join().await.unwrap();
 }

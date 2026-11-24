@@ -8,6 +8,7 @@ use aimux_providers::{
     bedrock::{AmazonBedrockProviderSettings, create_amazon_bedrock},
     google::{GoogleProviderSettings, create_google},
     openai_compatible::{OpenAICompatibleProviderSettings, create_openai_compatible},
+    xai::{XAIProviderSettings, create_xai},
 };
 use futures_util::StreamExt;
 use serde_json::json;
@@ -826,6 +827,493 @@ async fn the_gemini_body_carries_the_stored_nullable_type_verbatim() {
     let parameters = &body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"];
     assert_eq!(parameters, &canonical_shaped_schema());
     assert_eq!(parameters["required"], json!(["space_id"]));
+}
+
+/// A 1x1 GIF: Gemini does not take GIF in any part of a request.
+const GIF: &str = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+/// A 1x1 WebP: a format the native xAI routes do not take.
+const WEBP: &str = "UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
+
+/// Gemini takes PNG, JPEG and WebP but not GIF; a GIF becomes its reference.
+#[tokio::test]
+async fn a_gif_image_reaches_gemini_as_its_reference() {
+    let request: ModelRequest = serde_json::from_value(json!({
+        "providerId": "application-alias", "modelId": "gemini-2.5-pro",
+        "messages": [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "mediaType": "image/png", "data": "aGVsbG8="}},
+            {"type": "image", "source": {"type": "base64", "mediaType": "image/gif", "data": GIF}}
+        ]}]
+    }))
+    .unwrap();
+    let prepared = convert(&request, &ProviderKind::Gemini, None).unwrap();
+    let LanguageModelMessage::User { content, .. } = &prepared.options.prompt[0] else {
+        panic!("missing user message")
+    };
+    assert_eq!(content.len(), 2, "{content:?}");
+    assert!(matches!(&content[0], UserPart::File(file) if file.media_type == "image/png"));
+    assert!(
+        matches!(&content[1], UserPart::Text(part) if part.text.starts_with("img:")),
+        "the GIF is not a Gemini image format: {content:?}"
+    );
+    let (body, _) = gemini_capture(request, "gemini-2.5-pro").await;
+    let parts = body["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(parts[0]["inlineData"]["mimeType"], "image/png");
+    assert!(
+        parts[1]["text"].as_str().unwrap().starts_with("img:"),
+        "the GIF reaches the wire as its reference: {body}"
+    );
+    assert!(
+        parts
+            .iter()
+            .all(|part| part["inlineData"]["mimeType"] != "image/gif"),
+        "no GIF reaches the wire: {body}"
+    );
+}
+
+/// A native xAI body for `request` as it reaches the wire.
+async fn native_xai_capture(
+    request: ModelRequest,
+    kind: ProviderKind,
+    model: &'static str,
+) -> Value {
+    capture(
+        move |url| match kind {
+            ProviderKind::Xai => Arc::new(
+                create_openai_compatible(OpenAICompatibleProviderSettings {
+                    name: "xai".into(),
+                    base_url: url,
+                    ..OpenAICompatibleProviderSettings::default()
+                })
+                .unwrap()
+                .chat(model),
+            ),
+            _ => Arc::new(
+                create_xai(XAIProviderSettings {
+                    base_url: Some(url),
+                    api_key: Some("test-key".into()),
+                    ..XAIProviderSettings::default()
+                })
+                .unwrap()
+                .responses(model),
+            ),
+        },
+        convert(&request, &kind, None).unwrap().options,
+    )
+    .await
+}
+
+/// Native xAI takes PNG and JPEG only: a WebP in user content and a GIF in a
+/// tool result become their references and reach no wire as pixels, on either
+/// native route.
+#[tokio::test]
+async fn an_unsupported_image_reaches_native_xai_as_its_reference() {
+    for kind in [ProviderKind::Xai, ProviderKind::XaiResponses] {
+        let request: ModelRequest = serde_json::from_value(json!({
+            "providerId": "application-alias", "modelId": "grok-4",
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "mediaType": "image/png", "data": "aGVsbG8="}},
+                    {"type": "image", "source": {"type": "base64", "mediaType": "image/webp", "data": WEBP}}
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call-1", "name": "read", "input": {}}
+                ]},
+                {"role": "tool_result", "content": [
+                    {"type": "tool_result", "tool_use_id": "call-1", "is_error": false,
+                     "content": [
+                        {"type": "text", "text": "caption"},
+                        {"type": "image", "source": {"type": "base64", "mediaType": "image/gif", "data": GIF}}
+                     ]}
+                ]},
+                {"role": "user", "content": "continue"}
+            ],
+            "tools": [tool("read")]
+        }))
+        .unwrap();
+        let body = native_xai_capture(request, kind, "grok-4").await;
+        let wire = body.to_string();
+        assert!(wire.contains("image/png"), "{kind:?}: {body}");
+        assert!(
+            !wire.contains("image/webp"),
+            "no WebP reaches the {kind:?} wire: {body}"
+        );
+        assert!(
+            !wire.contains("image/gif"),
+            "no GIF reaches the {kind:?} wire: {body}"
+        );
+        assert_eq!(
+            wire.matches("img:").count(),
+            2,
+            "both unsupported images reach the {kind:?} wire as references: {body}"
+        );
+    }
+}
+
+/// A compatible xAI body for `request` as it reaches the wire: the generic
+/// Chat model the `xai` preset builds.
+async fn compatible_xai_capture(request: ModelRequest, preset: Option<&str>) -> Value {
+    capture(
+        |url| {
+            Arc::new(
+                create_openai_compatible(OpenAICompatibleProviderSettings {
+                    name: "xai".into(),
+                    base_url: url,
+                    ..OpenAICompatibleProviderSettings::default()
+                })
+                .unwrap()
+                .chat("grok-4"),
+            )
+        },
+        convert(&request, &ProviderKind::OpenaiCompatible, preset)
+            .unwrap()
+            .options,
+    )
+    .await
+}
+
+/// One request with a WebP in user content and a GIF in a tool result.
+fn compatible_image_request() -> ModelRequest {
+    serde_json::from_value(json!({
+        "providerId": "application-alias", "modelId": "grok-4",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "mediaType": "image/png", "data": "aGVsbG8="}},
+                {"type": "image", "source": {"type": "base64", "mediaType": "image/webp", "data": WEBP}}
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call-1", "name": "read", "input": {}}
+            ]},
+            {"role": "tool_result", "content": [
+                {"type": "tool_result", "tool_use_id": "call-1", "is_error": false,
+                 "content": [
+                    {"type": "text", "text": "caption"},
+                    {"type": "image", "source": {"type": "base64", "mediaType": "image/gif", "data": GIF}}
+                 ]}
+            ]},
+            {"role": "user", "content": "continue"}
+        ],
+        "tools": [tool("read")]
+    }))
+    .unwrap()
+}
+
+/// The `xai` preset on the compatible protocol takes PNG and JPEG only: a WebP
+/// in user content and a GIF in a tool result become their references and reach
+/// no wire as pixels.
+#[tokio::test]
+async fn a_compatible_xai_request_turns_an_unsupported_image_into_its_reference() {
+    let body = compatible_xai_capture(compatible_image_request(), Some("xai")).await;
+    let wire = body.to_string();
+    assert!(wire.contains("image/png"), "{body}");
+    assert!(
+        !wire.contains("image/webp"),
+        "no WebP reaches the wire: {body}"
+    );
+    assert!(
+        !wire.contains("image/gif"),
+        "no GIF reaches the wire: {body}"
+    );
+    assert_eq!(
+        wire.matches("img:").count(),
+        2,
+        "both unsupported images reach the wire as references: {body}"
+    );
+}
+
+/// The `xai` preset changes the image parts and nothing else: a request without
+/// images reaches the wire byte for byte as it does without the preset, and the
+/// same image request without the preset still sends the WebP and the GIF.
+#[tokio::test]
+async fn a_compatible_xai_preset_changes_no_request_without_images() {
+    let text: ModelRequest = serde_json::from_value(json!({
+        "providerId": "application-alias", "modelId": "grok-4",
+        "system": "be brief",
+        "messages": [
+            {"role": "user", "content": "look"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call-1", "name": "read", "input": {"path": "notes.txt"}}
+            ]},
+            {"role": "tool_result", "content": [
+                {"type": "tool_result", "tool_use_id": "call-1", "is_error": false,
+                 "content": [{"type": "text", "text": "caption"}]}
+            ]},
+            {"role": "user", "content": "continue"}
+        ],
+        "tools": [tool("read")],
+        "config": {"maxTokens": 64, "temperature": 0.25}
+    }))
+    .unwrap();
+    let without = compatible_xai_capture(text.clone(), None).await;
+    let with = compatible_xai_capture(text, Some("xai")).await;
+    assert_eq!(
+        with, without,
+        "the preset changes no request without images"
+    );
+
+    let images = compatible_xai_capture(compatible_image_request(), None).await;
+    let wire = images.to_string();
+    assert!(
+        wire.contains("image/webp") && wire.contains("image/gif"),
+        "a compatible destination without the preset still takes both: {images}"
+    );
+}
+
+/// The line a failed result's text starts with where the destination's wire
+/// form reports no status field.
+const TOOL_ERROR_MARKER_TEXT: &str = "[Error: this tool result reports a failed tool call.]";
+
+/// One Bedrock request whose tool result carries a PNG.
+fn bedrock_tool_image_request(model: &str, is_error: bool) -> ModelRequest {
+    serde_json::from_value(json!({
+        "providerId": "application-alias", "modelId": model,
+        "messages": [
+            {"role": "user", "content": "look"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call-1", "name": "read", "input": {}}
+            ]},
+            {"role": "tool_result", "content": [
+                {"type": "tool_result", "tool_use_id": "call-1", "is_error": is_error,
+                 "content": [
+                    {"type": "text", "text": "caption"},
+                    {"type": "image", "source": {"type": "base64", "mediaType": "image/png", "data": "aGVsbG8="}}
+                 ]}
+            ]}
+        ],
+        "tools": [tool("read")]
+    }))
+    .unwrap()
+}
+
+/// A Bedrock body for `request` as it reaches the wire.
+async fn bedrock_capture(request: ModelRequest, model: &'static str) -> Value {
+    let transform = super::tool_result_status_rewrite(&ProviderKind::Bedrock, model);
+    capture(
+        move |url| {
+            Arc::new(
+                create_amazon_bedrock(AmazonBedrockProviderSettings {
+                    region: Some("us-east-1".into()),
+                    api_key: Some(Resolvable::Value(String::new())),
+                    access_key_id: Some("access-key".into()),
+                    secret_access_key: Some("secret-key".into()),
+                    base_url: Some(url),
+                    transform_request_body: transform,
+                    ..AmazonBedrockProviderSettings::default()
+                })
+                .unwrap()
+                .chat(model),
+            )
+        },
+        convert(&request, &ProviderKind::Bedrock, None)
+            .unwrap()
+            .options,
+    )
+    .await
+}
+
+fn bedrock_tool_result_part(body: &Value) -> &Value {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().unwrap())
+        .find_map(|part| part.get("toolResult"))
+        .expect("the request carries a tool result")
+}
+
+fn bedrock_tool_result(body: &Value) -> &Value {
+    &bedrock_tool_result_part(body)["content"]
+}
+
+/// Bedrock takes an image inside `toolResult` only on the models that support
+/// that block; the others receive it in the user message after the result.
+#[tokio::test]
+async fn a_bedrock_tool_image_uses_a_placement_the_model_supports() {
+    for model in [
+        "us.amazon.nova-pro-v1:0",
+        "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ] {
+        let body = bedrock_capture(bedrock_tool_image_request(model, false), model).await;
+        let result = bedrock_tool_result(&body);
+        assert!(
+            result
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|part| part.get("image").is_some()),
+            "{model} takes the image inside toolResult: {body}"
+        );
+    }
+    for model in [
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "global.anthropic.claude-opus-5",
+    ] {
+        let body = bedrock_capture(bedrock_tool_image_request(model, false), model).await;
+        let result = bedrock_tool_result(&body);
+        assert!(
+            result
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|part| part.get("image").is_none()),
+            "{model} takes no image inside toolResult: {body}"
+        );
+        assert!(
+            body["messages"].as_array().unwrap().iter().any(|message| {
+                message["content"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part.get("image").is_some()))
+            }),
+            "the image takes a supported placement instead: {body}"
+        );
+    }
+}
+
+/// Bedrock's optional `status` field is supported only on Amazon Nova and
+/// Anthropic Claude 3 and 4. The other models keep the image placement without
+/// the field, for either result status, and a failure names itself in the
+/// result text.
+#[tokio::test]
+async fn a_bedrock_tool_status_reaches_only_the_models_that_support_it() {
+    for (model, supports_status) in [
+        ("us.amazon.nova-pro-v1:0", true),
+        ("us.meta.llama4-maverick-17b-instruct-v1:0", false),
+    ] {
+        for is_error in [false, true] {
+            let body = bedrock_capture(bedrock_tool_image_request(model, is_error), model).await;
+            let messages = body["messages"].as_array().unwrap();
+            let index = messages
+                .iter()
+                .position(|message| {
+                    message["content"].as_array().is_some_and(|parts| {
+                        parts.iter().any(|part| part.get("toolResult").is_some())
+                    })
+                })
+                .expect("the request carries a tool result");
+            let content = messages[index]["content"].as_array().unwrap();
+            let tool = content
+                .iter()
+                .position(|part| part.get("toolResult").is_some())
+                .unwrap();
+            let result = &content[tool]["toolResult"];
+            if supports_status {
+                let status = if is_error { "error" } else { "success" };
+                assert_eq!(
+                    result["status"],
+                    json!(status),
+                    "{model} {is_error}: {body}"
+                );
+                assert!(
+                    !body.to_string().contains(TOOL_ERROR_MARKER_TEXT),
+                    "{model} reports the outcome in the field: {body}"
+                );
+            } else {
+                assert!(
+                    result.get("status").is_none(),
+                    "{model} does not support the status field: {body}"
+                );
+                let caption = if is_error {
+                    format!("{TOOL_ERROR_MARKER_TEXT}\ncaption{TOOL_IMAGE_MARKER}")
+                } else {
+                    format!("caption{TOOL_IMAGE_MARKER}")
+                };
+                assert_eq!(
+                    result["content"],
+                    json!([{"text": caption}]),
+                    "the image leaves the result and a failure stays in its text: {body}"
+                );
+                assert!(
+                    content[tool + 1..]
+                        .iter()
+                        .any(|part| part.get("image").is_some()),
+                    "the image follows the result in a user message: {body}"
+                );
+            }
+        }
+    }
+}
+
+/// One Bedrock request whose tool result carries `content` and no image.
+fn bedrock_text_tool_result_request(model: &str, is_error: bool, blocks: bool) -> ModelRequest {
+    let content = if blocks {
+        json!([{"type": "text", "text": "result text"}])
+    } else {
+        json!("result text")
+    };
+    serde_json::from_value(json!({
+        "providerId": "application-alias", "modelId": model,
+        "messages": [
+            {"role": "user", "content": "look"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call-1", "name": "read", "input": {}}
+            ]},
+            {"role": "tool_result", "content": [
+                {"type": "tool_result", "tool_use_id": "call-1", "is_error": is_error,
+                 "content": content}
+            ]}
+        ],
+        "tools": [tool("read")]
+    }))
+    .unwrap()
+}
+
+/// A Bedrock result without an image keeps its text-only form. Where AWS does
+/// not support the status field, a failure names itself in that text for both
+/// text forms.
+#[tokio::test]
+async fn a_bedrock_result_without_an_image_names_its_failure_in_the_text() {
+    let model = "us.meta.llama4-maverick-17b-instruct-v1:0";
+    for blocks in [false, true] {
+        for is_error in [false, true] {
+            let request = bedrock_text_tool_result_request(model, is_error, blocks);
+            let body = bedrock_capture(request, model).await;
+            let result = bedrock_tool_result_part(&body);
+            assert!(
+                result.get("status").is_none(),
+                "blocks={blocks} {is_error}: the status field is unsupported: {body}"
+            );
+            let text = if is_error {
+                format!("{TOOL_ERROR_MARKER_TEXT}\nresult text")
+            } else {
+                "result text".into()
+            };
+            assert_eq!(
+                result["content"],
+                json!([{"text": text}]),
+                "blocks={blocks} {is_error}: the text reports the outcome: {body}"
+            );
+        }
+    }
+}
+
+/// The in-memory form backs the wire assertion above: an unsupported model
+/// keeps an error result's text as an error and moves its image out.
+#[tokio::test]
+async fn a_bedrock_error_tool_image_keeps_the_error_text_and_moves_the_image() {
+    let model = "test-model";
+    let request = bedrock_tool_image_request(model, true);
+    let prepared = convert(&request, &ProviderKind::Bedrock, None).unwrap();
+    let LanguageModelMessage::Tool { content, .. } = &prepared.options.prompt[2] else {
+        panic!("the third message is the tool result")
+    };
+    let [ToolPart::ToolResult(result)] = content.as_slice() else {
+        panic!("one tool result")
+    };
+    let Some(LanguageModelMessage::User { content, .. }) = prepared.options.prompt.get(3) else {
+        panic!("the image follows in a user message")
+    };
+    assert!(
+        content.iter().any(|part| matches!(part, UserPart::File(_))),
+        "the image follows in a user message: {content:?}"
+    );
+    assert!(
+        matches!(&result.output, ToolResultOutput::ErrorText { .. }),
+        "the result keeps its error text: {:?}",
+        result.output
+    );
+    assert!(
+        super::tool_result_status_rewrite(&ProviderKind::Bedrock, model).is_some(),
+        "the unsupported model rewrites its serialized body"
+    );
 }
 
 /// A stored reply, the only varying input of #1038's switch table.

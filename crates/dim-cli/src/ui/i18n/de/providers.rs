@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "ChatGPT-Tarif wird verwendet",
+        "This sign-in method will be removed in a future version." => {
+            "Diese Anmeldemethode wird in einer künftigen Version entfernt."
+        }
+        "Switch to ChatGPT" => "Zu ChatGPT wechseln",
+        "Manage usage" => "Nutzung verwalten",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "OpenAI verarbeitet Eingaben, ausgewählte Dateien und Werkzeugergebnisse."
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "Dim speichert deine ChatGPT-Verbindung auf diesem Computer."
+        }
+        "Switch account" => "Konto wechseln",
+        "Continue with ChatGPT" => "Mit ChatGPT fortfahren",
+        "Add ChatGPT account" => "ChatGPT-Konto hinzufügen",
+        "Waiting for authorization in your browser" => "Warte auf Autorisierung im Browser",
+        "{name} (Legacy)" => "{name} (veraltet)",
+        "Legacy" => "Veraltet",
         "Refresh model list" => "Modellliste aktualisieren",
         "Model list refreshed" => "Modellliste aktualisiert",
         "Model list refresh failed: {reason}" => {
@@ -9,6 +27,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // providers_panel.rs
         "Providers" => "Provider",
         "Enter open · Esc clear/close" => "Enter öffnen · Esc leeren/schließen",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab bewegen · Enter ausführen · Ctrl+R neu einlesen · Esc zurück"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => {
             "↑↓/Tab bewegen · Enter ausführen · Esc zurück"
         }
@@ -72,6 +93,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "Diese URL öffnen: {url}",
         "Enter code:    {code}" => "Code eingeben:    {code}",
         "Waiting after server slow-down" => "Warte nach Server-Drosselung",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "OAuth-Login abgebrochen",
         "Enter your work email" => "Firmen-E-Mail eingeben",
         "Invalid OAuth state - possible CSRF attempt" => {

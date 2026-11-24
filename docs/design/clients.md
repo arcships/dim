@@ -50,7 +50,7 @@ Dashed boxes are outside this repository (Desktop) or not implemented (remote de
 | --- | --- |
 | Wire protocol v4: framing, `hello` and feature advertisement, notifications | `crates/dim-app-server/src/protocol.rs` (no prose reference exists, §4 item 2); [App Server README](../../crates/dim-app-server/README.md) |
 | Session methods versus management methods, and which entry is served which | [Session boundary](contracts/session-boundary.md) (A.3 entries), [management methods](appserver/management-methods.md) |
-| Reading a Session: `session.attach`, then `session.history` up to a fixed head, then live `session.event`, `session.state`, `session.model.progress`; clients fold these themselves. The attach reply carries that Session's `SessionInfo`, whose `model` follows the Session's latest adopted configuration, so a client that opens a known Session takes the model from it and reads no catalog; `session.summaries` items still report the creation model until [#795](https://github.com/arcships/dim/issues/795) lands. A reload leaves the title fields absent and `running` false, and the notices that follow correct them. The `session.create` and `session.attach` replies also carry `modelPreferences`, the preferences the Session's adopted configuration sends, derived from it and absent when it carries none; `session.summaries` items do not carry it | [Session access](contracts/session-access.md), [CLI commands](cli-commands.md); triage of [#276](https://github.com/arcships/dim/issues/276) |
+| Reading a Session: `session.attach`, then `session.history` up to a fixed head, then live `session.event`, `session.state`, `session.model.progress`; clients fold these themselves. The attach reply carries that Session's `SessionInfo`, whose `model` is the root's adopted configuration, so a client that opens a known Session on the root takes the model from it and reads no catalog; a conversation on a line takes that line's own configuration through `session.model.get {sessionId, branchId, through}` at the reply's cursor ([timeline branches §14](timeline-branches.md#14-clients)); `session.summaries` items still report the creation model until [#795](https://github.com/arcships/dim/issues/795) lands. A reload leaves the title fields absent and `running` false, and the notices that follow correct them. The `session.create` and `session.attach` replies also carry `modelPreferences`, the preferences the root's adopted configuration sends, derived from it and absent when it carries none; `session.summaries` items do not carry it. The attach reply's `sequence` stays the root's cutoff, and the line the conversation is on travels beside it as `defaultBranch {branchId, sequence}`; the cursor is that reply's alone, and `session.summaries` items carry none ([timeline branches §14](timeline-branches.md#14-clients)) | [Session access](contracts/session-access.md), [CLI commands](cli-commands.md); triage of [#276](https://github.com/arcships/dim/issues/276) |
 | Broadcast notices that are not Timeline facts (`session.notice`, e.g. titles) | [Session notices](appserver/session-notices.md) |
 | Approvals and questions: `approval.request` / `cancelled` / `resolved`; a question is a pending `ask_user` call answered by `session.question.respond` | [ADR 003](../adr/003-approval-scope.md), [Questions](plugins/Questions.md) |
 | MCP App views: the document a tool declares (`session.mcp.app.widget`), a view's tool call (`session.mcp.app.call`), a view's message through `session.submit` | [MCP Apps](appserver/mcp-apps.md) |
@@ -170,7 +170,7 @@ absence from a missing start event in the window:
 
 | State | Required read and merge |
 | --- | --- |
-| Adopted model and preferences | The attach reply; a `context/configured` in the window is historical display, not a substitute for the current adopted value. |
+| Adopted model and preferences | `session.model.get {sessionId, branchId, through?}`: the line's own adopted configuration at its own committed cutoff. Apply only that line's `Configuration` events whose `sequence > through`, and refresh by calling again without `through`. An ended line answers at its fixed head without reopening; an unknown line is an error. The attach reply carries the root's configuration and the configured conversation's `defaultBranch`, but what it says about the model describes the root: a client uses it for the root's configuration only, and never infers the model of the line `defaultBranch` names from it. A `context/configured` in the window is historical display, not a substitute. Without the feature, a client uses the attach reply for the root alone; for every other line it reports the limitation instead of showing the root's configuration. |
 | Permission | `session.permission.get`; later policy notices update it. |
 | Active turn and output | Current running/turn/request state and output block identities; a window without `turn/start` cannot prove the branch idle. |
 | Pending questions | `session.question.pending` ([Questions §3.5](plugins/Questions.md#35-pending-question-read)); join later tool results by call identity. |
@@ -179,9 +179,11 @@ absence from a missing start event in the window:
 | Pending inputs | Unconsumed Queue/Steer input identities, modes and display content, excluding deleted inputs. |
 
 Ended branches remain directory entries but have no actionable inventories; clients read their
-transcript and details only when selected. Configuration updates use the attach configuration
+transcript and details only when selected. On the root, configuration updates use the attach configuration
 position independently of the transcript cursor, so a buffered configuration between attach and
-the window head is still adopted.
+the window head is still adopted; a conversation on a line reads its adopted configuration through
+`session.model.get` at the window head, and takes the read's own committed cutoff as the watermark, so
+a configuration buffered above it still applies and a pre-window adoption is not lost.
 
 The active-turn row and the last four rows raise requirements to InputQueue, Questions, BackgroundExec
 and Collaboration, plus Loop for current execution state, through the App Server. Each read must identify the branch and
@@ -232,7 +234,7 @@ Include a turn longer than the page budget, an empty visible page,
 a question/task/delegation/input started before the window, a terminal event while
 state is loading, member switching, reconnect and a transport-oversized batch.
 Also verify that `/lines` lists a branch created before the window, line-mode
-`/effort` uses the attach model, and an old ACP `forkAtTurn` anchor still resolves.
+`/effort` uses the shown line's model, and an old ACP `forkAtTurn` anchor still resolves.
 `/goal` reads `session.goal.get` before choosing a command and after its write; a successful Goal read must not
 be discarded because the transcript failed, nor may a partial transcript decide
 whether a goal exists. Retrying a transcript never changes other branches into

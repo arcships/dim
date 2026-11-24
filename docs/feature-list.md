@@ -161,7 +161,7 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 
 ## Workspace tools
 
-- `read`: read text files; vision models can read supported image formats.
+- `read`: read text files and PNG, JPEG, WebP or GIF images; a vision-capable model, or one whose capability is unknown, receives the image itself, except a GIF on Gemini and a WebP or GIF on an xAI destination, which receive its `img:` reference, and a Bedrock model outside Amazon Nova and Claude 3/4, which receives a tool-result image in the user message after the result; a model without image input receives an `img:` reference or an omission placeholder.
 - `write`: create or overwrite files.
 - `edit`: make precise file-content changes.
 - `glob`: find files by path pattern.

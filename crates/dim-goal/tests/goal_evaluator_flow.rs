@@ -1,7 +1,7 @@
 //! The `goal.test.mjs` Pursuit cases: the evaluator judge, its line, its
 //! conclusions and the ends it records. The part harness supplies every fact
 //! the Loop and TimelineTree would write; expectations are Goal's inputs.
-mod support;
+use crate::support;
 
 use std::time::Duration;
 
@@ -821,6 +821,99 @@ async fn pursuit_2_a_continue_conclusion_writes_one_continuation_or_pauses_at_th
             "the automatic continuation limit was reached",
             conclusion
         )
+    );
+    env.close().await;
+}
+
+/// A Queue that commits while the `continue` conclusion waits for its cutoff
+/// leaves the evaluated continuation behind: the recheck reads the fold at the
+/// latest committed cutoff, so the Queue's own turn decides (Pursuit §4.1, §5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pursuit_2_a_continue_conclusion_reads_the_latest_committed_cutoff() {
+    let env = Env::start().await;
+    let (evaluation, create) = completion_requested(&env).await;
+    let through = env.timeline("main").committed() + 1;
+    let mut cutoff_gate = dim_goal::testing::hold_stage(
+        env.session_id(),
+        "main",
+        dim_goal::testing::Stage::Cutoff,
+        through,
+        None,
+    );
+    let conclusion = texts::conclusion(
+        "main",
+        &create.branch,
+        evaluation,
+        "continue",
+        "CONTINUE:\n- still missing",
+    );
+    let conclusion = env.write_message(
+        "main",
+        vec![raw(&conclusion, None, false)],
+        InputMode::Append,
+    );
+    assert!(
+        conclusion.sequence >= through,
+        "the conclusion input at {} follows the registered cutoff {through}",
+        conclusion.sequence
+    );
+    let cutoff = cutoff_gate.arrived().await;
+    assert!(
+        cutoff >= conclusion.sequence,
+        "the conclusion's write waits at the latest committed cutoff {cutoff}, after its input at {}",
+        conclusion.sequence
+    );
+
+    let queue_gate = dim_goal::testing::hold_input(
+        env.session_id(),
+        "main",
+        env.timeline("main").committed() + 1,
+    );
+    let queued = env.write_message(
+        "main",
+        vec![raw("keep going", None, false)],
+        InputMode::Queue,
+    );
+    assert!(
+        queued.sequence > cutoff,
+        "the queued input at {} commits after the conclusion's cutoff {cutoff}",
+        queued.sequence
+    );
+    cutoff_gate.release();
+
+    let stale = tokio::time::timeout(Duration::from_millis(750), async {
+        loop {
+            let writes = writes_with(&env, "main", &format!(r#"evaluation="{evaluation}""#)).await;
+            if let Some(block) = writes
+                .iter()
+                .find(|block| block.marker.contains(r#"kind="continuation""#))
+            {
+                return block.marker.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        stale.is_err(),
+        "the continue conclusion writes no continuation while a committed Queue is not folded: {stale:?}"
+    );
+
+    queue_gate.release();
+    env.dispatched("main", queued.sequence).await;
+    let writes = env.settled("main").await;
+    assert!(
+        !writes.iter().any(|block| {
+            block.marker.contains(r#"kind="continuation""#)
+                && block
+                    .marker
+                    .contains(&format!(r#"evaluation="{evaluation}""#))
+        }),
+        "the continue conclusion writes no continuation after the Queue folds: {writes:#?}"
+    );
+    assert!(
+        env.pending_inputs("main").await.contains(&queued.id),
+        "the Queue drives the next turn instead of the evaluated continuation"
     );
     env.close().await;
 }

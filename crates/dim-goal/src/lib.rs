@@ -10,6 +10,9 @@ mod read;
 mod session;
 mod text;
 
+#[cfg(feature = "testing")]
+pub mod testing;
+
 pub use text::GoalTexts;
 
 use dim_agent_runtime::{AgentBuilder, Names, PartRegistry, PartScope};

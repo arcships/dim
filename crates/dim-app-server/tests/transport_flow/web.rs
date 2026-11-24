@@ -1,22 +1,50 @@
 //! Web through actual C4, Settings, Permission and ToolExecutor boundaries.
 use super::*;
+use dim_agent_capabilities::tool_registry::{ToolProvider, ToolRegistry, ToolSourceSet};
+use dim_agent_runtime::Names;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_app_server::managed_provider::{
     AccountSnapshot, CredentialLease, ManagedCatalog, ManagedError, ManagedFuture, ManagedProvider,
-    ManagedProviderRow, ProviderDescriptor, WebSearchHit, WebSearchRequest, WebSearchResponse,
+    ManagedProviderBinding, ManagedProviderRow, ProviderDescriptor, WebSearchHit, WebSearchRequest,
+    WebSearchResponse,
     management::{
         BrowserLogin, BrowserLoginBegin, DeviceLogin, LoginBegin, LoginState,
         ManagedBrowserLoginComplete, ManagedLoginAttempt, Usage,
     },
 };
-use rutis::host::BoxFuture;
+use rutis::host::{BoxFuture, DynPlugin, Effect, FiberView, Key, TypeKey};
 use rutis::{Ctx, Plugin};
-use std::sync::atomic::AtomicBool;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use tokio::io::AsyncReadExt;
+use tokio::sync::watch;
 
-struct SearchProvider(Arc<AtomicBool>);
+struct SearchProvider {
+    /// The account the owner stores; the test moves it directly, as a login
+    /// completing without its client does.
+    signed_in: watch::Sender<Option<bool>>,
+    /// Account observations, which the assembly and reconciliation count.
+    observations: Arc<AtomicUsize>,
+    /// Account reads, which an installed watch must make unnecessary.
+    reads: Arc<AtomicUsize>,
+    /// Makes the next account read fail, as a transient store error does.
+    fail_status: Arc<AtomicBool>,
+}
 fn unused<T: Send + 'static>() -> ManagedFuture<T> {
     Box::pin(async { Err(ManagedError::InvalidInput) })
+}
+fn account(signed_in: bool) -> AccountSnapshot {
+    AccountSnapshot {
+        credential_epoch: "epoch".into(),
+        generation: u64::from(signed_in) + 1,
+        account: signed_in.then(|| dim_app_server::managed_provider::AccountView {
+            issuer: "https://accounts.example".into(),
+            subject: "subject".into(),
+            email: None,
+            name: None,
+            granted_scopes: vec![],
+        }),
+    }
 }
 impl ManagedProvider for SearchProvider {
     fn providers(&self) -> Vec<ProviderDescriptor> {
@@ -28,7 +56,33 @@ impl ManagedProvider for SearchProvider {
         }]
     }
     fn status(&self, _: &str) -> ManagedFuture<AccountSnapshot> {
-        unused()
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let fail = self.fail_status.load(Ordering::SeqCst);
+        let signed_in = self.signed_in.borrow().unwrap_or(false);
+        Box::pin(async move {
+            if fail {
+                return Err(ManagedError::Transient);
+            }
+            Ok(account(signed_in))
+        })
+    }
+    fn subscribe_account(&self) -> watch::Receiver<Option<bool>> {
+        self.signed_in.subscribe()
+    }
+    fn observe_account(&self, _: &str) -> ManagedFuture<()> {
+        self.observations.fetch_add(1, Ordering::SeqCst);
+        let fail = self.fail_status.load(Ordering::SeqCst);
+        let signed_in = self.signed_in.clone();
+        Box::pin(async move {
+            if fail {
+                return Err(ManagedError::Transient);
+            }
+            let current = *signed_in.borrow();
+            if let Some(usable) = current {
+                signed_in.send_replace(Some(usable));
+            }
+            Ok(())
+        })
     }
     fn recover(&self, _: &str) -> ManagedFuture<AccountSnapshot> {
         unused()
@@ -49,7 +103,8 @@ impl ManagedProvider for SearchProvider {
         unused()
     }
     fn logout(&self, _: &str) -> ManagedFuture<AccountSnapshot> {
-        unused()
+        self.signed_in.send_replace(Some(false));
+        Box::pin(async { Ok(account(false)) })
     }
     fn usage(&self, _: &str) -> ManagedFuture<Usage> {
         unused()
@@ -59,7 +114,7 @@ impl ManagedProvider for SearchProvider {
         req: WebSearchRequest,
         _: CancellationToken,
     ) -> ManagedFuture<WebSearchResponse> {
-        let signed_in = self.0.load(Ordering::SeqCst);
+        let signed_in = self.signed_in.borrow().unwrap_or(false);
         Box::pin(async move {
             if !signed_in {
                 return Err(ManagedError::TokenMissing);
@@ -101,15 +156,176 @@ impl ManagedProvider for SearchProvider {
         Box::pin(async {})
     }
 }
-struct SearchProviderPlugin(Arc<AtomicBool>);
+struct SearchProviderPlugin {
+    signed_in: watch::Sender<Option<bool>>,
+    reads: Arc<AtomicUsize>,
+    observations: Arc<AtomicUsize>,
+    fail_status: Arc<AtomicBool>,
+}
+impl SearchProviderPlugin {
+    fn new(signed_in: watch::Sender<Option<bool>>, reads: Arc<AtomicUsize>) -> Self {
+        Self {
+            signed_in,
+            reads,
+            observations: Arc::new(AtomicUsize::new(0)),
+            fail_status: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    /// Also counts `observe_account` calls on `observations`.
+    fn observing(mut self, observations: Arc<AtomicUsize>) -> Self {
+        self.observations = observations;
+        self
+    }
+    fn with_failure(mut self, fail_status: Arc<AtomicBool>) -> Self {
+        self.fail_status = fail_status;
+        self
+    }
+}
 impl Plugin for SearchProviderPlugin {
     type Deps = ();
     fn name(&self) -> &str {
         "search-provider-fixture"
     }
     async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
-        ctx.provide_as::<dyn ManagedProvider>(Arc::new(SearchProvider(self.0.clone())))?;
+        ctx.provide_as::<dyn ManagedProvider>(Arc::new(SearchProvider {
+            signed_in: self.signed_in.clone(),
+            observations: self.observations.clone(),
+            reads: self.reads.clone(),
+            fail_status: self.fail_status.clone(),
+        }))?;
         Ok(())
+    }
+}
+
+/// A process row that installs a managed provider and its binding, as the
+/// product profile does, and exposes both so a test can replace the binding
+/// with one that already stores a signed-in account.
+struct ProviderRow {
+    slot: Arc<OnceLock<(Ctx, FiberView, FiberView)>>,
+    signed_in: watch::Sender<Option<bool>>,
+    reads: Arc<AtomicUsize>,
+    fail: Arc<AtomicBool>,
+}
+impl DynPlugin for ProviderRow {
+    fn name(&self) -> &str {
+        "test.managed-provider-row"
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let provider = ctx.plugin(
+                SearchProviderPlugin::new(self.signed_in.clone(), self.reads.clone())
+                    .with_failure(self.fail.clone()),
+            );
+            let binding = ctx.plugin(ManagedProviderBinding);
+            let _ = self.slot.set((ctx.clone(), provider, binding));
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// A Session tool source that withholds every `sets()` read while armed.
+///
+/// The registry refreshes its sources, and the branch adopts them, from the
+/// last read: a held read holds the adoption, so a test can write the `web`
+/// source and still bind a request to the declaration from before it.
+struct AdoptionGate {
+    armed: AtomicBool,
+    reads: watch::Sender<u64>,
+    open: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+impl Default for AdoptionGate {
+    fn default() -> Self {
+        Self {
+            armed: AtomicBool::new(false),
+            reads: watch::Sender::new(0),
+            open: std::sync::Mutex::new(true),
+            opened: std::sync::Condvar::new(),
+        }
+    }
+}
+impl AdoptionGate {
+    /// Holds every read from here on, and answers how many it held so far so
+    /// the caller can wait for the next one.
+    fn arm(&self) -> u64 {
+        *self.open.lock().unwrap() = false;
+        self.armed.store(true, Ordering::SeqCst);
+        *self.reads.borrow()
+    }
+    fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+    fn hold(&self) {
+        if !self.armed.load(Ordering::SeqCst) {
+            return;
+        }
+        tokio::task::block_in_place(|| {
+            let open = self.open.lock().unwrap();
+            if *open {
+                return;
+            }
+            self.reads.send_modify(|reads| *reads += 1);
+            drop(self.opened.wait_while(open, |open| !*open).unwrap());
+        });
+    }
+    /// Waits until the registry read the held source after `since`: every
+    /// earlier source change was announced, and none of them is applied yet.
+    async fn reached(&self, since: u64) {
+        let mut reads = self.reads.subscribe();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while *reads.borrow_and_update() <= since {
+                reads.changed().await.expect("the gate outlives the read");
+            }
+        })
+        .await
+        .expect("the registry never read the gated tool source");
+    }
+}
+
+struct GatedSource(Arc<AdoptionGate>);
+impl ToolProvider for GatedSource {
+    fn sets(&self) -> Vec<Arc<ToolSourceSet>> {
+        self.0.hold();
+        Vec::new()
+    }
+}
+
+/// Releases the gate it holds when it goes out of scope: a failed assertion
+/// must not leave a held read waiting for the runtime to shut down.
+struct ReleaseOnDrop(Arc<AdoptionGate>);
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+struct GatedSourcePlugin {
+    gate: Arc<AdoptionGate>,
+    registry: Key<ToolRegistry>,
+}
+impl GatedSourcePlugin {
+    fn new(names: &Names<'_>, gate: Arc<AdoptionGate>) -> rutis::Result<Self> {
+        Ok(Self {
+            gate,
+            registry: names.key()?,
+        })
+    }
+}
+impl DynPlugin for GatedSourcePlugin {
+    fn name(&self) -> &str {
+        "test.adoption-gate"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.registry.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        let gate = self.gate.clone();
+        Box::pin(async move {
+            let registry = ctx.require_at(&self.registry)?;
+            registry.register_source(ctx, "gate", Arc::new(GatedSource(gate)))?;
+            Ok(Effect::Done)
+        })
     }
 }
 
@@ -145,13 +361,22 @@ async fn create_web(client: &mut Client, preset: &str, interactive: bool) -> Str
         )
         .await;
     assert_ok(&created);
-    created["result"]["sessionId"].as_str().unwrap().to_owned()
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":id,"branchId":"main",
+            "providerId":"018ec73f-0000-7000-8000-000000000011","modelId":"fixture"}),
+            )
+            .await,
+    );
+    id
 }
 
 async fn result(session: &dim_agent_runtime::Session) -> ToolResult {
-    chain_events(session, "main", ..)
-        .await
-        .unwrap()
+    let events = chain_events(session, "main", ..).await.unwrap();
+    events
         .iter()
         .rev()
         .find_map(|event| {
@@ -161,7 +386,23 @@ async fn result(session: &dim_agent_runtime::Session) -> ToolResult {
                 None
             }
         })
-        .expect("tool result")
+        .unwrap_or_else(|| {
+            let outcome = events.iter().rev().find_map(|event| match &event.kind {
+                EventKind::TurnEnd(data) => Some(format!("{:?}", data.outcome)),
+                _ => None,
+            });
+            let text = events.iter().rev().find_map(|event| match &event.kind {
+                EventKind::Text(data) => Some(data.delta.clone()),
+                _ => None,
+            });
+            panic!(
+                "tool result; keys {:?}; last turn {outcome:?}; last text {text:?}",
+                events
+                    .iter()
+                    .map(|event| event.kind.key())
+                    .collect::<Vec<_>>()
+            )
+        })
 }
 
 fn text(result: &ToolResult) -> &str {
@@ -189,6 +430,1097 @@ async fn idle(client: &mut Client, id: &str) {
             .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
             .await,
     );
+}
+
+async fn say(client: &mut Client, id: &str, text: &str) {
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":id,"branchId":"main","text":text}),
+            )
+            .await,
+    );
+    idle(client, id).await;
+}
+
+async fn create_with_tools(client: &mut Client, tools: Option<Value>) -> String {
+    let mut params = json!({"cwd":std::env::temp_dir(),"interactive":false,
+        "permissionPolicy":{"preset":"full-access","allowedTools":[],"disallowedTools":[]}});
+    if let Some(tools) = tools {
+        params["tools"] = tools;
+    }
+    let created = client.rpc("session.create", params.clone()).await;
+    assert!(
+        created.get("error").is_none(),
+        "session.create {params} -> {created}"
+    );
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":id,"branchId":"main",
+            "providerId":"018ec73f-0000-7000-8000-000000000011","modelId":"fixture"}),
+            )
+            .await,
+    );
+    id
+}
+
+/// Waits for the branch's adopted tool part to state whether `web_search` is
+/// declared. Adoption runs in its own task; yielding lets it finish, so the
+/// test never depends on a sleep.
+async fn await_search_declared(session: &dim_agent_runtime::Session, present: bool) {
+    use dim_agent_capabilities::tool_registry::ToolSourcesView;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let declared = chain_events(session, "main", ..)
+            .await
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                EventKind::ContextConfigured(data) => Some(
+                    data.settings
+                        .tools
+                        .as_ref()
+                        .map(|tools| tools.iter().any(|tool| tool.name == "web_search")),
+                ),
+                _ => None,
+            });
+        if declared == Some(Some(present)) {
+            return;
+        }
+        let sources = session
+            .session_service::<ToolSourcesView>()
+            .map(|view| view.get());
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "web_search declaration did not become {present}: {declared:?}; sources {sources:?}"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// The newest turn's outcome on the main branch.
+async fn last_turn_outcome(session: &dim_agent_runtime::Session) -> Option<String> {
+    chain_events(session, "main", ..)
+        .await
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::TurnEnd(data) => Some(format!("{:?}", data.outcome)),
+            _ => None,
+        })
+}
+
+/// Every committed tool result on the main branch, oldest first.
+async fn tool_results(session: &dim_agent_runtime::Session) -> Vec<ToolResult> {
+    chain_events(session, "main", ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ToolResult(batch) => batch.results.first().map(|entry| entry.result.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Waits for the result after `before` committed results.
+async fn next_tool_result(session: &dim_agent_runtime::Session, before: usize) -> ToolResult {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let results = tool_results(session).await;
+        if let Some(result) = results.get(before) {
+            return result.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "tool result did not arrive; {} committed",
+            results.len()
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// A text turn: its first request's declarations, once the turn and any later
+/// request are drained.
+async fn text_turn(
+    client: &mut Client,
+    id: &str,
+    requests: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<String>>,
+    text: &str,
+) -> Vec<String> {
+    say(client, id, text).await;
+    let names = requests.recv().await.unwrap();
+    idle(client, id).await;
+    while requests.try_recv().is_ok() {}
+    names
+}
+
+/// A tool turn: its first request's declarations and its result.
+async fn tool_turn(
+    client: &mut Client,
+    session: &dim_agent_runtime::Session,
+    id: &str,
+    requests: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<String>>,
+    name: &str,
+    arguments: Value,
+) -> (Vec<String>, ToolResult) {
+    let before = tool_results(session).await.len();
+    submit(client, id, name, arguments).await;
+    let names = requests.recv().await.unwrap();
+    let result = next_tool_result(session, before).await;
+    idle(client, id).await;
+    while requests.try_recv().is_ok() {}
+    (names, result)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_search_is_declared_only_while_a_search_service_is_usable() {
+    disable_system_proxy();
+    let (base, stop, http) = brave_fixture().await;
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dws-{}", uuid::Uuid::new_v4()));
+    let signed_in = watch::Sender::new(Some(false));
+    let transition = signed_in.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reads_row = reads.clone();
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("rust")),
+        managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+            let (signed_in, reads) = (signed_in.clone(), reads_row.clone());
+            builtins
+                .builtins
+                .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                    Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone()))
+                });
+            "SearchProviderFixture".to_owned()
+        }))),
+        ..Default::default()
+    };
+    let (server, mut requests, _) = super::session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000011","displayName":"Fixture","connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1","auth":{"type":"anonymous"}},"models":[{"modelId":"fixture","displayName":"fixture","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}],"enabled":true})).await);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":"018ec73f-0000-7000-8000-000000000011","modelId":"fixture"}),
+            )
+            .await,
+    );
+    let id = create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+
+    let names = text_turn(&mut client, &id, &mut requests, "hello").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert!(names.iter().any(|name| name == "web_fetch"), "{names:?}");
+
+    configure(
+        &mut client,
+        json!({"searchService":{"kind":"brave","endpoint":format!("{base}/search"),"apiKey":"fixture-web-key"}}),
+    )
+    .await;
+    await_search_declared(&session, true).await;
+    let (names, searched) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"configured"}),
+    )
+    .await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_ne!(searched.is_error, Some(true), "{searched:?}");
+    assert!(text(&searched).contains("https://example.com/"));
+
+    configure(&mut client, json!({})).await;
+    await_search_declared(&session, false).await;
+    let names = text_turn(&mut client, &id, &mut requests, "after removal").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    transition.send_replace(Some(true));
+    await_search_declared(&session, true).await;
+    let (names, managed) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"managed"}),
+    )
+    .await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_ne!(managed.is_error, Some(true), "{managed:?}");
+    assert!(text(&managed).contains("https://managed.example.com/hit"));
+
+    transition.send_replace(Some(false));
+    await_search_declared(&session, false).await;
+    let names = text_turn(&mut client, &id, &mut requests, "after logout").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    transition.send_replace(Some(true));
+    await_search_declared(&session, true).await;
+    let (_, failed) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"fail"}),
+    )
+    .await;
+    assert_eq!(failed.is_error, Some(true));
+    assert!(text(&failed).contains("search_failed"), "{failed:?}");
+    let names = text_turn(&mut client, &id, &mut requests, "after a failure").await;
+    assert!(
+        names.iter().any(|name| name == "web_search"),
+        "a call-time failure keeps the declaration: {names:?}"
+    );
+
+    let narrow = create_with_tools(&mut client, Some(json!(["web_fetch"]))).await;
+    let names = text_turn(&mut client, &narrow, &mut requests, "narrow").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert!(names.iter().any(|name| name == "web_fetch"), "{names:?}");
+
+    stop.cancel();
+    http.await.unwrap();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A Brave-compatible search endpoint, its base URL, and the stop that ends
+/// it.
+async fn brave_fixture() -> (String, CancellationToken, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let stop = CancellationToken::new();
+    let stopping = stop.clone();
+    let http = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = stopping.cancelled() => return,
+                accepted = listener.accept() => {
+                    let (mut socket, _) = accepted.unwrap();
+                    tokio::spawn(async move {
+                        let mut header = Vec::new();
+                        let mut chunk = [0; 4096];
+                        while !header.windows(4).any(|part| part == b"\r\n\r\n") {
+                            let n = socket.read(&mut chunk).await.unwrap();
+                            if n == 0 { return; }
+                            header.extend_from_slice(&chunk[..n]);
+                        }
+                        let body = r#"{"type":"search","web":{"results":[{"title":"fixture","url":"https://example.com/","description":"snippet"}]}}"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        socket.write_all(response.as_bytes()).await.unwrap();
+                    });
+                }
+            }
+        }
+    });
+    (base, stop, http)
+}
+
+/// A fixture model provider selected for the process and a Session that mounts
+/// both Web tools.
+async fn provider_ready(client: &mut Client) {
+    assert_ok(&client.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000011","displayName":"Fixture","connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1","auth":{"type":"anonymous"}},"models":[{"modelId":"fixture","displayName":"fixture","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}],"enabled":true})).await);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":"018ec73f-0000-7000-8000-000000000011","modelId":"fixture"}),
+            )
+            .await,
+    );
+}
+async fn provider_session(client: &mut Client) -> String {
+    provider_ready(client).await;
+    create_with_tools(client, Some(json!(["web_search", "web_fetch"]))).await
+}
+
+/// Adding a service changes the declaration at the request the branch adopts
+/// it for: a request bound before that adoption does not see `web_search`, and
+/// the next one declares it and calls it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_search_is_declared_at_the_next_request_after_the_added_service_is_adopted() {
+    disable_system_proxy();
+    let (base, stop, http) = brave_fixture().await;
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwa-{}", uuid::Uuid::new_v4()));
+    let gate = Arc::new(AdoptionGate::default());
+    let install = gate.clone();
+    let (server, mut requests, _) = super::session_typescript::start_with(
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            ..Default::default()
+        },
+        move |builder| {
+            builder.require_feature(
+                Feature::new("test.adoption-gate").session("test.adoption-gate", move |names| {
+                    Ok(Box::new(GatedSourcePlugin::new(names, install.clone())?))
+                }),
+            );
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = provider_session(&mut client).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    let names = text_turn(&mut client, &id, &mut requests, "hello").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    // The request after the first adopted source change carries a tool part;
+    // from then on a declaration follows the branch's adoption, not a read of
+    // the registry, which is what the gate below holds.
+    configure(
+        &mut client,
+        json!({"searchService":{"kind":"brave","endpoint":format!("{base}/search"),"apiKey":"fixture-web-key"}}),
+    )
+    .await;
+    await_search_declared(&session, true).await;
+    configure(&mut client, json!({})).await;
+    await_search_declared(&session, false).await;
+
+    let since = gate.arm();
+    let _released = ReleaseOnDrop(gate.clone());
+    configure(
+        &mut client,
+        json!({"searchService":{"kind":"brave","endpoint":format!("{base}/search"),"apiKey":"fixture-web-key"}}),
+    )
+    .await;
+    gate.reached(since).await;
+    let names = text_turn(&mut client, &id, &mut requests, "before the adoption").await;
+    assert!(
+        !names.iter().any(|name| name == "web_search"),
+        "a request bound before the adoption must not see the added service: {names:?}"
+    );
+
+    gate.release();
+    await_search_declared(&session, true).await;
+    let (names, searched) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"configured"}),
+    )
+    .await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_ne!(searched.is_error, Some(true), "{searched:?}");
+    assert!(text(&searched).contains("https://example.com/"));
+
+    stop.cancel();
+    http.await.unwrap();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Removing a service changes the declaration at the request the branch adopts
+/// it for: a request bound before that adoption still declares `web_search`,
+/// its call finds no service, and the next request does not declare it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_search_stays_declared_with_a_failing_call_until_the_removed_service_is_adopted() {
+    disable_system_proxy();
+    let (base, stop, http) = brave_fixture().await;
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwr-{}", uuid::Uuid::new_v4()));
+    let gate = Arc::new(AdoptionGate::default());
+    let install = gate.clone();
+    let signed_in = watch::Sender::new(Some(false));
+    let transition = signed_in.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reads_row = reads.clone();
+    let (server, mut requests, _) = super::session_typescript::start_with(
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let (signed_in, reads) = (signed_in.clone(), reads_row.clone());
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                        Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone()))
+                    });
+                "SearchProviderFixture".to_owned()
+            }))),
+            ..Default::default()
+        },
+        move |builder| {
+            builder.require_feature(
+                Feature::new("test.adoption-gate").session("test.adoption-gate", move |names| {
+                    Ok(Box::new(GatedSourcePlugin::new(names, install.clone())?))
+                }),
+            );
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = provider_session(&mut client).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    configure(
+        &mut client,
+        json!({"searchService":{"kind":"brave","endpoint":format!("{base}/search"),"apiKey":"fixture-web-key"}}),
+    )
+    .await;
+    await_search_declared(&session, true).await;
+    let (names, searched) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"configured"}),
+    )
+    .await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_ne!(searched.is_error, Some(true), "{searched:?}");
+
+    let since = gate.arm();
+    let _released = ReleaseOnDrop(gate.clone());
+    configure(&mut client, json!({})).await;
+    gate.reached(since).await;
+    let (names, removed) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"after the removal"}),
+    )
+    .await;
+    assert!(
+        names.iter().any(|name| name == "web_search"),
+        "a request bound before the adoption keeps the declaration: {names:?}"
+    );
+    assert_eq!(removed.is_error, Some(true), "{removed:?}");
+    assert!(
+        text(&removed).contains("search_unavailable"),
+        "a bound request's call must report the missing service: {removed:?}"
+    );
+
+    gate.release();
+    await_search_declared(&session, false).await;
+    let names = text_turn(&mut client, &id, &mut requests, "after the adoption").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    transition.send_replace(Some(true));
+    await_search_declared(&session, true).await;
+    let since = gate.arm();
+    transition.send_replace(Some(false));
+    gate.reached(since).await;
+    let (names, signed_out) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"after the sign-out"}),
+    )
+    .await;
+    assert!(
+        names.iter().any(|name| name == "web_search"),
+        "a request bound before the sign-out's adoption keeps the declaration: {names:?}"
+    );
+    assert!(
+        text(&signed_out).contains("search_unavailable"),
+        "a bound request's call must report the signed-out account: {signed_out:?}"
+    );
+
+    gate.release();
+    await_search_declared(&session, false).await;
+    let names = text_turn(
+        &mut client,
+        &id,
+        &mut requests,
+        "after the sign-out's adoption",
+    )
+    .await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    stop.cancel();
+    http.await.unwrap();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An account transition the provider reports by itself reaches an open
+/// Session's next request: nothing reads the account or a login attempt after
+/// the owner changes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_search_follows_an_owner_account_transition_without_an_account_read() {
+    disable_system_proxy();
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwt-{}", uuid::Uuid::new_v4()));
+    let signed_in = watch::Sender::new(Some(false));
+    let transition = signed_in.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reads_row = reads.clone();
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("rust")),
+        managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+            let (signed_in, reads) = (signed_in.clone(), reads_row.clone());
+            builtins
+                .builtins
+                .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                    Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone()))
+                });
+            "SearchProviderFixture".to_owned()
+        }))),
+        ..Default::default()
+    };
+    let (server, mut requests, _) = super::session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000011","displayName":"Fixture","connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1","auth":{"type":"anonymous"}},"models":[{"modelId":"fixture","displayName":"fixture","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}],"enabled":true})).await);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":"018ec73f-0000-7000-8000-000000000011","modelId":"fixture"}),
+            )
+            .await,
+    );
+    let id = create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    let names = text_turn(&mut client, &id, &mut requests, "hello").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert!(names.iter().any(|name| name == "web_fetch"), "{names:?}");
+
+    let observed = reads.load(Ordering::SeqCst);
+    transition.send_replace(Some(true));
+    await_search_declared(&session, true).await;
+    let (names, managed) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"managed"}),
+    )
+    .await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_ne!(managed.is_error, Some(true), "{managed:?}");
+    assert!(text(&managed).contains("https://managed.example.com/hit"));
+
+    transition.send_replace(Some(false));
+    await_search_declared(&session, false).await;
+    let names = text_turn(&mut client, &id, &mut requests, "after the sign-out").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        observed,
+        "an account transition must be published from the change, not read back"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Replacing the bound provider with one that already stores a signed-in
+/// account publishes that account at install: an open Session's next adopted
+/// request declares and calls `web_search`, with no account read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_search_is_declared_after_a_signed_in_binding_replaces_a_signed_out_one() {
+    disable_system_proxy();
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwv-{}", uuid::Uuid::new_v4()));
+    let signed_out = watch::Sender::new(Some(false));
+    let signed_in = watch::Sender::new(Some(true));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let slot = Arc::new(OnceLock::new());
+    let row = slot.clone();
+    let start = signed_out.clone();
+    let first_reads = reads.clone();
+    let (server, mut requests, _) = super::session_typescript::start_with(
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            ..Default::default()
+        },
+        move |builder| {
+            builder.plugin(move |_| {
+                Ok(Box::new(ProviderRow {
+                    slot: row.clone(),
+                    signed_in: start.clone(),
+                    reads: first_reads.clone(),
+                    fail: Arc::new(AtomicBool::new(false)),
+                }))
+            });
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = provider_session(&mut client).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    let names = text_turn(&mut client, &id, &mut requests, "hello").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "a watched provider answers without an account read"
+    );
+
+    let (ctx, provider, _binding) = slot.get().expect("the provider row was not installed");
+    provider.shutdown().await.unwrap();
+    ctx.plugin(SearchProviderPlugin::new(signed_in.clone(), reads.clone()));
+    await_search_declared(&session, true).await;
+
+    let (names, managed) = tool_turn(
+        &mut client,
+        &session,
+        &id,
+        &mut requests,
+        "web_search",
+        json!({"query":"managed"}),
+    )
+    .await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_ne!(managed.is_error, Some(true), "{managed:?}");
+    assert!(text(&managed).contains("https://managed.example.com/hit"));
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "installing the binding must publish its initialized account"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Replacing the bound provider with one that has not read its account yet
+/// withdraws the declaration the retired binding published, and only the new
+/// binding's own watch decides the declaration afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_search_is_withdrawn_when_a_replacement_binding_has_not_observed_its_account() {
+    disable_system_proxy();
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwx-{}", uuid::Uuid::new_v4()));
+    let signed_in = watch::Sender::new(Some(true));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let slot = Arc::new(OnceLock::new());
+    let row = slot.clone();
+    let start = signed_in.clone();
+    let first_reads = reads.clone();
+    let (server, mut requests, _) = super::session_typescript::start_with(
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            ..Default::default()
+        },
+        move |builder| {
+            builder.plugin(move |_| {
+                Ok(Box::new(ProviderRow {
+                    slot: row.clone(),
+                    signed_in: start.clone(),
+                    reads: first_reads.clone(),
+                    fail: Arc::new(AtomicBool::new(false)),
+                }))
+            });
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = provider_session(&mut client).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    let names = text_turn(&mut client, &id, &mut requests, "hello").await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    let (ctx, _provider, _binding) = slot.get().expect("the provider row was not installed");
+    signed_in.send_replace(None);
+    ctx.plugin(ManagedProviderBinding);
+
+    await_web_source(&session, false).await;
+    let names = text_turn(&mut client, &id, &mut requests, "after the replacement").await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    let second = create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    let second_session = server.agent().unwrap().get_session(&second).unwrap();
+    let names = text_turn(&mut client, &second, &mut requests, "another Session").await;
+    assert!(
+        !names.iter().any(|name| name == "web_search"),
+        "an unobserved binding must not inherit the retired one's account: {names:?}"
+    );
+
+    signed_in.send_replace(Some(true));
+    await_web_source(&session, true).await;
+    await_web_source(&second_session, true).await;
+    await_search_declared(&session, true).await;
+    await_search_declared(&second_session, true).await;
+    let names = text_turn(&mut client, &id, &mut requests, "the new binding signed in").await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    signed_in.send_replace(Some(false));
+    await_web_source(&session, false).await;
+    await_web_source(&second_session, false).await;
+    await_search_declared(&second_session, false).await;
+    let names = text_turn(
+        &mut client,
+        &second,
+        &mut requests,
+        "the new binding signed out",
+    )
+    .await;
+    assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A replacement binding whose first account observation fails still does not
+/// inherit the retired binding's signed-in state; its own watch alone decides
+/// the declaration afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_initial_account_observation_does_not_inherit_the_previous_binding() {
+    disable_system_proxy();
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwy-{}", uuid::Uuid::new_v4()));
+    let signed_in = watch::Sender::new(Some(true));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let slot = Arc::new(OnceLock::new());
+    let row = slot.clone();
+    let start = signed_in.clone();
+    let first_reads = reads.clone();
+    let (server, mut requests, _) = super::session_typescript::start_with(
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            ..Default::default()
+        },
+        move |builder| {
+            builder.plugin(move |_| {
+                Ok(Box::new(ProviderRow {
+                    slot: row.clone(),
+                    signed_in: start.clone(),
+                    reads: first_reads.clone(),
+                    fail: Arc::new(AtomicBool::new(true)),
+                }))
+            });
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = provider_session(&mut client).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    let names = text_turn(&mut client, &id, &mut requests, "hello").await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    let (ctx, _provider, _binding) = slot.get().expect("the provider row was not installed");
+    signed_in.send_replace(None);
+    ctx.plugin(ManagedProviderBinding);
+
+    await_web_source(&session, false).await;
+    let second = create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    let second_session = server.agent().unwrap().get_session(&second).unwrap();
+    let names = text_turn(
+        &mut client,
+        &second,
+        &mut requests,
+        "a failed first observation",
+    )
+    .await;
+    assert!(
+        !names.iter().any(|name| name == "web_search"),
+        "a failed observation must not inherit the retired account: {names:?}"
+    );
+
+    signed_in.send_replace(Some(true));
+    await_web_source(&session, true).await;
+    await_web_source(&second_session, true).await;
+    await_search_declared(&second_session, true).await;
+    let names = text_turn(
+        &mut client,
+        &second,
+        &mut requests,
+        "the binding published its state",
+    )
+    .await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An open Session that switches from an explicit adapter to the default
+/// managed search observes the account once, so a signed-in account keeps the
+/// declaration instead of being hidden until another Session reads it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn switching_an_open_session_to_managed_search_observes_the_account() {
+    disable_system_proxy();
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwz-{}", uuid::Uuid::new_v4()));
+    let signed_in = watch::Sender::new(Some(true));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fail = Arc::new(AtomicBool::new(false));
+    let signed_row = signed_in.clone();
+    let reads_row = reads.clone();
+    let fail_row = fail.clone();
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("rust")),
+        managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+            let (signed_in, reads, fail) =
+                (signed_row.clone(), reads_row.clone(), fail_row.clone());
+            builtins
+                .builtins
+                .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                    Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone())
+                        .observing(reads.clone())
+                        .with_failure(fail.clone()))
+                });
+            "SearchProviderFixture".to_owned()
+        }))),
+        ..Default::default()
+    };
+    let (server, mut requests, _) = super::session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    provider_ready(&mut client).await;
+    configure(
+        &mut client,
+        json!({"searchService":{"kind":"brave","endpoint":"http://127.0.0.1:1/search","apiKey":"scenario-eval"}}),
+    )
+    .await;
+    let id = create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    let names = text_turn(&mut client, &id, &mut requests, "the explicit adapter").await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "an explicit adapter answers without an account read"
+    );
+
+    configure(&mut client, json!({})).await;
+    await_reads(&reads, 1).await;
+    let names = text_turn(&mut client, &id, &mut requests, "the default service").await;
+    assert!(
+        names.iter().any(|name| name == "web_search"),
+        "switching to managed search must observe the signed-in account: {names:?}"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+async fn await_web_source(session: &dim_agent_runtime::Session, present: bool) {
+    use dim_agent_capabilities::tool_registry::ToolSourcesView;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let has = session
+                .session_service::<ToolSourcesView>()
+                .map(|view| view.get().0.contains_key("web"))
+                .unwrap_or(false);
+            if has == present {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the web source did not become {present}"));
+}
+
+async fn await_reads(reads: &AtomicUsize, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while reads.load(Ordering::SeqCst) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the account was not read");
+}
+
+/// A Session's assembly reads the account only when its declaration depends on
+/// it: a fetch-only Session and a Session with an explicit search adapter do
+/// not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_web_assembly_reads_the_account_only_when_managed_search_is_needed() {
+    disable_system_proxy();
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwm-{}", uuid::Uuid::new_v4()));
+    let signed_in = watch::Sender::new(Some(true));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fail = Arc::new(AtomicBool::new(false));
+    let signed_row = signed_in.clone();
+    let reads_row = reads.clone();
+    let fail_row = fail.clone();
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("rust")),
+        managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+            let (signed_in, reads, fail) =
+                (signed_row.clone(), reads_row.clone(), fail_row.clone());
+            builtins
+                .builtins
+                .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                    Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone())
+                        .observing(reads.clone())
+                        .with_failure(fail.clone()))
+                });
+            "SearchProviderFixture".to_owned()
+        }))),
+        ..Default::default()
+    };
+    let (server, _, _) = super::session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    provider_ready(&mut client).await;
+
+    create_with_tools(&mut client, Some(json!(["web_fetch"]))).await;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "a fetch-only Session must not read the account"
+    );
+
+    configure(
+        &mut client,
+        json!({"searchService":{"kind":"brave","endpoint":"http://127.0.0.1:1/search","apiKey":"scenario-eval"}}),
+    )
+    .await;
+    create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "an explicit adapter answers without an account read"
+    );
+
+    configure(&mut client, json!({})).await;
+    await_reads(&reads, 1).await;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "switching the open Session to the default service observes the account once"
+    );
+    create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    await_reads(&reads, 2).await;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        2,
+        "the default service reads the account once for the new Session"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A failed account read leaves the last observation: a second Session's
+/// transient failure must not withdraw an open Session's search.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_account_read_keeps_an_open_session_search_declared() {
+    disable_system_proxy();
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dwf-{}", uuid::Uuid::new_v4()));
+    let signed_in = watch::Sender::new(Some(true));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fail = Arc::new(AtomicBool::new(false));
+    let signed_row = signed_in.clone();
+    let reads_row = reads.clone();
+    let fail_row = fail.clone();
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("rust")),
+        managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+            let (signed_in, reads, fail) =
+                (signed_row.clone(), reads_row.clone(), fail_row.clone());
+            builtins
+                .builtins
+                .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                    Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone())
+                        .observing(reads.clone())
+                        .with_failure(fail.clone()))
+                });
+            "SearchProviderFixture".to_owned()
+        }))),
+        ..Default::default()
+    };
+    let (server, mut requests, _) = super::session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    provider_ready(&mut client).await;
+    let first = create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    let first_session = server.agent().unwrap().get_session(&first).unwrap();
+    let names = text_turn(&mut client, &first, &mut requests, "hello").await;
+    assert!(names.iter().any(|name| name == "web_search"), "{names:?}");
+
+    fail.store(true, Ordering::SeqCst);
+    create_with_tools(&mut client, Some(json!(["web_search", "web_fetch"]))).await;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        2,
+        "the second Session's initial account read failed"
+    );
+    let managed = server
+        .service::<dim_app_server::managed_provider::ManagedSearch>()
+        .unwrap();
+    assert!(
+        managed.usable(),
+        "a failed read must not withdraw the last account observation"
+    );
+
+    let (names, searched) = tool_turn(
+        &mut client,
+        &first_session,
+        &first,
+        &mut requests,
+        "web_search",
+        json!({"query":"managed"}),
+    )
+    .await;
+    assert!(
+        names.iter().any(|name| name == "web_search"),
+        "a failed read in another Session must not withdraw an open Session's search: {names:?}"
+    );
+    assert_ne!(searched.is_error, Some(true), "{searched:?}");
+    let names = text_turn(&mut client, &first, &mut requests, "after the failed read").await;
+    assert!(
+        names.iter().any(|name| name == "web_search"),
+        "the withdrawal must not reach later requests either: {names:?}"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -295,17 +1627,19 @@ async fn web_settings_permission_cancellation_and_restore() {
     let home = std::fs::canonicalize("/tmp")
         .unwrap()
         .join(format!("dw-{}", uuid::Uuid::new_v4()));
-    let signed_in = Arc::new(AtomicBool::new(false));
-    let signed_in_row = signed_in.clone();
+    let signed_in = watch::Sender::new(Some(false));
+    let transition = signed_in.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reads_row = reads.clone();
     let config = ServerConfig {
         product_home: Some(home.clone()),
         target_home: Some(home.join("rust")),
         managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
-            let flag = signed_in_row.clone();
+            let (signed_in, reads) = (signed_in.clone(), reads_row.clone());
             builtins
                 .builtins
                 .register::<Value, _, _>("SearchProviderFixture", move |_| {
-                    Ok(SearchProviderPlugin(flag.clone()))
+                    Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone()))
                 });
             "SearchProviderFixture".to_owned()
         }))),
@@ -342,8 +1676,16 @@ async fn web_settings_permission_cancellation_and_restore() {
             let session = server.agent().unwrap().get_session(&id).unwrap();
             submit(&mut client, &id, "web_search", json!({"query":"initial"})).await;
             idle(&mut client, &id).await;
-            assert!(text(&result(&session).await).contains("search_unavailable"));
-            signed_in.store(true, Ordering::SeqCst);
+            let initial = last_turn_outcome(&session).await;
+            assert!(
+                initial
+                    .as_deref()
+                    .is_some_and(|outcome| outcome
+                        .contains("Tool was not offered in this request: web_search")),
+                "{initial:?}"
+            );
+            transition.send_replace(Some(true));
+            await_search_declared(&session, true).await;
             submit(
                 &mut client,
                 &id,
@@ -412,12 +1754,20 @@ async fn web_settings_permission_cancellation_and_restore() {
                     .unwrap()
                     .contains("fixture-web-key")
             );
-            signed_in.store(false, Ordering::SeqCst);
+            transition.send_replace(Some(false));
             configure(&mut client, json!({"allowPrivateHosts":["127.0.0.1"]})).await;
+            await_search_declared(&session, false).await;
             let before = requests.load(Ordering::SeqCst);
             submit(&mut client, &id, "web_search", json!({"query":"removed"})).await;
             idle(&mut client, &id).await;
-            assert!(text(&result(&session).await).contains("search_unavailable"));
+            let removed = last_turn_outcome(&session).await;
+            assert!(
+                removed
+                    .as_deref()
+                    .is_some_and(|outcome| outcome
+                        .contains("Tool was not offered in this request: web_search")),
+                "{removed:?}"
+            );
             assert_eq!(requests.load(Ordering::SeqCst), before);
 
             let denied = create_web(&mut client, "read-only", true).await;
@@ -949,6 +2299,7 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
         }),
     )
     .await;
+    await_search_declared(&session, true).await;
     submit(
         &mut client,
         &id,
@@ -1287,8 +2638,10 @@ async fn node_managed_search_matches_native_results_and_errors() {
     let home = std::fs::canonicalize("/tmp")
         .unwrap()
         .join(format!("dms-{}", uuid::Uuid::new_v4()));
-    let signed_in = Arc::new(AtomicBool::new(true));
-    let signed_in_row = signed_in.clone();
+    let signed_in = watch::Sender::new(Some(true));
+    let transition = signed_in.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reads_row = reads.clone();
     let mut parts = super::session_typescript::fixture();
     parts.rows = vec![json!({
         "id":"managed-search",
@@ -1300,11 +2653,11 @@ async fn node_managed_search_matches_native_results_and_errors() {
         target_home: Some(home.join("rust")),
         session_typescript: Some(parts),
         managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
-            let flag = signed_in_row.clone();
+            let (signed_in, reads) = (signed_in.clone(), reads_row.clone());
             builtins
                 .builtins
                 .register::<Value, _, _>("SearchProviderFixture", move |_| {
-                    Ok(SearchProviderPlugin(flag.clone()))
+                    Ok(SearchProviderPlugin::new(signed_in.clone(), reads.clone()))
                 });
             "SearchProviderFixture".to_owned()
         }))),
@@ -1314,7 +2667,7 @@ async fn node_managed_search_matches_native_results_and_errors() {
     let mut client = Client::new_version(&server, false, 3).await;
     let search = server.service::<ManagedSearch>().unwrap();
     for (query, logged_in) in [("dim", true), ("fail", true), ("dim", false)] {
-        signed_in.store(logged_in, Ordering::SeqCst);
+        transition.send_replace(Some(logged_in));
         let request = WebSearchRequest {
             query: query.into(),
             count: 2,

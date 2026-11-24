@@ -17,8 +17,13 @@ fn branch() -> Value {
     json!({"sessionId":"session","branchId":"main"})
 }
 
+/// A resumed launch writes the explicit preset on the line its attach reply
+/// names, never on a line read from the directory before the attach: the
+/// directory and the reply are one round trip apart (design §14). A refused
+/// write ends the launch before the startup `--model` is adopted on any line
+/// and before any turn runs.
 #[test]
-fn tui_resume_requires_the_explicit_permission_before_attaching() {
+fn tui_resume_writes_the_explicit_permission_on_the_attached_line() {
     for fullscreen in [false, true] {
         for leaf in [false, true] {
             for failure in ["unsupported", "read", "update"] {
@@ -32,30 +37,88 @@ fn tui_resume_requires_the_explicit_permission_before_attaching() {
                         methods.extend(PRESET_METHODS);
                     }
                     wire.hello(&methods);
-                    if failure != "unsupported" {
-                        let get = wire.read("session.permission.get");
-                        assert_eq!(get["params"], branch());
-                        if failure == "read" {
-                            fail(wire, &get, "service_reloading");
-                        } else {
-                            wire.reply(
-                                &get,
-                                json!({"version":7,"policy":policy("full-access", &["fixture-tool"], &["blocked"])}),
-                            );
-                            let update = wire.read("session.permission.update");
-                            assert_eq!(
-                                update["params"],
-                                json!({"sessionId":"session","branchId":"main","expectedVersion":7,
-                                    "policy":policy("read-only", &["fixture-tool"], &["blocked"])})
-                            );
-                            fail(wire, &update, "permission_failed");
+                    if failure == "unsupported" {
+                        assert_eq!(
+                            wire.trailing_request(),
+                            None,
+                            "a daemon without the preset methods ends the launch before it attaches"
+                        );
+                        return;
+                    }
+                    wire.2 = true;
+                    let attach = wire.read_any();
+                    assert_eq!(
+                        attach["method"],
+                        json!("session.attach"),
+                        "the launch attaches before it adopts --model or writes the preset's line"
+                    );
+                    let mut record = attach_record(&attach);
+                    record["defaultBranch"] = json!({"branchId":"line-1","sequence":5});
+                    wire.reply(&attach, record);
+                    // The attach's own read of the line comes first; the write
+                    // the launch asked for reads it again.
+                    let mut reads = 0;
+                    loop {
+                        let request = wire.read_any();
+                        match request["method"].as_str().unwrap_or_default() {
+                            "session.history" => wire.reply(
+                                &request,
+                                json!({"events":[],"through":5,"nextAfter":5,"done":true}),
+                            ),
+                            "session.permission.get" => {
+                                assert_eq!(
+                                    request["params"],
+                                    json!({"sessionId":"session","branchId":"line-1"}),
+                                    "the preset is written on the attach reply's line"
+                                );
+                                reads += 1;
+                                if failure == "read" && reads == 2 {
+                                    fail(wire, &request, "service_reloading");
+                                    break;
+                                }
+                                wire.reply(
+                                    &request,
+                                    json!({"version":7,"policy":policy("full-access", &["fixture-tool"], &["blocked"])}),
+                                );
+                            }
+                            "session.permission.update" => {
+                                assert_eq!(
+                                    request["params"],
+                                    json!({"sessionId":"session","branchId":"line-1","expectedVersion":7,
+                                        "policy":policy("read-only", &["fixture-tool"], &["blocked"])})
+                                );
+                                fail(wire, &request, "permission_failed");
+                                break;
+                            }
+                            "session.model.update" => panic!(
+                                "a refused preset must not adopt the startup model on any line: {request}"
+                            ),
+                            "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                                "code":-32601,"message":"Unknown method: session.context.usage",
+                                "data":{"appError":"unknown_method"}}})),
+                            "ui.open" => {
+                                wire.reply(&request, json!({"uiId":"ui-1","token":"token-1"}))
+                            }
+                            "account.providers" => wire.reply(&request, json!([])),
+                            "provider.list" => wire.reply(&request, json!({"providers":[]})),
+                            other => panic!("unexpected {other}: {request}"),
                         }
                     }
-                    assert_eq!(
-                        wire.trailing_request(),
-                        None,
-                        "a refused explicit permission must not adopt, attach, open a UI or submit"
-                    );
+                    // The refused write ends the launch: no model is adopted
+                    // and no turn runs.
+                    while let Some(line) = wire.trailing_request() {
+                        let request: Value = serde_json::from_str(&line).unwrap();
+                        assert_ne!(
+                            request["method"],
+                            json!("session.model.update"),
+                            "a refused preset must not adopt the startup model on any line"
+                        );
+                        assert_ne!(
+                            request["method"],
+                            json!("session.submit"),
+                            "a refused explicit permission must not submit"
+                        );
+                    }
                 });
                 let mut command = home.command();
                 command.args(["--permission", "read-only", "--model", "replacement"]);
@@ -77,6 +140,67 @@ fn tui_resume_requires_the_explicit_permission_before_attaching() {
     }
 }
 
+/// A resumed launch registers its leaf only once the launch preset is in
+/// force: another client cannot see the interface online, or address it for
+/// approvals, while the resumed line still carries its old policy
+/// (design §14).
+#[test]
+fn tui_resume_registers_its_leaf_after_the_launch_preset_is_applied() {
+    let home = Home::new();
+    let (opened, open_seen) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[
+            "ui.leaf.2",
+            "session.permission.get",
+            "session.permission.update",
+        ]);
+        wire.2 = true;
+        let attach = wire.read_any();
+        assert_eq!(attach["method"], json!("session.attach"));
+        let mut record = attach_record(&attach);
+        record["defaultBranch"] = json!({"branchId":"line-1","sequence":5});
+        wire.reply(&attach, record);
+        let update = loop {
+            let request = wire.read_any();
+            match request["method"].as_str().unwrap_or_default() {
+                "session.history" => wire.reply(
+                    &request,
+                    json!({"events":[],"through":5,"nextAfter":5,"done":true}),
+                ),
+                "session.permission.get" => wire.reply(
+                    &request,
+                    json!({"version":7,"policy":policy("full-access", &[], &[])}),
+                ),
+                "session.permission.update" => break request,
+                "ui.open" => {
+                    panic!("the leaf registers before the launch preset is applied: {request}")
+                }
+                "account.providers" => wire.reply(&request, json!([])),
+                "provider.list" => wire.reply(&request, json!({"providers":[]})),
+                "session.context.usage" => {
+                    wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                    "code":-32601,"message":"Unknown method: session.context.usage",
+                    "data":{"appError":"unknown_method"}}}))
+                }
+                other => panic!("unexpected {other}: {request}"),
+            }
+        };
+        assert_eq!(update["params"]["policy"]["preset"], json!("read-only"));
+        wire.reply(&update, json!({"version":8}));
+        let open = wire.read("ui.open");
+        wire.reply(&open, json!({"uiId":"ui-1","token":"token-1"}));
+        opened.send(()).unwrap();
+    });
+    let mut command = home.command();
+    command.args(["--permission", "read-only"]);
+    sized(&mut command, 100, 32);
+    let mut terminal = Terminal::resume_tui(command);
+    open_seen.recv_timeout(PATIENCE).unwrap();
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
 /// One submitted turn that completes without tool calls.
 fn quiet_turn(wire: &mut Wire) {
     let submit = wire.read("session.submit");
@@ -94,9 +218,7 @@ fn line_permission_controls_keep_tool_lists_report_conflicts_and_reject_unknown_
         wire.hello(&PRESET_METHODS);
         wire.created();
         let mut current = policy("read-only", &["read"], &["blocked"]);
-        let read = wire.read("session.permission.get");
-        wire.reply(&read, json!({"version":1,"policy":current}));
-        wire.attached();
+        wire.attached_with_policy(json!({"version":1,"policy":current}));
         let read = wire.read("session.permission.get");
         wire.reply(&read, json!({"version":1,"policy":current}));
         let write = wire.read("session.permission.update");
@@ -129,7 +251,7 @@ fn line_permission_controls_keep_tool_lists_report_conflicts_and_reject_unknown_
     terminal.until("Run the command again to switch.");
     terminal.until("\n> ");
     terminal.write(b"/permissions workspace-write\n");
-    terminal.until("Preset (main branch): workspace-write");
+    terminal.until("Preset: workspace-write");
     terminal.until("\n> ");
     terminal.write(b"/permissions\n");
     terminal.until("permission: workspace-write");
@@ -351,6 +473,10 @@ fn permission_flag_selects_the_new_and_resumed_preset_with_version_checks() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         wire.hello(&PRESET_METHODS);
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["defaultBranch"] = json!({"branchId":"main","sequence":8});
+        wire.reply(&attach, record);
         let get = wire.read("session.permission.get");
         assert_eq!(get["params"], branch());
         wire.reply(
@@ -378,7 +504,7 @@ fn permission_flag_selects_the_new_and_resumed_preset_with_version_checks() {
             &update,
             json!({"version":9,"policy":current}),
         );
-        wire.attached();
+        wire.resumed_on("main", 8);
         quiet_turn(wire);
     });
     let output = home
@@ -402,15 +528,37 @@ fn permission_flag_selects_the_new_and_resumed_preset_with_version_checks() {
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("permission: full-access"));
 
+    // The resumed preset lands on the line the attach reply names, not on the
+    // line a directory read reported before it (design §14).
     let home = Home::new();
     let daemon = home.daemon(|wire| {
-        wire.hello(&PRESET_METHODS);
+        wire.hello(&[
+            "session.branches",
+            PRESET_METHODS[0],
+            PRESET_METHODS[1],
+        ]);
+        let branches = wire.read("session.branches");
+        wire.reply(
+            &branches,
+            json!({"defaultBranchId":"main","branches":[
+                {"branchId":"main","state":"open","head":8},
+                {"branchId":"line-1","parentBranchId":"main","branchPoint":1,"state":"open","head":5}]}),
+        );
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["defaultBranch"] = json!({"branchId":"line-1","sequence":5});
+        wire.reply(&attach, record);
         let get = wire.read("session.permission.get");
+        assert_eq!(
+            get["params"],
+            json!({"sessionId":"session","branchId":"line-1"}),
+            "the write follows the attach reply's line, not the directory's"
+        );
         wire.reply(
             &get,
             json!({"version":2,"policy":policy("read-only", &[], &[])}),
         );
-        wire.attached();
+        wire.resumed_on("line-1", 5);
         quiet_turn(wire);
     });
     let output = home
@@ -573,12 +721,9 @@ fn interactive_approvals_list_switch_and_edit_rules_with_version_checks() {
         methods.extend(RULE_METHODS);
         wire.hello(&methods);
         wire.created();
-        let get = wire.read("session.permission.get");
-        wire.reply(
-            &get,
+        wire.attached_with_policy(
             json!({"version":0,"policy":policy("workspace-write", &[], &["blocked-tool"])}),
         );
-        wire.attached();
         let state = |wire: &mut Wire, version: u64, preset: &str| {
             let get = wire.read("session.permission.get");
             assert_eq!(get["params"], branch());
@@ -700,20 +845,20 @@ fn interactive_approvals_list_switch_and_edit_rules_with_version_checks() {
     terminal.until("Usage: /permissions");
     terminal.until("\n> ");
     terminal.write(b"/approvals full-access\n");
-    terminal.until("Switch the main branch to full-access? [y/N] ");
+    terminal.until("Switch to full-access? [y/N] ");
     terminal.write(b"\n");
     terminal.until("Preset unchanged: workspace-write");
     terminal.until("\n> ");
     terminal.write(b"/approvals full-access\n");
-    terminal.until("Switch the main branch to full-access? [y/N] ");
+    terminal.until("Switch to full-access? [y/N] ");
     terminal.write(b"y\n");
     terminal.until("The preset changed elsewhere and is now read-only; nothing was changed.");
     terminal.until("\n> ");
     terminal.write(b"/approvals read-only\n");
-    terminal.until("Preset (main branch) is already read-only");
+    terminal.until("Preset is already read-only");
     terminal.until("\n> ");
     terminal.write(b"/permissions workspace-write\n");
-    terminal.until("Preset (main branch): workspace-write. Child branches and members created later from main inherit it; existing branches and members keep their policies.");
+    terminal.until("Preset: workspace-write. Lines and members created later from this line inherit it; existing lines and members keep their policies.");
     terminal.until("\n> ");
     terminal.write(b"/approvals remove 1\n");
     terminal.until("Rule removed: allow exact `cargo test`");
@@ -766,7 +911,7 @@ fn interactive_approvals_list_switch_and_edit_rules_with_version_checks() {
     terminal.until("Error: Usage: /permissions");
     terminal.until("\n> ");
     terminal.write(b"after\n");
-    terminal.until("[permission] main branch preset: full-access");
+    terminal.until("[permission] preset: full-access");
     terminal.until("\n> ");
     terminal.write(b"/exit\n");
     assert!(terminal.wait().success());
@@ -774,7 +919,7 @@ fn interactive_approvals_list_switch_and_edit_rules_with_version_checks() {
     assert!(
         !terminal
             .transcript
-            .contains("[permission] main branch preset: workspace-write"),
+            .contains("[permission] preset: workspace-write"),
         "{}",
         terminal.transcript
     );
@@ -1050,7 +1195,7 @@ fn real_daemon_always_allow_saves_an_exact_rule_until_approvals_removes_it() {
     terminal.until("Rule removed: allow exact `printf always-ran`");
     terminal.editor();
     terminal.write(b"/approvals read-only\n");
-    terminal.until("Preset (main branch): read-only.");
+    terminal.until("Preset: read-only.");
     terminal.editor();
     let mark = terminal.transcript.len();
     terminal.write(b"exec: printf always-ran\n");
@@ -1065,7 +1210,7 @@ fn real_daemon_always_allow_saves_an_exact_rule_until_approvals_removes_it() {
     terminal.until("permission: read-only");
     terminal.editor();
     terminal.write(b"/permissions full-access\n");
-    terminal.until("Switch the main branch to full-access? [y/N] ");
+    terminal.until("Switch to full-access? [y/N] ");
     terminal.write(b"y\n");
     terminal.until("permission: full-access");
     terminal.editor();
@@ -1079,7 +1224,7 @@ fn real_daemon_always_allow_saves_an_exact_rule_until_approvals_removes_it() {
         terminal.transcript
     );
     terminal.write(b"/permissions workspace-write\n");
-    terminal.until("Preset (main branch): workspace-write");
+    terminal.until("Preset: workspace-write");
     terminal.editor();
     let mark = terminal.transcript.len();
     terminal.write(b"exec: printf ask-ran\n");

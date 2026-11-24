@@ -53,7 +53,7 @@
 
 | 消费的事件 | 条件 | 动作 |
 | --- | --- | --- |
-| `turn/end` N | Goal 的 C1–C4 满足（目标 active、未中断、回合 `completed`、是最新的且未决定），裁判为 `evaluator`，且该回合包含干活模型的 `completed` 块 | 取代 Goal 的续跑决定：`treeCommands.create(B, N, {prompt, source: {kind: "host", operation_id: "goal:evaluate:N"}}, cancelled)`。Goal 的 `decided` 把该 `branch/create` 算作 `N` 的决定（§3），所以重载不会再次创建 |
+| `turn/end` N | Goal 的 C1–C4 满足（目标 active、未中断、回合 `completed`、是最新的且未决定），裁判为 `evaluator`，当前执行存在一个未被后续目标变更取代、尚未为它发起评审的干活模型 `completed` 请求，且没有待消费的驱动输入 | 取代 Goal 的续跑决定：`treeCommands.create(B, N, {prompt, source: {kind: "host", operation_id: "goal:evaluate:N"}}, cancelled)`。Goal 的 `decided` 把该 `branch/create` 算作 `N` 的决定（§3），所以重载不会再次创建 |
 | `goal:evaluate:N` 的 `branch/create-failed`，或在 `N` 的任何 `branch/create` 提交之前 `create` 抛出 | `N` 仍是当前评审 | 暂停（`evaluation_failed`），与 Goal 的暂停一样标记 `after="N"`；两者中先写出暂停的一个使 `N` 对另一个而言已被取代。已提交的创建会记录自己的结果（子分支或 `branch/create-failed`），由那个事实决定；因任务被取消而抛出时不写任何东西 |
 | 评审 `N` 的结论输入 | 是 `N` 的第一份结论，来自 `goal:evaluate:N` 的 `branch/create` 所记录的分支，且 `N` 仍是当前评审：`N` 之后没有更新的变更：`set`、`edit`、`clear`、`pause` 或 `resume` 触发器、干活模型新的 `completed`，或旧历史中带 key 的块。Goal 为回答 `N` 自己回合内的变更而写的 `goal:state` 记录是那个变更的陈述，不是新的变更，因此不会让 `N` 过期；暂停目标的记录通过状态本身停止结论 | `done`：评审者判定的 `completed`。`blocked`：评审者判定的 `blocked`。`continue`：Goal 的续跑决定（[Goal A.4](Goal.md#a4-续跑决策) 的 C1、C5 和 C6；只有设置了 `maxContinuations` 时 C6 才生效；以及后台等待），然后写使用 Pursuit 文本的续跑，或暂停（`limit`）；与任何回合结束时一样，有待处理的驱动输入就不续跑（C5），有后台任务仍开放时也不决策：折叠保留该结论，关闭最后一个开放任务的 cancelled 结束会执行它。`failed`：暂停（`evaluation_failed`） |
 
@@ -76,7 +76,7 @@ Goal 从分支的第一条本地 Queue 输入识别这个角色（Prompt 在 `br
 
 ## 5. 上下文映射
 
-标记、转义和 key 沿用 Goal（[A.5](Goal.md#a5-模型可见文本)）。`N` 是请求所在回合的 `turn/end`，`B` 是工作分支，`E` 是评审分支。模型可见文本保持英文。
+标记、转义和 key 沿用 Goal（[A.5](Goal.md#a5-模型可见文本)）。`N` 是创建评审的 `turn/end`：通常就是请求所在回合，有驱动输入时则是消费完最后一条驱动输入的回合。驱动输入是执行尚未消费的 Queue 或 Steer 输入，例如用户 Queue 输入或回合收尾时生效的 Steer（如后台命令的唤醒）。连续排队时创建会一直推迟到队列排空，没有轮数上限。推迟的那一轮里模型没有再调 `goal_update` 时，`Reported result:` 仍是上一次报告的摘要。`B` 是工作分支，`E` 是评审分支。模型可见文本保持英文。
 
 | 写入 | 位置、key | 模式 | 文本 |
 | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ Goal 从分支的第一条本地 Queue 输入识别这个角色（Prompt 在 `br
 
 干活的模型和评审者都用假模型，放在 `crates/dim-goal/tests` 的流程测试中：
 
-1. 评审裁判：续跑是 Goal 的。干活的模型报告 `completed`；状态保持 `active`；该回合结束时在 `N` 处创建一个带 `goal:evaluate:N` 的评审分支，不写续跑。`DONE` 得到评审者判定的 `completed`。
+1. 评审裁判：续跑是 Goal 的。干活的模型报告 `completed`；状态保持 `active`；该回合结束时，如果没有待消费的驱动输入，就在 `N` 处创建一个带 `goal:evaluate:N` 的评审分支，不写续跑。`DONE` 得到评审者判定的 `completed`。
 2. 带两行清单的 `CONTINUE` 得到结论和一次续跑（在 `max(A, last_operator)` 之后的续跑上 `count` + 1；干活模型的请求和结论都不移动 `A`，也不重置计数，C5 与任何回合结束时一样适用）；`BLOCKED` 得到 `blocked`；达到显式设置的 `maxContinuations` 时 `CONTINUE` 得到暂停（`limit`）；评审续跑不读进度、不推进 Goal 的 C7 停滞数，因为评审者已经看着干活分支的完整回合做了判断。结论到达时仍有后台任务开放则不写续跑；结论保留在折叠中，关闭最后一个开放任务的 cancelled 结束会执行它一次（Goal A.4）。
 3. 干活模型的 `blocked`、上限暂停、用户中断和用户暂停都不创建评审分支。
 4. 没有结论的评审回复在评审分支上得到一次追问，之后的结论生效；如果第二次回复仍没有结论，截断到 4000 字符的整个回复作为 `continue` 写回（受 `maxContinuations` 约束的一次续跑），不再追问，重载后也一样。
@@ -134,6 +134,7 @@ Goal 从分支的第一条本地 Queue 输入识别这个角色（Prompt 在 `br
 8. 流式输出的结论能跨 `step/text` 记录重组，并忽略更早请求中的 `DONE:`。
 9. 模型裁判：Goal 的验收不变。
 10. 在工作分支上的 `set`、`edit`、`clear`、`pause`、`resume` 或干活模型新的 `completed` 之后到达的结论不做任何决定：`pause` 之后迟到的 `DONE` 让目标保持暂停。
+11. 报告回合结束时有待消费的驱动输入：该回合结束不创建评审，评审在消费完最后一条驱动输入的 `turn/end` 创建，请求不丢。用户 Queue 输入与回合收尾时生效的 Steer 都会让评审推迟；连续排队时推迟没有轮数上限，推迟的那一轮里没有再调 `goal_update` 时 `Reported result:` 仍是上一次报告的摘要。
 
 ## 10. 以后的选项
 

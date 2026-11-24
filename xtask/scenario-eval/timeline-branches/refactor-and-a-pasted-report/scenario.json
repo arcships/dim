@@ -1,0 +1,10 @@
+{
+  "description": "A refactor with golden files and a pasted traceback to triage; the two jobs are independent",
+  "message": "Two separate jobs in this project. First, move the CSV writing out of report/export.py into a new report/writer.py, and keep tests/test_export.py and the golden files passing. Second, triage this traceback from last night's run and write the cause and the fix in docs/incident-4471.md; the runbook that produced it is runbooks/nightly.py:\n\n```\nTraceback (most recent call last):\n  File \"runbooks/nightly.py\", line 25, in <module>\n    main()\n  File \"runbooks/nightly.py\", line 20, in main\n    report = build_report(rows)\n  File \"report/export.py\", line 10, in build_report\n    total += row[\"total\"]\nKeyError: 'total'\n```\n\nKeep the refactor to report/, tests/test_export.py and tests/golden/.",
+  "budget": {"turns": 30, "seconds": 900, "window": 131072},
+  "probes": [
+    {"id": "refactor-done", "kind": "must_show", "text": "the CSV writer is in report/writer.py and report/export.py no longer defines it, and the tests and golden files pass"},
+    {"id": "incident-cause-and-fix", "kind": "must_show", "text": "docs/incident-4471.md names the KeyError's cause and the fix"},
+    {"id": "no-cross-edits", "kind": "must_not_show", "text": "the refactor changes runbooks/nightly.py or docs/incident-4471.md, or the incident work changes report/export.py, report/writer.py, tests/test_export.py or tests/golden"}
+  ]
+}

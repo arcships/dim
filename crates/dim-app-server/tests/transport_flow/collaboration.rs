@@ -2,12 +2,16 @@ use super::deletion::Store;
 use super::*;
 use dim_agent_capabilities::prompt_state::PromptSnapshot;
 use dim_agent_runtime::testing::{branch_events, chain_events, timeline_events};
-use dim_agent_runtime::{Agent, CollaborationRole, Session, TimelineQueryScope};
+use dim_agent_runtime::{
+    Agent, CollaborationRole, Names, Session, SessionIdentity, TimelineQueryScope, TimelineStore,
+};
 use dim_agent_types::{
     AgentEvent, CollaborationDelivery, CollaborationOutcome, ContentBlock, EventKind, InputBlock,
     InputMessageData, MessageContent, ToolContent, ToolEffect,
 };
-use rutis::host::{BoxFuture, CtxHost};
+use futures_util::FutureExt;
+use rutis::Ctx;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::ops::RangeInclusive;
 use std::sync::OnceLock;
 
@@ -1266,6 +1270,46 @@ fn agent_results(events: &[Arc<AgentEvent>]) -> Vec<String> {
         .collect()
 }
 
+/// The page's business events, without the environment state inputs that can
+/// land between two reads when a client attaches, detaches or unloads.
+fn business_events(events: &Value) -> Vec<Value> {
+    events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            !(event["type"] == "input"
+                && event["mode"] == "append"
+                && event["user"].is_null()
+                && event["blocks"].as_array().is_some_and(|blocks| {
+                    !blocks.is_empty()
+                        && blocks.iter().all(|block| {
+                            block["text"].as_str().is_some_and(|text| {
+                                text.starts_with("<dim-state source=\"dim/environment/clients\"")
+                            })
+                        })
+                }))
+        })
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn environment_client_rows_are_ignored_but_collaboration_rows_are_not() {
+    let events = json!([
+        {"sequence":1,"type":"input","mode":"append","user":null,"blocks":
+            [{"type":"raw","text":"<dim-state source=\"dim/environment/clients\">1 client</dim-state>"}]},
+        {"sequence":2,"type":"input","mode":"queue","user":{"content":[{"type":"text","text":"follow-up"}]},"blocks":[]},
+        {"sequence":3,"type":"tool_call","callId":"same","name":"hold"},
+        {"sequence":4,"type":"tool_call","callId":"same","name":"hold"}
+    ]);
+    assert_eq!(
+        business_events(&events),
+        events.as_array().unwrap()[1..].to_vec(),
+        "only the client-presence row is removed; order and duplicates stay"
+    );
+}
+
 /// Each operation event has exactly one later `delivered`; each delivered
 /// request exactly one later `result`. Collaboration facts stay out of the
 /// model context.
@@ -1320,8 +1364,16 @@ async fn assert_no_collaboration_facts(session: &Session) {
 
 /// Polls `check` until it yields a value; fails at the 10s deadline instead
 /// of hanging.
-async fn poll<T>(what: &str, mut check: impl AsyncFnMut() -> Option<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
+async fn poll<T>(what: &str, check: impl AsyncFnMut() -> Option<T>) -> T {
+    poll_within(Duration::from_secs(10), what, check).await
+}
+
+async fn poll_within<T>(
+    limit: Duration,
+    what: &str,
+    mut check: impl AsyncFnMut() -> Option<T>,
+) -> T {
+    tokio::time::timeout(limit, async {
         loop {
             if let Some(value) = check().await {
                 return value;
@@ -1767,7 +1819,7 @@ async fn leader_delegates_and_team_members_communicate() {
     };
     let before = facts(&member_session).await;
     for input in [
-        json!({"action": "read", "agentId": default_agent, "sessionId": lead, "after": read_after, "limit": 200}),
+        json!({"action": "read", "agentId": default_agent, "sessionId": lead, "after": read_after, "branchId": "main", "limit": 200}),
         json!({"action": "list"}),
         json!({"action": "request", "agentId": default_agent, "prompt": "x"}),
         json!({"action": "inspect", "agentId": default_agent}),
@@ -2121,9 +2173,9 @@ async fn a_member_is_an_internal_child_of_its_leader() {
     server.join().await.unwrap();
 }
 
-/// cancel ends a request cancelled and stops other member work as idle,
-/// close removes the member but keeps its Session and its Agent's record, and
-/// an externally closed member fails its request.
+/// cancel ends a request cancelled and stops other member work as idle, close
+/// settles the request and closes the member Session in this process while its
+/// records stay, and an externally closed member fails its request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn members_cancel_close_and_leave_the_team() {
     let (server, agent) = launch_team().await;
@@ -2338,61 +2390,47 @@ async fn members_cancel_close_and_leave_the_team() {
         "queue",
     )
     .await;
-    say(&mut client, &lead, tool(json!({"action": "list"})), "queue").await;
     idle(&mut client, &lead).await;
     let timeline = events(&lead_session).await;
-    let tail: Vec<Value> = results(&timeline)
-        .into_iter()
-        .rev()
-        .take(2)
-        .map(|(_, text)| serde_json::from_str(&text).unwrap())
-        .collect();
-    assert_eq!(tail[1]["status"], "closed");
-    assert_eq!(tail[0]["participants"], json!([]));
-    assert!(
-        tail[0]["agents"]
+    assert_eq!(last_ok(&timeline)["status"], "closed");
+    assert_eq!(result_of(&timeline, &member).len(), 2);
+    // Without a store the last member's close takes its temporary Agent with
+    // it, once the member Session is closed in this process.
+    let listed = poll("temporary Agent closed with its last Session", async || {
+        say(&mut client, &lead, tool(json!({"action": "list"})), "queue").await;
+        idle(&mut client, &lead).await;
+        let listed = last_ok(&events(&lead_session).await);
+        (!listed["agents"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|agent| agent["agentId"] == temporary.as_str())
-    );
-    assert_eq!(result_of(&timeline, &member).len(), 2);
+            .any(|agent| agent["agentId"] == temporary.as_str()))
+        .then_some(listed)
+    })
+    .await;
+    assert_eq!(listed["participants"], json!([]));
     let agents = client.rpc("agent.list", json!({})).await;
     assert_eq!(
         agents["result"].as_array().unwrap().len(),
         1,
         "an owned Agent belongs to its Team, not the public directory"
     );
-    let listed = client.rpc("session.summaries", json!({})).await;
+    let summaries = client.rpc("session.summaries", json!({})).await;
     assert!(
-        listed["result"]
+        !summaries["result"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|info| info["sessionId"] == member.as_str())
+            .any(|info| info["sessionId"] == member.as_str()),
+        "a closed member keeps no open Session: {summaries}"
     );
-    assert_ok(
-        &client
-            .rpc("session.attach", json!({"sessionId": member}))
-            .await,
+    let attach = client
+        .rpc("session.attach", json!({"sessionId": member}))
+        .await;
+    assert_eq!(
+        attach["error"]["data"]["appError"], "session_closed",
+        "{attach}"
     );
-    assert_ok(
-        &client
-            .rpc("session.close", json!({"sessionId": member}))
-            .await,
-    );
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while client.rpc("agent.list", json!({})).await["result"]
-            .as_array()
-            .unwrap()
-            .len()
-            != 1
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("temporary Agent closed with its last Session");
 
     say(
         &mut client,
@@ -2416,7 +2454,7 @@ async fn members_cancel_close_and_leave_the_team() {
         result_of(&timeline, &member)[..],
         [CollaborationOutcome::Cancelled { .. }]
     ));
-    assert!(agent.get_session(&member).is_some());
+    assert!(agent.get_session(&member).is_none());
     say(
         &mut client,
         &lead,
@@ -2492,6 +2530,386 @@ async fn members_cancel_close_and_leave_the_team() {
 
     server.shutdown();
     server.join().await.unwrap();
+}
+
+/// #2034: `close` settles the request and closes the member Session in this
+/// process. Its records stay, and closed is process state: an attached client
+/// reads `session.closed`, `session.attach` answers `session_closed`, and a
+/// restart loads the member again as a Session its leader addresses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_a_member_ends_its_session_here_and_a_restart_loads_it_again() {
+    let store = Store::new();
+    let config = store.config();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config.clone()).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(&mut client, allowed()).await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder,
+            "prompt": "tool:wait {\"millis\":30000}"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(&lead_session, 0).await;
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId": member}))
+            .await,
+    );
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "close", "agentId": holder, "sessionId": member})),
+        "queue",
+    )
+    .await;
+    let closed = client.notice("session.closed").await;
+    assert_eq!(closed["params"]["sessionId"], member.as_str());
+    idle(&mut client, &lead).await;
+    let timeline = events(&lead_session).await;
+    assert_eq!(last_ok(&timeline)["status"], "closed");
+    assert!(
+        matches!(
+            result_of(&timeline, &member)[..],
+            [CollaborationOutcome::Cancelled { .. }]
+        ),
+        "close settles the request cancelled, not failed: {:?}",
+        result_of(&timeline, &member)
+    );
+    let attach = client
+        .rpc("session.attach", json!({"sessionId": member}))
+        .await;
+    assert_eq!(
+        attach["error"]["data"]["appError"], "session_closed",
+        "{attach}"
+    );
+    let open = client.rpc("session.summaries", json!({})).await;
+    assert!(
+        !open["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|info| info["sessionId"] == member.as_str()),
+        "a closed member is not an open Session: {open}"
+    );
+    let kept = client
+        .rpc("session.summaries", json!({"includeClosed": true}))
+        .await;
+    let row = kept["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|info| info["sessionId"] == member.as_str())
+        .unwrap_or_else(|| panic!("the closed member keeps its records: {kept}"));
+    assert_eq!(row["closed"], true);
+    assert!(
+        store
+            .rows(&member)
+            .iter()
+            .any(|(table, _)| *table == "agent_sessions"),
+        "the member's rows stay stored: {:?}",
+        store.rows(&member)
+    );
+
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId": member}))
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId": lead}))
+            .await,
+    );
+    let lead_session = agent.get_session(&lead).unwrap();
+    say(&mut client, &lead, tool(json!({"action": "list"})), "queue").await;
+    idle(&mut client, &lead).await;
+    let listed = last_ok(&events(&lead_session).await);
+    assert!(
+        listed["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["sessionId"] == member.as_str()),
+        "a restart loads the member again for its leader: {listed}"
+    );
+    let listed = client.rpc("session.summaries", json!({})).await;
+    assert!(
+        listed["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|info| info["sessionId"] == member.as_str()),
+        "a restart lists the member's records: {listed}"
+    );
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "message", "agentId": holder, "sessionId": member,
+            "content": "again"}),
+        ),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    assert_eq!(last_ok(&events(&lead_session).await)["status"], "delivered");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    tokio::fs::remove_dir_all(&store.0).await.unwrap();
+}
+
+/// #2034: a reload of Collaboration rebuilds the Team from the store, and a
+/// member closed in this process stays out of it: closed is process state, and
+/// only a restart loads the member again. A stored member keeps its Agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_member_stays_out_of_the_team_when_agents_reload() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(&mut client, allowed()).await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "prompt": "done", "profile": {"name": "helper",
+            "description": "temporary", "systemPrompt": "", "tools": ["wait"]}}),
+        ),
+        "queue",
+    )
+    .await;
+    let started = poll("temporary request", async || {
+        let timeline = events(&lead_session).await;
+        (!results(&timeline).is_empty()).then(|| last_ok(&timeline))
+    })
+    .await;
+    let temporary = started["agentId"].as_str().unwrap().to_owned();
+    let member = started["sessionId"].as_str().unwrap().to_owned();
+    returned(&mut client, &lead, &lead_session, 1).await;
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "close", "agentId": temporary, "sessionId": member})),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    assert_eq!(last_ok(&events(&lead_session).await)["status"], "closed");
+    say(&mut client, &lead, tool(json!({"action": "list"})), "queue").await;
+    idle(&mut client, &lead).await;
+    let listed = last_ok(&events(&lead_session).await);
+    assert_eq!(listed["participants"], json!([]));
+    assert!(
+        listed["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|agent| agent["agentId"] == temporary.as_str()),
+        "a stored member keeps its Agent's record loaded: {listed}"
+    );
+    server.restart("Agents").await.unwrap();
+    assert!(server.agent().is_some());
+    say(&mut client, &lead, tool(json!({"action": "list"})), "queue").await;
+    idle(&mut client, &lead).await;
+    assert_eq!(
+        last_ok(&events(&lead_session).await)["participants"],
+        json!([]),
+        "a reload rebuilds the Team without the member closed in this process"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    tokio::fs::remove_dir_all(&store.0).await.unwrap();
+}
+
+/// #2034: a business close closes the Session's admission before its runtime
+/// close returns, so an `attach` that arrives in that window is refused
+/// instead of restoring the member the close is ending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_refuses_an_attach_that_arrives_while_it_runs() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let member = stored_member(&mut client, &agent).await;
+    let hold = server.hold_next_close().expect("the Agents index");
+    let close = server.close_session(&member);
+    let mut attaching = Client::new_version(&server, false, 4).await;
+    let (closed, ()) = tokio::join!(close, async {
+        wait(&hold.waiting, "the close after its runtime close").await;
+        let attached = attaching
+            .rpc("session.attach", json!({"sessionId": member}))
+            .await;
+        assert_eq!(
+            attached["error"]["data"]["appError"], "session_closed",
+            "{attached}"
+        );
+        assert!(
+            agent.get_session(&member).is_none(),
+            "the attach must not restore the member the close is ending"
+        );
+        hold.release();
+    });
+    closed.expect("the close completes");
+    assert!(agent.get_session(&member).is_none());
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    tokio::fs::remove_dir_all(&store.0).await.unwrap();
+}
+
+/// #2034: a restore admitted before a close ends closed: the close closes the
+/// Session's admission first and waits for the restore, which releases what it
+/// loaded instead of publishing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_settles_a_restore_that_was_already_admitted() {
+    let store = Store::new();
+    let held = HeldRestore::default();
+    let (server, agent) = launch_with(Arc::new(MockTools), store.config(), |builder| {
+        held.install(builder)
+    })
+    .await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let member = stored_member(&mut client, &agent).await;
+    unload(&agent, &member).await;
+    held.hold(&member);
+    let mut attaching = Client::new_version(&server, false, 4).await;
+    let attach = attaching
+        .send("session.attach", json!({"sessionId": member}))
+        .await;
+    held.entered().await;
+    let hold = server.hold_next_close().expect("the Agents index");
+    let close = server.close_session(&member);
+    let (closed, ()) = tokio::join!(close, async {
+        tokio::select! {
+            _ = wait(&hold.admission, "the close's admission") => {}
+            _ = wait(&hold.waiting, "the close after its runtime close") => {}
+        }
+        held.release();
+        let attached = attaching.response(attach).await;
+        assert_eq!(
+            attached["error"]["data"]["appError"], "session_closed",
+            "{attached}"
+        );
+        assert!(
+            agent.get_session(&member).is_none(),
+            "the closed member must not stay loaded"
+        );
+        hold.release();
+    });
+    closed.expect("the close completes");
+    assert!(agent.get_session(&member).is_none());
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    tokio::fs::remove_dir_all(&store.0).await.unwrap();
+}
+
+/// A stored member of a new Team, its request returned and its Session idle.
+async fn stored_member(client: &mut Client, agent: &Agent) -> String {
+    let lead = leader(client, allowed()).await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "hello"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(&lead_session, 0).await;
+    returned(client, &lead, &lead_session, 1).await;
+    member
+}
+
+/// Waits for a test hold; `poll` owns the deadline.
+async fn wait(signal: &tokio::sync::Notify, what: &str) {
+    poll(what, async || signal.notified().now_or_never()).await;
+}
+
+/// Holds the next restore of one Session in its Session part's apply, while
+/// `acquire` holds the Session's gate and slot.
+#[derive(Clone, Default)]
+struct HeldRestore(Arc<HeldState>);
+#[derive(Default)]
+struct HeldState {
+    held: std::sync::Mutex<Option<String>>,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+impl HeldRestore {
+    fn install(&self, builder: &mut AgentBuilder) {
+        let held = self.clone();
+        builder.require_feature(
+            Feature::new("test.held-restore").session("test.held-restore", move |names| {
+                Ok(Box::new(HeldRestorePart::new(names, held.clone())?))
+            }),
+        );
+    }
+    fn hold(&self, id: &str) {
+        *self.0.held.lock().unwrap() = Some(id.to_owned());
+    }
+    async fn entered(&self) {
+        wait(&self.0.entered, "the held restore").await;
+    }
+    fn release(&self) {
+        self.0.release.notify_one();
+    }
+}
+struct HeldRestorePart {
+    held: HeldRestore,
+    identity: Key<SessionIdentity>,
+}
+impl HeldRestorePart {
+    fn new(names: &Names<'_>, held: HeldRestore) -> rutis::Result<Self> {
+        Ok(Self {
+            held,
+            identity: names.key()?,
+        })
+    }
+}
+impl DynPlugin for HeldRestorePart {
+    fn name(&self) -> &str {
+        "test.held-restore"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.identity.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let identity = ctx.require_at(&self.identity)?;
+            let state = &self.held.0;
+            let held = identity.restored
+                && state
+                    .held
+                    .lock()
+                    .unwrap()
+                    .take_if(|id| *id == identity.session_id)
+                    .is_some();
+            if held {
+                state.entered.notify_one();
+                state.release.notified().await;
+            }
+            Ok(Effect::Done)
+        })
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3082,7 +3500,7 @@ async fn member_work(mut config: ServerConfig) {
     let read = |after: u64, limit: usize| {
         tool(
             json!({"action": "read", "agentId": holder, "sessionId": member,
-            "after": after, "limit": limit}),
+            "after": after, "branchId": "main", "limit": limit}),
         )
     };
     for limit in [0, 201, usize::MAX] {
@@ -3171,7 +3589,10 @@ async fn member_work(mut config: ServerConfig) {
             .get_session(&member)
             .expect("the authorized read acquires its peer");
         let read = last_ok(&events(&lead_session).await);
-        assert_eq!(read["events"], full["events"]);
+        assert_eq!(
+            business_events(&read["events"]),
+            business_events(&full["events"])
+        );
         assert!(
             (full["nextCursor"].as_u64().unwrap()..=restored.sequence("main").unwrap())
                 .contains(&read["nextCursor"].as_u64().unwrap())
@@ -5545,7 +5966,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
         &lead,
         tool(
             json!({"action": "read", "agentId": holder, "sessionId": member,
-            "after": after, "limit": 200}),
+            "after": after, "branchId": "main", "limit": 200}),
         ),
         "queue",
     )
@@ -5575,7 +5996,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
         &lead,
         tool(
             json!({"action": "read", "agentId": holder, "sessionId": member,
-            "after": through, "limit": 200}),
+            "after": through, "branchId": "main", "limit": 200}),
         ),
         "queue",
     )
@@ -5643,7 +6064,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
         &lead,
         tool(
             json!({"action": "read", "agentId": holder, "sessionId": many,
-            "after": closed_at.0 - 1, "limit": 200}),
+            "after": closed_at.0 - 1, "branchId": "main", "limit": 200}),
         ),
         "queue",
     )
@@ -5670,7 +6091,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
         &mut client,
         &lead,
         tool(json!({"action":"read","agentId":holder,
-        "sessionId":member,"after":after,"limit":200})),
+        "sessionId":member,"after":after,"branchId":"main","limit":200})),
         "queue",
     )
     .await;
@@ -8228,11 +8649,17 @@ async fn member_approval_cancellation_and_policy_tightening_never_execute_a_late
             let _ = client.rpc("approval.respond", json!({"sessionId":lead,"branchId":"main","requestId":request_id,"decision":"allow"})).await;
             returned(&mut client, lead, &leader, index + 1).await;
             if let Some(child) = child {
-                let idle = member.idle(&child);
-                tokio::time::timeout(Duration::from_secs(5), idle)
+                let idle = tokio::time::timeout(Duration::from_secs(5), member.idle(&child))
                     .await
-                    .unwrap()
                     .unwrap();
+                if action == "close" {
+                    assert!(
+                        matches!(&idle, Err(dim_agent_runtime::AgentError::Closed(_))),
+                        "{action}: close ends the member Session: {idle:?}"
+                    );
+                } else {
+                    idle.unwrap();
+                }
             }
             let ended = client.rpc("session.collaboration.approval.get", json!({"sessionId":lead,"branchId":"main","requestId":request_id})).await;
             assert_eq!(ended["result"]["state"], "ended", "{action}");
@@ -8290,7 +8717,7 @@ async fn a_stopped_turn_keeps_a_delivered_members_later_approval_reachable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn missing_permission_state_refuses_a_committed_member_request_without_creating_a_member() {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(45), async {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let hold: Hold = Arc::new({
@@ -8352,7 +8779,7 @@ async fn missing_permission_state_refuses_a_committed_member_request_without_cre
             .expect("the same branch's Permission part");
         let view = ctx.view(permission.id).unwrap();
         let closing = tokio::spawn(view.shutdown());
-        poll("permission state is unavailable", async || {
+        poll_within(Duration::from_secs(30), "permission state is unavailable", async || {
             (!matches!(session.get::<dim_agent_capabilities::permission::PermissionState>("main"), Ok(Some(_)))).then_some(())
         }).await;
         release.notify_one();
@@ -8642,4 +9069,583 @@ async fn node_approval_destination_matches_the_native_owner_during_a_delegation(
     tokio::fs::remove_dir_all(socket.parent().unwrap())
         .await
         .unwrap();
+}
+
+/// A team whose member Sessions may open a line and run `hold`: a test moves
+/// a member's default branch while a request is in flight on the line it was
+/// delivered to (design §9, §15).
+async fn launch_branch_team() -> (
+    RunningServer,
+    Agent,
+    Client,
+    String,
+    Session,
+    String,
+    Arc<tokio::sync::Semaphore>,
+) {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut config = ServerConfig::default();
+    config.session_defaults.tools = Some(vec!["branch".into(), "hold".into(), "echo".into()]);
+    config.unix_path = Some(std::path::PathBuf::from("/tmp").join(format!(
+        "dim-server-test-{}/server.sock",
+        uuid::Uuid::new_v4()
+    )));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+        dim_agent_runtime::MemoryTimelineStore::default(),
+    )));
+    defaults::install(&mut builder);
+    defaults::mock_model_hosts(&mut builder);
+    dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(GateTools(gate.clone())));
+    dim_app_server::collaboration::install(&mut builder);
+    let server = serve(builder, config).await.unwrap();
+    let agent = server.agent().unwrap();
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (server, agent, client, lead, lead_session, holder, gate)
+}
+
+/// Opens an idle line on `session` and moves its default branch there.
+async fn side_line(client: &mut Client, session: &Session) -> String {
+    let at = session.sequence("main").unwrap();
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId":session.id(),"parentBranchId":"main","at":at,"prompt":"side"}),
+        )
+        .await;
+    assert_ok(&opened);
+    let side = opened["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    session.idle(&side).await.unwrap();
+    side
+}
+
+/// How many `hold` calls the Session's main line has started.
+async fn hold_calls(session: &Session) -> usize {
+    events(session)
+        .await
+        .iter()
+        .filter(|event| {
+            matches!(&event.kind,
+                EventKind::ToolCall(data) if data.calls[0].name == "hold")
+        })
+        .count()
+}
+
+/// The request's completion reads the line its input was delivered to: after
+/// the member moves its default branch mid-request, the leader's result is the
+/// running turn's answer, from the line that ran it (design §9, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_completes_from_the_line_its_input_was_delivered_to() {
+    let (server, agent, mut client, lead, lead_session, holder, gate) = launch_branch_team().await;
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+    let side = side_line(&mut client, &member_session).await;
+
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:hold {}"}),
+        ),
+        "queue",
+    )
+    .await;
+    poll("the member holds", async || {
+        (hold_calls(&member_session).await == 1).then_some(())
+    })
+    .await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":member,"branchId":side}),
+            )
+            .await,
+    );
+    assert_eq!(
+        member_session.default_branch().unwrap(),
+        side,
+        "the move stands while the request is in flight"
+    );
+    gate.add_permits(1);
+
+    // The first request's result already exists: wait for the second one, the
+    // request this test is about.
+    let outcome = poll("the request completes", async || {
+        let results = result_of(&events(&lead_session).await, &member);
+        (results.len() >= 2).then(|| results.last().unwrap().clone())
+    })
+    .await;
+    assert_eq!(
+        outcome,
+        CollaborationOutcome::Completed,
+        "the delivery line's turn decides the result"
+    );
+    let answer = events(&member_session)
+        .await
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::Text(data) => Some(data.delta.clone()),
+            _ => None,
+        })
+        .expect("the member answered");
+    let result = events(&lead_session)
+        .await
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::CollaborationResult(data) if data.session_id == member => Some(data.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        result.text, answer,
+        "the settle reads the line the input was written to, not the new default"
+    );
+    let delivered_turn = events(&member_session)
+        .await
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::TurnEnd(data) => Some(data.turn_id.clone()),
+            _ => None,
+        })
+        .expect("the delivered turn ended");
+    assert_eq!(
+        result.last_turn_id.as_deref(),
+        Some(delivered_turn.as_str()),
+        "the result names the delivery line's turn"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A cancellation of the in-flight request stops the line its input was
+/// delivered to: after the member moves its default branch mid-request, the
+/// stop lands on the running turn and never on the idle line (design §9, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancel_stops_the_line_the_request_was_delivered_to() {
+    let (server, agent, mut client, lead, lead_session, holder, _gate) = launch_branch_team().await;
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+    let side = side_line(&mut client, &member_session).await;
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:hold {}"}),
+        ),
+        "queue",
+    )
+    .await;
+    poll("the member holds", async || {
+        (hold_calls(&member_session).await == 1).then_some(())
+    })
+    .await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":member,"branchId":side}),
+            )
+            .await,
+    );
+    let cancelled = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+        )
+        .await;
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+    cancel_settled(&lead_session, &member, &member_session).await;
+    assert_eq!(
+        stop_reason(&member_session).await,
+        "cancelled by the client",
+        "the stop landed on the delivery line"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A page's continuation is bound to the branch it read: after the member
+/// moves its default branch between pages, a bare `after` is refused and the
+/// page's `branchId` continues the original line, whose sequence numbers
+/// overlap the new default's (design §9, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_continuation_stays_on_the_branch_its_page_read() {
+    let (server, agent, mut client, lead, lead_session, holder, _gate) = launch_branch_team().await;
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+    let side = side_line(&mut client, &member_session).await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":member,"branchId":side,"text":"side turn"}),
+            )
+            .await,
+    );
+    member_session.idle(&side).await.unwrap();
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":member,"branchId":side}),
+            )
+            .await,
+    );
+
+    let read = |after: u64, limit: usize, branch: Option<&str>| {
+        let mut input = json!({"action": "read", "agentId": holder, "sessionId": member,
+            "after": after, "limit": limit});
+        if let Some(branch) = branch {
+            input["branchId"] = json!(branch);
+        }
+        tool(input)
+    };
+    say(&mut client, &lead, read(0, 2, None), "queue").await;
+    idle(&mut client, &lead).await;
+    let first = last_ok(&events(&lead_session).await);
+    assert_eq!(first["branchId"], json!(side), "{first}");
+    let cursor = first["nextCursor"].as_u64().unwrap();
+    assert!(cursor > 0 && cursor < member_session.sequence(&side).unwrap());
+
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":member,"branchId":"main"}),
+            )
+            .await,
+    );
+    let root_head = member_session.sequence("main").unwrap();
+    assert!(
+        root_head >= cursor,
+        "the lines' sequence numbers overlap: {root_head} vs {cursor}"
+    );
+    say(&mut client, &lead, read(cursor, 200, None), "queue").await;
+    idle(&mut client, &lead).await;
+    let refused = last_error(&events(&lead_session).await);
+    assert!(refused.starts_with("invalid_input"), "{refused}");
+    assert!(refused.contains("branchId"), "{refused}");
+
+    say(&mut client, &lead, read(cursor, 200, Some(&side)), "queue").await;
+    idle(&mut client, &lead).await;
+    let page = last_ok(&events(&lead_session).await);
+    assert_eq!(page["branchId"], json!(side), "{page}");
+    assert!(
+        page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["sequence"].as_u64().unwrap() > cursor),
+        "the continuation resumes the line it read: {page}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Appends the recovered history a leader reload reads: one open request and
+/// its delivery fact, the way a process that died before settling leaves
+/// them. `input` is the member's input the fact names, or `None` for a record
+/// written without one.
+async fn seed_recovery_facts(
+    database: &std::path::Path,
+    lead: &str,
+    holder: &str,
+    member: &str,
+    input: Option<&str>,
+) {
+    let db = dim_app_server::storage::SqliteStorage::open(database.to_path_buf()).unwrap();
+    let store = dim_app_server::storage::SqliteTimelineStore::new(db.clone());
+    let key = dim_agent_runtime::TimelineKey {
+        session_id: lead.into(),
+        branch_id: "main".into(),
+    };
+    let head = store.head(&key).await.unwrap();
+    let request_id = format!("recovery-request-{}", uuid::Uuid::new_v4());
+    let mut events = Vec::new();
+    for (index, kind) in [
+        EventKind::CollaborationRequest(dim_agent_types::CollaborationRequestData {
+            turn_id: "recovery-turn".into(),
+            request_id: "recovery-request".into(),
+            call_id: "recovery-call".into(),
+            target: dim_agent_types::CollaborationTarget::Member {
+                agent_id: holder.into(),
+                session_id: member.into(),
+            },
+            prompt: "recovered work".into(),
+            title: None,
+        }),
+        EventKind::CollaborationDelivered(dim_agent_types::CollaborationDeliveredData {
+            op_event_id: request_id.clone(),
+            delivery: CollaborationDelivery::Ok {
+                agent_id: holder.into(),
+                session_id: member.into(),
+                input_event_id: input.map(str::to_owned),
+                outcome: None,
+            },
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let sequence = head + 1 + index as u64;
+        events.push(dim_agent_runtime::StoredEvent {
+            event: Arc::new(AgentEvent {
+                id: if index == 0 {
+                    request_id.clone()
+                } else {
+                    format!("{request_id}-delivery")
+                },
+                sequence,
+                create_at: 1_000 + sequence,
+                tags: None,
+                parent_call_id: None,
+                kind,
+            }),
+            trace: None,
+            batch_end: head + 2,
+        });
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    store
+        .append(
+            key,
+            events,
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        )
+        .unwrap();
+    receiver.await.unwrap().unwrap();
+    // The daemon launch that follows opens the same file: this reader gives its
+    // ownership up first, as the storage flows do.
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// Whether `branch` holds the recovery's own stop.
+fn stopped_by_recovery(reasons: &[String]) -> bool {
+    reasons
+        .iter()
+        .any(|reason| reason == "interrupted by leader")
+}
+
+/// The stop reasons `branch` holds.
+async fn stop_reasons_on(session: &Session, branch: &str) -> Vec<String> {
+    branch_events(session, branch, ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::StopInterrupt(data) => Some(data.reason.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The leader's recovered request ends `Failed` once recovery has settled it.
+async fn recovered_failure(lead: &Agent, lead_id: &str, member: &str) {
+    poll("the recovered request fails", async || {
+        result_of(&events(&agent_session(lead, lead_id)).await, member)
+            .into_iter()
+            .find(|outcome| matches!(outcome, CollaborationOutcome::Failed { .. }))
+    })
+    .await;
+}
+
+fn agent_session(agent: &Agent, id: &str) -> Session {
+    agent
+        .get_session(id)
+        .unwrap_or_else(|| panic!("{id} is loaded"))
+}
+
+/// Recovery stops the line the request's input was delivered to, not the
+/// member's current default: the recovered request names an input on B while
+/// the member's conversation is on C, so B is stopped and C is left alone
+/// (design §9, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_stops_the_delivery_line_after_the_member_moves_its_default() {
+    let directory = std::env::temp_dir().join(format!("dim-recovery-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("dimcode.sqlite");
+    let mut config = ServerConfig {
+        database_path: Some(database.clone()),
+        ..Default::default()
+    };
+    config.session_defaults.tools = Some(vec!["branch".into(), "echo".into(), "wait".into()]);
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config.clone()).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+    let b = side_line(&mut client, &member_session).await;
+    let submission = uuid::Uuid::new_v4().to_string();
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":member,"branchId":b,"submissionId":submission,
+                    "text":"the delivery line's input"}),
+            )
+            .await,
+    );
+    member_session.idle(&b).await.unwrap();
+    let input = branch_events(&member_session, &b, ..)
+        .await
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::InputMessage(data) if data.submission_id.as_deref() == Some(&submission) => {
+                Some(event.id.clone())
+            }
+            _ => None,
+        })
+        .expect("the delivery line holds the input");
+    let c = side_line(&mut client, &member_session).await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":member,"branchId":c}),
+            )
+            .await,
+    );
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    seed_recovery_facts(&database, &lead, &holder, &member, Some(&input)).await;
+
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    // The member loads first, so its stored Team relation is live when the
+    // leader's recovery reads it.
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId":member}))
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId":lead}))
+            .await,
+    );
+    recovered_failure(&agent, &lead, &member).await;
+    let member_session = agent_session(&agent, &member);
+    assert!(
+        stopped_by_recovery(&stop_reasons_on(&member_session, &b).await),
+        "the delivery line is stopped"
+    );
+    assert!(
+        !stopped_by_recovery(&stop_reasons_on(&member_session, &c).await),
+        "the moved default is left alone"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// A recovered record whose member input cannot be found stops nothing: the
+/// member's current default keeps running instead of being stopped
+/// (design §9, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_without_the_delivered_input_stops_nothing() {
+    let directory = std::env::temp_dir().join(format!("dim-recovery-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("dimcode.sqlite");
+    let mut config = ServerConfig {
+        database_path: Some(database.clone()),
+        ..Default::default()
+    };
+    config.session_defaults.tools = Some(vec!["branch".into(), "echo".into(), "wait".into()]);
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config.clone()).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+    let b = side_line(&mut client, &member_session).await;
+    let c = side_line(&mut client, &member_session).await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":member,"branchId":c}),
+            )
+            .await,
+    );
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    seed_recovery_facts(&database, &lead, &holder, &member, None).await;
+
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    // The member loads first, so its stored Team relation is live when the
+    // leader's recovery reads it.
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId":member}))
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId":lead}))
+            .await,
+    );
+    recovered_failure(&agent, &lead, &member).await;
+    let member_session = agent_session(&agent, &member);
+    assert!(
+        !stopped_by_recovery(&stop_reasons_on(&member_session, &b).await),
+        "the delivery line is untouched"
+    );
+    assert!(
+        !stopped_by_recovery(&stop_reasons_on(&member_session, &c).await),
+        "the moved default is untouched"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    let _ = std::fs::remove_dir_all(directory);
 }

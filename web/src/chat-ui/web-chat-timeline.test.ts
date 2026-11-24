@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { computed, createApp, defineComponent, h, nextTick, ref, shallowReactive, type App } from "vue"
+import { computed, createApp, defineComponent, h, nextTick, reactive, ref, shallowReactive, type App, type Ref } from "vue"
 import { createPinia, setActivePinia, type Pinia } from "pinia"
 import { createMemoryHistory, createRouter, type Router } from "vue-router"
 import type { ChatUiHost } from "@dimcode/chat-ui"
+import type { WebChatActions } from "./web-host"
 import { i18n } from "../i18n"
 import { Projection } from "../projection"
-import type { ApprovalRequest, PendingQuestion, SessionEvent } from "../rpc/protocol"
+import type { ApprovalRequest, ModelRetryProgress, PendingQuestion, SessionEvent } from "../rpc/protocol"
 import { useChatStore } from "../stores/chat"
 import { useConnectionStore } from "../stores/connection"
 import { useSessionsStore } from "../stores/sessions"
+import { readNotification } from "../rpc/read"
 import { createRowMapper } from "./rows"
 import { createWebChatUiHost } from "./web-host"
 import WebChatTimeline from "./WebChatTimeline.vue"
@@ -220,8 +222,11 @@ describe("WebChatTimeline", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: 1_700_000_000_000 })
     const projection = new Projection()
     projection.apply(recorded[0]!)
-    const retry = { attempt: 2, maxAttempts: 8, retryAtMs: Date.now() + 5_000, kind: "server_error", reason: "overloaded" }
-    const root = mount(projection.rows, () => {}, { running: true, retry })
+    const props = reactive<{ running: boolean; retry: ModelRetryProgress | undefined }>({
+      running: true,
+      retry: { attempt: 2, maxAttempts: 8, retryAtMs: Date.now() + 5_000, kind: "server_error", reason: "overloaded" },
+    })
+    const { root } = mountWith(projection.rows, { props })
     await settle()
     const live = (): string[] => [...root.querySelectorAll("[aria-live]")]
       .filter(region => region.closest("[aria-hidden='true']") === null)
@@ -237,6 +242,23 @@ describe("WebChatTimeline", () => {
     expect(countdown()).toContain("in 3 s")
     expect(live()).toEqual(before)
     expect(root.querySelector("[data-testid='web-chat-retry']")?.closest("[aria-hidden='true']")).not.toBeNull()
+
+    props.retry = { ...props.retry!, retryAtMs: Date.now() + 4_000 }
+    await settle()
+    expect(countdown()).toContain("in 4 s")
+    expect(live()).toEqual(before)
+
+    props.retry = { ...props.retry!, attempt: 3, retryAtMs: Date.now() + 5_000 }
+    await settle()
+    expect(live()).toContain("Retrying, attempt 3 of 8: The provider reported a server error")
+    vi.advanceTimersByTime(1_000)
+    await settle()
+    expect(countdown()).toContain("in 4 s")
+
+    props.retry = undefined
+    await settle()
+    expect(root.querySelector("[data-testid='web-chat-retry']")).toBeNull()
+    expect(live()).not.toContain("Retrying, attempt 3 of 8: The provider reported a server error")
   })
 
   it("rebuilds only the turn whose rows changed", () => {
@@ -1071,17 +1093,18 @@ describe("Web ChatUiHost commands", () => {
   }
   const rows = project(recorded).rows
 
-  function setup(features: readonly string[] = HELLO_FEATURES, methods: readonly string[] = SESSION_METHODS, view: "loaded" | "missing" = "loaded") {
+  function setup(features: readonly string[] = HELLO_FEATURES, methods: readonly string[] = SESSION_METHODS, view: "loaded" | "missing" = "loaded", branch = "main") {
     const pinia = stores(features, view === "missing" ? null : { approvals: [approval], questions: [question], methods })
     const router = testRouter()
     const openBranch = vi.fn()
     const confirmFork = vi.fn(async () => true)
     let host!: ChatUiHost
+    let actions!: Ref<WebChatActions>
     const app = createApp({
       setup() {
-        host = createWebChatUiHost({
+        const created = createWebChatUiHost({
           sessionId: ref("s-1"),
-          branchId: ref("main"),
+          branchId: ref(branch),
           rows: computed(() => createRowMapper()(rows, "s-1")),
           running: ref(false),
           branchable: ref(true),
@@ -1089,13 +1112,15 @@ describe("Web ChatUiHost commands", () => {
           noticeText: () => "",
           confirmFork,
           openBranch,
-        }).host
+        })
+        host = created.host
+        actions = created.actions
         return () => null
       },
     })
     app.use(pinia).use(router).use(i18n).mount(document.createElement("div"))
     mounted.push(app)
-    return { host, chat: useChatStore(pinia), sessions: useSessionsStore(pinia), router, openBranch, confirmFork }
+    return { host, actions, chat: useChatStore(pinia), sessions: useSessionsStore(pinia), router, openBranch, confirmFork }
   }
 
   it("maps each supported command to its chat store action", async () => {
@@ -1138,6 +1163,17 @@ describe("Web ChatUiHost commands", () => {
     expect(answer).not.toHaveBeenCalled()
   })
 
+  it("refuses a fork of a centre that is not the root, so a line's cut stays its own", async () => {
+    const { host, actions, chat, confirmFork } = setup(HELLO_FEATURES, SESSION_METHODS, "loaded", "worker")
+    const storeFork = vi.spyOn(chat, "fork").mockResolvedValue("s-2")
+    const availability = actions.value.fork
+    expect(availability.available).toBe(false)
+    expect(availability.available ? undefined : availability.reason).toBe("A fork copies the main line; branch opens a line here instead.")
+    await expect(host.commands.fork("user-9")).rejects.toThrow("A fork copies the main line")
+    expect(confirmFork).not.toHaveBeenCalled()
+    expect(storeFork).not.toHaveBeenCalled()
+  })
+
   it("approves through the built-in approval.respond, which hello does not announce", async () => {
     const { host, chat } = setup([])
     expect(host.capabilities.value.interactive).toBe(true)
@@ -1159,5 +1195,308 @@ describe("Web ChatUiHost commands", () => {
     const respond = vi.spyOn(chat, "respond")
     await expect(host.commands.approve("req-1", "allow")).rejects.toThrow("The session is not loaded.")
     expect(respond).not.toHaveBeenCalled()
+  })
+})
+
+/** The features a Session on a line serves: a bounded transcript, the line's own configuration and its policy. */
+const LINE_FEATURES = ["session.branches", "session.methods", "session.history.display", "session.history.detail", "session.history.display.tail", "session.history.display.transcript", "session.history.latestTurn", "session.model.get", "session.permission.get"]
+
+function permission(preset: string, version = 1) {
+  return { version, policy: { preset, allowedTools: [], disallowedTools: [] } }
+}
+
+/** Answers the reads a Session's attach and a move make, with per-method overrides. */
+function serveChat(overrides: Record<string, (params: Record<string, any>) => unknown> = {}) {
+  const calls: Array<{ method: string; params: Record<string, any> }> = []
+  const client = useConnectionStore().client
+  vi.spyOn(client, "call").mockImplementation((async (method: string, params: Record<string, any>, read: (value: unknown) => unknown) => {
+    calls.push({ method, params })
+    const reply = overrides[method] !== undefined
+      ? overrides[method]!(params)
+      : (() => {
+          switch (method) {
+            case "session.attach": return { model: { providerId: "fixture", modelId: "root-model" } }
+            case "session.methods": return { methods: ["session.input.pending", "session.question.pending", "session.turn.get"].map(name => ({ name })) }
+            case "session.branches": return { defaultBranchId: "main", branches: [{ branchId: "main", state: "open", head: 8 }] }
+            case "session.branch_set_default": return { defaultBranchId: params.branchId }
+            case "session.history": return { events: [], through: 5, nextAfter: 5, done: true }
+            case "session.history.display": return { items: [], through: 5, nextBefore: 1, nextAfter: 5, done: true }
+            case "session.branch.get": return { branchId: params.branchId, parentBranchId: "main", branchPoint: 1, state: "open", head: 5 }
+            case "session.question.pending": return { branchId: params.branchId, through: 5, batches: [], next: null }
+            case "session.input.pending": return { branchId: params.branchId, through: 5, inputs: [], next: null }
+            case "session.turn.get": return { branchId: params.branchId, through: 5, turn: null, output: null }
+            case "session.model.get": return { branchId: params.branchId, through: 5, configuration: { model: { providerId: "fixture", modelId: `${params.branchId}-model` } } }
+            case "session.permission.get": return permission("workspace-write")
+            case "session.context.usage": return { contextWindow: 1000, outputTokens: 0, thresholdTokens: 900, estimatedInputTokens: 10, baselineSource: "usage" }
+            default: throw new Error(`unexpected ${method}`)
+          }
+        })()
+    return read(await reply)
+  }) as any)
+  return calls
+}
+
+describe("chat store moves", () => {
+  beforeEach(() => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  })
+
+  it("installs an accepted move when its model read fails", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    const calls = serveChat({
+      "session.model.get": (params) => {
+        if (params.branchId === "worker") throw new Error("the model read failed")
+        return { branchId: params.branchId, through: 5, configuration: { model: { providerId: "fixture", modelId: `${params.branchId}-model` } } }
+      },
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+
+    await expect(chat.setDefaultBranch("s-1", "worker")).resolves.toBeUndefined()
+    const view = chat.views["s-1"]!
+    expect(view.defaultBranchId).toBe("worker")
+    expect(view.model).toBeUndefined()
+    expect(view.status).toBe("ready")
+    expect(view.error).toBe("")
+    expect(view.permission?.preset).toBe("workspace-write")
+    await chat.usage("s-1")
+    expect(calls[calls.length - 1]?.params.branchId).toBe("worker")
+  })
+
+  it("applies a move's policy read only while that move owns the centre", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    const policy = new Map<string, (value: unknown) => void>()
+    serveChat({
+      "session.permission.get": (params) => {
+        if (params.branchId === "main") return permission("read-only")
+        return new Promise<unknown>(resolve => policy.set(params.branchId, resolve))
+      },
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+
+    const first = chat.setDefaultBranch("s-1", "worker")
+    await vi.waitFor(() => expect(policy.has("worker")).toBe(true))
+    const second = chat.setDefaultBranch("s-1", "other")
+    await vi.waitFor(() => expect(policy.has("other")).toBe(true))
+    expect(chat.views["s-1"]!.permission).toBeUndefined()
+
+    policy.get("other")!(permission("full-access"))
+    await second
+    expect(chat.views["s-1"]!.permission?.preset).toBe("full-access")
+    policy.get("worker")!(permission("workspace-write"))
+    await first
+    expect(chat.views["s-1"]!.permission?.preset).toBe("full-access")
+    expect(chat.views["s-1"]!.defaultBranchId).toBe("other")
+  })
+
+  it("does not let a move's policy read undo a newer edit on the same line", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    const held: { resolve?: (value: unknown) => void } = {}
+    let reads = 0
+    serveChat({
+      "session.permission.get": (params) => {
+        if (params.branchId === "main") return permission("workspace-write")
+        reads += 1
+        // The move's own read is held at the old version while the user edits
+        // the line it names.
+        return reads === 1 ? new Promise<unknown>(resolve => { held.resolve = resolve }) : permission("workspace-write")
+      },
+      "session.permission.update": () => ({ version: 2 }),
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+
+    const moved = chat.setDefaultBranch("s-1", "worker")
+    await vi.waitFor(() => expect(reads).toBe(1))
+    await expect(chat.setPermission("s-1", "read-only")).resolves.toBe("updated")
+    expect(chat.views["s-1"]!.permission?.preset).toBe("read-only")
+    held.resolve!(permission("workspace-write", 1))
+    await moved
+    expect(chat.views["s-1"]!.permission?.preset).toBe("read-only")
+    expect(chat.views["s-1"]!.defaultBranchId).toBe("worker")
+  })
+
+  it("does not let a move's policy read undo a newer permission event on the same line", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    const held: { resolve?: (value: unknown) => void } = {}
+    let reads = 0
+    serveChat({
+      "session.permission.get": (params) => {
+        if (params.branchId === "main") return permission("workspace-write")
+        reads += 1
+        return reads === 1 ? new Promise<unknown>(resolve => { held.resolve = resolve }) : permission("workspace-write")
+      },
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+
+    const moved = chat.setDefaultBranch("s-1", "worker")
+    await vi.waitFor(() => expect(reads).toBe(1))
+    // Another client changes the policy of the very line the move is reading,
+    // after the read left the server.
+    chat.receive(readNotification("session.event", {
+      sessionId: "s-1",
+      branchId: "worker",
+      event: { id: "e6", sequence: 6, create_at: 1, type: "permission", name: "changed", data: { policy: { preset: "read-only", allowedTools: [], disallowedTools: [] } } },
+    })!)
+    await vi.waitFor(() => expect(chat.views["s-1"]!.permission?.preset).toBe("read-only"))
+    held.resolve!(permission("workspace-write", 1))
+    await moved
+    expect(chat.views["s-1"]!.permission?.preset).toBe("read-only")
+    expect(chat.views["s-1"]!.defaultBranchId).toBe("worker")
+  })
+
+  it("does not let a live permission event undo a newer write on the same line", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    serveChat({
+      "session.permission.get": () => permission("read-only", 6),
+      "session.permission.update": () => ({ version: 8 }),
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+    expect(chat.views["s-1"]!.permission?.preset).toBe("read-only")
+    expect(chat.views["s-1"]!.permissionVersion).toBe(6)
+
+    await expect(chat.setPermission("s-1", "full-access")).resolves.toBe("updated")
+    expect(chat.views["s-1"]!.permission?.preset).toBe("full-access")
+    expect(chat.views["s-1"]!.permissionVersion).toBe(8)
+
+    // The event was queued before the write and reaches the store after it.
+    chat.receive(readNotification("session.event", {
+      sessionId: "s-1",
+      branchId: "main",
+      event: { id: "e6", sequence: 6, create_at: 1, type: "permission", name: "changed", data: { policy: { preset: "read-only", allowedTools: [], disallowedTools: [] } } },
+    })!)
+    await settle()
+    expect(chat.views["s-1"]!.permission?.preset).toBe("full-access")
+    expect(chat.views["s-1"]!.permissionVersion).toBe(8)
+  })
+
+  it("keeps a failed goal refresh on the line that issued it", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    const held: Record<string, { resolve: (value: unknown) => void; reject: (cause: unknown) => void }> = {}
+    let mainReads = 0
+    serveChat({
+      "session.methods": () => ({ methods: [...SESSION_METHODS, "session.goal.get"].map(name => ({ name })) }),
+      "session.goal.set": () => ({ reply: {} }),
+      "session.goal.get": (params) => {
+        if (params.branchId === "worker") return new Promise<unknown>((resolve, reject) => { held.worker = { resolve, reject } })
+        mainReads += 1
+        // The centre's first read finishes the attach; the write's reread is
+        // the one that fails after the centre has moved.
+        return mainReads === 1
+          ? { branchId: params.branchId, through: 5, goal: null }
+          : new Promise<unknown>((resolve, reject) => { held.main = { resolve, reject } })
+      },
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+
+    const written = chat.writeGoal("s-1", "set", "root work", "main").catch((cause: unknown) => cause)
+    await vi.waitFor(() => expect(held.main !== undefined).toBe(true))
+    let finished = false
+    const moved = chat.setDefaultBranch("s-1", "worker").then(() => { finished = true })
+    // The move continues on the new centre but waits for the goal refresh the
+    // outgoing line started, so it cannot finish while that read is held.
+    await vi.waitFor(() => expect(chat.views["s-1"]!.defaultBranchId).toBe("worker"))
+    await settle()
+    expect(finished).toBe(false)
+
+    // The outgoing line's read fails only after the centre has moved on; the
+    // refresh the new centre asked for is still pending.
+    held.main!.reject(new Error("the goal read failed"))
+    await vi.waitFor(() => expect(held.worker !== undefined).toBe(true))
+    held.worker!.resolve({ branchId: "worker", through: 5, goal: { objective: "worker work", status: { kind: "active" }, evaluator: false } })
+    await moved
+    expect(chat.views["s-1"]!.defaultBranchId).toBe("worker")
+    expect(await written).toBeUndefined()
+
+    const view = chat.views["s-1"]!
+    expect(view.defaultBranchId).toBe("worker")
+    expect(view.status).toBe("ready")
+    expect(view.error).toBe("")
+    await vi.waitFor(() => expect(view.goal?.objective).toBe("worker work"))
+  })
+
+  it("does not carry a failure from the outgoing line into the new centre", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    const held: Record<string, { resolve: (value: unknown) => void; reject: (cause: unknown) => void }> = {}
+    let mainReads = 0
+    let releaseMove: ((value: unknown) => void) | undefined
+    serveChat({
+      "session.methods": () => ({ methods: [...SESSION_METHODS, "session.goal.get"].map(name => ({ name })) }),
+      "session.goal.set": () => ({ reply: {} }),
+      "session.goal.get": (params) => {
+        if (params.branchId === "worker") return new Promise<unknown>((resolve, reject) => { held.worker = { resolve, reject } })
+        mainReads += 1
+        return mainReads === 1
+          ? { branchId: params.branchId, through: 5, goal: null }
+          : new Promise<unknown>((resolve, reject) => { held.main = { resolve, reject } })
+      },
+      "session.branch_set_default": (params) => new Promise<unknown>((resolve) => { releaseMove = () => resolve({ defaultBranchId: params.branchId }) }),
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+
+    const written = chat.writeGoal("s-1", "set", "root work", "main").catch((cause: unknown) => cause)
+    await vi.waitFor(() => expect(held.main !== undefined).toBe(true))
+    const moved = chat.setDefaultBranch("s-1", "worker")
+    await vi.waitFor(() => expect(releaseMove !== undefined).toBe(true))
+    // The outgoing line's goal read fails before the move's reply, while that
+    // line is still the centre, so the failure is published to the page.
+    held.main!.reject(new Error("the goal read failed"))
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("failed"))
+    expect(await written).toBeInstanceOf(Error)
+
+    releaseMove!({ defaultBranchId: "worker" })
+    await vi.waitFor(() => expect(held.worker !== undefined).toBe(true))
+    held.worker!.resolve({ branchId: "worker", through: 5, goal: { objective: "worker work", status: { kind: "active" }, evaluator: false } })
+    await moved
+
+    const view = chat.views["s-1"]!
+    expect(view.defaultBranchId).toBe("worker")
+    expect(view.status).toBe("ready")
+    expect(view.error).toBe("")
+    expect(view.goal?.objective).toBe("worker work")
+  })
+
+  it("publishes a model update only to the line that issued it", async () => {
+    const pinia = stores(LINE_FEATURES, null)
+    const held: { resolve?: (value: unknown) => void } = {}
+    const calls = serveChat({
+      "session.model.update": () => new Promise<unknown>(resolve => { held.resolve = resolve }),
+    })
+    const chat = useChatStore(pinia)
+    chat.open("s-1")
+    await vi.waitFor(() => expect(chat.views["s-1"]?.status).toBe("ready"))
+
+    const choosing = chat.setModel("s-1", { providerId: "fixture", modelId: "picked" })
+    await vi.waitFor(() => expect(held.resolve).toBeDefined())
+    expect(calls.find(call => call.method === "session.model.update")?.params.branchId).toBe("main")
+    await chat.setDefaultBranch("s-1", "worker")
+    expect(chat.views["s-1"]!.model).toEqual({ providerId: "fixture", modelId: "worker-model" })
+
+    // The reply reaches the line that asked for it after the centre moved.
+    held.resolve!({ model: { providerId: "fixture", modelId: "picked" }, outcome: "updated" })
+    await choosing
+    expect(chat.views["s-1"]!.model).toEqual({ providerId: "fixture", modelId: "worker-model" })
+    expect(chat.views["s-1"]!.defaultBranchId).toBe("worker")
   })
 })

@@ -8,25 +8,52 @@ settlement and bounded retry/recovery.
 
 ## Image handling
 
-Every conversational request replaces image blocks in user content and tool
-results with content references, regardless of the model's vision capability.
-The reference and omission-placeholder rules are owned by
+Every conversational request routes image blocks in user content and tool
+results by the model's vision capability and the resolved destination's format
+support. A vision-capable model, or a request whose capability is unknown,
+receives a sendable image as an image block when the destination takes its
+format; a model without image input, an image that cannot be sent, or an image
+in a format the destination does not take receives a content reference or
+omission placeholder. The routing, reference and placeholder rules are owned by
 [Attachments A.1](../../../design/plugins/Attachments.md#a1-image-handling-cli-checks-and-modelprovider),
 implemented by [images.rs](../../../../crates/dim-agent-capabilities/src/model_provider/images.rs)
 using the shared `images::image_reference` helper. The transformation changes
 the request only; adopted input, the Timeline and stored tool results never change.
-Auxiliary calls do not pass through ModelProvider, so their image pixels stay intact.
+Auxiliary calls do not pass through ModelProvider, so their image pixels stay
+intact; a target that does not take an image's format fails the call instead of
+turning it into a reference
+([ImageUnderstanding §3](../../../design/plugins/ImageUnderstanding.md#3-references)).
+
+The destination's format support belongs to that rule: one whitelist per
+protocol, and for the compatible protocol the vendor package the connection's
+preset names. Gemini takes no GIF, and every xAI destination takes only PNG and
+JPEG — the native routes by their protocol, the built-in `xai` and `grok-build`
+entries by the preset their connections carry — so a GIF on Gemini and a WebP or
+GIF on an xAI destination become references before the encoder and add nothing
+to the budget. The other protocols, and compatible destinations that name no
+vendor package or another one, take the four a request may carry.
+The provider request encoder applies the destination's message-placement
+support: a Bedrock model outside the ones that support images in `toolResult`
+receives the tool image in the user message after the result, and the same
+families are the only ones AWS supports for `toolResult.status`; the other
+Bedrock models receive no such field, and a failed result's text starts with
+`[Error: this tool result reports a failed tool call.]`. All of these decisions
+stay in the routing rule and the encoder; no catalog field states them.
 
 The adapter selects replacements before copying content. An unchanged request
 keeps its Arc without cloning text, thinking, tool arguments or result blocks.
 When images change, only those messages are copied; other messages stay shared.
 
-The final Aimux boundary reads immutable accepted bytes without decoding or
-rescaling them again. A request permits at most 32 MiB of encoded image data,
-including user and tool-result images, and 64 MiB of final HTTP body. Exceeding
-these limits fails before sending the request. Each Aimux generation admits
-four concurrent request preparations and sends; waiting is cancellable and
-owner shutdown releases the waiters. Provider-specific limits still apply.
+Each image the request sends as pixels joins its 32 MiB encoded-image aggregate
+as it is added, so an over-budget request fails during adaptation before the
+remaining files are read. An image that becomes a reference after its file is
+resolved adds no bytes. The final Aimux boundary reads immutable accepted bytes
+without decoding or rescaling them again and checks the aggregate again. A
+request permits at most 32 MiB of encoded image data, including user and
+tool-result images, and 64 MiB of final HTTP body. Exceeding these limits fails
+before sending the request. Each Aimux generation admits four concurrent
+request preparations and sends; waiting is cancellable and owner shutdown
+releases the waiters. Provider-specific limits still apply.
 
 ## Dependencies
 
@@ -99,7 +126,9 @@ provider boundary gets `unknown` and the message it already carried. A tool
 start whose name is not in `request.tools` fails the request before a call is
 committed; it is a host failure, so its `failure.kind` is `unknown`. Arguments
 that never complete fail it with `failure.kind = malformed_response`, the kind
-the same defect carries when the bridge reports unparseable arguments.
+the same defect carries when the bridge reports unparseable arguments, unless
+the stream reports a content filter after the interrupted call: the known filter
+terminal wins and the reply is `content_filtered`.
 `failure` is absent on events written before it existed and on failures that are
 not a provider call's: the agent loop's unsettled call on a reload and a context
 preparation failure. `error` is the default English line
@@ -141,9 +170,9 @@ a continuation declines it.
 `invalid_model_stream_is_cancelled_and_drained_before_settlement`,
 `transient_retries_are_bounded_and_stop_after_irreversible_output`,
 `stop_during_native_drain_keeps_an_already_completed_model_result`,
-`image_references_survive_vision_and_text_model_switches_without_changing_history`,
+`vision_and_text_models_route_images_without_changing_history`,
 `replacing_a_tool_image_preserves_other_messages_and_the_stored_result`,
-`stored_attachment_and_tool_images_share_a_reference_without_changing_file_history`.
+`stored_attachment_and_tool_images_route_by_vision_capability`.
 
 <!-- generated:plugin ModelProvider — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
@@ -156,24 +185,30 @@ a continuation declines it.
 
 ## Durable images at model execution
 
-During reference adaptation and before budget validation, ModelProvider uses
-`session_files::resolve` to read one file-backed image for the request
-metadata's Session, hashes it and releases its bytes before reading the next.
-The same path handles user content and tool results for vision and text-only
-models; only images in effective context are read. Adaptation retains only
-references, not the resolved images. The stored request and its File sources
-remain unchanged.
+During request adaptation, ModelProvider uses `session_files::resolve` to read
+a file-backed image for the request metadata's Session, then keeps the bytes
+for a vision-capable model, or hashes and releases them for a model that needs
+a reference. The resolved source is checked by the same sendable rule, so an
+empty owned file takes the placeholder instead of being sent as an empty image.
+The same path handles user content and tool results for both kinds of model;
+only images in effective context are read. A reference route retains only the
+reference; the vision route retains the resolved bytes. The stored request and
+its File sources remain unchanged.
 
 The optional dependency is named through `Names` and read with `get_at` at
 load. It does not gate or create a reload relation. A missing file service,
 Session identity or stored image fails a request that needs file bytes, rather
 than inventing a reference or silently omitting it. Cancellation propagates to
 bounded reads with the existing per-file storage limit. The aggregate image-data
-budget applies only at Aimux's image-consuming boundary, not to conversational
-references, so retained images totaling more than 32 MiB do not block text calls.
+budget applies during adaptation, as each image the request sends as pixels
+joins the request: a reference route carries no image data, so retained images
+totaling more than 32 MiB do not block text calls, while a vision request that
+carries them as pixels fails during adaptation before the remaining files are
+read. Aimux's image-consuming boundary checks the materialized request again.
 
 SessionStore provides `sessionFiles` in the process, under both its shared
 dispatch name and the native binding. The native-storage profile also gates
 Aimux on that owner, so it is available before ModelProvider's required model
 host. Aimux retains its final materialization boundary for direct and auxiliary
-image requests; those requests are not converted to conversational references.
+image requests; those requests are not converted to conversational references,
+and an auxiliary image the target does not take fails the call.

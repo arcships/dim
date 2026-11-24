@@ -12,7 +12,7 @@ use url::Url;
 
 pub struct Capture {
     ipv4: TcpListener,
-    ipv6: TcpListener,
+    ipv6: Option<TcpListener>,
     redirect: Url,
 }
 impl Capture {
@@ -31,15 +31,33 @@ impl Capture {
         let ipv6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok()?;
         Some(Self {
             ipv4,
-            ipv6,
+            ipv6: Some(ipv6),
             redirect,
         })
     }
+    pub async fn bind_ipv4(path: &str) -> Result<Self> {
+        let ipv4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let redirect = Url::parse(&format!("http://{}{path}", ipv4.local_addr()?))?;
+        Ok(Self {
+            ipv4,
+            ipv6: None,
+            redirect,
+        })
+    }
+
+    pub fn redirect_uri(&self) -> &str {
+        self.redirect.as_str()
+    }
+
     pub async fn receive(self) -> Result<(String, TcpStream)> {
         loop {
-            let (mut stream, _) = tokio::select! {
-                value = self.ipv4.accept() => value?,
-                value = self.ipv6.accept() => value?,
+            let (mut stream, _) = if let Some(ipv6) = &self.ipv6 {
+                tokio::select! {
+                    value = self.ipv4.accept() => value?,
+                    value = ipv6.accept() => value?,
+                }
+            } else {
+                self.ipv4.accept().await?
             };
             let request = tokio::time::timeout(Duration::from_secs(2), async {
                 let mut request = Vec::new();

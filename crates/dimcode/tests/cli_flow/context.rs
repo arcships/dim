@@ -105,7 +105,7 @@ fn tui_display_details_use_one_typed_reply_and_retry_after_collapse() {
         terminal.write(b"/tools\r/tools\r/tools\r");
         terminal.until("Loading");
         terminal.write(b"/tools\rcollapsed pending fence\r");
-        terminal.until("cancelled details settled");
+        terminal.until_visible("cancelled details settled");
         terminal.write(b"/exit\r");
         terminal.until("Bye!");
         assert!(terminal.wait().success());
@@ -148,9 +148,9 @@ fn tui_displays_history_and_handles_input_while_context_usage_is_pending() {
             "--scrollback"
         });
         let mut terminal = Terminal::resume_tui(command);
-        terminal.until("restored while usage waits");
+        terminal.until_visible("restored while usage waits");
         terminal.write(b"still responsive\r");
-        terminal.until("live while usage waits");
+        terminal.until_visible("live while usage waits");
         release.send(()).unwrap();
         terminal.until("64K / 256K");
         terminal.write(b"/exit\r");
@@ -206,7 +206,7 @@ fn tui_discards_a_previous_sessions_delayed_context_report() {
         terminal.write(b"/new\r");
         terminal.until("─ new session ─");
         terminal.write(b"next\r");
-        terminal.until("next session ready");
+        terminal.until_visible("next session ready");
         terminal.until_anywhere("64K / 256K");
         assert!(
             !terminal.transcript.contains("128K / 256K"),
@@ -552,13 +552,13 @@ fn tui_usage_shows_the_last_requests_cache_hit_rate() {
         let mut terminal = Terminal::resume_tui(command);
         terminal.until("1.8K / 256K");
         shown.send(()).unwrap();
-        terminal.until("first request");
+        terminal.until_visible("first request");
         terminal.write(b"/usage\r");
         terminal.until("last request cached 92%");
-        terminal.until("second request");
+        terminal.until_visible("second request");
         terminal.write(b"/usage\r");
         terminal.until("last request cached 0%");
-        terminal.until("third request");
+        terminal.until_visible("third request");
         terminal.write(b"/usage\r");
         terminal.until("tokens (6%)");
         terminal.write(b"/exit\r");

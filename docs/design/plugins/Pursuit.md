@@ -53,7 +53,7 @@ Every decision is taken as Goal takes its own: by the Dispatcher handler from co
 
 | Consumed event | Condition | Action |
 | --- | --- | --- |
-| `turn/end` N | Goal's C1–C4 hold (active goal, not interrupted, turn `completed`, latest and undecided), the judge is `evaluator`, and the turn contains a worker `completed` block | Instead of Goal's continuation decision: `treeCommands.create(B, N, {prompt, source: {kind: "host", operation_id: "goal:evaluate:N"}}, cancelled)`. Goal's `decided` counts that `branch/create` as `N`'s decision (§3), within this execution; reload pauses the goal and never creates the old evaluator again |
+| `turn/end` N | Goal's C1–C4 hold (active goal, not interrupted, turn `completed`, latest and undecided), the judge is `evaluator`, the execution holds a worker `completed` request that no later goal change superseded and for which no evaluation has been started, and no driving input is pending | Instead of Goal's continuation decision: `treeCommands.create(B, N, {prompt, source: {kind: "host", operation_id: "goal:evaluate:N"}}, cancelled)`. Goal's `decided` counts that `branch/create` as `N`'s decision (§3), within this execution; reload pauses the goal and never creates the old evaluator again |
 | `branch/create-failed` for `goal:evaluate:N`, or `create` throws before any `branch/create` for `N` committed | `N` is still current | Pause (`evaluation_failed`), marked `after="N"` as Goal's pauses are; the first of the two to write it supersedes `N` for the other. A creation that committed records its own outcome (a child or `branch/create-failed`), so that fact decides it, and a throw because the task was cancelled writes nothing |
 | Conclusion input for evaluation `N` | The first conclusion for `N`, from the branch named by the `branch/create` for `goal:evaluate:N`, and `N` is still current: no newer change follows `N` — a `set`, `edit`, `clear`, `pause` or `resume` trigger, a new worker `completed`, or an old keyed block. A model-facing `goal:state` input is not another completion request. The current business state and in-memory evaluation identity determine whether the conclusion is still eligible; paused stops it | `done`: `completed` by the evaluator. `blocked`: `blocked` by the evaluator. `continue`: Goal's continuation decision ([Goal A.4](Goal.md#a4-continuation-decision) C1, C5 and C6, C6 only when `maxContinuations` is set, and the background wait), then a continuation with the Pursuit text, or pause (`limit`); as at any turn end, a pending driving input means no continuation (C5), and a background task still open means no decision yet: the current execution keeps the conclusion in memory, and the cancelled end that closes the last open task may take it while that execution remains running. `failed`: pause (`evaluation_failed`) |
 
@@ -78,7 +78,7 @@ The working branch only accepts reports paired with an evaluator created by its 
 
 ## 5. Context mapping
 
-Markers, escaping and keys are Goal's ([A.5](Goal.md#a5-model-visible-texts)). `N` is the request's `turn/end`, `B` the working branch, `E` the evaluator.
+Markers, escaping and keys are Goal's ([A.5](Goal.md#a5-model-visible-texts)). `N` is the `turn/end` at which the evaluation is created: normally the request's own turn end, and when driving input is pending, the turn end that consumes the last of it. Driving input is a Queue or Steer input the execution has not consumed, such as a user Queue input or a Steer applied as the turn ends (a background command's wake, for example). Consecutive queued inputs defer the creation without a turn limit until the queue drains. A deferred turn that does not call `goal_update` again leaves `Reported result:` as the summary of the earlier report. `B` is the working branch, `E` the evaluator.
 
 | Write | Where, key | Mode | Text |
 | --- | --- | --- | --- |
@@ -126,7 +126,7 @@ The evaluator is an ordinary child branch with the working branch's permission p
 
 Flows with a fake model for worker and evaluator, in the crate's flow tests under `crates/dim-goal/tests`:
 
-1. Evaluator judge: continuations are Goal's. The worker reports `completed`; the status stays `active`; at that turn's end one evaluator is created at `N` with `goal:evaluate:N` and no continuation is written. `DONE` gives `completed` by the evaluator.
+1. Evaluator judge: continuations are Goal's. The worker reports `completed`; the status stays `active`; at that turn's end, when no driving input is pending, one evaluator is created at `N` with `goal:evaluate:N` and no continuation is written. `DONE` gives `completed` by the evaluator.
 2. `CONTINUE` with a two-line list gives the conclusion and one continuation (`count` + 1 over the continuations after `max(A, last_operator)`; neither the worker's request nor the conclusion moves `A` or resets the count, and C5 applies as at any turn end); `BLOCKED` gives `blocked`; at an explicit `maxContinuations`, `CONTINUE` gives pause (`limit`); the evaluated continuation does not read progress or advance Goal's C7 streak, because the evaluator judged the worker's turn with the whole of it in front of it. A background task still open when the conclusion arrives writes no continuation; the conclusion stays in current-execution memory, and the cancelled end that closes the last open task takes it once while the execution is running (Goal A.4).
 3. A worker `blocked`, a limit pause, a user interrupt and a user pause create no evaluator.
 4. An evaluator reply without a conclusion gets one follow-up on the evaluator branch, and its next conclusion is applied; if the second reply has none either, the whole reply, truncated to 4000 characters, is written as `continue` (one continuation under `maxContinuations`), and no further follow-up is written, within the same execution. Reload terminates the evaluation rather than reconstructing its follow-up state.
@@ -136,6 +136,7 @@ Flows with a fake model for worker and evaluator, in the crate's flow tests unde
 8. The streamed conclusion is reassembled across `step/text` records and ignores an earlier request's `DONE:`.
 9. Model judge: Goal's acceptance unchanged.
 10. A conclusion that arrives after `set`, `edit`, `clear`, `pause`, `resume` or a new worker `completed` on the working branch decides nothing: a late `DONE` after a `pause` leaves the goal paused.
+11. When driving input is pending at the report turn's end, that turn end creates no evaluator: the evaluation is created at the `turn/end` that consumes the last driving input, and the request is not lost. User Queue input and a Steer applied as the turn ends defer it; consecutive inputs defer it without a turn limit, and a deferred turn without another `goal_update` leaves `Reported result:` as the earlier report's summary.
 
 ## 10. Later options
 

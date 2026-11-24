@@ -280,4 +280,45 @@ mod tests {
             BTreeSet::from(["LOCAL_KEY".to_owned(), "OTHER_KEY".to_owned()])
         );
     }
+
+    /// The development file's `compatible.preset` is the vendor package the
+    /// compatible protocol builds, so it reaches the image rule too: an xAI
+    /// model takes only PNG and JPEG, and a GIF becomes its reference.
+    #[test]
+    fn the_model_config_xai_preset_reaches_the_image_rule() {
+        let config: ModelConfigFile = serde_json::from_value(json!({
+            "defaultModel": {"providerId": "local", "modelId": "one"},
+            "providers": [{
+                "id": "local",
+                "kind": "openai-compatible",
+                "baseUrl": "https://api.x.ai/v1",
+                "compatible": {"preset": "xai"},
+                "models": [{"id": "one", "contextWindow": 128000, "maxOutputTokens": 4096,
+                            "config": {"maxTokens": 4096}}]
+            }]
+        }))
+        .unwrap();
+        let models = AimuxModels::from_config(config).unwrap();
+        let model = models.get("local", "one").unwrap();
+        assert_eq!(model.preset.as_deref(), Some("xai"));
+        let request: ModelRequest = serde_json::from_value(json!({
+            "providerId": "local", "modelId": "one",
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "mediaType": "image/gif",
+                 "data": "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"}}
+            ]}]
+        }))
+        .unwrap();
+        let prepared =
+            crate::request::convert(&request, &model.kind, model.preset.as_deref()).unwrap();
+        let wire = serde_json::to_string(&prepared.options).unwrap();
+        assert!(
+            !wire.contains("image/gif"),
+            "the configured xAI destination takes no GIF as pixels: {wire}"
+        );
+        assert!(
+            wire.contains("img:"),
+            "the GIF becomes its reference: {wire}"
+        );
+    }
 }

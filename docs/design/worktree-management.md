@@ -95,17 +95,25 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
   Git 才收到 `--force`，所以内容在检查后出现时 Git 自己会拒绝。删除走 `git worktree remove`，与记录删除在
   同一次存储操作里完成，分支保留，已提交内容不随目录消失。根已核验缺失，或存在但 Git 已不再登记时，只删
   记录并 `git worktree prune`；后者在目录非空时需要 `--force`。未登记目录按 task-id 显式删除，要求内容干净、
-  没有 Session 的 cwd 在根下且不含 `.git`；带 `.git` 的残留由用户用 `git worktree remove` 处理，错误信息给出路径。
+  目录记录中没有根在其下的条目、没有 Session 的 cwd 在根下且要删除的整棵树不含 `.git` 条目（目录、gitdir 文件或
+  符号链接，含悬空链接）；带 `.git` 的残留由用户用 `git worktree remove` 处理，错误信息给出路径。
   记录只有 repository 与 root，同一路径被手工重建的 worktree 视为同一条记录，这是已知限制。
 - **prune**：候选只包括根在 `$DIMCODE_HOME/worktrees` 下、没有剩余使用关联的目录记录，再按最后使用时间
   应用 `--older-than` 或 `--keep`；未知时间按 §4 处理，仍有关联、Session 的 cwd 在根下、无法检查、Git 已不再登记（除显式
   `--force`）或未登记的目录一律不选。删除前逐项复核 Git 登记、根未变与内容干净，先预览再按确认删除；apply
   携带预览的 task id，只删除用户看到的集合，单个候选失败时保留其记录并继续其余候选。保留项逐条给出原因。
   选择语义与交互沿用 [session cleanup](cli-commands.md#session-deletion-and-cleanup)，不新增第二套。
-- **排斥**：remove 与 prune 经由 SessionStore 的 `store.removeWorktree` 操作完成：它持有会话存储
-  所有权锁，先复核关联与存储中的 Session cwd，再调用调用方传入的 Git 删除步骤，最后删除记录。`Session`
-  创建与 `associate_worktree` 在同一把锁内重新核验 cwd 与根是否仍是目录，所以复核之后不会出现指向已删根的
-  新 Session 或关联。锁跨越一次 Git 删除，其上限是一次 `git worktree remove`（30 秒超时）。
+- **排斥**：已登记的 remove 与 prune 经由 SessionStore 的 `store.removeWorktree` 操作完成：它持有会话存储
+  所有权锁，先复核关联与存储中的 Session cwd，再调用调用方传入的 Git 删除步骤，最后删除记录。未登记的 remove
+  经由 `store.removeUnregisteredDirectory`：它在同一把锁内复核目录记录中没有根在该目录或其下的条目、存储中没有
+  Session 的 cwd 在该目录或其下，再运行调用方传入的删除步骤；该步骤在删除前用文件系统检查复核目录仍是管理根下的
+  普通目录、它的直接子目录仍是管理根内的普通目录，以及删除范围内每个目录都没有 `.git` 条目（目录、gitdir 文件或
+  符号链接，含悬空链接；遍历不跟随符号链接，不起 Git 子进程），不满足就拒绝。
+  `Session` 创建与 `associate_worktree` 在同一把锁内重新核验 cwd 与根是否仍是目录，所以复核之后不会出现指向已删根的
+  新 Session 或关联；分叉、删除 Session 与关联移除也取同一把锁，会等这次删除结束。
+  锁跨越的步骤没有时间上限：一次 `git worktree remove`（30 秒超时）、Git 不再登记时的 `cleanup_unregistered_root`
+  递归删除，以及未登记目录删除前对整棵树 `.git` 条目的遍历和带 `--force` 的递归删除都在锁内；未登记目录的内容有多少，锁就持有多久。
+  这期间 `session.create`、`session.fork`、`session.delete` 以及 worktree 关联与删除都要等这把锁。
   可证明的使用只有记录与存储中的 cwd；其余使用不可证明，由预览、确认和 worktree-access §4 的删除授权承担。
 - Session 删除和 `session cleanup` 不删除也不报告遗留的 worktree；`worktree list` 是查看它们的唯一入口。
 
@@ -113,13 +121,13 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
 
 | Owner | 现有机制为何不够 | 需要的合同 | 顺序与失败 |
 | --- | --- | --- | --- |
-| SessionStore | `associate_worktree` 要求 Session 已存在，不能补写创建期记录；目录记录没有时间；删除目录记录会撞上未级联的关联外键 | 创建 Session 时同一事务写入目录记录、使用关联与最后使用时间；关联写入/解除更新时间；按根查询任何存储中 Session 的 cwd；Session 创建/删除、关联写入与移除共用所有权锁，创建与关联在锁内重新核验 cwd/根；`store.removeWorktree` 操作 在锁内运行调用方的 Git 删除与记录删除；删除目录记录的类型化操作（含核验缺失/Git 不登记的记录清理）。列变更遵守 native-storage-format.md | 创建失败不留记录；删除成功才删记录，失败保留供重试 |
+| SessionStore | `associate_worktree` 要求 Session 已存在，不能补写创建期记录；目录记录没有时间；删除目录记录会撞上未级联的关联外键 | 创建 Session 时同一事务写入目录记录、使用关联与最后使用时间；关联写入/解除更新时间；按根查询任何存储中 Session 的 cwd；Session 创建、分叉、删除、关联写入与移除共用所有权锁，创建与关联在锁内重新核验 cwd/根；`store.removeWorktree` 与 `store.removeUnregisteredDirectory` 操作在锁内复核并运行调用方传入的删除（前者还删除记录），锁一直持有到删除结束且没有时间上限；删除目录记录的类型化操作（含核验缺失/Git 不登记的记录清理）。列变更遵守 native-storage-format.md | 创建失败不留记录；删除成功才删记录，失败保留供重试 |
 | Agents | 现有 `cwd` 只能指向已存在目录，不能把创建目录和创建 Session 合成一次请求 | `session.create` 与 `sessions.launch` 共用可选 `worktree`、嵌套回复、创建关联与失败清除；launch 保持既有策略上限与非交互语义 | 入口只校验格式与权限；Git、失败清除由 ManagedWorktrees 执行，创建失败时入口调用它清除 |
 | App Server 协议 | 客户端各自 `git worktree add` 会重新引入路径分歧；新成员会被旧 daemon 当作未知字段拒绝 | `hello.features` 宣告 `session.create.worktree` 与 `sessions.launch.worktree`（仅在产品 home 与原生存储都存在时宣告）、`worktree.list`、`worktree.remove`、`worktree.prune`；`cwd` 声明为源工作区；三个操作注册为 `managementMethods` 的 `worktree` 命名空间，不服务配对设备 | 客户端只在宣告存在时发送；失败不留半成品，重试创建新的 `<task-id>` |
 | CLI 与 Desktop | 没有可调用的创建入口，只能让模型跑 Git | 各自的入口与展示（`--worktree`、`dimcode worktree ...`；TUI 的 `/worktree` 面板留待后续），只消费类型化结果与拒绝原因 | 由各自 owner 更新 cli-commands.md 与 clients.md；不拼路径、不读存储、不直接调用 Git |
 | ManagedWorktrees（本部件） | 现有 `Worktrees` 只做 Session 内识别，没有 Process 级根与创建/清理 | Process 部件：根与命名、Git 调用、创建与失败清除、list/remove/prune 的选择、复核与锁的编排 | 不持有 Session 或分支状态；只在用户命令或 Session 创建时动作 |
 
-这些需求都不改变 Timeline、Dispatcher、装配与门面，因此不向基础设施提通用能力。
+这些需求不改变 Timeline、Dispatcher 与装配；新增的公开内容只有 `store.removeUnregisteredDirectory` 这一个门面操作，其余复用已有机制，因此不向基础设施提通用能力。
 
 ## 7. 规则检查
 
@@ -135,6 +143,6 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
 | §4.5 批次 | 不适用：不新增 Timeline 批次；创建事务与记录删除由 SessionStore 自己提交。 |
 | §4.6 模型上下文 | 不适用：不向模型上下文加入新事实。 |
 | §4.7 公开事件与服务 | 新增的公开内容只有 `managementMethods` 的 `worktree` 命名空间与 `hello.features` 条目；两者都在 §6 说明消费者。 |
-| §4.8 基础设施 | 不修改 Timeline、Dispatcher、装配或门面；缺少的创建期写入与所有权锁复用属于 SessionStore 自己的合同。 |
+| §4.8 基础设施 | 不修改 Timeline、Dispatcher 或装配；`store` 面新增 `removeUnregisteredDirectory` 操作，复用 SessionStore 已有的所有权锁和 Session cwd 查询，属于 SessionStore 自己的合同。 |
 | §4.9 事实取舍 | 不新增 Timeline 事件；列表、计数、时间与路径是命令结果，不进 Timeline。 |
 | ADR 002 | 无接线模块、无第二套容器；管理方法归 Process owner，配对设备不服务；配置不参与装载行。 |

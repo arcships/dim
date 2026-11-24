@@ -49,6 +49,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "retrying {attempt}/{max} in {seconds} s: {reason}" => {
             "{seconds}초 후 {attempt}/{max}번째 재시도: {reason}"
         }
+        "Retrying {attempt}/{max} in {seconds} s" => "{seconds}초 후 {attempt}/{max}번째 재시도",
         "Retrying {attempt}/{max} in {seconds} s · {reason} · Esc stops" => {
             "{seconds}초 후 {attempt}/{max}번째 재시도 · {reason} · Esc 중지"
         }
@@ -60,6 +61,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "the provider asked to wait {seconds} s" => "공급자가 {seconds}초 대기를 요청했습니다",
         "cause:" => "원인:",
         "Tried {count} times over {seconds} s." => "{count}회 시도, {seconds}초 경과.",
+        "Waiting for the provider" => "공급자를 기다리는 중",
         "Waiting for the provider · {reason} · Esc stops" => {
             "공급자를 기다리는 중 · {reason} · Esc 중지"
         }

@@ -463,7 +463,11 @@ impl Connection {
             return Err(RpcError::invalid("display requires protocol v3"));
         }
         let session_id = session.id().to_owned();
-        let record = rpc
+        let _transition = self.transitions.lock().await;
+        if session.is_closing() {
+            return Err(RpcError::closed());
+        }
+        let mut record = rpc
             .index
             .session_record(&host, &session, version)
             .await
@@ -475,7 +479,83 @@ impl Connection {
         // changes, this one after. With no previous attachment — a first
         // attach, or a detach that completed first — events committed between
         // the pin and the new listener have none.
-        let _transition = self.transitions.lock().await;
+        if let Some(expected) = &params.expected_config {
+            // Feature `testing`: a test holds the check after this record is
+            // captured, moves the default away and ends the former default,
+            // then releases it.
+            #[cfg(feature = "testing")]
+            if let Some(hold) = self.hub.take_attach_check_hold() {
+                hold.entered.notify_one();
+                hold.release.notified().await;
+            }
+            crate::agents::check_configuration(
+                &session,
+                session.config(),
+                &record.default_branch,
+                expected,
+            )
+            .await?;
+        }
+        let mut scoped_admission = None;
+        if let Some(provider) = rpc.ctx.get::<crate::provider::ProviderService>() {
+            let current = session
+                .get::<PromptSnapshot>(ROOT_BRANCH_ID)?
+                .and_then(|snapshot| snapshot.configuration);
+            let model = current.map_or_else(
+                || session.config().model.clone(),
+                |model| dim_agent_types::ModelSelection {
+                    provider_id: model.provider_id,
+                    model_id: model.model_id,
+                    capability_snapshot: model.capability_snapshot,
+                    config: model.config,
+                    metadata: model.metadata,
+                },
+            );
+            provider.scoped_connection_owner(&self.id, model.metadata.as_ref(), false)?;
+            if !self.is_attached(&session_id)
+                && let Some(route) = provider.scoped_model(&self.id, &model)?
+            {
+                let admission = self.scoped_route_admission(&usage).await?;
+                if session.sequence(ROOT_BRANCH_ID)? != record.info.sequence {
+                    return Err(RpcError::service(
+                        "provider_route_conflict",
+                        "Session advanced before temporary route adoption",
+                    ));
+                }
+                let outcome = session
+                    .configure(
+                        dim_agent_runtime::ConfigureUpdate {
+                            model: Some(route.model.clone()),
+                            ..Default::default()
+                        },
+                        ROOT_BRANCH_ID,
+                    )
+                    .await?;
+                configuration_outcome(outcome)?;
+                if let Err(error) = provider.retain_startup(&session, &route.model) {
+                    let rollback = session
+                        .configure(
+                            dim_agent_runtime::ConfigureUpdate {
+                                model: Some(model),
+                                ..Default::default()
+                            },
+                            ROOT_BRANCH_ID,
+                        )
+                        .await?;
+                    configuration_outcome(rollback)?;
+                    return Err(provider_error(error));
+                }
+                record.info.sequence = session.sequence(ROOT_BRANCH_ID)?;
+                if record.default_branch.branch_id == ROOT_BRANCH_ID {
+                    record.default_branch.sequence = record.info.sequence;
+                }
+                scoped_admission = Some(admission);
+            }
+        }
+        let SessionRecord {
+            info: record_info,
+            default_branch: record_default,
+        } = record;
         let generation = self.next_attachment.fetch_add(1, Ordering::Relaxed);
         let cancel = self.closed.child_token();
         let watched = Arc::new(Mutex::new(HashSet::new()));
@@ -562,7 +642,8 @@ impl Connection {
                 .ok()
                 .flatten()
                 .and_then(|snapshot| snapshot.configuration);
-            let (model, model_preferences, capability_snapshot) = match adopted {
+            let (model, model_preferences, capability_snapshot, catalog_provider_id) = match adopted
+            {
                 Some(configuration) => (
                     dim_agent_types::ModelId {
                         provider_id: configuration.provider_id.clone(),
@@ -573,25 +654,35 @@ impl Connection {
                         configuration.metadata.as_ref(),
                     ),
                     configuration.capability_snapshot,
+                    crate::provider::scoped_routes::logical_provider(
+                        configuration.metadata.as_ref(),
+                    )
+                    .map(str::to_owned),
                 ),
                 None => (
-                    record.model.clone(),
+                    record_info.model.clone(),
                     crate::provider::adopted_selection_preferences(
                         session.config().model.config.as_ref(),
                         session.config().model.metadata.as_ref(),
                     ),
                     session.config().model.capability_snapshot.clone(),
+                    crate::provider::scoped_routes::logical_provider(
+                        session.config().model.metadata.as_ref(),
+                    )
+                    .map(str::to_owned),
                 ),
             };
             let record = SessionInfo {
                 attached_clients,
                 model,
-                ..record
+                ..record_info
             };
             let reply = AttachResult {
                 session: record,
+                default_branch: record_default,
                 model_preferences,
                 capability_snapshot: capability_snapshot.map(Box::new),
+                catalog_provider_id,
             };
             if self
                 .sender
@@ -604,6 +695,7 @@ impl Connection {
             previous
         };
         drop(admitted);
+        drop(scoped_admission);
         // The previous subscription settles before this attach returns, but
         // after the new one is in place: its own listeners and tasks cannot
         // strand an event committed from now on.

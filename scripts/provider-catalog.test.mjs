@@ -698,7 +698,7 @@ test("a raw leaf nothing projects still makes the provider changed", async (t) =
   }));
   const summary = execFileSync(process.execPath, [script, "--sync", "deepseek"], { cwd, env, encoding: "utf8" });
   assert.match(summary, /Synced 1 providers \(0 unchanged, 1 changed\)/);
-  assert.match(summary, /~ deepseek-v4-pro +metadata\.raw\.family "deepseek-thinking" -> "a-family-nothing-reads"/);
+  assert.match(summary, /~ deepseek-v4-pro +metadata\.raw\.family "deepseek-pro" -> "a-family-nothing-reads"/);
 });
 
 test("a canonical id the upstream replaces is written and both values are printed", async (t) => {

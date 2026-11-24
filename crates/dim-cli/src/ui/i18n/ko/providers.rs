@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "ChatGPT 요금제 사용 중",
+        "This sign-in method will be removed in a future version." => {
+            "이 로그인 방식은 향후 버전에서 제거됩니다."
+        }
+        "Switch to ChatGPT" => "ChatGPT로 전환",
+        "Manage usage" => "사용량 관리",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "OpenAI는 프롬프트, 선택한 파일, 도구 실행 결과를 처리합니다."
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "Dim은 ChatGPT 연결 정보를 이 컴퓨터에 저장합니다."
+        }
+        "Switch account" => "계정 전환",
+        "Continue with ChatGPT" => "ChatGPT로 계속",
+        "Add ChatGPT account" => "ChatGPT 계정 추가",
+        "Waiting for authorization in your browser" => "브라우저에서 승인을 기다리는 중",
+        "{name} (Legacy)" => "{name} (이전 방식)",
+        "Legacy" => "이전 방식",
         "Refresh model list" => "모델 목록 새로 고침",
         "Model list refreshed" => "모델 목록을 새로 고쳤습니다",
         "Model list refresh failed: {reason}" => "모델 목록을 새로 고치지 못했습니다: {reason}",
@@ -7,6 +25,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // providers_panel.rs
         "Providers" => "프로바이더",
         "Enter open · Esc clear/close" => "Enter 열기 · Esc 지우기/닫기",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab 이동 · Enter 실행 · Ctrl+R 새로 읽기 · Esc 뒤로"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => "↑↓/Tab 이동 · Enter 실행 · Esc 뒤로",
         "Loading providers..." => "프로바이더 불러오는 중…",
         "No matching providers." => "일치하는 프로바이더 없음",
@@ -68,6 +89,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "이 URL 열기: {url}",
         "Enter code:    {code}" => "코드 입력:    {code}",
         "Waiting after server slow-down" => "서버 감속 요청으로 대기 중",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "OAuth 로그인 취소됨",
         "Enter your work email" => "회사 이메일 입력",
         "Invalid OAuth state - possible CSRF attempt" => "잘못된 OAuth state - CSRF 시도 가능성",

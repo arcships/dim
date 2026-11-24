@@ -356,6 +356,63 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "Use o prompt de linha ou dimcode permissions."
         }
+        "Tool call timeout: {millis} ms" => "Tempo limite da chamada de ferramenta: {millis} ms",
+        "Variables: {names}" => "Variáveis: {names}",
+        "Unset variables: {names}" => "Variáveis não definidas: {names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "A fonte MCP mudou desde a prévia; nenhuma entrada foi importada, e uma entrada que ela teria substituído pode estar desativada agora. Visualize novamente."
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "As entradas de projeto foram gravadas e os valores retidos não; substitua-as novamente para tentar de novo."
+        }
+        "Replaced {id}." => "{id} substituído.",
+        "Added {id}." => "{id} adicionado.",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "Entrega à sessão {session}, ramo {branch} ({mode})."
+        }
+        "Launches a new Session in {cwd}." => "Inicia uma nova sessão em {cwd}.",
+        "Disabled: {code} at {instant}." => "Desativado: {code} em {instant}.",
+        "The definition changed since it was read; nothing was written." => {
+            "A definição mudou desde que foi lida; nada foi gravado."
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "Colunas: ID, cliente, escopo, caminho, estado, entradas ou erro."
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "Nenhum valor de um armazenamento é lido ou impresso; --from ID visualiza um dentro do daemon."
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "Colunas: ID, ação, ID de destino.\nUma entrada renomeada é gravada com o id de destino; a entrada da fonte com o id antigo fica como estava."
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "Entradas importadas e substituídas começam desativadas: uma entrada de usuário é gravada com enabled: false, e uma entrada de projeto não tem registro de ativação até você ativá-la localmente."
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "Este daemon não pode listar os armazenamentos MCP de outros clientes."
+        }
+        "This daemon cannot import MCP servers." => "Este daemon não pode importar servidores MCP.",
+        "The document holds no mcpServers entries." => {
+            "O documento não contém entradas mcpServers."
+        }
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "Colunas: ID, estado, transporte, campos alterados, campos não suportados, erro.\nUm campo alterado indica o que uma gravação mudaria e o tipo de valor que ele contém; nenhum valor é impresso.\nUm campo não suportado fica sem uso ou é descartado, como mostrado após o campo."
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "Uma entrada de projeto é gravada como seu esqueleto público: o arquivo do espaço de trabalho recebe o comando, o cwd declarado, a origem da URL e os campos OAuth públicos. Seus argumentos, valores de ambiente e cabeçalho, token bearer, uma URL com userinfo, caminho, consulta ou fragmento, e membros desconhecidos vão para o seu registro mcp-secrets de escopo de usuário, nunca para o arquivo do espaço de trabalho."
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id} tem {count} nomes de campo a mais do que as listas acima mostram."
+        }
+        "Top-level members the import does not carry: none." => {
+            "Membros de nível superior que a importação não leva: nenhum."
+        }
+        "Top-level members the import does not carry: {names}." => {
+            "Membros de nível superior que a importação não leva: {names}."
+        }
+        "Applying the selection at this revision." => "Aplicando a seleção nesta revisão.",
+        "An unchanged entry was already in the source and was not written." => {
+            "Uma entrada inalterada já estava na fonte e não foi gravada."
+        }
         _ => return None,
     })
 }

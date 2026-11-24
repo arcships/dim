@@ -6,7 +6,10 @@ use axum::{
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::post,
 };
-use dim_agent_capabilities::host_platform::{HostPlatform, ShellStatus};
+use dim_agent_capabilities::host_platform::HostPlatform;
+#[cfg(unix)]
+use dim_agent_capabilities::host_platform::ShellStatus;
+#[cfg(unix)]
 use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost};
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, MockTools},
@@ -568,6 +571,7 @@ impl Env {
     /// A Session whose stdio entry names a program only the installed
     /// runtime provides: the child `PATH` gets `bin` appended, so the bare
     /// command resolves there.
+    #[cfg(unix)]
     async fn with_stdio_toolchain(bin: PathBuf, root: PathBuf) -> Self {
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-minimal.cjs");
@@ -2448,17 +2452,10 @@ async fn a_shadowed_user_server_closes_its_unused_connection() {
 const TOOL_IMAGE: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=";
 
-/// An MCP image result retains its source while the model receives a reference.
+/// An MCP image result retains its source while the model receives the pixels.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() {
-    use base64::Engine as _;
     use dim_agent_aimux::{AimuxModels, AimuxPlugin, ConfiguredModelsPlugin};
-    use sha2::{Digest, Sha256};
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(TOOL_IMAGE)
-        .unwrap();
-    let digest = format!("{:x}", Sha256::digest(bytes));
-    let reference = format!("img:{}", &digest[..16]);
     tokio::time::timeout(Duration::from_secs(30), async {
         let requests: Arc<Mutex<Vec<Value>>> = Default::default();
         let seen = requests.clone();
@@ -2703,15 +2700,15 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             .iter()
             .find(|message| message["role"] == "tool")
             .unwrap();
-        assert!(
-            tool["content"].as_str().unwrap().contains(&reference),
-            "{tool}"
-        );
-        assert!(tool["content"].as_str().unwrap().contains("screenshot captured"));
-        assert!(tool["content"].as_str().unwrap().contains("[Image omitted: the image cannot be sent to this model.]"));
-        assert!(!next.to_string().contains(TOOL_IMAGE), "{next}");
-        assert!(!next.to_string().contains("image_url"), "{next}");
-        assert!(!next.to_string().contains("[Image: sent in the following user message as tool output.]"), "{next}");
+        let content = tool["content"].as_str().unwrap();
+        assert!(content.contains("screenshot captured"), "{tool}");
+        assert!(content.contains("[Image omitted: the image cannot be sent to this model.]"), "{tool}");
+        assert!(content.contains("[Image: sent in the following user message as tool output.]"), "{tool}");
+        assert!(next.to_string().contains(TOOL_IMAGE), "the model receives the pixels: {next}");
+        assert!(!next.to_string().contains("img:"), "a vision model needs no reference: {next}");
+        let image = next["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(image["role"], "user", "{image}");
+        assert!(image["content"].to_string().contains(&format!("data:image/png;base64,{TOOL_IMAGE}")), "{image}");
         session
             .submit("thanks".into(), InputMode::Queue, "main")
             .await
@@ -3904,6 +3901,7 @@ async fn a_tool_call_deadline_is_shared_by_its_404_retry() {
 /// directory starts there and lists its tools: the child `PATH` appends the
 /// toolchain directories after the daemon's own, and on Unix the program
 /// lookup reads the child `PATH`.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_stdio_entry_starts_a_command_the_toolchain_source_provides() {
     use std::os::unix::fs::PermissionsExt;

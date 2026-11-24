@@ -16,10 +16,10 @@ aimux 桥接层是唯一持有提供方结构化错误、并看得到完整响�
 | `quota_exhausted` | 402；条件码 `insufficient_quota`、`quota_exceeded`、`billing_error`、`credit_exhausted` | 否 | 账户没有配额了 | 检查套餐或计费 |
 | `not_found` | 404 | 否 | 提供方找不到模型或端点 | 检查模型和提供方 base URL |
 | `context_too_long` | 413；条件码 `context_length_exceeded`、`context_too_long` | 否 | 对话超过模型可接受的长度 | 压缩对话或新开会话 |
-| `content_filtered` | 条件码 `content_policy_violation`、`safety_block`、`moderation_block` | 否 | 提供方的内容过滤拦截了响应 | 改写请求 |
+| `content_filtered` | 条件码 `content_policy_violation`、`safety_block`、`moderation_block`；内容过滤的结束原因 | 否 | 提供方的内容过滤拦截了响应 | 改写请求 |
 | `invalid_request` | 传输层本地拒绝；400、409、422、501、505、其他 4xx；类别标签 `invalid_request_error`；条件码 `max_tokens_exceeded`；`InvalidArgument`、`InvalidPrompt`、`UnsupportedFunctionality` | 否 | 请求被拒绝 | 查看详情 |
 | `output_limit` | `max_tokens` 停止 | 否 | 模型达到输出上限 | 提高输出 token 上限后重试 |
-| `unknown` | 其他 | 否 | 模型请求失败 | 查看详情 |
+| `unknown` | 其他，包括提供方的生成错误和无法识别的结束原因 | 否 | 模型请求失败 | 查看详情 |
 
 HTTP 连接或流的超时以传输 `ApiCall` 到达桥接层，是 `network`。`AiMuxError::Timeout` 在聊天调用中没有产生者；若它到达桥接层，是 `unknown`，且不重试。
 
@@ -76,8 +76,9 @@ ModelFailure {
 - 从不存储：请求 URL、请求头、请求值、响应体或任何凭据。aimux 已丢弃 URL；桥接层不得复制 `url`、`request_body_values` 或 `response_body`，`reason` 和原因帧只是去除了控制字符的文本。
 - 旧客户端读取的 `error` 是默认英文行 `<meaning>: <reason>. <action>`，没有 reason 时省略 `: <reason>`。传输层在本地拒绝请求且有 reason 时，只使用该 reason，不将拒绝归因于提供方。不再有 `ApiCall:` 前缀。当该失败使其 turn 结算为 Failed 时，该回合在 `TurnOutcome::Failed.error` 中携带同一字符串，客户端据此可以区分两者并去掉重复。不使 turn 失败的失败（例如输出上限停止）不在 turn 的结果中携带任何内容。
 - `max_tokens` 停止保留其 presentation，同时写入 `failure.kind = output_limit`。它不使 turn 失败：Loop 以 `output_limit` 为 reason 把该 turn 结算为 Completed（见 Loop.md「声明了调用却从未执行的失败步骤」一节）。
-- 工具参数始终没有完成时写入 `failure.kind = malformed_response`，与 `InvalidToolInput` 对同一缺陷的 kind 相同。
+- 工具参数始终没有完成时写入 `failure.kind = malformed_response`，与 `InvalidToolInput` 对同一缺陷的 kind 相同。例外是流在被中断的调用之后报出的内容过滤：已知的过滤结局优先，因此该回复写入 `content_filtered`，已开始的调用按失败关闭，而不是被宣告成工具调用。流若此后不再送出该终止项，仍写入 `malformed_response`。每个请求都开启 strict 流，它把每个客户端调用留到 finish 部分、在终止项之前紧挨着交出，所以即使适配器把两者放在不同事件里（例如 Responses 适配器），桥接层在失败调用之后的下一次读取就能读到终止项。桥接层在那里只读流已经送达的部分，因此失败不会等待可能永远不来的部分。
 - 以 end-turn 停止、既没有非空白文本也没有工具调用的回复写入 `failure.kind = malformed_response`，原因为 "the response had no text and no tool call"。只有 thinking 不算回答，所以只带 thinking 的回复同样算空回复。该判断落在桥接层流结束处，因为只有它看得到完整响应。是否重试取决于这次尝试交出了什么：只交出过消息开始的，与任何 `malformed_response` 一样重试一次；一旦交出过别的任何东西，包括只有空白的正文片段，就过了可重试的界线（`output.rs` 除消息开始外每个片段都清除 replay safety），因此 turn 带着已记录并展示的失败结束，由用户重新发送。重试在任何情况下都不能跟在已提交的输出之后：请求已提交的内容必须与下一份完整回复一致，thinking 也算在内（`output.rs`），而第二次尝试会带来它自己的 thinking。该规则适用于每个 turn，包括 Loop 与 Goal 的驱动 turn：空回复在那里同样不是一个有效步骤。
+- 被结束原因判为失败的回复同样没有提供方错误，其 `reason` 是固定句子，不引用任何响应内容。内容过滤是 `content_filtered`，原因为 "the stream ended on a content-filter finish reason"；提供方的生成错误和无法识别的结束原因都是 `unknown`，原因分别为 "the provider reported a generation error" 和 "the stream ended on an unsupported finish reason"。kind 决定是否续接：`unknown` 是新请求能结算的 kind，`content_filtered` 不是。
 - 没有提供方边界的宿主机失败得到 kind `unknown` 和它原本携带的消息。
 
 ## 3. 谁来措辞

@@ -951,12 +951,7 @@ impl Projection {
         let mut state = Self::default();
         if let Some(row) = last(
             timeline,
-            request(
-                TimelineQueryScope::Chain,
-                through,
-                &["context/configured"],
-                &["data"],
-            ),
+            crate::timeline_tree::read::configuration_query(Some(through)),
         )
         .await?
         {
@@ -1385,12 +1380,56 @@ impl Prompt {
 }
 
 impl Prompt {
-    pub(super) async fn advance(&self, through: u64) -> Result<()> {
-        if self.branch_phase.phase() != BranchPhase::Active {
-            return self.recover_sources(through).await;
+    /// Waits until the result written at `sequence` is published. A line that
+    /// starts closing while the read waits stops waiting: its own facts still
+    /// answer at the tree, so the owner reports cancellation instead of
+    /// waiting for a publication the close itself may be holding back.
+    async fn await_written(&self, sequence: u64) -> Result<u64> {
+        tokio::select! {
+            result = self.publisher.await_published(sequence) => result,
+            _ = self.branch_phase.closing() => {
+                Err(AgentError::Cancelled("prompt adoption".into()))
+            }
+            _ = self.lifecycle.cancelled() => Err(AgentError::Closed("Prompt".into())),
         }
+    }
+
+    /// Brings the projection to `through` and answers the cutoff it reached:
+    /// `through` itself while the line is active, or the published head when
+    /// the line is closing. A closing line may already have committed an
+    /// interrupt whose publication is pending, and no read may pass the
+    /// published head; answering at that head keeps the returned cutoff and the
+    /// configuration the same pinned read. A close that starts while the
+    /// projection advances ends the waits below, and the caller settles the
+    /// line from its own facts.
+    pub(super) async fn advance(&self, through: u64) -> Result<u64> {
+        if self.branch_phase.phase() != BranchPhase::Active {
+            let through = self.timeline.sequence().min(through);
+            self.recover_sources(through).await?;
+            return Ok(through);
+        }
+        self.advance_while_active(through).await
+    }
+
+    /// [`Self::advance`] for the configuration read, which must not write: a
+    /// line that is not active answers cancellation at the same phase check
+    /// that would choose recovery, so the read never replays sources or
+    /// appends a checkpoint while its line is closing. The caller answers the
+    /// line from the tree at its published cutoff instead.
+    pub(super) async fn advance_active(&self, through: u64) -> Result<u64> {
+        if self.branch_phase.phase() != BranchPhase::Active {
+            return Err(AgentError::Cancelled("prompt adoption".into()));
+        }
+        self.advance_while_active(through).await
+    }
+
+    /// Advances an active projection to `through`, waits for the written result
+    /// to publish, and reports it.
+    async fn advance_while_active(&self, through: u64) -> Result<u64> {
         let mut progress = self.dispatcher.watch();
         while self.dispatcher.sequence() < through {
+            #[cfg(feature = "testing")]
+            super::testing::read_waiting(&self.identity.session_id, &self.identity.branch_id);
             if let Some(error) = self.dispatcher.failure() {
                 return Err(error);
             }
@@ -1411,9 +1450,11 @@ impl Prompt {
             return Err(error);
         }
         let written = self.projection.lock().unwrap().written_result;
-        self.publisher.await_published(written).await?;
+        #[cfg(feature = "testing")]
+        super::testing::read_publishing(&self.identity.session_id, &self.identity.branch_id);
+        self.await_written(written).await?;
         self.projection.lock().unwrap().publish(self, written);
-        Ok(())
+        Ok(through)
     }
 
     pub(super) async fn recover_sources(&self, through: u64) -> Result<()> {
@@ -1498,7 +1539,9 @@ impl Prompt {
             }
         }
         let written = self.projection.lock().unwrap().written_result;
-        self.publisher.await_published(written).await?;
+        #[cfg(feature = "testing")]
+        super::testing::read_publishing(&self.identity.session_id, &self.identity.branch_id);
+        self.await_written(written).await?;
         self.projection.lock().unwrap().publish(self, written);
         Ok(())
     }

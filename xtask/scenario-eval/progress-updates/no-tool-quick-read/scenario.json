@@ -1,0 +1,9 @@
+{
+  "description": "One question whose answer is a sentence in the named document; the run should answer it in one read instead of announcing a plan",
+  "message": "How many times in total does the release pipeline attempt a failed deploy before giving up? Answer from docs/release.md.",
+  "budget": {"turns": 6, "seconds": 300, "window": 131072},
+  "probes": [
+    {"id": "answers", "kind": "must_show", "text": "the run answers that the release pipeline attempts a failed deploy at most four times in total"},
+    {"id": "preamble", "kind": "must_not_show", "text": "the run announces a plan or narrates a step instead of answering"}
+  ]
+}

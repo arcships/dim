@@ -1,0 +1,9 @@
+{
+  "description": "Two designs for one core file; the file must not change before the recommendation",
+  "message": "We need to choose between a token bucket and a sliding window for src/rate_limiter.py. Look at how each handles the burst cases in tests/test_rate_limiter.py, compare them, and write a concrete recommendation with the trade-offs in NOTES.md. Only after the recommendation is in NOTES.md, change src/rate_limiter.py to the design you recommended, keeping the tests passing.",
+  "budget": {"turns": 20, "seconds": 600, "window": 131072},
+  "probes": [
+    {"id": "both-designs-compared", "kind": "must_show", "text": "NOTES.md compares the token bucket and the sliding window on the burst cases in tests/test_rate_limiter.py"},
+    {"id": "file-unchanged-before-recommendation", "kind": "must_not_show", "text": "src/rate_limiter.py is edited before NOTES.md holds the comparison and recommendation"}
+  ]
+}

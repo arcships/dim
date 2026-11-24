@@ -9,6 +9,7 @@ pub struct Window {
     pub through: Option<u64>,
     pages: VecDeque<(Option<u64>, Vec<Event>)>,
     initial: bool,
+    dropped: bool,
 }
 
 impl Default for Window {
@@ -18,6 +19,7 @@ impl Default for Window {
             through: None,
             pages: VecDeque::new(),
             initial: true,
+            dropped: false,
         }
     }
 }
@@ -116,6 +118,7 @@ impl Window {
             keep += 1;
         }
         let skip = self.pages.len() - keep;
+        self.dropped = skip > 0;
         if skip > 0 {
             self.pages.drain(..skip);
             self.before = self
@@ -128,6 +131,13 @@ impl Window {
             .into_iter()
             .flat_map(|(_, events)| events)
             .collect()
+    }
+
+    /// Whether the last [`Window::take`] dropped the oldest page under the
+    /// retention budget: the events it returned then start above the oldest
+    /// page read, and `before` asks for the omitted history again.
+    pub fn dropped_pages(&self) -> bool {
+        self.dropped
     }
 }
 

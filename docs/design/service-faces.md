@@ -177,17 +177,14 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `contextUsage` | branch | ContextUsage | hot-path | 本地请求计数器、请求引用与按序统计；`session.context.usage` 是 App Server RPC。按 #1292 确认是否需要独立插件操作。 |
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
-| `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
-| `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareContextHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 待迁移；按 #1292 定义操作面 |
-| `faultReporter` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 
 ### 3.6 入口、凭据与宿主资源
 
@@ -206,7 +203,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `hooksService` | process | HooksSettings | host-resource |
 | `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |
 | `providerConnectionResolver` | process | Provider | host-resource |
-| `sessionLoader` | session | SessionScope | control |
 | `timelineFactory` | session | SessionScope | control |
 
 ## 4. 批次契约（#1292）
@@ -292,7 +288,7 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 与 `wakeups` 同一做法：注册为 shared，在 `host_key("loops")` 提供 dispatcher，原生 `Loops` 在类型键继续提供。按 Scheduler §12.6：
 
 ```text
-loops.start {sessionId, branchId?, prompt, everySeconds?} -> {loopId, branchId, state, round, nextAt?, lastRoundAt?, expiresAt, stoppedReason?, settledAt?}
+loops.start {sessionId, branchId?, prompt, everySeconds?} -> {loopId, branchId, state, round, prompt, nextAt?, lastRoundAt?, expiresAt, stoppedReason?, settledAt?}
 loops.next {sessionId, loopId, delaySeconds?} -> 同一记录形状
 loops.list {sessionId, branchId?} -> {loops: [记录…]}
 loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: false}

@@ -9,6 +9,8 @@ use std::{num::NonZeroU64, sync::Arc};
 pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()> {
     if read_one(
         session,
+        ROOT_BRANCH_ID,
+        TimelineQueryScope::Branch,
         at,
         in_field("kind", &["turn/start", "turn/end"]),
         QueryPick::Last,
@@ -20,6 +22,8 @@ pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()
     }
     let interrupted_at = read_one(
         session,
+        ROOT_BRANCH_ID,
+        TimelineQueryScope::Branch,
         at,
         in_field("kind", &["stop/interrupt"]),
         QueryPick::Last,
@@ -112,9 +116,16 @@ pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()
             })
             .collect(),
     };
-    if read_one(session, at, pending, QueryPick::First)
-        .await?
-        .is_some()
+    if read_one(
+        session,
+        ROOT_BRANCH_ID,
+        TimelineQueryScope::Branch,
+        at,
+        pending,
+        QueryPick::First,
+    )
+    .await?
+    .is_some()
     {
         return reject("an input is waiting to be consumed");
     }
@@ -141,15 +152,29 @@ pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()
             },
         ],
     };
-    if read_one(session, at, running, QueryPick::First)
-        .await?
-        .is_some()
+    if read_one(
+        session,
+        ROOT_BRANCH_ID,
+        TimelineQueryScope::Branch,
+        at,
+        running,
+        QueryPick::First,
+    )
+    .await?
+    .is_some()
     {
         return reject("a background task is running");
     }
-    if read_one(session, at, unposted_filter(), QueryPick::First)
-        .await?
-        .is_some()
+    if read_one(
+        session,
+        ROOT_BRANCH_ID,
+        TimelineQueryScope::Branch,
+        at,
+        unposted_filter(),
+        QueryPick::First,
+    )
+    .await?
+    .is_some()
     {
         return reject("a background task has not woken the branch");
     }
@@ -162,7 +187,35 @@ fn reject(cause: &str) -> Result<()> {
     )))
 }
 
-fn in_field(path: &str, values: &[&str]) -> QueryFilter {
+/// The one-event query both a fork's rest-point check and an attach's
+/// configuration check read: the named line's facts at a fixed cursor, with
+/// nothing still being published.
+pub(super) fn one_event(
+    scope: TimelineQueryScope,
+    through: u64,
+    filter: QueryFilter,
+    pick: QueryPick,
+) -> TimelineQuery {
+    TimelineQuery {
+        scope,
+        from: None,
+        through: Some(through),
+        include_publishing: false,
+        query: QuerySpec {
+            filter: Some(filter),
+            select: QuerySelect::Events,
+            group_by: vec![],
+            pick: Some(pick),
+            order_by: vec![],
+        },
+        page: Some(QueryPage {
+            limit: NonZeroU64::MIN,
+            after: None,
+        }),
+    }
+}
+
+pub(super) fn in_field(path: &str, values: &[&str]) -> QueryFilter {
     QueryFilter::In {
         value: QueryOperand::Field { path: path.into() },
         values: values.iter().map(|value| (*value).into()).collect(),
@@ -184,33 +237,16 @@ fn input_relation(kinds: &[&str]) -> QueryFilter {
     }
 }
 
-async fn read_one(
+pub(super) async fn read_one(
     session: &Session,
+    branch: &str,
+    scope: TimelineQueryScope,
     at: u64,
     filter: QueryFilter,
     pick: QueryPick,
 ) -> Result<Option<Arc<AgentEvent>>> {
     let reply = session
-        .query(
-            ROOT_BRANCH_ID,
-            TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                from: None,
-                through: Some(at),
-                include_publishing: false,
-                query: QuerySpec {
-                    filter: Some(filter),
-                    select: QuerySelect::Events,
-                    group_by: vec![],
-                    pick: Some(pick),
-                    order_by: vec![],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::MIN,
-                    after: None,
-                }),
-            },
-        )
+        .query(branch, one_event(scope, at, filter, pick))
         .await?;
     let QueryOutput::Events { events } = reply.result else {
         unreachable!("event selection returns events")

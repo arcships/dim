@@ -30,7 +30,20 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Branch history is incomplete; stop-all unavailable" => "分支历史尚未读完，暂不能停止全部",
         "Running" => "运行中",
         "Lines" => "线",
-        "Enter show the line · x end it · Esc close" => "Enter 查看该线 · x 结束 · Esc 关闭",
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter 查看 · p 从此继续 · x 结束 · Esc 关闭"
+        }
+        "Main line" => "主线",
+        "Start" => "起点",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "默认分支和它延续的线都不能结束；请先切换到另一条线继续"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "原默认分支保持开启，并保留它已打开的线。根分支在任一方向都保有自己的开线权。"
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "原默认分支保持开启，并保留它已打开的线。两条线互换开线的权利。"
+        }
         "This session has no lines." => "这个会话还没有线。",
         "No matching lines." => "没有匹配的线。",
         "the session itself" => "会话本身",
@@ -266,6 +279,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "文件",
         "Searching…" => "正在搜索…",
+        "type filter · enter select · esc clear/close" => "输入筛选 · Enter 选择 · Esc 清除/关闭",
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 选择 · enter/tab 插入 · esc 关闭",
         "not sent to the model" => "未发送给模型",
         "… {count} more lines" => "… 还有 {count} 行",
@@ -301,8 +315,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "还有 {count} 条 · shift+← 编辑最后一条 · ctrl+s 立即 steer"
         }
         "Queue ({count})" => "队列（{count}）",
-        "Thinking…" => "思考中…",
-        "Thinking excerpt" => "思考摘录",
+        "Thinking…" => "正在思考…",
         "Thought" => "已思考",
         "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "欢迎使用 DIM {version}！",
@@ -317,6 +330,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Sign-in link:" => "登录链接：",
         "Resume" => "回到终端",
         "Press Ctrl+C to stop the Web workspace." => "按 Ctrl+C 停止 Web 工作区。",
+        "Feedback or ideas? Join us on Discord:" => "有反馈或想法？加入我们的 Discord：",
         "To resume this session:" => "恢复此会话：",
 
         "start a new session" => "开始新会话",
@@ -523,8 +537,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
 
         "Select a model" => "选择模型",
         "Loading models..." => "正在加载模型...",
-        "Previous page" => "上一页",
-        "Next page" => "下一页",
         "No models available. Connect a provider first." => "无可用模型。请先连接 Provider。",
         "No matching models." => "无匹配的模型。",
         "current" => "当前",
@@ -621,6 +633,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Background task finished: {label}" => "后台任务已完成：{label}",
         "Background task failed: {label}" => "后台任务失败：{label}",
         "Background task stopped: {label}" => "后台任务已停止：{label}",
+        "Background tasks" => "后台任务",
+        "Nothing runs in the background." => "后台没有正在运行的任务。",
+        "No matching tasks." => "没有匹配的任务。",
         "Permission needed: {tool}" => "需要授权：{tool}",
         "Question waiting for your answer" => "有问题等你回答",
         "Notify when agent needs you" => "需要你时通知",
@@ -668,6 +683,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ctrl+Enter 中断并立即发送：草稿与所有暂存消息合成一条发出"
         }
         "Send now failed: {error}; the draft was kept" => "立即发送失败：{error}；草稿已保留",
+        "Send now failed: {error}" => "立即发送失败：{error}",
         "Send now cancelled; the draft was kept" => "已取消立即发送；草稿保留",
         "Send now is still stopping the run; the draft was kept" => {
             "立即发送仍在停止运行；草稿已保留"
@@ -688,6 +704,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "选中历史项时 Shift+Tab 选择较新项 · Esc 返回输入框"
         }
         "(shift+tab to cycle)" => "(Shift+Tab 切换)",
+        "Permission unavailable" => "权限不可用",
         "Fullscreen" => "全屏",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown 滚动 · Home/End 到顶部或底部 (草稿为空时) · Tab 选择消息，e 编辑，q 引用"
@@ -756,6 +773,73 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "moving retained images into Session files" => "把保留下来的图片写入会话文件",
         "updating the text index of the rows that changed" => "更新已改动行的文本索引",
         "checking and committing the upgraded store" => "校验并提交升级后的库",
+        "Permission mode" => "权限模式",
+        "Related settings" => "相关设置",
+        "Process isolation" => "进程隔离",
+        "open" => "打开",
+        "User-wide command rules. Allow skips asks, never denials." => {
+            "用户级命令规则。允许只会跳过询问，不会越过拒绝。"
+        }
+        "Opens Settings; user-wide, for new processes; independent of permission mode." => {
+            "打开设置；用户级，作用于新进程；与权限模式无关。"
+        }
+        "keep mode" => "保持模式",
+        "use mode" => "使用模式",
+        "Current session; remembered for new sessions. {consequence}" => {
+            "仅当前会话；会记住用于新会话。{consequence}"
+        }
+        "↑↓/Tab move · Enter {action} · Esc close" => {
+            "↑↓/Tab 移动 · Enter {action} · Esc 关闭"
+        }
+        "Writes and commands denied; external reads may ask." => {
+            "写入和命令一律拒绝；外部读取可能会询问。"
+        }
+        "Workspace writes allowed; commands, network and ungranted outside access usually ask." => {
+            "允许工作区写入；命令、网络和未获授权的外部访问通常会询问。"
+        }
+        "Skips preset approval; pending calls on this branch are reevaluated. Explicit denies and isolation remain." => {
+            "跳过预设审批；此分支上待处理的调用会重新评估。明确的拒绝和隔离仍然有效。"
+        }
+        "↑↓ move · Enter select · Esc close" => "↑↓ 移动 · Enter 选择 · Esc 关闭",
+        "Loading process isolation…" => "正在读取进程隔离…",
+        "Sandbox is unavailable on this host: {reason}" => "此主机上沙箱不可用：{reason}",
+        "Applies to new processes and shells." => "作用于新进程和 shell。",
+        "Off: commands use your OS permissions, not file-tool limits." => {
+            "关闭：命令使用操作系统的权限，不受文件工具限制。"
+        }
+        "Off" => "关闭",
+        "Sandboxed · No network" => "沙箱 · 无网络",
+        "Sandboxed · Network allowed" => "沙箱 · 允许网络",
+        "selected" => "已选",
+        "Save" => "保存",
+        "Reset to defaults" => "重置为默认值",
+        "Reload" => "重新加载",
+        "Discard edits and read the current settings" => "放弃修改并读取当前设置",
+        "Reset the execution switches to defaults?" => "将执行开关重置为默认值？",
+        "Discard unsaved changes?" => "放弃未保存的修改？",
+        "Yes (y)" => "是 (y)",
+        "Cancel (n)" => "取消 (n)",
+        "y confirm · Enter/Esc cancel" => "y 确认 · Enter/Esc 取消",
+        "Read only" => "只读",
+        "Workspace write" => "工作区写入",
+        "Agent" => "智能体",
+        "agent" => "智能体",
+        "command" => "命令",
+        "ended" => "已结束",
+        "Signed in" => "已登录",
+        "Retry" => "重试",
+        "Provider changed; review the retained draft and press Apply again" => {
+            "提供方已更改；请检查保留的草稿并再次按应用"
+        }
+        "y allow · a always · n reject · ←→/Tab move · Enter confirm" => {
+            "y 允许 · a 始终允许 · n 拒绝 · ←→/Tab 切换 · Enter 确认"
+        }
+        "{count} in background · /tasks" => "后台 {count} 项 · /tasks",
+        "{field}: {error} Your text is kept in {path}" => {
+            "{field}：{error} 你的文本已保留在 {path}"
+        }
+        "{field}: {error}" => "{field}：{error}",
+        "Prompts: {error}" => "提示词：{error}",
         _ => return None,
     })
 }

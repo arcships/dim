@@ -4,7 +4,8 @@
 use crate::{
     document::MAX_PROMPT_BYTES,
     loops::{self, Loops, StartRequest, wire_loop},
-    methods::{Caller, ScheduleJobs, ToolRequest},
+    methods::{Caller, PROMPT_PREVIEW_BYTES, ScheduleJobs, Shared, ToolRequest, truncate},
+    runs::SchedulerError,
     wakeups::{WakeupRequest, Wakeups},
 };
 use dim_agent_capabilities::{
@@ -14,7 +15,7 @@ use dim_agent_capabilities::{
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionIdentity};
-use dim_agent_types::{DEFAULT_BRANCH_ID, ToolCall, ToolDefinition, ToolResult, ToolSource};
+use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use jiff::Timestamp;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -47,7 +48,7 @@ const LOOP_UNAVAILABLE: &str = "loop is available only in interactive leader Ses
 const LOOP_CANCELLED_BEFORE_HANDOVER: &str = "loop: cancelled before handover";
 /// The `loop` tool's declaration (design §12.4). The description sentences
 /// that say when to continue and when to stop are policy text.
-const LOOP_DESCRIPTION: &str = "Run this Session's work on a rhythm you choose. A loop delivers its prompt as one ordinary input of this branch, marked as that loop's round, and the loop ends unless you arm the next round with action=next.\n- start: begin a loop with delay_seconds until its first round is due (default 300).\n- next: arm the following round after the current one, between 60 and 3600 seconds out; choose short waits while work is moving and long ones when nothing is pending, and stop instead of waiting when the work is done.\n- stop: end the loop now.\n- list: the loops of this branch, with their state, round and next due time.\nA loop ends after 7 days; a loop whose Session or branch is gone stops.";
+const LOOP_DESCRIPTION: &str = "Run this Session's work on a rhythm you choose. A loop delivers its prompt as one ordinary input of this branch, marked as that loop's round, and the loop ends unless you arm the next round with action=next.\n- start: begin a loop whose first round is due after delay_seconds, required and clamped to 60..3600 seconds out; nothing is delivered when you call it.\n- next: arm the following round after the current one, between 60 and 3600 seconds out; choose short waits while work is moving and long ones when nothing is pending, and stop instead of waiting when the work is done. When the user changes the rhythm, call next with the new delay: it replaces the pending round.\n- stop: end the loop now.\n- list: the loops of this branch, with their state, round and next due time.\nA loop ends after 7 days; a loop whose Session or branch is gone stops.";
 
 fn declaration(description: &str) -> ToolDefinition {
     let mut tool = definition(
@@ -300,9 +301,12 @@ pub(crate) struct CancelParams {
 }
 
 /// The non-empty-string check the neighbouring Session methods use.
-pub(crate) fn nonempty(text: &str, field: &str) -> Result<(), RpcError> {
+pub(crate) fn nonempty(text: &str, field: &str) -> Result<(), SchedulerError> {
     if text.is_empty() {
-        return Err(RpcError::invalid(format!("{field} must not be empty")));
+        return Err(SchedulerError::new(
+            "invalid_params",
+            format!("{field} must not be empty"),
+        ));
     }
     Ok(())
 }
@@ -348,6 +352,26 @@ fn loop_listing(records: &[loops::Loop]) -> String {
     text
 }
 
+/// A loop as the model reads it: the wire record with the prompt bounded and
+/// `prompt_truncated` saying so, the way `job_preview` bounds a job's; the wire
+/// itself carries the whole prompt. `next` and `stop` reach a record by its
+/// Session-wide id, so a loop of another branch answers with its state and
+/// timing only: the prompt belongs to the branch that owns the loop.
+fn loop_preview(record: &loops::Loop, caller: &str) -> Value {
+    let mut value = wire_loop(record);
+    if record.branch_id != caller {
+        value
+            .as_object_mut()
+            .expect("wire_loop returns a record")
+            .remove("prompt");
+        return value;
+    }
+    let prompt = truncate(&record.prompt, PROMPT_PREVIEW_BYTES);
+    value["prompt_truncated"] = json!(prompt.len() < record.prompt.len());
+    value["prompt"] = json!(prompt);
+    value
+}
+
 /// The `session.loop.*` handler: parses at the wire boundary, forwards to the
 /// process owner, and maps its errors.
 fn loop_handler(loops: Arc<Loops>) -> dim_agent_capabilities::methods::Handler {
@@ -362,12 +386,13 @@ fn loop_handler(loops: Arc<Loops>) -> dim_agent_capabilities::methods::Handler {
             match method.as_str() {
                 "session.loop.start" => {
                     let p: LoopStartParams = params(value)?;
-                    let created = loops.start(loop_start_request(p)?).await?;
+                    let request = loop_start_request(&loops.shared, p).await?;
+                    let created = loops.start(request).await?;
                     reply(json!({ "loop": wire_loop(&created) }))
                 }
                 "session.loop.list" => {
                     let p: LoopListParams = params(value)?;
-                    let (session_id, branch) = loop_list_scope(p)?;
+                    let (session_id, branch) = loop_list_scope(&loops.shared, p).await?;
                     let own = loops.list(&session_id, &branch).await?;
                     reply(json!({
                         "loops": own.iter().map(wire_loop).collect::<Vec<_>>()
@@ -402,7 +427,7 @@ fn loop_declaration() -> ToolDefinition {
             "properties": {
                 "action": {"type": "string", "enum": ["start", "next", "stop", "list"]},
                 "prompt": {"type": "string", "description": format!("[start] The text each round delivers, at most {MAX_PROMPT_BYTES} bytes of UTF-8.")},
-                "delay_seconds": {"type": "integer", "description": "[start, next] Seconds until the round is due; a next delay is clamped to 60..3600."},
+                "delay_seconds": {"type": "integer", "description": "[start, next] Seconds until the round is due; required for start; a start or next delay is clamped to 60..3600."},
                 "loop_id": {"type": "string", "description": "[next, stop] The loop to act on; absent, the branch's only loop."}
             }
         }),
@@ -440,27 +465,42 @@ pub(crate) struct LoopStopParams {
 }
 
 /// The one parse of a loop start, shared by the `session.loop.start` handler
-/// and the `loops` data face's `start`, so both answer the same errors.
-pub(crate) fn loop_start_request(params: LoopStartParams) -> Result<StartRequest, RpcError> {
+/// and the `loops` data face's `start`, so both answer the same errors and
+/// both read an omitted branch's default once (timeline branches §20.22).
+pub(crate) async fn loop_start_request(
+    shared: &Shared,
+    params: LoopStartParams,
+) -> Result<StartRequest, SchedulerError> {
     nonempty(&params.session_id, "sessionId")?;
-    let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-    nonempty(branch, "branchId")?;
+    let branch = match params.branch_id {
+        Some(branch) => branch,
+        None => shared.default_branch(&params.session_id).await?,
+    };
+    nonempty(&branch, "branchId")?;
     nonempty(&params.prompt, "prompt")?;
-    prompt_size(&params.prompt).map_err(RpcError::invalid)?;
+    prompt_size(&params.prompt)
+        .map_err(|message| SchedulerError::new("invalid_params", message))?;
     Ok(StartRequest {
         session_id: params.session_id,
-        branch_id: branch.to_owned(),
+        branch_id: branch,
         prompt: params.prompt,
         every_seconds: params.every_seconds,
+        first_delay_seconds: None,
     })
 }
 
 /// The one parse of a loop list scope, shared by the handler and the face.
-pub(crate) fn loop_list_scope(params: LoopListParams) -> Result<(String, String), RpcError> {
+pub(crate) async fn loop_list_scope(
+    shared: &Shared,
+    params: LoopListParams,
+) -> Result<(String, String), SchedulerError> {
     nonempty(&params.session_id, "sessionId")?;
-    let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-    nonempty(branch, "branchId")?;
-    Ok((params.session_id, branch.to_owned()))
+    let branch = match params.branch_id {
+        Some(branch) => branch,
+        None => shared.default_branch(&params.session_id).await?,
+    };
+    nonempty(&branch, "branchId")?;
+    Ok((params.session_id, branch))
 }
 
 /// The one parse of a loop stop target, shared by the handler and the face.
@@ -511,6 +551,22 @@ pub(crate) fn wakeup_request(
     })
 }
 
+/// The one parse of a wakeup list scope, shared by the handler and the face:
+/// an omitted branch is the Session's default, read once
+/// (timeline branches §20.22).
+pub(crate) async fn wakeup_list_scope(
+    shared: &Shared,
+    params: ListParams,
+) -> Result<(String, String), SchedulerError> {
+    nonempty(&params.session_id, "sessionId")?;
+    let branch = match params.branch_id {
+        Some(branch) => branch,
+        None => shared.default_branch(&params.session_id).await?,
+    };
+    nonempty(&branch, "branchId")?;
+    Ok((params.session_id, branch))
+}
+
 /// The created record as the wire spells it (design §10).
 pub(crate) fn wire_scheduled(wakeup: &crate::wakeups::Wakeup) -> Value {
     json!({
@@ -541,10 +597,8 @@ fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Han
                 }
                 "session.wakeup.list" => {
                     let p: ListParams = params(value)?;
-                    nonempty(&p.session_id, "sessionId")?;
-                    let branch_id = p.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-                    nonempty(branch_id, "branchId")?;
-                    let own = wakeups.list(&p.session_id, branch_id).await?;
+                    let (session_id, branch_id) = wakeup_list_scope(&wakeups.shared, p).await?;
+                    let own = wakeups.list(&session_id, &branch_id).await?;
                     reply(json!({
                         "wakeups": own.iter().map(wire_scheduled).collect::<Vec<_>>()
                     }))
@@ -729,8 +783,6 @@ struct LoopArgs {
     #[serde(default)]
     delay_seconds: Option<i64>,
     #[serde(default)]
-    every_seconds: Option<u64>,
-    #[serde(default)]
     loop_id: Option<String>,
 }
 
@@ -803,18 +855,29 @@ impl ToolHandler for LoopTool {
                     if let Err(message) = prompt_size(&prompt) {
                         return Ok(ToolResult::error(format!("loop: loop_invalid\n{message}")));
                     }
+                    let Some(delay) = args.delay_seconds else {
+                        return Ok(ToolResult::error(
+                            "loop: loop_invalid\nstart requires delay_seconds between 60 and 3600",
+                        ));
+                    };
+                    // The tool never delivers at the call, so its first round
+                    // waits the delay it announced (§12.2); the user's entries
+                    // leave the delay absent and stay due now.
+                    let delay = loops::clamp_next(delay);
                     self.loops
                         .start(StartRequest {
                             session_id: self.session_id.clone(),
                             branch_id: branch_id.clone(),
                             prompt,
-                            every_seconds: args.every_seconds,
+                            every_seconds: None,
+                            first_delay_seconds: Some(delay),
                         })
                         .await
                         .map(|record| {
                             format!(
-                                "loop: started\n{}\nThe first round is due now; arm the following one with action=next.",
-                                wire_loop(&record)
+                                "loop: started\n{}\nThe first round is due at {}, in {delay} seconds. It is not delivered now: work that is due now belongs to this turn.",
+                                loop_preview(&record, &branch_id),
+                                record.next_at.as_deref().unwrap_or_default(),
                             )
                         })
                         .map_err(|error| format!("loop: {}\n{}", error.code, error.message))
@@ -828,7 +891,7 @@ impl ToolHandler for LoopTool {
                     self.loops
                         .next(&self.session_id, &loop_id, delay)
                         .await
-                        .map(|record| format!("loop: next\n{}", wire_loop(&record)))
+                        .map(|record| format!("loop: next\n{}", loop_preview(&record, &branch_id)))
                         .map_err(|error| format!("loop: {}\n{}", error.code, error.message))
                 }
                 "stop" => {
@@ -839,7 +902,9 @@ impl ToolHandler for LoopTool {
                     self.loops
                         .stop(&self.session_id, &loop_id)
                         .await
-                        .map(|(record, _)| format!("loop: stopped\n{}", wire_loop(&record)))
+                        .map(|(record, _)| {
+                            format!("loop: stopped\n{}", loop_preview(&record, &branch_id))
+                        })
                         .map_err(|error| format!("loop: {}\n{}", error.code, error.message))
                 }
                 "list" => self

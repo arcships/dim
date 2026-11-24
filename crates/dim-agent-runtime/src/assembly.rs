@@ -26,30 +26,74 @@ pub const SESSION_GROUP: &str = "session";
 /// Instanced loader group of one branch, nested in [`SESSION_GROUP`].
 pub const BRANCH_GROUP: &str = "branch";
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct OpeningAdvanced(pub PluginId);
+#[derive(Clone, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum OpeningAdvanced {
+    Plugin(PluginId),
+    Instance(String),
+}
 impl rutis::Event for OpeningAdvanced {
     const NAME: &'static str = "dim/opening-advanced";
     type Value = ();
 }
 
 /// Reports that the opening this context's plugin belongs to advanced: the
-/// plugin made real progress in its `apply`. Any plugin whose opening can run
-/// long may call it; it renews the [`StartupProgress`] inactivity interval of
-/// every opening whose subtree contains the plugin's row, and changes nothing
-/// else about the opening. A report is a synchronous event, so a plugin whose
-/// work runs on a blocking thread reports from there. A context whose plugin
-/// has no live fiber reports nothing: the report would be dropped anyway.
+/// plugin made real progress in work the opening waits for, its own `apply` or
+/// a restore of the lines it owns. Any plugin whose opening can run long may
+/// call it; it renews the [`StartupProgress`] inactivity interval of every
+/// opening whose subtree contains the plugin's row, and changes nothing else
+/// about the opening. A report is a synchronous event, so a plugin whose work
+/// runs on a blocking thread reports from there. A context whose plugin has no
+/// live fiber reports nothing: the report would be dropped anyway.
+///
+/// The report is attributed to this context's instance and costs no
+/// diagnostics snapshot; a task that reports at many steps may resolve its
+/// plugin id once with [`OpeningReporter::new`] and report through it instead.
 pub fn opening_advanced(ctx: &Ctx) {
-    let instance = ctx.instance();
-    let id = ctx
-        .diagnostics()
-        .plugins
-        .into_iter()
-        .find(|plugin| plugin.instance == instance)
-        .map(|plugin| plugin.id);
-    if let Some(id) = id {
-        let _ = ctx.emit(OpeningAdvanced(id));
+    if !ctx.cancellation_token().is_cancelled() {
+        let _ = ctx.emit(OpeningAdvanced::Instance(ctx.instance().to_string()));
+    }
+}
+
+/// The identity an opening report is attributed to, resolved once and reused at
+/// every report. A task that reports at many steps, such as a restore after
+/// each read, costs one process diagnostics snapshot for the whole task instead
+/// of one per step.
+///
+/// Every report still counts only the openings whose subtree contains the row
+/// when they read it; a report after the row has ended extends no opening.
+pub struct OpeningReporter {
+    ctx: Ctx,
+    id: PluginId,
+}
+
+impl OpeningReporter {
+    /// Resolves the plugin id of `ctx`'s plugin, or none when no live fiber has
+    /// that instance.
+    pub fn new(ctx: &Ctx) -> Option<Self> {
+        let instance = ctx.instance();
+        let id = ctx
+            .diagnostics()
+            .plugins
+            .into_iter()
+            .find(|plugin| plugin.instance == instance)
+            .map(|plugin| plugin.id)?;
+        Some(Self {
+            ctx: ctx.clone(),
+            id,
+        })
+    }
+
+    /// Reports real progress; see [`opening_advanced`].
+    pub fn report(&self) {
+        let _ = self.ctx.emit(OpeningAdvanced::Plugin(self.id));
+    }
+
+    /// The fiber this reporter's reports are attributed to. Feature `testing`
+    /// only: a flow test asserts which tree's fiber a report lands on.
+    #[cfg(feature = "testing")]
+    pub fn id(&self) -> PluginId {
+        self.id
     }
 }
 
@@ -68,7 +112,7 @@ pub struct StartupProgress {
     ctx: Ctx,
     started: tokio::time::Instant,
     timeout: Duration,
-    active: Arc<Mutex<HashMap<PluginId, tokio::time::Instant>>>,
+    active: Arc<Mutex<HashMap<OpeningAdvanced, tokio::time::Instant>>>,
     report: Arc<Mutex<Option<ProgressReport>>>,
     listeners: Vec<rutis::Disposer>,
 }
@@ -84,7 +128,7 @@ impl StartupProgress {
             if event.to == FiberState::Active {
                 let inserted = {
                     let mut changes = changes.lock().unwrap();
-                    match changes.entry(event.plugin_id) {
+                    match changes.entry(OpeningAdvanced::Plugin(event.plugin_id)) {
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             entry.insert(tokio::time::Instant::now());
                             true
@@ -114,7 +158,7 @@ impl StartupProgress {
                 changes
                     .lock()
                     .unwrap()
-                    .insert(event.0, tokio::time::Instant::now());
+                    .insert((*event).clone(), tokio::time::Instant::now());
                 notify_progress(&reports);
                 Ok(None)
             })?);
@@ -150,15 +194,24 @@ impl StartupProgress {
                 .into_iter()
                 .flat_map(|id| subtree(&snapshot, id))
                 .collect();
-            let last = self
-                .active
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(id, _)| members.contains(id))
-                .map(|(_, time)| *time)
-                .max()
-                .unwrap_or(self.started);
+            let last = {
+                let active = self.active.lock().unwrap();
+                let by_plugin = members
+                    .iter()
+                    .filter_map(|&id| active.get(&OpeningAdvanced::Plugin(id)));
+                let by_instance = snapshot
+                    .plugins
+                    .iter()
+                    .filter(|plugin| members.contains(&plugin.id))
+                    .filter_map(|plugin| {
+                        active.get(&OpeningAdvanced::Instance(plugin.instance.to_string()))
+                    });
+                by_plugin
+                    .chain(by_instance)
+                    .copied()
+                    .max()
+                    .unwrap_or(self.started)
+            };
             deadline = last + self.timeout;
             if deadline <= tokio::time::Instant::now() {
                 return None;
@@ -683,6 +736,11 @@ impl AgentBuilder {
                 session: required_session.clone(),
                 branch: required_branch.clone(),
             };
+            let extension_groups: Arc<[String]> = assembly
+                .extensions
+                .iter()
+                .map(|(group, _)| group.clone())
+                .collect();
             builtins.register(session_scope_module, move |build| {
                 let owner = build.value::<Arc<SessionAssembly>>().ok_or_else(|| {
                     rutis::Error::from(ErrorKind::PluginFailed(
@@ -692,12 +750,14 @@ impl AgentBuilder {
                 let scope = session_scope(build)?;
                 *owner.instance.lock().unwrap() = Some(scope.instance);
                 let required = required_session.clone();
+                let extension_groups = extension_groups.clone();
                 let build = build.clone();
                 Factory::new(move || {
                     Box::new(SessionScopePlugin {
                         owner: (*owner).clone(),
                         scope,
                         build: build.clone(),
+                        extension_groups: extension_groups.clone(),
                         required: required.clone(),
                     }) as Box<dyn DynPlugin>
                 })
@@ -1072,7 +1132,6 @@ pub(crate) struct SessionAssembly {
     pub id: String,
     pub restored: bool,
     pub unloading: CancellationToken,
-    pub faults: FaultReporter,
     pub closing: CancellationToken,
     pub lifecycle: SessionLifecycle,
     pub loaded: Mutex<Option<Arc<Loaded<SessionScope>>>>,
@@ -1099,6 +1158,7 @@ struct SessionScopePlugin {
     /// The names of this copy's instances, for the mounters it builds.
     build: Build,
     required: Arc<[String]>,
+    extension_groups: Arc<[String]>,
 }
 impl DynPlugin for SessionScopePlugin {
     fn name(&self) -> &str {
@@ -1109,7 +1169,12 @@ impl DynPlugin for SessionScopePlugin {
             let (owner, scope) = (&self.owner, self.scope);
             ctx.provide_at(
                 scope.key::<crate::SessionLoader>(),
-                Arc::new(crate::SessionLoader::new(owner.loader.clone(), ctx.clone())),
+                Arc::new(crate::SessionLoader::new(
+                    owner.loader.clone(),
+                    ctx.clone(),
+                    Some(SESSION_GROUP),
+                    self.extension_groups.clone(),
+                )),
             )?;
             ctx.provide_at(scope.key::<SessionConfig>(), Arc::new(owner.config.clone()))?;
             ctx.provide_at(
@@ -1140,7 +1205,6 @@ impl DynPlugin for SessionScopePlugin {
                 rutis_bridge::session::host_key("timelineStore").instance(scope.instance),
                 owner.assembly.store.clone(),
             )?;
-            ctx.provide_at(scope.key::<FaultReporter>(), Arc::new(owner.faults.clone()))?;
             for provide in &owner.assembly.values {
                 provide(ctx, &scope)?;
             }
@@ -1268,7 +1332,6 @@ struct LoadedBranch {
     timeline: Timeline,
     dispatcher: Dispatcher,
     lifecycle: BranchLifecycle,
-    opening: Arc<BranchOpening>,
 }
 struct BranchScopePlugin {
     owner: Arc<BranchAssembly>,
@@ -1298,15 +1361,13 @@ impl DynPlugin for BranchScopePlugin {
                 ancestors,
                 session.assembly.store.clone(),
                 owner.sequence,
-                session.faults.clone(),
+                session.lifecycle.faults.clone(),
             );
             let dispatcher = Dispatcher::new(scope.instance, owner.sequence, timeline.clone());
             ctx.provide_at(scope.key::<Timeline>(), Arc::new(timeline.clone()))?;
             ctx.provide_at(scope.key::<Dispatcher>(), Arc::new(dispatcher.clone()))?;
             let lifecycle = BranchLifecycle::new();
             ctx.provide_at(scope.key::<BranchLifecycle>(), Arc::new(lifecycle.clone()))?;
-            let opening = Arc::new(BranchOpening::new());
-            ctx.provide_at(scope.key::<BranchOpening>(), opening.clone())?;
             ctx.provide_at(
                 scope.key::<TimelineIdentity>(),
                 Arc::new(TimelineIdentity {
@@ -1325,7 +1386,6 @@ impl DynPlugin for BranchScopePlugin {
                 timeline,
                 dispatcher,
                 lifecycle,
-                opening,
             }));
             let site = Arc::new(crate::parts::MountSite {
                 scope: crate::PartScope::Branch,
@@ -1458,8 +1518,7 @@ impl TimelineFactory {
                     branch.timeline.clone(),
                     branch.dispatcher.clone(),
                     branch.lifecycle.clone(),
-                    branch.opening.clone(),
-                    parent.faults.clone(),
+                    parent.lifecycle.faults.clone(),
                     parent.assembly.catalog.clone(),
                 ))
             })
@@ -1582,7 +1641,7 @@ async fn create_instance(
                 .and_then(|instance| locate(loader, ctx, instance));
             let error = match &found {
                 _ if cancel.is_cancelled() => AgentError::Cancelled("initialization".into()),
-                Some(created) => timed_out(ctx, &created.children),
+                Some(created) => timed_out(ctx, &created.children, None),
                 None => AgentError::Build(format!("initialization timed out: {group}")),
             };
             if found.is_none() {
@@ -1624,7 +1683,7 @@ async fn create_instance(
     let mut ready = progress
         .wait(active_rows(&group, cancel), || vec![created.view.id])
         .await
-        .unwrap_or_else(|| Err(timed_out(ctx, &group)));
+        .unwrap_or_else(|| Err(timed_out(ctx, &group, None)));
     // Read after the group is Active: a settle can return while it still waits,
     // and its rows are the ones the required-row wait has to name.
     let mut waiting: Vec<FiberView> = loader
@@ -1637,7 +1696,7 @@ async fn create_instance(
         ready = progress
             .wait(active_rows(&waiting, cancel), || vec![created.view.id])
             .await
-            .unwrap_or_else(|| Err(timed_out(ctx, &waiting)));
+            .unwrap_or_else(|| Err(timed_out(ctx, &waiting, None)));
     }
     let mut handed = Handed::default();
     if ready.is_ok() {
@@ -1648,7 +1707,7 @@ async fn create_instance(
                 vec![created.view.id]
             })
             .await
-            .unwrap_or_else(|| Err(timed_out(ctx, &handed.required)));
+            .unwrap_or_else(|| Err(timed_out(ctx, &handed.required, None)));
         if let Err(error) = &ready
             && failed_mounter(&handed.required).is_some()
         {
@@ -1661,7 +1720,7 @@ async fn create_instance(
         ready = progress
             .wait(active_rows(&parts, cancel), || vec![created.view.id])
             .await
-            .unwrap_or_else(|| Err(timed_out(ctx, &parts)));
+            .unwrap_or_else(|| Err(timed_out(ctx, &parts, None)));
     }
     // Parts create nested instances while they load, and their rows are this
     // creation's members: read them once the waits above are done.
@@ -1693,7 +1752,7 @@ async fn create_instance(
             || vec![created.view.id],
         )
         .await
-        .unwrap_or_else(|| Err(timed_out(ctx, &created.children)));
+        .unwrap_or_else(|| Err(timed_out(ctx, &created.children, None)));
     match settled {
         Ok(()) => Ok(created),
         Err(error) => Err((error, Some(created))),
@@ -1820,7 +1879,6 @@ pub(crate) async fn build_session(
         config,
         id,
         restored: matches!(initialization, SessionInitialization::Restore(_)),
-        faults: FaultReporter::default(),
         unloading: CancellationToken::new(),
         lifecycle: SessionLifecycle::new(closing.clone()),
         closing,
@@ -1875,6 +1933,12 @@ pub(crate) async fn build_session(
             &session.ctx,
             session.scope.key::<dyn TimelineTreeControl>(),
         )?;
+        let phase = match &initialization {
+            SessionInitialization::Prepared(_) | SessionInitialization::Restore(_) => {
+                Some("restore")
+            }
+            SessionInitialization::New => None,
+        };
         let initialize = async {
             match initialization {
                 SessionInitialization::Prepared(branches)
@@ -1889,7 +1953,7 @@ pub(crate) async fn build_session(
                 match result {
                     Some(result) => result,
                     None => {
-                        let error = timed_out(host, std::slice::from_ref(&created.view));
+                        let error = timed_out(host, std::slice::from_ref(&created.view), phase);
                         tree.begin_close();
                         let _ = initialize.await;
                         Err(error)
@@ -1984,7 +2048,7 @@ pub async fn wait_active(
             views.iter().map(|view| view.id).collect()
         })
         .await
-        .unwrap_or_else(|| Err(timed_out(ctx, views)))
+        .unwrap_or_else(|| Err(timed_out(ctx, views, None)))
 }
 
 async fn active_rows(views: &[FiberView], cancel: &CancellationToken) -> Result<()> {
@@ -2031,7 +2095,7 @@ async fn active_rows(views: &[FiberView], cancel: &CancellationToken) -> Result<
         }
     }
 }
-fn timed_out(ctx: &Ctx, views: &[FiberView]) -> AgentError {
+fn timed_out(ctx: &Ctx, views: &[FiberView], phase: Option<&str>) -> AgentError {
     let snapshot = ctx.diagnostics();
     let ids: HashSet<_> = views
         .iter()
@@ -2051,6 +2115,13 @@ fn timed_out(ctx: &Ctx, views: &[FiberView]) -> AgentError {
             format!("{} {:?} [{}]", p.name, p.state, unmet.join(", "))
         })
         .collect();
+    if pending.is_empty()
+        && let Some(phase) = phase
+    {
+        return AgentError::Build(format!(
+            "initialization timed out: no pending row in this wait; still running: {phase}"
+        ));
+    }
     AgentError::Build(format!("initialization timed out: {}", pending.join("; ")))
 }
 

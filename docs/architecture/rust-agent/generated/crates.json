@@ -344,6 +344,10 @@
     "to": "dim-agent-types"
   },
   {
+    "from": "dim-oauth",
+    "to": "dim-client"
+  },
+  {
     "from": "dim-session-title",
     "to": "dim-agent-capabilities"
   },
@@ -422,6 +426,10 @@
   {
     "from": "dim-goal",
     "to": "dim-client"
+  },
+  {
+    "from": "dim-goal",
+    "to": "dim-goal"
   },
   {
     "from": "dim-report",
@@ -574,6 +582,10 @@
   {
     "from": "dimcode",
     "to": "dim-agent-types"
+  },
+  {
+    "from": "dimcode",
+    "to": "dim-client"
   },
   {
     "from": "dimcode",

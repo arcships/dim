@@ -28,6 +28,17 @@ const PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=";
 const REFERENCE: &str = "img:12c5f2d047c10416";
 const PROVIDER: &str = "176ea61e-7705-491f-b005-e2085d52b431";
+const GEMINI_PROVIDER: &str = "b5f2c4b6-31d6-4a9a-9f0b-7a3f0c1a2d64";
+/// A 1x1 GIF: a format Gemini does not take.
+const GIF: &str = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+/// A 1x1 WebP: a format only the compatible, Chat and Responses protocols take.
+const WEBP: &str = "UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
+/// The two native xAI driver kinds. The built-in `xai` and `grok-build`
+/// providers route through the compatible protocol, so only a custom provider
+/// reaches these.
+const NATIVE_XAI: [&str; 2] = ["xai", "xai-responses"];
+/// The New API route whose model the reuse tests re-point.
+const ROUTED_PROVIDER: &str = "2b0f6f5c-6b8f-4a3e-9a02-5e5b1f9c7d31";
 
 fn image() -> ImageSource {
     ImageSource {
@@ -161,11 +172,12 @@ async fn provider(stream: tokio::net::TcpStream, script: Arc<Script>) {
     } else {
         "stop"
     };
+    let model = request["model"].as_str().unwrap_or("gemini");
     let body = format!(
         "data: {}\n\ndata: [DONE]\n\n",
         json!({
-            "id":"answer","object":"chat.completion.chunk","created":0,"model":request["model"],
-            "choices":[{"index":0,"delta":{"content":format!("answer from {}",request["model"].as_str().unwrap())},"finish_reason":reason}]
+            "id":"answer","object":"chat.completion.chunk","created":0,"model":model,
+            "choices":[{"index":0,"delta":{"content":format!("answer from {model}")},"finish_reason":reason}]
         })
     );
     let reply = format!(
@@ -291,6 +303,7 @@ struct Fixture {
     script: Arc<Script>,
     tools: Tools,
     home: std::path::PathBuf,
+    endpoint: String,
     provider_task: tokio::task::JoinHandle<()>,
     histories: Histories,
 }
@@ -376,6 +389,7 @@ impl Fixture {
             script,
             tools,
             home,
+            endpoint: endpoint.clone(),
             provider_task,
             histories,
         };
@@ -386,7 +400,15 @@ impl Fixture {
             "connection":{"driverKind":"openai-compatible","baseUrl":endpoint,"auth":{"type":"anonymous"}},
             "models":[
                 {"modelId":"alpha","displayName":"alpha","status":"active","capabilities":vision},
-                {"modelId":"beta","displayName":"beta","status":"active","capabilities":vision}
+                {"modelId":"beta","displayName":"beta","status":"active","capabilities":vision},
+                {"modelId":"text","displayName":"text","status":"active","capabilities":CatalogCapabilities::with_limits(128_000, 1024)}
+            ]
+        })).await;
+        fixture.rpc("provider.create", json!({
+            "providerId":GEMINI_PROVIDER, "displayName":"Gemini fixture", "enabled":true,
+            "connection":{"driverKind":"gemini","baseUrl":endpoint,"auth":{"type":"anonymous"}},
+            "models":[
+                {"modelId":"gemini-alpha","displayName":"gemini-alpha","status":"active","capabilities":vision}
             ]
         })).await;
         fixture
@@ -405,8 +427,80 @@ impl Fixture {
             .unwrap()
     }
     async fn configure(&self, model: Option<&str>) {
+        self.configure_to(PROVIDER, model).await;
+    }
+    async fn configure_to(&self, provider: &str, model: Option<&str>) {
         let revision = self.rpc("modality.capabilities", json!({})).await["revision"].clone();
-        self.rpc("modality.configure", json!({"expectedRevision":revision,"category":"image","operation":"understand","model":model.map(|id| json!({"providerId":PROVIDER,"modelId":id}))})).await;
+        self.rpc("modality.configure", json!({"expectedRevision":revision,"category":"image","operation":"understand","model":model.map(|id| json!({"providerId":provider,"modelId":id}))})).await;
+    }
+    /// A custom provider of one native xAI driver kind, serving a vision
+    /// model on this fixture's endpoint.
+    async fn native_xai(&self, driver: &str) -> String {
+        let provider = uuid::Uuid::new_v4().to_string();
+        let mut vision = CatalogCapabilities::with_limits(128_000, 1024);
+        vision.vision = true;
+        self.rpc("provider.create", json!({
+            "providerId":provider, "displayName":"Native xAI fixture", "enabled":true,
+            "connection":{"driverKind":driver,"baseUrl":self.endpoint,"auth":{"type":"anonymous"}},
+            "models":[
+                {"modelId":"grok-vision","displayName":"grok-vision","status":"active","capabilities":vision}
+            ]
+        }))
+        .await;
+        provider
+    }
+    /// Points the built-in `xai` provider at this fixture's endpoint: the
+    /// catalog entry serves xAI over the compatible protocol, so this keeps its
+    /// identity and driver while the wire goes to the fixture.
+    async fn builtin_xai(&self) {
+        let view = self
+            .rpc("provider.management", json!({"providerId":"xai"}))
+            .await;
+        let version = view["providers"][0]["version"].as_u64().unwrap();
+        self.rpc(
+            "provider.update",
+            json!({
+                "providerId":"xai","expectedVersion":version,
+                "patch":{
+                    "baseUrl":self.endpoint,
+                    "credential":{"action":"set","value":"xai-fixture-key"},
+                    "enabled":true
+                }
+            }),
+        )
+        .await;
+    }
+    /// A New API route that serves `openai` at first: its model's protocol is
+    /// the route metadata, which a model edit can move without changing the
+    /// provider or the model id.
+    async fn routed(&self) {
+        let mut vision = CatalogCapabilities::with_limits(128_000, 1024);
+        vision.vision = true;
+        self.rpc("provider.create", json!({
+            "providerId":ROUTED_PROVIDER, "displayName":"Routed fixture", "enabled":true,
+            "connection":{"driverKind":"new-api-router","baseUrl":self.endpoint,"auth":{"type":"anonymous"}},
+            "models":[{
+                "modelId":"routed", "displayName":"routed", "status":"active", "capabilities":vision,
+                "metadata":{"raw":{"endpointType":"openai"}}
+            }]
+        }))
+        .await;
+    }
+    /// Moves the routed model's protocol, keeping its provider and model id.
+    async fn move_route(&self, endpoint: &str) {
+        let catalog = self
+            .rpc("provider.catalog", json!({"providerId":ROUTED_PROVIDER}))
+            .await;
+        self.rpc(
+            "provider.models.edit",
+            json!({
+                "providerId":ROUTED_PROVIDER,
+                "expectedVersion":catalog["catalog"]["version"],
+                "modelId":"routed",
+                "edit":{"endpoint":{"action":"set","value":endpoint}}
+            }),
+        )
+        .await;
     }
     async fn session(&self) -> Session {
         self.server
@@ -461,7 +555,67 @@ async fn idle(session: &Session, branch: &str) {
         .unwrap()
         .unwrap();
 }
+async fn turn(session: &Session, text: &str) {
+    session
+        .submit(text.into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    idle(session, "main").await;
+}
 async fn attach(fixture: &Fixture, session: &Session, branch: &str) {
+    attach_image(
+        fixture,
+        session,
+        branch,
+        session_model(session),
+        "attached.png",
+        PNG,
+        "image/png",
+    )
+    .await;
+}
+async fn attach_gif(fixture: &Fixture, session: &Session, branch: &str) {
+    attach_image(
+        fixture,
+        session,
+        branch,
+        session_model(session),
+        "attached.gif",
+        GIF,
+        "image/gif",
+    )
+    .await;
+}
+fn session_model(session: &Session) -> ModelSelection {
+    ModelSelection {
+        metadata: Some(RequestMetadata {
+            session_id: Some(session.id().into()),
+            ..Default::default()
+        }),
+        ..SessionConfig::default().model
+    }
+}
+async fn attach_with(fixture: &Fixture, session: &Session, branch: &str, model: ModelSelection) {
+    attach_image(
+        fixture,
+        session,
+        branch,
+        model,
+        "attached.png",
+        PNG,
+        "image/png",
+    )
+    .await;
+}
+async fn attach_image(
+    fixture: &Fixture,
+    session: &Session,
+    branch: &str,
+    model: ModelSelection,
+    name: &str,
+    data: &str,
+    media_type: &str,
+) {
     use base64::Engine;
     let stored = fixture
         .server
@@ -470,9 +624,9 @@ async fn attach(fixture: &Fixture, session: &Session, branch: &str) {
         .0
         .put(
             session.id().into(),
-            "attached.png".into(),
+            name.into(),
             base64::engine::general_purpose::STANDARD
-                .decode(PNG)
+                .decode(data)
                 .unwrap(),
             CancellationToken::new(),
         )
@@ -481,13 +635,7 @@ async fn attach(fixture: &Fixture, session: &Session, branch: &str) {
     session
         .configure(
             ConfigureUpdate {
-                model: Some(ModelSelection {
-                    metadata: Some(RequestMetadata {
-                        session_id: Some(session.id().into()),
-                        ..Default::default()
-                    }),
-                    ..SessionConfig::default().model
-                }),
+                model: Some(model),
                 ..Default::default()
             },
             branch,
@@ -498,6 +646,7 @@ async fn attach(fixture: &Fixture, session: &Session, branch: &str) {
         source_type: ImageSourceType::File,
         file_id: Some(stored.file_id),
         data: None,
+        media_type: media_type.into(),
         ..image()
     };
     session
@@ -514,14 +663,148 @@ async fn attach(fixture: &Fixture, session: &Session, branch: &str) {
         .unwrap();
     idle(session, branch).await;
 }
+fn selection(model_id: &str, vision: bool, session: &str) -> ModelSelection {
+    let target = ModelId {
+        provider_id: PROVIDER.into(),
+        model_id: model_id.into(),
+    };
+    ModelSelection {
+        provider_id: PROVIDER.into(),
+        model_id: model_id.into(),
+        capability_snapshot: Some(ModelCapabilitySnapshot {
+            target,
+            capabilities: ModelCapabilities {
+                vision,
+                ..ModelCapabilities::with_limits(128_000, 1024)
+            },
+            reasoning: None,
+            service_tier: None,
+        }),
+        config: None,
+        metadata: Some(RequestMetadata {
+            session_id: Some(session.into()),
+            ..Default::default()
+        }),
+    }
+}
+async fn configure_model(session: &Session, branch: &str, model_id: &str, vision: bool) {
+    session
+        .configure(
+            ConfigureUpdate {
+                model: Some(selection(model_id, vision, session.id())),
+                ..Default::default()
+            },
+            branch,
+        )
+        .await
+        .unwrap();
+}
 fn question() -> Value {
     json!({"image":REFERENCE, "question":"What is visible?"})
+}
+fn gif_reference() -> String {
+    dim_agent_capabilities::images::image_reference(&ImageSource {
+        source_type: ImageSourceType::Base64,
+        media_type: "image/gif".into(),
+        data: Some(GIF.into()),
+        url: None,
+        file_id: None,
+    })
+    .expect("the GIF fixture has a content reference")
+}
+fn webp_reference() -> String {
+    dim_agent_capabilities::images::image_reference(&ImageSource {
+        source_type: ImageSourceType::Base64,
+        media_type: "image/webp".into(),
+        data: Some(WEBP.into()),
+        url: None,
+        file_id: None,
+    })
+    .expect("the WebP fixture has a content reference")
+}
+fn gif_question() -> Value {
+    json!({"image":gif_reference(),"question":"What is visible?"})
 }
 fn text(result: &ToolResult) -> &str {
     let ToolContent::Text(text) = &result.content else {
         panic!("text answer")
     };
     text
+}
+fn request_images(request: &ModelRequest) -> Vec<ImageSource> {
+    let mut images = Vec::new();
+    for message in &request.messages {
+        let MessageContent::Parts(parts) = &message.content else {
+            continue;
+        };
+        for part in parts {
+            match part {
+                MessagePart::Image { source } => images.push(source.clone()),
+                MessagePart::ToolResult {
+                    content: ToolContent::Blocks(blocks),
+                    ..
+                } => images.extend(blocks.iter().filter_map(|block| match block {
+                    ContentBlock::Image { source } => Some(source.clone()),
+                    _ => None,
+                })),
+                _ => {}
+            }
+        }
+    }
+    images
+}
+fn request_texts(request: &ModelRequest) -> Vec<String> {
+    let mut texts = Vec::new();
+    for message in &request.messages {
+        let MessageContent::Parts(parts) = &message.content else {
+            continue;
+        };
+        for part in parts {
+            match part {
+                MessagePart::Text { text, .. } => texts.push(text.clone()),
+                MessagePart::ToolResult {
+                    content: ToolContent::Blocks(blocks),
+                    ..
+                } => texts.extend(blocks.iter().filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })),
+                _ => {}
+            }
+        }
+    }
+    texts
+}
+
+/// A standalone image question has no history a content reference could
+/// resolve against, so a target that does not take the image's format fails
+/// the call instead of answering without seeing the image.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_image_the_target_cannot_take_fails_without_an_answer() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    attach_gif(&fixture, &session, "main").await;
+    fixture
+        .configure_to(GEMINI_PROVIDER, Some("gemini-alpha"))
+        .await;
+    let result = fixture
+        .ask(
+            &session,
+            "main",
+            "gif",
+            json!({"image":gif_reference(),"question":"What is visible?"}),
+        )
+        .await;
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    assert!(
+        text(&result).starts_with("image_understand_failed:"),
+        "{result:?}"
+    );
+    assert!(
+        fixture.script.auxiliary.lock().unwrap().is_empty(),
+        "the target never receives a request without the image"
+    );
+    fixture.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -602,8 +885,359 @@ async fn image_questions_follow_current_defaults_and_reuse_only_completed_own_an
                 .unwrap()
                 .contains("image_understand")
         );
-        assert!(requests[0].messages.iter().any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, MessagePart::Text { text, .. } if text == REFERENCE)))));
+        assert!(
+            request_images(&requests[0])
+                .iter()
+                .any(|source| source.data.as_deref() == Some(PNG))
+        );
+        assert!(
+            !request_texts(&requests[0])
+                .iter()
+                .any(|text| text == REFERENCE)
+        );
     }
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vision_model_receives_a_read_image_as_pixels() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    configure_model(&session, "main", "alpha", true).await;
+    fixture.script.push(&[("read", "read-image", json!({}))]);
+    turn(&session, "read the image").await;
+    let request = fixture
+        .script
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(request.model_id, "alpha");
+    assert!(
+        request
+            .capability_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.capabilities.vision)
+    );
+    let images = request_images(&request);
+    assert_eq!(
+        images.len(),
+        1,
+        "the read image reaches the model as pixels"
+    );
+    assert_eq!(images[0].source_type, ImageSourceType::Base64);
+    assert_eq!(images[0].data.as_deref(), Some(PNG));
+    assert!(!request_texts(&request).iter().any(|text| text == REFERENCE));
+    assert!(fixture.script.auxiliary.lock().unwrap().is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vision_model_keeps_two_read_images_in_later_turns_without_image_understanding() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    configure_model(&session, "main", "alpha", true).await;
+    fixture
+        .script
+        .push(&[("read", "read-a", json!({})), ("read", "read-b", json!({}))]);
+    turn(&session, "read both images").await;
+    turn(&session, "compare the second difference").await;
+    let request = fixture
+        .script
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        request_images(&request).len(),
+        2,
+        "both read images stay in the later turn"
+    );
+    assert!(!request_texts(&request).iter().any(|text| text == REFERENCE));
+    let events = branch_events(&session, "main", ..).await.unwrap();
+    assert!(!events.iter().any(|event| matches!(&event.kind,
+        EventKind::ToolCall(data) if data.calls.iter().any(|call| call.name == "image_understand"))));
+    assert!(fixture.script.auxiliary.lock().unwrap().is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_text_model_receives_references_and_can_still_ask_image_understand() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    configure_model(&session, "main", "text", false).await;
+    fixture.script.push(&[("read", "read-image", json!({}))]);
+    fixture
+        .script
+        .push(&[("image_understand", "understand", question())]);
+    turn(&session, "read and inspect").await;
+    let after_read = {
+        let requests = fixture.script.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        requests[1].clone()
+    };
+    assert!(request_images(&after_read).is_empty());
+    assert!(
+        request_texts(&after_read)
+            .iter()
+            .any(|text| text == REFERENCE),
+        "a text model receives the reference"
+    );
+    assert!(
+        after_read
+            .tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(|tool| tool.name == "image_understand")),
+        "image_understand stays available to a text model"
+    );
+    let events = branch_events(&session, "main", ..).await.unwrap();
+    let answer = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ToolResult(data) => data
+                .results
+                .iter()
+                .find(|result| result.call_id == "understand"),
+            _ => None,
+        })
+        .expect("the image question ran");
+    assert_eq!(text(&answer.result), "answer from alpha");
+    assert_eq!(fixture.script.auxiliary.lock().unwrap().len(), 1);
+    configure_model(&session, "main", "alpha", true).await;
+    turn(&session, "look again").await;
+    let after_switch = fixture
+        .script
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        request_images(&after_switch).len(),
+        1,
+        "a later vision turn receives the stored image as pixels"
+    );
+    assert!(
+        !request_texts(&after_switch)
+            .iter()
+            .any(|text| text == REFERENCE)
+    );
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attachments_and_read_images_route_alike_on_both_models() {
+    let fixture = Fixture::new().await;
+    for (model_id, vision) in [("alpha", true), ("text", false)] {
+        let session = fixture.session().await;
+        attach_with(
+            &fixture,
+            &session,
+            "main",
+            selection(model_id, vision, session.id()),
+        )
+        .await;
+        fixture.script.push(&[("read", "read-image", json!({}))]);
+        turn(&session, "read the attached image").await;
+        let request = fixture
+            .script
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(request.model_id, model_id);
+        if vision {
+            assert_eq!(
+                request_images(&request).len(),
+                2,
+                "the attachment and the read image are both pixels for {model_id}"
+            );
+            assert!(!request_texts(&request).iter().any(|text| text == REFERENCE));
+        } else {
+            assert!(request_images(&request).is_empty());
+            assert_eq!(
+                request_texts(&request)
+                    .iter()
+                    .filter(|text| *text == REFERENCE)
+                    .count(),
+                2,
+                "the attachment and the read image share one reference for {model_id}"
+            );
+        }
+    }
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unsendable_image_is_a_placeholder_for_a_vision_model() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    configure_model(&session, "main", "alpha", true).await;
+    session
+        .input(
+            InputMessageData {
+                user: Some(UserInput {
+                    content: vec![
+                        ContentBlock::Image { source: image() },
+                        ContentBlock::Image {
+                            source: ImageSource {
+                                source_type: ImageSourceType::Url,
+                                media_type: "image/png".into(),
+                                data: None,
+                                url: Some("https://example.invalid/a.png".into()),
+                                file_id: None,
+                            },
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource {
+                                source_type: ImageSourceType::Base64,
+                                media_type: "image/svg+xml".into(),
+                                data: Some(PNG.into()),
+                                url: None,
+                                file_id: None,
+                            },
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource {
+                                source_type: ImageSourceType::Base64,
+                                media_type: "image/png".into(),
+                                data: Some("not base64!".into()),
+                                url: None,
+                                file_id: None,
+                            },
+                        },
+                    ],
+                }),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    idle(&session, "main").await;
+    let request = fixture
+        .script
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        request_images(&request).len(),
+        1,
+        "the sendable image still reaches the vision model"
+    );
+    assert_eq!(
+        request_texts(&request)
+            .iter()
+            .filter(|text| text.starts_with("[Image omitted:"))
+            .count(),
+        3,
+        "an unsendable image is a placeholder even for a vision model"
+    );
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_file_image_is_a_placeholder_for_a_vision_model() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    configure_model(&session, "main", "alpha", true).await;
+    let stored = fixture
+        .server
+        .service::<SessionFiles>()
+        .unwrap()
+        .0
+        .put(
+            session.id().into(),
+            "empty.png".into(),
+            Vec::new(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    session
+        .input(
+            InputMessageData {
+                user: Some(UserInput {
+                    content: vec![ContentBlock::Image {
+                        source: ImageSource {
+                            source_type: ImageSourceType::File,
+                            file_id: Some(stored.file_id),
+                            data: None,
+                            ..image()
+                        },
+                    }],
+                }),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    idle(&session, "main").await;
+    let request = fixture
+        .script
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert!(
+        request_images(&request).is_empty(),
+        "the empty owned file is not sent as an image block"
+    );
+    assert_eq!(
+        request_texts(&request)
+            .iter()
+            .filter(|text| text.starts_with("[Image omitted:"))
+            .count(),
+        1,
+        "the empty file takes the omission placeholder"
+    );
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_image_understanding_default_does_not_change_conversational_routing() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    configure_model(&session, "main", "alpha", true).await;
+    fixture.configure(Some("beta")).await;
+    attach_with(
+        &fixture,
+        &session,
+        "main",
+        selection("alpha", true, session.id()),
+    )
+    .await;
+    fixture.script.push(&[("read", "read-image", json!({}))]);
+    turn(&session, "read the attached image").await;
+    let request = fixture
+        .script
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(request.model_id, "alpha");
+    assert_eq!(
+        request_images(&request).len(),
+        2,
+        "the understood default does not replace pixels"
+    );
+    assert!(fixture.script.auxiliary.lock().unwrap().is_empty());
     fixture.close().await;
 }
 
@@ -924,5 +1558,245 @@ async fn a_compacted_image_resolves_from_history_after_the_index_is_rebuilt() {
         "answer from alpha"
     );
     assert_eq!(fixture.script.auxiliary.lock().unwrap().len(), 1);
+    fixture.close().await;
+}
+
+/// A standalone call has no history a content reference could resolve against,
+/// so both native xAI routes refuse a WebP before they send anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_image_the_native_xai_target_cannot_take_fails_without_a_request() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    attach_image(
+        &fixture,
+        &session,
+        "main",
+        session_model(&session),
+        "attached.webp",
+        WEBP,
+        "image/webp",
+    )
+    .await;
+    for driver in NATIVE_XAI {
+        let provider = fixture.native_xai(driver).await;
+        fixture.configure_to(&provider, Some("grok-vision")).await;
+        let result = fixture
+            .ask(
+                &session,
+                "main",
+                driver,
+                json!({"image":webp_reference(),"question":"What is visible?"}),
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true), "{driver}: {result:?}");
+        assert!(
+            text(&result).starts_with("image_understand_failed:"),
+            "{driver}: {result:?}"
+        );
+        assert!(
+            fixture.script.auxiliary.lock().unwrap().is_empty(),
+            "the {driver} route receives no request without the image"
+        );
+    }
+    fixture.close().await;
+}
+
+/// The built-in `xai` target is an xAI destination served over the compatible
+/// protocol, so a WebP fails the standalone call before it sends anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_image_the_builtin_xai_target_cannot_take_fails_without_a_request() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    attach_image(
+        &fixture,
+        &session,
+        "main",
+        session_model(&session),
+        "attached.webp",
+        WEBP,
+        "image/webp",
+    )
+    .await;
+    fixture.builtin_xai().await;
+    fixture.configure_to("xai", Some("grok-4.7")).await;
+    let result = fixture
+        .ask(
+            &session,
+            "main",
+            "webp",
+            json!({"image":webp_reference(),"question":"What is visible?"}),
+        )
+        .await;
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    assert!(
+        text(&result).starts_with("image_understand_failed:"),
+        "{result:?}"
+    );
+    assert!(
+        fixture.script.auxiliary.lock().unwrap().is_empty(),
+        "the built-in xai route receives no request without the image"
+    );
+    fixture.close().await;
+}
+
+/// An answer already committed for the built-in `xai` target is not reused for
+/// an image the destination does not take: the reference names the content, so
+/// the same bytes re-attached as a WebP still find the committed answer, and the
+/// format rule of the route that serves the target judges it first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_committed_for_the_builtin_xai_target_is_not_reused_for_an_unsupported_format() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    attach_image(
+        &fixture,
+        &session,
+        "main",
+        session_model(&session),
+        "attached.png",
+        PNG,
+        "image/png",
+    )
+    .await;
+    fixture.builtin_xai().await;
+    fixture.configure_to("xai", Some("grok-4.7")).await;
+    assert_eq!(
+        text(&fixture.ask(&session, "main", "png", question()).await),
+        "answer from grok-4.7"
+    );
+    assert_eq!(fixture.script.auxiliary.lock().unwrap().len(), 1);
+    attach_image(
+        &fixture,
+        &session,
+        "main",
+        session_model(&session),
+        "attached.webp",
+        PNG,
+        "image/webp",
+    )
+    .await;
+    let refused = fixture.ask(&session, "main", "webp", question()).await;
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    assert!(
+        text(&refused).starts_with("image_understand_failed:"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        fixture.script.auxiliary.lock().unwrap().len(),
+        1,
+        "the refused reuse sends no request"
+    );
+    fixture.close().await;
+}
+
+/// An answer stamped on a route that took the image is not reused after the
+/// same provider and model id move to a route that does not, while a format the
+/// new route still takes keeps its answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_is_not_reused_after_the_route_stops_taking_the_image_format() {
+    let fixture = Fixture::new().await;
+    fixture.routed().await;
+    let session = fixture.session().await;
+    attach(&fixture, &session, "main").await;
+    attach_gif(&fixture, &session, "main").await;
+    fixture.configure_to(ROUTED_PROVIDER, Some("routed")).await;
+    assert_eq!(
+        text(&fixture.ask(&session, "main", "png", question()).await),
+        "answer from routed"
+    );
+    assert_eq!(
+        text(&fixture.ask(&session, "main", "gif", gif_question()).await),
+        "answer from routed"
+    );
+    assert_eq!(fixture.script.auxiliary.lock().unwrap().len(), 2);
+    fixture.move_route("gemini").await;
+    assert_eq!(
+        text(&fixture.ask(&session, "main", "png-again", question()).await),
+        "answer from routed",
+        "a format the new route takes keeps its completed answer"
+    );
+    let refused = fixture
+        .ask(&session, "main", "gif-again", gif_question())
+        .await;
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    assert!(
+        text(&refused).starts_with("image_understand_failed:"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        fixture.script.auxiliary.lock().unwrap().len(),
+        2,
+        "the refused reuse sends no request"
+    );
+    fixture.close().await;
+}
+
+/// A call that arrives after the route moved is not handed the answer another
+/// caller's older route is still producing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_in_flight_is_not_shared_with_a_route_that_cannot_take_the_image() {
+    let fixture = Fixture::new().await;
+    fixture.routed().await;
+    let session = fixture.session().await;
+    attach_gif(&fixture, &session, "main").await;
+    fixture.configure_to(ROUTED_PROVIDER, Some("routed")).await;
+    let gate = CancellationToken::new();
+    *fixture.script.gate.lock().unwrap() = Some(gate.clone());
+    let tool = fixture.tool(&session);
+    let context = || ToolExecutionContext {
+        branch_id: "main".into(),
+        request_id: "fixture".into(),
+        turn_id: "fixture".into(),
+    };
+    let call = || ToolCall {
+        id: "fixture".into(),
+        name: "image_understand".into(),
+        input: gif_question().as_object().unwrap().clone(),
+    };
+    let first = tool
+        .handler
+        .execute(call(), context(), CancellationToken::new());
+    tokio::pin!(first);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture.script.auxiliary.lock().unwrap().is_empty() {
+            assert!(futures_util::poll!(&mut first).is_pending());
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first call reaches the route and waits for its answer");
+    fixture.move_route("gemini").await;
+    let selections = fixture.script.selections.load(Ordering::SeqCst);
+    let second = tool
+        .handler
+        .execute(call(), context(), CancellationToken::new());
+    tokio::pin!(second);
+    let second = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let std::task::Poll::Ready(result) = futures_util::poll!(&mut second) {
+                break result;
+            }
+            if fixture.script.selections.load(Ordering::SeqCst) > selections {
+                // The second call has read the moved route; let the answer in
+                // flight settle so the call returns either way.
+                gate.cancel();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the second call settles while the first answer is in flight")
+    .unwrap();
+    assert_eq!(second.is_error, Some(true), "{second:?}");
+    assert!(
+        text(&second).starts_with("image_understand_failed:"),
+        "{second:?}"
+    );
+    assert_eq!(
+        fixture.script.auxiliary.lock().unwrap().len(),
+        1,
+        "the second call neither joins the flight nor sends"
+    );
+    gate.cancel();
+    assert_eq!(text(&first.await.unwrap()), "answer from routed");
     fixture.close().await;
 }

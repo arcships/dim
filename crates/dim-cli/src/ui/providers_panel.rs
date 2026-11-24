@@ -147,7 +147,7 @@ impl ProvidersPanel {
                 let edited = !form.api_key.text().is_empty()
                     || form.base_url.text().trim() != form.original_base_url
                     || form.model_prefix.text().trim() != form.original_model_prefix;
-                if failed && form.version != Some(entry.version) {
+                if failed && form.version != entry.version {
                     form.message = Some(Err(t(
                         "Provider changed; review the retained draft and press Apply again",
                     )
@@ -155,7 +155,7 @@ impl ProvidersPanel {
                 }
                 form.connected = entry.status == "connected";
                 form.enabled = entry.enabled;
-                form.version = Some(entry.version);
+                form.version = entry.version;
                 form.original_base_url = entry.base_url.clone().unwrap_or_default();
                 form.original_model_prefix = entry.glued_prefix.clone().unwrap_or_default();
                 if !failed && !edited {
@@ -211,6 +211,16 @@ impl ProvidersPanel {
         if let Some(view) = self.oauth.as_mut().filter(|view| view.dim_panel()) {
             view.set_account(account);
         }
+    }
+
+    pub fn set_chatgpt_profiles(
+        &mut self,
+        result: Result<Vec<crate::login::ChatGptProfile>, String>,
+    ) -> Effect {
+        if let Some(view) = self.oauth.as_mut().filter(|view| view.chatgpt_panel()) {
+            return view.set_chatgpt_profiles(result);
+        }
+        Effect::None
     }
 
     /// The Dim account's usage from the host.
@@ -288,7 +298,7 @@ impl ProvidersPanel {
                 }
                 self.form = Some(Form {
                     provider_id: entry.id.clone(),
-                    version: Some(entry.version),
+                    version: entry.version,
                     original_base_url: entry.base_url.clone().unwrap_or_default(),
                     original_model_prefix: entry.glued_prefix.clone().unwrap_or_default(),
                     name: None,
@@ -326,6 +336,8 @@ impl ProvidersPanel {
         };
         let effect = if dim {
             Effect::LoginStatus(entry.id.clone())
+        } else if view.chatgpt_panel() {
+            Effect::ChatGptProfiles
         } else {
             view.auto_start()
         };
@@ -639,6 +651,11 @@ fn build_rows(providers: &[ProviderEntry]) -> Vec<Item> {
                 _ => "not connected",
             }
         });
+        let detail = if provider.id == crate::login::LEGACY_CODEX_ID {
+            format!("{detail} · {}", t("Legacy"))
+        } else {
+            detail.to_owned()
+        };
         let mut row = Item::new(provider.id.clone(), label, detail);
         row.search = format!("{} {}", provider.id, provider.driver);
         rows.push(row);
@@ -737,7 +754,7 @@ mod tests {
     fn entry(id: &str, name: &str, status: &str, current: bool) -> ProviderEntry {
         ProviderEntry {
             id: id.into(),
-            version: 3,
+            version: Some(3),
             name: name.into(),
             driver: "openai".into(),
             status: status.into(),
@@ -810,7 +827,7 @@ mod tests {
                 ("mock", "current"),
                 ("Alpha", "disabled"),
                 ("Alpha (2)", "ready"),
-                ("Codex", "Sign in"),
+                ("Codex", "Sign in · Legacy"),
                 ("Grok Build", "Sign in"),
                 ("Read-only", "not connected"),
                 ("API key", "not connected"),
@@ -850,6 +867,7 @@ mod tests {
             panel.handle_key(key(KeyCode::Enter)),
             Effect::None
         ));
+        panel.handle_key(key(KeyCode::Down));
         assert!(matches!(
             panel.handle_key(key(KeyCode::Enter)),
             Effect::Logout(target) if target.provider_id == "openai-codex"
@@ -877,9 +895,9 @@ mod tests {
                 false,
             ),
             described(
-                "openai-codex",
-                "Codex",
-                "account.codex",
+                "test-browser",
+                "Test Browser",
+                "account.fixture",
                 &["browser"],
                 false,
             ),
@@ -901,8 +919,8 @@ mod tests {
         panel.handle_key(key(KeyCode::Down));
         assert!(matches!(
             panel.handle_key(key(KeyCode::Enter)),
-            Effect::OauthStart(start) if start.provider_id == "openai-codex"
-                && start.namespace == "account.codex"
+            Effect::OauthStart(start) if start.provider_id == "test-browser"
+                && start.namespace == "account.fixture"
                 && !start.device
         ));
     }
@@ -1000,7 +1018,7 @@ mod tests {
         }
         panel.set_result(Ok("Added My LLM!".into()));
         let mut saved = entry(&allocated_id, "My LLM!", "connected", false);
-        saved.version = 1;
+        saved.version = Some(1);
         saved.base_url = Some("http://localhost:8080/v1".into());
         panel.set_providers(Ok(vec![saved]));
         let form = panel.form.as_ref().unwrap();
@@ -1039,7 +1057,7 @@ mod tests {
             Effect::Refresh
         );
         let mut reread = entry(&allocated_id, "My LLM!", "connected", false);
-        reread.version = 2;
+        reread.version = Some(2);
         reread.base_url = Some("http://other-client.test/v1".into());
         reread.api_key_preview = Some("stored".into());
         panel.set_providers(Ok(vec![reread]));
@@ -1080,7 +1098,7 @@ mod tests {
         let allocated_id = form.provider_id.clone();
         panel.set_providers(Err("Snapshot unavailable".into()));
         let mut reread = entry(&allocated_id, "Recovered provider", "connected", false);
-        reread.version = 1;
+        reread.version = Some(1);
         reread.base_url = Some("https://first.example/v1".into());
         panel.set_providers(Ok(vec![reread]));
         let form = panel.form.as_ref().unwrap();

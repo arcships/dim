@@ -72,14 +72,16 @@ fn unauthorized() -> Reply {
     }
 }
 
-#[derive(Clone)]
-struct Scripted {
+struct Scripted<F> {
     requests: Arc<Mutex<Vec<Recorded>>>,
-    respond: Arc<dyn Fn(&Recorded) -> Reply + Send + Sync>,
+    respond: F,
 }
 
 #[async_trait]
-impl Fetch for Scripted {
+impl<F> Fetch for Scripted<F>
+where
+    F: Fn(&Recorded) -> Option<Reply> + Send + Sync + 'static,
+{
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
         let recorded = Recorded {
             method: request.method.clone(),
@@ -97,7 +99,9 @@ impl Fetch for Scripted {
             body: request.body.to_vec(),
         };
         self.requests.lock().unwrap().push(recorded.clone());
-        let reply = (self.respond)(&recorded);
+        let Some(reply) = (self.respond)(&recorded) else {
+            return std::future::pending().await;
+        };
         Ok(FetchResponse::from_bytes(
             reply.status,
             HeaderMap::new(),
@@ -114,7 +118,7 @@ fn scripted(
     let requests = Arc::new(Mutex::new(Vec::new()));
     let fetch: FetchFunction = Arc::new(Scripted {
         requests: requests.clone(),
-        respond: Arc::new(respond),
+        respond: move |request: &Recorded| Some(respond(request)),
     });
     (Arc::new(MediaAdapter::scripted(fetch)), requests)
 }
@@ -620,6 +624,105 @@ async fn an_unmapped_provider_is_unavailable() {
 
 fn path_is_inside(path: &Path, dir: &Path) -> bool {
     path.strip_prefix(dir).is_ok()
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_dim_account_relay_does_not_retry_a_timed_out_post() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let adapter = Arc::new(MediaAdapter::scripted(Arc::new(Scripted {
+        requests: requests.clone(),
+        respond: |_: &Recorded| None,
+    })));
+    let dir = work_dir("relay-timeout");
+    let error = run(
+        &adapter,
+        job(
+            "dimcode-api-oauth",
+            "arcship-image",
+            "image",
+            "generate",
+            json!({"prompt": "a red circle"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://relay.example.test/v1",
+        "arcship-image",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, AdapterErrorCode::ProviderError);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].method, Method::POST);
+    assert!(requests[0].url.ends_with("/images/generations"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// The Dim account relay speaks the OpenAI Image API on its `/v1` base with
+/// the account's bearer, for a model id only the relay knows (#1887).
+#[tokio::test]
+async fn the_dim_account_relay_serves_its_image_models_over_the_openai_image_api() {
+    let relay = ModelId {
+        provider_id: "dimcode-api-oauth".into(),
+        model_id: "arcship-image".into(),
+    };
+    let names: Vec<String> = MediaAdapter::new()
+        .operations(&relay)
+        .into_iter()
+        .map(|operation| format!("{}.{}", operation.category, operation.operation))
+        .collect();
+    assert_eq!(names, ["realtime.voice", "image.generate", "image.edit"]);
+
+    let dir = work_dir("relay");
+    let (adapter, requests) =
+        scripted(|_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]})));
+    let base = "https://relay.example.test/v1";
+    let generate = job(
+        "dimcode-api-oauth",
+        "arcship-image",
+        "image",
+        "generate",
+        json!({"prompt": "a red circle"}),
+        Vec::new(),
+        &dir,
+    );
+    let output = run(&adapter, generate, base, "arcship-image")
+        .await
+        .unwrap();
+    assert_eq!(output.files[0].media_type, "image/png");
+    let reference = input(&dir, "in.png", "image/png", PNG_HEADER);
+    let edit = job(
+        "dimcode-api-oauth",
+        "arcship-image",
+        "image",
+        "edit",
+        json!({"prompt": "add a hat"}),
+        vec![reference],
+        &dir,
+    );
+    run(&adapter, edit, base, "arcship-image").await.unwrap();
+
+    let requests = requests.lock().unwrap();
+    let urls: Vec<&str> = requests
+        .iter()
+        .map(|request| request.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://relay.example.test/v1/images/generations",
+            "https://relay.example.test/v1/images/edits"
+        ]
+    );
+    for request in requests.iter() {
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer test-credential")
+        );
+    }
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "arcship-image");
+    assert_eq!(body["prompt"], "a red circle");
 }
 
 /// One (row, operation) pair with the exact request it must send.

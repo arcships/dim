@@ -80,7 +80,7 @@ Subscription {
   id: "sub_<uuid>",
   types: ["im.message" | "im.*"],    // 1..16；精确类型或 "<source>.*"
   match?: { "<attr>": "<value>" },   // 至多 16 对；每一对都必须等于事件的属性
-  target: { sessionId, branchId },   // branchId 默认为 "main"
+  target: { sessionId, branchId },   // 请求省略 branchId 时取该 Session 的默认分支
   mode?: "queue" | "steer" | "append",
   origin: "tool" | "client",
   createdAt: "2026-11-08T09:15:04.120Z",
@@ -112,9 +112,10 @@ GuideRecord {
 | --- | --- | --- |
 | `delivered` | `{sessionId, branchId, subscriptionIds, inputId, sequence, truncated?, repeated?}` | 保留 |
 | `gone` | `{sessionId, branchId, subscriptionIds, code}`，`code` 为 `branch_missing` 或 `branch_ended` | 每条列出的订阅都被移除，因为该目标分支不会再接受输入；仅由 `to` 到达的分支，列表为空 |
-| `failed` | `{sessionId, branchId, subscriptionIds, code, message}`，`code` 为其他任何 `sessions` 错误或 `transport`：`session_closed`、`reloading`、`rejected`、`ambiguous`、`publication_unknown`、`transport`、`failed` | 每条列出的订阅都保留，并由 `lastFailure` 记录该码 |
+| `failed` | `{sessionId, branchId?, subscriptionIds, code, message}`，`code` 为其他任何 `sessions` 错误或 `transport`：`session_closed`、`reloading`、`rejected`、`ambiguous`、`publication_unknown`、`transport`、`failed` | 每条列出的订阅都保留，并由 `lastFailure` 记录该码 |
 
 - `subscriptionIds` 列出所有导致这条分支被投递的匹配订阅；仅由 `to` 到达的分支为空。表中的效果作用于每一条列出的订阅。
+- 省略的 `branchId` 无法解析的目标，其 `failed` 条目不携带 `branchId`：目标不命名任何线，`code` 就是该读取给出的答案（`session_closed`、`reloading`、`transport` 或其他 `sessions` 码）。
 - `repeated: true` 表示该分支已持有本进程内某次发布写入的同一事件输入；`inputId` 与 `sequence` 指向那个输入，且不含 `truncated`，见 2.4、3.2。
 - `failed` 不是拒绝：输入没有被写入，但有两种情况写入本身存疑：`publication_unknown`，此时它已提交而发布情况未知；以及 `transport`，此时 `sessions` 调用失败或其回复无法读取。生产方用同一个 `id` 重试会得到同一份回执，见 2.4。
 - 订阅的 `lastFailure` 只在发生变化时写入：设为一个新的码，或在一次已记录的失败之后清空。同一次发布的所有 `lastFailure` 变更在它的投递结束后合成一个事务。`eventhub.subscriptions` 会显示它，所以一条失效的订阅不必等生产方再发回执就能被看见。
@@ -135,7 +136,7 @@ GuideRecord {
 
 没有队列、没有未投递事件、没有重试、没有定时器、没有心跳。`publish` 只在每个目标都有了结果之后才回复，所以需要顺序的生产方逐次等待每个调用；并发的发布之间没有顺序。没能完成的投递由生产方根据回执自行决定。发布持有一份属于整个安装的投递预算，所有发布合计至多同时运行 8 个调用。这份预算同时约束 `sessions.lookup` 与 `sessions.input` 调用：二十个并发发布合起来仍然至多同时进行 8 个调用，发布给许多冷 Session 时会分批恢复它们，而不是一次全部恢复，一次发布也挤不掉另一次；一次恢复需要数秒 (一个 10 万事件、十条打开分支的 Session 约 4 秒，为 #1113 测得)。`publish` 自己没有超时：不能等待的生产方不要 await 它，那样做的同时也就放弃了顺序。
 
-实例状态(2.1)就是锁与预算所在：事件锁(2.4)、Session 锁(3.3)与投递预算。它们全是进程内存，所以重启后从空开始，每张映射在最后一个持有者释放时删除对应项。
+实例状态(2.1)就是锁与预算所在：事件锁(2.4)、Session 锁(3.3)与投递预算。它们全是进程内存，所以重启后从空开始，每张映射在最后一个持有者释放时删除对应项。它们只按一个顺序获取：事件锁、投递许可、目标 Session 的锁，最后是订阅文件的变更锁；因此没有任何一条路径会持有一把锁去等待另一把已经在等它的锁。投递在投递许可下等指南刷新所需的 Session 锁(3.3)；省略分支的 `subscribe` 先在一次许可下解析该分支，再取这把锁，两者因此不会互相等待，也没有哪次订阅会把整个安装的许可堵在身后。
 
 ### 2.6 被否决的替代方案
 
@@ -169,7 +170,7 @@ sequenceDiagram
   H-->>P: {eventId, deliveries}
 ```
 
-一条分支无论被多少个目标命中，都只投递一次。一个 `to` 条目给出了 `mode` 时用它；否则取匹配的订阅中有效模式最强者，顺序为 `steer` 高于 `queue` 高于 `append`，其中订阅的有效模式是它自己的 `mode`，没有则为类型声明的 `mode`。要求被唤醒的订阅者不会被没有这样要求的订阅者盖过。凡可选的 `branchId` 都默认为 `main`。零个目标不是错误：`deliveries: []`。
+一条分支无论被多少个目标命中，都只投递一次。一个 `to` 条目给出了 `mode` 时用它；否则取匹配的订阅中有效模式最强者，顺序为 `steer` 高于 `queue` 高于 `append`，其中订阅的有效模式是它自己的 `mode`，没有则为类型声明的 `mode`。要求被唤醒的订阅者不会被没有这样要求的订阅者盖过。凡请求可省略 `branchId` 时，它表示该 Session 当前的默认分支：`subscribe` 把该分支记入订阅，`publish` 每个请求一次地经 `sessions` 数据面解析每个省略分支的目标 Session——同一 Session 的第二个条目不重新读取，第一次的答案（包括失败）即它的答案——冷读受 hub 的投递预算约束。`subscribe` 先检查声明的类型，再解析省略的目标分支，因此被拒绝的类型绝不会恢复冷 Session；随后它也在同一投递预算下读取该 Session。publish 先回答进程准入、来源归属和类型，再解析任何目标，所以被拒绝的 publish 绝不恢复冷的 Session，而是回答自己的错误；省略分支无法解析的目标，无论读取回答了什么（`session_closed`、`reloading` 或 `transport`），都在它自己的 `failed` 回执条目里带该码作答且不带 `branchId`（同一 Session 只计一条，无论多少个条目录到它）；其余目标与所有匹配订阅照常规划并投递。已存订阅的目标永不改变。零个目标不是错误：`deliveries: []`。
 
 投递给一条被订阅的分支时，先按该分支与来源取出记录的指南，与当前声明对比(3.3)。二者不同时，它先在该 Session 的锁下把当前指南作为一条带键的 `append` 写出，然后写事件；仅由 `to` 到达的分支没有记录，也不写指南。
 
@@ -198,7 +199,7 @@ sequenceDiagram
 2. 为订阅命名的每个来源向目标分支各写一条 `append` 输入，提交 id 为 `eventhub-guide:<subscriptionId>:<source>`，它的唯一原始块是 `<dim-event-guide source="im">guide</dim-event-guide>`，键为 `eventhub:guide:<source>`，`use: live`。这次写入同时校验目标：分支不存在或已结束、Session 已关闭或任何其他 `sessions` 错误都会拒绝创建、什么也不存；`publication_unknown` 是例外，因为它说明输入已经提交，所以订阅会被存储，见 A.3。
 3. 存储订阅并带上它的 `origin`，同时为它写出的每个来源把该指南的 digest 存入该分支的 `GuideRecord`：由 `events` 工具发起时为 `tool`，由管理方法发起时为 `client`(2.2)。
 
-每次 `subscribe` 与 `unsubscribe` 从第一次检查到最后一次写指南或撤回为止，持有目标 Session 的一把锁；`agent/session-deleted` 处理与 3.4 的对账拿同一把锁。没有它，同一条分支上同一来源的两次变更可以交错：一条订阅写出它的指南，旧记录的取消订阅在新记录尚未存储时移除旧记录、撤回该键，然后订阅才存储新记录——已生效的指南被撤回。按 Session 加锁保留这个顺序，又不至于让宿主机上的每次订阅变更都被卡住：持锁时间由该 Session 自己的 `sessions.input` 调用决定，所以一次冷恢复只会堵住对该 Session 的变更。`gone` 移除不拿这把锁：该分支上的订阅会以同一个码在写指南时失败。每 Session 与总数上限仍在存储的变更里、文件锁之下执行。
+每次 `subscribe` 与 `unsubscribe` 都取目标 Session 的一把锁，并从那把锁下的第一次检查一直持有到最后一次写指南或撤回；省略分支的 `subscribe` 在拿这把锁之前，先在一次投递许可下解析该分支(2.5，timeline branches §20.22)。`agent/session-deleted` 处理与 3.4 的对账拿同一把锁。没有它，同一条分支上同一来源的两次变更可以交错：一条订阅写出它的指南，旧记录的取消订阅在新记录尚未存储时移除旧记录、撤回该键，然后订阅才存储新记录——已生效的指南被撤回。按 Session 加锁保留这个顺序，又不至于让宿主机上的每次订阅变更都被卡住：持锁时间由该 Session 自己的 `sessions.input` 调用决定，所以一次冷恢复只会堵住对该 Session 的变更。`gone` 移除不拿这把锁：该分支上的订阅会以同一个码在写指南时失败。每 Session 与总数上限仍在存储的变更里、文件锁之下执行。
 
 带键块在压缩之后会被重放，所以只要分支还订阅着，来源的手册就一直留在上下文里，跨重启、生产方关闭时也一样。对分支上已经生效的来源再建一条订阅，会以同样的文字写一次同一个键，覆盖该块而不改变模型读到的内容。`append` 从不启动一轮，见 `crates/dim-agent-capabilities/src/agent_loop.rs:149-157` 与 `crates/dim-agent-capabilities/src/input_queue.rs:167-180`。
 
@@ -358,7 +359,7 @@ publish { source: "im",
           title?: "Build failed",
           body: "…",
           attributes?: { "channel": "general", "user": "u1" },
-          to?: [ { sessionId: "…", branchId?: "main", mode?: "steer" } ] }
+          to?: [ { sessionId: "…", branchId?: "<branch>", mode?: "steer" } ] }
      -> { eventId: "7f3a", deliveries: [ Delivery ] }
 ```
 
@@ -369,7 +370,7 @@ publish { source: "im",
 | `title` | 一行，至多 256 字节 |
 | `body` | 文本，至多 1 MiB，否则 `too_large` |
 | `attributes` | 至多 16 项；键匹配 `[a-z][a-z0-9_-]{0,31}`；值是单行，每项至多 256 字节。`source`、`type`、`id`、`file`、`bytes` 与 `truncated` 是保留名，出现即 `invalid_event` |
-| `to` | 0 到 16 个目标，每项 `{sessionId, branchId?, mode?}` |
+| `to` | 0 到 16 个目标，每项 `{sessionId, branchId?, mode?}`；省略 `branchId` 时取该 Session 当前的默认分支 |
 
 `Delivery` 是 2.3 的三行之一：分支已持有该输入时，`delivered` 项带 `repeated: true` 且不含 `truncated`；`truncated: true` 只由写出该输入的那次发布给出(2.4、3.2)。除正文超限以外的字段格式错误都是 `invalid_event`。零个目标回复 `deliveries: []`。
 

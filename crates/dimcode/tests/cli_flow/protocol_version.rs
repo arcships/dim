@@ -403,16 +403,17 @@ fn a_resumed_session_of_a_newer_protocol_names_both_versions_and_offers_no_retry
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         wire.hello(&["session.permission.get", "session.permission.update"]);
-        let get = wire.read("session.permission.get");
+        let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["sessionId"], json!("session"));
         refuse_session_version(
             wire,
-            &get,
+            &attach,
             "Session was created by protocol version 5; this connection speaks 4",
         );
         assert_eq!(
             wire.trailing_request(),
             None,
-            "a refused Session must not be adopted, attached or submitted"
+            "a refused Session must not be adopted, written to or submitted"
         );
     });
     let mut command = home.command();

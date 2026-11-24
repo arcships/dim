@@ -1158,21 +1158,21 @@ impl UpgradeProgress {
             changed
         };
         if changed {
-            self.report(true);
+            let _ = self.report(true);
         }
     }
     /// Reports real progress when a second passed since the last report or
-    /// when `force`d at a step boundary.
-    fn report(&self, force: bool) {
+    /// when `force`d at a step boundary, and returns the counter it wrote.
+    fn report(&self, force: bool) -> Option<u64> {
         let now = std::time::Instant::now();
-        let counter = {
+        let (counter, stage) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if !force
                 && state
                     .last
                     .is_some_and(|last| now.duration_since(last) < UPGRADE_REPORT_INTERVAL)
             {
-                return;
+                return None;
             }
             state.counter += 1;
             state.last = Some(now);
@@ -1183,7 +1183,8 @@ impl UpgradeProgress {
         // Reporting is best effort; the opening's own outcome does not
         // depend on it.
         dim_agent_runtime::opening_advanced(&self.ctx);
-        write_startup_progress(&self.database, self.from, FORMAT, counter.0, counter.1);
+        write_startup_progress(&self.database, self.from, FORMAT, counter, stage);
+        Some(counter)
     }
 }
 
@@ -1209,6 +1210,53 @@ fn slow_upgrade_report() {
     if let Some(delay) = delay {
         std::thread::sleep(delay);
     }
+}
+
+/// Reports that this opening finished `step` when it upgrades a store. The
+/// upgrade's own steps are the last ones its report covers on their own: the
+/// commit clears the progress callback, and the steps after it run with none.
+fn advance(progress: Option<&Arc<UpgradeProgress>>, step: &'static str) {
+    let Some(progress) = progress else {
+        return;
+    };
+    let Some(counter) = progress.report(true) else {
+        return;
+    };
+    record_upgrade_step(&progress.database, step, counter);
+}
+
+/// The steps after the upgrade's own that reported progress, by database, with
+/// the counter each report wrote: a flow test pins that every one of them
+/// reports. Feature `testing` only.
+#[cfg(feature = "testing")]
+static UPGRADE_STEPS: Mutex<Vec<(PathBuf, &'static str, u64)>> = Mutex::new(Vec::new());
+
+#[cfg(feature = "testing")]
+fn record_upgrade_step(database: &Path, step: &'static str, counter: u64) {
+    UPGRADE_STEPS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((database.to_path_buf(), step, counter));
+}
+
+#[cfg(not(feature = "testing"))]
+fn record_upgrade_step(_database: &Path, _step: &'static str, _counter: u64) {}
+
+/// Takes the steps that reported progress while the opening upgraded
+/// `database`, in order, with the counter each report wrote. Feature `testing`
+/// only.
+#[cfg(feature = "testing")]
+pub fn take_upgrade_steps(database: &Path) -> Vec<(&'static str, u64)> {
+    let mut recorded = UPGRADE_STEPS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut steps = Vec::new();
+    recorded.retain(|(path, step, counter)| {
+        let this = path == database;
+        if this {
+            steps.push((*step, *counter));
+        }
+        !this
+    });
+    steps
 }
 
 /// The process connection and maintenance admission. Business modules never
@@ -1493,6 +1541,9 @@ impl SqliteStorage {
         // What the store left dangling before any upgrade step ran, by
         // `(table, parent)`; read only on the upgrade path.
         let mut violations_before: BTreeMap<(String, String), i64> = BTreeMap::new();
+        // The report an upgrade keeps for every step of the opening; an
+        // ordinary open registers none.
+        let mut progress: Option<Arc<UpgradeProgress>> = None;
         if actual.is_empty() {
             for (_, sql) in SCHEMA
                 .iter()
@@ -1531,19 +1582,19 @@ impl SqliteStorage {
                 // Only an upgrade registers the report, and it clears it
                 // again after the commit: an ordinary open runs no progress
                 // callback.
-                let progress = ctx.map(|ctx| Arc::new(UpgradeProgress::new(ctx, &path, version)));
+                progress = ctx.map(|ctx| Arc::new(UpgradeProgress::new(ctx, &path, version)));
                 if let Some(progress) = &progress {
                     let reports = Arc::clone(progress);
                     connection
                         .progress_handler(
                             UPGRADE_PROGRESS_OPS,
                             Some(move || {
-                                reports.report(false);
+                                let _ = reports.report(false);
                                 false
                             }),
                         )
                         .map_err(storage)?;
-                    progress.report(true);
+                    let _ = progress.report(true);
                 }
                 let resume =
                     matches!(version, 42..=44) && same_schema(&actual, resume_schema(version));
@@ -1730,7 +1781,7 @@ impl SqliteStorage {
                         super::catalog::backfill(&connection)?;
                     }
                     if let Some(progress) = &progress {
-                        progress.report(true);
+                        let _ = progress.report(true);
                     }
                 }
                 if let Some(progress) = &progress {
@@ -1767,6 +1818,7 @@ impl SqliteStorage {
         for (_, sql) in DERIVED_INDEXES {
             connection.execute_batch(sql).map_err(storage)?;
         }
+        advance(progress.as_ref(), "derived-indexes");
         // The transaction ran with foreign keys off (see its opening), so an
         // upgrade compares the violations it found with the ones it leaves: a
         // pair whose count grew refuses the store, and one that is unchanged or
@@ -1787,7 +1839,9 @@ impl SqliteStorage {
                 path.display()
             )));
         }
+        advance(progress.as_ref(), "references");
         connection.execute_batch("COMMIT").map_err(storage)?;
+        advance(progress.as_ref(), "commit");
         if upgraded_from.is_some() {
             connection
                 .progress_handler(0, None::<fn() -> bool>)
@@ -1796,25 +1850,33 @@ impl SqliteStorage {
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(storage)?;
+        advance(progress.as_ref(), "journal-mode");
         connection
             .pragma_update(None, "synchronous", "FULL")
             .map_err(storage)?;
+        advance(progress.as_ref(), "synchronous");
         connection
             .pragma_update(None, "wal_autocheckpoint", 0)
             .map_err(storage)?;
+        advance(progress.as_ref(), "wal-autocheckpoint");
         connection
             .pragma_update(None, "journal_size_limit", WAL_LIMIT_BYTES)
             .map_err(storage)?;
+        advance(progress.as_ref(), "journal-size-limit");
         connection
             .pragma_update(None, "cache_size", -WRITER_CACHE_KIB)
             .map_err(storage)?;
+        advance(progress.as_ref(), "cache-size");
         connection
             .pragma_update(None, "foreign_keys", true)
             .map_err(storage)?;
+        advance(progress.as_ref(), "foreign-keys");
         #[cfg(target_os = "macos")]
         connection
             .pragma_update(None, "fullfsync", true)
             .map_err(storage)?;
+        #[cfg(target_os = "macos")]
+        advance(progress.as_ref(), "fullfsync");
         let _ = std::fs::remove_file(startup_note_path(&path));
         let readers = Readers::demand();
         Ok(Arc::new(Self {
@@ -2552,10 +2614,10 @@ impl HostDispatch for SqliteDispatch {
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
-            .map_err(|error| BridgeError::Value(error.to_string()))?;
+            .map_err(|error| BridgeError::value(error.to_string()))?;
         if !request.is_object() {
-            return Err(BridgeError::Value(
-                "sqliteStorage request must be an object".into(),
+            return Err(BridgeError::value(
+                "sqliteStorage request must be an object",
             ));
         }
         #[derive(Deserialize)]
@@ -2660,7 +2722,7 @@ impl HostDispatch for SqliteDispatch {
         }
         let request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
-                .map_err(|error| BridgeError::Value(error.to_string()))?;
+                .map_err(|error| BridgeError::value(error.to_string()))?;
         let db = self.0.clone();
         Ok(BridgeValue::cancellable_future(async move {
             let value = match request {

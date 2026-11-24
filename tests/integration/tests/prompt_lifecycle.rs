@@ -1329,11 +1329,11 @@ impl DynPlugin for OpeningObserved {
     }
 }
 
-struct OpeningFailure(Key<Dispatcher>, Key<BranchOpening>);
+struct OpeningFailure(Key<Dispatcher>, Key<BranchLifecycle>);
 
 struct SlowOpening {
     dispatcher: Key<Dispatcher>,
-    opening: Key<BranchOpening>,
+    opening: Key<BranchLifecycle>,
     timeline: Key<Timeline>,
     receipts: bool,
     completed: Arc<AtomicUsize>,
@@ -1377,7 +1377,7 @@ impl DynPlugin for SlowOpening {
                         if receipts {
                             for step in 1..=7 {
                                 let (timeline, completed) = (timeline.clone(), completed.clone());
-                                opening.register(Box::pin(async move {
+                                opening.admit_opening(Box::pin(async move {
                                     tokio::time::sleep(Duration::from_millis(200 * step)).await;
                                     assert!(
                                         timeline_events(
@@ -1394,7 +1394,7 @@ impl DynPlugin for SlowOpening {
                                 }))?;
                             }
                         } else {
-                            opening.register(Box::pin(async move {
+                            opening.admit_opening(Box::pin(async move {
                                 assert!(
                                     timeline_events(&timeline, TimelineQueryScope::Branch, ..=1001)
                                         .await?
@@ -1529,8 +1529,8 @@ impl DynPlugin for OpeningFailure {
             dispatcher.subscribe(ctx, "OpeningFailure", &["branch/start"], move |_| {
                 let opening = opening.clone();
                 Box::pin(async move {
-                    opening.register(Box::pin(std::future::pending()))?;
-                    opening.register(Box::pin(async {
+                    opening.admit_opening(Box::pin(std::future::pending()))?;
+                    opening.admit_opening(Box::pin(async {
                         Err(AgentError::InvalidInput("opening rejected".into()))
                     }))?;
                     Ok(())

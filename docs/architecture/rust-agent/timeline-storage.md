@@ -18,7 +18,8 @@ worktree 清理都调用原实现。AgentBuilder 使用的 TimelineStore 端口�
 分叉前由生命周期 owner 验证来源角色、已发布的 main 切点、批次/上下文边界和静止点，传入去掉 `initialTitle` 的来源存储配置文本；仓储保持文本字节，不追加运行时配置限制。
 创建、分叉、删除共用 native 边界的 Session id 单个正常路径分量校验，拒绝绝对路径、父目录与多级路径，在碰触存储和输出目录前返回 `invalid`。
 
-`removeWorktree` 延续 native 回调的所有权互斥：回调不得等待同锁操作，即创建、分叉、删除 Session、删除 worktree 目录记录、再次删除 worktree，以及 `worktreeAssociations.associate`；不取此锁的读取仍可使用。回调失败不删除目录记录，不改为锁外删除。
+`removeWorktree` 延续 native 回调的所有权互斥：回调不得等待同锁操作，即创建、分叉、删除 Session、删除 worktree 目录记录、再次删除 worktree、删除未登记目录，以及 `worktreeAssociations.associate`；不取此锁的读取仍可使用。回调失败不删除目录记录，不改为锁外删除。
+`removeUnregisteredDirectory` 在同一把锁内复核目录记录中没有根在该目录或其下的条目、存储中没有 Session 的 cwd 在该目录或其下，再运行调用方的删除（删除前只用文件系统检查复核未登记条件），锁一直持有到删除结束，调用方放弃这次调用不会提前放锁；回调同样不得等待上述同锁操作。
 `store.catalog` 返回数据库页（数据库 sequence，行内 `closed=false`），客户端需要的 live sequence 与关闭状态仍由生命周期 owner 用 AgentIndex 补齐。原生错误分类不变：未知 Session 的 addGrant 为外键 `storage`，removeGrant 幂等成功，语言更新为 `closed`；未知协议版本仍由数据库返回 `storage`，调用方须先检查。
 
 ```text

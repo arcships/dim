@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "正在使用 ChatGPT 方案",
+        "This sign-in method will be removed in a future version." => {
+            "此登入方式將在未來版本中移除。"
+        }
+        "Switch to ChatGPT" => "切換至 ChatGPT",
+        "Manage usage" => "管理用量",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "OpenAI 會處理提示詞、選取的檔案及工具執行結果。"
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "Dim 會將你的 ChatGPT 連線儲存在這台電腦上。"
+        }
+        "Switch account" => "切換帳號",
+        "Continue with ChatGPT" => "使用 ChatGPT 繼續",
+        "Add ChatGPT account" => "新增 ChatGPT 帳號",
+        "Waiting for authorization in your browser" => "正在等待你在瀏覽器中授權",
+        "{name} (Legacy)" => "{name}（舊版）",
+        "Legacy" => "舊版",
         "Refresh model list" => "重新整理模型清單",
         "Model list refreshed" => "模型清單已重新整理",
         "Model list refresh failed: {reason}" => "無法重新整理模型清單：{reason}",
@@ -7,6 +25,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // providers_panel.rs
         "Providers" => "模型供應商",
         "Enter open · Esc clear/close" => "Enter 開啟 · Esc 清除/關閉",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab 移動 · Enter 執行 · Ctrl+R 重新讀取 · Esc 返回"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => "↑↓/Tab 移動 · Enter 執行 · Esc 返回",
         "Loading providers..." => "正在載入模型供應商…",
         "No matching providers." => "無相符的模型供應商。",
@@ -66,6 +87,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "開啟此 URL：{url}",
         "Enter code:    {code}" => "輸入配對碼：{code}",
         "Waiting after server slow-down" => "伺服器要求放慢頻率，繼續等待",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "已取消 OAuth 登入",
         "Enter your work email" => "輸入公司電子郵件",
         "Invalid OAuth state - possible CSRF attempt" => "無效的 OAuth state - 可能為 CSRF 攻擊",

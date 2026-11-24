@@ -229,10 +229,11 @@ it, is refused before it is read.
 HEIC, HEIF and AVIF are refused with the format named; every other binary file
 is refused as before. `read` never decides for the model: the same image block
 goes into the tool result whatever the model, and the stored result holds what
-was sent, the scaled image. In every conversational request, ModelProvider
-replaces that image block with its content reference, even for a vision model;
-the stored result stays unchanged. Reference computation and the existing
-placeholders for sources without decodable bytes are owned by
+was sent, the scaled image. In a conversational request, ModelProvider sends
+that image block to a vision-capable model and replaces it with its content
+reference or placeholder otherwise; the stored result stays unchanged. The
+routing rule, reference computation and the existing placeholders for sources
+without decodable bytes are owned by
 [Attachments A.1](../../../design/plugins/Attachments.md#a1-image-handling-cli-checks-and-modelprovider).
 
 The model-facing texts and their classes
@@ -368,9 +369,10 @@ does, what it returns or its reach is protocol; a sentence that advises when or
 how to use it is policy. A name that a policy sentence states stays protocol.
 
 - `read` — protocol: "Read a file from the filesystem.", "Text comes back with
-  line numbers" and "A PNG, JPEG, WebP or GIF image comes back as an image block
-  with one line giving its path and pixel size."; policy: "use offset and limit
-  for large files".
+  line numbers" and "A PNG, JPEG, WebP or GIF image comes back with one line giving
+  its path and pixel size, and as an image itself when the model accepts images in
+  that format; otherwise it comes back as an img: reference or an omission
+  placeholder."; policy: "use offset and limit for large files".
 - `write` — protocol throughout: it states what the call writes, that it creates
   the file and that it overwrites the whole content.
 - `edit` — protocol: "Edit an existing file by replacing exact text matches."
@@ -456,8 +458,9 @@ animated GIF's first frame, transparent pixels on white, a WebP EXIF chunk
 larger than its file refused, a missing file reported as `file_not_found`, the
 pixel guard before decoding, and the refusals.
 [read_image_flow.rs](../../../../crates/dim-app-server/tests/read_image_flow.rs)
-runs a model's `read` on a PNG. The request-only reference rule for vision and
-text-only models, and preservation of the stored tool result, are covered by
+runs a model's `read` on a PNG. The per-request routing of images for vision
+and text-only models — pixels, a reference or a placeholder — and preservation
+of the stored tool result are covered by
 [host_flows.rs](../../../../crates/dim-agent-capabilities/tests/host_flows.rs).
 
 The App Server's [native execution flow](../../../../crates/dim-app-server/tests/transport_flow/shell_input.rs)

@@ -52,11 +52,16 @@ impl ErrorReference {
         tree: Option<&TreeCommands>,
     ) -> Result<(Snapshot, Option<ModelId>), RpcError> {
         let (observed, branch, timeline) = match self {
-            Self::Observed { observed } => (
-                observed,
-                DEFAULT_BRANCH_ID.to_owned(),
-                Err(Missing::NoReference),
-            ),
+            Self::Observed { observed } => {
+                // A report raised without a reference reads the line the
+                // Session's conversation is on; a provider without a Session
+                // has none, and reads the root (design §9, §15).
+                let branch = match tree {
+                    Some(tree) => tree.default_branch()?,
+                    None => DEFAULT_BRANCH_ID.to_owned(),
+                };
+                (observed, branch, Err(Missing::NoReference))
+            }
             Self::Timeline {
                 branch_id,
                 sequence,
@@ -193,13 +198,14 @@ impl Snapshot {
         session: &crate::draft::Session,
     ) -> (Self, Option<ModelId>) {
         let tree = &session.tree;
-        let branch = tree.get(DEFAULT_BRANCH_ID).ok();
+        let default = tree.default_branch().ok();
+        let branch = default.as_deref().and_then(|id| tree.get(id).ok());
         let conversation_through = branch.as_ref().map(Branch::sequence);
         let mut conversation = Default::default();
-        let timeline = match conversation_through {
-            Some(through) => read_window(
+        let timeline = match (default.as_deref(), conversation_through) {
+            (Some(id), Some(through)) => read_window(
                 tree,
-                DEFAULT_BRANCH_ID,
+                id,
                 through,
                 &[
                     "step/model-start",
@@ -222,7 +228,7 @@ impl Snapshot {
                 TimelineEvidence::Recent { recent, truncated }
             })
             .map_err(|_| Missing::ReadFailed),
-            None => Err(Missing::ReadFailed),
+            _ => Err(Missing::ReadFailed),
         };
         let model = branch.as_ref().and_then(adopted_model);
         (

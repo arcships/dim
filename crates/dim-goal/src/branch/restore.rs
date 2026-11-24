@@ -7,7 +7,28 @@ impl Owner {
             _ = self.stop.cancelled() => return Err(AgentError::Closed(self.branch_id.clone())),
         };
         self.await_fold().await?;
+        self.await_dispatched().await?;
+        self.write_status.borrow().clone()?;
+        Ok(write)
+    }
+
+    /// Waits until the Dispatcher has delivered every fact committed at the
+    /// call and returns that cutoff. A decision taken after this wait sees an
+    /// input or a turn that committed before it, so the caller does not act on
+    /// a stale fold (C4, C5). A caller claiming a decision reads the cutoff
+    /// again under its lock: a fact committing while this wait runs leaves the
+    /// returned cutoff behind, and the claim catches up to the newer one before
+    /// it reads the fold.
+    pub(super) async fn await_dispatched(&self) -> Result<u64, AgentError> {
         let through = self.timeline.committed();
+        #[cfg(feature = "testing")]
+        crate::testing::stage_held(
+            &self.session_id,
+            &self.branch_id,
+            crate::testing::Stage::Cutoff,
+            through,
+        )
+        .await;
         let mut dispatched = self.dispatcher.watch();
         while self.dispatcher.sequence() < through {
             if let Some(error) = self.dispatcher.failure() {
@@ -15,8 +36,7 @@ impl Owner {
             }
             tokio::select! {result=dispatched.changed()=>result.map_err(|_|AgentError::Closed("Goal".into()))?,_=self.stop.cancelled()=>return Err(AgentError::Closed("Goal".into()))}
         }
-        self.write_status.borrow().clone()?;
-        Ok(write)
+        Ok(through)
     }
 
     pub(super) fn resume_decisions(self: &Arc<Self>) {

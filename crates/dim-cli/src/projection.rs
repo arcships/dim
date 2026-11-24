@@ -44,10 +44,24 @@ pub struct Projection {
     owner: String,
     /// The lines of the Session, as `main` recorded them (design §14).
     lines: Vec<LineView>,
+    /// Lines whose creation failed. The fact outruns the line's row: a
+    /// `branch/create-failed` the parent's page has not projected a
+    /// `branch/create` for is still terminal.
+    creation_failed: HashSet<String>,
     /// Each line's own user messages, by input id and submission sequence,
-    /// to count where a line was cut (timeline UI §6); a withdrawn one is
-    /// dropped.
+    /// to count where a line was cut (timeline UI §6); a withdrawn message
+    /// stays, and `withdrawals` decides which cuts still count it.
     messages: HashMap<String, Vec<(String, u64)>>,
+    /// Each line's user messages withdrawn later, by input id and the sequence
+    /// that withdrew them: a cut before that sequence still counts the
+    /// message, whichever page carried the input or the withdrawal.
+    withdrawals: HashMap<String, HashMap<String, u64>>,
+    /// Lines whose loaded history starts after the line's own start: a cut
+    /// that counts one of them has no count until an earlier read reaches it.
+    incomplete: HashSet<String>,
+    /// Where each line was cut from its parent, until the parent's history
+    /// lets its count be folded.
+    cuts: HashMap<String, u64>,
     /// Shared with the published snapshots: a snapshot copies pointers, and
     /// a row is copied only when it changes while a snapshot still holds it
     /// (in practice the one that is streaming).
@@ -113,21 +127,23 @@ impl Projection {
             }
     }
 
-    /// Folds one line's creation or end into the Session's lines, whichever
-    /// line recorded it: `parent` is the line whose history holds the fact
-    /// (design §14).
-    fn lines(&mut self, parent: &str, event: &Event) {
+    /// Folds one line's creation or end, or a user message a cut counts, into
+    /// the Session's lines, whichever line recorded it: `parent` is the line
+    /// whose history holds the fact (design §14).
+    pub fn line_event(&mut self, parent: &str, event: &Event) {
         match &event.content {
             EventContent::Input(data) if data.user.is_some() => {
-                self.messages
-                    .entry(parent.to_owned())
-                    .or_default()
-                    .push((event.id.clone(), event.sequence));
+                let messages = self.messages.entry(parent.to_owned()).or_default();
+                if !messages.iter().any(|(id, _)| *id == event.id) {
+                    messages.push((event.id.clone(), event.sequence));
+                }
             }
             EventContent::InputDeleted(data) => {
-                if let Some(messages) = self.messages.get_mut(parent) {
-                    messages.retain(|(id, _)| *id != data.input_id);
-                }
+                let withdrawals = self.withdrawals.entry(parent.to_owned()).or_default();
+                withdrawals
+                    .entry(data.input_id.clone())
+                    .and_modify(|at| *at = (*at).min(event.sequence))
+                    .or_insert(event.sequence);
             }
             EventContent::BranchCreate(data) => {
                 let purpose = data
@@ -137,32 +153,32 @@ impl Projection {
                     .unwrap_or_default()
                     .trim()
                     .to_owned();
-                if !self.lines.iter().any(|line| line.id == data.branch) {
-                    let sequence = match data.at {
-                        BranchCreateAt::Sequence { sequence } => sequence,
-                        BranchCreateAt::Create {} => event.sequence,
-                    };
-                    let inherited = self
-                        .lines
-                        .iter()
-                        .find(|line| line.id == parent)
-                        .and_then(|line| line.cut)
-                        .map_or(0, |cut| cut.messages);
-                    let own = self.messages.get(parent).map_or(0, |messages| {
-                        messages
-                            .iter()
-                            .take_while(|(_, at)| *at <= sequence)
-                            .count()
-                    });
+                let sequence = match data.at {
+                    BranchCreateAt::Sequence { sequence } => sequence,
+                    BranchCreateAt::Create {} => event.sequence,
+                };
+                self.cuts.insert(data.branch.clone(), sequence);
+                let cut = self
+                    .cut_count(parent, sequence)
+                    .map(|messages| LineCut { sequence, messages });
+                if let Some(line) = self.lines.iter_mut().find(|line| line.id == data.branch) {
+                    // The directory lists a line before its parent's history
+                    // arrives; the creation fold supplies the count then.
+                    line.branch_point = Some(sequence);
+                    line.cut = line.cut.or(cut);
+                } else {
                     self.lines.push(LineView {
                         id: data.branch.clone(),
                         parent: Some(parent.to_owned()),
                         purpose,
-                        state: LineState::Waiting,
-                        cut: Some(LineCut {
-                            sequence,
-                            messages: inherited + own,
-                        }),
+                        state: if self.creation_failed.contains(&data.branch) {
+                            LineState::CreationFailed
+                        } else {
+                            LineState::Waiting
+                        },
+                        running: None,
+                        branch_point: Some(sequence),
+                        cut,
                     });
                 }
             }
@@ -171,6 +187,7 @@ impl Projection {
                     BranchCreateFailedData::Failed { branch, .. }
                     | BranchCreateFailedData::Cancelled { branch, .. } => branch,
                 };
+                self.creation_failed.insert(branch.clone());
                 if let Some(line) = self.lines.iter_mut().find(|line| line.id == *branch) {
                     line.state = LineState::CreationFailed;
                 }
@@ -188,6 +205,89 @@ impl Projection {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The user messages a cut inherits: the parent's own up to `sequence`,
+    /// its inherited ones included, and `None` while a line it counts is
+    /// missing the start of its history.
+    fn cut_count(&self, branch: &str, sequence: u64) -> Option<usize> {
+        if self.incomplete.contains(branch) {
+            return None;
+        }
+        let inherited = match self.lines.iter().find(|line| line.id == branch) {
+            Some(line) => self.cut_count(line.parent.as_deref()?, *self.cuts.get(branch)?)?,
+            None if branch == ROOT_BRANCH_ID => 0,
+            None => return None,
+        };
+        let own = self.messages.get(branch).map_or(0, |messages| {
+            messages
+                .iter()
+                .filter(|(id, at)| {
+                    *at <= sequence
+                        && self
+                            .withdrawals
+                            .get(branch)
+                            .and_then(|withdrawals| withdrawals.get(id))
+                            .is_none_or(|withdrawn| *withdrawn > sequence)
+                })
+                .count()
+        });
+        Some(inherited + own)
+    }
+
+    /// Records that the loaded history of `branch` starts after the branch's
+    /// own start: the cuts that count it show nothing until a later read
+    /// reaches the start, and the counts folded until now stop counting it.
+    pub fn missing_history(&mut self, branch: &str) {
+        if !self.incomplete.insert(branch.to_owned()) {
+            return;
+        }
+        for index in 0..self.lines.len() {
+            if self.counts(index, branch) {
+                self.lines[index].cut = None;
+            }
+        }
+    }
+
+    /// Whether the line at `index` counts `branch` through its parent chain.
+    fn counts(&self, index: usize, branch: &str) -> bool {
+        let mut parent = self.lines[index].parent.as_deref();
+        while let Some(id) = parent {
+            if id == branch {
+                return true;
+            }
+            parent = self
+                .lines
+                .iter()
+                .find(|line| line.id == id)
+                .and_then(|line| line.parent.as_deref());
+        }
+        false
+    }
+
+    /// Records that the loaded history of `branch` reaches its own start, and
+    /// folds the counts of the cuts that were waiting for it.
+    pub fn whole_history(&mut self, branch: &str) {
+        if self.incomplete.remove(branch) {
+            self.resolve_cuts();
+        }
+    }
+
+    /// Fills the count of a cut that waited for the parent history an earlier
+    /// read brought.
+    fn resolve_cuts(&mut self) {
+        for index in 0..self.lines.len() {
+            if self.lines[index].cut.is_some() {
+                continue;
+            }
+            let parent = self.lines[index].parent.clone();
+            let sequence = self.cuts.get(&self.lines[index].id).copied();
+            if let (Some(parent), Some(sequence)) = (parent, sequence)
+                && let Some(messages) = self.cut_count(&parent, sequence)
+            {
+                self.lines[index].cut = Some(LineCut { sequence, messages });
+            }
         }
     }
 
@@ -263,7 +363,7 @@ impl Projection {
             }
             _ => {}
         }
-        self.lines(branch_id, event);
+        self.line_event(branch_id, event);
         if !self.owns(branch_id)
             && !matches!(
                 &event.content,
@@ -1291,11 +1391,6 @@ impl Projection {
             .map(|row| row.text.clone())
     }
 
-    /// Whether this transcript's turn runs.
-    pub fn running(&self) -> bool {
-        self.running
-    }
-
     pub fn missing_tool(&self) -> Option<(String, String)> {
         self.rows.iter().find_map(|row| {
             if row.kind != RowKind::ToolCall || row.tool_lookup_done {
@@ -1361,15 +1456,21 @@ impl Projection {
             } else {
                 LineState::Waiting
             },
-            cut: entry
+            running: None,
+            branch_point: entry
                 .branch_point
-                .zip(entry.cut_messages)
-                .map(|(sequence, messages)| LineCut {
+                .or_else(|| previous.and_then(|index| self.lines[index].branch_point)),
+            // The server does not calculate the count; the creation fold owns
+            // it, and a row with no count of its own must not drop it.
+            cut: match entry.cut_messages {
+                Some(messages) => entry.branch_point.map(|sequence| LineCut {
                     sequence,
                     messages: messages
                         .try_into()
                         .expect("message count fits the client address space"),
                 }),
+                None => previous.and_then(|index| self.lines[index].cut),
+            },
         };
         if let Some(index) = previous {
             self.lines[index] = view;
@@ -1380,6 +1481,12 @@ impl Projection {
 
     pub fn line_views(&self) -> &[LineView] {
         &self.lines
+    }
+
+    /// Whether `branch`'s creation failed, whether or not its row is
+    /// projected yet: the line is terminal from the fact.
+    pub fn creation_failed(&self, branch: &str) -> bool {
+        self.creation_failed.contains(branch)
     }
 
     pub fn approvals(&self) -> Vec<ApprovalView> {
@@ -2760,6 +2867,345 @@ mod tests {
         })
     }
 
+    fn user_says(sequence: u64, text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("in-{sequence}"), "sequence": sequence, "create_at": sequence * 1000,
+            "type": "input", "name": "message",
+            "data": {"user": {"content": [{"type": "text", "text": text}]}},
+        })
+    }
+
+    fn line_created(sequence: u64, branch: &str, at: u64) -> serde_json::Value {
+        line_event(
+            sequence,
+            "create",
+            serde_json::json!({
+                "at": {"kind": "sequence", "sequence": at},
+                "source": {"kind": "tool", "turn_id": "t1", "request_id": "r1", "call_id": "c1"},
+                "branch": branch,
+                "prompt": "parser race",
+            }),
+        )
+    }
+
+    #[test]
+    fn opening_a_line_keeps_the_cut_folded_from_its_creation() {
+        let mut main = Projection::default();
+        apply(
+            &mut main,
+            &[
+                user_says(1, "find the leak"),
+                user_says(2, "try the parser"),
+                line_created(3, "b-7c", 2),
+            ],
+        );
+        assert_eq!(
+            main.line_views()[0].cut,
+            Some(LineCut {
+                sequence: 2,
+                messages: 2,
+            })
+        );
+        main.directory(&dim_client::wire::BranchEntry {
+            purpose: Some("parser race".into()),
+            cut_messages: None,
+            end: None,
+            branch_id: "b-7c".into(),
+            parent_branch_id: Some("main".into()),
+            branch_point: Some(2),
+            state: "open".into(),
+            head: 3,
+        });
+        assert_eq!(
+            main.line_views()[0].cut,
+            Some(LineCut {
+                sequence: 2,
+                messages: 2,
+            }),
+            "a detail row with no count does not drop the folded one"
+        );
+    }
+
+    #[test]
+    fn a_directory_row_gains_the_cut_when_the_parent_history_arrives() {
+        let mut main = Projection::default();
+        main.directory(&dim_client::wire::BranchEntry {
+            purpose: None,
+            cut_messages: None,
+            end: None,
+            branch_id: "b-7c".into(),
+            parent_branch_id: Some("main".into()),
+            branch_point: Some(2),
+            state: "open".into(),
+            head: 3,
+        });
+        assert_eq!(main.line_views()[0].cut, None);
+        for event in [
+            user_says(1, "find the leak"),
+            user_says(2, "try the parser"),
+            line_created(3, "b-7c", 2),
+        ] {
+            let event: Event = serde_json::from_value(event).unwrap();
+            main.replay("main", &event);
+        }
+        assert_eq!(
+            main.line_views()[0].cut,
+            Some(LineCut {
+                sequence: 2,
+                messages: 2,
+            }),
+            "attach counts the parent's messages at the line's creation"
+        );
+    }
+
+    #[test]
+    fn a_cut_of_a_line_the_list_does_not_hold_shows_no_count() {
+        let mut main = Projection::default();
+        let create: Event = serde_json::from_value(line_created(12, "b-90", 10)).unwrap();
+        main.apply("b-7c", &create);
+        assert_eq!(
+            main.line_views()[0].cut,
+            None,
+            "b-7c is not listed, so what b-90 inherits is unknown"
+        );
+    }
+
+    #[test]
+    fn a_cut_counts_the_history_a_window_holds_without_the_branch_start() {
+        let mut main = Projection::default();
+        apply(
+            &mut main,
+            &[user_says(2, "try the parser"), line_created(3, "b-7c", 2)],
+        );
+        assert_eq!(
+            main.line_views()[0].cut,
+            Some(LineCut {
+                sequence: 2,
+                messages: 1,
+            }),
+            "a transcript page leaves the branch start out, and still counts"
+        );
+    }
+
+    #[test]
+    fn a_cut_counts_nothing_while_the_parent_history_misses_its_start() {
+        let mut main = Projection::default();
+        main.missing_history("main");
+        apply(
+            &mut main,
+            &[user_says(2, "try the parser"), line_created(3, "b-7c", 1)],
+        );
+        assert_eq!(
+            main.line_views()[0].cut,
+            None,
+            "the parent's first message is outside the loaded window"
+        );
+    }
+
+    #[test]
+    fn an_earlier_read_that_reaches_the_start_completes_the_count_of_a_cut() {
+        let mut main = Projection::default();
+        main.missing_history("main");
+        apply(
+            &mut main,
+            &[user_says(5, "carry on"), line_created(6, "b-7c", 5)],
+        );
+        assert_eq!(main.line_views()[0].cut, None);
+        let older: Event = serde_json::from_value(user_says(2, "find the leak")).unwrap();
+        main.line_event("main", &older);
+        main.whole_history("main");
+        assert_eq!(
+            main.line_views()[0].cut,
+            Some(LineCut {
+                sequence: 5,
+                messages: 2,
+            }),
+            "the page that reaches the branch start completes the count"
+        );
+    }
+
+    #[test]
+    fn history_read_later_counts_a_line_the_directory_already_listed() {
+        let mut main = Projection::default();
+        main.directory(&dim_client::wire::BranchEntry {
+            purpose: None,
+            cut_messages: None,
+            end: None,
+            branch_id: "b-7c".into(),
+            parent_branch_id: Some("main".into()),
+            branch_point: Some(5),
+            state: "open".into(),
+            head: 6,
+        });
+        main.missing_history("main");
+        apply(&mut main, &[user_says(6, "carry on")]);
+        assert_eq!(main.line_views()[0].cut, None);
+        for event in [user_says(2, "find the leak"), line_created(5, "b-7c", 5)] {
+            let event: Event = serde_json::from_value(event).unwrap();
+            main.line_event("main", &event);
+        }
+        main.whole_history("main");
+        assert_eq!(
+            main.line_views()[0].cut,
+            Some(LineCut {
+                sequence: 5,
+                messages: 1,
+            }),
+            "history read later counts a line the directory already listed"
+        );
+    }
+
+    /// Every order of `pages`, each page a range of event indices.
+    fn page_orders(pages: &[(usize, usize)]) -> Vec<Vec<(usize, usize)>> {
+        if pages.len() <= 1 {
+            return vec![pages.to_vec()];
+        }
+        let mut orders = Vec::new();
+        for (index, page) in pages.iter().enumerate() {
+            let mut rest = pages.to_vec();
+            rest.remove(index);
+            for mut order in page_orders(&rest) {
+                order.insert(0, *page);
+                orders.push(order);
+            }
+        }
+        orders
+    }
+
+    /// A cut counts what a complete chronological read counts, however the
+    /// history is split into pages and whichever page arrives first,
+    /// overlapping and repeated pages included. A withdrawal before a cut
+    /// leaves its input out of that cut; one after the cut keeps it in.
+    #[test]
+    fn a_cut_counts_the_same_however_its_history_is_paged() {
+        let withdrawal = |sequence: u64, input: &str| {
+            serde_json::json!({
+                "id": format!("deleted-{sequence}"), "sequence": sequence,
+                "create_at": sequence * 1000, "type": "input", "name": "deleted",
+                "data": {"input_id": input},
+            })
+        };
+        let events: Vec<Event> = [
+            user_says(1, "first ask"),
+            user_says(2, "second ask"),
+            line_created(3, "b-a", 2),
+            withdrawal(4, "in-1"),
+            line_created(5, "b-b", 4),
+        ]
+        .into_iter()
+        .map(|event| serde_json::from_value(event).expect("an event"))
+        .collect();
+
+        let counted = |projection: &Projection| {
+            ["b-a", "b-b"].map(|id| {
+                projection
+                    .line_views()
+                    .iter()
+                    .find(|line| line.id == id)
+                    .and_then(|line| line.cut)
+            })
+        };
+        let mut whole = Projection::default();
+        for event in &events {
+            whole.apply("main", event);
+        }
+        let expected = counted(&whole);
+        assert_eq!(
+            expected,
+            [
+                Some(LineCut {
+                    sequence: 2,
+                    messages: 2,
+                }),
+                Some(LineCut {
+                    sequence: 4,
+                    messages: 1,
+                }),
+            ],
+            "the first cut keeps the later-withdrawn message; the second leaves the earlier-withdrawn one out"
+        );
+
+        let run = |pages: &[(usize, usize)]| {
+            let mut projection = Projection::default();
+            projection.missing_history("main");
+            for &(start, end) in pages {
+                for event in &events[start..=end] {
+                    projection.line_event("main", event);
+                }
+            }
+            projection.whole_history("main");
+            assert_eq!(
+                counted(&projection),
+                expected,
+                "pages {pages:?} count what a complete read counts"
+            );
+            for &(start, end) in pages {
+                for event in &events[start..=end] {
+                    projection.line_event("main", event);
+                }
+            }
+            assert_eq!(
+                counted(&projection),
+                expected,
+                "the pages {pages:?} again count nothing twice"
+            );
+            projection.missing_history("main");
+            assert_eq!(
+                counted(&projection),
+                [None, None],
+                "a history that lost a page counts every cut as unknown"
+            );
+            for &(start, end) in pages {
+                for event in &events[start..=end] {
+                    projection.line_event("main", event);
+                }
+            }
+            projection.whole_history("main");
+            assert_eq!(
+                counted(&projection),
+                expected,
+                "the pages that fill the gap count what a complete read counts"
+            );
+        };
+
+        let ranges: Vec<(usize, usize)> = (0..events.len())
+            .flat_map(|start| (start..events.len()).map(move |end| (start, end)))
+            .collect();
+        let mut deliveries = 0;
+        for boundaries in 0u32..(1 << (events.len() - 1)) {
+            let mut pages = Vec::new();
+            let mut start = 0;
+            for end in 0..events.len() {
+                if end == events.len() - 1 || boundaries & (1 << end) != 0 {
+                    pages.push((start, end));
+                    start = end + 1;
+                }
+            }
+            for order in page_orders(&pages) {
+                run(&order);
+                deliveries += 1;
+            }
+        }
+        for first in &ranges {
+            for second in &ranges {
+                for third in &ranges {
+                    let pages = [*first, *second, *third];
+                    if !(0..events.len())
+                        .all(|at| pages.iter().any(|(start, end)| *start <= at && at <= *end))
+                    {
+                        continue;
+                    }
+                    run(&pages);
+                    deliveries += 1;
+                }
+            }
+        }
+        assert_eq!(
+            deliveries, 1642,
+            "every split in every order, plus every delivery of up to three overlapping or repeated pages"
+        );
+    }
+
     #[test]
     fn a_message_is_received_by_the_line_it_names_and_shown_once() {
         let mut line = Projection::for_branch("b-7c");
@@ -2859,6 +3305,8 @@ mod tests {
                 parent: Some("main".into()),
                 purpose: "parser race hypothesis".into(),
                 state: LineState::Waiting,
+                running: None,
+                branch_point: Some(5),
                 cut: Some(LineCut {
                     sequence: 5,
                     messages: 2,
@@ -2943,6 +3391,8 @@ mod tests {
                 parent: Some("b-7c".into()),
                 purpose: "review the change".into(),
                 state: LineState::Waiting,
+                running: None,
+                branch_point: Some(12),
                 cut: Some(LineCut {
                     sequence: 12,
                     messages: 3,

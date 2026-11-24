@@ -41,7 +41,6 @@ pub struct TimelineContext {
     timeline: Timeline,
     dispatcher: Dispatcher,
     lifecycle: BranchLifecycle,
-    opening: Arc<BranchOpening>,
     /// Signals a possible change of [`BranchStatus`]; the status itself is
     /// read from its owners on query.
     changed: watch::Sender<()>,
@@ -63,33 +62,6 @@ const LOOP_RETURN_POLL: std::time::Duration = std::time::Duration::from_millis(1
 
 /// The latest stop and the sequence of its interrupt (0 until written).
 type StopOperation = (Arc<CloseOnce<u64>>, Arc<AtomicU64>);
-
-/// Receipts registered synchronously by the unique branch opening dispatch.
-/// Work remains owned and joined by the capability, not by this collector.
-pub struct BranchOpening(Mutex<Option<Vec<BoxFuture<'static, Result<()>>>>>);
-impl BranchOpening {
-    pub fn register(&self, receipt: BoxFuture<'static, Result<()>>) -> Result<()> {
-        let mut receipts = self.0.lock().unwrap();
-        receipts
-            .as_mut()
-            .ok_or_else(|| AgentError::Closed("branch opening".into()))?
-            .push(receipt);
-        Ok(())
-    }
-    pub(crate) fn new() -> Self {
-        Self(Mutex::new(Some(Vec::new())))
-    }
-    async fn finish(&self, ctx: &Ctx, scope: rutis::host::PluginId) -> Result<()> {
-        use futures_util::{StreamExt, stream::FuturesUnordered};
-        let receipts = self.0.lock().unwrap().take().unwrap_or_default();
-        let mut pending: FuturesUnordered<_> = receipts.into_iter().collect();
-        while let Some(result) = pending.next().await {
-            result?;
-            ctx.emit(OpeningAdvanced(scope))?;
-        }
-        Ok(())
-    }
-}
 
 impl TimelineContext {
     /// Dispatches the opening through `through`, seals registration and waits
@@ -114,7 +86,7 @@ impl TimelineContext {
                             .await
                             .map_err(|_| AgentError::Closed("branch dispatch".into()))?;
                     }
-                    let receipts = self.opening.finish(&self.ctx, self.view.id);
+                    let receipts = self.lifecycle.finish_opening(&self.ctx, self.view.id);
                     tokio::pin!(receipts);
                     loop {
                         if let Some(error) = dispatch.borrow_and_update().failure.clone() {
@@ -165,7 +137,6 @@ impl TimelineContext {
         timeline: Timeline,
         dispatcher: Dispatcher,
         lifecycle: BranchLifecycle,
-        opening: Arc<BranchOpening>,
         faults: FaultReporter,
         catalog: Arc<rutis_loader::ServiceCatalog>,
     ) -> Arc<Self> {
@@ -182,7 +153,6 @@ impl TimelineContext {
             timeline,
             dispatcher,
             lifecycle,
-            opening,
             changed: watch::channel(()).0,
             failure: Mutex::new(None),
             ended: AtomicU64::new(0),
@@ -217,7 +187,7 @@ impl TimelineContext {
                 if dispatched > sequence {
                     sequence = dispatched;
                     if inner.lifecycle.phase() == BranchPhase::Loading
-                        && let Err(error) = inner.ctx.emit(OpeningAdvanced(inner.view.id))
+                        && let Err(error) = inner.ctx.emit(OpeningAdvanced::Plugin(inner.view.id))
                     {
                         inner.dispatcher.fail(error.into());
                     }
@@ -767,6 +737,8 @@ impl TimelineContext {
         let this = self.clone();
         self.lifecycle.advance(BranchPhase::Closing);
         self.close.start(self.ctx.handle(), async move {
+            #[cfg(feature = "testing")]
+            crate::testing::closing(&this.timeline.key().session_id, &this.id).await;
             let _guard = this.control.lock().await;
             let span = tracing::info_span!(
                 "timeline.close",

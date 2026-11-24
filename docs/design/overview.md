@@ -490,7 +490,7 @@ A **supplement** adds services, methods or configuration. A **change** alters ex
 | ToolRegistry | Supplement | Parts of any language register tools with `toolRegistry` ([methods A.5](contracts/session-boundary.md#a5-tool-contribution)) | Non-Rust Session tools |
 | Agent assembly | Supplement | Collects the named services each installed plugin declares in `provides`; optional Session and branch parts installed per enabled plugin | All Session plugins |
 | Permission | Supplement | Command rules read at use time (no new risk category: unknown risks are unclassified, #45) | `/approvals` |
-| ModelProvider | Supplement | When building a request, sends an image in user content or in a tool result, or replaces it with a text placeholder if the model lacks image support or the request cannot carry it; history is unchanged (moved out of Rpc) | Attachments |
+| ModelProvider | Supplement | When building a request, sends an image in user content or in a tool result to a vision-capable model, or to a request whose model capability is unknown; otherwise replaces it with an `img:` reference or text placeholder if the model lacks image support or the image cannot be sent; history is unchanged (moved out of Rpc) | Attachments |
 | Prompt, PromptSources | Supplement | Prompt's published adopted model configuration; atomic adoption of a profile's prompt and optional model, using PromptSources' existing `dim/session` System entry | `/effort`, `/fast`, `/agent` |
 | PromptSources | Supplement | Prompt language source | The Session's reply language (`session.language.*`) |
 | ContextPreparation | Supplement | Usage query; manual compaction; production compaction host implementing `ResolveContextModel` | `/usage`, `/compact` |

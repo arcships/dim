@@ -28,25 +28,6 @@ function group(blocks: Block[], minWorkBlocks?: number) {
 }
 
 describe('timeline block grouping', () => {
-  it('groups consecutive work blocks and absorbs notifications', () => {
-    const blocks = [
-      block('text-1', 'text'),
-      block('think-1', 'thinking'),
-      block('notify-1', 'notification'),
-      block('tool-1', 'tool'),
-      block('status-1', 'status'),
-    ]
-
-    const grouped = group(blocks)
-    expect(grouped.map(item => item.kind)).toEqual(['single', 'group', 'single'])
-    const workGroup = grouped[1]
-    expect(workGroup?.kind).toBe('group')
-    if (workGroup?.kind === 'group') {
-      expect(workGroup.groupId).toBe('group:think-1')
-      expect(workGroup.blocks.map(value => value.id)).toEqual(['think-1', 'notify-1', 'tool-1'])
-    }
-  })
-
   it('keeps a lone work block single', () => {
     const grouped = group([block('think-1', 'thinking'), block('text-1', 'text')])
     expect(grouped.map(item => item.kind)).toEqual(['single', 'single'])

@@ -31,7 +31,20 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Branch history is incomplete; stop-all unavailable" => "分支歷程尚未讀完，暫無法全部停止",
         "Running" => "執行中",
         "Lines" => "線",
-        "Enter show the line · x end it · Esc close" => "Enter 查看該線 · x 結束 · Esc 關閉",
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter 查看 · p 從此繼續 · x 結束 · Esc 關閉"
+        }
+        "Main line" => "主線",
+        "Start" => "起點",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "預設分支和它延續的線都不能結束；請先切換到另一條線繼續"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "原預設分支保持開啟，並保留它已開啟的線。根分支在任一方向都保有自己的開線權。"
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "原預設分支保持開啟，並保留它已開啟的線。兩條線互換開線的權利。"
+        }
         "This session has no lines." => "這個工作階段還沒有線。",
         "No matching lines." => "沒有符合的線。",
         "the session itself" => "工作階段本身",
@@ -252,6 +265,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "檔案",
         "Searching…" => "正在搜尋…",
+        "type filter · enter select · esc clear/close" => "輸入篩選 · enter 選擇 · esc 清除/關閉",
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 選擇 · enter/tab 插入 · esc 關閉",
         "not sent to the model" => "未傳送給模型",
         "… {count} more lines" => "… 還有 {count} 行",
@@ -287,8 +301,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "還有 {count} 則 · shift+← 編輯最後一則 · ctrl+s 立即 steer"
         }
         "Queue ({count})" => "佇列（{count}）",
-        "Thinking…" => "思考中…",
-        "Thinking excerpt" => "思考摘錄",
+        "Thinking…" => "正在思考…",
         "Thought" => "已思考",
         "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "歡迎使用 DIM {version}！",
@@ -303,6 +316,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Sign-in link:" => "登入連結：",
         "Resume" => "回到終端機",
         "Press Ctrl+C to stop the Web workspace." => "按 Ctrl+C 停止 Web 工作區。",
+        "Feedback or ideas? Join us on Discord:" => "有意見或想法？加入我們的 Discord：",
         "To resume this session:" => "繼續此工作階段：",
 
         // commands.rs: descriptions
@@ -415,8 +429,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // models_panel.rs
         "Select a model" => "選擇模型",
         "Loading models..." => "正在載入模型…",
-        "Previous page" => "上一頁",
-        "Next page" => "下一頁",
         "No models available. Connect a provider first." => "沒有可用的模型。請先連線供應商。",
         "No matching models." => "沒有相符的模型。",
         "current" => "目前",
@@ -514,6 +526,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Background task finished: {label}" => "後台任務已完成：{label}",
         "Background task failed: {label}" => "後台任務失敗：{label}",
         "Background task stopped: {label}" => "後台任務已停止：{label}",
+        "Background tasks" => "後台任務",
+        "Nothing runs in the background." => "後台沒有正在執行的任務。",
+        "No matching tasks." => "沒有符合的任務。",
         "Permission needed: {tool}" => "需要授權：{tool}",
         "Question waiting for your answer" => "有問題等你回答",
         "Notify when agent needs you" => "需要你時通知",
@@ -541,6 +556,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ctrl+Enter 中斷並立即傳送：草稿與所有暫存訊息合成一則送出"
         }
         "Send now failed: {error}; the draft was kept" => "立即傳送失敗：{error}；草稿已保留",
+        "Send now failed: {error}" => "立即傳送失敗：{error}",
         "Send now cancelled; the draft was kept" => "已取消立即傳送；草稿保留",
         "Send now is still stopping the run; the draft was kept" => {
             "立即傳送仍在停止執行；草稿已保留"
@@ -561,6 +577,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "選取歷史項時 Shift+Tab 選擇較新項 · Esc 返回輸入框"
         }
         "(shift+tab to cycle)" => "(Shift+Tab 切換)",
+        "Permission unavailable" => "權限不可用",
         "Fullscreen" => "全螢幕",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown 捲動 · Home/End 至頂端或底端 (草稿為空時) · Tab 選擇訊息，e 編輯，q 引用"
@@ -629,6 +646,166 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "moving retained images into Session files" => "把保留的圖片寫入工作階段檔案",
         "updating the text index of the rows that changed" => "更新已改動列的文字索引",
         "checking and committing the upgraded store" => "校驗並提交升級後的資料庫",
+        "A prompt save is still in progress" => "提示詞儲存尚未完成",
+        "Base prompt" => "基礎提示詞",
+        "Before/after comparison is unavailable for this record." => {
+            "此記錄沒有可用的修改前後對照。"
+        }
+        "Cancelling generation…" => "正在取消產生…",
+        "Changes" => "修改內容",
+        "Compaction prompt" => "壓縮提示詞",
+        "Could not open the share destination" => "無法開啟分享頁面",
+        "Could not save ZIP" => "無法儲存 ZIP",
+        "Default: current-session diagnostics only." => "預設只打包目前工作階段的診斷資訊。",
+        "Draft a GitHub issue" => "在 GitHub 起草 Issue",
+        "Email the ZIP to {email}" => "可將 ZIP 寄至 {email}",
+        "Enter apply · Esc back" => "Enter 套用 · Esc 返回",
+        "Error diagnostics only; no session text is available." => {
+            "僅打包錯誤診斷資訊；沒有可收集的工作階段內容。"
+        }
+        "Evidence · No recent session activity" => "證據 · 近期沒有可回報的工作階段活動",
+        "Evidence · Observed error only" => "證據 · 只有觀測到的錯誤",
+        "Evidence · Recent session activity" => "證據 · 最近的工作階段活動",
+        "Evidence · Timeline omitted" => "證據 · 已省略時間線",
+        "Evidence · Timeline read failed" => "證據 · 無法讀取時間線",
+        "Evidence · Timeline unavailable" => "證據 · 時間線不可用",
+        "Generate report" => "產生報告",
+        "Generate/save never uploads. Share manually after saving." => {
+            "產生和儲存都不會上傳。儲存後再手動分享。"
+        }
+        "Generating report…" => "正在產生報告…",
+        "Give feedback on Discord" => "到 Discord 提供意見",
+        "Input" => "參數",
+        "Invalid report ZIP" => "報告 ZIP 無效",
+        "Local generation makes zero model requests." => "本機產生不會呼叫模型。",
+        "Model · Generate locally" => "模型 · 本機產生",
+        "New" => "新",
+        "No content changes." => "內容沒有變化。",
+        "No session to report." => "沒有可回報的工作階段。",
+        "Old" => "舊",
+        "Opened Discord" => "已開啟 Discord",
+        "Opened GitHub issue draft" => "已開啟 GitHub Issue 草稿",
+        "Options" => "選項",
+        "Options must fit within 1 KiB" => "選項不得超過 1 KiB",
+        "Options · for example: omit timeline, keep error codes" => {
+            "選項 · 例如 omit timeline, keep error codes"
+        }
+        "Prepare report again" => "重新準備報告",
+        "Preparing report…" => "正在準備報告…",
+        "Prompt saved; applies to new Sessions" => "提示詞已儲存；對新工作階段生效",
+        "Prompt settings are not available" => "提示詞設定不可用",
+        "Prompts" => "提示詞",
+        "Redact [ ]" => "遮蔽 [ ]",
+        "Redact [x]" => "遮蔽 [x]",
+        "Redact is off. The ZIP may contain sensitive text from recent messages." => {
+            "遮蔽已關閉。ZIP 可能包含近期對話中的敏感內容。"
+        }
+        "Refresh report plan" => "重新整理報告計畫",
+        "Report ready" => "報告已產生",
+        "Report this error" => "回報此錯誤",
+        "Report this session" => "回報目前工作階段",
+        "Resetting {field}; the old text is kept in {path}" => {
+            "正在重設 {field}；舊文字保留在 {path}"
+        }
+        "Result" => "結果",
+        "Run /report to create a report." => "輸入 /report 產生報告。",
+        "Running…" => "執行中…",
+        "Save ZIP" => "儲存 ZIP",
+        "Saved ZIP" => "ZIP 已儲存至",
+        "Session model" => "工作階段模型",
+        "Skills instructions" => "技能說明",
+        "Some options were unsupported." => "部分選項不受支援。",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab 也可選擇工具標題 · Enter/空白鍵展開或收合目前工具"
+        }
+        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
+            "只有主動關閉遮蔽，才會將近期使用者和助手內容附加到 ZIP；可能含敏感資訊。"
+        }
+        "Updating report plan…" => "正在更新報告計畫…",
+        "Usage: /report" => "用法：/report",
+        "Waiting for result…" => "等待結果…",
+        "ZIP contents: report.md, diagnostics.json" => "ZIP 內容：report.md、diagnostics.json",
+        "built-in" => "內建",
+        "custom" => "自訂",
+        "report the current session" => "回報目前工作階段",
+        "skills replaces the marker and call shape; the skill tool and list stay · r reset" => {
+            "skills 會替換標記與呼叫形狀；skill 工具和清單不受影響 · r 重設"
+        }
+        "… {count} unchanged lines" => "… {count} 行未修改",
+        "↑↓ move · Enter edit · r reset · Esc close" => {
+            "↑↓ 移動 · Enter 編輯 · r 重設 · Esc 關閉"
+        }
+        "↑↓ move · Enter select · ←→/Space change · r reset · Esc close" => {
+            "↑↓ 移動 · Enter 選擇 · ←→/空白鍵 變更 · r 重設 · Esc 關閉"
+        }
+        "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 切換 · Enter 選擇 · Esc 關閉",
+        "Permission mode" => "權限模式",
+        "Related settings" => "相關設定",
+        "Process isolation" => "進程隔離",
+        "open" => "開啟",
+        "User-wide command rules. Allow skips asks, never denials." => {
+            "使用者層級指令規則。允許只會跳過詢問，不會越過拒絕。"
+        }
+        "Opens Settings; user-wide, for new processes; independent of permission mode." => {
+            "開啟設定；使用者層級，作用於新進程；與權限模式無關。"
+        }
+        "keep mode" => "保持模式",
+        "use mode" => "使用模式",
+        "Current session; remembered for new sessions. {consequence}" => {
+            "僅目前工作階段；會記住用於新工作階段。{consequence}"
+        }
+        "↑↓/Tab move · Enter {action} · Esc close" => {
+            "↑↓/Tab 移動 · Enter {action} · Esc 關閉"
+        }
+        "Writes and commands denied; external reads may ask." => {
+            "寫入和指令一律拒絕；外部讀取可能會詢問。"
+        }
+        "Workspace writes allowed; commands, network and ungranted outside access usually ask." => {
+            "允許工作區寫入；指令、網路和未獲授權的外部存取通常會詢問。"
+        }
+        "Skips preset approval; pending calls on this branch are reevaluated. Explicit denies and isolation remain." => {
+            "跳過預設核准；此分支上待處理的呼叫會重新評估。明確的拒絕和隔離仍然有效。"
+        }
+        "↑↓ move · Enter select · Esc close" => "↑↓ 移動 · Enter 選擇 · Esc 關閉",
+        "Loading process isolation…" => "正在讀取進程隔離…",
+        "Sandbox is unavailable on this host: {reason}" => "此主機上沙箱不可用：{reason}",
+        "Applies to new processes and shells." => "作用於新進程和 shell。",
+        "Off: commands use your OS permissions, not file-tool limits." => {
+            "關閉：指令使用作業系統的權限，不受檔案工具限制。"
+        }
+        "Off" => "關閉",
+        "Sandboxed · No network" => "沙箱 · 無網路",
+        "Sandboxed · Network allowed" => "沙箱 · 允許網路",
+        "selected" => "已選",
+        "Save" => "儲存",
+        "Reset to defaults" => "重設為預設值",
+        "Reload" => "重新載入",
+        "Discard edits and read the current settings" => "捨棄修改並讀取目前設定",
+        "Reset the execution switches to defaults?" => "將執行開關重設為預設值？",
+        "Discard unsaved changes?" => "捨棄未儲存的修改？",
+        "Yes (y)" => "是 (y)",
+        "Cancel (n)" => "取消 (n)",
+        "y confirm · Enter/Esc cancel" => "y 確認 · Enter/Esc 取消",
+        "Read only" => "唯讀",
+        "Workspace write" => "工作區寫入",
+        "Agent" => "智慧代理",
+        "agent" => "智慧代理",
+        "command" => "指令",
+        "ended" => "已結束",
+        "Signed in" => "已登入",
+        "Retry" => "重試",
+        "Provider changed; review the retained draft and press Apply again" => {
+            "提供方已變更；請檢查保留的草稿並再次按套用"
+        }
+        "y allow · a always · n reject · ←→/Tab move · Enter confirm" => {
+            "y 允許 · a 永遠允許 · n 拒絕 · ←→/Tab 切換 · Enter 確認"
+        }
+        "{count} in background · /tasks" => "背景 {count} 項 · /tasks",
+        "{field}: {error} Your text is kept in {path}" => {
+            "{field}：{error} 你的文字已保留在 {path}"
+        }
+        "{field}: {error}" => "{field}：{error}",
+        "Prompts: {error}" => "提示詞：{error}",
         _ => return None,
     })
 }

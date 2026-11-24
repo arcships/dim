@@ -36,6 +36,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Finish or stop the current work first (a running turn, shell command, or pending prompt)." => {
             "先に実行中の作業（ターン、シェルコマンド、保留中の確認）を終えるか止めてください。"
         }
+        "Waiting for this Session's state after the switch." => {
+            "切り替え後のセッションの状態を待っています。"
+        }
+        "Waiting for the Session switch to finish." => {
+            "セッションの切り替えが完了するのを待っています。"
+        }
         "Checking for updates…" => "更新を確認しています…",
         "DimCode {version} is up to date." => "DimCode {version} は最新です。",
         "Skip this version" => "このバージョンをスキップ",
@@ -129,6 +135,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "editing" => "編集中",
         "changed" => "変更",
         "changing" => "変更中",
+        "Ran code" => "コードを実行",
+        "Running code" => "コードを実行中",
         "checked on" => "確認",
         "checking on" => "確認中",
         "Explored" => "探索",
@@ -173,6 +181,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Checked on background task" => "バックグラウンドタスクを確認",
         "Waiting…" => "待機中…",
         "… +{count} lines" => "… 残り {count} 行",
+        "New members from main inherit this policy; existing members retain theirs." => {
+            "main から作成される新しいメンバーはこの権限を継承し、既存のメンバーは現在の権限を保ちます。"
+        }
+        "Subagent tool approval" => "サブエージェントのツール承認",
         _ => return None,
     })
 }

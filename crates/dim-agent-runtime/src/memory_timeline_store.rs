@@ -16,6 +16,7 @@ struct MemorySession {
 }
 struct MemoryBranch {
     info: BranchRecord,
+    /// In sequence order without gaps, so `events[n - 1]` holds sequence `n`.
     events: Vec<StoredEvent>,
     snapshots: BTreeMap<(String, u64), RecoverySnapshot>,
 }
@@ -167,11 +168,20 @@ impl TimelineStore for MemoryTimelineStore {
         let session = sessions
             .get_mut(&key.session_id)
             .ok_or_else(|| AgentError::Storage(format!("unknown session {}", key.session_id)))?;
-        if !session.branches.contains_key(&key.branch_id) {
-            return Err(AgentError::Storage(format!(
-                "unknown branch {}",
-                key.branch_id
-            )));
+        let branch = session
+            .branches
+            .get(&key.branch_id)
+            .ok_or_else(|| AgentError::Storage(format!("unknown branch {}", key.branch_id)))?;
+        let first = branch
+            .events
+            .last()
+            .map_or(1, |record| record.event.sequence + 1);
+        for (expected, record) in (first..).zip(&events) {
+            if record.event.sequence != expected {
+                return Err(AgentError::Storage(
+                    "Timeline sequence is not contiguous".into(),
+                ));
+            }
         }
         for record in &events {
             if let EventKind::BranchCreate(data) = &record.event.kind {
@@ -196,7 +206,7 @@ impl TimelineStore for MemoryTimelineStore {
         session
             .branches
             .get_mut(&key.branch_id)
-            .unwrap()
+            .expect("the branch was checked before the batch was accepted")
             .events
             .extend(events);
         drop(sessions);
@@ -309,5 +319,146 @@ impl TimelineStore for MemoryTimelineStore {
                         .map(|(_, snapshot)| snapshot.clone())
                 }))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dim_agent_types::{AgentEvent, InputMessageData};
+    use std::sync::Arc;
+
+    fn key() -> TimelineKey {
+        TimelineKey {
+            session_id: "session".into(),
+            branch_id: "main".into(),
+        }
+    }
+
+    fn stored(sequence: u64, batch_end: u64) -> StoredEvent {
+        StoredEvent {
+            event: Arc::new(AgentEvent {
+                id: format!("event-{sequence}"),
+                sequence,
+                create_at: 0,
+                tags: None,
+                parent_call_id: None,
+                kind: EventKind::InputMessage(InputMessageData::text(
+                    format!("event {sequence}"),
+                    None,
+                )),
+            }),
+            trace: None,
+            batch_end,
+        }
+    }
+
+    fn callback() -> (tokio::sync::oneshot::Receiver<Result<()>>, PublishCallback) {
+        let (sent, received) = tokio::sync::oneshot::channel();
+        (
+            received,
+            Box::new(move |result| {
+                let _ = sent.send(result);
+            }),
+        )
+    }
+
+    async fn session(store: &MemoryTimelineStore) {
+        store
+            .create_session("session", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn contiguous_appends_store_events_in_sequence_order() {
+        let store = MemoryTimelineStore::default();
+        session(&store).await;
+        let (mut published, publish) = callback();
+        store
+            .append(key(), vec![stored(1, 2), stored(2, 2)], publish)
+            .unwrap();
+        assert!(published.try_recv().expect("the append publishes").is_ok());
+        assert_eq!(store.head(&key()).await.unwrap(), 2);
+        let events = store.read(&key(), 1..=2).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|record| record.event.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_append_after_a_gap_is_rejected_without_writing() {
+        let store = MemoryTimelineStore::default();
+        session(&store).await;
+        store
+            .append(
+                key(),
+                vec![stored(1, 1)],
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let (mut published, publish) = callback();
+        let error = store
+            .append(key(), vec![stored(3, 3)], publish)
+            .unwrap_err();
+        assert!(
+            matches!(&error, AgentError::Storage(message) if message == "Timeline sequence is not contiguous"),
+            "{error}"
+        );
+        assert!(
+            published.try_recv().is_err(),
+            "a rejected batch publishes no completion"
+        );
+        assert_eq!(store.head(&key()).await.unwrap(), 1);
+        let events = store.read(&key(), 1..=1).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event.sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn an_append_with_a_gap_inside_its_batch_is_rejected_without_writing() {
+        let store = MemoryTimelineStore::default();
+        session(&store).await;
+        store
+            .append(
+                key(),
+                vec![stored(1, 1)],
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let (mut published, publish) = callback();
+        let error = store
+            .append(key(), vec![stored(2, 2), stored(4, 4)], publish)
+            .unwrap_err();
+        assert!(
+            matches!(&error, AgentError::Storage(message) if message == "Timeline sequence is not contiguous"),
+            "{error}"
+        );
+        assert!(
+            published.try_recv().is_err(),
+            "a rejected batch publishes no completion"
+        );
+        assert_eq!(store.head(&key()).await.unwrap(), 1);
+        assert_eq!(store.read(&key(), 1..=1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_first_append_must_start_at_sequence_one() {
+        let store = MemoryTimelineStore::default();
+        session(&store).await;
+        let (mut published, publish) = callback();
+        let error = store
+            .append(key(), vec![stored(2, 2)], publish)
+            .unwrap_err();
+        assert!(
+            matches!(&error, AgentError::Storage(message) if message == "Timeline sequence is not contiguous"),
+            "{error}"
+        );
+        assert!(published.try_recv().is_err());
+        assert_eq!(store.head(&key()).await.unwrap(), 0);
     }
 }

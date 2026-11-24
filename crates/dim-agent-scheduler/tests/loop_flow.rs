@@ -3,8 +3,9 @@
 //! round 2; a round without `next` leaves the loop `waiting` and delivers
 //! nothing more; `stop` is idempotent; expiry settles `expired`; a gone branch
 //! settles `stopped`; a restart with a delivered round settles by lookup and
-//! never writes a second one. A row that waits for a window names one an hour
-//! out and crosses it with the clock; one that waits for a pass crosses a tick
+//! never writes a second one; a `next` or `stop` reply carries a prompt only
+//! for a loop of the calling branch. A row that waits for a window names one an
+//! hour out and crosses it with the clock; one that waits for a pass crosses a tick
 //! (#1536).
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
@@ -46,6 +47,25 @@ impl Script {
     fn release(&self) {
         *self.held.lock().unwrap() = None;
         self.release.notify_waiters();
+    }
+    /// The text and error flag of the result for `id`, as the model reads them.
+    fn tool_result(&self, id: &str) -> Option<(String, bool)> {
+        self.requests.lock().unwrap().iter().find_map(|request| {
+            request.messages.iter().find_map(|message| {
+                let MessageContent::Parts(parts) = &message.content else {
+                    return None;
+                };
+                parts.iter().find_map(|part| match part {
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        content: ToolContent::Text(text),
+                        is_error,
+                        ..
+                    } if tool_use_id == id => Some((text.clone(), is_error == &Some(true))),
+                    _ => None,
+                })
+            })
+        })
     }
 }
 
@@ -214,10 +234,15 @@ async fn create_session(
 }
 
 async fn history(client: &mut Client, session_id: &str) -> Vec<Value> {
+    history_on(client, session_id, "main").await
+}
+
+/// Every event of one named branch, in order.
+async fn history_on(client: &mut Client, session_id: &str, branch_id: &str) -> Vec<Value> {
     let page: Value = client
         .rpc(
             "session.history",
-            json!({"sessionId": session_id, "branchId": "main", "after": 0, "limit": 256}),
+            json!({"sessionId": session_id, "branchId": branch_id, "after": 0, "limit": 256}),
         )
         .await
         .unwrap();
@@ -1039,4 +1064,567 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
         rounds.iter().any(|event| marker_of(event) == marker),
         "the next pass delivered the new loop's round 1: {rounds:?}"
     );
+}
+
+/// A loop started without `branchId` reaches the line the Session's
+/// conversation is on, and its rounds are delivered there, not on the root
+/// (timeline branches §20.22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_loop_started_without_a_branch_follows_the_default_branch() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["branch"], true).await;
+    let agent = server.agent().expect("the default Agent");
+    let at = agent
+        .get_session(&session)
+        .unwrap()
+        .sequence("main")
+        .unwrap();
+    let branch = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": session, "parentBranchId": "main", "at": at,
+                "prompt": "Child work."}),
+        )
+        .await
+        .unwrap()["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    client
+        .rpc(
+            "session.branch_set_default",
+            json!({"sessionId": session, "branchId": branch}),
+        )
+        .await
+        .unwrap();
+
+    let created: Value = client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "prompt": "check the deploy"}),
+        )
+        .await
+        .unwrap();
+    let loop_id = created["loop"]["loopId"].as_str().unwrap().to_owned();
+    assert_eq!(created["loop"]["state"], "running");
+    assert_eq!(created["loop"]["branchId"], json!(branch), "{created}");
+
+    wait_for("round 1 to settle", || {
+        stored_loops(home.path())
+            .first()
+            .is_some_and(|record| record["round"] == json!(2))
+    })
+    .await;
+    let rounds = loop_rounds(&history_on(&mut client, &session, &branch).await);
+    assert_eq!(rounds.len(), 1, "the default branch takes the round");
+    let marker = marker_of(&rounds[0]);
+    assert!(
+        marker.contains(&format!("loop=\"{loop_id}\"")) && marker.contains("round=\"1\""),
+        "the marker names the loop and its round: {marker}"
+    );
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "the root takes nothing"
+    );
+}
+
+/// The tool's `start` never delivers at the call: its first round is due after
+/// the delay it was given, and its result names that due time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_start_waits_its_delay_and_delivers_one_round() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "delay_seconds": 600, "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    let before = dim_agent_scheduler::testing::clock(home.path()).now();
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+
+    wait_for("the loop record", || !stored_loops(home.path()).is_empty()).await;
+    let record = stored_loops(home.path())[0].clone();
+    let due = record["next_at"]
+        .as_str()
+        .expect("round 1 is due after the delay")
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    let delay = due.duration_since(before).as_secs();
+    assert!(
+        (600..=605).contains(&delay),
+        "the first round is 600 s after the call, got {delay}: {record}"
+    );
+
+    // A pass just before the delay writes nothing.
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    clock.advance_to(due - jiff::SignedDuration::from_secs(2));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "nothing is delivered at the call or before the delay"
+    );
+
+    // The due time delivers exactly one round.
+    clock.advance_to(due);
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while loop_rounds(&history(&mut client, &session).await).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("round 1 is delivered at the due time");
+    let rounds = loop_rounds(&history(&mut client, &session).await);
+    assert_eq!(rounds.len(), 1, "exactly one round is delivered");
+    assert!(
+        marker_of(&rounds[0]).contains("round=\"1\""),
+        "the round is round 1: {}",
+        marker_of(&rounds[0])
+    );
+
+    wait_for("the tool result", || model.tool_result("call-1").is_some()).await;
+    let (text, is_error) = model.tool_result("call-1").unwrap();
+    assert!(!is_error, "{text}");
+    let stamp = due.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    assert!(
+        text.contains(&stamp),
+        "the result names the due time {stamp}: {text}"
+    );
+    assert!(text.contains("in 600 seconds"), "{text}");
+    assert!(text.contains("not delivered now"), "{text}");
+}
+
+/// A tool `start` without `delay_seconds` is refused and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_start_without_a_delay_is_refused_and_writes_nothing() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+
+    wait_for("the tool result", || model.tool_result("call-1").is_some()).await;
+    let (text, is_error) = model.tool_result("call-1").unwrap();
+    assert!(is_error, "{text}");
+    assert!(text.contains("loop_invalid"), "{text}");
+    assert!(text.contains("delay_seconds between 60 and 3600"), "{text}");
+    assert!(
+        stored_loops(home.path()).is_empty(),
+        "a refused start writes no record"
+    );
+    assert!(loop_rounds(&history(&mut client, &session).await).is_empty());
+}
+
+/// A `next` before the first round replaces the pending round's due time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_next_before_the_first_round_replaces_its_due_time() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "delay_seconds": 600, "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the loop record", || !stored_loops(home.path()).is_empty()).await;
+    let first = stored_loops(home.path())[0]["next_at"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+
+    model.push(vec![ToolCall {
+        id: "call-2".into(),
+        name: "loop".into(),
+        input: json!({"action": "next", "delay_seconds": 120})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    let armed = dim_agent_scheduler::testing::clock(home.path()).now();
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "run it sooner"}),
+        )
+        .await
+        .unwrap();
+
+    wait_for("the replaced due time", || {
+        stored_loops(home.path()).first().is_some_and(|record| {
+            record["next_at"]
+                .as_str()
+                .is_some_and(|at| at.parse::<jiff::Timestamp>().ok() != Some(first))
+        })
+    })
+    .await;
+    let record = stored_loops(home.path())[0].clone();
+    let due = record["next_at"]
+        .as_str()
+        .expect("the armed round is due")
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    let delay = due.duration_since(armed).as_secs();
+    assert!(
+        (120..=125).contains(&delay),
+        "the next's 120 s replaces the pending due time, got {delay}: {record}"
+    );
+    assert!(due < first, "the pending 600 s round is replaced: {record}");
+
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    clock.advance_to(due - jiff::SignedDuration::from_secs(2));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "nothing is delivered before the replaced due time"
+    );
+    clock.advance_to(due);
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while loop_rounds(&history(&mut client, &session).await).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("round 1 is delivered at the replaced due time");
+    assert_eq!(
+        loop_rounds(&history(&mut client, &session).await).len(),
+        1,
+        "one round is delivered"
+    );
+}
+
+/// A tool-started loop keeps its round across a restart: it neither fires
+/// early nor loses the round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_start_keeps_its_round_across_a_restart() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "delay_seconds": 600, "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the loop record", || !stored_loops(home.path()).is_empty()).await;
+    let due = stored_loops(home.path())[0]["next_at"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+
+    clock.advance_to(due - jiff::SignedDuration::from_secs(2));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "a restart before the delay does not fire the round"
+    );
+
+    clock.advance_to(due);
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while loop_rounds(&history(&mut client, &session).await).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the restored round is delivered at its due time");
+    assert_eq!(
+        loop_rounds(&history(&mut client, &session).await).len(),
+        1,
+        "the round is delivered once"
+    );
+}
+
+/// `session.loop.list` carries the whole prompt, including one longer than a
+/// client's display bound: truncation belongs to the reader.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_carries_the_whole_prompt() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &[], true).await;
+    let prompt = format!("first line\n{}", "p".repeat(8_000));
+
+    let created: Value = client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "prompt": prompt}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created["loop"]["prompt"], json!(prompt), "{created}");
+
+    let listed: Value = client
+        .rpc("session.loop.list", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let records = listed["loops"].as_array().unwrap();
+    assert_eq!(records.len(), 1, "{listed}");
+    assert_eq!(
+        records[0]["prompt"],
+        json!(prompt),
+        "the wire keeps the whole prompt: {listed}"
+    );
+}
+
+/// Tool results bound the prompt to a preview and say so, while the record
+/// keeps the whole prompt: a long self-paced prompt must not repeat in every
+/// `next` reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_replies_bound_the_loop_prompt() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+    let prompt = "x".repeat(5_000);
+    let preview = "x".repeat(4_096);
+
+    let check = |id: &str| {
+        let (text, is_error) = model.tool_result(id).expect("the tool replied");
+        assert!(!is_error, "{text}");
+        assert!(text.contains("\"prompt_truncated\":true"), "{text}");
+        assert!(
+            !text.contains(&prompt),
+            "the whole prompt is not repeated: {text}"
+        );
+        assert!(
+            text.contains(&preview),
+            "the preview keeps the first 4 KiB: {text}"
+        );
+    };
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action":"start","delay_seconds":600,"prompt":prompt})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the start result", || model.tool_result("call-1").is_some()).await;
+    check("call-1");
+
+    model.push(vec![ToolCall {
+        id: "call-2".into(),
+        name: "loop".into(),
+        input: json!({"action":"next","delay_seconds":120})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "run it sooner"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the next result", || model.tool_result("call-2").is_some()).await;
+    check("call-2");
+
+    model.push(vec![ToolCall {
+        id: "call-3".into(),
+        name: "loop".into(),
+        input: json!({"action":"stop"}).as_object().cloned().unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "stop it"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the stop result", || model.tool_result("call-3").is_some()).await;
+    check("call-3");
+}
+
+/// A loop belongs to one branch: `next` and `stop` reach a record by its
+/// Session-wide id, so a reply from another branch carries that record's state
+/// and timing only, while the owning branch still reads its prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_reply_carries_the_prompt_of_the_calling_branch_only() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop", "branch"], true).await;
+
+    // The child's opening turn waits at the model, so the child's first round
+    // stays queued and the batches below reach the turn on `main`.
+    model.hold("Child work.");
+    let agent = server.agent().expect("the default Agent");
+    let at = agent
+        .get_session(&session)
+        .unwrap()
+        .sequence("main")
+        .unwrap();
+    let child = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": session, "parentBranchId": "main", "at": at,
+                "prompt": "Child work."}),
+        )
+        .await
+        .unwrap()["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let foreign_prompt = "inspect the child branch";
+    let foreign: Value = client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "branchId": child, "prompt": foreign_prompt}),
+        )
+        .await
+        .unwrap();
+    let foreign_id = foreign["loop"]["loopId"].as_str().unwrap().to_owned();
+
+    for (id, input) in [
+        ("call-1", json!({"action": "next", "loop_id": foreign_id})),
+        ("call-2", json!({"action": "stop", "loop_id": foreign_id})),
+        ("call-3", json!({"action": "next"})),
+        ("call-4", json!({"action": "stop"})),
+        ("call-5", json!({"action": "list"})),
+    ] {
+        model.push(vec![ToolCall {
+            id: id.into(),
+            name: "loop".into(),
+            input: input.as_object().cloned().unwrap(),
+        }]);
+    }
+
+    let own_prompt = "inspect the main branch";
+    let own: Value = client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "prompt": own_prompt}),
+        )
+        .await
+        .unwrap();
+    let own_id = own["loop"]["loopId"].as_str().unwrap().to_owned();
+    wait_for("the loop tool results", || {
+        (1..=5).all(|n| model.tool_result(&format!("call-{n}")).is_some())
+    })
+    .await;
+
+    let reply = |id: &str| {
+        let (text, is_error) = model.tool_result(id).expect("the tool replied");
+        assert!(!is_error, "{text}");
+        text
+    };
+    for id in ["call-1", "call-2"] {
+        let text = reply(id);
+        assert!(
+            !text.contains(foreign_prompt),
+            "another branch's prompt never reaches {id}: {text}"
+        );
+        let record: Value = serde_json::from_str(text.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(record["loopId"], json!(foreign_id), "{text}");
+        assert_eq!(record["branchId"], json!(child), "{text}");
+        assert!(
+            record.get("prompt").is_none(),
+            "a foreign loop answers without its prompt: {text}"
+        );
+        assert!(
+            record.get("prompt_truncated").is_none(),
+            "a foreign loop says nothing about a prompt it does not carry: {text}"
+        );
+    }
+    for id in ["call-3", "call-4"] {
+        let text = reply(id);
+        assert!(
+            text.contains(own_prompt),
+            "the owning branch reads its prompt in {id}: {text}"
+        );
+        let record: Value = serde_json::from_str(text.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(record["branchId"], json!("main"), "{text}");
+        assert_eq!(record["prompt"], json!(own_prompt), "{text}");
+        assert_eq!(record["prompt_truncated"], json!(false), "{text}");
+    }
+    let listed = reply("call-5");
+    assert!(
+        !listed.contains(foreign_prompt) && !listed.contains(&foreign_id),
+        "list names no loop of another branch: {listed}"
+    );
+    assert!(
+        listed.contains(&format!("- {own_id} ")) && listed.contains(own_prompt),
+        "list names the calling branch's loop and its prompt: {listed}"
+    );
+    model.release();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
 }

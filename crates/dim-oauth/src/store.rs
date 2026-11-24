@@ -11,6 +11,7 @@ use reqwest::Client;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{io, sync::Arc, time::Duration};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -247,6 +248,15 @@ fn authenticated(
     }))
 }
 
+/// Whether `doc` stores a signed-in account, from a validated read: a
+/// `tokenDigest` that does not match its grant is not signed in. `None` for a
+/// document this build cannot read, which leaves the published value alone.
+fn signed_in(doc: &Doc) -> Option<bool> {
+    parse(doc, true)
+        .ok()
+        .map(|parsed| parsed.state.is_some_and(|state| state.identity.is_some()))
+}
+
 fn snapshot(doc: &Doc) -> Result<AccountSnapshot> {
     let Parsed { tokens, state } = parse(doc, true)?;
     let state = state.ok_or(ManagedError::AccountRecoveryRequired)?;
@@ -324,6 +334,10 @@ fn document(bytes: &[u8]) -> Result<Doc> {
 /// One locked `auth.json`.
 struct AuthFile {
     lease: FileLease,
+    /// The owner's read of whether the file stores a signed-in account, moved
+    /// by every observation made under this lease: a write, or a read of the
+    /// file. `None` until an observation initializes it.
+    account: watch::Sender<Option<bool>>,
 }
 impl AuthFile {
     async fn read(&mut self) -> Result<(Doc, Option<Vec<u8>>)> {
@@ -342,7 +356,18 @@ impl AuthFile {
         self.lease
             .replace(bytes, private_permissions(), &CancellationToken::new())
             .await
-            .map_err(file_error)
+            .map_err(file_error)?;
+        self.publish(doc);
+        Ok(())
+    }
+    /// Publishes the signed-in state of a document this lease read or wrote.
+    /// The publication and the read share the lease, so a write that waits
+    /// for it publishes after this observation and one that held it earlier
+    /// is what the read saw.
+    fn publish(&self, doc: &Doc) {
+        if let Some(signed_in) = signed_in(doc) {
+            self.account.send_replace(Some(signed_in));
+        }
     }
     /// Drops a stored client secret and moves a legacy `dimcode.cn` grant to
     /// `dimagent.cn`, advancing the revision when the grant changes.
@@ -424,6 +449,10 @@ pub(super) struct Store {
     root: usize,
     client: Client,
     stopping: CancellationToken,
+    /// Whether the account file stores a signed-in account, moved after every
+    /// write of it: the provider publishes the App Server's availability from
+    /// the account's own transitions. `None` until the store reads the file.
+    account: watch::Sender<Option<bool>>,
 }
 impl Store {
     pub fn new(files: Arc<FileStorage>, root: usize, client: Client) -> Self {
@@ -432,7 +461,38 @@ impl Store {
             root,
             client,
             stopping: CancellationToken::new(),
+            account: watch::Sender::new(None),
         }
+    }
+    /// The account file's signed-in state: the initialized observation, then
+    /// every write. A subscriber that sees `None` waits for the provider's
+    /// first read rather than treating it as signed out.
+    pub fn account(&self) -> watch::Receiver<Option<bool>> {
+        self.account.subscribe()
+    }
+    /// Publishes the signed-in state the account file stores. An observation
+    /// whose validated state already equals the watch answers from the atomic
+    /// read without the lease; the first observation, or one whose state
+    /// differs, takes the lease, rereads the file and publishes what that read
+    /// holds. The observation is read-only: it never creates, normalizes or
+    /// rewrites `auth.json`, so a shared file another writer populated stays as
+    /// it is. A missing file is a home that never signed in and publishes
+    /// signed out; a record this build cannot validate leaves the watch as it
+    /// was. `cancel` ends a wait for the lease, so a caller that gives up does
+    /// not leave a retry behind.
+    pub async fn observe_account(&self, cancel: Option<&CancellationToken>) -> Result<()> {
+        if let Some(current) = self.observed_current().await
+            && *self.account.borrow() == Some(current)
+        {
+            return Ok(());
+        }
+        let mut file = self.open(cancel).await?;
+        let (doc, _) = file.read().await?;
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Err(ManagedError::ServiceReloading);
+        }
+        file.publish(&doc);
+        Ok(())
     }
     /// Stops lock acquisition. A transaction that holds the lock still
     /// persists its result.
@@ -446,7 +506,12 @@ impl Store {
             if self.stopping.is_cancelled() || cancel.is_cancelled() {
                 return Err(ManagedError::ServiceReloading);
             }
-            match self.files.lock(&path, &self.stopping).await {
+            let attempt = tokio::select! {
+                _ = self.stopping.cancelled() => return Err(ManagedError::ServiceReloading),
+                _ = cancel.cancelled() => return Err(ManagedError::ServiceReloading),
+                attempt = self.files.lock(&path, &self.stopping) => attempt,
+            };
+            match attempt {
                 Ok(lease) => return Ok(lease),
                 Err(FileStorageError::Locked) => tokio::select! {
                     _ = self.stopping.cancelled() => {}
@@ -460,7 +525,25 @@ impl Store {
     async fn open(&self, cancel: Option<&CancellationToken>) -> Result<AuthFile> {
         Ok(AuthFile {
             lease: self.lease(AUTH_FILE, cancel).await?,
+            account: self.account.clone(),
         })
+    }
+
+    /// The signed-in state the account file stores, read without its lease.
+    /// A missing file is a home that never signed in; an unreadable or invalid
+    /// record returns `None`, which sends the observation down the leased path;
+    /// that path publishes only a validated read.
+    async fn observed_current(&self) -> Option<bool> {
+        let path = self.files.path(self.root, AUTH_FILE).ok()?;
+        let bytes = match self.files.read(&path, &CancellationToken::new()).await {
+            Ok(bytes) => bytes,
+            Err(FileStorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Some(false);
+            }
+            Err(_) => return None,
+        };
+        let doc = document(&bytes).ok()?;
+        signed_in(&doc)
     }
 
     /// Reads the account file without its lease. Writes are atomic replaces,
@@ -524,11 +607,37 @@ impl Store {
         }))
     }
 
+    /// The `account.status` read. A read that changes the published
+    /// observation takes the account lease, so a newer write or logout
+    /// publishes after it and an uninitialized watch is recovered from the
+    /// store it reads.
     pub async fn status(&self) -> Result<AccountSnapshot> {
+        if let Some(status) = self.current_status().await {
+            let status = status?;
+            if *self.account.borrow() == Some(status.account.is_some()) {
+                return Ok(status);
+            }
+        }
+        let mut file = self.open(None).await?;
+        self.status_in(&mut file).await
+    }
+
+    /// The stored account for internal readers. A record that needs no rewrite
+    /// answers from the lease-free read, so a fresh credential lookup is not
+    /// held up by another process's account lease; a rewrite still takes the
+    /// lease and publishes that observation.
+    pub(super) async fn read_status(&self) -> Result<AccountSnapshot> {
         if let Some(status) = self.current_status().await {
             return status;
         }
         let mut file = self.open(None).await?;
+        self.status_in(&mut file).await
+    }
+
+    /// Reads the account under `file`'s lease, normalizing or writing a
+    /// signed-out record, and publishes the observation before the lease is
+    /// released.
+    async fn status_in(&self, file: &mut AuthFile) -> Result<AccountSnapshot> {
         let (mut doc, _) = file.read().await?;
         file.normalize(&mut doc).await?;
         // No Dim record at all, even beside other owners' records, is signed
@@ -537,7 +646,9 @@ impl Store {
             doc.insert(STATE.into(), signed_out(None, false)?);
             file.write(&doc).await?;
         }
-        snapshot(&doc)
+        let status = snapshot(&doc)?;
+        file.publish(&doc);
+        Ok(status)
     }
 
     pub async fn login_revision(&self) -> Result<Revision> {
@@ -623,15 +734,28 @@ impl Store {
     }
 
     /// The current grant, refreshed within the freshness window, or after a
-    /// rejection of `rejected` when no newer grant replaced it. A rotated grant
-    /// is persisted before the account lock is released.
+    /// rejection of `rejected` when no newer grant replaced it. A record that
+    /// needs normalization is rewritten first. A rotated grant is persisted
+    /// before the account lock is released.
     pub async fn resolve(&self, rejected: Option<&Grant>) -> Result<Grant> {
+        self.resolve_in(rejected, true).await
+    }
+
+    /// Renewal for the background task: it persists a rotated grant and signs
+    /// out a rejected one, but never normalizes the record it reads.
+    pub(super) async fn renew(&self) -> Result<Grant> {
+        self.resolve_in(None, false).await
+    }
+
+    async fn resolve_in(&self, rejected: Option<&Grant>, normalize: bool) -> Result<Grant> {
         if let Some(grant) = self.current(rejected).await? {
             return Ok(grant);
         }
         let mut file = self.open(None).await?;
         let (mut doc, _) = file.read().await?;
-        file.normalize(&mut doc).await?;
+        if normalize {
+            file.normalize(&mut doc).await?;
+        }
         let Parsed { tokens, state } = parse(&doc, true)?;
         // A home that never signed in needs login, not recovery.
         if tokens.is_none() && state.is_none() {
@@ -774,5 +898,84 @@ impl Store {
         doc.insert(STATE.into(), state);
         file.write(&doc).await?;
         snapshot(&doc)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dim_agent_capabilities::file_storage::FileStoragePlugin;
+    use rutis::Ctx;
+    use rutis::host::CtxHost;
+    use std::path::Path;
+
+    async fn storage(home: &Path) -> (Ctx, Arc<FileStorage>) {
+        let root = Ctx::root().unwrap();
+        let view = root.plugin(FileStoragePlugin::new(vec![home.to_path_buf()]));
+        view.running(Duration::from_secs(10)).await.unwrap();
+        let files = root.get::<FileStorage>().unwrap();
+        (root, files)
+    }
+
+    fn signed_in_document() -> Value {
+        let identity = Identity {
+            issuer: "https://accounts.example".into(),
+            subject: "subject".into(),
+            email: None,
+            name: None,
+        };
+        let tokens = validate_tokens(&json!({
+            "type": "oauth",
+            "access": "access",
+            "refresh": "refresh",
+            "clientId": "client",
+            "issuer": identity.issuer,
+            "tokenEndpoint": "https://accounts.example/token",
+            "relayBaseUrl": "https://relay.example",
+            "expires": now() + 3_600_000,
+        }))
+        .unwrap();
+        let state = authenticated(Uuid::new_v4().to_string(), 1, 1, &identity, &tokens).unwrap();
+        json!({"nextApiOauth": Value::Object(tokens.0), "dimAccountState": state})
+    }
+
+    /// A store whose initializer never read the file still publishes its first
+    /// successful account read, so a failed assembly read does not hide a
+    /// signed-in account until the next write.
+    #[tokio::test]
+    async fn a_status_read_publishes_an_uninitialized_account_watch() {
+        let home = std::env::temp_dir().join(format!("do-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let home = home.canonicalize().unwrap();
+        std::fs::write(
+            home.join("auth.json"),
+            serde_json::to_vec_pretty(&signed_in_document()).unwrap(),
+        )
+        .unwrap();
+        let (root, files) = storage(&home).await;
+        let store = Store::new(files, 0, Client::new());
+        assert_eq!(*store.account.borrow(), None);
+        assert!(store.status().await.unwrap().account.is_some());
+        assert_eq!(
+            *store.account.borrow(),
+            Some(true),
+            "the status read must publish the account it read"
+        );
+        root.shutdown().await.unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// The publication decision validates the record: a `tokenDigest` that
+    /// does not match its grant is not a signed-in account.
+    #[test]
+    fn a_digest_mismatch_is_not_published_as_signed_in() {
+        let mut doc = signed_in_document();
+        assert_eq!(signed_in(doc.as_object().unwrap()), Some(true));
+        doc["dimAccountState"]["tokenDigest"] = json!("0".repeat(64));
+        assert_eq!(
+            signed_in(doc.as_object().unwrap()),
+            None,
+            "a record whose digest does not match its grant was published signed in"
+        );
     }
 }

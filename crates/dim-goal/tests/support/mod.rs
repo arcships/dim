@@ -1,6 +1,6 @@
-#![expect(
+#![allow(
     dead_code,
-    reason = "each test binary uses the helpers it needs; the rest are shared"
+    reason = "shared Goal test fixture keeps unused helper hooks"
 )]
 pub mod parts;
 pub mod texts;
@@ -15,7 +15,7 @@ use dim_agent_capabilities::{
 };
 pub use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{
-    Agent, AgentBuilder, AgentConfig, BoxFuture, Feature, Names, Session, Timeline,
+    Agent, AgentBuilder, AgentConfig, AgentError, BoxFuture, Feature, Names, Session, Timeline,
     TimelineIdentity, testing::chain_events,
 };
 use dim_agent_types::{BranchCreateData, EventKind, ModelRequest, SystemPrompt, SystemPromptPart};
@@ -502,10 +502,30 @@ fn block_of(event: &dim_agent_types::AgentEvent) -> Option<Block> {
     })
 }
 
+/// The facts of `branch` in order. The Session facade reads open lines, so a
+/// line that ended before this read is read through the tree at its fixed head
+/// instead (timeline-read-ownership §2).
+async fn branch_facts(
+    session: &Session,
+    branch: &str,
+) -> dim_agent_runtime::Result<Vec<Arc<dim_agent_types::AgentEvent>>> {
+    match branch_events(session, branch, ..).await {
+        Ok(events) => Ok(events),
+        Err(AgentError::BranchEnded(_)) => {
+            let through = session.sequence(branch)?;
+            session
+                .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()?
+                .page(branch.to_owned(), 0, 4096, through)
+                .await
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Goal's blocks on `branch`, in order: each input's first `<dim-goal>`
 /// marker line, then the input's whole text.
 pub async fn goal_writes(session: &Session, branch: &str) -> Vec<Block> {
-    branch_events(session, branch, ..)
+    branch_facts(session, branch)
         .await
         .unwrap_or_else(|error| panic!("the facts of {branch}: {error}"))
         .iter()
@@ -517,7 +537,7 @@ pub async fn goal_writes(session: &Session, branch: &str) -> Vec<Block> {
 pub async fn wait_goal(session: &Session, branch: &str, needle: &str) -> Block {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            if let Ok(events) = branch_events(session, branch, ..).await
+            if let Ok(events) = branch_facts(session, branch).await
                 && let Some(block) = events
                     .iter()
                     .filter_map(|event| block_of(event))
@@ -535,7 +555,7 @@ pub async fn wait_goal(session: &Session, branch: &str, needle: &str) -> Block {
 /// The full text of the last Goal block on `branch` whose marker contains
 /// `needle`.
 pub async fn goal_block(session: &Session, branch: &str, needle: &str) -> String {
-    branch_events(session, branch, ..)
+    branch_facts(session, branch)
         .await
         .unwrap()
         .iter()
@@ -549,7 +569,7 @@ pub async fn goal_block(session: &Session, branch: &str, needle: &str) -> String
 /// The raw blocks of the last Goal input on `branch` whose marker contains
 /// `needle`, in order.
 pub async fn goal_blocks(session: &Session, branch: &str, needle: &str) -> Vec<String> {
-    let events = branch_events(session, branch, ..)
+    let events = branch_facts(session, branch)
         .await
         .unwrap_or_else(|error| panic!("no Goal input with {needle} on {branch}: {error}"));
     events
@@ -578,7 +598,7 @@ pub async fn goal_blocks(session: &Session, branch: &str, needle: &str) -> Vec<S
 
 /// Sequences of the `turn/end` events on `branch`.
 pub async fn turn_ends(session: &Session, branch: &str) -> Vec<u64> {
-    branch_events(session, branch, ..)
+    branch_facts(session, branch)
         .await
         .unwrap()
         .iter()

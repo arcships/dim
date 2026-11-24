@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "Usando o plano do ChatGPT",
+        "This sign-in method will be removed in a future version." => {
+            "Este método de login será removido em uma versão futura."
+        }
+        "Switch to ChatGPT" => "Mudar para o ChatGPT",
+        "Manage usage" => "Gerenciar uso",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "A OpenAI processa os prompts, os arquivos selecionados e os resultados das ferramentas."
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "O Dim armazena sua conexão com o ChatGPT neste computador."
+        }
+        "Switch account" => "Trocar de conta",
+        "Continue with ChatGPT" => "Continuar com o ChatGPT",
+        "Add ChatGPT account" => "Adicionar conta do ChatGPT",
+        "Waiting for authorization in your browser" => "Aguardando autorização no navegador",
+        "{name} (Legacy)" => "{name} (legado)",
+        "Legacy" => "Legado",
         "Refresh model list" => "Atualizar lista de modelos",
         "Model list refreshed" => "Lista de modelos atualizada",
         "Model list refresh failed: {reason}" => "Falha ao atualizar a lista de modelos: {reason}",
@@ -7,6 +25,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // providers_panel.rs
         "Providers" => "Provedores",
         "Enter open · Esc clear/close" => "Enter abrir · Esc limpar/fechar",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab mover · Enter ativar · Ctrl+R reler · Esc voltar"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => {
             "↑↓/Tab mover · Enter ativar · Esc voltar"
         }
@@ -70,6 +91,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "Abra esta URL: {url}",
         "Enter code:    {code}" => "Digite o código:    {code}",
         "Waiting after server slow-down" => "Aguardando: servidor pediu pausa",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "Login OAuth cancelado",
         "Enter your work email" => "Digite seu e-mail corporativo",
         "Invalid OAuth state - possible CSRF attempt" => {

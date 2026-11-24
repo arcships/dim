@@ -10,6 +10,7 @@ mod lody;
 mod mcp;
 mod outbox;
 mod projection;
+mod providers;
 mod rpc;
 
 use agent_client_protocol::{Agent, Error, UntypedMessage};

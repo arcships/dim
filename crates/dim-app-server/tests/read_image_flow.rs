@@ -1,11 +1,8 @@
-//! #656, #687: workspace reads retain images in history; conversations send
-//! references even after user and tool images accumulate.
-#![cfg(unix)]
-
+//! #656: workspace reads retain images in history; a vision model receives
+//! them as pixels and a text-only model as references.
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
-    http::StatusCode,
     response::sse::{Event, Sse},
     routing::post,
 };
@@ -57,8 +54,7 @@ fn selection(model_id: &str, vision: bool) -> ModelSelection {
     }
 }
 
-const HISTORY_BODY_LIMIT: usize = 64 * 1024;
-const HISTORY_IMAGE_LIMIT: usize = 2;
+const HISTORY_BODY_LIMIT: usize = 512 * 1024;
 const HISTORY_CALLS: [(&str, &str); 2] =
     [("read-first", "first.gif"), ("read-second", "second.gif")];
 
@@ -82,18 +78,6 @@ async fn history_completion(
 ) -> impl axum::response::IntoResponse {
     use axum::response::IntoResponse as _;
     use serde::Serialize;
-
-    let image_count = request["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|message| message["content"].as_array())
-        .flatten()
-        .filter(|part| part["type"] == "image_url")
-        .count();
-    if image_count > HISTORY_IMAGE_LIMIT {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-    }
 
     #[derive(Serialize)]
     struct Chunk {
@@ -154,8 +138,8 @@ async fn history_completion(
     } else {
         let content = match request_number {
             4 => "Read both images.",
-            5 => "Image history is still available.",
-            _ => "Image received.",
+            5 => "The second difference is the color.",
+            _ => "Image history is still available.",
         };
         (Delta::Text { content }, "stop")
     };
@@ -180,7 +164,7 @@ async fn history_completion(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
+async fn accumulated_user_and_read_images_follow_model_routing() {
     use base64::Engine as _;
     use dim_agent_aimux::{
         AimuxModels, AimuxPlugin, ConfiguredModelsPlugin,
@@ -205,10 +189,9 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
         let digest = format!("{:x}", Sha256::digest(bytes));
         format!("img:{}", &digest[..16])
     });
-    assert!(images.len() > HISTORY_IMAGE_LIMIT);
+    assert!(images.len() > 2);
     let user_bytes = encoded[..2].iter().map(String::len).sum::<usize>();
     assert!(user_bytes < HISTORY_BODY_LIMIT);
-    assert!(encoded.iter().map(String::len).sum::<usize>() > HISTORY_BODY_LIMIT);
     for ((_, path), bytes) in HISTORY_CALLS.iter().zip(&images[2..]) {
         std::fs::write(work.join(path), bytes).unwrap();
     }
@@ -306,11 +289,12 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
     });
     let text_inputs = [
         "Read the two workspace images.",
+        "Compare the two read images.",
         "Use the images from the earlier turns.",
     ]
     .map(|text| InputMessageData::text(text, Some(InputMode::Queue)));
     for (index, input) in image_inputs.chain(text_inputs).enumerate() {
-        if index == 3 {
+        if index == 4 {
             session
                 .configure(
                     ConfigureUpdate {
@@ -358,7 +342,7 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
             _ => None,
         })
         .collect();
-    assert_eq!(turns.len(), 4);
+    assert_eq!(turns.len(), 5);
     assert!(
         turns
             .iter()
@@ -373,63 +357,84 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
         })
         .collect();
     assert!(
-        replies.ends_with("Read both images.Image history is still available."),
+        replies.ends_with(
+            "Read both images.The second difference is the color.Image history is still available."
+        ),
         "{replies}"
     );
 
     {
         let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 5);
-        for request in requests.iter() {
-            let body = request.to_string();
+        assert_eq!(requests.len(), 6);
+        let image_count = |request: &Value| {
+            request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|message| message["content"].as_array())
+                .flatten()
+                .filter(|part| part["type"] == "image_url")
+                .count()
+        };
+        assert_eq!(
+            [0, 1, 2, 3, 4].map(|index| image_count(&requests[index])),
+            [1, 2, 2, 4, 4],
+            "the vision model receives every sendable image as pixels"
+        );
+        for request in &requests[..5] {
+            assert_eq!(request["model"], "vision");
+        }
+        let text = &requests[5];
+        assert_eq!(text["model"], "text-only");
+        assert_eq!(image_count(text), 0);
+        let body = text.to_string();
+        assert!(!body.contains("\"image_url\""));
+        assert!(!encoded.iter().any(|image| body.contains(image)));
+        let messages = text["messages"].as_array().unwrap();
+        for reference in &references[..2] {
             assert!(
-                !body.contains("\"image_url\""),
-                "chat requests must not carry pixels"
+                messages.iter().any(|message| message["role"] == "user"
+                    && message["content"].to_string().contains(reference)),
+                "missing user image {reference}"
             );
-            assert!(!encoded.iter().any(|image| body.contains(image)));
         }
-        for (request, model) in requests[3..].iter().zip(["vision", "text-only"]) {
-            assert_eq!(request["model"], model);
-            let messages = request["messages"].as_array().unwrap();
-            for reference in &references[..2] {
-                assert!(
-                    messages.iter().any(|message| message["role"] == "user"
-                        && message["content"].to_string().contains(reference)),
-                    "missing user image {reference}"
-                );
-            }
-            let (assistant_index, assistant) = messages
-                .iter()
-                .enumerate()
-                .find(|(_, message)| {
-                    message["role"] == "assistant" && message["tool_calls"].is_array()
-                })
-                .expect("the assistant read batch is in the history");
-            let calls = assistant["tool_calls"].as_array().unwrap();
-            assert_eq!(calls.len(), HISTORY_CALLS.len());
-            let results: Vec<_> = messages[assistant_index + 1..]
-                .iter()
-                .take_while(|message| message["role"] == "tool")
-                .collect();
-            assert_eq!(results.len(), HISTORY_CALLS.len());
-            for ((id, path), reference) in HISTORY_CALLS.iter().zip(&references[2..]) {
-                assert!(
-                    calls
-                        .iter()
-                        .any(|call| call["id"] == *id && call["function"]["name"] == "read")
-                );
-                let result = results
+        let (assistant_index, assistant) = messages
+            .iter()
+            .enumerate()
+            .find(|(_, message)| message["role"] == "assistant" && message["tool_calls"].is_array())
+            .expect("the assistant read batch is in the history");
+        let calls = assistant["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), HISTORY_CALLS.len());
+        let results: Vec<_> = messages[assistant_index + 1..]
+            .iter()
+            .take_while(|message| message["role"] == "tool")
+            .collect();
+        assert_eq!(results.len(), HISTORY_CALLS.len());
+        for ((id, path), reference) in HISTORY_CALLS.iter().zip(&references[2..]) {
+            assert!(
+                calls
                     .iter()
-                    .find(|result| result["tool_call_id"] == *id)
-                    .unwrap_or_else(|| panic!("missing result paired with {id}"));
-                let content = result["content"].as_str().unwrap();
-                assert!(
-                    content.contains(reference)
-                        && content.contains(&format!("Read image: {path} (1x1 px).")),
-                    "{id}: {content}"
-                );
-            }
+                    .any(|call| call["id"] == *id && call["function"]["name"] == "read")
+            );
+            let result = results
+                .iter()
+                .find(|result| result["tool_call_id"] == *id)
+                .unwrap_or_else(|| panic!("missing result paired with {id}"));
+            let content = result["content"].as_str().unwrap();
+            assert!(
+                content.contains(reference)
+                    && content.contains(&format!("Read image: {path} (1x1 px).")),
+                "{id}: {content}"
+            );
         }
+        assert!(
+            requests[3].to_string().contains(&encoded[2]),
+            "a read image reaches the vision model as pixels"
+        );
+        assert!(
+            !requests[3].to_string().contains(&references[2]),
+            "a vision request needs no read-image reference"
+        );
     }
 
     agent.close().await.unwrap();

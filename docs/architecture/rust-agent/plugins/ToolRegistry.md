@@ -114,8 +114,10 @@ the Session's private name `tool_provider_changes(instance)`
 notification carries no data because every refresh reads every source.
 Replacing or withdrawing sets updates the source-state watch (`sources_state()`),
 which ToolBinding follows. ToolBinding owns adoption and request pins. Dynamic
-source validation reserves the mount list's names, host tool names and every
-registered tool's name; only a registered tool's own set may offer that name.
+source validation reserves host tool names and every registered tool's name;
+only a registered tool's own set may offer that name. A name the mount list
+lists is not reserved: the list filters host and registered tools, and each
+source decides its own visibility.
 Already bound requests retain their handlers. A refresh is neither a durable
 configuration save nor permission authorization; a new tool is not
 model-visible until adoption, or until the next `bind_current` request of a
@@ -140,7 +142,7 @@ how Sessions unload and restore; App Server recovery is described in
 
 Initial attachment and adoption satisfy
 [Session boundary A.5](../../../design/contracts/session-boundary.md#a5-tool-contribution)
-through ToolBinding initialization and the existing Prompt / BranchOpening path,
+through ToolBinding initialization and the existing Prompt / BranchLifecycle path,
 before Session publication and input admission. A branch whose configuration
 has no tool part declares the registry's current host and registered tools
 through PrepareModelHost / `bind_current` on each request; a registration change
@@ -175,7 +177,7 @@ malformed results, retained handlers of an unloaded row, and cancellation withou
 | §4 rule 5 | Memory notifications add no Timeline batches; existing producers retain atomic commit ownership. |
 | §4 rule 6 | Declarations reach model context through Prompt adoption; results use ToolExecutor. |
 | §4 rule 7 | Parts register through ToolRegistry's public `register`; private provider state is not read. |
-| §4 rule 8 | No infrastructure change: registration is an effect of the caller (`ctx.effect`, the bridge's `caller_row`); adoption uses `SessionLifecycle`, ToolBinding initialization and BranchOpening. |
+| §4 rule 8 | No infrastructure change: registration is an effect of the caller (`ctx.effect`, the bridge's `caller_row`); adoption uses `SessionLifecycle`, ToolBinding initialization and BranchLifecycle. |
 | §4 rule 9 | Registry availability stays in memory and process logs, not new Timeline facts. |
 | §1 | ToolRegistry owns its table and attachment; App Server remains assembly only. |
 | ADR 002 D1 | The registry and contributions belong to one Session. |

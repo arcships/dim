@@ -154,6 +154,13 @@ impl Store {
     ) -> impl Future<Output = Result<bool>> {
         self.0.remove_worktree(directory, remove)
     }
+    pub fn remove_unregistered_directory(
+        &self,
+        path: PathBuf,
+        remove: impl FnOnce(PathBuf) -> BoxFuture<'static, Result<()>> + Send + 'static,
+    ) -> impl Future<Output = Result<bool>> {
+        self.0.remove_unregistered_directory(path, remove)
+    }
 }
 
 #[derive(Deserialize)]
@@ -289,7 +296,8 @@ impl HostDispatch for Store {
             "hasRecords":"async", "delete":"async", "fork":"async",
             "sessionConfigText":"async", "createOwnedSession":"async",
             "worktreeDirectories":"async", "sessionsUnderWorkspace":"async",
-            "removeWorktreeDirectory":"async", "worktreeUsages":"async", "removeWorktree":"async"
+            "removeWorktreeDirectory":"async", "worktreeUsages":"async", "removeWorktree":"async",
+            "removeUnregisteredDirectory":"async"
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
@@ -297,20 +305,21 @@ impl HostDispatch for Store {
             let mut args = args.list()?.into_iter();
             let directory = args
                 .next()
-                .ok_or_else(|| Error::Value("missing directory".into()))?
+                .ok_or_else(|| Error::value("missing directory"))?
                 .json()?;
             if !directory.is_object() {
-                return Err(Error::Value("store request must be an object".into()));
+                return Err(Error::value("store request must be an object"));
             }
             let directory: Directory = serde_json::from_value(directory)
-                .map_err(|error| Error::Value(error.to_string()))?;
+                .map_err(|error| Error::value(error.to_string()))?;
             let remove = args
                 .next()
-                .ok_or_else(|| Error::Value("missing removal callback".into()))?
+                .ok_or_else(|| Error::value("missing removal callback"))?
                 .reference()?;
             if args.next().is_some() {
-                return Err(Error::Value("unexpected removeWorktree argument".into()));
+                return Err(Error::value("unexpected removeWorktree argument"));
             }
+            let remove = removal(remove);
             let owner = self.clone();
             return Ok(Value::future(async move {
                 let removed = owner
@@ -319,47 +328,51 @@ impl HostDispatch for Store {
                             repository: directory.repository.into(),
                             root: directory.root.into(),
                         },
-                        move |path| {
-                            Box::pin(async move {
-                                let result = async {
-                                    let value = remove
-                                        .call_async(Value::List(vec![json!(path).into()]))
-                                        .await?;
-                                    if let Value::Reference(reference) = value
-                                        && reference.is_future()
-                                    {
-                                        reference.wait_async().await?;
-                                    }
-                                    Ok::<_, Error>(())
-                                }
-                                .await;
-                                result.map_err(|error| {
-                                    let message = match &error {
-                                        Error::Remote { message, .. } => message.clone(),
-                                        _ => error.to_string(),
-                                    };
-                                    match error.code() {
-                                        Some("invalid") => AgentError::InvalidInput(message),
-                                        Some("cancelled") => AgentError::Cancelled(message),
-                                        _ => AgentError::Storage(message),
-                                    }
-                                })
-                            })
-                        },
+                        remove,
                     )
                     .await
                     .map_err(failure)?;
                 Ok(json!({"removed":removed}).into())
             }));
         }
+        if method == "removeUnregisteredDirectory" {
+            let mut args = args.list()?.into_iter();
+            let root = args
+                .next()
+                .ok_or_else(|| Error::value("missing directory"))?
+                .json()?;
+            if !root.is_object() {
+                return Err(Error::value("store request must be an object"));
+            }
+            let root: Root =
+                serde_json::from_value(root).map_err(|error| Error::value(error.to_string()))?;
+            let remove = args
+                .next()
+                .ok_or_else(|| Error::value("missing removal callback"))?
+                .reference()?;
+            if args.next().is_some() {
+                return Err(Error::value(
+                    "unexpected removeUnregisteredDirectory argument",
+                ));
+            }
+            let remove = removal(remove);
+            let owner = self.clone();
+            return Ok(Value::future(async move {
+                let removed = owner
+                    .remove_unregistered_directory(root.root.into(), remove)
+                    .await
+                    .map_err(failure)?;
+                Ok(json!({"removed":removed}).into())
+            }));
+        }
         let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         if !request.is_object() {
-            return Err(Error::Value("store request must be an object".into()));
+            return Err(Error::value("store request must be an object"));
         }
         if method == "catalog" {
             let p: Catalog =
-                serde_json::from_value(request).map_err(|error| Error::Value(error.to_string()))?;
+                serde_json::from_value(request).map_err(|error| Error::value(error.to_string()))?;
             let owner = self.clone();
             return Ok(Value::cancellable_future(async move {
                 let cancel = tokio_util::sync::CancellationToken::new();
@@ -369,12 +382,12 @@ impl HostDispatch for Store {
                     .await
                     .map_err(failure)?;
                 Ok(serde_json::to_value(page)
-                    .map_err(|error| Error::Value(error.to_string()))?
+                    .map_err(|error| Error::value(error.to_string()))?
                     .into())
             }));
         }
         let request: Request = serde_json::from_value(json!({"method":method,"request":request}))
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         let owner = self.clone();
         Ok(Value::future(async move {
             let result: dim_agent_runtime::Result<serde_json::Value> = async {
@@ -497,6 +510,41 @@ impl HostDispatch for Store {
         }))
     }
 }
+/// One removal callback as the owner takes it: the bridge reference is
+/// awaited with the checked path, and its error keeps the `invalid`,
+/// `cancelled` or `storage` kind the caller raised.
+fn removal(
+    remove: rutis_bridge::session::Reference,
+) -> impl FnOnce(PathBuf) -> BoxFuture<'static, Result<()>> {
+    move |path| {
+        Box::pin(async move {
+            let result = async {
+                let value = remove
+                    .call_async(Value::List(vec![json!(path).into()]))
+                    .await?;
+                if let Value::Reference(reference) = value
+                    && reference.is_future()
+                {
+                    reference.wait_async().await?;
+                }
+                Ok::<_, Error>(())
+            }
+            .await;
+            result.map_err(|error| {
+                let message = match &error {
+                    Error::Remote { message, .. } => message.clone(),
+                    _ => error.to_string(),
+                };
+                match error.code() {
+                    Some("invalid") => AgentError::InvalidInput(message),
+                    Some("cancelled") => AgentError::Cancelled(message),
+                    _ => AgentError::Storage(message),
+                }
+            })
+        })
+    }
+}
+
 fn failure(error: AgentError) -> Error {
     let code = match &error {
         AgentError::InvalidInput(_) => "invalid",

@@ -289,7 +289,7 @@ mod tests {
         worker.session_id = "attached".into();
         assert!(
             worker
-                .attach("original".into(), SwitchKind::Resumed)
+                .attach("original".into(), SwitchKind::Resumed, true)
                 .await
                 .is_err()
         );
@@ -300,7 +300,7 @@ mod tests {
             ))
         );
         worker
-            .attach("original".into(), SwitchKind::Resumed)
+            .attach("original".into(), SwitchKind::Resumed, true)
             .await
             .unwrap();
         let error = receiver
@@ -374,7 +374,7 @@ mod tests {
         // its own code and text.
         worker.session_id = "shown".into();
         let refused = worker
-            .attach("legacy".into(), SwitchKind::Resumed)
+            .attach("legacy".into(), SwitchKind::Resumed, true)
             .await
             .expect_err("a classified refusal is the caller's error");
         assert!(

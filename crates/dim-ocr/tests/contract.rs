@@ -1,9 +1,9 @@
 //! The helper contract without an engine: argument parsing, artifact names,
 //! the result document and the typed failure line.
 use dim_ocr::{
-    Document, DocumentText, HelperArguments, HelperErrorCode, MAX_ARTIFACT_BYTES, MAX_INPUT_BYTES,
-    MAX_PAGE_PIXELS, MAX_PDF_PAGES, OutputMode, Page, PageText, Region, helper_main,
-    page_image_name, read_pages,
+    Document, DocumentText, HELPER_CONTRACT, HelperArguments, HelperErrorCode, MAX_ARTIFACT_BYTES,
+    MAX_INPUT_BYTES, MAX_PAGE_PIXELS, MAX_PDF_PAGES, OutputMode, Page, PageText, Region,
+    helper_main, page_image_name, read_pages,
 };
 use std::ffi::OsString;
 
@@ -17,6 +17,21 @@ fn the_limits_are_named_constants_with_the_agreed_values() {
     assert_eq!(MAX_PAGE_PIXELS, 25_000_000);
     assert_eq!(MAX_ARTIFACT_BYTES, 1024 * 1024 * 1024);
     assert_eq!(MAX_INPUT_BYTES, 100 * 1024 * 1024);
+}
+
+#[test]
+fn the_light_ocr_row_reports_the_contract_this_build_reads() {
+    let row = include_str!("../../../runtime/plugins/light-ocr/index.ts");
+    let reported: Vec<u32> = row
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("contract:"))
+        .map(|version| version.trim().trim_end_matches(',').parse().unwrap())
+        .collect();
+    assert_eq!(
+        reported,
+        [HELPER_CONTRACT],
+        "the bundled light-ocr row answers `describe` with the contract this build reads (#2050)"
+    );
 }
 
 #[test]

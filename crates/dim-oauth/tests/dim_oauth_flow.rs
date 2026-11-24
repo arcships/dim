@@ -6,20 +6,24 @@
 mod oauth;
 
 use dim_agent_capabilities::{
-    file_storage::{FileStorage, FileStoragePlugin},
+    adapters::EchoModel,
+    defaults,
+    file_storage::{FileLease, FileStorage, FileStorageError, FileStoragePlugin},
+    history::HistoryRenderer,
     host::{
         HostError, HostFuture, ModalityConnectionHost, ModalityTarget, ModelConnection,
         ModelDriver, ModelHost, ModelProtocol, ModelStream, ProviderConnectionResolver,
         SelectableModelsHost,
     },
 };
-use dim_agent_runtime::Names;
+use dim_agent_runtime::{AgentBuilder, AgentConfig, Names};
 use dim_agent_types::{
     Message, ModelCapabilities, ModelCapabilitySnapshot, ModelId, ModelRequest, Role,
 };
 use dim_app_server::{
+    RunningServer, ServerConfig,
     managed_provider::{
-        AccountSnapshot, ManagedModel, ManagedProviderBinding, ManagedProviders,
+        AccountSnapshot, ManagedModel, ManagedProvider, ManagedProviderBinding, ManagedProviders,
         ManagedProvidersPlugin,
         management::{
             BrowserLoginBegin, LoginBegin, LoginState, ManagedBrowserLoginComplete,
@@ -29,8 +33,10 @@ use dim_app_server::{
     },
     model_catalog::{BundledCatalog, ProviderProjection, raw_kind},
     provider::{ProviderError, ProviderPlugin, ProviderService},
+    serve,
     storage::SqliteStoragePlugin,
 };
+use dim_client::{Client, ConnectionConfig, Server};
 use dim_oauth::{ClientIds, DimOAuthPlugin};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, TypeKey};
@@ -58,6 +64,23 @@ impl DynPlugin for Capture {
         Box::pin(async move {
             let owner = ctx.require_at(&owner_key())?;
             let _ = self.0.set(owner);
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct ProviderCapture(Arc<OnceLock<Arc<dyn ManagedProvider>>>);
+impl DynPlugin for ProviderCapture {
+    fn name(&self) -> &str {
+        "capture-managed-provider"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![TypeKey::of::<dyn ManagedProvider>()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let provider = ctx.require::<dyn ManagedProvider>()?;
+            let _ = self.0.set(provider);
             Ok(Effect::Done)
         })
     }
@@ -127,6 +150,13 @@ fn auth(home: &Path) -> Value {
 }
 
 async fn login(providers: &ManagedProviders, directory: &str) -> AccountSnapshot {
+    login_attempt(providers, directory).await.0
+}
+
+async fn login_attempt(
+    providers: &ManagedProviders,
+    directory: &str,
+) -> (AccountSnapshot, ManagedLoginAttempt) {
     let device = providers
         .begin_device(
             LoginBegin {
@@ -143,17 +173,29 @@ async fn login(providers: &ManagedProviders, directory: &str) -> AccountSnapshot
         provider_id: PROVIDER.into(),
         attempt_id: device.attempt_id,
     };
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let account = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match providers.attempt_status(&attempt, &cancel()).unwrap() {
-                LoginState::Pending => tokio::time::sleep(Duration::from_millis(50)).await,
+                LoginState::Pending => tokio::task::yield_now().await,
                 LoginState::Completed { account } => break account,
                 state => panic!("device login ended as {state:?}"),
             }
         }
     })
     .await
-    .unwrap()
+    .unwrap();
+    (account, attempt)
+}
+
+async fn await_usable(providers: &ManagedProviders, expected: bool) {
+    let mut usable = providers.subscribe_usable();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *usable.borrow_and_update() != expected {
+            usable.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the account observation was not published");
 }
 
 async fn title_call(
@@ -502,6 +544,536 @@ async fn device_login_publishes_identity_catalog_usage_and_leases() {
         .unwrap();
     assert_eq!(required.code, "account_required");
     drop(lease);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A completed device login is published from the account transition itself:
+/// neither the attempt nor the account is read after the login starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn account_transitions_publish_without_a_client_read() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let Process { root, providers } = process(&home).await;
+    let mut usable = providers.subscribe_usable();
+    assert!(!providers.usable());
+    let device = providers
+        .begin_device(
+            LoginBegin {
+                provider_id: PROVIDER.into(),
+                directory: fixture.base.clone(),
+                email: None,
+            },
+            &cancel(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(device.user_code, "USER-CODE");
+    let signed_in = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if *usable.borrow_and_update() {
+                return true;
+            }
+            usable.changed().await.unwrap();
+        }
+    })
+    .await;
+    assert!(
+        signed_in.is_ok_and(|signed_in| signed_in),
+        "the completed login was not published: {:?}",
+        auth(&home)["dimAccountState"]["state"]
+    );
+    let lease = providers
+        .credential(PROVIDER, "fixture-model", &cancel())
+        .await
+        .unwrap();
+    providers.finish_rejected(&lease, &cancel()).await.unwrap();
+    let signed_out = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if !*usable.borrow_and_update() {
+                return true;
+            }
+            usable.changed().await.unwrap();
+        }
+    })
+    .await;
+    assert!(
+        signed_out.is_ok_and(|signed_out| signed_out),
+        "the settled rejection was not published: {:?}",
+        auth(&home)["dimAccountState"]["state"]
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A completed login attempt is history: polling it after logout must not
+/// republish its account over the watch's signed-out transition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_completed_login_attempt_does_not_reenable_search_after_logout() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let Process { root, providers } = process(&home).await;
+    let (_, attempt) = login_attempt(&providers, &fixture.base).await;
+    await_usable(&providers, true).await;
+    providers.logout(PROVIDER, &cancel()).await.unwrap();
+    await_usable(&providers, false).await;
+    let state = providers.attempt_status(&attempt, &cancel()).unwrap();
+    assert!(
+        matches!(state, LoginState::Completed { .. }),
+        "the completed attempt stays readable as history: {state:?}"
+    );
+    assert!(
+        !providers.usable(),
+        "polling a completed attempt must not re-enable the account"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A signed-in `auth.json`, as a completed login in another process leaves
+/// it.
+async fn signed_in_record(fixture: &oauth::Fixture) -> Vec<u8> {
+    let source = home();
+    let Process { root, providers } = process(&source).await;
+    login(&providers, &fixture.base).await;
+    let bytes = std::fs::read(source.join("auth.json")).unwrap();
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(source).unwrap();
+    bytes
+}
+
+/// A signed-out `auth.json` a host without Dim's writer may leave.
+fn signed_out_record() -> Vec<u8> {
+    serde_json::to_vec_pretty(&json!({
+        "dimAccountState": {
+            "schemaVersion": 1,
+            "credentialEpoch": uuid::Uuid::new_v4().to_string(),
+            "generation": 1,
+            "credentialRevision": 1,
+            "state": "signed_out",
+        }
+    }))
+    .unwrap()
+}
+
+/// Another process's login and logout reach this process's published account
+/// at its next account read, in both directions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn account_reads_follow_another_process_writes() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let first = process(&home).await;
+    let second = process(&home).await;
+    let service = second.root.get::<dyn ManagedProvider>().unwrap();
+    let mut account = service.subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(false) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the empty account file was not initialized");
+    assert!(!second.providers.usable());
+
+    login(&first.providers, &fixture.base).await;
+    assert!(
+        !second.providers.usable(),
+        "another process's login must not move this watch by itself"
+    );
+    second.providers.status(PROVIDER, &cancel()).await.unwrap();
+    await_usable(&second.providers, true).await;
+
+    first.providers.logout(PROVIDER, &cancel()).await.unwrap();
+    assert!(
+        second.providers.usable(),
+        "another process's logout must not move this watch by itself"
+    );
+    second.providers.status(PROVIDER, &cancel()).await.unwrap();
+    await_usable(&second.providers, false).await;
+
+    first.root.shutdown().await.unwrap();
+    second.root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A new Session on one server observes a sign-in or sign-out another server
+/// wrote to the shared product home, without an `account.status` call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_session_sees_an_account_change_another_server_wrote() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let first_home = home.join("first");
+    let second_home = home.join("second");
+    let first_capture = Arc::new(OnceLock::new());
+    let second_capture = Arc::new(OnceLock::new());
+    let ids = || ClientIds {
+        global: "global-client".into(),
+        cn: "cn-client".into(),
+    };
+
+    // Start the observing server first and wait for its startup observation,
+    // so its watch holds that reading before the other server signs in.
+    let (model, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let model = Arc::new(RecordingModel(model));
+    let mut second_builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut second_builder);
+    defaults::mock_hosts_with_model(&mut second_builder, HistoryRenderer::default(), model);
+    let capture = second_capture.clone();
+    second_builder.plugin(move |_| Ok(Box::new(Capture(capture.clone())) as Box<dyn DynPlugin>));
+    let second_provider = Arc::new(OnceLock::new());
+    let capture = second_provider.clone();
+    second_builder
+        .plugin(move |_| Ok(Box::new(ProviderCapture(capture.clone())) as Box<dyn DynPlugin>));
+    let second = serve(
+        second_builder,
+        ServerConfig {
+            product_home: Some(home.clone()),
+            database_path: Some(second_home.join("dimcode.sqlite")),
+            unix_path: Some(second_home.join("second.sock")),
+            managed_provider: Some(dim_oauth::row(ids())),
+            startup_timeout: Duration::from_secs(60),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut observing = second_provider
+        .get()
+        .expect("the observing server's managed provider was not captured")
+        .subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *observing.borrow_and_update() != Some(false) {
+            observing.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the observing server did not publish a signed-out account");
+
+    let mut first_builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut first_builder);
+    defaults::mock_hosts(&mut first_builder);
+    let capture = first_capture.clone();
+    first_builder.plugin(move |_| Ok(Box::new(Capture(capture.clone())) as Box<dyn DynPlugin>));
+    let first = serve(
+        first_builder,
+        ServerConfig {
+            product_home: Some(home.clone()),
+            database_path: Some(first_home.join("dimcode.sqlite")),
+            unix_path: Some(first_home.join("first.sock")),
+            managed_provider: Some(dim_oauth::row(ids())),
+            startup_timeout: Duration::from_secs(60),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let first_providers = first_capture
+        .get()
+        .expect("the first server's managed provider owner was not captured")
+        .clone();
+    assert!(
+        !second_capture
+            .get()
+            .expect("the second server's managed provider owner was not captured")
+            .usable(),
+        "the observing server starts signed out"
+    );
+    login(&first_providers, &fixture.base).await;
+    assert!(
+        !second_capture.get().unwrap().usable(),
+        "another server's login must not move this server's watch by itself"
+    );
+
+    let mut client = client_for(&second).await;
+    select_model(&mut client).await;
+    let id = create_web_session(&mut client, &home).await;
+    let tools = submit_and_record(&mut client, &id, "signed in elsewhere", &mut requests).await;
+    assert!(
+        tools.iter().any(|name| name == "web_search"),
+        "a new Session must observe the other server's sign-in: {tools:?}"
+    );
+    assert!(second_capture.get().unwrap().usable());
+
+    first_providers.logout(PROVIDER, &cancel()).await.unwrap();
+    let id = create_web_session(&mut client, &home).await;
+    let tools = submit_and_record(&mut client, &id, "signed out elsewhere", &mut requests).await;
+    assert!(
+        !tools.iter().any(|name| name == "web_search"),
+        "a new Session must observe the other server's sign-out: {tools:?}"
+    );
+
+    drop(client);
+    first.shutdown();
+    second.shutdown();
+    first.join().await.unwrap();
+    second.join().await.unwrap();
+    drop(fixture);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A new Session's assembly and a switch to managed search both await one
+/// account observation; a renewal holding the account lease must not stall
+/// either of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_session_and_a_search_switch_do_not_wait_for_the_renewal_lease() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let state = home.join("state");
+    let (model, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let model = Arc::new(RecordingModel(model));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
+    let capture = Arc::new(OnceLock::new());
+    let captured = capture.clone();
+    builder.plugin(move |_| Ok(Box::new(Capture(captured.clone())) as Box<dyn DynPlugin>));
+    let server = serve(
+        builder,
+        ServerConfig {
+            product_home: Some(home.clone()),
+            database_path: Some(state.join("dimcode.sqlite")),
+            unix_path: Some(state.join("server.sock")),
+            managed_provider: Some(dim_oauth::row(ClientIds {
+                global: "global-client".into(),
+                cn: "cn-client".into(),
+            })),
+            startup_timeout: Duration::from_secs(60),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let providers = capture
+        .get()
+        .expect("the server's managed provider was not captured")
+        .clone();
+    // The login grant is already inside the freshness window, so the
+    // background renewal refreshes it and keeps the account lease across the
+    // refresh request.
+    *fixture.service.expires_in.lock().unwrap() = Some(json!("0"));
+    fixture.service.refresh_wait.store(true, Ordering::SeqCst);
+    login(&providers, &fixture.base).await;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        fixture.service.refresh_started.notified(),
+    )
+    .await
+    .expect("the background renewal did not start");
+
+    // A switch to managed search reconciles through this call.
+    let switched = Instant::now();
+    assert!(providers.refresh_usable(&cancel()).await);
+    assert!(
+        switched.elapsed() < Duration::from_secs(5),
+        "a search switch waited for the renewal's account lease"
+    );
+
+    // Session assembly awaits the same call before it decides its declaration.
+    let started = Instant::now();
+    let mut client = client_for(&server).await;
+    select_model(&mut client).await;
+    let id = create_web_session(&mut client, &home).await;
+    let tools = submit_and_record(&mut client, &id, "unchanged account", &mut requests).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "a new Session waited for the renewal's account lease"
+    );
+    assert!(
+        tools.iter().any(|name| name == "web_search"),
+        "a signed-in Session did not declare web_search: {tools:?}"
+    );
+
+    fixture.service.refresh_wait.store(false, Ordering::SeqCst);
+    fixture.service.refresh_release.notify_one();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    drop(fixture);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Records the tool names of every model request and answers like the mock
+/// model.
+struct RecordingModel(tokio::sync::mpsc::UnboundedSender<Vec<String>>);
+impl ModelDriver for RecordingModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let tools = request
+            .tools
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .map(|tool| tool.name.clone())
+            .collect();
+        let _ = self.0.send(tools);
+        EchoModel.invoke(request, connection, cancel)
+    }
+}
+
+async fn client_for(server: &RunningServer) -> Client {
+    Client::connect(&ConnectionConfig {
+        endpoint: server.unix_path.clone().unwrap(),
+        server: Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "dim-oauth-shared-home-test",
+        protocol_version: 4,
+    })
+    .await
+    .unwrap()
+}
+
+async fn select_model(client: &mut Client) {
+    let created = client
+        .rpc(
+            "provider.create",
+            json!({"providerId":"018ec73f-0000-7000-8000-000000000031","displayName":"Fixture",
+                "connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1","auth":{"type":"anonymous"}},
+                "models":[{"modelId":"fixture","displayName":"fixture","status":"active",
+                    "capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}],
+                "enabled":true}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("provider.create: {error}"));
+    assert!(created.get("error").is_none(), "{created}");
+    let selected = client
+        .rpc(
+            "provider.select",
+            json!({"providerId":"018ec73f-0000-7000-8000-000000000031","modelId":"fixture"}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("provider.select: {error}"));
+    assert!(selected.get("error").is_none(), "{selected}");
+}
+
+async fn create_web_session(client: &mut Client, home: &Path) -> String {
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"tools":["web_search","web_fetch"],"interactive":false,
+                "permissionPolicy":{"preset":"full-access","allowedTools":[],"disallowedTools":[]}}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("session.create: {error}"));
+    created["sessionId"].as_str().unwrap().to_owned()
+}
+
+async fn submit_and_record(
+    client: &mut Client,
+    id: &str,
+    text: &str,
+    requests: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<String>>,
+) -> Vec<String> {
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId":id,"branchId":"main","text":text}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("session.submit: {error}"));
+    assert!(submitted.get("error").is_none(), "{submitted}");
+    let tools = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let tools = requests.recv().await.expect("the model host stopped");
+            if tools.iter().any(|name| name == "web_fetch") {
+                return tools;
+            }
+        }
+    })
+    .await
+    .expect("the Session did not reach the model");
+    let idle = client
+        .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+        .await
+        .unwrap_or_else(|error| panic!("session.idle: {error}"));
+    assert!(idle.get("error").is_none(), "{idle}");
+    tools
+}
+
+/// An account read that waits for the account lease must publish what the
+/// store holds when it reads: a logout that commits meanwhile is not reopened
+/// by the observation it saw first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_waiting_for_the_store_does_not_reopen_search_after_a_logout() {
+    let fixture = oauth::start().await;
+    let record = signed_in_record(&fixture).await;
+    let home = home();
+    std::fs::write(home.join("auth.json"), signed_out_record()).unwrap();
+    let Process { root, providers } = process(&home).await;
+    // The startup observation publishes before this test changes the shared
+    // file, so no observation left from startup can publish a later state.
+    let mut account = root
+        .get::<dyn ManagedProvider>()
+        .unwrap()
+        .subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(false) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the startup observation did not publish the signed-out record");
+    std::fs::write(home.join("auth.json"), record.clone()).unwrap();
+    providers.status(PROVIDER, &cancel()).await.unwrap();
+    await_usable(&providers, true).await;
+    providers.logout(PROVIDER, &cancel()).await.unwrap();
+    await_usable(&providers, false).await;
+
+    // Another process signs in while this store's watch stays withdrawn.
+    std::fs::write(home.join("auth.json"), record).unwrap();
+    assert!(!providers.usable());
+    let files = root.get::<FileStorage>().unwrap();
+    let path = files.path(0, "auth.json").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let held = loop {
+        match files.lock(&path, &cancel()).await {
+            Ok(lease) => break lease,
+            Err(FileStorageError::Locked) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the account lease stayed held"
+                );
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("the account lease failed: {error}"),
+        }
+    };
+    let reading = tokio::spawn({
+        let providers = providers.clone();
+        async move { providers.status(PROVIDER, &cancel()).await }
+    });
+    // The read reaches the store while the lease is held; it must wait for the
+    // lease before answering, not return the snapshot it read first.
+    for _ in 0..1_000 {
+        if reading.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !reading.is_finished(),
+        "a status read must wait for the account lease before answering"
+    );
+    // The logout lands while the read waits for the account lease.
+    std::fs::write(home.join("auth.json"), signed_out_record()).unwrap();
+    drop(held);
+    let status = reading.await.unwrap().unwrap();
+    assert!(
+        status.account.is_none(),
+        "the read must answer from the store it read under the lease"
+    );
+    assert!(
+        !providers.usable(),
+        "an earlier read must not reopen search after a logout"
+    );
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
@@ -1037,6 +1609,356 @@ async fn corrupt_records_reset_once_with_a_backup_and_unknown_schema_is_kept() {
         assert_eq!(error.code, "account_unsupported_schema");
     }
     assert_eq!(std::fs::read(home.join("auth.json")).unwrap(), unknown);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Holds the account lease from outside the server, as another process's
+/// account writer does. The root keeps its FileStorage alive while the lease
+/// is held.
+async fn hold_account_lease(home: &Path) -> (Ctx, FileLease) {
+    let root = Ctx::root().unwrap();
+    let view = root.plugin(FileStoragePlugin::new(vec![home.to_path_buf()]));
+    active(&view).await;
+    let files = root.get::<FileStorage>().unwrap();
+    let path = files.path(0, "auth.json").unwrap();
+    let held = files.lock(&path, &cancel()).await.unwrap();
+    (root, held)
+}
+
+/// The startup observation leaves an empty home signed out without creating
+/// `auth.json`: a missing Dim record is published, not persisted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_home_starts_signed_out_without_creating_the_account_file() {
+    let home = home();
+    let Process { root, .. } = process(&home).await;
+    let mut account = root
+        .get::<dyn ManagedProvider>()
+        .unwrap()
+        .subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(false) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the store never published its initialized observation");
+    assert!(
+        !home.join("auth.json").exists(),
+        "the startup observation created the account file"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A shared `auth.json` that an external writer populated while the startup
+/// observation waited for the account lease keeps its bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_startup_observation_does_not_overwrite_a_shared_account_file() {
+    let home = home();
+    let (_holding, held) = hold_account_lease(&home).await;
+    let Process { root, .. } = process(&home).await;
+    let shared = serde_json::to_vec(&json!({"otherProvider":{"secret":"kept"}})).unwrap();
+    std::fs::write(home.join("auth.json"), &shared).unwrap();
+    drop(held);
+    let mut account = root
+        .get::<dyn ManagedProvider>()
+        .unwrap()
+        .subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(false) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the store never published its initialized observation");
+    assert_eq!(
+        std::fs::read(home.join("auth.json")).unwrap(),
+        shared,
+        "the startup observation replaced the shared account file"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The account observation a new Session or a Settings change triggers
+/// publishes the stored state without creating or rewriting `auth.json`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_account_observation_does_not_create_the_account_file() {
+    let home = home();
+    let Process { root, .. } = process(&home).await;
+    let shared = serde_json::to_vec(&json!({"otherProvider":{"secret":"kept"}})).unwrap();
+    std::fs::write(home.join("auth.json"), &shared).unwrap();
+    let provider = root.get::<dyn ManagedProvider>().unwrap();
+    provider.observe_account(PROVIDER).await.unwrap();
+    let mut account = provider.subscribe_account();
+    assert_eq!(
+        *account.borrow_and_update(),
+        Some(false),
+        "the observation published the shared file's signed-out state"
+    );
+    assert_eq!(
+        std::fs::read(home.join("auth.json")).unwrap(),
+        shared,
+        "the account observation rewrote the shared account file"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The background account paths leave a legacy record's bytes alone: neither
+/// the startup observation nor the renewal task normalizes `auth.json`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_legacy_account_record_is_not_rewritten_in_the_background() {
+    let home = home();
+    let (_holding, held) = hold_account_lease(&home).await;
+    let Process { root, .. } = process(&home).await;
+    let legacy = serde_json::to_vec(&json!({
+        "nextApiOauth": {
+            "type": "oauth",
+            "access": "legacy-access",
+            "refresh": "legacy-refresh",
+            "clientId": "legacy-client",
+            "expires": 4102444800000u64,
+            "issuer": "https://dimcode.cn",
+            "tokenEndpoint": "https://dimcode.cn/oauth/token",
+            "authorizationEndpoint": "https://dimcode.cn/oauth/authorize",
+            "relayBaseUrl": "https://dimcode.cn/v1",
+        },
+        "otherProvider": {"secret": "kept"},
+    }))
+    .unwrap();
+    std::fs::write(home.join("auth.json"), &legacy).unwrap();
+    drop(held);
+    let mut account = root
+        .get::<dyn ManagedProvider>()
+        .unwrap()
+        .subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(false) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the store never published its initialized observation");
+    assert_eq!(
+        std::fs::read(home.join("auth.json")).unwrap(),
+        legacy,
+        "the background account paths rewrote the legacy account record"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A signed-in record whose grant still stores a legacy `clientSecret`, with
+/// the token digest the account schema requires over that grant.
+fn client_secret_record() -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let tokens = json!({
+        "type": "oauth",
+        "access": "client-secret-access",
+        "refresh": "client-secret-refresh",
+        "clientId": "client-secret-id",
+        "clientSecret": "client-secret",
+        "expires": 4102444800000u64,
+        "issuer": "https://accounts.example",
+        "tokenEndpoint": "https://accounts.example/token",
+        "relayBaseUrl": "https://accounts.example/v1",
+    });
+    let digest = format!("{:x}", Sha256::digest(serde_jcs::to_vec(&tokens).unwrap()));
+    serde_json::to_vec(&json!({
+        "nextApiOauth": tokens,
+        "dimAccountState": {
+            "schemaVersion": 1,
+            "credentialEpoch": uuid::Uuid::new_v4().to_string(),
+            "generation": 1,
+            "credentialRevision": 1,
+            "state": "authenticated",
+            "identity": {"issuer": "https://accounts.example", "subject": "client-secret-subject"},
+            "tokenDigest": digest,
+        }
+    }))
+    .unwrap()
+}
+
+/// An unchanged observation answers from the atomic read while a renewal
+/// holds the account lease, and publishes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unchanged_account_observation_does_not_wait_for_the_renewal_lease() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let Process { root, providers } = process(&home).await;
+    // The login grant is already inside the freshness window, so the
+    // background renewal refreshes it and keeps the account lease across the
+    // refresh request.
+    *fixture.service.expires_in.lock().unwrap() = Some(json!("0"));
+    fixture.service.refresh_wait.store(true, Ordering::SeqCst);
+    login(&providers, &fixture.base).await;
+    let provider = root.get::<dyn ManagedProvider>().unwrap();
+    let mut account = provider.subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(true) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the login was not published");
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        fixture.service.refresh_started.notified(),
+    )
+    .await
+    .expect("the background renewal did not start");
+    tokio::time::timeout(Duration::from_secs(5), provider.observe_account(PROVIDER))
+        .await
+        .expect("an unchanged observation waited for the renewal's account lease")
+        .unwrap();
+    assert!(
+        !account.has_changed().unwrap(),
+        "an unchanged observation must not publish over the watch"
+    );
+    fixture.service.refresh_wait.store(false, Ordering::SeqCst);
+    fixture.service.refresh_release.notify_one();
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A changed observation waits for the account lease, rereads the file and
+/// publishes what that read holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_observation_of_a_changed_account_reads_it_under_the_lease() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let Process { root, providers } = process(&home).await;
+    login(&providers, &fixture.base).await;
+    await_usable(&providers, true).await;
+    let (_holding, held) = hold_account_lease(&home).await;
+    std::fs::write(home.join("auth.json"), signed_out_record()).unwrap();
+    let reading = tokio::spawn({
+        let provider = root.get::<dyn ManagedProvider>().unwrap();
+        async move { provider.observe_account(PROVIDER).await }
+    });
+    for _ in 0..1_000 {
+        if reading.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !reading.is_finished(),
+        "an observation of a changed record must read it under the account lease"
+    );
+    drop(held);
+    reading.await.unwrap().unwrap();
+    await_usable(&providers, false).await;
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A signed-in record that still stores a `clientSecret` is observed without
+/// the account lease: validation must not exclude the legacy field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_with_a_client_secret_is_observed_without_the_lease() {
+    let home = home();
+    std::fs::write(home.join("auth.json"), client_secret_record()).unwrap();
+    let Process { root, .. } = process(&home).await;
+    let provider = root.get::<dyn ManagedProvider>().unwrap();
+    let mut account = provider.subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(true) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the startup observation did not publish the signed-in record");
+    let (_holding, held) = hold_account_lease(&home).await;
+    tokio::time::timeout(Duration::from_secs(5), provider.observe_account(PROVIDER))
+        .await
+        .expect("an unchanged observation of a record with a client secret took the account lease")
+        .unwrap();
+    drop(held);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A home without an account file is signed out, and observing that state
+/// does not take the account lease either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_home_observes_signed_out_without_the_account_lease() {
+    let home = home();
+    let Process { root, .. } = process(&home).await;
+    let provider = root.get::<dyn ManagedProvider>().unwrap();
+    let mut account = provider.subscribe_account();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *account.borrow_and_update() != Some(false) {
+            account.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the store never published its initialized observation");
+    let (_holding, held) = hold_account_lease(&home).await;
+    tokio::time::timeout(Duration::from_secs(5), provider.observe_account(PROVIDER))
+        .await
+        .expect("an empty home took the account lease to observe its signed-out state")
+        .unwrap();
+    assert!(
+        !home.join("auth.json").exists(),
+        "the observation created the account file"
+    );
+    drop(held);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The bounded wait a Session puts on its account observation also ends the
+/// observation: after the timeout nothing keeps polling the account lease.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timed_out_observation_leaves_no_lease_retry() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let Process { root, providers } = process(&home).await;
+    login(&providers, &fixture.base).await;
+    await_usable(&providers, true).await;
+    let provider = root.get::<dyn ManagedProvider>().unwrap();
+    let mut account = provider.subscribe_account();
+    account.borrow_and_update();
+    let (_holding, held) = hold_account_lease(&home).await;
+    std::fs::write(home.join("auth.json"), signed_out_record()).unwrap();
+    // The observation stays blocked on the held lease until this wait ends.
+    assert!(providers.refresh_usable(&cancel()).await);
+    drop(held);
+    let published = tokio::time::timeout(Duration::from_secs(5), account.changed()).await;
+    assert!(
+        published.is_err(),
+        "a timed-out observation kept polling the account lease and published after it was released"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Dropping a caller's observation ends its lease wait instead of leaving a
+/// retry behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dropped_observation_ends_its_lease_wait() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let Process { root, providers } = process(&home).await;
+    login(&providers, &fixture.base).await;
+    await_usable(&providers, true).await;
+    let provider = root.get::<dyn ManagedProvider>().unwrap();
+    let mut account = provider.subscribe_account();
+    account.borrow_and_update();
+    let (_holding, held) = hold_account_lease(&home).await;
+    std::fs::write(home.join("auth.json"), signed_out_record()).unwrap();
+    let observation = provider.observe_account(PROVIDER);
+    tokio::task::yield_now().await;
+    drop(observation);
+    drop(held);
+    let published = tokio::time::timeout(Duration::from_secs(5), account.changed()).await;
+    assert!(
+        published.is_err(),
+        "an observation its caller dropped kept polling the account lease and published after it was released"
+    );
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }

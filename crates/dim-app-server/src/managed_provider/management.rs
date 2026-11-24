@@ -324,7 +324,7 @@ pub(super) fn provide(
                 match method.as_str() {
                     "account.providers" => {
                         let _: Empty = params(value)?;
-                        reply(oauth.providers(cancel).await.map_err(error)?)
+                        reply(oauth.external_providers(cancel).await.map_err(error)?)
                     }
                     "account.status" => {
                         let p: ProviderTarget = params(value)?;
@@ -403,7 +403,7 @@ pub(super) fn provide(
     Ok(())
 }
 
-fn error(error: super::ManagedProviderError) -> RpcError {
+pub(super) fn error(error: super::ManagedProviderError) -> RpcError {
     RpcError::app(-32000, error.code, error.message)
 }
 

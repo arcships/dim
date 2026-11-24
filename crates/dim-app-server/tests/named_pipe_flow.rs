@@ -1,5 +1,3 @@
-#![cfg(windows)]
-
 use dim_agent_capabilities::{adapters::MockTools, defaults};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_app_server::{ServerConfig, ShutdownReason, serve};

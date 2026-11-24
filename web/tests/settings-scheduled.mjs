@@ -217,7 +217,7 @@ test("a new task can deliver into an existing Session branch", async t => {
   await select(root, "Target", "Deliver to an existing Session branch")
   await change(field(root, "Session ID"), "session-9", "onInput")
   await submit(root)
-  assert.deepEqual(written.target, { kind: "session", session_id: "session-9", branch_id: "main", input_mode: "queue" })
+  assert.deepEqual(written.target, { kind: "session", session_id: "session-9", input_mode: "queue" }, "a blank branch is left out, so the save records the Session's default branch")
 })
 
 test("one-off DST gaps and repeated minutes are explicit and do not leak into repeat plans", async t => {

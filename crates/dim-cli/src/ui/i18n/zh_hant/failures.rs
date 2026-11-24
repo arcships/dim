@@ -31,6 +31,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "retrying {attempt}/{max} in {seconds} s: {reason}" => {
             "{seconds} 秒後第 {attempt}/{max} 次重試：{reason}"
         }
+        "Retrying {attempt}/{max} in {seconds} s" => "{seconds} 秒後第 {attempt}/{max} 次重試",
         "Retrying {attempt}/{max} in {seconds} s · {reason} · Esc stops" => {
             "{seconds} 秒後第 {attempt}/{max} 次重試 · {reason} · Esc 停止"
         }
@@ -42,6 +43,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "the provider asked to wait {seconds} s" => "提供方要求等待 {seconds} 秒",
         "cause:" => "原因：",
         "Tried {count} times over {seconds} s." => "已嘗試 {count} 次，歷時 {seconds} 秒。",
+        "Waiting for the provider" => "正在等待提供方",
         "Waiting for the provider · {reason} · Esc stops" => {
             "正在等待提供方 · {reason} · Esc 停止"
         }

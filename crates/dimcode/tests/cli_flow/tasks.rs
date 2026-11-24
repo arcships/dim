@@ -148,6 +148,138 @@ fn opening_a_discovered_line_loads_its_transcript_through_the_task_history_queue
 }
 
 #[test]
+fn tui_lines_count_a_cut_read_from_a_transcript_window() {
+    for at_start in [true, false] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[
+                "session.methods",
+                "session.history.display",
+                "session.history.detail",
+                "session.history.display.tail",
+                "session.history.display.transcript",
+            ]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let methods = wire.read("session.methods");
+            wire.reply(&methods, json!({"methods":[
+                {"name":"session.input.pending","mutating":false},
+                {"name":"session.exec.pending","mutating":false},
+                {"name":"session.turn.get","mutating":false}
+            ]}));
+            let said = |sequence: u64, text: &str| {
+                fact(
+                    &format!("in-{sequence}"),
+                    sequence,
+                    sequence * 1000,
+                    "input",
+                    "message",
+                    json!({"user":{"content":[{"type":"text","text":text}]},"mode":"append"}),
+                )
+            };
+            let cut = || {
+                fact(
+                    "create-4",
+                    4,
+                    4000,
+                    "branch",
+                    "create",
+                    json!({
+                        "branch":"b-7c",
+                        "at":{"kind":"sequence","sequence":3},
+                        "source":{"kind":"tool","turn_id":"turn","request_id":"request","call_id":"call"},
+                        "prompt":"parser race",
+                    }),
+                )
+            };
+            let history = loop {
+                let request = wire.read_any();
+                match request["method"].as_str().unwrap() {
+                    "account.providers" => wire.reply(&request, json!([])),
+                    "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                    "session.history.display" => break request,
+                    method => assert!(
+                        wire.empty_state(&request),
+                        "unexpected startup read {method}: {request}"
+                    ),
+                }
+            };
+            assert_eq!(history["params"]["transcript"], true);
+            assert_eq!(history["params"]["limit"], 32);
+            let items = if at_start {
+                vec![said(2, "find the leak"), said(3, "try the parser"), cut()]
+            } else {
+                vec![said(3, "try the parser"), cut()]
+            };
+            wire.reply(
+                &history,
+                json!({
+                    "items": items,
+                    "through": 8,
+                    "nextAfter": 8,
+                    "nextBefore": if at_start { 2 } else { 3 },
+                    "done": at_start,
+                }),
+            );
+            let mut earlier = 0;
+            loop {
+                let request = wire.read_any();
+                match request["method"].as_str().unwrap() {
+                    "account.providers" => wire.reply(&request, json!([])),
+                    "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                    "session.history.display" => {
+                        earlier += 1;
+                        let page = if !at_start && earlier == 1 {
+                            assert_eq!(request["params"]["before"], 3);
+                            json!({
+                                "items": [said(2, "find the leak")],
+                                "through": 8,
+                                "nextAfter": 8,
+                                "nextBefore": 2,
+                                "done": true,
+                            })
+                        } else {
+                            json!({
+                                "items": [],
+                                "through": 8,
+                                "nextAfter": 8,
+                                "nextBefore": null,
+                                "done": true,
+                            })
+                        };
+                        wire.reply(&request, page);
+                    }
+                    method => assert!(
+                        wire.empty_state(&request),
+                        "unexpected read {method}: {request}"
+                    ),
+                }
+            }
+        });
+        let mut terminal = Terminal::resume_tui(home.command());
+        terminal.until("test / model");
+        terminal.write(b"/lines\r");
+        terminal.until("parser race");
+        if at_start {
+            terminal.until("after message 2");
+        } else {
+            assert!(
+                !terminal.transcript.contains("after message"),
+                "the window stops before the branch start: {}",
+                terminal.transcript
+            );
+            terminal.write(b"\r");
+            terminal.write(b"/earlier\r");
+            terminal.write(b"/lines\r");
+            terminal.until("after message 2");
+        }
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
 #[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
 fn native_tui_stop_all_settles_the_member_and_reports_cancellation_to_the_leader() {
     fn rpc(stream: &mut BufReader<UnixStream>, method: &str, params: Value) -> Value {
@@ -1047,7 +1179,7 @@ fn tui_task_stop_all_keeps_its_finite_targets_and_waits_only_for_replies() {
         wire.reply(&submit, json!({"event":{}}));
         wire.send(json!({"jsonrpc":"2.0","id":first["id"],"error":{"code":-32000,"message":"first stop failed","data":{"appError":"service_reloading"}}}));
         let member = wire.read("session.stop");
-        assert_eq!(member["params"], json!({"sessionId":"member","branchId":"main","reason":"stopped by the user"}));
+        assert_eq!(member["params"], json!({"sessionId":"member","reason":"stopped by the user"}));
         wire.quiet(Duration::from_millis(150));
         wire.reply(&member, json!({}));
         let child = wire.read("session.exec.stop");
@@ -1458,7 +1590,7 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
         wire.notice("session.event", json!({"sessionId":"member","branchId":"main","event":fact("member-tool-result",7,3000,"step","tool-result",json!({"turn_id":"member-turn","request_id":"member-tools","results":[{"call_id":"member-exec","result":{"content":"member disclosure output"}}]}))}));
         wire.notice("session.model.progress", json!({"sessionId":"member","branchId":"main","requestId":"member-model","text":"","textOffset":0,"thinking":"live member thought\n\nmember thinking final paragraph","thinkingOffset":0}));
         let stop = wire.read("session.stop");
-        assert_eq!(stop["params"], json!({"sessionId":"member","branchId":"main","reason":"stopped by the user"}));
+        assert_eq!(stop["params"], json!({"sessionId":"member","reason":"stopped by the user"}));
         wire.reply(&stop, json!({}));
         event(wire, "main", fact("leader-result",5,4000,"collaboration","result",json!({"request_event_id":"leader-member","agent_id":"reviewer","session_id":"member","status":"cancelled","reason":"stopped by the user","text":"real cancelled delegation result"})));
         let detach = wire.read("session.detach");
@@ -1541,7 +1673,7 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
             .contains("member original + live + live")
     );
     terminal.write(b"\x1b[27u and continue\r");
-    terminal.until("leader resumed after view");
+    terminal.until_visible("leader resumed after view");
     assert!(terminal.transcript.contains("leader notice while reading"));
     home.kill(&terminal);
     terminal.wait();
@@ -1818,6 +1950,50 @@ fn tui_main_history_failure_is_visible_and_disables_submission() {
         terminal.wait();
         daemon.join().unwrap();
     }
+}
+
+#[test]
+fn tui_main_history_failure_is_visible_on_a_reporting_daemon() {
+    let home = Home::new();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["report.prepare"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        assert_eq!(history["params"]["branchId"], "main");
+        wire.send(json!({"jsonrpc":"2.0","id":history["id"],"error":{"code":-32000,"message":"main store unreadable","data":{"appError":"storage_failed"}}}));
+        while let Some(line) = wire.trailing_request() {
+            let request: Value = serde_json::from_str(&line).unwrap();
+            match request["method"].as_str().unwrap() {
+                "session.context.usage" => assert_eq!(request["params"], json!({"sessionId":"session","branchId":"main"})),
+                "account.providers" => wire.reply(&request, json!([])),
+                other => panic!("failed main history must not accept a hidden turn: {other}"),
+            }
+        }
+    });
+    let mut launch = home.command();
+    launch.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(launch);
+    terminal.until("Main branch history:");
+    terminal.write(b"keep this draft");
+    terminal.until("keep this draft");
+    terminal.write(b"\r");
+    terminal.until("Disconnected; draft kept. Exit and resume this Session.");
+    assert!(
+        terminal.transcript.contains("keep this draft"),
+        "the refused submission stays in the composer: {}",
+        terminal.transcript
+    );
+    assert!(
+        !terminal
+            .transcript
+            .contains("Run /report to create a report."),
+        "a fatal main history failure is not offered as a report: {}",
+        terminal.transcript
+    );
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
 }
 
 fn workflow_run(id: &str, name: &str, state: &str, started_by: Value, report_to: Value) -> Value {

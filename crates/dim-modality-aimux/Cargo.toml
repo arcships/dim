@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 publish = false
 description = "The built-in Modality adapter: media operations executed through aimux"
+autotests = false
+
+[[test]]
+name = "modality_aimux_flow"
+path = "tests/modality_aimux_flow.rs"
 
 [dependencies]
 aimux-core.workspace = true
@@ -35,7 +40,7 @@ dim-app-server.workspace = true
 http = "1"
 serde_json.workspace = true
 sha2 = "0.10.9"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true

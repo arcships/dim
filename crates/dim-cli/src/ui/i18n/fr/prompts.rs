@@ -36,6 +36,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Finish or stop the current work first (a running turn, shell command, or pending prompt)." => {
             "Terminez ou arrêtez d'abord le travail en cours (tour en cours, commande shell ou question en attente)."
         }
+        "Waiting for this Session's state after the switch." => {
+            "En attente de l'état de cette session après le changement."
+        }
+        "Waiting for the Session switch to finish." => {
+            "En attente de la fin du changement de session."
+        }
         "Checking for updates…" => "Recherche de mises à jour…",
         "DimCode {version} is up to date." => "DimCode {version} est à jour.",
         "Skip this version" => "Ignorer cette version",
@@ -137,6 +143,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "editing" => "modifie",
         "changed" => "a changé",
         "changing" => "change",
+        "Ran code" => "a exécuté le code",
+        "Running code" => "exécute le code",
         "checked on" => "a vérifié",
         "checking on" => "vérifie",
         "Explored" => "Exploré",
@@ -181,6 +189,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Checked on background task" => "Tâche de fond vérifiée",
         "Waiting…" => "En attente…",
         "… +{count} lines" => "… +{count} lignes",
+        "New members from main inherit this policy; existing members retain theirs." => {
+            "Les nouveaux membres issus de main héritent de cette politique ; les membres existants gardent la leur."
+        }
+        "Subagent tool approval" => "Approbation d'outil du sous-agent",
         _ => return None,
     })
 }

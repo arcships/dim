@@ -51,6 +51,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "retrying {attempt}/{max} in {seconds} s: {reason}" => {
             "Tentando novamente {attempt}/{max} em {seconds} s: {reason}"
         }
+        "Retrying {attempt}/{max} in {seconds} s" => {
+            "Tentando novamente {attempt}/{max} em {seconds} s"
+        }
         "Retrying {attempt}/{max} in {seconds} s · {reason} · Esc stops" => {
             "Tentando novamente {attempt}/{max} em {seconds} s · {reason} · Esc interrompe"
         }
@@ -62,6 +65,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "the provider asked to wait {seconds} s" => "o provedor pediu para aguardar {seconds} s",
         "cause:" => "causa:",
         "Tried {count} times over {seconds} s." => "{count} tentativas em {seconds} s.",
+        "Waiting for the provider" => "Aguardando o provedor",
         "Waiting for the provider · {reason} · Esc stops" => {
             "Aguardando o provedor · {reason} · Esc interrompe"
         }

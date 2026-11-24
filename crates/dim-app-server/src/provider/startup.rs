@@ -47,12 +47,13 @@ pub enum AutoWindow {
     Auto,
 }
 
-struct Binding {
-    source: StartupConnectionSource,
-    connection: HttpModelConnection,
+pub(super) struct Binding {
+    pub(super) source: StartupConnectionSource,
+    pub(super) connection: HttpModelConnection,
+    pub(super) scope: Option<String>,
 }
 
-fn same_destination(a: &StartupConnectionSource, b: &StartupConnectionSource) -> bool {
+pub(super) fn same_destination(a: &StartupConnectionSource, b: &StartupConnectionSource) -> bool {
     a.api_format == b.api_format
         && a.base_url == b.base_url
         && a.auth == b.auth
@@ -61,7 +62,8 @@ fn same_destination(a: &StartupConnectionSource, b: &StartupConnectionSource) ->
 
 #[derive(Default)]
 pub(super) struct StartupBindings {
-    connections: HashMap<String, Binding>,
+    pub(super) connections: HashMap<String, Binding>,
+    pub(super) routes: super::scoped_routes::Routes,
     owners: HashMap<String, HashSet<String>>,
     watched: HashMap<String, uuid::Uuid>,
 }
@@ -69,8 +71,8 @@ pub(super) struct StartupBindings {
 /// Holds an unclaimed binding until Session creation or adoption succeeds.
 pub struct StartupSelection {
     pub model: ModelSelection,
-    owner: Arc<ProviderService>,
-    pending: Option<String>,
+    pub(super) owner: Arc<ProviderService>,
+    pub(super) pending: Option<String>,
 }
 
 impl Drop for StartupSelection {
@@ -84,28 +86,32 @@ impl Drop for StartupSelection {
     }
 }
 
+pub(super) fn normalize_base_url(base_url: &str) -> Result<String, HostError> {
+    let url = reqwest::Url::parse(base_url).map_err(|_| failure("Invalid startup base URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || base_url.trim() != base_url
+        || base_url.bytes().any(|byte| byte.is_ascii_control())
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(failure(
+            "Startup base URL must be HTTP(S), without user info, query or fragment",
+        ));
+    }
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
 impl StartupConnectionInput {
-    fn admit(self) -> Result<(StartupConnectionSource, HttpModelConnection), HostError> {
+    pub(super) fn admit(self) -> Result<(StartupConnectionSource, HttpModelConnection), HostError> {
         if self.api_format == ModelProtocol::Bedrock {
             return Err(failure(
                 "Direct startup does not support signed Bedrock; use a configured Provider",
             ));
         }
-        let url =
-            reqwest::Url::parse(&self.base_url).map_err(|_| failure("Invalid startup base URL"))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || self.base_url.trim() != self.base_url
-            || self.base_url.bytes().any(|byte| byte.is_ascii_control())
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(failure(
-                "Startup base URL must be HTTP(S), without user info, query or fragment",
-            ));
-        }
+        let base_url = normalize_base_url(&self.base_url)?;
         if self.api_key.is_some() && self.auth_token.is_some() {
             return Err(failure(
                 "Supply either DIM_API_KEY or DIM_AUTH_TOKEN, not both",
@@ -153,7 +159,7 @@ impl StartupConnectionInput {
         let source = StartupConnectionSource {
             id: uuid::Uuid::new_v4().to_string(),
             api_format: self.api_format,
-            base_url: url.as_str().trim_end_matches('/').to_owned(),
+            base_url,
             auth,
             header_names,
         };
@@ -353,7 +359,7 @@ impl ProviderService {
                 explicit,
                 Some(cwd),
                 preferences,
-                Saved::Apply,
+                Saved::ALL,
                 (input.context_window, input.max_output_tokens),
                 cancel,
             )
@@ -364,6 +370,13 @@ impl ProviderService {
             .as_mut()
             .expect("Provider adopts capabilities");
         if let Some(limit) = input.context_window {
+            if model.provider_id == "openai-codex" {
+                let maximum = self
+                    .bundled
+                    .model(&model.provider_id, &model.model_id)
+                    .and_then(|entry| entry.codex_context_window_ceiling());
+                super::models::validate_context_window(limit, maximum).map_err(failure)?;
+            }
             snapshot.capabilities.context_window = limit;
         }
         if let Some(limit) = input.max_output_tokens {
@@ -415,11 +428,14 @@ impl ProviderService {
             }
             let id = source.id.clone();
             startup.connection = Some(source.clone());
-            self.startup
-                .lock()
-                .unwrap()
-                .connections
-                .insert(id.clone(), Binding { source, connection });
+            self.startup.lock().unwrap().connections.insert(
+                id.clone(),
+                Binding {
+                    source,
+                    connection,
+                    scope: None,
+                },
+            );
             Some(id)
         } else {
             if let Some(source) = &startup.connection {
@@ -540,27 +556,30 @@ impl ProviderService {
         else {
             return Ok(());
         };
-        let connection = self.startup_connection(source)?;
         {
             let mut bindings = self.startup.lock().unwrap();
-            bindings
+            let binding = bindings
                 .connections
-                .entry(source.id.clone())
-                .or_insert_with(|| Binding {
-                    source: source.clone(),
-                    connection: connection.clone(),
-                });
+                .get(&source.id)
+                .filter(|binding| binding.source == *source)
+                .ok_or_else(|| failure("Temporary model connection is not bound"))?;
+            let scoped = binding.scope.is_some();
+            let connection = binding.connection.clone();
             bindings
                 .owners
                 .entry(source.id.clone())
                 .or_default()
                 .insert(session.id().to_owned());
-            for branch in session.branches() {
+            for branch in session.branches().into_iter().filter(|_| !scoped) {
                 if let Ok(Some(state)) =
                     session.get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
                     && let Some(previous) = state
                         .configuration
                         .as_ref()
+                        .filter(|model| {
+                            super::scoped_routes::logical_provider(model.metadata.as_ref())
+                                .is_none()
+                        })
                         .and_then(|model| model.metadata.as_ref())
                         .and_then(|metadata| metadata.startup.as_ref())
                         .and_then(|startup| startup.connection.as_ref())
@@ -572,6 +591,7 @@ impl ProviderService {
                         .or_insert_with(|| Binding {
                             source: previous.clone(),
                             connection: connection.clone(),
+                            scope: None,
                         });
                     bindings
                         .owners

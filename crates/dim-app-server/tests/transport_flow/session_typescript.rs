@@ -1212,27 +1212,42 @@ type RecordedTools = tokio::sync::mpsc::UnboundedReceiver<Vec<ToolDefinition>>;
 pub(super) async fn start(
     config: ServerConfig,
 ) -> (RunningServer, ModelRequests, Arc<tokio::sync::Notify>) {
-    let (server, requests, release, _) = start_recording(config).await;
+    start_with(config, |_| {}).await
+}
+
+/// `start` with the fixture builder exposed before the server is served, so a
+/// test installs its own parts next to the default ones.
+pub(super) async fn start_with(
+    config: ServerConfig,
+    install: impl FnOnce(&mut AgentBuilder),
+) -> (RunningServer, ModelRequests, Arc<tokio::sync::Notify>) {
+    let (mut builder, requests, release, _) = setup_recording();
+    install(&mut builder);
+    let server = serve(builder, prepare(config)).await.unwrap();
     (server, requests, release)
 }
 
 /// `start` that also returns the full tool definitions each model request
 /// carries.
 pub(super) async fn start_recording(
-    mut config: ServerConfig,
+    config: ServerConfig,
 ) -> (
     RunningServer,
     ModelRequests,
     Arc<tokio::sync::Notify>,
     RecordedTools,
 ) {
+    let (builder, requests, release, tools) = setup_recording();
+    let server = serve(builder, prepare(config)).await.unwrap();
+    (server, requests, release, tools)
+}
+
+fn prepare(mut config: ServerConfig) -> ServerConfig {
     config.unix_path = Some(std::env::temp_dir().join(format!(
         "dm-ts-{}/server.sock",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     )));
-    let (builder, requests, release, tools) = setup_recording();
-    let server = serve(builder, config).await.unwrap();
-    (server, requests, release, tools)
+    config
 }
 
 pub(super) fn setup() -> (AgentBuilder, ModelRequests, Arc<tokio::sync::Notify>) {
@@ -1877,8 +1892,8 @@ impl rutis::host::DynPlugin for ControlledGate {
 struct GateValue;
 impl rutis_bridge::session::HostDispatch for GateValue {
     fn invoke(&self, _: &str, _: rutis_bridge::session::Value) -> rutis_bridge::session::Reply {
-        Err(rutis_bridge::session::Error::Value(
-            "fixture dependency is not a tool".into(),
+        Err(rutis_bridge::session::Error::value(
+            "fixture dependency is not a tool",
         ))
     }
     fn methods(&self) -> Option<Value> {
@@ -2937,12 +2952,9 @@ async fn node_session_typescript_call_channel_checks_the_call_and_the_connection
 }
 
 /// A.2: an oversized notification from another language writes nothing and
-/// keeps the connection open. The bridge that carries the payload already
-/// refuses any message over 16 MiB, the same limit as the notification
-/// frame, so the refusal a foreign provider can actually observe is the
-/// bridge's (`bad-value`), not `too_large`: a request the App Server would
-/// encode past its frame limit cannot reach it. `too_large` itself is
-/// covered by the Rust binding's flow test.
+/// keeps the connection open. rutis 0.23 chunks frames over 16 MiB, so the
+/// bridge delivers the payload; the refusal a foreign provider observes is the
+/// App Server's own frame limit (`too_large`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_session_typescript_oversized_notification_writes_nothing_and_keeps_the_connection() {
@@ -2972,11 +2984,11 @@ async fn node_session_typescript_oversized_notification_writes_nothing_and_keeps
             json!({"sessionId": session}),
         )
         .await;
-    assert_eq!(reply["result"]["code"], "bad-value", "{reply}");
+    assert_eq!(reply["result"]["code"], "too_large", "{reply}");
     assert!(
         reply["result"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("16 MiB")),
+            .is_some_and(|message| message.contains("exceeds the frame limit")),
         "{reply}"
     );
     assert_ok(&client.rpc("daemon.ping", json!({})).await);

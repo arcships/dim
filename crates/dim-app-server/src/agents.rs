@@ -8,12 +8,12 @@ use crate::{
 use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
     AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, InUse, Modules, Names,
-    NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Session, SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope,
+    NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QueryRow, QuerySelect,
+    QuerySpec, QueryValue, Session, SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope,
     TimelineReadScope, TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
-use dim_agent_types::{DEFAULT_BRANCH_ID, ROOT_BRANCH_ID, TimelinePosition};
+use dim_agent_types::{ROOT_BRANCH_ID, TimelinePosition};
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, Key, TypeKey,
 };
@@ -35,6 +35,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod configuration;
+pub(crate) use configuration::check_configuration;
 mod fork;
 pub(crate) const SESSION_NAMESPACE: &str = "session.agent";
 
@@ -171,6 +172,10 @@ struct SessionSlot {
     /// Incremented by every `acquire`: while it stays unchanged and `uses`
     /// stays 0, no lease has held the Session (idle unload §6.1).
     acquired: AtomicU64,
+    /// Set by a business close before its runtime close: an `acquire` that
+    /// would restore the Session refuses it, while a use of the loaded
+    /// Session is still admitted until `closed`.
+    closing: AtomicBool,
     /// Set by `session.close` and by a delete's close: the Session does not
     /// load again in this process (S5c D5).
     closed: AtomicBool,
@@ -178,12 +183,30 @@ struct SessionSlot {
     /// close of it must outlive the slot.
     deleted: AtomicBool,
 }
+/// The cutoffs one Session summary reads at: its preview stays on the root,
+/// where the Session's first words were written, while its activity follows
+/// the line the conversation is on (design §5, §15).
+pub(crate) struct SummaryCutoff {
+    pub(crate) preview_through: u64,
+    pub(crate) activity_through: u64,
+    pub(crate) default: String,
+}
+
 /// An accepted request or subscription pins one loaded instance.
 pub(crate) struct SessionUse {
     pub host: Arc<AgentHost>,
     pub session: Session,
     slot: Arc<SessionSlot>,
     activity: Arc<ProcessHold>,
+}
+impl SessionUse {
+    pub(crate) async fn admission(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.slot.gate.clone().lock_owned().await
+    }
+
+    pub(crate) fn is_exclusive(&self, attached: bool) -> bool {
+        self.slot.uses.load(Ordering::Acquire) == 1 + usize::from(attached)
+    }
 }
 impl Clone for SessionUse {
     fn clone(&self) -> Self {
@@ -399,6 +422,10 @@ pub struct AgentIndex {
     /// waiting on its branch. Feature `testing` only.
     #[cfg(feature = "testing")]
     idle_admitted: Arc<tokio::sync::Notify>,
+    /// The hold the next business close of a Session takes. Feature
+    /// `testing` only.
+    #[cfg(feature = "testing")]
+    close_hold: Arc<Mutex<Option<Arc<crate::CloseHold>>>>,
 }
 /// One page of `branch`'s own facts after `after` through its Session's query:
 /// at most `limit`, never past `through`, ending on an atomic batch.
@@ -521,6 +548,14 @@ impl AgentIndex {
     pub(crate) fn idle_admitted(&self) -> Arc<tokio::sync::Notify> {
         self.idle_admitted.clone()
     }
+    /// The hold the next business close of a Session takes. Feature `testing`
+    /// only.
+    #[cfg(feature = "testing")]
+    pub(crate) fn hold_next_close(&self) -> Arc<crate::CloseHold> {
+        let hold = Arc::new(crate::CloseHold::default());
+        *self.close_hold.lock().expect("close hold") = Some(hold.clone());
+        hold
+    }
     /// How many uses Session `id` has right now. Feature `testing` only.
     #[cfg(feature = "testing")]
     pub(crate) fn uses(&self, id: &str) -> usize {
@@ -634,6 +669,41 @@ impl AgentIndex {
         let mut inner = self.directory.inner.lock().unwrap();
         inner.versions.remove(session_id);
         inner.sessions.remove(session_id);
+    }
+    /// The business close of Session `id`: it stops the Session's restoration
+    /// first, so an `acquire` that finds no loaded Session while this runs
+    /// does not load it again, and waits for a restore that already holds the
+    /// slot gate to end before closing what it loaded. The runtime close then
+    /// completes and the index records that the Session does not load again in
+    /// this process. The Session records stay, so a restart loads it again. A
+    /// Session no loaded instance holds is already closed.
+    pub(crate) async fn close_session(&self, id: &str) -> dim_agent_runtime::Result<()> {
+        #[cfg(feature = "testing")]
+        let close_hold = self.close_hold.lock().expect("close hold").take();
+        if let Some((_, slot)) = self.owned_slot(id) {
+            slot.closing.store(true, Ordering::Release);
+            #[cfg(feature = "testing")]
+            if let Some(hold) = &close_hold {
+                hold.admission.notify_one();
+            }
+            drop(slot.gate.clone().lock_owned().await);
+        }
+        let result = match self.session(id) {
+            Some((_, session)) => session.close().await,
+            None => match self
+                .host_by_session(id)
+                .and_then(|host| host.agent.get_session(id))
+            {
+                Some(session) => session.closed().await,
+                None => Ok(()),
+            },
+        };
+        #[cfg(feature = "testing")]
+        if let Some(hold) = close_hold {
+            hold.wait().await;
+        }
+        self.remove_version(id);
+        result
     }
     /// Sessions can also close through the runtime fault supervisor.
     /// Versions of a closing Agent stay until its settlement forgets them.
@@ -901,6 +971,9 @@ impl AgentIndex {
                 (session, gate, activity)
             }
             None if self.session_store.is_some() => {
+                if slot.closing.load(Ordering::Acquire) {
+                    return Err(AgentError::Closed(id.into()));
+                }
                 if self.settings.is_some() || expected_cwd.is_some() {
                     let config = self
                         .session_store
@@ -940,11 +1013,19 @@ impl AgentIndex {
                     .expect("AgentsPlugin apply sets its context")
                     .clone();
                 tokio::spawn(async move {
-                    let _slot = slot;
                     let session = host
                         .agent
                         .restore_session_for_version(id.clone(), version)
                         .await?;
+                    if slot.closing.load(Ordering::Acquire) {
+                        // The close stopped this Session's restoration while
+                        // this restore ran: release what it loaded and refuse
+                        // it.
+                        if let Err(error) = session.close().await {
+                            tracing::warn!(%error, session_id = %id, "Restored Session close failed");
+                        }
+                        return Err(AgentError::Closed(id));
+                    }
                     ctx.parallel(SessionRestored {
                         agent_id: host.agent_id.clone(),
                         session_id: id,
@@ -1058,14 +1139,15 @@ impl AgentIndex {
         for summary in &mut page.sessions {
             summary.closed = closed.contains(&summary.session.session_id);
             if let Some((_, session)) = self.session(&summary.session.session_id) {
+                // The row's `sequence` stays the root's, as the persisted row
+                // stores it, so loading or unloading never changes it; the
+                // running state follows the line the conversation is on
+                // (design §14, §15).
                 match session
-                    .state(DEFAULT_BRANCH_ID)
-                    .and_then(|state| Ok((state.running, session.sequence(DEFAULT_BRANCH_ID)?)))
+                    .default_branch()
+                    .and_then(|default| session.state(&default))
                 {
-                    Ok((running, sequence)) => {
-                        summary.session.running = running;
-                        summary.session.sequence = sequence;
-                    }
+                    Ok(state) => summary.session.running = state.running,
                     Err(_) if session.is_unloading() => {}
                     Err(error) => {
                         tracing::warn!(session_id=%summary.session.session_id, %error, "Session state was not read for the catalog");
@@ -1085,12 +1167,17 @@ impl AgentIndex {
     /// title that cannot be read now leaves the title fields absent, and a
     /// branch whose Loop is being replaced reports not running; both reach an
     /// attached client as notices.
+    ///
+    /// The record's own `sequence` is the root's, the cutoff a client built
+    /// before the default branch moved reads its root transcript from; the
+    /// line the conversation is on travels beside it as the branch-qualified
+    /// cursor (design §14, §15).
     pub(crate) async fn session_record(
         &self,
         host: &AgentHost,
         session: &Session,
         version: u32,
-    ) -> dim_agent_runtime::Result<crate::protocol::SessionInfo> {
+    ) -> dim_agent_runtime::Result<crate::protocol::SessionRecord> {
         let title = match (&self.session_metadata, version >= 3) {
             (_, false) => None,
             (Some(store), true) => Some(match store.read(session.id()).await {
@@ -1106,36 +1193,48 @@ impl AgentIndex {
             },
             _ => (None, None),
         };
-        Ok(crate::protocol::SessionInfo {
-            session_id: session.id().to_owned(),
-            cwd: session.config().cwd.clone(),
-            model: dim_agent_types::ModelId {
-                provider_id: session.config().model.provider_id.clone(),
-                model_id: session.config().model.model_id.clone(),
+        // The running state and the cursor report the line the Session's
+        // conversation is on, read once; the record's own sequence stays the
+        // root's (design §14, §15).
+        let default = session.default_branch()?;
+        Ok(crate::protocol::SessionRecord {
+            info: crate::protocol::SessionInfo {
+                session_id: session.id().to_owned(),
+                cwd: session.config().cwd.clone(),
+                model: dim_agent_types::ModelId {
+                    provider_id: session.config().model.provider_id.clone(),
+                    model_id: session.config().model.model_id.clone(),
+                },
+                created_at: session.created_at(),
+                running: session.state(&default).is_ok_and(|state| state.running),
+                sequence: session.sequence(ROOT_BRANCH_ID)?,
+                attached_clients: 0,
+                agent_id: (version >= 3).then(|| host.agent_id.clone()),
+                origin,
+                parent_session_id,
+                title,
             },
-            created_at: session.created_at(),
-            running: session
-                .state(DEFAULT_BRANCH_ID)
-                .is_ok_and(|state| state.running),
-            sequence: session.sequence(DEFAULT_BRANCH_ID)?,
-            attached_clients: 0,
-            agent_id: (version >= 3).then(|| host.agent_id.clone()),
-            origin,
-            parent_session_id,
-            title,
+            default_branch: crate::protocol::BranchCursor {
+                sequence: session.sequence(&default)?,
+                branch_id: default,
+            },
         })
     }
 
+    /// One Session's preview from its root and its activity from the line its
+    /// conversation is on (design §5, §15): the preview is the Session's first
+    /// words, which stay where they were written, and a Session reads as recent
+    /// by its default branch.
     pub(crate) async fn session_summary(
         &self,
         id: &str,
-        through: u64,
+        cutoff: SummaryCutoff,
         created_at: u64,
     ) -> dim_agent_runtime::Result<(Option<String>, u64)> {
         let query = TimelineQuery {
             scope: TimelineQueryScope::Branch,
             from: None,
-            through: Some(through),
+            through: Some(cutoff.preview_through),
             include_publishing: false,
             query: QuerySpec {
                 filter: Some(QueryFilter::In {
@@ -1159,41 +1258,9 @@ impl AgentIndex {
                 after: None,
             }),
         };
-        let loaded = match self.session(id) {
-            Some((_, session)) => match session.query(DEFAULT_BRANCH_ID, query.clone()).await {
-                Ok(reply) => Some(reply.result),
-                Err(_) if session.is_unloading() => None,
-                Err(error) => return Err(error),
-            },
-            None => None,
-        };
-        let result = match loaded {
-            Some(result) => result,
-            None => {
-                let store = self
-                    .session_store
-                    .as_ref()
-                    .ok_or_else(|| AgentError::Closed(id.into()))?;
-                let scope = TimelineReadScope {
-                    key: TimelineKey {
-                        session_id: id.into(),
-                        branch_id: DEFAULT_BRANCH_ID.into(),
-                    },
-                    through,
-                    segments: vec![TimelineReadSegment {
-                        branch_id: DEFAULT_BRANCH_ID.into(),
-                        from: 1,
-                        through,
-                        stored_through: through,
-                        tail: vec![],
-                    }],
-                };
-                store
-                    .query(&scope, &query.query, query.page.as_ref())
-                    .await?
-                    .result
-            }
-        };
+        let result = self
+            .branch_query(id, ROOT_BRANCH_ID, cutoff.preview_through, query)
+            .await?;
         let QueryOutput::Rows { rows } = result else {
             unreachable!("field selection returns rows")
         };
@@ -1227,18 +1294,27 @@ impl AgentIndex {
                 (!text.is_empty())
                     .then(|| crate::storage::truncate_preview(&text, Self::SUMMARY_PREVIEW_CHARS))
             });
-        let updated_at = self
-            .latest_activity(id, through)
-            .await?
-            .unwrap_or(created_at);
+        let latest = self
+            .latest_activity(id, &cutoff.default, cutoff.activity_through)
+            .await?;
+        let opening = if latest.is_none() && cutoff.default != ROOT_BRANCH_ID {
+            self.opening_time(id, &cutoff.default, cutoff.activity_through)
+                .await?
+        } else {
+            None
+        };
+        let updated_at =
+            crate::storage::activity_time(latest, opening, &cutoff.default, || Ok(created_at))?;
         Ok((preview, updated_at))
     }
 
-    /// The newest Session activity timestamp on main through the fixed cutoff.
-    /// Idle unload falls back to persisted facts, which include all published facts.
+    /// The newest Session activity timestamp on `default`, the line the
+    /// Session's conversation is on, through the fixed cutoff. Idle unload
+    /// falls back to persisted facts, which include all published facts.
     async fn latest_activity(
         &self,
         id: &str,
+        default: &str,
         through: u64,
     ) -> dim_agent_runtime::Result<Option<u64>> {
         let query = TimelineQuery {
@@ -1289,52 +1365,99 @@ impl AgentIndex {
                 after: None,
             }),
         };
+        let result = self.branch_query(id, default, through, query).await?;
+        let QueryOutput::Rows { rows } = result else {
+            unreachable!("field selection returns rows")
+        };
+        Ok(rows.first().map(Self::event_timestamp))
+    }
+
+    /// The first event's timestamp on `branch` through the fixed cutoff: the
+    /// opening that dates a line other than the root while it has no activity
+    /// of its own (session catalog §3.2).
+    async fn opening_time(
+        &self,
+        id: &str,
+        branch: &str,
+        through: u64,
+    ) -> dim_agent_runtime::Result<Option<u64>> {
+        let query = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: Some(through),
+            include_publishing: false,
+            query: QuerySpec {
+                filter: None,
+                select: QuerySelect::Fields {
+                    fields: vec!["create_at".into()],
+                },
+                group_by: vec![],
+                pick: Some(QueryPick::First),
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: NonZeroU64::MIN,
+                after: None,
+            }),
+        };
+        let result = self.branch_query(id, branch, through, query).await?;
+        let QueryOutput::Rows { rows } = result else {
+            unreachable!("field selection returns rows")
+        };
+        Ok(rows.first().map(Self::event_timestamp))
+    }
+
+    /// Reads `query` on `branch` through `through` from the loaded Session, or
+    /// from its stored rows once it is unloading.
+    async fn branch_query(
+        &self,
+        id: &str,
+        branch: &str,
+        through: u64,
+        query: TimelineQuery,
+    ) -> dim_agent_runtime::Result<QueryOutput> {
         let loaded = match self.session(id) {
-            Some((_, session)) => match session.query(ROOT_BRANCH_ID, query.clone()).await {
+            Some((_, session)) => match session.query(branch, query.clone()).await {
                 Ok(reply) => Some(reply.result),
                 Err(_) if session.is_unloading() => None,
                 Err(error) => return Err(error),
             },
             None => None,
         };
-        let result = match loaded {
-            Some(result) => result,
-            None => {
-                let store = self
-                    .session_store
-                    .as_ref()
-                    .ok_or_else(|| AgentError::Closed(id.into()))?;
-                let scope = TimelineReadScope {
-                    key: TimelineKey {
-                        session_id: id.into(),
-                        branch_id: ROOT_BRANCH_ID.into(),
-                    },
-                    through,
-                    segments: vec![TimelineReadSegment {
-                        branch_id: ROOT_BRANCH_ID.into(),
-                        from: 1,
-                        through,
-                        stored_through: through,
-                        tail: vec![],
-                    }],
-                };
-                store
-                    .query(&scope, &query.query, query.page.as_ref())
-                    .await?
-                    .result
-            }
+        if let Some(result) = loaded {
+            return Ok(result);
+        }
+        let store = self
+            .session_store
+            .as_ref()
+            .ok_or_else(|| AgentError::Closed(id.into()))?;
+        let scope = TimelineReadScope {
+            key: TimelineKey {
+                session_id: id.into(),
+                branch_id: branch.into(),
+            },
+            through,
+            segments: vec![TimelineReadSegment {
+                branch_id: branch.into(),
+                from: 1,
+                through,
+                stored_through: through,
+                tail: vec![],
+            }],
         };
-        let QueryOutput::Rows { rows } = result else {
-            unreachable!("field selection returns rows")
+        Ok(store
+            .query(&scope, &query.query, query.page.as_ref())
+            .await?
+            .result)
+    }
+
+    fn event_timestamp(row: &QueryRow) -> u64 {
+        let [QueryValue::Value { value: timestamp }] = row.values.as_slice() else {
+            unreachable!("event has a creation timestamp")
         };
-        Ok(rows.first().map(|row| {
-            let [QueryValue::Value { value: timestamp }] = row.values.as_slice() else {
-                unreachable!("event has a creation timestamp")
-            };
-            timestamp
-                .as_u64()
-                .expect("event creation timestamp is unsigned")
-        }))
+        timestamp
+            .as_u64()
+            .expect("event creation timestamp is unsigned")
     }
 
     pub(crate) async fn prepare_session(
@@ -1815,7 +1938,13 @@ impl AgentIndex {
     /// fork is a prepared creation whose prepare step is SessionStore's fork
     /// transaction; it belongs to the source's Agent and protocol version,
     /// and its `main` opens with `branch/resume`.
-    pub(crate) async fn fork(&self, source: &str, at: u64) -> dim_agent_runtime::Result<Session> {
+    pub(crate) async fn fork(
+        &self,
+        source: &str,
+        at: u64,
+        expected: Option<&dim_agent_types::SessionConfigExpectation>,
+        scope: Option<(&crate::provider::ProviderService, &str)>,
+    ) -> Result<Session, RpcError> {
         let store = self
             .session_store
             .clone()
@@ -1823,9 +1952,9 @@ impl AgentIndex {
         let usage = self.acquire(source).await?;
         let session = &usage.session;
         if session.config().collaboration_role == CollaborationRole::Member {
-            return Err(AgentError::InvalidInput(
-                "a member conversation cannot be forked".into(),
-            ));
+            return Err(
+                AgentError::InvalidInput("a member conversation cannot be forked".into()).into(),
+            );
         }
         let checked = async {
             dim_agent_capabilities::history::validate_context_boundary_in(
@@ -1839,7 +1968,7 @@ impl AgentIndex {
         }
         .await;
         if session.is_closing() {
-            return Err(AgentError::Closed(source.into()));
+            return Err(AgentError::Closed(source.into()).into());
         }
         checked?;
         let version = self
@@ -1856,6 +1985,24 @@ impl AgentIndex {
             .ok_or_else(|| AgentError::Closed(source.to_owned()))?;
         let mut config = serde_json::from_str::<SessionConfig>(&stored)
             .map_err(|error| AgentError::Storage(format!("the source configuration: {error}")))?;
+        if let Some(expected) = expected {
+            let line = crate::protocol::BranchCursor {
+                branch_id: ROOT_BRANCH_ID.into(),
+                sequence: at,
+            };
+            check_configuration(session, &config, &line, expected).await?;
+        }
+        if let Some((provider, scope)) = scope {
+            let (adopted, _) = session
+                .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()?
+                .adopted_configuration(ROOT_BRANCH_ID.into(), Some(at))
+                .await?;
+            let (provider_id, metadata) = match &adopted {
+                Some(adopted) => (&adopted.provider_id, adopted.metadata.as_ref()),
+                None => (&config.model.provider_id, config.model.metadata.as_ref()),
+            };
+            provider.check_fork_route(scope, provider_id, metadata)?;
+        }
         // A fork of an older protocol keeps the live Session's codemode
         // exclusion; the stored record is written without it, as on create.
         config.exclude_codemode_below(version);
@@ -1873,7 +2020,8 @@ impl AgentIndex {
             let Some(members) = value.as_object_mut() else {
                 return Err(AgentError::Storage(
                     "the source configuration is not an object".into(),
-                ));
+                )
+                .into());
             };
             members.remove(INITIAL_TITLE);
             record = serde_json::to_string(&value)
@@ -1897,7 +2045,8 @@ impl AgentIndex {
                 agent_id: usage.host.agent_id.clone(),
                 session_id: id,
             })
-            .await?;
+            .await
+            .map_err(AgentError::from)?;
         Ok(fork)
     }
     /// `agent.create`: one more Agent, a peer of every other. A requested
@@ -2274,6 +2423,8 @@ impl DynPlugin for AgentsPlugin {
                 stopping: CancellationToken::new(),
                 #[cfg(feature = "testing")]
                 idle_admitted: Arc::new(tokio::sync::Notify::new()),
+                #[cfg(feature = "testing")]
+                close_hold: Arc::new(Mutex::new(None)),
             };
             let index = Arc::new(index);
             let cleanup = index.clone();

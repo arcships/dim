@@ -3,13 +3,14 @@ use crate::tree_protocol as wire;
 use dim_agent_capabilities::input_queue::{
     CheckInterrupted, SubmitCheckRequest, SubmitChecks, SubmitDecision, SubmitEntry, append_blocks,
 };
+use dim_agent_capabilities::prompt::Prompt;
 use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    BranchOptions, InputCommit, QueryComparison, QueryFilter, QueryOperand, QueryOrder,
+    AgentError, BranchOptions, InputCommit, QueryComparison, QueryFilter, QueryOperand, QueryOrder,
     QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue,
     TimelineQuery,
 };
-use dim_agent_types::{BranchSource, DEFAULT_BRANCH_ID, InputBlock, InputMode, TimelinePosition};
+use dim_agent_types::{BranchSource, InputBlock, InputMode, TimelinePosition};
 
 impl Connection {
     /// Runs the Session's submit checks before writing operator input (Hooks
@@ -34,8 +35,25 @@ impl Connection {
             return Err(RpcError::invalid("text and user are mutually exclusive"));
         }
         let session = self.session(rpc, &params.session_id)?;
-        let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-        let publication = session.publication(branch).map_err(RpcError::from)?;
+        // A request that names no line goes to the line the Session's
+        // conversation is on, read once for everything this call does, and to
+        // the root on a connection whose stream carries the root alone (design
+        // §9, §14, §15, §20.22).
+        let branch = match params.branch_id {
+            Some(branch) => branch,
+            None => self.unnamed_branch(&session).map_err(RpcError::from)?,
+        };
+        let publication = session.publication(&branch).map_err(RpcError::from)?;
+        if let Some(provider) = rpc.ctx.get::<crate::provider::ProviderService>() {
+            let adopted = session
+                .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch)?
+                .and_then(|state| state.configuration);
+            let metadata = match &adopted {
+                Some(model) => model.metadata.as_ref(),
+                None => session.config().model.metadata.as_ref(),
+            };
+            provider.scoped_connection_owner(&self.id, metadata, false)?;
+        }
         let user = params.user.or_else(|| {
             params.text.map(|text| UserInput {
                 content: vec![ContentBlock::Text { text }],
@@ -101,7 +119,7 @@ impl Connection {
                 &session,
                 SubmitCheckRequest {
                     entry: SubmitEntry::Submit,
-                    branch_id: branch.to_owned(),
+                    branch_id: branch.clone(),
                     user: data.user.clone(),
                     mode: data.effective_mode(),
                 },
@@ -120,7 +138,7 @@ impl Connection {
             }
         };
         let (event, commit) = session
-            .input_commit(data, branch)
+            .input_commit(data, &branch)
             .await
             .map_err(RpcError::from)?;
         // A warning describes the write of this call. A resubmission of a
@@ -537,8 +555,20 @@ impl Connection {
         params: Branches,
     ) -> Result<Reply, RpcError> {
         let session = self.session(rpc, &params.session_id)?;
+        // Feature `testing`: a test holds the read before its snapshot, moves
+        // the default away and ends the former default, then releases it.
+        #[cfg(feature = "testing")]
+        if let Some(hold) = self.hub.take_branches_hold() {
+            hold.entered.notify_one();
+            hold.release.notified().await;
+        }
+        // The default and the rows come from one tree snapshot: the advertised
+        // default is an open identity in the directory the same answer carries
+        // (design §14).
+        let (default_branch_id, rows) = session.default_and_directory();
         Ok(Reply::Branches(wire::BranchesResult {
-            branches: session.directory().into_iter().map(Into::into).collect(),
+            branches: rows.into_iter().map(Into::into).collect(),
+            default_branch_id,
         }))
     }
 
@@ -562,6 +592,79 @@ impl Connection {
         Ok(Reply::BranchGet(entry))
     }
 
+    /// `session.model.get`: the configuration the requested line adopted at
+    /// that line's own cutoff. An open line answers from its owner; a line
+    /// whose own end is committed, or an explicit earlier cutoff, reads the
+    /// tree's chain at its fixed, published or requested head. The App Server
+    /// owns none of the answer.
+    pub(super) async fn model_get(
+        &self,
+        rpc: &RpcService,
+        params: GetModel,
+    ) -> Result<Reply, RpcError> {
+        let session = self.session(rpc, &params.session_id)?;
+        let branch = params.branch_id;
+        let tree = session
+            .session_service::<TreeCommands>()
+            .map_err(RpcError::from)?;
+        let live = match params.through {
+            Some(_) => None,
+            // A line that committed its own end is closing or ended. Its
+            // closing scope may still hold its owner, and that owner may be
+            // waiting on a publication the close holds back, so this read is
+            // answered from the tree at the published head without replaying
+            // or waiting.
+            None if tree.end_committed(&branch).map_err(RpcError::from)? => None,
+            None => match session.service::<Prompt>(&branch) {
+                Ok(prompt) => match prompt.adopted_configuration().await {
+                    // The line ended or began closing after the check above:
+                    // its own facts still answer at its fixed head.
+                    Err(AgentError::BranchEnded(_))
+                    | Err(AgentError::Cancelled(_))
+                    | Err(AgentError::Closed(_)) => None,
+                    read => Some(read),
+                },
+                // A line that is ending has already lost its scope when the
+                // parent has not recorded the end yet: its own facts still
+                // answer at its head. An active line that is reloading keeps
+                // its error instead of being answered from the tree.
+                Err(error) => match tree.end_committed(&branch) {
+                    Ok(true) => None,
+                    _ => return Err(RpcError::from(error)),
+                },
+            },
+        };
+        let (configuration, through) = match live {
+            Some(read) => read.map_err(RpcError::from)?,
+            None => tree
+                .adopted_configuration(branch.clone(), params.through)
+                .await
+                .map_err(RpcError::from)?,
+        };
+        Ok(Reply::ModelGet(ModelGetResult {
+            branch_id: branch,
+            through,
+            configuration: configuration.map(|settings| {
+                let model_preferences = crate::provider::adopted_selection_preferences(
+                    settings.config.as_ref(),
+                    settings.metadata.as_ref(),
+                );
+                ModelConfigurationView {
+                    model: dim_agent_types::ModelId {
+                        provider_id: settings.provider_id,
+                        model_id: settings.model_id,
+                    },
+                    catalog_provider_id: crate::provider::scoped_routes::logical_provider(
+                        settings.metadata.as_ref(),
+                    )
+                    .map(str::to_owned),
+                    capability_snapshot: settings.capability_snapshot.map(Box::new),
+                    model_preferences,
+                }
+            }),
+        }))
+    }
+
     pub(super) async fn end_branch(
         &self,
         rpc: &RpcService,
@@ -578,6 +681,30 @@ impl Connection {
             .await
             .map_err(RpcError::from)?;
         Ok(Reply::empty())
+    }
+
+    /// The user's entry to the default branch (design §14): the tree admits the
+    /// target and writes one `branch/default` on the root, and this call
+    /// answers the line the Session's conversation is on now. A refusal writes
+    /// nothing, and the tree's own codes reach the client unchanged.
+    pub(super) async fn set_default_branch(
+        &self,
+        rpc: &RpcService,
+        params: BranchSetDefault,
+    ) -> Result<Reply, RpcError> {
+        let session = self.session(rpc, &params.session_id)?;
+        let default_branch_id = session
+            .set_default_branch(
+                &params.branch_id,
+                BranchSource::User {
+                    operation_id: uuid::Uuid::new_v4().to_string(),
+                },
+            )
+            .await
+            .map_err(RpcError::from)?;
+        Ok(Reply::BranchSetDefault(wire::SetDefaultResult {
+            default_branch_id,
+        }))
     }
 
     pub(super) async fn create_branch(
@@ -608,6 +735,17 @@ impl Connection {
         .await
         .map_err(RpcError::from)?;
         boundary.map_err(RpcError::invalid)?;
+        if let Some(provider) = rpc.ctx.get::<crate::provider::ProviderService>() {
+            let (adopted, _) = session
+                .session_service::<TreeCommands>()?
+                .adopted_configuration(params.parent_branch_id.clone(), Some(params.at))
+                .await?;
+            let metadata = match &adopted {
+                Some(model) => model.metadata.as_ref(),
+                None => session.config().model.metadata.as_ref(),
+            };
+            provider.scoped_connection_owner(&self.id, metadata, false)?;
+        }
         // A blocked prompt creates no branch (Hooks A.6.2). A branch's first
         // input is built from the prompt alone, so the checks' contexts are
         // dropped and their warnings ride on the reply.

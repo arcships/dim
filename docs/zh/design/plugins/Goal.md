@@ -452,7 +452,7 @@ in its last 3 continued turns"，`evaluation_failed` "the evaluator could not ch
 
 ### A.5.2 评估
 
-状态记录中目标文本与状态句子的句子、以及续跑块的句子，是同一次策略改动，按 [model-facing prompts §8](../model-prompts.md#8-一次改动怎样判定) 的场景集以 current 对 candidate 判定：`main` 上设置的目标会续跑；一条线不续跑它继承来的目标；已完成或已阻塞的目标停止。两句话都在出厂配置上开放，因此候选走真实装配运行，结果在交付处报告。`GoalTexts` 承载它们，字段为 `objective` 与 `continuation`，分支处写为 `{branch}` 由代码替换；`install_with` 在工厂处换成候选。两句话分别判定，各一个 `--text` id；一次评估可以同时带上这两对 `--text`/`--candidate`，因此它们按本节所说的同一次改动来判定。
+状态记录中目标文本与状态句子的句子、以及续跑块的句子，是同一次策略改动，按 [model-facing prompts §8](../model-prompts.md#8-一次改动怎样判定) 的场景集以 current 对 candidate 判定：`main` 上设置的目标会续跑；一条线不续跑它继承来的目标；已完成或已阻塞的目标停止。两句话都在出厂配置上开放，因此候选走真实装配运行，结果在交付处报告。`GoalTexts` 承载它们，字段为 `objective` 与 `continuation`，分支处写为 `{branch}` 由代码替换；`install_with` 在工厂处换成候选。两句话分别判定，各一个 `--text` id；一次评估可以同时带上这两组 `--text`/`--baseline`/`--candidate`，因此它们按本节所说的同一次改动来判定。
 
 ### A.6 Timeline 机制
 

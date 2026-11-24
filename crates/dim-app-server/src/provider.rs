@@ -15,6 +15,7 @@ mod query;
 pub mod read_work;
 mod remote;
 pub use query::{ModelPage, ModelQuery};
+pub(crate) mod scoped_routes;
 mod secrets;
 mod startup;
 mod view;
@@ -416,9 +417,11 @@ pub enum CredentialAuthority {
     Grok,
 }
 
+const LEGACY_CODEX_ID: &str = "openai-codex";
+
 fn managed_authority(provider_id: &str) -> CredentialAuthority {
     match provider_id {
-        "openai-codex" => CredentialAuthority::OpenaiCodex,
+        LEGACY_CODEX_ID => CredentialAuthority::OpenaiCodex,
         "grok-build" => CredentialAuthority::Grok,
         _ => CredentialAuthority::Static,
     }
@@ -757,22 +760,79 @@ impl ProviderCatalog {
     }
 }
 
+/// Image models whose listing may carry no media metadata: a relay or an
+/// account catalog lists them under their bare id. The operations are the ones
+/// the vendor documents for the id.
+const KNOWN_IMAGE_MODELS: &[&str] = &[
+    "arcship-image",
+    "gpt-image-2",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare-2026-09-08",
+    "gpt-image-2.5-sunburst-2026-09-08",
+    "grok-imagine-image",
+    "grok-imagine-image-2.0",
+    "grok-imagine-image-quality",
+];
+
 impl ProviderModel {
-    /// The `<category>.<operation>` ids this entry declares for modality
-    /// (Modality §9.2), in their catalog order; `None` when it declares none.
+    /// The `<category>.<operation>` ids this entry serves for modality
+    /// (Modality §9.2, provider management §3.6); `None` when it serves none.
+    /// An explicit `modalityCapabilities` list is the answer, an empty one
+    /// included. Without one, an image model is recognized from its id or its
+    /// kind and output: `image.generate`, and `image.edit` when it also reads
+    /// images; `imageGeneration: false` recognizes nothing.
     fn modality_operations(&self) -> Option<Vec<String>> {
-        let values = self
-            .metadata
-            .as_ref()?
-            .raw
-            .get("modalityCapabilities")?
-            .as_array()?;
-        let operations: Vec<String> = values
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .collect();
-        (!operations.is_empty()).then_some(operations)
+        let raw = self.metadata.as_ref().map(|metadata| &metadata.raw);
+        let field = |name: &str| raw.and_then(|raw| raw.get(name));
+        if let Some(values) = field("modalityCapabilities").and_then(serde_json::Value::as_array) {
+            let operations: Vec<String> = values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            return (!operations.is_empty()).then_some(operations);
+        }
+        if field("imageGeneration") == Some(&serde_json::Value::Bool(false)) {
+            return None;
+        }
+        let modalities = |direction: &str| -> Vec<&str> {
+            field("modalities")
+                .and_then(|modalities| modalities.get(direction))
+                .and_then(serde_json::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (input, output) = (modalities("input"), modalities("output"));
+        let kind = field("type").and_then(serde_json::Value::as_str);
+        let operations: &[&str] = if KNOWN_IMAGE_MODELS.contains(&self.id.as_str())
+            || self
+                .id
+                .split(['.', '/', '_', '-'])
+                .any(|part| part == "seedream")
+        {
+            &["image.generate", "image.edit"]
+        } else if kind == Some("image-edit") {
+            &["image.edit"]
+        } else if field("imageGeneration") == Some(&serde_json::Value::Bool(true))
+            || (matches!(kind, Some("image" | "image-generation"))
+                && (output.is_empty() || output.contains(&"image")))
+            || (output == ["image"])
+        {
+            if input.contains(&"image") {
+                &["image.generate", "image.edit"]
+            } else {
+                &["image.generate"]
+            }
+        } else {
+            return None;
+        };
+        Some(operations.iter().map(|id| (*id).to_owned()).collect())
     }
 
     /// The realtime transport this entry's `metadata.raw.realtime` declares,
@@ -1408,6 +1468,7 @@ fn reseed_candidate(
 
 pub struct ProviderService {
     db: Arc<SqliteStorage>,
+    sessions: Option<Arc<crate::storage::Store>>,
     oauth: Arc<ManagedProviders>,
     codex: Arc<OpenAICodexOAuthService>,
     grok: Arc<GrokOAuthService>,
@@ -1683,9 +1744,19 @@ fn selection_scope(cwd: Option<&Path>) -> Result<String, HostError> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Saved {
     /// Apply the saved value for each field the caller left unstated.
-    Apply,
+    Apply {
+        clear_reasoning: bool,
+        clear_service_tier: bool,
+    },
     /// Resolve at the model's declared defaults alone.
     Withhold,
+}
+
+impl Saved {
+    const ALL: Self = Self::Apply {
+        clear_reasoning: false,
+        clear_service_tier: false,
+    };
 }
 
 impl ProviderService {
@@ -1711,6 +1782,34 @@ impl ProviderService {
             })
         })
         .await
+    }
+
+    async fn legacy_codex_visible(self: &Arc<Self>, cancel: &CancellationToken) -> bool {
+        if !matches!(self.oauth.legacy_codex_hidden(cancel).await, Ok(false)) {
+            return false;
+        }
+        if self
+            .codex
+            .status(cancel)
+            .await
+            .is_ok_and(|status| status.expires_at.is_some() || status.recovery_required)
+        {
+            return true;
+        }
+        let db = self.db.clone();
+        let visible: Result<bool, HostError> = self.owned(cancel, move |_| {
+            Box::pin(async move {
+                db.run_read(|connection| {
+                    connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM provider_model_state WHERE provider_id=?1)
+                            OR EXISTS(SELECT 1 FROM provider_models WHERE provider_id=?1 AND source IN ('user','override'))
+                            OR EXISTS(SELECT 1 FROM provider_selections WHERE provider_id=?1)",
+                        [LEGACY_CODEX_ID], |row| row.get(0),
+                    ).map_err(storage)
+                }).await.map_err(failure)
+            })
+        }).await;
+        visible.is_ok_and(|configured| configured)
     }
 
     async fn account_available(
@@ -1898,6 +1997,7 @@ impl ProviderService {
     ) -> Result<ProviderList, HostError> {
         let db = self.db.clone();
         let bundled = self.bundled.clone();
+        let show_legacy = self.legacy_codex_visible(cancel).await;
         let mut list = self
             .owned(cancel, move |_| {
                 Box::pin(async move {
@@ -1908,6 +2008,9 @@ impl ProviderService {
                             errors: Vec::new(),
                         };
                         for id in persistence::ids(&tx, &bundled)? {
+                            if id == LEGACY_CODEX_ID && !show_legacy {
+                                continue;
+                            }
                             match persistence::read(&tx, &id, persistence::Models::Header) {
                                 Ok(Some(PersistedProviderRecord::Static(record))) => {
                                     result.providers.push(static_summary(&bundled, id, *record))
@@ -2318,11 +2421,25 @@ impl ProviderService {
         preferences: ModelPreferences,
         cancel: &CancellationToken,
     ) -> Result<ModelSelection, HostError> {
+        self.configuration_with_preference_update(explicit, cwd, preferences.into(), cancel)
+            .await
+    }
+
+    pub(super) async fn configuration_with_preference_update(
+        self: &Arc<Self>,
+        explicit: Option<ModelId>,
+        cwd: Option<&Path>,
+        preferences: crate::protocol::ModelPreferenceUpdate,
+        cancel: &CancellationToken,
+    ) -> Result<ModelSelection, HostError> {
         self.configuration_with_limits(
             explicit,
             cwd,
-            preferences,
-            Saved::Apply,
+            preferences.values(),
+            Saved::Apply {
+                clear_reasoning: preferences.clears_reasoning(),
+                clear_service_tier: preferences.clears_service_tier(),
+            },
             (None, None),
             cancel,
         )
@@ -2358,6 +2475,7 @@ impl ProviderService {
         model_id: Option<String>,
         cancel: &CancellationToken,
     ) -> Result<Vec<String>, HostError> {
+        let show_legacy = self.legacy_codex_visible(cancel).await;
         let db = self.db.clone();
         let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
@@ -2371,6 +2489,9 @@ impl ProviderService {
                         persistence::ids(&tx, &bundled)?
                     };
                     for id in ids {
+                        if id == LEGACY_CODEX_ID && !show_legacy {
+                            continue;
+                        }
                         match persistence::read(&tx, &id, persistence::Models::Header) {
                             Ok(Some(PersistedProviderRecord::Managed(_))) => selected.push((0, id)),
                             Ok(Some(PersistedProviderRecord::Static(r)))
@@ -2542,8 +2663,17 @@ impl ProviderService {
             .map_err(|error| failure(error.to_string()))?;
             let base = preferences::catalog_defaults(&model.config, &snapshot, protocol);
             let config = match saved {
-                Saved::Apply => {
-                    let saved = self.saved_preferences(&id, &model.id, cancel).await?;
+                Saved::Apply {
+                    clear_reasoning,
+                    clear_service_tier,
+                } => {
+                    let mut saved = self.saved_preferences(&id, &model.id, cancel).await?;
+                    if clear_reasoning {
+                        saved.reasoning_effort = None;
+                    }
+                    if clear_service_tier {
+                        saved.service_tier = None;
+                    }
                     preferences::effective(
                         &preferences,
                         &saved,
@@ -2933,6 +3063,12 @@ impl ProviderService {
             }
             let mut connection =
                 drivers::connection(&record.driver_kind, protocol, &record.base_url, headers);
+            // The built-in xai entry serves xAI over the compatible protocol;
+            // its provider id is what says so, since custom providers take a
+            // generated UUID and never this id.
+            if provider_id == "xai" {
+                connection.preset = Some("xai".into());
+            }
             if provider_id == "opencode-go" {
                 let session_id = use_
                     .session_id()
@@ -2977,6 +3113,18 @@ impl ProviderService {
                 realtime,
             });
         }
+        if provider_id == crate::managed_provider::chatgpt::ID {
+            let (Some(sessions), Some(session_id)) = (&self.sessions, use_.session_id()) else {
+                return Err(chatgpt_requires_client_session());
+            };
+            let (origin, _) = sessions
+                .creation_record(session_id)
+                .await
+                .map_err(failure)?;
+            if origin != crate::protocol::SessionOrigin::Client {
+                return Err(chatgpt_requires_client_session());
+            }
+        }
         let mut catalog = self
             .catalog_target(provider_id.to_owned(), model_id.to_owned(), cancel)
             .await?
@@ -2997,7 +3145,11 @@ impl ProviderService {
             return Err(failure("Managed account or model route changed"));
         }
         let protocol = lease.protocol;
-        let recovered = plugin_connection(self.clone(), lease);
+        let recovered = plugin_connection(
+            self.clone(),
+            lease,
+            provider_id == crate::managed_provider::chatgpt::ID,
+        );
         Ok(Resolution {
             connection: ResolvedModelConnection {
                 connection: recovered.connection,
@@ -3008,6 +3160,13 @@ impl ProviderService {
             realtime,
         })
     }
+}
+
+fn chatgpt_requires_client_session() -> HostError {
+    HostError::classified(
+        HostErrorKind::InvalidRequest,
+        "ChatGPT plan usage requires an interactive Dim session",
+    )
 }
 
 struct ProductResolver(Arc<ProviderService>);
@@ -3149,7 +3308,7 @@ fn managed_connection(
             }
             (ModelProtocol::OpenaiResponses, Some("openai-codex".into()))
         }
-        CredentialAuthority::Grok => (ModelProtocol::OpenaiCompatible, None),
+        CredentialAuthority::Grok => (ModelProtocol::OpenaiCompatible, Some("xai".into())),
         CredentialAuthority::Static => unreachable!(),
     };
     RecoveredModelConnection {
@@ -3218,10 +3377,12 @@ impl RecoverModelConnection for ManagedRecovery {
 struct PluginRecovery {
     owner: Arc<ProviderService>,
     lease: CredentialLease,
+    chatgpt: bool,
 }
 fn plugin_connection(
     owner: Arc<ProviderService>,
     lease: CredentialLease,
+    chatgpt: bool,
 ) -> RecoveredModelConnection {
     RecoveredModelConnection {
         connection: ModelConnection::Http(HttpModelConnection {
@@ -3231,14 +3392,22 @@ fn plugin_connection(
             network: ModelNetwork::default(),
             bearer: Some(lease.bearer.clone()),
             api_key: None,
-            preset: None,
+            preset: chatgpt.then(|| crate::managed_provider::chatgpt::ID.into()),
         }),
-        recovery: Arc::new(PluginRecovery { owner, lease }),
+        recovery: Arc::new(PluginRecovery {
+            owner,
+            lease,
+            chatgpt,
+        }),
     }
 }
 impl RecoverModelConnection for PluginRecovery {
     fn rejection(&self, error: &HostError, phase: CredentialRecoveryPhase) -> CredentialRejection {
-        oauth_rejection(error, phase)
+        if self.chatgpt && matches!(phase, CredentialRecoveryPhase::Recovered) {
+            CredentialRejection::Unrelated
+        } else {
+            oauth_rejection(error, phase)
+        }
     }
     fn recover(&self, cancel: CancellationToken) -> HostFuture<'_, RecoveredModelConnection> {
         Box::pin(async move {
@@ -3250,7 +3419,7 @@ impl RecoverModelConnection for PluginRecovery {
                 .await
                 .map_err(failure)?;
             self.owner.check(&cancel)?;
-            Ok(plugin_connection(self.owner.clone(), lease))
+            Ok(plugin_connection(self.owner.clone(), lease, self.chatgpt))
         })
     }
     fn finish_rejected(&self, cancel: CancellationToken) -> HostFuture<'_, ()> {
@@ -3286,6 +3455,7 @@ fn oauth_rejection(error: &HostError, phase: CredentialRecoveryPhase) -> Credent
 
 pub struct ProviderPlugin {
     db: Key<SqliteStorage>,
+    sessions: Option<Key<crate::storage::Store>>,
     index: Option<Key<crate::agents::AgentIndex>>,
     oauth: Key<ManagedProviders>,
     codex: Key<OpenAICodexOAuthService>,
@@ -3310,6 +3480,7 @@ impl ProviderPlugin {
     fn keyed(names: &Names<'_>, secret_host: bool, lifecycle: bool) -> rutis::Result<Self> {
         Ok(Self {
             db: names.key()?,
+            sessions: lifecycle.then(|| names.key()).transpose()?,
             index: lifecycle.then(|| names.key()).transpose()?,
             oauth: crate::managed_provider::owner_key(),
             codex: names.key()?,
@@ -3333,6 +3504,7 @@ impl DynPlugin for ProviderPlugin {
             self.host.erase(),
             self.methods.erase(),
         ];
+        keys.extend(self.sessions.as_ref().map(Key::erase));
         keys.extend(self.index.as_ref().map(Key::erase));
         keys.extend(self.secret_host.as_ref().map(Key::erase));
         keys
@@ -3340,6 +3512,11 @@ impl DynPlugin for ProviderPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let db = ctx.require_at(&self.db)?;
+            let sessions = self
+                .sessions
+                .as_ref()
+                .map(|key| ctx.require_at(key))
+                .transpose()?;
             let index = self
                 .index
                 .as_ref()
@@ -3357,6 +3534,7 @@ impl DynPlugin for ProviderPlugin {
             let service =
                 Arc::new(ProviderService {
                     db,
+                    sessions,
                     oauth,
                     codex,
                     grok,
@@ -3448,6 +3626,15 @@ pub(crate) fn adopted_selection_preferences(
     metadata: Option<&dim_agent_types::RequestMetadata>,
 ) -> Option<ModelPreferences> {
     dim_agent_capabilities::host::adopted_preferences(config?, provider_protocol(metadata)?)
+}
+
+pub(crate) fn declared_reasoning_effort(
+    snapshot: Option<&ModelCapabilitySnapshot>,
+    metadata: Option<&dim_agent_types::RequestMetadata>,
+) -> Option<String> {
+    let protocol = provider_protocol(metadata)?;
+    let config = preferences::catalog_defaults(&ModelConfig::default(), snapshot?, protocol);
+    dim_agent_capabilities::host::adopted_preferences(&config, protocol)?.reasoning_effort
 }
 
 #[cfg(feature = "testing")]

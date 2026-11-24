@@ -54,7 +54,6 @@ flowchart LR
   p35 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p48
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p48
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p48
-  p35 -->|"dim_agent_runtime::timeline_context::BranchOpening@main"| p48
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p47
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p47
   p40 -->|"dim_agent_capabilities::context_preparation::ConfigurationPublisher@main"| p46
@@ -62,11 +61,10 @@ flowchart LR
   p21 -->|"dim_agent_capabilities::prompt::InitialPromptConfiguration@session"| p46
   p28 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p46
   p35 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p46
+  p21 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p46
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p46
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p46
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p46
-  p21 -->|"dim_agent_runtime::lifecycle::FaultReporter@session"| p46
-  p35 -->|"dim_agent_runtime::timeline_context::BranchOpening@main"| p46
   p21 -->|"dim_agent_capabilities::permission::CommandRules@session"| p45
   p21 -->|"dim_agent_runtime::config::SessionConfig@session"| p45
   p21 -->|"dim_agent_runtime::config::SessionIdentity@session"| p45

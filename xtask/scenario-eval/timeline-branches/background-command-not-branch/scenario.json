@@ -1,0 +1,10 @@
+{
+  "description": "A slow command and a small bug fix; a background command is not a line",
+  "message": "Run `python3 scripts/slow_audit.py` and report what it finds. Also fix the leap-year bug in src/date_util.py and add the missing test in tests/test_date_util.py. Do not change anything else.",
+  "budget": {"turns": 20, "seconds": 600, "window": 131072},
+  "probes": [
+    {"id": "report-read", "kind": "must_show", "text": "the output of python3 scripts/slow_audit.py is reported to the user"},
+    {"id": "bug-fixed-with-test", "kind": "must_show", "text": "is_leap handles century years correctly and tests/test_date_util.py covers it"},
+    {"id": "no-line-for-the-command", "kind": "must_not_show", "text": "a branch line is opened to run or watch the audit command"}
+  ]
+}

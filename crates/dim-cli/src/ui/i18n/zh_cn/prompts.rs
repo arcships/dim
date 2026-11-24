@@ -30,6 +30,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Finish or stop the current work first (a running turn, shell command, or pending prompt)." => {
             "请先完成或停止当前工作（运行中的回合、Shell 命令或待处理的提问）。"
         }
+        "Waiting for this Session's state after the switch." => "切换后正在等待此会话的状态。",
+        "Waiting for the Session switch to finish." => "正在等待会话切换完成。",
         "Checking for updates…" => "正在检查更新…",
         "DimCode {version} is up to date." => "DimCode {version} 已是最新版本。",
         "Skip this version" => "跳过此版本",
@@ -123,6 +125,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "editing" => "正在编辑",
         "changed" => "修改了",
         "changing" => "正在修改",
+        "Ran code" => "运行了代码",
+        "Running code" => "正在运行代码",
         "checked on" => "查看了",
         "checking on" => "正在查看",
         "Explored" => "浏览了",

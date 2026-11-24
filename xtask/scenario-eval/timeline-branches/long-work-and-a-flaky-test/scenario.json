@@ -1,0 +1,10 @@
+{
+  "description": "Two independent jobs, one a feature and one a flaky test; neither waits for the other",
+  "message": "Two independent jobs in this project, and neither waits for the other. First, add cursor pagination to api/list.py: `list_page(cursor=None, limit=10)` returns `{items, nextCursor, done}`, the tests in tests/test_list.py pass, and README.md gets a short section on the cursor format. Second, reproduce the flake in tests/test_retry.py, find its cause, and write both the cause and the evidence that reproduces it to docs/flaky-retry.md. Keep each job to its own files.",
+  "budget": {"turns": 30, "seconds": 900, "window": 131072},
+  "probes": [
+    {"id": "pagination-works", "kind": "must_show", "text": "cursor pagination is implemented in api/list.py and the tests in tests/test_list.py pass"},
+    {"id": "flake-cause-with-evidence", "kind": "must_show", "text": "docs/flaky-retry.md names the cause of the intermittent retry-test failure and the evidence that reproduces it"},
+    {"id": "no-cross-edits", "kind": "must_not_show", "text": "the pagination work changes src/retry.py or tests/test_retry.py, or the flake work changes api/list.py or tests/test_list.py"}
+  ]
+}

@@ -9,11 +9,15 @@
 //! Session parts ([AuxiliaryModel §4.3](../../../docs/design/appserver/auxiliary-model.md#43-named-binding)).
 use crate::host::{
     AuxiliaryError, AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryReply, AuxiliaryRequest,
-    CompleteAuxiliary, HostError, ModelChunk, ModelHost, ModelStopReason, ModelStream,
-    ResolveModelConnection,
+    CompleteAuxiliary, HostError, ModelChunk, ModelConnection, ModelHost, ModelStopReason,
+    ModelStream, ResolveModelConnection,
 };
+use crate::images::takes_image_format;
 use crate::model_provider::invoke_with_recovery;
-use dim_agent_types::{ModelCapabilitySnapshot, ModelConfig, ModelId, ModelRequest, SystemPrompt};
+use dim_agent_types::{
+    ContentBlock, MessageContent, MessagePart, ModelCapabilitySnapshot, ModelConfig, ModelId,
+    ModelProtocol, ModelRequest, SystemPrompt, ToolContent,
+};
 use futures_util::StreamExt;
 use rutis::Ctx;
 use rutis::host::CtxHost;
@@ -81,6 +85,7 @@ pub async fn complete(
     let resolved = connection
         .resolve(model_request.clone(), cancel.clone())
         .await?;
+    require_sendable_images(&model_request, &resolved.connection)?;
     invoke_with_recovery(
         host,
         &model_request,
@@ -92,6 +97,66 @@ pub async fn complete(
     )
     .await
     .map_err(AuxiliaryError::from)
+}
+
+/// A standalone call has no conversation a content reference could resolve
+/// against, so an image the destination does not take as pixels fails the
+/// call instead of becoming a reference the model cannot read.
+fn require_sendable_images(
+    request: &ModelRequest,
+    connection: &ModelConnection,
+) -> Result<(), AuxiliaryError> {
+    let (protocol, preset) = match connection {
+        ModelConnection::Http(connection) => {
+            (Some(connection.protocol), connection.preset.as_deref())
+        }
+        ModelConnection::Bedrock(_) => (Some(ModelProtocol::Bedrock), None),
+        ModelConnection::Local => (None, None),
+    };
+    for message in &request.messages {
+        let MessageContent::Parts(parts) = &message.content else {
+            continue;
+        };
+        for part in parts {
+            match part {
+                MessagePart::Image { source } => {
+                    require_sendable_image(protocol, preset, &source.media_type)?
+                }
+                MessagePart::ToolResult {
+                    content: ToolContent::Blocks(blocks),
+                    ..
+                } => {
+                    for block in blocks {
+                        if let ContentBlock::Image { source } = block {
+                            require_sendable_image(protocol, preset, &source.media_type)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fails when the destination does not take the image's format as pixels. A
+/// standalone call has no conversation a content reference could resolve
+/// against, so it refuses the image instead of sending pixels the target does
+/// not take; an owner that reuses an answer calls this too, so a reused answer
+/// follows the format rule of the route that serves the target now. `preset` is
+/// the vendor package the route's compatible protocol builds, if any.
+pub fn require_sendable_image(
+    protocol: Option<ModelProtocol>,
+    preset: Option<&str>,
+    media_type: &str,
+) -> Result<(), AuxiliaryError> {
+    if takes_image_format(protocol, preset, media_type) {
+        return Ok(());
+    }
+    Err(AuxiliaryError {
+        code: AuxiliaryErrorCode::InvalidRequest,
+        message: format!("The image model does not accept {media_type}"),
+    })
 }
 
 /// Records one finished call under `auxiliary.complete`: provider, model,
@@ -150,7 +215,7 @@ impl HostDispatch for AuxiliaryModel {
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
         if method != "complete" {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "unknown auxiliaryModel method {method}"
             )));
         }

@@ -27,6 +27,7 @@ use dim_app_server::{
 use rutis::Ctx;
 use rutis::host::BoxFuture;
 use std::sync::{Mutex as StdMutex, Weak};
+use tokio::sync::watch;
 
 /// What the account's catalog reports for its second model.
 #[derive(Clone, Copy, PartialEq)]
@@ -50,6 +51,7 @@ struct Fixture {
     limited: StdMutex<Limited>,
     recovered: AtomicUsize,
     released: StdMutex<Vec<String>>,
+    watch: watch::Sender<Option<bool>>,
 }
 impl LeaseOwner for Fixture {
     fn release(&self, lease_id: &str) {
@@ -91,6 +93,9 @@ impl ManagedProvider for Provider {
             }
             _ => Ok(self.0.account.lock().unwrap().clone()),
         })
+    }
+    fn subscribe_account(&self) -> watch::Receiver<Option<bool>> {
+        self.0.watch.subscribe()
     }
     fn recover(&self, _: &str) -> ManagedFuture<AccountSnapshot> {
         ready(Ok(self.0.account.lock().unwrap().clone()))
@@ -290,6 +295,7 @@ async fn managed_model_writes_expose_typed_catalog_recovery() {
         limited: StdMutex::new(Limited::Absent),
         recovered: AtomicUsize::new(0),
         released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
     });
     let provider = fixture.clone();
     let server = launch(
@@ -442,6 +448,7 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         limited: StdMutex::new(Limited::Absent),
         recovered: AtomicUsize::new(0),
         released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
     });
     let provider = fixture.clone();
     let mut builder = AgentBuilder::new(AgentConfig::default());
@@ -1040,6 +1047,7 @@ async fn a_managed_model_made_usable_by_its_edit_is_governed_by_its_effective_li
         limited: StdMutex::new(Limited::Unavailable),
         recovered: AtomicUsize::new(0),
         released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
     });
     let provider = fixture.clone();
     let mut builder = AgentBuilder::new(AgentConfig::default());
@@ -1234,6 +1242,7 @@ async fn an_account_identifies_its_models_with_its_prefix_and_aliases() {
         limited: StdMutex::new(Limited::Unidentified),
         recovered: AtomicUsize::new(0),
         released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
     });
     let provider = fixture.clone();
     let server = launch(

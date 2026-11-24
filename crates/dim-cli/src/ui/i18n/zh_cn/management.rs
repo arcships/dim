@@ -312,6 +312,59 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "请在行内提示符或 dimcode permissions 中使用。"
         }
+        "Tool call timeout: {millis} ms" => "工具调用超时：{millis} 毫秒",
+        "Variables: {names}" => "变量：{names}",
+        "Unset variables: {names}" => "未设置的变量：{names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "MCP 来源在预览之后已更改；没有导入任何条目，原本会被它替换的条目现在可能已被禁用。请重新预览。"
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "项目条目已写入，保留未写的取值没有写入；再次替换即可重试。"
+        }
+        "Replaced {id}." => "已替换 {id}。",
+        "Added {id}." => "已添加 {id}。",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "投递到会话 {session} 的分支 {branch}（{mode}）。"
+        }
+        "Launches a new Session in {cwd}." => "在 {cwd} 启动新会话。",
+        "Disabled: {code} at {instant}." => "已禁用：{code}，时间 {instant}。",
+        "The definition changed since it was read; nothing was written." => {
+            "定义在读取之后已更改；没有写入任何内容。"
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "列：ID、客户端、范围、路径、状态、条目数或错误。"
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "不会读出或打印存储中的任何取值；--from ID 会在守护进程内预览其中一个。"
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "列：ID、操作、目标 ID。\n重命名的条目会以其目标 id 写入；来源中旧 id 的条目保持原样。"
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "导入和替换的条目初始为禁用：用户条目写入时带 enabled: false，项目条目在你本地启用前没有启用记录。"
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "此守护进程无法列出其他客户端的 MCP 存储。"
+        }
+        "This daemon cannot import MCP servers." => "此守护进程无法导入 MCP 服务器。",
+        "The document holds no mcpServers entries." => "文档中没有 mcpServers 条目。",
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "列：ID、状态、传输方式、更改的字段、不支持的字段、错误。\n更改的字段说明写入会改变什么以及取值的类型；不打印任何取值。\n不支持的字段按字段后的说明保持未使用或被丢弃。"
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "项目条目只写入其公开骨架：工作区文件得到命令、声明的 cwd、URL 来源和公开的 OAuth 字段。它的参数、环境变量和请求头取值、bearer token、带 userinfo、路径、查询或片段的 URL，以及未知成员，都写入你的用户级 mcp-secrets 记录，绝不写入工作区文件。"
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id} 还有 {count} 个字段名未在上面的列表中显示。"
+        }
+        "Top-level members the import does not carry: none." => "导入未携带的顶层成员：无。",
+        "Top-level members the import does not carry: {names}." => {
+            "导入未携带的顶层成员：{names}。"
+        }
+        "Applying the selection at this revision." => "正按此修订应用所选内容。",
+        "An unchanged entry was already in the source and was not written." => {
+            "未改动的条目已存在于来源中，未写入。"
+        }
         _ => return None,
     })
 }

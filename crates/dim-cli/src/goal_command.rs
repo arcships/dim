@@ -1,5 +1,6 @@
-//! `/goal` at the line-mode prompt: shows the goal in force on `main`, and
-//! writes it through the methods Goal registers (cli-commands.md).
+//! `/goal` at the line-mode prompt: shows the goal in force on the Session's
+//! conversation, and writes it through the methods Goal registers
+//! (cli-commands.md).
 use crate::{
     Result,
     client::Client,
@@ -7,7 +8,6 @@ use crate::{
     goal,
     session::{Interrupts, settle},
 };
-use dim_agent_types::DEFAULT_BRANCH_ID;
 
 /// What the prompt says when Ctrl+C arrives while a form is in flight.
 const NOTICE: &str = "Waiting for the goal command before accepting more input.";
@@ -16,6 +16,7 @@ const NOTICE: &str = "Waiting for the goal command before accepting more input."
 pub async fn command(
     client: &mut Client,
     session_id: &str,
+    branch_id: &str,
     text: &str,
     display: &mut Display,
     interrupts: &mut Interrupts,
@@ -32,13 +33,12 @@ pub async fn command(
         let mut state: dim_agent_types::GoalRead = client
             .typed(
                 "session.goal.get",
-                serde_json::json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID}),
+                serde_json::json!({"sessionId":session_id,"branchId":branch_id}),
             )
             .await?;
         let call = goal::call(&request, state.goal.as_ref());
         if let Some(call) = call {
-            let mut params =
-                serde_json::json!({"sessionId": session_id, "branchId": DEFAULT_BRANCH_ID});
+            let mut params = serde_json::json!({"sessionId": session_id, "branchId": branch_id});
             if let Some(objective) = goal::objective(&request) {
                 params["objective"] = serde_json::json!(objective);
             }
@@ -51,7 +51,7 @@ pub async fn command(
             state = client
                 .typed(
                     "session.goal.get",
-                    serde_json::json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID}),
+                    serde_json::json!({"sessionId":session_id,"branchId":branch_id}),
                 )
                 .await?;
         }
@@ -60,7 +60,7 @@ pub async fn command(
     match settle(interrupts, NOTICE, operation).await? {
         Reply::Unavailable => display.record(goal::NOT_AVAILABLE)?,
         Reply::Done(call, goal) => {
-            for line in goal::report(DEFAULT_BRANCH_ID, call, goal.as_ref()) {
+            for line in goal::report(branch_id, call, goal.as_ref()) {
                 display.record(&line)?;
             }
         }

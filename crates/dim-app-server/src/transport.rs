@@ -806,6 +806,7 @@ async fn run_connection(
                                             "session.history",
                                             "session.branches",
                                             "session.branch.get",
+                                            "session.model.get",
                                             "session.turn.get",
                                             "session.turn.get.inputId",
                                             "session.input.pending.blockPresence",
@@ -819,10 +820,15 @@ async fn run_connection(
                                             "session.methods",
                                             "session.branch_create",
                                             "session.branch_end",
+                                            "session.branch_set_default",
                                             "session.create.origin",
                                             "session.language",
                                             "session.attach.expectedCwd",
+                                            "session.attach.expectedConfig",
                                         ]);
+                                        if hub.config().product_home.is_some() {
+                                            features.push("session.create.clearModelPreferences");
+                                        }
                                         if hub.config().database_path.is_some()
                                             && hub.config().product_home.is_some()
                                         {
@@ -842,9 +848,12 @@ async fn run_connection(
                                         }
                                         if local && hub.config().product_home.is_some() {
                                             features.push("session.create.modelFromSession");
+                                            features
+                                                .push("session.model.update.requireExpiredRoute");
                                         }
                                         if hub.config().database_path.is_some() {
                                             features.push("session.fork");
+                                            features.push("session.fork.expectedConfig");
                                             features.push("session.history.latestTurn");
                                             if params.protocol_version >= 3 {
                                                 features.push("session.history.display.tail");

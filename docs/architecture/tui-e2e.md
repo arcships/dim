@@ -26,7 +26,7 @@ node scripts/tui-tmux/run.mjs --artifacts /tmp/tui-failure # failed cases go her
 ```
 
 A migrated case in `crates/dimcode/tests/cli_flow*` runs only here: it is
-`#[ignore]`d, and `cargo test -p dimcode --test cli_flow -- --ignored` runs it
+`#[ignore]`d, and `cargo test -p dimcode --test cli_flow --test cli_tui_flow --test cli_session_flow --test cli_daemon_flow -- --ignored` runs it
 locally beside the production flows. A case without a scenario stays selected by
 CI.
 
@@ -41,8 +41,10 @@ Prerequisites:
 | No network | The model fixture listens on loopback; the suite sets `DIMCODE_UPDATE_CHECK=0` |
 
 The suite is Unix-only because tmux is. Windows keeps its native boundary checks
-(`cargo test --locked -p dim-cli --lib` in the `windows-cli` job) and the
-component-level terminal tests that do not need tmux.
+in the `windows-cli` job: `cargo test --locked -p dim-cli --lib`, and the
+Windows-only boundary flows that the same job runs for Windows storage,
+host-platform and named-pipe paths and on full sweeps. The component-level
+terminal tests that do not need tmux also run there.
 
 ## What a case runs
 
@@ -118,6 +120,7 @@ daemon. `--keep` leaves the home and raw streams in place for inspection.
 | tasks | `task_strip_stays_and_switches_the_open_detail` | Two background commands keep their `◐` rows under an open task detail: in fullscreen a row click opens live output with `Esc close`, a second row click switches the detail, and Esc returns to the composer with its draft; in scrollback `/tasks` → Enter keeps the strip and `Esc back` |
 | members | `member_conversation_and_stop_all` | A delegated member's task row, the member conversation's heading and transcript, `Ctrl+X` stop-all, and the leader's settled turn; read-only input and the leader draft stay with `tui_member_conversation_is_read_only_and_preserves_the_leader_draft` in CI |
 | providers | `provider_panel_adds_and_keeps_a_custom_provider` | On the production App Server profile (`--server`, no `--model-config`) `/connect` adds a custom provider against the fixture, tests and applies it, a turn uses its key, and the product home keeps it across a daemon restart |
+| providers | `chatgpt_plan_opens_at_connect` | In a fresh product home, `/connect` opens the ChatGPT consent panel and omits the legacy Codex entry |
 | suggestions | `prompt_suggestion_offers_and_takes_the_next_message` | Every completed turn draws its own numbered offer; `Tab` takes it in scrollback, `Tab` keeps the focus in fullscreen (and `Enter` sends nothing) while `Right` takes it there, and `Escape` withdraws it without asking again |
 | suggestions | `suggestion_asks_nothing_while_a_draft_exists` | A draft withdraws the offer, no suggestion request follows it, and the next completed turn asks again |
 | daemon | `daemon_stop_reports_disconnect_and_resume_replays_history` | A stopped daemon keeps the draft in the same process and shows it, names `dimcode --resume`, exits cleanly with the terminal restored; the resumed session replays history and then answers a distinct new prompt, which only a new turn can produce (the draft is not restored across processes) |
@@ -223,13 +226,13 @@ does the resumed `resumed session · N messages` count a follow-up is skipped by
 
 ## Existing terminal E2E cases
 
-`crates/dimcode/tests/cli_flow*.rs` holds 299 cases that drive the TUI (or the
+`crates/dimcode/tests/cli_flow*.rs` holds 305 cases that drive the TUI (or the
 launcher that passes through to it) through a PTY, spread over 26 modules; the
 inventory below lists each one with the disposition #1802 gave it. #1805 is
 merged, so the five cases it merged are gone and its no-session survivor is in
-their place. Of those 299, 10 are now `#[ignore]`d with the reason "TUI E2E runs
+their place. Of those 305, 10 are now `#[ignore]`d with the reason "TUI E2E runs
 in the local tmux suite" because a tmux scenario proves their behavior; 8 were
-already ignored for production (4 of them now have a scenario); the other 281
+already ignored for production (4 of them now have a scenario); the other 287
 stay selected by CI until #1810 replaces them. `tests/ui_leaf.rs` adds 4 UI
 leaf cases, all still selected by CI.
 
@@ -314,9 +317,9 @@ States (the #1802 disposition, not the current routing):
 
 - unreviewed (#1802), CI — `skill_discovery_reports_failures_and_a_failed_reload_keeps_the_palette`, `tui_skills_panel_reads_again_after_a_failed_read`, `tui_skills_panel_lists_toggles_and_reloads`, `tui_skills_panel_reloads_an_empty_catalog`, `tui_skills_panel_says_when_the_daemon_cannot_manage_them`
 
-**`staged_update`** — 2 cases
+**`staged_update`** — 6 cases
 
-- unreviewed (#1802), CI (release-stamped step) — `tui_update::update_now_stops_an_idle_daemon_and_restarts_or_refuses_a_busy_or_old_one`, `tui_update::update_now_survives_a_history_write_that_waits_for_its_lock`
+- unreviewed (#1802), CI — `tui_update::update_now_stops_an_idle_daemon_and_restarts_on_the_same_session`, `tui_update::update_now_refuses_a_busy_daemon_and_prints_manual_command`, `tui_update::update_now_falls_back_to_manual_command_for_an_old_daemon`, `tui_update::update_now_cancels_cleanly_on_sigint_while_stopping_daemon`, `tui_update::update_now_waits_for_a_released_history_lock_before_restarting`, `tui_update::update_now_restarts_after_a_bounded_wait_when_history_lock_stays_held`
 
 The interrupted-check case is line mode and stays in CI with the other `update`
 flows.
@@ -367,17 +370,20 @@ flows.
 - rewrite (#1802), CI — `tui_queue_shows_held_messages_and_steers_or_withdraws_them`
 - unreviewed (#1802), CI — `explicit_model_selection_uses_protocol_field_names_from_tui_and_line_client`, `fullscreen_session_attached_before_the_first_frame_shows_one_banner`, `the_model_label_shows_the_adopted_reasoning_effort_in_both_modes`, `a_new_session_shows_the_effort_its_creation_adopted`, `the_model_label_shows_a_configured_profile_effort` (ignored, production), `home_after_new_drops_the_previous_sessions_effort`, `repicking_the_current_model_keeps_the_effort`, `a_resumed_session_draws_the_adopted_model_and_effort`, `another_clients_adoption_redraws_the_model_label`, `a_narrow_composer_drops_the_effort_before_the_model`, `tui_escape_sends_the_reason_that_records_the_interruption`, `tui_shell_mode_runs_through_session_methods_and_shows_the_recorded_run`, `tui_effort_dialog_selects_the_current_models_effort_and_cancels_without_writing`, `tui_mcp_and_configuration_commands_use_session_methods`, `tui_pasted_images_and_long_text_submit_as_user_content`, `tui_skill_rows_come_from_the_catalog_and_complete_without_sending`, `reloading_skills_changes_the_palette_rows`, `a_daemon_without_skill_catalog_keeps_a_working_command_palette`, `tui_palette_tab_only_completes_and_enter_still_runs`, `tui_sends_dropped_files_as_links_and_images_by_model_capability`, `fullscreen_login_releases_mouse_for_the_link_and_restores_the_preference_on_close`, `tui_mcp_says_when_no_server_is_configured`, `tui_mcp_shows_failure_reasons_rejections_and_the_catalog_error`, `tui_mcp_enables_and_disables_a_project_server`, `tui_web_toggles_the_daemon_switch_without_leaving`, `tui_registers_with_the_ui_registry_and_leaves_when_asked`, `tui_export_dialog_matches_the_subcommand_and_cancel_sends_nothing`, `tui_ctrl_enter_interrupts_the_run_and_starts_a_new_one_with_the_draft`, `tui_ctrl_s_steers_the_draft_while_a_run_is_in_progress`, `tui_escape_withdraws_the_queue_before_the_run_stops`, `tui_command_output_refreshes_one_read_and_preserves_its_branch_and_terminal_result`, `tui_command_output_errors_stop_refresh_and_reopening_retries`, `tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules`, `tui_approval_alias_selects_presets_and_remembers_them`, `tui_shift_tab_cycles_permissions_and_preserves_the_draft_in_both_modes`, `tui_yields_the_title_and_the_bar_to_a_terminal_that_keeps_the_record`, `cold_hosted_tui_opens_without_reading_the_session_catalog`, `resume_by_id_takes_its_model_from_the_attach_record`, `resume_by_id_finds_the_model_in_the_catalog_when_the_attach_reply_is_empty`, `tui_provider_create_recovery_preserves_changed_draft_until_confirmation`, `tui_models_picker_edits_only_the_subagent_model_policy`, `tui_models_picker_cycles_reasoning_effort`, `tui_models_picker_writes_the_default_the_launch_workspace_reads`, `member_tool_approval_requires_trusted_details_in_both_terminal_modes`, `member_approval_without_the_detail_method_offers_only_rejection`, `tui_default_theme_respects_background_and_saved_choice`
 
-Modules: 26; cases: 301; already ignored before this PR: 8 (4 now covered by a
+Modules: 26; cases: 305; already ignored before this PR: 8 (4 now covered by a
 tmux scenario: `unix_npm_wrapper_…`, `tui_provider_management_…`,
 `native_tui_question_answer_…`, `tasks::native_tui_stop_all_…`); newly ignored
 for the tmux suite: 10; moved to the tmux suite: 14; still ignored with no
 scenario: `a_cold_ui_leaf_…`, `a_resumed_session_of_an_older_protocol_opens`,
 `managed_worktree_tui_…`, `the_model_label_shows_a_configured_profile_effort`;
-selected by CI: 283 in `cli_flow` plus the 4 `ui_leaf` cases (287).
+selected by CI: 287 in the `cli_flow*` targets; the 4 `ui_leaf` cases run in
+their own target.
 
-The `cli_flow` target also holds the line-mode, ACP, daemon and production flows
-that CI keeps: 412 cases, of which 400 run by default and 12 are `--ignored`
-production flows that the CI selection names one by one. The five cases #1805
+The `cli_flow*` targets (`cli_flow`, `cli_tui_flow`, `cli_daemon_flow`,
+`cli_session_flow`) also hold the line-mode, ACP, daemon and production flows
+that CI keeps: 434 cases on Linux (432 on macOS), of which 422 run by default
+(420 on macOS) and 12 are `--ignored` production flows in `cli_flow` that the
+CI selection names one by one. The five cases #1805
 merged, and the one case #1805 added, are recorded in the dispositions above
 rather than listed here.
 
@@ -407,7 +413,7 @@ No CI job runs a **migrated** TUI flow. The 10 cases whose behavior a tmux
 scenario proves are `#[ignore]`d with the reason "TUI E2E runs in the local tmux
 suite", so the ordinary `cargo test --workspace` selection compiles them and
 runs none of them; the production `--ignored` step names only the flows CI
-keeps. The other 283 `cli_flow` TUI cases and the 4 `ui_leaf` cases have no
+keeps. The other 287 `cli_flow*` TUI cases and the 4 `ui_leaf` cases have no
 replacement yet and stay selected by CI, because dropping them would remove
 runtime coverage that only they assert (#1810). Terminal E2E coverage that has
 moved is a local verification step: a display-less runner and the suite's
@@ -419,17 +425,16 @@ component and protocol tests do not already cover.
 CI keeps:
 
 - Ordinary workspace tests: the `dim-cli` component render and keyboard tests,
-  `dim-app-server` protocol and transport flows, the 400 non-TUI `cli_flow`
-  cases (`--no-tui`, `exec`, piped prompts, ACP and the scripted daemon flows),
-  and the 287 TUI cases #1810 still tracks.
+  `dim-app-server` protocol and transport flows, the 422 non-TUI `cli_flow*`
+  cases (`--no-tui`, `exec`, piped prompts, ACP, `staged_update::recovery::`,
+  and the scripted daemon flows), and the 287 TUI cases #1810 still tracks
+  (including the 6 `staged_update::tui_update::` cases, which use the debug-only
+  `DIM_TEST_RELEASE_BUILD=1` override instead of a separate release-stamped
+  build step).
 - The explicit `cli_flow` step that names the 12 `--ignored` production and
   line-mode flows one by one: the production App Server, the account and
   permission presets, the real-owner MCP/hooks/workflow writes, and the
   line-mode startup case below.
-- The release-stamped step, which runs `staged_update::recovery::` and the TUI
-  cases `staged_update::tui_update::`: they pass trivially in an unstamped build,
-  so only that step exercises them. The recovery cases and `local_execution` do
-  not drive the UI.
 
 ### Line-mode routing exception
 

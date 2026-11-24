@@ -40,14 +40,13 @@ pub struct ManagementProvider {
     pub info: ManagementInfo,
     pub models: Option<Vec<ManagementModel>>,
     pub preferences: BTreeMap<String, ModelPreferences>,
-    /// What an update did with the record's models; absent from the reads and
-    /// from a patch that did not change `baseUrl`, `credential` or `headers`.
+    /// What a connection update did with the record's models, including an
+    /// enable that fills an empty bundled catalog or endpoint listing. Absent from reads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models_listed: Option<ModelsListed>,
 }
 
-/// What `provider.update` did with the record's models when the patch changed
-/// the endpoint or the account it reaches.
+/// What `provider.update` did with the record's models for a connection change.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelsListed {
@@ -331,6 +330,11 @@ impl ProviderService {
             ]);
         }
         let version = record.as_ref().map(|record| record.version);
+        let namespace = if descriptor.provider_id == crate::managed_provider::chatgpt::ID {
+            crate::managed_provider::chatgpt::NAMESPACE
+        } else {
+            "account"
+        };
         ManagementInfo {
             provider_id: descriptor.provider_id,
             display_name: descriptor.display_name,
@@ -339,7 +343,7 @@ impl ProviderService {
             version,
             enabled: None,
             account: Some(ManagementAccount {
-                namespace: "account",
+                namespace,
                 login_methods: descriptor.login_methods,
                 state: AccountState::Package(account),
             }),
@@ -650,6 +654,7 @@ impl ProviderService {
         let target = request.provider_id.clone();
         let after = request.after.clone();
         let accounts_only = request.accounts_only;
+        let show_legacy = target.is_some() || self.legacy_codex_visible(cancel).await;
         let query_text = request.query.clone().unwrap_or_default().to_lowercase();
         let account_ids: BTreeMap<_, _> = descriptors
             .iter()
@@ -670,6 +675,9 @@ impl ProviderService {
                         }
                         let mut records = Vec::new();
                         for id in ids {
+                            if id == LEGACY_CODEX_ID && !show_legacy {
+                                continue;
+                            }
                             if after.as_ref().is_some_and(|after| &id <= after) {
                                 continue;
                             }

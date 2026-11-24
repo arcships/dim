@@ -142,6 +142,8 @@ session.model.update {
 } -> {model: {providerId, modelId}, outcome: "adopted" | "unchanged"}
 ```
 
+A protected local client with `session.model.update.requireExpiredRoute` may send `requireExpiredRoute: true` together with both target IDs and without `startup`. The update requires an expired temporary route and exclusive, idle Session admission. It adopts the explicit shared catalog model even if the caller has its own route for that Provider. A live route owned by another connection yields `provider_route_conflict`. A selection without an expired route yields `provider_route_not_expired`. See [Provider route ownership](appserver/provider-management.md#connection-scoped-provider-routes).
+
 A plain string sets the field. `{action:"clear"}` clears it and needs no
 `value`; any other action, including `{action:"set"}`, any extra field, null and
 an empty string are invalid. An omitted field keeps its adopted value.
@@ -195,7 +197,9 @@ spells the field `model_preferences` and the two replies spell it
 The CLI draws the effort from that field and keeps no preference state of its
 own. The attach reply also carries the adopted declaration as `capabilitySnapshot`,
 so temporary connections support preference commands before their first input
-without requiring a saved Provider catalog. Other internal model settings remain
+without requiring a saved Provider catalog. For scoped routes, the attach reply and the `session.model.get` configuration
+add `catalogProviderId` and the event adds `catalog_provider_id` for catalog
+selection and display. Both keep the adopted Provider ID as the execution identity. Other internal model settings remain
 private. Advertised choices are display data; Provider validates each update.
 An adoption starts from the model's declared configuration with the model's own
 catalog defaults applied: when no preference names an effort and that
@@ -393,9 +397,13 @@ both fields start from the target's declared configuration as for any explicit
 adoption, so a clear there is accepted and adds nothing to that adoption; the
 adoption can still change the model. An omitted sibling is reset by that
 adoption. A client that clears one field and keeps the other sends no target.
-`session.create` keeps the set-only spelling: a new Session has no value to
-clear. A clear follows the same `main`-only, admission, supersession and
-cancellation behavior as a set.
+On servers advertising `session.create.clearModelPreferences`, an ordinary product
+`session.create` accepts `{action:"clear"}` for an individual preference to
+use that field's catalog-declared configuration and bypass the saved preference.
+An omitted sibling still uses its saved preference and then its declared default.
+This uses the creation's model resolution and leaves saved preferences untouched.
+The `startup` and preview inputs keep their set-only contract. An in-Session
+clear follows the same admission, supersession and cancellation behavior as a set.
 
 `session.model.update` still requires at least one preference field and returns
 its existing `{model, outcome}` reply. A clear that leaves the adopted

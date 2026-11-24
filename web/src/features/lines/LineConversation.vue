@@ -24,16 +24,20 @@ const view = computed(() => chat.views[props.sessionId])
 const branch = computed(() => view.value?.branches[props.branchId])
 const line = computed(() => view.value?.lines.find((candidate) => candidate.id === props.branchId))
 const approval = computed(() => view.value?.approvals.find((request) => request.branchId === props.branchId))
-const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, props.branchId, view.value?.approvals ?? []))
+const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, props.branchId, view.value?.defaultBranchId ?? ROOT_BRANCH_ID, view.value?.approvals ?? []))
 const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === props.branchId) ?? [])
 const rulesAvailable = computed(() => connection.supports("permission.rules") && connection.supports("permission.set_rules"))
 const searchFiles = computed(() => view.value?.methods.includes("session.files.search") ? (query: string) => chat.searchFiles(props.sessionId, query) : undefined)
-const open = computed(() => line.value === undefined
-  ? branch.value?.status !== "failed"
-  : line.value.state.kind === "working" || line.value.state.kind === "waiting")
+const open = computed(() => props.branchId === ROOT_BRANCH_ID
+  ? branch.value?.status === "ready"
+  : line.value === undefined
+    ? branch.value?.status !== "failed"
+    : line.value.state.kind === "working" || line.value.state.kind === "waiting")
 const prompting = computed(() => approval.value !== undefined || questions.value.length > 0)
 const title = computed(() => lineName(t, line.value, props.branchId))
-const state = computed(() => line.value?.state ?? (branch.value?.running ? { kind: "working" as const } : { kind: "waiting" as const }))
+const state = computed(() => props.branchId === ROOT_BRANCH_ID
+  ? { kind: branch.value?.running === true ? "working" as const : "waiting" as const }
+  : line.value?.state ?? (branch.value?.running ? { kind: "working" as const } : { kind: "waiting" as const }))
 const parentName = computed(() => {
   const parentId = line.value?.parentId
   if (parentId === null || parentId === undefined) return ""
@@ -158,6 +162,7 @@ function noModel(): void {
           v-if="open && !prompting"
           ref="composer"
           :session-id="sessionId"
+          :branch-id="branchId"
           :running="running"
           :stopping="stopping"
           :model="view.model"

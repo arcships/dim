@@ -16,7 +16,9 @@ registerHooks({
 })
 
 const { Lines } = await import("./lines.ts")
-const { approvalKeyDecision, approvalKeyboardBranch } = await import("./features/lines/line-state.ts")
+const { approvalKeyDecision, approvalKeyboardBranch, canContinueFrom, lineMarks } = await import("./features/lines/line-state.ts")
+const en = (await import("./i18n/en.ts")).default
+const zhCN = (await import("./i18n/zh-CN.ts")).default
 
 function event(sequence, content) {
   return { id: `e${sequence}`, sequence, createAt: 1_000 + sequence, content }
@@ -109,6 +111,24 @@ test("directory does not invent a cut count from a partial transcript", () => {
   assert.equal(lines.views()[1].cut.messages, 40)
 })
 
+test("the tree marks the root and the default branch, and offers continue from here elsewhere", () => {
+  assert.deepEqual(lineMarks("main", "main"), ["main-line", "start"])
+  assert.deepEqual(lineMarks("b-child", "b-child"), ["main-line"])
+  assert.deepEqual(lineMarks("main", "b-child"), ["start"])
+  assert.deepEqual(lineMarks("b-grandchild", "b-child"), [])
+  assert.equal(en["lines.mainLine"], "Main line")
+  assert.equal(en["lines.start"], "Start")
+  assert.equal(zhCN["lines.mainLine"], "主线")
+  assert.equal(zhCN["lines.start"], "起点")
+  assert.equal(en["lines.continueFrom"], "Continue from here")
+  assert.equal(zhCN["lines.continueFrom"], "从此继续")
+  // The method decides the refusals; the tree only leaves out a move to the
+  // line already holding the role and a line that never opened.
+  assert.equal(canContinueFrom({ id: "b-child", state: { kind: "waiting" } }, "main"), true)
+  assert.equal(canContinueFrom({ id: "main", state: { kind: "main" } }, "main"), false)
+  assert.equal(canContinueFrom({ id: "b-child", state: { kind: "creation-failed" } }, "main"), false)
+})
+
 test("approval shortcuts follow the visible surface across wide, expanded and covered layouts", () => {
   const mainOnly = [{ branchId: "main" }]
   const mainAndLine = [{ branchId: "main" }, { branchId: "b-child" }]
@@ -125,28 +145,28 @@ test("approval shortcuts follow the visible surface across wide, expanded and co
   }
 
   assert.deepEqual(
-    dispatch(mainOnly, { detailOpen: false, detailExpanded: false, shellWidth: 1280 }, "Enter"),
+    dispatch(mainOnly, { detailOpen: false, detailExpanded: false, shellWidth: 1280, defaultBranchId: "main" }, "Enter"),
     [["main", "allow"]],
   )
   assert.deepEqual(
-    dispatch(mainOnly, { detailOpen: true, detailExpanded: true, shellWidth: 1280, activeLine: "b-child" }, "Enter"),
+    dispatch(mainOnly, { detailOpen: true, detailExpanded: true, shellWidth: 1280, defaultBranchId: "main", activeLine: "b-child" }, "Enter"),
     [],
   )
   assert.deepEqual(
-    dispatch(mainOnly, { detailOpen: true, detailExpanded: false, shellWidth: 680, activeLine: "b-child" }, "y"),
+    dispatch(mainOnly, { detailOpen: true, detailExpanded: false, shellWidth: 680, defaultBranchId: "main", activeLine: "b-child" }, "y"),
     [],
   )
   assert.deepEqual(
-    dispatch(mainOnly, { detailOpen: true, detailExpanded: false, shellWidth: 960, activeLine: undefined }, "Escape"),
+    dispatch(mainOnly, { detailOpen: true, detailExpanded: false, shellWidth: 960, defaultBranchId: "main", activeLine: undefined }, "Escape"),
     [],
   )
 
   assert.deepEqual(
-    dispatch(mainAndLine, { detailOpen: true, detailExpanded: true, shellWidth: 1280, activeLine: "b-child" }, "Enter"),
+    dispatch(mainAndLine, { detailOpen: true, detailExpanded: true, shellWidth: 1280, defaultBranchId: "main", activeLine: "b-child" }, "Enter"),
     [["b-child", "allow"]],
   )
   assert.deepEqual(
-    dispatch(mainAndLine, { detailOpen: true, detailExpanded: false, shellWidth: 680, activeLine: "b-child" }, "Escape"),
+    dispatch(mainAndLine, { detailOpen: true, detailExpanded: false, shellWidth: 680, defaultBranchId: "main", activeLine: "b-child" }, "Escape"),
     [["b-child", "deny"]],
   )
   assert.deepEqual(
@@ -154,15 +174,15 @@ test("approval shortcuts follow the visible surface across wide, expanded and co
     [["b-child", "deny"]],
   )
   assert.deepEqual(
-    dispatch(mainAndLine, { detailOpen: true, detailExpanded: false, shellWidth: 1280, activeLine: "b-child", detailFocused: true }, "y"),
+    dispatch(mainAndLine, { detailOpen: true, detailExpanded: false, shellWidth: 1280, defaultBranchId: "main", activeLine: "b-child", detailFocused: true }, "y"),
     [["b-child", "allow"]],
   )
   assert.deepEqual(
-    dispatch(mainAndLine, { detailOpen: true, detailExpanded: false, shellWidth: 1280, activeLine: "b-child", detailFocused: false }, "Enter"),
+    dispatch(mainAndLine, { detailOpen: true, detailExpanded: false, shellWidth: 1280, defaultBranchId: "main", activeLine: "b-child", detailFocused: false }, "Enter"),
     [["main", "allow"]],
   )
   assert.deepEqual(
-    dispatch(mainAndLine, { detailOpen: true, detailExpanded: true, shellWidth: 1280, activeLine: "b-child" }, "Enter", { target: { tagName: "TEXTAREA" } }),
+    dispatch(mainAndLine, { detailOpen: true, detailExpanded: true, shellWidth: 1280, defaultBranchId: "main", activeLine: "b-child" }, "Enter", { target: { tagName: "TEXTAREA" } }),
     [],
   )
 })

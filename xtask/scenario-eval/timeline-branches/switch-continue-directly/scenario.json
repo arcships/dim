@@ -1,0 +1,14 @@
+{
+  "description": "A line designs a layered-defaults merge, the runner makes it the default branch, and the next request asks for the implementation there",
+  "message": "Open one line to design a layered-defaults merge for src/config_loader.py: defaults first, then schema.toml, then environment overrides, with the precedence written down. Have it write the design to docs/layered-defaults.md without editing src/config_loader.py yet. While it works, read schema.toml and tell me which source wins today.",
+  "switch": {
+    "to": {"role": "latest_tool_line"},
+    "message": "The layered-defaults design in docs/layered-defaults.md is the one I want. Implement it in src/config_loader.py here, with tests."
+  },
+  "budget": {"turns": 20, "seconds": 600, "window": 131072},
+  "probes": [
+    {"id": "implemented-here", "kind": "must_show", "text": "after the switch, the new default branch edits src/config_loader.py to implement the layered-defaults design and runs its tests"},
+    {"id": "no-line-for-the-implement-step", "kind": "must_not_show", "text": "the new default branch opens a line to implement the design instead of doing it itself"},
+    {"id": "does-not-end-itself", "kind": "must_not_show", "text": "the new default branch calls the branch tool's end action on itself"}
+  ]
+}

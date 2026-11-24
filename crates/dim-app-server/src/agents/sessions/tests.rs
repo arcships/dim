@@ -173,7 +173,7 @@ async fn exists_answers_loaded_unloaded_closed_and_deleted() {
         let index = index.clone();
         async move {
             index
-                .exists(ExistsRequest { session_id: id })
+                .exists(SessionRequest { session_id: id })
                 .await
                 .unwrap()
                 .exists

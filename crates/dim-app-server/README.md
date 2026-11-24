@@ -536,7 +536,7 @@ A scope offers `withLock(name, callback, cancelled?)`, `list(prefix)`, `remove(n
 
 `list(prefix)` returns one level of the directory `prefix`, sorted by name, each entry its name relative to the authorized root and its kind (`file`, `directory`, or `other` for a link or special file, never followed). A returned name is the stored components joined by `/`, so it can be passed straight to another operation; on Unix a backslash is part of a name, and on Windows it is a separator. It does not recurse and does not enter a directory entry, and the root itself is not listed, so a prefix names a directory. An entry whose name is not valid UTF-8 is omitted: these operations address names as strings, so it could not be read either, but removing the directory removes it. `remove(name)` removes a file, or a directory and everything beneath it. A file a lease holds, and a directory with a lease held beneath it, fail `locked`; an absent entry counts as removed, so a retry is safe. Removal is not atomic: an error can leave part of a tree removed.
 
-Every file is either a text envelope or raw bytes. `read()` and `replace(text)` use the envelope below. `readBytes()` returns the file's bytes whole, so a text file returns its stored envelope; `replaceBytes(bytes)` writes raw bytes with no envelope. A text read of a raw file fails `invalid_data` and leaves it untouched. Both byte operations are whole-buffer and capped at [`MAX_WHOLE_FILE_BYTES`](src/plugin_files.rs) (8 MiB): the runtime channel's frame is 16 MiB and carries bytes base64-encoded, four bytes for every three, so 12 MiB is the raw ceiling before any envelope and 8 MiB leaves the envelope and both sides' copies room while bounding one allocation. A file over the cap fails `invalid_data` before it is read, and a replacement over it fails `invalid_data` without writing. A buffer large enough that its call message would exceed the runtime's 16 MiB frame never reaches the host: the plugin's own runtime refuses that call before sending it, with a `RangeError` coded `bad-value` naming the argument and the limit, and neither the plugin row nor the file store is affected — the same holds for any call argument, a large text `replace` included. For larger files use a pinned reader or a streamed replacement as described below.
+Every file is either a text envelope or raw bytes. `read()` and `replace(text)` use the envelope below. `readBytes()` returns the file's bytes whole, so a text file returns its stored envelope; `replaceBytes(bytes)` writes raw bytes with no envelope. A text read of a raw file fails `invalid_data` and leaves it untouched. Both byte operations are whole-buffer and capped at [`MAX_WHOLE_FILE_BYTES`](src/plugin_files.rs) (8 MiB), which bounds one allocation; a file over the cap fails `invalid_data` before it is read, and a replacement over it fails `invalid_data` without writing. A text `replace` is admitted when its serialized record fits the runtime's 16 MiB frame; a larger one fails that call with a `BindingError` coded `bad-value` naming the limit, and leaves the file unchanged. rutis 0.23 chunks a larger call frame up to the deployment's `max_transfer`, so the runtime no longer refuses a call at the 16 MiB boundary; limits that a Dim face does not enforce are not guaranteed. For larger files use a pinned reader or a streamed replacement as described below.
 
 `PluginFiles::open(ctx)` ties a Rust scope to its row. EventHub uses `PluginFiles::scope(Some(ctx.clone()))` so admitted publishes can finish their writes across a row restart. The caller releases its last `Arc<FileScope>` after those operations settle. Stopping the file provider cancels and drains its active operations. The scope’s `with_lock(name, change)` runs `change` on the inner text under the file's lock. `change` receives `None` for a missing file and returns the replacement text (`None` keeps the file as it is) together with its own result. The host writes and checks the same `{version: 1, text}` envelope. An envelope that is not version 1 fails with `InvalidData` before `change` runs, and its bytes stay unchanged.
 
@@ -623,12 +623,14 @@ unchanged transaction/backup/lifecycle behavior.
 
 ## Managed provider contract
 
+The product profile includes the local [ChatGPT plan provider](../../docs/design/appserver/chatgpt-plan.md). Its account operations live in `account.chatgpt` and its models use the managed catalog and connection path below.
+
 Catalog reads accept caller cancellation. Concurrent reads may share the account
 owner's in-flight request; cancellation removes that caller, while remaining
 callers retain their request. `account_cancelled` reports a cancelled catalog wait.
 The owner removes a completed flight and retains no directory-result cache.
 
-`ManagedProvider` ([`src/managed_provider.rs`](src/managed_provider.rs)) is the typed port a managed provider plugin publishes, and `ManagedProviderBinding` hands it to the implementation `ManagedProviders`. That implementation is no service: its only service face is the process data face `managedSearch` (`search`), the account RPC uses it through the `account` method namespace the same plugin registers, and the model provider reads it through a process-internal key. `ManagedProviders` and its key are assembled on every server; the `account` namespace is assembled with a product home. Without a binding the process lists no managed providers and `managedSearch.search` fails with `unavailable`.
+`ManagedProvider` ([`src/managed_provider.rs`](src/managed_provider.rs)) is the typed port a managed provider plugin publishes, and `ManagedProviderBinding` hands it to the implementation `ManagedProviders`. That implementation is no service: its only service face is the process data face `managedSearch` (`search`), the account RPC uses it through the `account` method namespace the same plugin registers, and the model provider reads it through a process-internal key. The same in-process type reports whether the bound provider holds a signed-in account (`usable`, `subscribe_usable`, `refresh_usable` on `ManagedSearch`); that read and its change notifications are owner state for App Server parts, not a service face. `ManagedProvider::subscribe_account` returns the provider's replayable watch over whether it stores a signed-in account. Its first `Some` is the provider's initialized read of its store, a read-only and validated observation: an observation whose validated state already equals the watch answers from the atomic read without the account lease, a file without a Dim record is signed out without being created or normalized, and a record whose `tokenDigest` does not match its grant publishes nothing. The first observation, or one whose state differs, takes the account lease, rereads the file and publishes that read. The account store moves the watch after every write of `auth.json` and after an `account.status` read that finds a different state, published under the same account lease. `ManagedProvider::observe_account` re-reads that store with the same read-only observation and publishes the result through the watch, so a store another process wrote becomes visible without an `account.status` call; the observation belongs to its caller, so dropping that wait ends its lease wait, and a failed read leaves the watch as it was. `ManagedProviderBinding` installs the binding and its initial observation together, under the same lock as the binding identity check. It publishes the watch's current value, read under that lock, on every later move while its binding is current and after `refresh_usable` observes the store, so an observation that read an older value cannot overwrite a newer move: a replacement whose watch has no value yet publishes the signed-out state instead of inheriting the retired binding's, so a login that completes after every client polling it is gone still reaches open Sessions and a replaced provider never overwrites a newer one. The watch is authoritative: account reads, completed login attempts and RPC results never publish over it. `ManagedSearch::refresh_usable` asks the provider for one `observe_account` when managed search first becomes necessary for a Session and then publishes the watch's current value; the observation is bounded, and a failed or timed-out read leaves the last observation and no retry behind. `ManagedProviders` and its key are assembled on every server; the `account` namespace is assembled with a product home. Without a binding the process lists no managed providers and `managedSearch.search` fails with `unavailable`.
 
 | Method | Input | Value |
 | --- | --- | --- |
@@ -729,7 +731,7 @@ There is no atomic transaction spanning the account file and SQLite. A generatio
 Public API-key, provider, native subscription, managed provider and transport flows do not need Node:
 
 ```sh
-cargo test --locked -p dim-app-server --test provider_flow --test managed_oauth_flow --test managed_provider_flow --test model_catalog_flow --test transport_flow
+cargo test --locked -p dim-app-server --test app_server_flow --test transport_flow
 ```
 
 The separately enabled Node flows load plugins through the actual rutis runtime and MCP servers built on the official MCP SDK. They cover C4 Session tool and method binding, isolation, restore, cancellation, an unmodified Cordis 4 branch plugin, and stdio and legacy SSE MCP flows.
@@ -739,8 +741,8 @@ npm ci --prefix runtime --ignore-scripts
 export DIM_TEST_NODE="$(command -v node)"
 export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
 export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
-cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow \
-  node_ -- --ignored
+cargo test --locked -p dim-app-server --test transport_flow node_ -- --ignored
+cargo test --locked -p dim-app-server --test app_server_flow mcp_http_flow::node_ -- --ignored
 ```
 
 The separate Python flows cover plugin installation, reload and scoped parts. In the same shell, use Python 3.12 or later with the pinned `rutis` package.
@@ -762,8 +764,8 @@ cargo test --locked -p dim-app-server --test transport_flow \
 Run the live Context7 check manually with `CONTEXT7_API_KEY`.
 
 ```sh
-cargo test --locked -p dim-app-server --test mcp_http_flow \
-  context7_live_through_rust_plugins -- --ignored
+cargo test --locked -p dim-app-server --test app_server_flow \
+  mcp_http_flow::context7_live_through_rust_plugins -- --ignored
 ```
 
 The [C4 Session TypeScript spike](../../docs/design/session-typescript-spike.md)

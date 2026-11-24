@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use crate::management::{self, editor};
 use crate::model::session::{
     Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DeleteOutcome, DeleteReply,
-    DraftPart, ManagementAction, ManagementRefusal, ManagementRequest, ManagementResult,
+    DraftPart, ManagementAction, ManagementRefusal, ManagementRequest, ManagementResult, Origin,
     PromptField, PromptSetting, RenameReply, SessionPort, SubmitMode, SuggestionSetting,
     SwitchKind, Update,
 };
@@ -24,7 +24,7 @@ use crate::model::view::{
 };
 use crate::ui::Env;
 use crate::ui::Initial;
-use crate::ui::approvals_panel::ApprovalsPanel;
+use crate::ui::approvals_panel::{ApprovalsPanel, preset_label};
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
 use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
 use crate::ui::i18n::{self, t, tf};
@@ -78,7 +78,7 @@ use crate::ui::transcript::tool_group::{
     disclosure_at, disclosure_rows, group_id, project_fullscreen_group, project_group,
     render_group,
 };
-use crate::ui::upgrade_dialog::UpgradeDialog;
+use crate::ui::upgrade_dialog::{Blocked, UpgradeDialog};
 use crate::usage::format_tokens;
 use crate::wire::Configuration;
 
@@ -149,15 +149,6 @@ enum Jump {
 
 /// The card id of fullscreen's load-more row: no line or delegation id.
 const LOAD_MORE: &str = "\u{1}load-more";
-
-/// The preset as the status line names it.
-fn permission_label(preset: dim_agent_types::PermissionPreset) -> &'static str {
-    match preset {
-        dim_agent_types::PermissionPreset::ReadOnly => "Read only",
-        dim_agent_types::PermissionPreset::WorkspaceWrite => "Workspace write",
-        dim_agent_types::PermissionPreset::FullAccess => "Full access",
-    }
-}
 
 fn apply_jump(full: &mut FullScreen, app: &App, jump: Jump) {
     match jump {
@@ -310,7 +301,11 @@ fn run_terminal(
     );
     app.fullscreen = full.is_some();
     app.initial = surroundings.initial;
-    app.awaiting_window = surroundings.resume;
+    app.awaiting_window = surroundings.resume.is_some();
+    if surroundings.resume.is_some() {
+        app.begin_switch(SwitchKind::Resumed);
+    }
+    app.startup_session = surroundings.resume;
     app.terminal_clipboard =
         terminal.clipboard_protocol() && crate::clipboard::terminal::native_unreachable();
     app.host.send(Command::LoginStatus(DIM_OAUTH_ID.into()));
@@ -515,13 +510,8 @@ fn run_terminal(
             (true, Some(at)) if !terminal.writing() => {
                 FRAME_INTERVAL.saturating_sub(now.duration_since(at))
             }
-            _ if app.running()
-                || terminal.writing()
-                || app.failure.is_none() && app.awaiting_window =>
-            {
-                FRAME_INTERVAL
-            }
-            _ => SESSION_POLL,
+            _ if terminal.writing() => FRAME_INTERVAL,
+            _ => app.poll_interval(),
         };
         let wait = full
             .as_ref()
@@ -1039,8 +1029,13 @@ struct ModelLabel {
 
 impl ModelLabel {
     fn new(configuration: &Configuration) -> Self {
+        let mut model = format!("{} / {}", configuration.provider_id, configuration.model_id);
+        if configuration.provider_id == crate::login::LEGACY_CODEX_ID {
+            model.push_str(" · ");
+            model.push_str(t("Legacy"));
+        }
         Self {
-            model: format!("{} / {}", configuration.provider_id, configuration.model_id),
+            model,
             effort: configuration
                 .model_preferences
                 .as_ref()
@@ -1086,6 +1081,53 @@ struct DisplayedExcerpt {
     text: String,
     next: String,
     at: Instant,
+}
+
+/// The Session switches this interface started whose outcome has not arrived.
+/// An ending update clears only the switch it belongs to, so two switches that
+/// overlap keep `Update now` blocked until the last one ends.
+#[derive(Debug, Default)]
+struct PendingSwitches {
+    resumes: usize,
+    forks: usize,
+    new_sessions: usize,
+    deletes: Vec<String>,
+}
+
+impl PendingSwitches {
+    fn begin(&mut self, kind: SwitchKind) {
+        match kind {
+            SwitchKind::Resumed => self.resumes += 1,
+            SwitchKind::Forked => self.forks += 1,
+            SwitchKind::New => self.new_sessions += 1,
+        }
+    }
+
+    fn end(&mut self, kind: SwitchKind) {
+        match kind {
+            SwitchKind::Resumed => self.resumes = self.resumes.saturating_sub(1),
+            SwitchKind::Forked => self.forks = self.forks.saturating_sub(1),
+            SwitchKind::New => self.new_sessions = self.new_sessions.saturating_sub(1),
+        }
+    }
+
+    fn begin_delete(&mut self, session_id: &str) {
+        self.deletes.push(session_id.to_owned());
+    }
+
+    fn end_delete(&mut self, session_id: &str) {
+        if let Some(index) = self.deletes.iter().position(|id| id == session_id) {
+            self.deletes.remove(index);
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.resumes > 0 || self.forks > 0 || self.new_sessions > 0 || !self.deletes.is_empty()
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 struct App {
@@ -1191,7 +1233,7 @@ struct App {
     /// A submitted first message no Session has taken yet: a refusal puts
     /// it back into the draft.
     unsent: Option<Initial>,
-    permission_policy: dim_agent_types::PermissionPolicy,
+    permission_policy: Option<dim_agent_types::PermissionPolicy>,
     /// The main branch's context use.
     context: Option<ContextReading>,
     /// The first attempt tag of the next `/login` panel, so a closed panel's
@@ -1214,8 +1256,20 @@ struct App {
     /// The user message a `/timeline` jump or a loaded page lands on, once
     /// drawn: `(row id, pick it)`.
     landing: Option<(String, bool)>,
+    /// The Session the invocation asked to resume, until the interface shows
+    /// it: the invocation's first message names that Session, while no key
+    /// typed before the attachment does.
+    startup_session: Option<String>,
     /// A session was just switched; the next snapshot decides the window.
     awaiting_window: bool,
+    /// A Session switch the user asked for whose outcome has not arrived
+    /// yet: a resume, a fork, a delete of the shown Session, or `/new`. The
+    /// view still shows the old Session, so what it reports says nothing
+    /// about where the interface is about to be.
+    switch_pending: bool,
+    /// The switches behind `switch_pending`, one entry per request, so an
+    /// ending update cannot release a switch it does not belong to.
+    switches: PendingSwitches,
     /// What to write once the switched-to history is out.
     pending_boundary: Option<SwitchKind>,
     /// The line the transcript switched to, until its boundary row is out.
@@ -1503,9 +1557,18 @@ enum ClipboardRead {
 /// A Ctrl+Enter that has withdrawn the queue and asked for a stop. At most one
 /// is in flight: its reply decides for the gesture the user last meant.
 struct SendNow {
+    /// The line the gesture started on: its stop and the draft it settles
+    /// belong to that line, not to the centre a queued move may install.
+    line: String,
+    /// The Session the gesture started in: a handoff it could not see keeps
+    /// the draft out of the Session that replaced it.
+    session: Origin,
     /// Esc called off the submit. The stop still settles, and its reply
     /// releases the gesture without submitting anything.
     submit_cancelled: bool,
+    /// A Session switch cleared the composer before the stop settled, so the
+    /// reply must not claim the draft was kept.
+    draft_lost: bool,
     /// Where the next recalled message goes: past the ones already recalled,
     /// so they keep queue order ahead of the draft that was typed.
     at: usize,
@@ -1628,10 +1691,10 @@ impl App {
             initial: None,
             unsent: None,
             send_now: None,
-            permission_policy: dim_agent_types::PermissionPolicy {
+            permission_policy: Some(dim_agent_types::PermissionPolicy {
                 preset: dim_agent_types::PermissionPreset::WorkspaceWrite,
                 ..Default::default()
-            },
+            }),
             context: None,
             login_attempts: 0,
             theme_context: None,
@@ -1641,7 +1704,10 @@ impl App {
             load_more: false,
             reveal_pending: false,
             landing: None,
+            startup_session: None,
             awaiting_window: false,
+            switch_pending: false,
+            switches: PendingSwitches::default(),
             pending_boundary: None,
             pending_line: None,
             window_info: (0, 0),
@@ -1817,6 +1883,16 @@ impl App {
         self.failure.is_none() && self.snapshot.as_ref().is_some_and(|s| s.running)
     }
 
+    /// The wait before input is polled again when no frame is due: frame rate
+    /// while a turn runs or a shown window still loads, else the idle poll.
+    fn poll_interval(&self) -> Duration {
+        if self.running() || (self.failure.is_none() && self.awaiting_window) {
+            FRAME_INTERVAL
+        } else {
+            SESSION_POLL
+        }
+    }
+
     /// Refuses to start a clipboard or image read while a send-now is settling,
     /// with the notice that says why. A read started after the stop was asked
     /// for cannot be ordered against the stop's reply, so the message a settled
@@ -1986,9 +2062,52 @@ impl App {
     /// Submits the draft a settled stop made ready, as a new message: the run
     /// is idle now, so the submit starts its own turn and takes whatever
     /// withdrawn messages joined the draft in the meantime.
-    fn submit_send_now(&mut self) {
+    fn submit_send_now(&mut self, line: String, session: Origin) {
         let outcome = self.composer.submit();
-        self.dispatch_composer(outcome, SubmitMode::Queue);
+        self.dispatch_composer(outcome, SubmitMode::Queue, line, session);
+    }
+
+    /// The origin a key's command belongs to: the Session shown, or Home.
+    /// `--resume` is not a key's origin: while the first attachment is still
+    /// in flight the interface shows Home, and a key typed there is Home's,
+    /// so no attachment can turn it into a command on the Session it brings
+    /// in (design §14).
+    fn target_session(&self) -> Origin {
+        if self.session_id.is_empty() {
+            Origin::Home
+        } else {
+            Origin::Session(self.session_id.clone())
+        }
+    }
+
+    /// A permission change and the Session and default line the gesture saw:
+    /// a move or handoff before it runs cancels it instead of changing the
+    /// policy of the new centre (design §14).
+    fn permission_change(&self, change: crate::permission::PresetSelection) -> Command {
+        Command::SetPermission {
+            change,
+            session: self.target_session(),
+            line: self.default_line(),
+        }
+    }
+
+    /// The centre as this interface last saw it: the line a key's command
+    /// belongs to. Empty before the first Snapshot, when a command can only
+    /// be the invocation's first message (design §14).
+    fn target_line(&self) -> String {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.focus.clone())
+            .unwrap_or_default()
+    }
+
+    /// The Session's default branch as this interface last saw it, the line
+    /// `/usage` reports (design §14).
+    fn default_line(&self) -> String {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.default_branch_id.clone())
+            .unwrap_or_default()
     }
 
     /// Ctrl+Enter: withdraws every held message into the draft, stops the run
@@ -2004,11 +2123,17 @@ impl App {
             return;
         }
         self.send_now = Some(SendNow {
+            line: self.target_line(),
+            session: self.target_session(),
             submit_cancelled: false,
+            draft_lost: false,
             at: 0,
         });
         self.recall_all_queued();
-        self.host.send(Command::SubmitNow);
+        self.host.send(Command::SubmitNow {
+            line: self.target_line(),
+            session: self.target_session(),
+        });
     }
 
     fn withdraw(&mut self, id: String) {
@@ -2030,6 +2155,19 @@ impl App {
         });
     }
 
+    /// Shows that the centre's policy is not known to this interface: the
+    /// status line, Settings and the Permissions panel stop naming the
+    /// outgoing preset (design §14).
+    fn show_permission_unknown(&mut self) {
+        if let Some(Prompt::Approvals(panel)) = &mut self.prompt {
+            panel.set_policy(None);
+        }
+        self.permission_policy = None;
+        if let Some(Prompt::Settings(panel)) = &self.prompt {
+            self.open_settings(panel.selected());
+        }
+    }
+
     fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some((text.into(), Instant::now() + NOTICE_TTL));
     }
@@ -2038,7 +2176,9 @@ impl App {
         self.exit_armed_until = Some(Instant::now() + EXIT_ARM);
     }
 
-    /// Why leaving now would cut something off, if it would.
+    /// Why leaving now would cut something off, if it would. The daemon's
+    /// own report for each line decides whether it runs; the transcript's
+    /// running flag follows recorded turns and is not this gate's source.
     fn busy_reason(&self) -> Option<ExitReason> {
         let snapshot = self.snapshot.as_ref()?;
         if !snapshot.questions.is_empty() {
@@ -2047,13 +2187,56 @@ impl App {
         if !snapshot.approvals.is_empty() {
             return Some(ExitReason::PermissionPending);
         }
-        let working = snapshot.main_running
-            || snapshot.running
-            || snapshot
-                .lines
-                .iter()
-                .any(|line| line.state == LineState::Working);
-        working.then_some(ExitReason::AgentRunning)
+        snapshot
+            .lines
+            .iter()
+            .any(|line| line.running == Some(true))
+            .then_some(ExitReason::AgentRunning)
+    }
+
+    /// Why `Update now` cannot leave yet, if it cannot: work in the shown
+    /// Session, a live line whose current state the daemon has not reported
+    /// yet, or a Session switch the user asked for whose outcome is still in
+    /// flight. A line that has ended, or that the tree never built, is
+    /// settled without a report. Home has no Session state to wait for.
+    fn update_blocked(&self) -> Option<Blocked> {
+        if self.shell.is_some() || self.busy_reason().is_some() {
+            return Some(Blocked::Busy);
+        }
+        if self.switch_pending {
+            return Some(Blocked::Switch);
+        }
+        let waiting = !self.session_id.is_empty()
+            && self.snapshot.as_ref().is_none_or(|snapshot| {
+                snapshot.lines.is_empty()
+                    || snapshot.lines.iter().any(|line| {
+                        matches!(
+                            line.state,
+                            LineState::Main | LineState::Waiting | LineState::Working
+                        ) && line.running.is_none()
+                    })
+            });
+        waiting.then_some(Blocked::Session)
+    }
+
+    fn begin_switch(&mut self, kind: SwitchKind) {
+        self.switches.begin(kind);
+        self.switch_pending = true;
+    }
+
+    fn begin_delete(&mut self, session_id: &str) {
+        self.switches.begin_delete(session_id);
+        self.switch_pending = true;
+    }
+
+    fn end_switch(&mut self, kind: SwitchKind) {
+        self.switches.end(kind);
+        self.switch_pending = self.switches.any();
+    }
+
+    fn end_delete(&mut self, session_id: &str) {
+        self.switches.end_delete(session_id);
+        self.switch_pending = self.switches.any();
     }
 
     /// Opens the prompt for the first pending approval or question, and
@@ -2348,13 +2531,21 @@ impl App {
                     }
                     return;
                 }
-                // The stop failed, so the combined draft stays in the
-                // composer with the reason: nothing typed is lost.
+                // A stop that failed for the Session still shown leaves the
+                // combined draft in the composer with the reason: nothing
+                // typed is lost. A switch already cleared it, so that notice
+                // does not claim the draft was kept.
                 if let Some(error) = error {
-                    self.notices.push(tf(
-                        "Send now failed: {error}; the draft was kept",
-                        &[("error", &crate::sanitize::safe_line(&error))],
-                    ));
+                    let error = crate::sanitize::safe_line(&error);
+                    let text = if pending.draft_lost {
+                        tf("Send now failed: {error}", &[("error", &error)])
+                    } else {
+                        tf(
+                            "Send now failed: {error}; the draft was kept",
+                            &[("error", &error)],
+                        )
+                    };
+                    self.notices.push(text);
                     return;
                 }
                 // No read can start while the gesture is pending, so nothing
@@ -2369,7 +2560,7 @@ impl App {
                     self.set_notice(t("Send now is waiting for the insertion before sending"));
                     return;
                 }
-                self.submit_send_now();
+                self.submit_send_now(pending.line, pending.session);
             }
             Update::Exported { format, path } => self.notices.push(tf(
                 "Exported {format}: {path}",
@@ -2381,12 +2572,28 @@ impl App {
             Update::Ready(configuration) => {
                 self.label = Some(ModelLabel::new(&configuration));
             }
+            Update::NoModel => self.label = None,
             Update::ModelFeatures {
                 images,
                 service_tiers,
             } => {
                 self.composer.set_accepts_images(images);
                 self.service_tiers = service_tiers;
+            }
+            Update::LineRefusal {
+                projection_id,
+                branch_id,
+                text,
+            } => {
+                let shown = match &mut self.prompt {
+                    Some(Prompt::Lines(panel)) => {
+                        panel.refuse(projection_id, &branch_id, text.clone())
+                    }
+                    _ => false,
+                };
+                if !shown {
+                    self.set_notice(text);
+                }
             }
             Update::Snapshot(snapshot) => {
                 let was_running = self.running();
@@ -2396,6 +2603,13 @@ impl App {
                     .is_some_and(|shown| shown.focus != snapshot.focus);
                 if switched {
                     self.switch_line(snapshot.focus.clone());
+                } else if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|shown| shown.window_error.is_some())
+                    && snapshot.window_error.is_none()
+                {
+                    self.rearm_window();
                 }
                 if let Some(Prompt::Tasks(panel)) = &mut self.prompt {
                     if panel.projection_id == snapshot.projection_id {
@@ -2592,15 +2806,19 @@ impl App {
             Update::Permissions(policy) => match policy {
                 Ok(policy) => {
                     if let Some(Prompt::Approvals(panel)) = &mut self.prompt {
-                        panel.set_policy(&policy);
+                        panel.set_policy(Some(&policy));
                     }
-                    self.permission_policy = policy;
+                    self.permission_policy = Some(policy);
                     if let Some(Prompt::Settings(panel)) = &self.prompt {
                         self.open_settings(panel.selected());
                     }
                 }
-                Err(error) => self.notices.push(error),
+                Err(error) => {
+                    self.notices.push(error);
+                    self.show_permission_unknown();
+                }
             },
+            Update::PermissionsUnknown => self.show_permission_unknown(),
             Update::PermissionSelected(preset) => {
                 let label = format!("Permission: {}", crate::permission::name(preset));
                 let message = crate::ui::config::write(
@@ -2888,6 +3106,9 @@ impl App {
                     name,
                     outcome,
                 } = reply;
+                // A shown Session whose removal failed stays attached, so
+                // this reply is the delete's only ending.
+                self.end_delete(&session_id);
                 let (text, tone) = match &outcome {
                     DeleteOutcome::Deleted => {
                         (tf("Deleted {name}.", &[("name", &name)]), Tone::Muted)
@@ -2914,6 +3135,14 @@ impl App {
                 }
                 self.reports.push(Block::Status { text, tone });
             }
+            Update::ForkFailed => self.end_switch(SwitchKind::Forked),
+            Update::NewSessionDone => self.end_switch(SwitchKind::New),
+            Update::ChatGptProfiles(result) => {
+                if let Some(Prompt::Providers(panel)) = &mut self.prompt {
+                    let effect = panel.set_chatgpt_profiles(result);
+                    self.apply_effect(effect);
+                }
+            }
             Update::Oauth { attempt, event } => {
                 let effect = match &mut self.prompt {
                     Some(Prompt::Providers(panel)) => panel.oauth_event(attempt, event),
@@ -2928,12 +3157,14 @@ impl App {
                     panel.set_providers(providers);
                 }
             }
-            Update::Models(models) => {
-                if let Err(error) = &models {
-                    self.set_notice(error.clone());
-                }
+            Update::Models {
+                query,
+                after,
+                result,
+            } => {
                 if let Some(Prompt::Models(panel)) = &mut self.prompt {
-                    panel.set_models(models);
+                    let effect = panel.page(&query, after, result);
+                    self.apply_effect(effect);
                 }
             }
             Update::EffortChoices(result) => {
@@ -3130,6 +3361,8 @@ impl App {
                 if let Some(Prompt::Report(report)) = &mut self.prompt {
                     report.disconnected(&message);
                 }
+                self.switch_pending = false;
+                self.switches.clear();
                 self.restore_unsent();
                 self.failure = Some(message);
                 self.run_started = None;
@@ -3144,8 +3377,13 @@ impl App {
             }
             Update::StartupFailed { message, resumable } => {
                 self.prompt = None;
+                self.switch_pending = false;
+                self.switches.clear();
                 self.failure = Some(message);
                 self.failure_resumable = resumable;
+                // The resumed Session does not exist: a command typed now is
+                // Home's, not the invocation's resume.
+                self.startup_session = None;
                 // A first message the invocation supplied has no Session
                 // to take it: keep it in the draft and stay, rather than
                 // exiting nonzero with nothing sent.
@@ -3432,9 +3670,8 @@ impl App {
                     && (key.mods == Modifiers::SHIFT
                         || (key.code == KeyCode::BackTab && key.mods == Modifiers::NONE)) =>
             {
-                self.host.send(Command::SetPermission(
-                    crate::permission::PresetSelection::Next,
-                ));
+                self.host
+                    .send(self.permission_change(crate::permission::PresetSelection::Next));
                 return Outcome::Continue;
             }
             KeyCode::Char('o' | 'p') if ctrl && !self.composer.palette_open() => {
@@ -3524,7 +3761,7 @@ impl App {
         match self.composer.handle_key(key) {
             ComposerOutcome::Command { name, args } => return self.run_command(&name, &args),
             outcome => {
-                self.dispatch_composer(outcome, mode);
+                self.dispatch_composer(outcome, mode, self.target_line(), self.target_session());
             }
         }
         if self.suggestion.is_some() && !self.composer.is_empty() {
@@ -3559,7 +3796,13 @@ impl App {
 
     /// What a composer outcome does, the same for Enter and for the
     /// invocation's first message.
-    fn dispatch_composer(&mut self, outcome: ComposerOutcome, mode: SubmitMode) -> Outcome {
+    fn dispatch_composer(
+        &mut self,
+        outcome: ComposerOutcome,
+        mode: SubmitMode,
+        line: String,
+        session: Origin,
+    ) -> Outcome {
         // Every send key is refused before the composer acts (see
         // `settling_key_refused`), so an outcome that already cleared the draft
         // cannot arrive here while a gesture settles. If one ever does, the
@@ -3600,7 +3843,7 @@ impl App {
                 if mode == SubmitMode::Queue && self.running() {
                     self.set_notice(t("Message queued"));
                 }
-                self.host.submit(text, mode);
+                self.host.submit(text, mode, line, session);
             }
             ComposerOutcome::SubmitDraft { text, parts } => {
                 let text = text.trim().to_owned();
@@ -3610,7 +3853,12 @@ impl App {
                 if mode == SubmitMode::Queue && self.running() {
                     self.set_notice(t("Message queued"));
                 }
-                self.host.send(Command::SubmitDraft(parts, mode));
+                self.host.send(Command::SubmitDraft {
+                    parts,
+                    mode,
+                    line,
+                    session,
+                });
             }
             ComposerOutcome::Shell { command, shell } => {
                 let entry = format!("{}{command}", shell.prefix());
@@ -3622,6 +3870,8 @@ impl App {
                     run_id: running.run_id.clone(),
                     command: running.command.clone(),
                     private: running.private,
+                    line,
+                    session,
                 });
                 self.shell = Some(running);
             }
@@ -3658,7 +3908,20 @@ impl App {
         if submitted && self.session_id.is_empty() {
             self.unsent = Some(initial);
         }
-        self.dispatch_composer(outcome, SubmitMode::Queue)
+        // The invocation's first message belongs to the Session it asked to
+        // resume, not to the Home screen the first frame may still show. Its
+        // line is unknown here: the first frame may carry the line the first
+        // attachment invalidated, while the worker resolves an empty line to
+        // the line it shows when the message runs (design §14).
+        let session = if self.session_id.is_empty() {
+            match &self.startup_session {
+                Some(session) => Origin::Session(session.clone()),
+                None => Origin::Home,
+            }
+        } else {
+            Origin::Session(self.session_id.clone())
+        };
+        self.dispatch_composer(outcome, SubmitMode::Queue, String::new(), session)
     }
 
     /// Puts a first message no Session took back into the draft, unless the
@@ -3904,7 +4167,9 @@ impl App {
                 stop_turn: self.running(),
             });
         } else {
-            self.host.stop();
+            let line = self.target_line();
+            let session = self.target_session();
+            self.host.stop(line, session);
         }
         self.set_notice(t("Stopping"));
     }
@@ -4031,6 +4296,7 @@ impl App {
             projection_id: snapshot.projection_id,
             at,
         });
+        self.begin_switch(SwitchKind::Forked);
         self.fork_draft = Some(text);
     }
 
@@ -4051,10 +4317,11 @@ impl App {
                     self.host.send(Command::CloseSessions);
                 }
                 if matches!(self.prompt, Some(Prompt::Management(_)))
-                    && let Some(panel) = self.models_return.take()
+                    && let Some(mut panel) = self.models_return.take()
                 {
+                    let effect = panel.refresh();
                     self.prompt = Some(Prompt::Models(Box::new(panel)));
-                    self.host.send(Command::ListModels);
+                    self.apply_effect(effect);
                     return Outcome::Continue;
                 }
                 self.prompt = match self.prompt.take() {
@@ -4069,7 +4336,7 @@ impl App {
             }
             Effect::Exit => return Outcome::Exit(130),
             Effect::UpgradeNow => {
-                if self.shell.is_some() || self.busy_reason().is_some() {
+                if self.update_blocked().is_some() {
                     if let Some(Prompt::Upgrade(dialog)) = &mut self.prompt {
                         dialog.block();
                     }
@@ -4166,13 +4433,28 @@ impl App {
                     branch_id,
                 });
             }
+            Effect::SetDefaultLine {
+                session_id,
+                projection_id,
+                branch_id,
+            } => {
+                self.host.send(Command::SetDefaultLine {
+                    session_id,
+                    projection_id,
+                    branch_id,
+                });
+            }
             Effect::Resume(id) => {
+                self.begin_switch(SwitchKind::Resumed);
                 self.host.send(Command::CloseSessions);
                 self.prompt = None;
                 self.composer.clear();
                 self.host.send(Command::Resume(id));
             }
             Effect::DeleteSession { session_id, name } => {
+                if session_id == self.session_id {
+                    self.begin_delete(&session_id);
+                }
                 self.host.send(Command::DeleteSession { session_id, name });
             }
             Effect::Refresh => match &mut self.prompt {
@@ -4186,7 +4468,7 @@ impl App {
             },
             Effect::OpenPermissions => {
                 self.open_prompt(Prompt::Approvals(ApprovalsPanel::new(
-                    &self.permission_policy,
+                    self.permission_policy.as_ref(),
                 )));
             }
             Effect::OpenArea { area, note } => {
@@ -4344,9 +4626,9 @@ impl App {
             }
             Effect::SetPermission(preset) => {
                 self.prompt = None;
-                self.host.send(Command::SetPermission(
-                    crate::permission::PresetSelection::Preset(preset),
-                ));
+                self.host.send(
+                    self.permission_change(crate::permission::PresetSelection::Preset(preset)),
+                );
             }
             Effect::Provider(action) => self.host.send(Command::Provider(action)),
             Effect::Plugin(action) => self.host.send(Command::Plugin(action)),
@@ -4388,8 +4670,15 @@ impl App {
                 if provider_id == DIM_OAUTH_ID {
                     self.signed_in = true;
                 }
-                self.prompt = Some(Prompt::Models(Box::new(ModelsPanel::new())));
-                self.host.send(Command::ListModels);
+                let mut models = ModelsPanel::new();
+                if provider_id == crate::login::CHATGPT_PROVIDER_ID {
+                    let effect = models.paste("OpenAI ChatGPT");
+                    self.prompt = Some(Prompt::Models(Box::new(models)));
+                    self.apply_effect(effect);
+                } else {
+                    self.prompt = Some(Prompt::Models(Box::new(models)));
+                    self.host.send(Command::ListModels);
+                }
             }
             Effect::OpenModels => {
                 self.prompt = Some(Prompt::Models(Box::new(ModelsPanel::new())));
@@ -4397,6 +4686,14 @@ impl App {
             }
             Effect::Logout(target) => self.host.send(Command::Logout(target)),
             Effect::LoginStatus(provider_id) => self.host.send(Command::LoginStatus(provider_id)),
+            Effect::ChatGptProfiles => self.host.send(Command::ChatGptProfiles),
+            Effect::SelectChatGptProfile {
+                profile_id,
+                attempt,
+            } => self.host.send(Command::SelectChatGptProfile {
+                profile_id,
+                attempt,
+            }),
             Effect::LoginUsage(provider_id) => self.host.send(Command::LoginUsage(provider_id)),
             Effect::OpenUrl(url) => {
                 let opened = crate::browser::open(&url);
@@ -4411,14 +4708,14 @@ impl App {
             }
             Effect::ClearModelPreferences {
                 query,
-                after,
+                batches,
                 provider_id,
                 model_id,
                 expected_version,
             } => {
                 self.host.send(Command::ClearModelPreferences {
                     query,
-                    after,
+                    batches,
                     provider_id,
                     model_id,
                     expected_version,
@@ -4445,8 +4742,11 @@ impl App {
                     .as_ref()
                     .is_some_and(|label| label.model == model)
                 {
-                    self.host
-                        .send(Command::Configure(format!("/effort {value}")));
+                    self.host.send(Command::Configure {
+                        text: format!("/effort {value}"),
+                        line: self.target_line(),
+                        session: self.target_session(),
+                    });
                 } else {
                     self.set_notice(t(
                         "Model changed; reopen /effort to choose its reasoning effort.",
@@ -4476,7 +4776,7 @@ impl App {
         if self.prompt.is_none()
             && let Some(mut panel) = self.permissions_return.take()
         {
-            panel.set_policy(&self.permission_policy);
+            panel.set_policy(self.permission_policy.as_ref());
             self.open_prompt(Prompt::Approvals(panel));
         }
         if self.prompt.is_none()
@@ -4905,7 +5205,10 @@ impl App {
                 .as_ref()
                 .map(|setting| setting.document.enabled),
             prompts: self.prompt_origins(),
-            permission: crate::permission::name(self.permission_policy.preset).to_owned(),
+            permission: self.permission_policy.as_ref().map_or_else(
+                || "Unavailable".to_owned(),
+                |policy| crate::permission::name(policy.preset).to_owned(),
+            ),
         };
         self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
     }
@@ -4937,7 +5240,7 @@ impl App {
                 self.settings_return = None;
             }
             Setting::Permission => {
-                let panel = ApprovalsPanel::new(&self.permission_policy);
+                let panel = ApprovalsPanel::new(self.permission_policy.as_ref());
                 self.open_prompt(Prompt::Approvals(panel));
             }
             Setting::Isolation => {
@@ -5446,18 +5749,27 @@ impl App {
                 Outcome::Continue
             }
             "usage" => {
-                self.host.send(Command::Usage);
+                self.host.send(Command::Usage {
+                    line: self.default_line(),
+                    session: self.target_session(),
+                });
                 Outcome::Continue
             }
             "compact" => {
-                self.host.send(Command::Compact);
+                self.host.send(Command::Compact {
+                    line: self.target_line(),
+                    session: self.target_session(),
+                });
                 Outcome::Continue
             }
             "earlier" => {
                 if self.fullscreen {
                     self.show_earlier();
                 } else {
-                    self.host.send(Command::Earlier);
+                    self.host.send(Command::Earlier {
+                        line: self.target_line(),
+                        session: self.target_session(),
+                    });
                 }
                 Outcome::Continue
             }
@@ -5493,7 +5805,16 @@ impl App {
             }
             "goal" => {
                 match crate::goal::request(args) {
-                    Some(request) => self.host.send(Command::Goal(request)),
+                    Some(request) => self.host.send(Command::Goal {
+                        request,
+                        line: self.target_line(),
+                        session: self.target_session(),
+                        draft: if args.trim().is_empty() {
+                            "/goal".to_owned()
+                        } else {
+                            format!("/goal {}", args.trim())
+                        },
+                    }),
                     None => self.reports.push(Block::Status {
                         text: crate::goal::USAGE.to_owned(),
                         tone: Tone::Muted,
@@ -5503,7 +5824,16 @@ impl App {
             }
             "loop" => {
                 match crate::loop_view::request(args) {
-                    Some(request) => self.host.send(Command::Loop(request)),
+                    Some(request) => self.host.send(Command::Loop {
+                        request,
+                        line: self.target_line(),
+                        session: self.target_session(),
+                        draft: if args.trim().is_empty() {
+                            "/loop".to_owned()
+                        } else {
+                            format!("/loop {}", args.trim())
+                        },
+                    }),
                     None => self.reports.push(Block::Status {
                         text: crate::loop_view::USAGE.to_owned(),
                         tone: Tone::Muted,
@@ -5526,8 +5856,11 @@ impl App {
                     self.open_prompt(Prompt::Effort(EffortPrompt::new()));
                 }
                 let text = format!("/{name} {args}");
-                self.host
-                    .send(Command::Configure(text.trim_end().to_owned()));
+                self.host.send(Command::Configure {
+                    text: text.trim_end().to_owned(),
+                    line: self.target_line(),
+                    session: self.target_session(),
+                });
                 Outcome::Continue
             }
             "report" => {
@@ -5558,6 +5891,9 @@ impl App {
             "exit" => Outcome::Exit(0),
             "tui" => Outcome::SwitchMode,
             "new" => {
+                // Every `/new` is one command, Home or not: the host answers
+                // each with its own `NewSessionDone`, and only that ends it.
+                self.begin_switch(SwitchKind::New);
                 self.host.send(Command::NewSession);
                 Outcome::Continue
             }
@@ -5633,7 +5969,7 @@ impl App {
                 // which opens holding where they work instead of ignoring
                 // them, and says it until the user's first key there.
                 if args.trim().is_empty() {
-                    let panel = ApprovalsPanel::new(&self.permission_policy);
+                    let panel = ApprovalsPanel::new(self.permission_policy.as_ref());
                     self.open_prompt(Prompt::Approvals(panel));
                 } else {
                     self.open_management(
@@ -6526,12 +6862,9 @@ impl App {
             Some(Prompt::Settings(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Isolation(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Exit(prompt)) => Some(prompt.render(outer, p)),
-            Some(Prompt::Upgrade(prompt)) => Some(prompt.render(
-                outer,
-                panel_rows,
-                self.shell.is_some() || self.busy_reason().is_some(),
-                p,
-            )),
+            Some(Prompt::Upgrade(prompt)) => {
+                Some(prompt.render(outer, panel_rows, self.update_blocked(), p))
+            }
             Some(Prompt::Permission(prompt)) => Some(prompt.render_sized(outer, panel_rows, p)),
             Some(Prompt::Ask(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Effort(prompt)) => Some(prompt.render(outer, panel_rows, p)),
@@ -6771,10 +7104,13 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return false;
         };
-        if !snapshot.history_complete {
+        if !snapshot.history_complete && snapshot.window_error.is_none() {
             return false;
         }
         self.awaiting_window = false;
+        if !snapshot.history_complete {
+            return true;
+        }
         let messages: Vec<usize> = snapshot
             .rows
             .iter()
@@ -7254,7 +7590,31 @@ impl App {
         }
         self.tail_groups = tail_groups;
         self.tail_thoughts = tail_thoughts;
+        if let Some(error) = snapshot.window_error.as_deref() {
+            let block = Block::Status {
+                text: format!(
+                    "{}: {}",
+                    t("Branch history failed; reopen to retry"),
+                    crate::sanitize::safe_line(error)
+                ),
+                tone: Tone::Warning,
+            };
+            let rows = render_block(&block, width, p, markdown, self.fullscreen);
+            tail.push(String::new());
+            tail.extend(rows.into_iter().map(|r| format!("{pad}{r}")));
+        }
         (commits, sources, tail)
+    }
+
+    /// Arms the shown line's window again after its first read failed. A
+    /// retry publishes the same focus as loading, so no switch announces it.
+    fn rearm_window(&mut self) {
+        self.window_floor = 0;
+        self.history_floor = 0;
+        self.load_more = false;
+        self.window_info = (0, 0);
+        self.history_request = None;
+        self.awaiting_window = true;
     }
 
     fn switch_line(&mut self, line: String) {
@@ -7311,8 +7671,16 @@ impl App {
     }
 
     fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
+        // `/new` ends when the host reports the command done, not when a Home
+        // switch happens to pass by: a delete's Home switch is not its ending.
+        if kind != SwitchKind::New {
+            self.end_switch(kind);
+        }
         self.report_error = None;
         self.release_compaction_details();
+        // The startup attachment has arrived: its Session is the centre, so
+        // later Home commands are Home's, not the invocation's resume.
+        self.startup_session = None;
         let first = self.session_id.is_empty();
         // Home's first message started this Session: nothing shown to clear.
         if first
@@ -7338,10 +7706,13 @@ impl App {
         self.thoughts.clear();
         self.commits = CommitState::default();
         self.answered.clear();
-        if !matches!(self.prompt, Some(Prompt::Report(_))) {
-            self.prompt = None;
+        match self.prompt.take() {
+            Some(Prompt::Upgrade(dialog)) => self.upgrade = Some(dialog),
+            Some(prompt @ Prompt::Report(_)) => self.prompt = Some(prompt),
+            _ => {}
         }
         self.snapshot = None;
+        self.reopen_upgrade();
         self.runs = Runs::default();
         // Another Session's tasks are its own: this interface has reported
         // none of them.
@@ -7361,6 +7732,9 @@ impl App {
             kind => Some(kind),
         };
         self.composer.clear();
+        if let Some(pending) = &mut self.send_now {
+            pending.draft_lost = true;
+        }
         self.line_draft = None;
         self.suggestion = None;
         if let Some(text) = self.fork_draft.take()
@@ -7470,7 +7844,10 @@ impl App {
         };
         match snapshot.earlier {
             Earlier::Unread => {
-                self.host.send(Command::Earlier);
+                self.host.send(Command::Earlier {
+                    line: self.target_line(),
+                    session: self.target_session(),
+                });
                 self.reveal_pending = true;
             }
             Earlier::Reading => self.reveal_pending = true,
@@ -8448,13 +8825,19 @@ impl App {
     fn status_line(&self, cols: usize) -> String {
         use dim_agent_types::PermissionPreset;
         let p = &self.palette;
-        let preset = self.permission_policy.preset;
-        let color = match preset {
-            PermissionPreset::ReadOnly => &p.permission_read,
-            PermissionPreset::WorkspaceWrite => &p.permission_write,
-            PermissionPreset::FullAccess => &p.permission_full,
+        let permission = match &self.permission_policy {
+            Some(policy) => {
+                let color = match policy.preset {
+                    PermissionPreset::ReadOnly => &p.permission_read,
+                    PermissionPreset::WorkspaceWrite => &p.permission_write,
+                    PermissionPreset::FullAccess => &p.permission_full,
+                };
+                fg(&format!("⏵⏵ {}", preset_label(policy.preset)), color)
+            }
+            // The line's policy is unknown until its own read or a fact
+            // arrives; the outgoing centre's preset is not shown for it.
+            None => fg(&format!("⏵⏵ {}", t("Permission unavailable")), &p.muted),
         };
-        let permission = fg(&format!("⏵⏵ {}", permission_label(preset)), color);
         let hint = fg(t("(shift+tab to cycle)"), &p.muted);
         let total = cols.saturating_sub(2);
         let prefix = format!("{}{permission}", " ".repeat(MARGIN));
@@ -9478,7 +9861,7 @@ mod tests {
                     drawn.key(KeyCode::Enter);
                     assert!(matches!(
                         sent.borrow().last(),
-                        Some(Command::Submit(text, _)) if text == draft
+                        Some(Command::Submit { text, .. }) if text == draft
                     ));
                 }
             }
@@ -9643,6 +10026,8 @@ mod tests {
                         parent: None,
                         purpose: String::new(),
                         state: LineState::Main,
+                        running: Some(false),
+                        branch_point: None,
                         cut: None,
                     },
                     LineView {
@@ -9650,6 +10035,8 @@ mod tests {
                         parent: Some("main".into()),
                         purpose: "parser race".into(),
                         state: LineState::Working,
+                        running: Some(true),
+                        branch_point: None,
                         cut: None,
                     },
                 ],
@@ -10163,7 +10550,9 @@ mod tests {
             assert!(!screen.contains("dima update"), "{screen}");
 
             drawn.app.snapshot = Some(ViewSnapshot {
+                session_id: "s1".into(),
                 running: true,
+                lines: vec![line_view("main", LineState::Main, Some(true))],
                 ..ViewSnapshot::default()
             });
             assert!(matches!(
@@ -10180,7 +10569,11 @@ mod tests {
                 "{screen}"
             );
 
-            drawn.app.snapshot = Some(ViewSnapshot::default());
+            drawn.app.snapshot = Some(ViewSnapshot {
+                session_id: "s1".into(),
+                lines: vec![line_view("main", LineState::Main, Some(false))],
+                ..ViewSnapshot::default()
+            });
             let screen = drawn.app.frame((80, 24)).live.join("\n");
             assert!(
                 !screen.contains("Finish or stop the current work"),
@@ -10194,6 +10587,1123 @@ mod tests {
                 Outcome::Exit(0)
             ));
             assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// `--resume` starts its update check before the Session is attached, so
+    /// the offer can arrive first; the dialog is process-wide and outlives
+    /// the switch.
+    #[test]
+    fn a_resumed_switch_keeps_the_update_offer() {
+        let offer = || crate::update::Offer {
+            current: "0.1.0-alpha.27".into(),
+            version: "0.1.0-alpha.28".into(),
+            manual: "dima update".into(),
+            direct: true,
+        };
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((80, 24), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Upgrade(offer()));
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            assert!(
+                matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))),
+                "fullscreen={fullscreen}: the switch dropped the offer"
+            );
+            let screen = drawn.app.frame((80, 24)).live.join("\n");
+            assert!(screen.contains(t("Update available")), "{screen}");
+        }
+    }
+
+    /// The snapshot `session_host` publishes at the end of a switch, before
+    /// the daemon's first `session.state` notice: the empty projection,
+    /// stamped with the Session and its `main` line.
+    fn switched_placeholder(session_id: &str) -> ViewSnapshot {
+        let mut snapshot = crate::projection::Projection::default().snapshot();
+        snapshot.lines = vec![line_view("main", LineState::Main, None)];
+        snapshot.focus = "main".into();
+        snapshot.session_id = session_id.into();
+        snapshot.task_history_loading = 1;
+        snapshot
+    }
+
+    /// A line as `session_host` lists it; `main` unless named otherwise.
+    fn line_view(id: &str, state: LineState, running: Option<bool>) -> LineView {
+        LineView {
+            id: id.into(),
+            parent: (id != "main").then(|| "main".into()),
+            purpose: String::new(),
+            state,
+            running,
+            branch_point: None,
+            cut: None,
+        }
+    }
+
+    /// A snapshot of Session `s2` showing `focus`.
+    fn session_snapshot(focus: &str, lines: Vec<LineView>) -> ViewSnapshot {
+        ViewSnapshot {
+            session_id: "s2".into(),
+            focus: focus.into(),
+            lines,
+            ..ViewSnapshot::default()
+        }
+    }
+
+    fn update_offer() -> crate::update::Offer {
+        crate::update::Offer {
+            current: "0.1.0-alpha.29".into(),
+            version: "0.1.0-alpha.30".into(),
+            manual: "dima update".into(),
+            direct: true,
+        }
+    }
+
+    fn enter(drawn: &mut Drawn) -> Outcome {
+        drawn.app.handle(InputEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            Modifiers::NONE,
+        )))
+    }
+
+    /// The switch clears the old Session's state and publishes an empty
+    /// projection before the daemon reports the new one. Neither snapshot
+    /// may read as an idle Session: `Update now` waits for the first report,
+    /// then leaves only when that report says the Session is idle.
+    #[test]
+    fn update_now_waits_for_the_switched_sessions_first_snapshot() {
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((80, 24), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left before any snapshot arrived"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(switched_placeholder("s2"))));
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left on the switch's empty projection"
+            );
+            assert!(!drawn.app.update_requested);
+            let screen = drawn.app.frame((80, 24)).live.join("\n");
+            assert!(
+                screen.contains(t("Waiting for this Session's state after the switch.")),
+                "fullscreen={fullscreen}: {screen}"
+            );
+
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                running: true,
+                ..session_snapshot("main", vec![line_view("main", LineState::Main, Some(true))])
+            })));
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while the Session was running"
+            );
+            assert!(!drawn.app.update_requested);
+            let screen = drawn.app.frame((80, 24)).live.join("\n");
+            assert!(
+                screen.contains("Finish or stop the current work"),
+                "fullscreen={fullscreen}: {screen}"
+            );
+
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![line_view("main", LineState::Main, Some(false))],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: an idle Session did not let Update now leave"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// A recorded turn that already ended reaches the transcript as a
+    /// history reply and clears its running flag. The line's activity is the
+    /// daemon's own report, so that reply may not release a line the daemon
+    /// reported busy; only its next idle report does.
+    #[test]
+    fn update_now_keeps_the_live_report_over_a_history_reply() {
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((80, 24), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            let main = |running: Option<bool>| {
+                session_snapshot("main", vec![line_view("main", LineState::Main, running)])
+            };
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                running: true,
+                ..main(Some(true))
+            })));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: the daemon reported main running"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(main(Some(true)))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: a history reply released the busy line"
+            );
+            assert!(!drawn.app.update_requested);
+            let screen = drawn.app.frame((80, 24)).live.join("\n");
+            assert!(
+                screen.contains("Finish or stop the current work"),
+                "fullscreen={fullscreen}: {screen}"
+            );
+
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(main(Some(false)))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the live idle report did not release Update now"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// A report for the shown line alone does not make the Session idle: a
+    /// child line's delayed running report keeps `Update now` waiting, and
+    /// the interface leaves only after every live line reported idle.
+    #[test]
+    fn update_now_waits_for_every_live_line() {
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((80, 24), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![
+                    line_view("main", LineState::Main, Some(false)),
+                    line_view("b-1", LineState::Waiting, None),
+                ],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while a live line had not reported"
+            );
+            assert!(!drawn.app.update_requested);
+            let screen = drawn.app.frame((80, 24)).live.join("\n");
+            assert!(
+                screen.contains(t("Waiting for this Session's state after the switch.")),
+                "fullscreen={fullscreen}: {screen}"
+            );
+
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![
+                    line_view("main", LineState::Main, Some(false)),
+                    line_view("b-1", LineState::Working, Some(true)),
+                ],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while the child line was running"
+            );
+            assert!(!drawn.app.update_requested);
+            let screen = drawn.app.frame((80, 24)).live.join("\n");
+            assert!(
+                screen.contains("Finish or stop the current work"),
+                "fullscreen={fullscreen}: {screen}"
+            );
+
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![
+                    line_view("main", LineState::Main, Some(false)),
+                    line_view("b-1", LineState::Waiting, Some(false)),
+                ],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: every live line was idle and Update now stayed"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// `--resume` starts the update check before the Session is attached, so
+    /// the offer can arrive while the startup resume is unresolved. Real Home
+    /// still leaves at once; the pending resume may not.
+    #[test]
+    fn update_now_waits_for_a_pending_startup_resume() {
+        for fullscreen in [false, true] {
+            let mut home = Drawn::new((80, 24), None, true);
+            home.app.fullscreen = fullscreen;
+            home.app.apply(Update::Upgrade(update_offer()));
+            assert!(
+                matches!(enter(&mut home), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: Home no longer leaves at once"
+            );
+            assert!(home.app.update_requested);
+
+            let mut drawn = Drawn::new((80, 24), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.switch_pending = true;
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left before the resume resolved"
+            );
+            assert!(!drawn.app.update_requested);
+            let screen = drawn.app.frame((80, 24)).live.join("\n");
+            assert!(
+                screen.contains(t("Waiting for the Session switch to finish.")),
+                "fullscreen={fullscreen}: {screen}"
+            );
+
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![line_view("main", LineState::Main, Some(false))],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the resolved resume did not let Update now leave"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// A line that ended before this client attached never reports a running
+    /// state. A view on it is settled, so Update now leaves while the other
+    /// lines are idle.
+    #[test]
+    fn update_now_leaves_a_settled_ended_line() {
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((80, 24), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "b-gone",
+                vec![
+                    line_view("main", LineState::Main, Some(false)),
+                    line_view("b-gone", LineState::Ended, None),
+                ],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the ended line held Update now"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// Waiting for a state that never arrives refuses `Update now` alone: Skip
+    /// and Close still dismiss the dialog, so the user is not trapped.
+    #[test]
+    fn update_now_waits_without_trapping_the_user() {
+        let offer = || crate::update::Offer {
+            current: "0.1.0-alpha.29".into(),
+            version: "0.1.0-alpha.30".into(),
+            manual: "dima update".into(),
+            direct: true,
+        };
+        let mut drawn = Drawn::new((80, 24), None, true);
+        drawn.app.apply(Update::Upgrade(offer()));
+        drawn.app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        drawn.key(KeyCode::Tab);
+        drawn.key(KeyCode::Enter);
+        assert!(drawn.app.prompt.is_none(), "Skip closes the dialog");
+        let skipped = tf("Skipped {version}.", &[("version", &offer().version)]);
+        assert_eq!(
+            drawn.app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some(skipped.as_str())
+        );
+        assert!(!drawn.app.update_requested);
+
+        drawn.app.apply(Update::Upgrade(offer()));
+        assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+        drawn.key(KeyCode::Esc);
+        assert!(drawn.app.prompt.is_none(), "Esc closes the dialog");
+        assert!(!drawn.app.update_requested);
+    }
+
+    /// The offer waits while another panel has the screen. The panel's own
+    /// switch then clears the old Session's state, and a question stashed in
+    /// it must go with it: only the dialog comes back.
+    #[test]
+    fn a_switch_does_not_restore_the_previous_sessions_stashed_question() {
+        let mut drawn = Drawn::new((100, 30), None, true);
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            questions: vec![questions()],
+            ..ViewSnapshot::default()
+        })));
+        assert!(matches!(drawn.app.prompt, Some(Prompt::Ask(_))));
+        drawn.app.run_command("export", "");
+        assert!(matches!(drawn.app.prompt, Some(Prompt::Export(_))));
+        drawn.app.apply(Update::Upgrade(crate::update::Offer {
+            current: "0.1.0-alpha.27".into(),
+            version: "0.1.0-alpha.28".into(),
+            manual: "dima update".into(),
+            direct: true,
+        }));
+        drawn.app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        assert!(
+            drawn.app.question_stash.is_none(),
+            "the old Session's stashed question must not survive the switch"
+        );
+        assert!(
+            matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))),
+            "the switch must put the update dialog back"
+        );
+        let screen = drawn.app.frame((100, 30)).live.join("\n");
+        assert!(screen.contains(t("Update available")), "{screen}");
+        assert!(!screen.contains("Which tall?"), "{screen}");
+    }
+
+    /// The orders that already worked keep working: the switch first, and
+    /// Home's first Session, whose switch returns before clearing prompts.
+    #[test]
+    fn the_update_offer_survives_a_switch_in_the_other_orders() {
+        let offer = || crate::update::Offer {
+            current: "0.1.0-alpha.27".into(),
+            version: "0.1.0-alpha.28".into(),
+            manual: "dima update".into(),
+            direct: true,
+        };
+        let mut switched_first = Drawn::new((80, 24), None, true);
+        switched_first.app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        switched_first.app.apply(Update::Upgrade(offer()));
+        assert!(matches!(
+            switched_first.app.prompt,
+            Some(Prompt::Upgrade(_))
+        ));
+        let screen = switched_first.app.frame((80, 24)).live.join("\n");
+        assert!(screen.contains(t("Update available")), "{screen}");
+
+        let mut first_from_home = Drawn::new((80, 24), None, true);
+        first_from_home.app.apply(Update::Upgrade(offer()));
+        first_from_home.app.apply(Update::Switched {
+            session_id: "s1".into(),
+            kind: SwitchKind::New,
+            cwd: None,
+        });
+        assert!(matches!(
+            first_from_home.app.prompt,
+            Some(Prompt::Upgrade(_))
+        ));
+        let screen = first_from_home.app.frame((80, 24)).live.join("\n");
+        assert!(screen.contains(t("Update available")), "{screen}");
+    }
+
+    /// Serves the Session list, lets the offer arrive behind it, and picks
+    /// the one row: the list closes and the dialog comes back while the
+    /// picked Session is still loading.
+    fn pick_a_session_from_the_list(
+        drawn: &mut Drawn,
+        sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>,
+    ) {
+        use crate::model::session::SessionItem;
+
+        typed(&mut drawn.app, "/resume");
+        drawn.key(KeyCode::Enter);
+        let id = sent
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::ListSessions { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("opening the list asks for its first page");
+        drawn.app.apply(Update::Sessions {
+            id,
+            paged: true,
+            result: Ok((
+                vec![SessionItem {
+                    id: "s2".into(),
+                    title: Some("old session".into()),
+                    preview: None,
+                    cwd: "/work".into(),
+                    updated_at: u64::MAX,
+                    model: "p/m".into(),
+                    origin: None,
+                    closed: false,
+                }],
+                None,
+            )),
+        });
+        drawn.app.apply(Update::Upgrade(update_offer()));
+        assert!(
+            matches!(drawn.app.prompt, Some(Prompt::Sessions(_))),
+            "the list keeps the screen while it is open"
+        );
+        drawn.key(KeyCode::Enter);
+        assert!(matches!(sent.borrow().last(), Some(Command::Resume(id)) if id == "s2"));
+        assert!(
+            matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))),
+            "closing the list reopens the offer"
+        );
+    }
+
+    /// The offer can also arrive while the Session list is open: choosing a
+    /// row closes the list and reopens the dialog, and the switch that follows
+    /// must keep it. Until the picked Session's state is known, Home's own
+    /// readiness may not let `Update now` leave.
+    #[test]
+    fn a_session_picked_from_the_list_keeps_the_update_offer() {
+        for fullscreen in [false, true] {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                ..ViewSnapshot::default()
+            })));
+            pick_a_session_from_the_list(&mut drawn, &sent);
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while the resume was in flight"
+            );
+            assert!(!drawn.app.update_requested);
+            let screen = drawn.app.frame((100, 30)).live.join("\n");
+            assert!(
+                screen.contains(t("Waiting for the Session switch to finish.")),
+                "fullscreen={fullscreen}: {screen}"
+            );
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            assert!(
+                matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))),
+                "the switch after the resume cleared the offer"
+            );
+            let screen = drawn.app.frame((100, 30)).live.join("\n");
+            assert!(screen.contains(t("Update available")), "{screen}");
+        }
+    }
+
+    /// A resume the daemon refuses comes back to Home. That ends the pending
+    /// switch, and `Update now` follows the view it came back to.
+    #[test]
+    fn a_refused_resume_ends_the_pending_switch() {
+        for fullscreen in [false, true] {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            drawn.app.session_id = "s1".into();
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                lines: vec![line_view("main", LineState::Main, Some(false))],
+                ..ViewSnapshot::default()
+            })));
+            pick_a_session_from_the_list(&mut drawn, &sent);
+            assert!(drawn.app.switch_pending);
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while the resume was in flight"
+            );
+            drawn.app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            assert!(!drawn.app.switch_pending);
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: Home did not let Update now leave after the refusal"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// A resume can be waiting for its attach reply while the previous
+    /// Session is still shown. `/new` queued then marks its own switch; when
+    /// the resume is refused, only the resume ends with the Home report, and
+    /// the queued `/new` must end with its own completion so `Update now` can
+    /// leave on Home.
+    #[test]
+    fn update_now_leaves_home_after_a_refused_resume_with_new_queued() {
+        for fullscreen in [false, true] {
+            use crate::model::session::SessionItem;
+
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut drawn);
+
+            typed(&mut drawn.app, "/resume");
+            drawn.key(KeyCode::Enter);
+            let id = sent
+                .borrow()
+                .iter()
+                .find_map(|command| match command {
+                    Command::ListSessions { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .expect("opening the list asks for its first page");
+            drawn.app.apply(Update::Sessions {
+                id,
+                paged: true,
+                result: Ok((
+                    vec![SessionItem {
+                        id: "s2".into(),
+                        title: Some("old session".into()),
+                        preview: None,
+                        cwd: "/work".into(),
+                        updated_at: u64::MAX,
+                        model: "p/m".into(),
+                        origin: None,
+                        closed: false,
+                    }],
+                    None,
+                )),
+            });
+            drawn.key(KeyCode::Enter);
+            assert!(matches!(sent.borrow().last(), Some(Command::Resume(id)) if id == "s2"));
+            assert!(drawn.app.switch_pending);
+
+            drawn.app.run_command("new", "");
+            assert!(matches!(sent.borrow().last(), Some(Command::NewSession)));
+            assert!(
+                drawn.app.switch_pending,
+                "fullscreen={fullscreen}: the new Session did not mark its wait"
+            );
+
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            drawn.app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                drawn.app.switch_pending,
+                "fullscreen={fullscreen}: the refused resume ended the queued /new"
+            );
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left before /new ended"
+            );
+
+            drawn.app.apply(Update::NewSessionDone);
+            assert!(!drawn.app.switch_pending);
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: Home did not let Update now leave"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// A `/new` sent while Home is shown is still one command: the resume
+    /// attaching behind it may bring a Session on screen, but `Update now`
+    /// must wait for that `/new`'s own completion and then restart on Home.
+    #[test]
+    fn update_now_waits_for_new_sent_from_home_until_its_completion() {
+        for fullscreen in [false, true] {
+            use crate::model::session::SessionItem;
+
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+
+            typed(&mut drawn.app, "/resume");
+            drawn.key(KeyCode::Enter);
+            let id = sent
+                .borrow()
+                .iter()
+                .find_map(|command| match command {
+                    Command::ListSessions { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .expect("opening the list asks for its first page");
+            drawn.app.apply(Update::Sessions {
+                id,
+                paged: true,
+                result: Ok((
+                    vec![SessionItem {
+                        id: "s2".into(),
+                        title: Some("resumed session".into()),
+                        preview: None,
+                        cwd: "/work".into(),
+                        updated_at: u64::MAX,
+                        model: "p/m".into(),
+                        origin: None,
+                        closed: false,
+                    }],
+                    None,
+                )),
+            });
+            drawn.key(KeyCode::Enter);
+            assert!(matches!(sent.borrow().last(), Some(Command::Resume(id)) if id == "s2"));
+            assert!(drawn.app.session_id.is_empty(), "Home is still shown");
+
+            drawn.app.run_command("new", "");
+            assert!(matches!(sent.borrow().last(), Some(Command::NewSession)));
+
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            assert!(
+                drawn.app.switch_pending,
+                "fullscreen={fullscreen}: the resume ended the queued /new"
+            );
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s2".into(),
+                focus: "main".into(),
+                lines: vec![line_view("main", LineState::Main, Some(false))],
+                ..ViewSnapshot::default()
+            })));
+
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left before /new ended"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn.app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::New,
+                cwd: None,
+            });
+            assert!(
+                drawn.app.session_id.is_empty(),
+                "the /new came back to Home"
+            );
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                drawn.app.switch_pending,
+                "fullscreen={fullscreen}: the Home switch ended /new before its completion"
+            );
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left before NewSessionDone"
+            );
+
+            drawn.app.apply(Update::NewSessionDone);
+            assert!(!drawn.app.switch_pending);
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: Home did not let Update now leave"
+            );
+            assert!(drawn.app.update_requested);
+            assert!(
+                drawn.app.session_id.is_empty(),
+                "fullscreen={fullscreen}: the restart target is not Home"
+            );
+        }
+    }
+
+    /// Session `s1`, shown and idle, with one finished turn a fork can cut
+    /// at.
+    fn shown_at_rest(drawn: &mut Drawn) {
+        drawn.app.apply(Update::Switched {
+            session_id: "s1".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "main".into(),
+            lines: vec![line_view("main", LineState::Main, Some(false))],
+            ended: Some((1, crate::model::view::TurnEnd::Completed)),
+            ..ViewSnapshot::default()
+        })));
+    }
+
+    /// A fork opens its Session only after the host attaches it. Until then
+    /// `Update now` waits; a fork that ends before attaching says so and
+    /// releases the wait, and the switch that follows gates on the new
+    /// Session's own report.
+    #[test]
+    fn update_now_waits_for_a_fork_in_flight() {
+        for fullscreen in [false, true] {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut drawn);
+            drawn.app.run_command("fork", "");
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Fork(_))));
+            drawn.key(KeyCode::Char('y'));
+            assert!(
+                matches!(sent.borrow().last(), Some(Command::Fork { .. })),
+                "fullscreen={fullscreen}: the confirmed fork is sent"
+            );
+
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while the fork was in flight"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn.app.apply(Update::ForkFailed);
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the shown Session stayed idle after the fork failed"
+            );
+            assert!(drawn.app.update_requested);
+
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut forked = Drawn::new((100, 30), None, true);
+            forked.app.fullscreen = fullscreen;
+            forked.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut forked);
+            forked.app.run_command("fork", "");
+            forked.key(KeyCode::Char('y'));
+            forked.app.apply(Update::Upgrade(update_offer()));
+            assert!(matches!(enter(&mut forked), Outcome::Continue));
+            forked.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Forked,
+                cwd: None,
+            });
+            assert!(
+                matches!(enter(&mut forked), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left before the forked Session reported"
+            );
+            forked.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![line_view("main", LineState::Main, Some(false))],
+            ))));
+            assert!(
+                matches!(enter(&mut forked), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the forked Session reported idle"
+            );
+            assert!(forked.app.update_requested);
+        }
+    }
+
+    /// Two forks can overlap when the first reply is still out. Each ending
+    /// update clears only its own fork, so the first fork's failure cannot
+    /// release `Update now` while the second is still in flight.
+    #[test]
+    fn update_now_waits_for_a_second_fork_after_the_first_fails() {
+        for fullscreen in [false, true] {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut drawn);
+            for _ in 0..2 {
+                drawn.app.run_command("fork", "");
+                assert!(matches!(drawn.app.prompt, Some(Prompt::Fork(_))));
+                drawn.key(KeyCode::Char('y'));
+                assert!(
+                    matches!(sent.borrow().last(), Some(Command::Fork { .. })),
+                    "fullscreen={fullscreen}: the confirmed fork is sent"
+                );
+            }
+
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while a fork was in flight"
+            );
+
+            drawn.app.apply(Update::ForkFailed);
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: the first fork's failure released the second"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Forked,
+                cwd: None,
+            });
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![line_view("main", LineState::Main, Some(false))],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the second fork ended in an idle Session"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// A delete of the shown Session and a fork sent while it is out end on
+    /// their own updates. The delete's failure clears only the delete, so the
+    /// fork still holds `Update now` until it attaches.
+    #[test]
+    fn update_now_waits_for_a_fork_after_a_delete_fails() {
+        for fullscreen in [false, true] {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut drawn);
+            drawn.app.apply_effect(Effect::DeleteSession {
+                session_id: "s1".into(),
+                name: "s1".into(),
+            });
+            assert!(
+                matches!(
+                    sent.borrow().last(),
+                    Some(Command::DeleteSession { session_id, .. }) if session_id == "s1"
+                ),
+                "fullscreen={fullscreen}: the shown Session's delete is sent"
+            );
+            drawn.app.run_command("fork", "");
+            drawn.key(KeyCode::Char('y'));
+
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while the delete and fork were in flight"
+            );
+            drawn.app.apply(Update::Deleted(DeleteReply {
+                session_id: "s1".into(),
+                name: "s1".into(),
+                outcome: DeleteOutcome::Failed("the store is locked".into()),
+            }));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: the failed delete released the fork"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn.app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Forked,
+                cwd: None,
+            });
+            drawn.app.apply(Update::Snapshot(Box::new(session_snapshot(
+                "main",
+                vec![line_view("main", LineState::Main, Some(false))],
+            ))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the forked Session reported idle"
+            );
+            assert!(drawn.app.update_requested);
+        }
+    }
+
+    /// Deleting the shown Session switches to Home: until the host answers,
+    /// `Update now` waits, and a delete that leaves the Session attached
+    /// ends the wait. Deleting another Session switches nothing.
+    #[test]
+    fn update_now_waits_for_a_delete_of_the_shown_session() {
+        use crate::model::session::SessionItem;
+
+        let row = |id: &str| SessionItem {
+            id: id.into(),
+            title: Some(id.into()),
+            preview: None,
+            cwd: "/work".into(),
+            updated_at: u64::MAX,
+            model: "p/m".into(),
+            origin: None,
+            closed: false,
+        };
+        let open_list =
+            |drawn: &mut Drawn, sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>| {
+                typed(&mut drawn.app, "/resume");
+                drawn.key(KeyCode::Enter);
+                let id = sent
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find_map(|command| match command {
+                        Command::ListSessions { id, .. } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .expect("opening the list asks for its first page");
+                drawn.app.apply(Update::Sessions {
+                    id,
+                    paged: true,
+                    result: Ok((vec![row("s1"), row("s2")], None)),
+                });
+            };
+        let delete = |drawn: &mut Drawn| {
+            drawn.app.handle(InputEvent::Key(KeyEvent::new(
+                KeyCode::Char('x'),
+                Modifiers::CTRL,
+            )));
+            drawn.key(KeyCode::Enter);
+        };
+
+        for fullscreen in [false, true] {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut drawn);
+            open_list(&mut drawn, &sent);
+            delete(&mut drawn);
+            assert!(
+                matches!(
+                    sent.borrow().last(),
+                    Some(Command::DeleteSession { session_id, .. }) if session_id == "s1"
+                ),
+                "fullscreen={fullscreen}: the shown Session's delete is sent"
+            );
+
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            assert!(
+                matches!(drawn.app.prompt, Some(Prompt::Sessions(_))),
+                "the picker holds the screen while the delete is in flight"
+            );
+            drawn.key(KeyCode::Esc);
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while the delete was in flight"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn.app.apply(Update::Deleted(DeleteReply {
+                session_id: "s1".into(),
+                name: "s1".into(),
+                outcome: DeleteOutcome::Failed("the store is locked".into()),
+            }));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: the shown Session stayed idle after the delete failed"
+            );
+            assert!(drawn.app.update_requested);
+
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut other = Drawn::new((100, 30), None, true);
+            other.app.fullscreen = fullscreen;
+            other.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut other);
+            open_list(&mut other, &sent);
+            other.key(KeyCode::Down);
+            delete(&mut other);
+            assert!(
+                matches!(
+                    sent.borrow().last(),
+                    Some(Command::DeleteSession { session_id, .. }) if session_id == "s2"
+                ),
+                "fullscreen={fullscreen}: the other Session's delete is sent"
+            );
+            other.app.apply(Update::Upgrade(update_offer()));
+            other.key(KeyCode::Esc);
+            assert!(
+                matches!(enter(&mut other), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: deleting another Session held Update now"
+            );
+        }
+    }
+
+    /// `/new` leaves the shown Session for Home, and on Home it changes
+    /// nothing. Either way the host ends the command with `NewSessionDone`,
+    /// and `Update now` waits for that.
+    #[test]
+    fn update_now_waits_for_new_from_a_session_and_from_home() {
+        for fullscreen in [false, true] {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 30), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            shown_at_rest(&mut drawn);
+            drawn.app.run_command("new", "");
+            assert!(matches!(sent.borrow().last(), Some(Command::NewSession)));
+
+            drawn.app.apply(Update::Upgrade(update_offer()));
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left while /new was in flight"
+            );
+            assert!(!drawn.app.update_requested);
+
+            drawn.app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::New,
+                cwd: None,
+            });
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Upgrade(_))));
+            assert!(
+                drawn.app.switch_pending,
+                "fullscreen={fullscreen}: the Home switch ended /new before the host did"
+            );
+            drawn.app.apply(Update::NewSessionDone);
+            assert!(!drawn.app.switch_pending);
+            assert!(
+                matches!(enter(&mut drawn), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: Home did not let Update now leave"
+            );
+            assert!(drawn.app.update_requested);
+
+            let mut home = Drawn::new((100, 30), None, true);
+            home.app.fullscreen = fullscreen;
+            home.app.run_command("new", "");
+            home.app.apply(Update::Upgrade(update_offer()));
+            assert!(
+                matches!(enter(&mut home), Outcome::Continue),
+                "fullscreen={fullscreen}: Update now left before the Home /new ended"
+            );
+            assert!(!home.app.update_requested);
+
+            home.app.apply(Update::NewSessionDone);
+            assert!(
+                matches!(enter(&mut home), Outcome::Exit(0)),
+                "fullscreen={fullscreen}: /new on Home held Update now"
+            );
+            assert!(home.app.update_requested);
         }
     }
 
@@ -10305,7 +11815,7 @@ mod tests {
             }
             drawn.key(KeyCode::Enter);
             assert!(
-                matches!(sent.borrow().last(), Some(Command::Submit(text, _)) if text == &draft)
+                matches!(sent.borrow().last(), Some(Command::Submit { text, .. }) if text == &draft)
             );
         }
     }
@@ -10559,7 +12069,6 @@ mod tests {
         app.snapshot = Some(ViewSnapshot {
             session_id: "s1".into(),
             running: true,
-            main_running: true,
             focus: "main".into(),
             ..ViewSnapshot::default()
         });
@@ -11148,6 +12657,8 @@ mod tests {
                 parent: None,
                 purpose: String::new(),
                 state: LineState::Main,
+                running: Some(false),
+                branch_point: None,
                 cut: None,
             }],
             ..ViewSnapshot::default()
@@ -11249,7 +12760,7 @@ mod tests {
         assert!(expected.ends_with(" appended"));
         press(&mut app, KeyCode::Enter);
         assert!(
-            matches!(sent.borrow().as_slice(), [Command::Submit(text, _)] if text == &expected)
+            matches!(sent.borrow().as_slice(), [Command::Submit { text, .. }] if text == &expected)
         );
     }
 
@@ -12172,6 +13683,7 @@ mod tests {
             "/private/tmp/dima-probe".into(),
         );
         app.apply(Update::Ready(Configuration {
+            catalog_provider_id: None,
             provider_id: provider.into(),
             model_id: model.into(),
             model_preferences: effort.map(|effort| dim_agent_types::ModelPreferences {
@@ -12775,6 +14287,7 @@ mod tests {
                 let app = &mut drawn.app;
                 app.fullscreen = fullscreen;
                 app.apply(Update::Ready(Configuration {
+                    catalog_provider_id: None,
                     provider_id: "test".into(),
                     model_id: "model".into(),
                     model_preferences: Some(dim_agent_types::ModelPreferences {
@@ -13488,7 +15001,7 @@ mod tests {
                     }
                     assert!(!sent.borrow().iter().any(|command| matches!(
                         command,
-                        Command::SetPermission(_) | Command::SaveIsolation { .. }
+                        Command::SetPermission { .. } | Command::SaveIsolation { .. }
                     )));
                 }
             }
@@ -13538,9 +15051,12 @@ mod tests {
         app.handle_input(key(KeyCode::Enter));
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::SetPermission(
-                crate::permission::PresetSelection::Preset(PermissionPreset::WorkspaceWrite)
-            ))
+            Some(Command::SetPermission {
+                change: crate::permission::PresetSelection::Preset(
+                    PermissionPreset::WorkspaceWrite
+                ),
+                ..
+            })
         ));
         app.apply(Update::PermissionSelected(PermissionPreset::WorkspaceWrite));
         let saved: serde_json::Value = serde_json::from_str(
@@ -13548,7 +15064,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(saved, serde_json::json!({"permission":"workspace-write"}));
-        assert_eq!(app.permission_policy.disallowed_tools, ["blocked"]);
+        assert_eq!(
+            app.permission_policy
+                .as_ref()
+                .expect("the read policy is shown")
+                .disallowed_tools,
+            ["blocked"]
+        );
+    }
+
+    #[test]
+    fn an_unknown_policy_hides_the_outgoing_preset() {
+        use dim_agent_types::{PermissionPolicy, PermissionPreset};
+
+        let (mut app, _home) = status_app("local", "fixture-model", None);
+        app.apply(Update::Permissions(Ok(PermissionPolicy {
+            preset: PermissionPreset::ReadOnly,
+            ..Default::default()
+        })));
+        let (_, _, footer) = composer_chrome(&mut app, 100);
+        assert!(footer.contains("⏵⏵ Read only"), "{footer}");
+
+        app.apply(Update::PermissionsUnknown);
+        let (_, _, footer) = composer_chrome(&mut app, 100);
+        assert!(footer.contains("⏵⏵ Permission unavailable"), "{footer}");
+
+        app.apply(Update::Permissions(Err(
+            "permission: unavailable (denied)".into()
+        )));
+        let (_, _, footer) = composer_chrome(&mut app, 100);
+        assert!(footer.contains("⏵⏵ Permission unavailable"), "{footer}");
     }
 
     #[test]
@@ -14413,6 +15958,8 @@ mod tests {
                         parent: None,
                         purpose: String::new(),
                         state: LineState::Main,
+                        running: Some(false),
+                        branch_point: None,
                         cut: None,
                     },
                     LineView {
@@ -14420,6 +15967,8 @@ mod tests {
                         parent: Some("main".into()),
                         purpose: "parser race".into(),
                         state: LineState::Waiting,
+                        running: Some(false),
+                        branch_point: Some(1),
                         cut: Some(crate::model::view::LineCut {
                             sequence: 1,
                             messages: 1,
@@ -14501,6 +16050,158 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_line_window_shows_its_error_and_returns_the_idle_poll() {
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((100, 40), None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.show(&[], "main", true);
+            drawn.show(&[], "b-7c", false);
+            assert!(
+                drawn.app.awaiting_window,
+                "fullscreen={fullscreen}: the line is still loading"
+            );
+            assert_eq!(
+                drawn.app.poll_interval(),
+                FRAME_INTERVAL,
+                "fullscreen={fullscreen}: a loading window asks for frames"
+            );
+            assert!(
+                !drawn.transcript().contains("Branch history failed"),
+                "fullscreen={fullscreen}: nothing is drawn while the window loads"
+            );
+
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                focus: "b-7c".into(),
+                window_error: Some("the daemon dropped the read".into()),
+                ..ViewSnapshot::default()
+            })));
+            drawn.draw();
+
+            let text = drawn.transcript();
+            assert!(
+                !drawn.app.awaiting_window,
+                "fullscreen={fullscreen}: the failed window armed the view"
+            );
+            assert_eq!(
+                drawn.app.poll_interval(),
+                SESSION_POLL,
+                "fullscreen={fullscreen}: a failed window waits at the idle poll"
+            );
+            assert!(
+                text.contains("Branch history failed; reopen to retry"),
+                "fullscreen={fullscreen}: the line names the failure and its retry: {text}"
+            );
+            assert!(
+                text.contains("the daemon dropped the read"),
+                "fullscreen={fullscreen}: the line carries the reason: {text}"
+            );
+            assert!(
+                text.contains("⑂ b-7c"),
+                "fullscreen={fullscreen}: the failure draws under the line's boundary: {text}"
+            );
+        }
+    }
+
+    /// A failed first window can be read again: reopening `/tasks` on the
+    /// same line publishes it as loading, and the page that lands is laid out
+    /// as a first window with the older history behind the load-more row.
+    #[test]
+    fn reopening_a_failed_line_rearms_its_window() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+        drawn.show(&[], "main", true);
+        drawn.show(&[], "b-7c", false);
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "b-7c".into(),
+            window_error: Some("the daemon dropped the read".into()),
+            ..ViewSnapshot::default()
+        })));
+        drawn.draw();
+        assert!(
+            !drawn.app.awaiting_window,
+            "the failed window settled the view"
+        );
+
+        drawn.app.run_command("tasks", "");
+        assert!(
+            matches!(drawn.app.prompt, Some(Prompt::Tasks(_))),
+            "/tasks opens on the failed line"
+        );
+        assert!(
+            sent.borrow()
+                .iter()
+                .any(|command| matches!(command, Command::TaskHistory { .. })),
+            "reopening the panel retries the line's window"
+        );
+
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "b-7c".into(),
+            ..ViewSnapshot::default()
+        })));
+        drawn.draw();
+        assert!(
+            drawn.app.awaiting_window,
+            "the retry loads the same line again instead of staying failed"
+        );
+        assert_eq!(
+            drawn.app.poll_interval(),
+            FRAME_INTERVAL,
+            "a loading window asks for frames"
+        );
+        assert!(
+            !drawn.transcript().contains("Branch history failed"),
+            "the retry clears the failure from the line"
+        );
+
+        let mut rows = older_rows(30);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "b-7c".into(),
+            rows,
+            history_complete: true,
+            earlier: Earlier::Unread,
+            ..ViewSnapshot::default()
+        })));
+        drawn.draw();
+        assert!(
+            !drawn.app.awaiting_window,
+            "the retried page armed the view"
+        );
+        assert_eq!(
+            drawn.app.poll_interval(),
+            SESSION_POLL,
+            "the loaded window waits at the idle poll"
+        );
+        assert_eq!(
+            drawn.app.window_floor, 30,
+            "the page is laid out over the newest window"
+        );
+        assert_eq!(
+            drawn.app.history_floor, 30,
+            "the retried page starts at the same floor"
+        );
+        assert_eq!(
+            drawn.app.window_info,
+            (HISTORY_WINDOW, 30),
+            "the window names the older messages it hides"
+        );
+        assert!(
+            drawn
+                .app
+                .history
+                .iter()
+                .any(|block| matches!(block, Block::LoadMore(30))),
+            "the older history is left to the load-more row"
+        );
+    }
+
+    #[test]
     fn the_scrollback_composer_names_the_shown_line() {
         let mut drawn = Drawn::new((80, 40), None, true);
         drawn.show(&[("user-1", "main one")], "main", true);
@@ -14527,15 +16228,22 @@ mod tests {
         drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
             session_id: "s1".into(),
             running: true,
-            main_running: true,
             focus: "main".into(),
             ..ViewSnapshot::default()
         })));
         drawn.app.notifications.clear();
         drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
             session_id: "s1".into(),
-            main_running: true,
             focus: "b-7c".into(),
+            lines: vec![crate::model::view::LineView {
+                id: "main".into(),
+                parent: None,
+                purpose: String::new(),
+                state: LineState::Main,
+                running: Some(true),
+                branch_point: None,
+                cut: None,
+            }],
             ..ViewSnapshot::default()
         })));
         assert!(
@@ -14557,6 +16265,8 @@ mod tests {
                     parent: None,
                     purpose: String::new(),
                     state: LineState::Main,
+                    running: Some(false),
+                    branch_point: None,
                     cut: None,
                 },
                 crate::model::view::LineView {
@@ -14564,6 +16274,8 @@ mod tests {
                     parent: Some("main".into()),
                     purpose: "review".into(),
                     state: LineState::Working,
+                    running: Some(true),
+                    branch_point: Some(1),
                     cut: Some(crate::model::view::LineCut {
                         sequence: 1,
                         messages: 0,
@@ -14951,7 +16663,7 @@ mod tests {
         assert!(
             matches!(
                 sent.borrow().as_slice(),
-                [Command::Submit(text, _)] if text == "/skill:commit fix the parser"
+                [Command::Submit { text, .. }] if text == "/skill:commit fix the parser"
             ),
             "the draft is a message, never a command"
         );
@@ -15163,7 +16875,7 @@ mod tests {
                 show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
                 let frame = drawn.app.frame(drawn.size);
                 let visible = strip_escapes(&frame.live.join("\n"));
-                assert!(visible.contains("Thinking excerpt · Read"), "{visible}");
+                assert!(visible.contains("Thinking… · Read"), "{visible}");
                 assert!(!visible.contains("Still checking"), "{visible}");
                 thought.row_id = "thought-durable".into();
                 thought.provisional_id = Some("thought-preview".into());
@@ -15174,14 +16886,14 @@ mod tests {
                 show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
                 let frame = drawn.app.frame(drawn.size);
                 let visible = strip_escapes(&frame.live.join("\n"));
-                assert!(visible.contains("Thinking excerpt · Read"), "{visible}");
+                assert!(visible.contains("Thinking… · Read"), "{visible}");
                 assert!(!visible.contains("Check the owner"), "{visible}");
                 drawn
                     .app
                     .tick_at(Instant::now() + Duration::from_millis(501));
                 let frame = drawn.app.frame(drawn.size);
                 let visible = strip_escapes(&frame.live.join("\n"));
-                assert!(visible.contains("Thinking excerpt · Check"), "{visible}");
+                assert!(visible.contains("Thinking… · Check"), "{visible}");
                 thought.streaming = false;
                 thought.elapsed_ms = Some(18000);
                 thought.text.push_str(". Keep the owner.");
@@ -15240,12 +16952,12 @@ mod tests {
             assert!(drawn.app.click(None, row, cols as usize));
             let frame = drawn.app.frame(drawn.size);
             let visible = strip_escapes(&frame.live.join("\n"));
-            assert!(visible.contains("Thinking excerpt"), "{visible}");
+            assert!(visible.contains("Thinking… · Keep locks."), "{visible}");
             assert!(!visible.contains("Read callers."), "{visible}");
             let header = frame
                 .live
                 .iter()
-                .position(|row| row.contains("Thinking excerpt"))
+                .position(|row| row.contains("Thinking…"))
                 .unwrap();
             assert!(drawn.app.click(None, header, cols as usize));
             let frame = drawn.app.frame(drawn.size);
@@ -17385,7 +19097,7 @@ mod tests {
             assert!(!drawn.app.composer.text().contains("[Image #1]"));
             drawn.key(KeyCode::Enter);
             match sent.borrow().last().unwrap() {
-                Command::Submit(text, _) => assert!(!text.contains("[Image #1]")),
+                Command::Submit { text, .. } => assert!(!text.contains("[Image #1]")),
                 Command::OpenLine { prompt, .. } => assert_eq!(prompt, "look [Image #7]"),
                 _ => panic!("message reuse must submit text or open a line"),
             }
@@ -17833,6 +19545,7 @@ mod tests {
             let (mut app, sent, _home) = asked();
             app.fullscreen = fullscreen;
             app.apply(Update::Ready(Configuration {
+                catalog_provider_id: None,
                 provider_id: "relay".into(),
                 model_id: "reasoner".into(),
                 model_preferences: None,
@@ -17888,6 +19601,7 @@ mod tests {
                 assert!(frame.live.iter().all(|row| width_of(row) <= 36));
                 if stale {
                     app.apply(Update::Ready(Configuration {
+                        catalog_provider_id: None,
                         provider_id: "relay".into(),
                         model_id: "other".into(),
                         model_preferences: None,
@@ -17903,7 +19617,7 @@ mod tests {
                     assert!(app.notice.as_ref().unwrap().0.contains("/effort"));
                 } else {
                     assert!(
-                        matches!(sent.borrow().last(), Some(Command::Configure(text)) if text == "/effort none")
+                        matches!(sent.borrow().last(), Some(Command::Configure { text, .. }) if text == "/effort none")
                     );
                 }
             }
@@ -17941,7 +19655,6 @@ mod tests {
             projection_id: 7,
             focus: "main".into(),
             running,
-            main_running: running,
             queued: queued
                 .iter()
                 .map(|(id, text)| crate::model::view::QueuedInput {
@@ -17995,18 +19708,15 @@ mod tests {
                     assert!(!applied.contains(t("Unread")), "{applied}");
                     assert_eq!(applied.matches("find the leak").count(), 1, "{applied}");
                     snapshot.running = false;
-                    snapshot.main_running = false;
                     snapshot.rows.push(stopped());
                     let idle = draw(&snapshot);
                     assert!(!idle.contains(t("Queue")), "{idle}");
                     assert_eq!(idle.matches("find the leak").count(), 1, "{idle}");
                     assert!(!idle.contains(t("Unread")), "{idle}");
                     snapshot.running = true;
-                    snapshot.main_running = true;
                     let resumed = draw(&snapshot);
                     assert!(!resumed.contains(t("Unread")), "{resumed}");
                     snapshot.running = false;
-                    snapshot.main_running = false;
                     snapshot.queued.clear();
                     snapshot.rows[0] = message(false);
                     let consumed = draw(&snapshot);
@@ -18041,7 +19751,7 @@ mod tests {
                         press(&mut app, KeyCode::Enter);
                         assert!(matches!(
                             sent.borrow().as_slice(),
-                            [Command::Goal(request)] if *request == expected
+                            [Command::Goal { request, .. }] if *request == expected
                         ));
                         assert!(app.composer.is_empty());
                     }
@@ -18086,7 +19796,7 @@ mod tests {
                 assert!(
                     matches!(
                         sent.borrow().as_slice(),
-                        [Command::Loop(request)] if *request == expected
+                        [Command::Loop { request, .. }] if *request == expected
                     ),
                     "{words:?} dispatches {expected:?}"
                 );
@@ -18144,10 +19854,10 @@ mod tests {
         commands
             .iter()
             .map(|command| match command {
-                Command::Submit(text, mode) => format!("submit:{}:{}", mode.as_str(), text),
+                Command::Submit { text, mode, .. } => format!("submit:{}:{}", mode.as_str(), text),
                 Command::InputControl { input_id, action } => format!("{action}:{input_id}"),
-                Command::Stop => "stop".into(),
-                Command::SubmitNow => "submit-now".into(),
+                Command::Stop { .. } => "stop".into(),
+                Command::SubmitNow { .. } => "submit-now".into(),
                 _ => "other".into(),
             })
             .collect()
@@ -18276,7 +19986,6 @@ mod tests {
                 projection_id: 7,
                 focus: "main".into(),
                 running: true,
-                main_running: true,
                 ..ViewSnapshot::default()
             })));
             typed(&mut app, "follow up");
@@ -18477,7 +20186,7 @@ mod tests {
         assert!(
             matches!(
                 &sent_now[3..],
-                [Command::SubmitDraft(parts, SubmitMode::Queue)]
+                [Command::SubmitDraft { parts, mode: SubmitMode::Queue, .. }]
                     if matches!(parts.as_slice(), [DraftPart::Text(text), DraftPart::Block(dim_agent_types::ContentBlock::Image { .. })] if text == "first\n")
             ),
             "the message is the text then the image, with no blank text: {}",
@@ -18548,7 +20257,7 @@ mod tests {
             assert!(
                 matches!(
                     submitted,
-                    [Command::SubmitDraft(parts, SubmitMode::Queue)]
+                    [Command::SubmitDraft { parts, mode: SubmitMode::Queue, .. }]
                         if matches!(
                             parts.as_slice(),
                             [
@@ -18609,7 +20318,7 @@ mod tests {
         assert!(
             matches!(
                 &sent_now[2..],
-                [Command::SubmitDraft(parts, SubmitMode::Queue)]
+                [Command::SubmitDraft { parts, mode: SubmitMode::Queue, .. }]
                     if matches!(
                         parts.as_slice(),
                         [
@@ -18901,7 +20610,7 @@ mod tests {
             assert!(
                 matches!(
                     &sent_now[2..],
-                    [Command::SubmitDraft(parts, SubmitMode::Queue)]
+                    [Command::SubmitDraft { parts, mode: SubmitMode::Queue, .. }]
                         if matches!(
                             parts.as_slice(),
                             [
@@ -18928,7 +20637,6 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         let mut settled = app.snapshot.as_ref().unwrap().clone();
         settled.running = false;
-        settled.main_running = false;
         app.apply(Update::Snapshot(Box::new(settled)));
         assert!(!app.running(), "the run shows as ended");
         app.handle(ctrl_enter());
@@ -18979,7 +20687,10 @@ mod tests {
             sent_now
                 .iter()
                 .filter(|command| {
-                    matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
+                    matches!(
+                        command,
+                        Command::Submit { .. } | Command::SubmitDraft { .. }
+                    )
                 })
                 .count(),
             1,
@@ -19000,9 +20711,10 @@ mod tests {
             error: Some("the stop failed".into()),
         });
         assert!(
-            sent.borrow()
-                .iter()
-                .all(|command| !matches!(command, Command::Submit(..) | Command::SubmitDraft(..))),
+            sent.borrow().iter().all(|command| !matches!(
+                command,
+                Command::Submit { .. } | Command::SubmitDraft { .. }
+            )),
             "a cancelled submit sends nothing: {}",
             describe(&sent.borrow()).join(", ")
         );
@@ -19030,9 +20742,10 @@ mod tests {
             error: Some("the retry stop failed".into()),
         });
         assert!(
-            sent.borrow()
-                .iter()
-                .all(|command| !matches!(command, Command::Submit(..) | Command::SubmitDraft(..))),
+            sent.borrow().iter().all(|command| !matches!(
+                command,
+                Command::Submit { .. } | Command::SubmitDraft { .. }
+            )),
             "no submit follows the retry's failed stop: {}",
             describe(&sent.borrow()).join(", ")
         );
@@ -19181,7 +20894,7 @@ mod tests {
                 if image {
                     assert!(matches!(
                         sent.borrow().as_slice(),
-                        [Command::SubmitDraft(parts, SubmitMode::Steer)]
+                        [Command::SubmitDraft { parts, mode: SubmitMode::Steer, .. }]
                             if matches!(parts.as_slice(), [DraftPart::Text(text), DraftPart::Block(dim_agent_types::ContentBlock::Image { .. })] if text == "look ")
                     ));
                 } else {
@@ -19266,7 +20979,7 @@ mod tests {
             assert!(
                 sent.borrow()
                     .iter()
-                    .all(|command| !matches!(command, Command::Submit(..))),
+                    .all(|command| !matches!(command, Command::Submit { .. })),
                 "nothing is submitted while the stop settles"
             );
             press(&mut app, KeyCode::Enter);
@@ -19274,7 +20987,7 @@ mod tests {
             assert!(
                 sent.borrow()
                     .iter()
-                    .all(|command| !matches!(command, Command::Submit(..))),
+                    .all(|command| !matches!(command, Command::Submit { .. })),
                 "Enter and Ctrl+Enter send nothing while the stop settles"
             );
 
@@ -19291,7 +21004,7 @@ mod tests {
                 assert!(
                     matches!(
                         submitted,
-                        [Command::SubmitDraft(parts, SubmitMode::Queue)]
+                        [Command::SubmitDraft { parts, mode: SubmitMode::Queue, .. }]
                             if matches!(parts.first(), Some(DraftPart::Text(text)) if text == "first\nsecond\nand then ")
                                 && parts.iter().any(|part| matches!(part, DraftPart::Block(_)))
                     ),
@@ -19329,9 +21042,10 @@ mod tests {
             error: Some("the run would not stop".into()),
         });
         assert!(
-            sent.borrow()
-                .iter()
-                .all(|command| !matches!(command, Command::Submit(..) | Command::SubmitDraft(..))),
+            sent.borrow().iter().all(|command| !matches!(
+                command,
+                Command::Submit { .. } | Command::SubmitDraft { .. }
+            )),
             "no submit follows a failed stop"
         );
         assert_eq!(app.composer.text(), "first\nand then");
@@ -19425,7 +21139,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().as_slice(),
-            [Command::SubmitDraft(restored, _)] if restored == &parts
+            [Command::SubmitDraft { parts: restored, .. }] if restored == &parts
         ));
     }
 
@@ -19542,7 +21256,7 @@ mod tests {
         );
         press(&mut app, KeyCode::Enter);
         assert!(
-            matches!(sent.borrow().last(), Some(Command::Usage)),
+            matches!(sent.borrow().last(), Some(Command::Usage { .. })),
             "the palette ran /usage"
         );
         assert_eq!(
@@ -22296,7 +24010,7 @@ mod tests {
         let before = drawn.transcript();
         drawn.app.show_earlier();
         assert_eq!(sent.borrow().len(), 1, "an unread prefix is requested");
-        assert!(matches!(sent.borrow()[0], Command::Earlier));
+        assert!(matches!(sent.borrow()[0], Command::Earlier { .. }));
         drawn.draw();
         assert_eq!(drawn.transcript(), before, "the request draws nothing");
         let mut rows = window_rows(HISTORY_WINDOW);

@@ -10,7 +10,7 @@ import QueuedInputs from "./QueuedInputs.vue"
 import QuestionPrompt from "./QuestionPrompt.vue"
 import { WebChatTimeline } from "../../chat-ui/timeline"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
-import { DEFAULT_BRANCH_ID, ROOT_BRANCH_ID, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
+import { ROOT_BRANCH_ID, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
 import { goalCall, goalObjective, parseGoalRequest, type Goal, type GoalStatus } from "../../goal"
 import { intervalSeconds, loopReport, parseLoopRequest } from "../../loop"
 import { useChatStore } from "../../stores/chat"
@@ -39,8 +39,10 @@ const title = computed(() => summary.value?.title ?? summary.value?.preview ?? t
 const parentId = computed(() => summary.value?.parentSessionId)
 const parent = computed(() => parentId.value === undefined ? undefined : sessions.byId.get(parentId.value))
 const children = computed(() => sessions.summaries.filter((session) => session.parentSessionId === props.sessionId))
-const approval = computed(() => view.value?.approvals.find((request) => request.branchId === DEFAULT_BRANCH_ID))
-const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === DEFAULT_BRANCH_ID) ?? [])
+/** The centre: the line the Session's conversation is on (design §4). */
+const centred = computed(() => view.value?.defaultBranchId ?? ROOT_BRANCH_ID)
+const approval = computed(() => view.value?.approvals.find((request) => request.branchId === centred.value))
+const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === centred.value) ?? [])
 const prompting = computed(() => approval.value !== undefined || questions.value.length > 0)
 const rulesAvailable = computed(() => connection.supports("permission.rules") && connection.supports("permission.set_rules"))
 const storesPastes = computed(() => view.value?.methods.includes("attachment.put") === true)
@@ -57,8 +59,10 @@ const permissionControl = computed(() => {
   if (session?.status !== "ready" || !connection.supports("session.permission.get") || !connection.supports("session.permission.update")) return undefined
   return { policy: session.permission, select: setPermission }
 })
-const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, DEFAULT_BRANCH_ID, view.value?.approvals ?? []))
+const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, centred.value, centred.value, view.value?.approvals ?? []))
 const composer = ref<InstanceType<typeof ComposerPanel>>()
+/** The centre as it is now, read by a composer a prompt has cached: its props keep the line it was hidden on. */
+const liveCentre = () => centred.value
 const lineCount = computed(() => view.value?.lines.filter((line) => line.id !== ROOT_BRANCH_ID).length ?? 0)
 const linesBusy = computed(() => {
   const approvals = view.value?.approvals ?? []
@@ -80,24 +84,30 @@ const sessionCommands = computed(() => {
   return {
     compact: session.methods.includes("session.context.compact") ? compact : undefined,
     usage: session.methods.includes("session.context.usage") ? usage : undefined,
-    fork: connection.supports("session.fork") && session.lastTurnEnd !== undefined ? fork : undefined,
+    fork: connection.supports("session.fork") ? fork : undefined,
     goal: session.methods.includes("session.goal.set") ? goal : undefined,
     loop: session.methods.includes("session.loop.start") ? loop : undefined,
     effort: effortChoices.value !== undefined && effortChoices.value.length > 0 ? effort : undefined,
   }
 })
 
-function send(text: string, attachments: DraftAttachments, mode: SubmitMode): Promise<void> {
-  return chat.submit(props.sessionId, DEFAULT_BRANCH_ID, text, attachments, mode)
+/**
+ * Sends the composer's draft to the line it was written on, which the
+ * composer names: a centre that moved while the gesture was out keeps the
+ * draft rather than writing it into the new conversation (design §14).
+ */
+function send(text: string, attachments: DraftAttachments, mode: SubmitMode, branchId = centred.value): Promise<void> {
+  if (branchId !== centred.value) return Promise.reject(new Error(t("composer.sendNowMoved")))
+  return chat.submit(props.sessionId, branchId, text, attachments, mode)
 }
 
-function stop(): Promise<void> {
-  return chat.stop(props.sessionId, DEFAULT_BRANCH_ID)
+function stop(branchId = centred.value): Promise<void> {
+  return chat.stop(props.sessionId, branchId)
 }
 
-/** Withdraws one held message of main, so the composer can recall it into the draft; reports a message the run already adopted. */
-async function withdrawHeld(input: QueuedInput): Promise<WithdrawResult["status"]> {
-  const result = await chat.withdrawInput(props.sessionId, DEFAULT_BRANCH_ID, input.id, undefined)
+/** Withdraws one held message of `branchId`, so the composer can recall it into the draft; reports a message the run already adopted. */
+async function withdrawHeld(input: QueuedInput, branchId = centred.value): Promise<WithdrawResult["status"]> {
+  const result = await chat.withdrawInput(props.sessionId, branchId, input.id, undefined)
   if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
   return result.status
 }
@@ -111,14 +121,15 @@ function openLine(branchId: string): void {
   ui.openLine(props.sessionId, branchId)
 }
 
+/** The shown transcript is the centre's, so a cut in it opens a child of that line. */
 function branch(text: string, cut: number): void {
-  ui.requestNewLine({ sessionId: props.sessionId, parentBranchId: ROOT_BRANCH_ID, at: cut, text })
+  ui.requestNewLine({ sessionId: props.sessionId, parentBranchId: centred.value, at: cut, text })
 }
 
 async function createBranch(prompt: string): Promise<void> {
   const at = view.value?.lastTurnEnd
   if (at === undefined) throw new Error(t("lines.noFinishedTurn"))
-  const branchId = await chat.createLine(props.sessionId, ROOT_BRANCH_ID, at, prompt)
+  const branchId = await chat.createLine(props.sessionId, centred.value, at, prompt)
   ui.openLine(props.sessionId, branchId)
 }
 
@@ -126,9 +137,9 @@ function failure(cause: unknown): void {
   toast.push({ tone: "danger", title: t("command.failed"), description: cause instanceof Error ? cause.message : String(cause) })
 }
 
-async function compact(): Promise<void> {
+async function compact(branchId: string): Promise<void> {
   try {
-    const result = await chat.compact(props.sessionId)
+    const result = await chat.compact(props.sessionId, branchId)
     if (result.status === "completed") toast.push({ tone: "success", title: t("command.compacted") })
     else toast.push({ tone: "info", title: t("command.compactSkipped"), description: result.reason })
   } catch (cause) {
@@ -150,9 +161,9 @@ function usageLine(reading: ContextUsage): string {
   })
 }
 
-async function usage(): Promise<void> {
+async function usage(branchId: string): Promise<void> {
   try {
-    toast.push({ tone: "info", title: t("command.usageTitle"), description: usageLine(await chat.usage(props.sessionId)) })
+    toast.push({ tone: "info", title: t("command.usageTitle"), description: usageLine(await chat.usage(props.sessionId, branchId)) })
   } catch (cause) {
     failure(cause)
   }
@@ -181,7 +192,7 @@ function showGoal(current: Goal | undefined): void {
   })
 }
 
-async function goal(words: string): Promise<void> {
+async function goal(words: string, branchId: string): Promise<void> {
   const request = parseGoalRequest(words)
   if (request === undefined) {
     toast.push({ tone: "info", title: t("goal.usage") })
@@ -194,7 +205,7 @@ async function goal(words: string): Promise<void> {
     return
   }
   try {
-    await chat.writeGoal(props.sessionId, call, goalObjective(request))
+    await chat.writeGoal(props.sessionId, call, goalObjective(request), branchId)
     toast.push({ tone: "success", title: t("goal.sent", { action: t(`goal.action.${call}`) }) })
   } catch (cause) {
     failure(cause)
@@ -202,7 +213,7 @@ async function goal(words: string): Promise<void> {
 }
 
 /** `/loop` shows the line's loops, starts one, or stops one, the same forms the terminal client takes. */
-async function loop(words: string): Promise<void> {
+async function loop(words: string, branchId: string): Promise<void> {
   const request = parseLoopRequest(words)
   if (request === undefined) {
     toast.push({ tone: "info", title: t("loop.usage") })
@@ -210,18 +221,18 @@ async function loop(words: string): Promise<void> {
   }
   try {
     if (request.form === "show") {
-      const loops = await chat.readLoops(props.sessionId)
+      const loops = await chat.readLoops(props.sessionId, branchId)
       toast.push({ tone: "info", title: loops.length === 0 ? t("loop.none") : t("loop.listed", { count: loops.length }), description: loopReport(loops).join("\n") })
       return
     }
     if (request.form === "start") {
-      const id = await chat.startLoop(props.sessionId, request.prompt, request.interval === undefined ? undefined : intervalSeconds(request.interval))
+      const id = await chat.startLoop(props.sessionId, request.prompt, request.interval === undefined ? undefined : intervalSeconds(request.interval), branchId)
       toast.push({ tone: "success", title: t("loop.started", { id }) })
       return
     }
     let loopId = request.loopId
     if (loopId === undefined) {
-      const live = (await chat.readLoops(props.sessionId)).filter((entry) => !["stopped", "expired"].includes(entry.state))
+      const live = (await chat.readLoops(props.sessionId, branchId)).filter((entry) => !["stopped", "expired"].includes(entry.state))
       if (live.length !== 1) {
         toast.push({ tone: "info", title: t("loop.noSingle") })
         return
@@ -235,8 +246,8 @@ async function loop(words: string): Promise<void> {
   }
 }
 
-/** `/effort` with no words lists the choices; `/effort VALUE` sets the default branch's reasoning effort. */
-async function effort(words: string): Promise<void> {
+/** `/effort` with no words lists the choices; `/effort VALUE` sets the named line's reasoning effort. */
+async function effort(words: string, branchId: string): Promise<void> {
   const choices = effortChoices.value
   const value = words.trim()
   if (choices === undefined) {
@@ -256,7 +267,7 @@ async function effort(words: string): Promise<void> {
     return
   }
   try {
-    const outcome = await chat.setEffort(props.sessionId, value)
+    const outcome = await chat.setEffort(props.sessionId, value, branchId)
     toast.push({ tone: "success", title: t("command.effortSet", { outcome, value }) })
   } catch (cause) {
     failure(cause)
@@ -272,12 +283,11 @@ async function setPermission(preset: PermissionPreset): Promise<void> {
   }
 }
 
+/** `/fork` copies only the root, whichever line the centre shows (design §9, §14). */
 async function fork(): Promise<void> {
-  const at = view.value?.lastTurnEnd
-  if (at === undefined) return
   if (!await forkConfirm.value?.open(t("fork.confirm"), { confirmLabel: t("fork.confirmLabel") })) return
   try {
-    const forked = await chat.fork(props.sessionId, at)
+    const forked = await chat.fork(props.sessionId)
     void sessions.refresh()
     await router.push({ name: "chat-session", params: { sessionId: forked } })
   } catch (cause) {
@@ -296,6 +306,9 @@ async function fork(): Promise<void> {
   <section v-else-if="view?.status === 'failed'" class="removed-state route-page">
     <h1 data-route-heading tabindex="-1">{{ title }}</h1>
     <p role="alert">{{ view.error }}</p>
+    <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-rotate-ccw" @click="chat.retryCentre(sessionId)">
+      {{ t("lines.retry") }}
+    </UButton>
   </section>
 
   <section v-else-if="!view || view.status === 'loading'" class="chat-loading" aria-busy="true">
@@ -367,12 +380,12 @@ async function fork(): Promise<void> {
       </div>
     </div>
     <WebChatTimeline :session-id="sessionId"
-      :branch-id="ROOT_BRANCH_ID"
+      :branch-id="centred"
       :rows="view.rows"
       :earlier="view.earlier"
       :loading-earlier="view.loadingEarlier"
       :history-error="view.historyError"
-      @earlier="chat.loadEarlier(sessionId, ROOT_BRANCH_ID)"
+      @earlier="chat.loadEarlier(sessionId, centred)"
       :running="view.running"
       :retry="view.retry"
       :quotable="!approval && questions.length === 0"
@@ -382,7 +395,7 @@ async function fork(): Promise<void> {
       @quote="composer?.quote($event)"
     />
     <div v-if="view.running && view.queued.length" class="composer-panel">
-      <QueuedInputs :session-id="sessionId" :items="view.queued" />
+      <QueuedInputs :session-id="sessionId" :branch-id="centred" :items="view.queued" />
     </div>
     <div v-if="approval" class="composer-panel">
       <ApprovalPrompt :key="JSON.stringify([approval.branchId, approval.requestId])" :session-id="sessionId" :request="approval" :keyboard="approvalKeyboard" :rules-available="rulesAvailable" />
@@ -395,6 +408,7 @@ async function fork(): Promise<void> {
         v-if="!prompting"
         ref="composer"
         :session-id="sessionId"
+        :branch-id="centred"
         :running="view.running"
         :stopping="view.stopping"
         :model="view.model"
@@ -411,6 +425,7 @@ async function fork(): Promise<void> {
         :open-lines="branchable ? () => ui.openLines(sessionId) : undefined"
         :session-commands="sessionCommands"
         :skills="skills"
+        :centre="liveCentre"
       />
     </KeepAlive>
   </section>

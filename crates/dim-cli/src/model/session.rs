@@ -164,6 +164,17 @@ pub enum SessionsScope {
     All,
 }
 
+/// Where a key's command was typed: on Home, before any Session, or in the
+/// Session shown then. A command acts only on the origin it names, so a
+/// command that waited while an attachment changed is cancelled instead of
+/// reaching the new centre. Home keeps the startup path: its commands create
+/// a Session or change the preference the next one starts with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    Home,
+    Session(String),
+}
+
 pub enum Command {
     ToolOrigin {
         session_id: String,
@@ -177,10 +188,28 @@ pub enum Command {
         projection_id: u64,
         targets: std::collections::BTreeSet<crate::model::view::CompactionTarget>,
     },
-    Submit(String, SubmitMode),
+    /// A message and the origin and line its draft was typed on; a submit
+    /// whose origin or line is no longer the centre is cancelled and its
+    /// draft kept (design §14).
+    Submit {
+        text: String,
+        mode: SubmitMode,
+        line: String,
+        session: Origin,
+    },
     /// A draft with pastes to store or content blocks to send.
-    SubmitDraft(Vec<DraftPart>, SubmitMode),
-    Stop,
+    SubmitDraft {
+        parts: Vec<DraftPart>,
+        mode: SubmitMode,
+        line: String,
+        session: Origin,
+    },
+    /// Interrupt the run on the line the key was pressed on, unless the
+    /// Session has changed since (design §14).
+    Stop {
+        line: String,
+        session: Origin,
+    },
     /// Answer an approval request.
     Approval {
         request_id: String,
@@ -213,9 +242,13 @@ pub enum Command {
         input_id: String,
         action: &'static str,
     },
-    /// Interrupt the run and reply once it has settled, so the interface can
-    /// submit the draft it held back (Ctrl+Enter).
-    SubmitNow,
+    /// Interrupt the run on the line the gesture started on and reply once it
+    /// has settled, so the interface can submit the draft it held back
+    /// (Ctrl+Enter); a Session handoff cancels it (design §14).
+    SubmitNow {
+        line: String,
+        session: Origin,
+    },
     /// Stop a background command on its originating branch (`/tasks`).
     StopTask {
         session_id: String,
@@ -232,6 +265,13 @@ pub enum Command {
     CloseSide,
     /// End a line of the displayed attachment, as the user asked.
     EndLine {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+    },
+    /// Continue on a line: make it the Session's default branch and show it
+    /// (design §14).
+    SetDefaultLine {
         session_id: String,
         projection_id: u64,
         branch_id: String,
@@ -349,26 +389,58 @@ pub enum Command {
     },
     ClearModelPreferences {
         query: String,
-        after: Option<dim_agent_types::ModelId>,
+        batches: usize,
         provider_id: String,
         model_id: String,
         expected_version: u32,
     },
-    /// Produce the `/usage` report.
-    Usage,
-    Earlier,
+    /// Produce the `/usage` report for the Session's default branch as it was
+    /// when the command was typed; a report whose line has moved is cancelled.
+    Usage {
+        line: String,
+        session: Origin,
+    },
+    /// Load what is before the drawn top of the line the command was typed on;
+    /// a read whose line has moved is cancelled.
+    Earlier {
+        line: String,
+        session: Origin,
+    },
     Export(crate::export::Format),
-    /// `/compact`: ask the shown line to compact its context.
-    Compact,
+    /// `/compact`: ask the line the command was typed on to compact its
+    /// context; a command whose line has moved is cancelled.
+    Compact {
+        line: String,
+        session: Origin,
+    },
     /// `/rename`: set the shown Session's manual title, or clear it when
     /// `title` is `None`; an empty text is refused, and only `--clear`
     /// clears. Nothing here reaches the model.
     Rename(Option<String>),
-    /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
-    Goal(crate::goal::Request),
-    /// `/loop`: show, start or stop a loop on the shown line.
-    Loop(crate::loop_view::Request),
-    SetPermission(crate::permission::PresetSelection),
+    /// `/goal`: show, set, edit, pause, resume or clear the line the command
+    /// was typed on; `draft` restores the command when that line has moved.
+    Goal {
+        request: crate::goal::Request,
+        line: String,
+        session: Origin,
+        draft: String,
+    },
+    /// `/loop`: show, start or stop a loop on the line the command was typed
+    /// on; `draft` restores the command when that line has moved.
+    Loop {
+        request: crate::loop_view::Request,
+        line: String,
+        session: Origin,
+        draft: String,
+    },
+    /// Change the permission preset on the default branch the gesture saw;
+    /// a gesture made on Home changes the preset the next Session starts
+    /// with instead.
+    SetPermission {
+        change: crate::permission::PresetSelection,
+        session: Origin,
+        line: String,
+    },
     /// List the providers of the `/connect` panel.
     ListProviders,
     /// Change one provider.
@@ -386,6 +458,11 @@ pub enum Command {
     },
     /// The `/login` panel opened: report the provider's account.
     LoginStatus(String),
+    ChatGptProfiles,
+    SelectChatGptProfile {
+        profile_id: String,
+        attempt: u64,
+    },
     /// The `/login` panel shows a signed-in account: report its usage.
     LoginUsage(String),
     /// `/web`: flip the daemon-owned Web entry switch.
@@ -395,11 +472,14 @@ pub enum Command {
     /// Sign the described account out.
     Logout(AccountTarget),
     /// Run a shell-mode command through the App Server; `private` (`!!`)
-    /// keeps its result out of the session.
+    /// keeps its result out of the session. The Session and line are the ones
+    /// the command was typed on (design §14).
     ShellRun {
         run_id: String,
         command: String,
         private: bool,
+        line: String,
+        session: Origin,
     },
     /// Ask the run `run_id` to end.
     ShellStop {
@@ -424,8 +504,13 @@ pub enum Command {
     /// Change one runtime; the worker lists the runtimes and the plugins
     /// again after it.
     Runtime(RuntimeAction),
-    /// A configuration command line (`/effort high`, `/agent`, ...).
-    Configure(String),
+    /// A configuration command line (`/effort high`, `/agent`, ...) and the
+    /// line its draft was typed on.
+    Configure {
+        text: String,
+        line: String,
+        session: Origin,
+    },
     /// Make `(provider, model)` the default and the active session's model.
     /// `reasoning_effort` is set when the picker cycled that model's effort;
     /// `label` is the row's text the default's confirmation names back.
@@ -868,6 +953,8 @@ pub struct OauthStart {
     pub namespace: String,
     pub device: bool,
     pub email: Option<String>,
+    pub profile_id: Option<String>,
+    pub migrate_legacy: bool,
 }
 
 /// A described account operation: the provider and its account namespace.
@@ -940,7 +1027,7 @@ pub enum ProviderAction {
 }
 
 /// The signed-in Dim account, as `account.status` reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Account {
     pub issuer: String,
     pub subject: String,
@@ -1004,7 +1091,7 @@ pub struct UsageFeature {
 #[derive(Debug, Clone)]
 pub struct ProviderEntry {
     pub id: String,
-    pub version: u32,
+    pub version: Option<u32>,
     pub name: String,
     pub driver: String,
     pub status: String,
@@ -1256,6 +1343,13 @@ pub enum Update {
     Stopped {
         error: Option<String>,
     },
+    /// `session.branch_set_default` refused the chosen line: the lines panel
+    /// shows the reason on the line the choice was made on (design §14).
+    LineRefusal {
+        projection_id: u64,
+        branch_id: String,
+        text: String,
+    },
     Exported {
         format: crate::export::Format,
         path: std::path::PathBuf,
@@ -1263,6 +1357,9 @@ pub enum Update {
     /// The startup preview or Session's adopted configuration: `provider / model`
     /// and its effective reasoning effort label the status line.
     Ready(Configuration),
+    /// The shown line has no configuration this client can show, so the status
+    /// line carries no model until a fact or a move supplies one (design §14).
+    NoModel,
     /// What the session's model offers, once its catalog entry is known:
     /// image input, and the priority/default service tiers of `/fast`.
     ModelFeatures {
@@ -1345,7 +1442,11 @@ pub enum Update {
     /// What `/update` found: a newer version, `None` when this build is the
     /// newest, or why nothing can be offered.
     UpgradeChecked(Result<Option<crate::update::Offer>, String>),
-    Models(Result<ModelList, String>),
+    Models {
+        query: String,
+        after: Option<dim_agent_types::ModelId>,
+        result: Result<Vec<ModelList>, String>,
+    },
     EffortChoices(Result<crate::configure::EffortChoices, String>),
     /// Sent only by a daemon that advertises the policy methods.
     ModelPolicy(ModelPolicyUpdate),
@@ -1385,6 +1486,11 @@ pub enum Update {
     /// A transient status-line message.
     Toast(String),
     Permissions(Result<dim_agent_types::PermissionPolicy, String>),
+    /// The shown line's policy is not known: the new centre's read is out, or
+    /// the line has one this client cannot read. The status line, Settings and
+    /// Permissions show no preset until a read or a fact supplies one (design
+    /// §14).
+    PermissionsUnknown,
     PermissionSelected(dim_agent_types::PermissionPreset),
     Providers(Result<Vec<ProviderEntry>, String>),
     /// What a provider change came to.
@@ -1423,11 +1529,18 @@ pub enum Update {
     Renamed(RenameReply),
     /// What a `/resume` delete came to, localized by the interface.
     Deleted(DeleteReply),
+    /// A fork ended without opening a Session: the shown one is still
+    /// attached, so no `Switched` ends the wait the fork started.
+    ForkFailed,
+    /// The host handled a `/new`, whether it left a Session or was already
+    /// Home: every `Command::NewSession` ends with exactly one of these.
+    NewSessionDone,
     /// Progress of the sign-in tagged `attempt`.
     Oauth {
         attempt: u64,
         event: OauthEvent,
     },
+    ChatGptProfiles(Result<Vec<crate::login::ChatGptProfile>, String>),
     /// Output the run `run_id` has produced since the last; `skipped` bytes
     /// were left out before it.
     ShellProgress {
@@ -1481,11 +1594,16 @@ pub trait SessionPort {
     fn drain(&self) -> Vec<Update>;
     /// Closes the connection and gives the worker a moment to wind down.
     fn shutdown(self: Box<Self>);
-    fn submit(&self, text: String, mode: SubmitMode) {
-        self.send(Command::Submit(text, mode));
+    fn submit(&self, text: String, mode: SubmitMode, line: String, session: Origin) {
+        self.send(Command::Submit {
+            text,
+            mode,
+            line,
+            session,
+        });
     }
-    fn stop(&self) {
-        self.send(Command::Stop);
+    fn stop(&self, line: String, session: Origin) {
+        self.send(Command::Stop { line, session });
     }
 }
 

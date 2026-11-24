@@ -1,6 +1,6 @@
-mod local_support;
+use crate::local_support;
 
-use dim_agent_capabilities::prompt_sources::refresh_update;
+use dim_agent_capabilities::prompt_sources::{PromptSourcesConfig, refresh_update};
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::*;
 use dim_agent_types::*;
@@ -84,9 +84,37 @@ async fn system_is_static_and_instructions_and_environment_arrive_as_inputs() {
         &[
             "You are DimAgent.",
             "Safety:",
+            "Tone and communication:",
+            "skip unnecessary preamble and wrap-up",
+            "Progress updates:",
+            "The user reads your reply text, \
+             while your thinking and most tool call details stay hidden",
+            "Before the first substantive tool call of a task",
             "<skills_instructions>",
             "SESSION-S",
         ],
+    );
+    let progress = system
+        .split_once("Progress updates:")
+        .and_then(|(_, rest)| rest.split_once("Objectivity:"))
+        .map(|(section, _)| section)
+        .expect("a Progress updates section before Objectivity");
+    for present in [
+        "when a finding changes the plan",
+        "when you hit a blocker",
+        "Exception: when the request asks for only a final answer, a patch or structured output, \
+         or when a task needs no tool or one quick read, \
+         write no text before or between tool calls",
+        "when the request asks for only a final answer, a patch or structured output",
+    ] {
+        assert!(
+            progress.contains(present),
+            "{present} missing in:\n{system}"
+        );
+    }
+    assert!(
+        !system.contains("skip preamble") && !system.contains("several tool calls"),
+        "{system}"
     );
     for absent in [
         "PROJECT-P",
@@ -382,4 +410,65 @@ async fn a_loaded_branch_appends_a_date_reminder_when_the_day_changes() {
     run(&session, "after restart").await;
     assert_eq!(dates(&session).await, ["2026-09-30", "2026-10-01"]);
     env.agent.close().await.unwrap();
+}
+
+/// A candidate base prompt at PromptSources' factory configuration replaces
+/// `dim/base`'s identity and rules (model-prompts §8.1): the Session's System
+/// carries the candidate, not the built-in text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_candidate_base_prompt_replaces_the_built_in_text() {
+    let dirs = Dirs::new();
+    let cwd = dirs.dir("root");
+    let env = env(
+        &dirs,
+        Options {
+            prompt_sources: Some(PromptSourcesConfig {
+                base: Some("CANDIDATE-BASE".into()),
+                ..Default::default()
+            }),
+            ..Options::default()
+        },
+    )
+    .await;
+    let session = env.session(&cwd, "SESSION-S").await.unwrap();
+    run(&session, "hello").await;
+    let system = last_system(&requests(&session).await);
+    assert!(system.contains("CANDIDATE-BASE"), "{system}");
+    assert!(!system.contains("You are DimAgent."), "{system}");
+    env.agent.close().await.unwrap();
+}
+
+/// Without a candidate the factory configuration keeps the built-in base
+/// prompt (model-prompts §8.1): `install_with_clock` and `install_with_config`
+/// given the default configuration compose the same System text, byte for
+/// byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_default_factory_configuration_keeps_the_built_in_base_prompt() {
+    let dirs = Dirs::new();
+    let cwd = dirs.dir("root");
+    let mut systems = Vec::new();
+    for config in [None, Some(PromptSourcesConfig::default())] {
+        let env = env(
+            &dirs,
+            Options {
+                prompt_sources: config,
+                ..Options::default()
+            },
+        )
+        .await;
+        let session = env.session(&cwd, "SESSION-S").await.unwrap();
+        run(&session, "hello").await;
+        let system = last_system(&requests(&session).await);
+        assert!(system.contains("You are DimAgent."), "{system}");
+        assert!(
+            system.contains("Never introduce code that exposes, logs, or commits secrets"),
+            "{system}"
+        );
+        systems.push(system);
+        env.agent.close().await.unwrap();
+    }
+    assert_eq!(
+        systems[0], systems[1],
+        "the default configuration composes the built-in base prompt, byte for byte"
+    );
 }

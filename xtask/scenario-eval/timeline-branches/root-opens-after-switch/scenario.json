@@ -1,0 +1,15 @@
+{
+  "description": "The root opens a line after another line became the default branch; the new line starts from the root and reports to it",
+  "message": "Open one line to add a `--dry-run` option to cli.py with a test. While it works, update README.md with the new option and the project's test command.",
+  "switch": {
+    "to": {"role": "latest_tool_line"},
+    "message": "Now add a `--json` output option to report.py with a test. Open a new line for it, from your own history.",
+    "branchId": "main"
+  },
+  "budget": {"turns": 30, "seconds": 900, "window": 131072},
+  "probes": [
+    {"id": "root-opens-line", "kind": "must_show", "text": "after the default branch moved to the tool line, the root opens a new line with the branch tool in response to the user's second request"},
+    {"id": "new-line-reports-to-root", "kind": "must_show", "text": "the new line is cut from the root's history and reports to the root, not to the line holding the default branch"},
+    {"id": "default-line-does-not-take-it", "kind": "must_not_show", "text": "the line holding the default branch does the --json work itself"}
+  ]
+}

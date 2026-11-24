@@ -488,39 +488,56 @@ impl ProviderService {
         self.adopt_provider(&provider_id, cancel).await?;
         let id = provider_id.clone();
         let db = self.db.clone();
-        let header = self
+        let bundled_count = self.bundled.bundled_model_count(&provider_id);
+        let changes_endpoint = patch.changes_endpoint();
+        let check_empty_listing =
+            bundled_count == Some(0) && patch.enabled == Some(true) && !changes_endpoint;
+        let (header, empty_endpoint_listing) = self
             .owned(cancel, move |_| {
                 Box::pin(async move {
                     db.run_read(move |c| {
-                        persistence::static_read(c, &id, persistence::Models::Header)
+                        let header = persistence::static_read(c, &id, persistence::Models::Header)?;
+                        let empty = check_empty_listing
+                            && header.as_ref().is_some_and(|record| {
+                                record.version == expected_version
+                                    && !record.enabled
+                                    && record.remote_models
+                            })
+                            && !persistence::has_endpoint_models(c, &id)?;
+                        Ok((header, empty))
                     })
                     .await
                     .map_err(ProviderError::from)
                 })
             })
-            .await?
-            .ok_or(ProviderError::NotFound)?;
+            .await?;
+        let header = header.ok_or(ProviderError::NotFound)?;
         if header.version != expected_version {
             return Err(ProviderError::Conflict(
                 "Provider version changed; reread before retrying".into(),
             ));
         }
-        let bundled_models =
-            self.bundled.provider_header(&provider_id).is_some() && !header.remote_models;
+        let inherited_count = if header.remote_models {
+            None
+        } else {
+            bundled_count
+        };
+        let enabled = patch.enabled.unwrap_or(header.enabled);
+        let listable = self.remote_model_list(&provider_id, &header);
+        let load_empty_bundle = inherited_count == Some(0) && enabled && listable;
+        let bundled_models = inherited_count.is_some() && !load_empty_bundle;
+        let refresh = changes_endpoint
+            || (!header.enabled && listable && (load_empty_bundle || empty_endpoint_listing));
         let (record, models_listed) = if patch.glued_prefix.is_none()
-            && (!patch.changes_endpoint()
-                || bundled_models
-                || !self.remote_model_list(&provider_id, &header))
+            && (!refresh || bundled_models || !listable)
         {
-            let listed = patch.changes_endpoint().then_some(
-                if patch.enabled == Some(false) || (patch.enabled.is_none() && !header.enabled) {
-                    ModelsListed::Disabled
-                } else if bundled_models {
-                    ModelsListed::Bundled
-                } else {
-                    ModelsListed::Unsupported
-                },
-            );
+            let listed = refresh.then_some(if !enabled {
+                ModelsListed::Disabled
+            } else if bundled_models {
+                ModelsListed::Bundled
+            } else {
+                ModelsListed::Unsupported
+            });
             let db = self.db.clone();
             let id = provider_id.clone();
             let bundled = self.bundled.clone();
@@ -578,9 +595,15 @@ impl ProviderService {
                 })
                 .await?;
             (record, listed)
-        } else if patch.changes_endpoint() {
-            self.update_connection(provider_id.clone(), expected_version, patch, cancel)
-                .await?
+        } else if refresh {
+            self.update_connection(
+                provider_id.clone(),
+                expected_version,
+                patch,
+                bundled_models,
+                cancel,
+            )
+            .await?
         } else {
             (
                 self.mutate_static(
@@ -610,15 +633,14 @@ impl ProviderService {
         }
     }
 
-    /// Applies a patch that changes the endpoint and, when the record's models
-    /// are its own, replaces them with the new endpoint's listing in the same
-    /// compare-and-set write. A failed listing fails the update, so a
-    /// re-pointing never leaves the old endpoint's models on the new one.
+    /// Applies a connection update and any required listing in the same
+    /// compare-and-set write. A failed listing leaves the connection unchanged.
     async fn update_connection(
         self: &Arc<Self>,
         provider_id: String,
         expected_version: u32,
         patch: ProviderPatch,
+        bundled_models: bool,
         cancel: &CancellationToken,
     ) -> Result<(StaticProviderRecord, Option<ModelsListed>), ProviderError> {
         let owner = self.clone();
@@ -648,8 +670,6 @@ impl ProviderService {
                 }
                 validate_static_record(&provider_id, &mut admitted)
                     .map_err(|error| ProviderError::InvalidConfig(error.to_string()))?;
-                let bundled_models = owner.bundled.provider_ids().any(|id| id == provider_id)
-                    && !admitted.remote_models;
                 let own_models =
                     !bundled_models && owner.remote_model_list(&provider_id, &admitted);
                 let (models, models_listed) = if !admitted.enabled {

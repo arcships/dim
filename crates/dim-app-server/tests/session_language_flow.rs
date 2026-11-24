@@ -3,8 +3,6 @@
 //! PromptSources, and the `dim/language` state it feeds.
 //!
 //! [PromptSources §3]: ../../../docs/design/plugins/PromptSources.md
-#![cfg(unix)]
-
 use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
 use dim_agent_capabilities::{
     adapters::MockTools,

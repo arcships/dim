@@ -8,6 +8,7 @@ are in [AGENTS.md](../../AGENTS.md).
 | ADR | [adr.md](adr.md) | [ADR 008](../adr/008-documentation-ownership.md) |
 | Feature or plugin design | [design.md](design.md) | [Web](../design/plugins/Web.md) |
 | Contract | [contract.md](contract.md) | [Session access](../design/contracts/session-access.md) |
+| Owner redesign | [owner-redesign.md](owner-redesign.md) | none yet |
 
 The [design guide](../design/capability-design-arguments.md) offers help with use, public promises and verification.
 The [detailed reference](../design/capability-design-reference.md) and [Wait example](../design/examples/wait-argument.md)

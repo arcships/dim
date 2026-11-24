@@ -4,6 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+autotests = false
+
+[[test]]
+name = "transport_flow"
+path = "tests/transport_flow.rs"
+
+[[test]]
+name = "provider_memory_flow"
+path = "tests/provider_memory_flow.rs"
+
+[[test]]
+name = "app_server_flow"
+path = "tests/app_server_flow.rs"
 
 [dependencies]
 dim-codemode.workspace = true
@@ -37,6 +50,8 @@ zip = { version = "9.1", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
 base64 = "0.22"
+ring = "0.17.14"
+time = { version = "0.3", features = ["parsing"] }
 serde_jcs = "0.2"
 toml = { version = "1", features = ["preserve_order"] }
 jsonschema = { version = "0.50.1", default-features = false }

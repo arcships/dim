@@ -64,18 +64,23 @@ fn require_rules(client: &Client) -> Result<()> {
 /// Runs `text`, an `/approvals` command line. `listing` is the rule list
 /// printed last, which `remove N` numbers from; its revision makes the write
 /// fail if the rules changed since.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per piece of the prompt, the line and the listing it acts on"
+)]
 pub async fn command(
     client: &mut Client,
     input: &mut Input,
     interrupts: &mut Interrupts,
     session_id: &str,
+    branch_id: &str,
     text: &str,
     display: &mut Display,
     listing: &mut Option<Rules>,
 ) -> Result<()> {
     let words: Vec<_> = text.split_whitespace().collect();
     match words[1..] {
-        [] => show(client, interrupts, session_id, display, listing).await,
+        [] => show(client, interrupts, session_id, branch_id, display, listing).await,
         ["remove", number] => {
             require_rules(client)?;
             let Some(seen) = listing.as_ref() else {
@@ -107,7 +112,10 @@ pub async fn command(
         }
         [preset] if !matches!(preset, "remove" | "allow" | "deny") => {
             let preset = permission::parse_preset(preset)?;
-            switch(client, input, interrupts, session_id, preset, display).await
+            switch(
+                client, input, interrupts, session_id, branch_id, preset, display,
+            )
+            .await
         }
         _ => {
             let Some((decision, matching, command)) = permission::parse_rule_words(&words[1..])
@@ -132,11 +140,17 @@ async fn show(
     client: &mut Client,
     interrupts: &mut Interrupts,
     session_id: &str,
+    branch_id: &str,
     display: &mut Display,
     listing: &mut Option<Rules>,
 ) -> Result<()> {
     if client.supports(&PRESET_METHODS) {
-        let state = settle(interrupts, NOTICE, permission::read(client, session_id)).await?;
+        let state = settle(
+            interrupts,
+            NOTICE,
+            permission::read(client, session_id, branch_id),
+        )
+        .await?;
         print_state(display, &state)?;
     } else {
         display.record("Permission presets: this daemon does not provide them")?;
@@ -158,21 +172,27 @@ async fn switch(
     input: &mut Input,
     interrupts: &mut Interrupts,
     session_id: &str,
+    branch_id: &str,
     preset: PermissionPreset,
     display: &mut Display,
 ) -> Result<()> {
     if !client.supports(&PRESET_METHODS) {
         return Err("This daemon cannot change the permission preset".into());
     }
-    let mut seen = settle(interrupts, NOTICE, permission::read(client, session_id)).await?;
+    let mut seen = settle(
+        interrupts,
+        NOTICE,
+        permission::read(client, session_id, branch_id),
+    )
+    .await?;
     let name = permission::name(preset);
     if seen.policy.preset == preset {
-        display.record(&format!("Preset (main branch) is already {name}"))?;
+        display.record(&format!("Preset is already {name}"))?;
         return print_state(display, &seen);
     }
     if preset == PermissionPreset::FullAccess {
         display.record("Full access removes path limits and skips tool questions. Explicit denies and process isolation still apply.")?;
-        input.prompt("Switch the main branch to full-access? [y/N] ")?;
+        input.prompt("Switch to full-access? [y/N] ")?;
         let line = tokio::select! {
             biased;
             _ = interrupts.recv() => {
@@ -193,15 +213,15 @@ async fn switch(
     match settle(
         interrupts,
         NOTICE,
-        permission::switch(client, session_id, &seen, preset),
+        permission::switch(client, session_id, branch_id, &seen, preset),
     )
     .await?
     {
-        Switch::Unchanged => display.record(&format!("Preset (main branch) is already {name}"))?,
+        Switch::Unchanged => display.record(&format!("Preset is already {name}"))?,
         Switch::Switched(version) => {
             display.permission_seen = display.permission_seen.max(version);
             display.record(&format!(
-                "Preset (main branch): {name}. Child branches and members created later from main inherit it; existing branches and members keep their policies."
+                "Preset: {name}. Lines and members created later from this line inherit it; existing lines and members keep their policies."
             ))?;
             seen.policy.preset = preset;
         }

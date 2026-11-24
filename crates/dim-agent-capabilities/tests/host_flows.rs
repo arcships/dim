@@ -4344,8 +4344,54 @@ fn sent_parts(request: &ModelRequest) -> Vec<String> {
         .collect()
 }
 
+fn sent_image_sources(request: &ModelRequest) -> Vec<ImageSource> {
+    let mut images = Vec::new();
+    for message in &request.messages {
+        let MessageContent::Parts(parts) = &message.content else {
+            continue;
+        };
+        for part in parts {
+            match part {
+                MessagePart::Image { source } => images.push(source.clone()),
+                MessagePart::ToolResult {
+                    content: ToolContent::Blocks(blocks),
+                    ..
+                } => images.extend(blocks.iter().filter_map(|block| match block {
+                    ContentBlock::Image { source } => Some(source.clone()),
+                    _ => None,
+                })),
+                _ => {}
+            }
+        }
+    }
+    images
+}
+
+fn sent_texts(request: &ModelRequest) -> Vec<String> {
+    let mut texts = Vec::new();
+    for message in &request.messages {
+        let MessageContent::Parts(parts) = &message.content else {
+            continue;
+        };
+        for part in parts {
+            match part {
+                MessagePart::Text { text, .. } => texts.push(text.clone()),
+                MessagePart::ToolResult {
+                    content: ToolContent::Blocks(blocks),
+                    ..
+                } => texts.extend(blocks.iter().filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })),
+                _ => {}
+            }
+        }
+    }
+    texts
+}
+
 #[tokio::test]
-async fn image_references_survive_vision_and_text_model_switches_without_changing_history() {
+async fn vision_and_text_models_route_images_without_changing_history() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let agent = MinimalHost::start(&builder(
@@ -4387,7 +4433,7 @@ async fn image_references_survive_vision_and_text_model_switches_without_changin
         let unsendable = "[Image omitted: the image cannot be sent to this model.]";
         assert_eq!(
             sent_parts(requests.lock().unwrap().last().unwrap()),
-            ["look", TOOL_IMAGE_REFERENCE, TOOL_IMAGE_REFERENCE, unsendable, unsendable, unsendable, unsendable, unsendable, unsendable]
+            ["look", "image:image/png", "image:image/jpeg", unsendable, unsendable, unsendable, unsendable, unsendable, unsendable]
         );
 
         session
@@ -4415,7 +4461,7 @@ async fn image_references_survive_vision_and_text_model_switches_without_changin
         session.idle("main").await.unwrap();
         let restored = requests.lock().unwrap().last().unwrap().clone();
         assert_eq!(restored.model_id, "seeing-again");
-        assert_eq!(sent_parts(&restored)[..9], ["look", TOOL_IMAGE_REFERENCE, TOOL_IMAGE_REFERENCE, unsendable, unsendable, unsendable, unsendable, unsendable, unsendable]);
+        assert_eq!(sent_parts(&restored)[..9], ["look", "image:image/png", "image:image/jpeg", unsendable, unsendable, unsendable, unsendable, unsendable, unsendable]);
         agent.close().await.unwrap();
     })
     .await
@@ -4486,7 +4532,7 @@ impl SessionFilesService for StoredImages {
 }
 
 #[tokio::test]
-async fn stored_attachment_and_tool_images_share_a_reference_without_changing_file_history() {
+async fn stored_attachment_and_tool_images_route_by_vision_capability() {
     use base64::Engine;
 
     let files = Arc::new(StoredImages::default());
@@ -4596,36 +4642,54 @@ async fn stored_attachment_and_tool_images_share_a_reference_without_changing_fi
             .await
             .unwrap();
         session.idle("main").await.unwrap();
+        if vision {
+            assert!(
+                requests.lock().unwrap().is_empty(),
+                "the over-budget vision request is refused before the model host"
+            );
+            let events = chain_events(&session, "main", ..).await.unwrap();
+            let failure = events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.kind {
+                    EventKind::ModelOutputEnd(data) => match &data.outcome {
+                        ModelOutputOutcome::Failed {
+                            failure: Some(failure),
+                            ..
+                        } => Some(failure.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("the refused request settles with a failure");
+            assert!(
+                failure
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("Model request images exceed 32 MiB")),
+                "{:?}",
+                failure.reason
+            );
+            continue;
+        }
         let sent = requests.lock().unwrap().last().unwrap().clone();
         assert_eq!(sent.model_id, model_id);
+        assert!(sent_image_sources(&sent).is_empty());
         assert_eq!(
-            sent_parts(&sent)
+            sent_texts(&sent)
                 .iter()
-                .filter(|part| *part == "img:4739787cfd409e67")
+                .filter(|text| *text == "img:4739787cfd409e67")
                 .count(),
             3,
-            "retained images exceeding the pixel budget still reach {model_id} as references"
+            "retained images still reach {model_id} as references"
         );
-        assert!(
-            sent_parts(&sent)
+        assert_eq!(
+            sent_texts(&sent)
                 .iter()
-                .any(|part| part == TOOL_IMAGE_REFERENCE)
-        );
-        assert!(sent.messages.iter().any(|message| matches!(&message.content,
-            MessageContent::Parts(parts) if parts.iter().any(|part| matches!(part,
-                MessagePart::ToolResult { content: ToolContent::Blocks(blocks), .. }
-                    if blocks.contains(&ContentBlock::Text { text: TOOL_IMAGE_REFERENCE.into() }))))));
-        assert!(
-            !sent
-                .messages
-                .iter()
-                .any(|message| matches!(&message.content,
-                MessageContent::Parts(parts) if parts.iter().any(|part| match part {
-                    MessagePart::Image { .. } => true,
-                    MessagePart::ToolResult { content: ToolContent::Blocks(blocks), .. } =>
-                        blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. })),
-                    _ => false,
-                })))
+                .filter(|text| *text == TOOL_IMAGE_REFERENCE)
+                .count(),
+            2,
+            "the attachment and this turn's tool image share one reference"
         );
     }
     let events = chain_events(&session, "main", ..).await.unwrap();
@@ -4649,6 +4713,761 @@ async fn stored_attachment_and_tool_images_share_a_reference_without_changing_fi
                 matches!(part, MessagePart::ToolResult { content: ToolContent::Blocks(blocks), .. }
                     if blocks.contains(&tool_image))))))));
     agent.close().await.unwrap();
+}
+
+/// The Gemini connection every request resolves to in the budget test below.
+struct GeminiConnection;
+impl ResolveModelConnection for GeminiConnection {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Http(HttpModelConnection {
+                    protocol: ModelProtocol::Gemini,
+                    base_url: "http://gemini.invalid/v1beta".into(),
+                    network: Default::default(),
+                    headers: Default::default(),
+                    bearer: None,
+                    api_key: None,
+                    preset: None,
+                }),
+                failure_policy: None,
+                recovery: None,
+            })
+        })
+    }
+}
+
+/// Gemini turns a GIF into its reference, so the GIF never becomes pixels and
+/// never consumes the encoded-image budget; the PNGs in the same request stay
+/// pixels even when the three images together exceed the budget.
+#[tokio::test]
+async fn a_gemini_request_does_not_charge_a_gif_against_the_encoded_image_budget() {
+    use base64::Engine;
+
+    let files = Arc::new(StoredImages::default());
+    let file_image = |media_type: &str, id: &str| ContentBlock::Image {
+        source: ImageSource {
+            source_type: ImageSourceType::File,
+            media_type: media_type.into(),
+            file_id: Some(id.into()),
+            data: None,
+            url: None,
+        },
+    };
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    builder.process_value(Arc::new(SessionFiles(files.clone())));
+    defaults::install_with_process_model(&mut builder);
+    let model = Arc::new(RecordingModel(requests.clone()));
+    let agent = MinimalHost::start_with(&builder, move |root, _| {
+        root.provide(ModelHost(model))?;
+        root.provide(ProviderConnectionResolver(Arc::new(GeminiConnection)))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig {
+            model: model_with_vision("gemini", true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(TOOL_IMAGE)
+        .unwrap();
+    let mut large = bytes;
+    large.resize(9 * 1024 * 1024, 0);
+    assert!(2 * dim_agent_capabilities::images::base64_len(large.len() as u64) <= 32 * 1024 * 1024);
+    assert!(3 * dim_agent_capabilities::images::base64_len(large.len() as u64) > 32 * 1024 * 1024);
+    for name in ["frame.gif", "one.png", "two.png"] {
+        files
+            .put(
+                session.id().into(),
+                name.into(),
+                large.clone(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+    session
+        .input(
+            InputMessageData {
+                user: Some(UserInput {
+                    content: vec![
+                        file_image("image/gif", "frame.gif"),
+                        file_image("image/png", "one.png"),
+                        file_image("image/png", "two.png"),
+                    ],
+                }),
+                mode: Some(InputMode::Queue),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    {
+        let requests = requests.lock().unwrap();
+        let sent = requests.last().expect("the request reaches the model host");
+        let images = sent_image_sources(sent);
+        assert_eq!(images.len(), 2, "the two PNGs stay pixels: {sent:?}");
+        assert!(
+            images.iter().all(|image| image.media_type == "image/png"),
+            "no GIF remains a pixel: {sent:?}"
+        );
+        assert_eq!(
+            sent_texts(sent)
+                .iter()
+                .filter(|text| text.starts_with("img:"))
+                .count(),
+            1,
+            "the GIF becomes its reference: {sent:?}"
+        );
+    }
+    agent.close().await.unwrap();
+}
+
+/// The connection a native xAI request resolves to in the test below.
+struct NativeConnection(ModelProtocol);
+impl ResolveModelConnection for NativeConnection {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        let protocol = self.0;
+        Box::pin(async move {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Http(HttpModelConnection {
+                    protocol,
+                    base_url: "http://xai.invalid/v1".into(),
+                    network: Default::default(),
+                    headers: Default::default(),
+                    bearer: None,
+                    api_key: None,
+                    preset: None,
+                }),
+                failure_policy: None,
+                recovery: None,
+            })
+        })
+    }
+}
+
+/// Both native xAI routes take PNG and JPEG only, so the WebP and GIF in the
+/// same request become their references and never join the encoded-image
+/// budget, while the PNG stays pixels even though the three files together
+/// exceed the budget.
+#[tokio::test]
+async fn a_native_xai_request_turns_an_unsupported_image_into_its_reference() {
+    use base64::Engine;
+
+    for protocol in [ModelProtocol::Xai, ModelProtocol::XaiResponses] {
+        let files = Arc::new(StoredImages::default());
+        let file_image = |media_type: &str, id: &str| ContentBlock::Image {
+            source: ImageSource {
+                source_type: ImageSourceType::File,
+                media_type: media_type.into(),
+                file_id: Some(id.into()),
+                data: None,
+                url: None,
+            },
+        };
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut builder = AgentBuilder::new(AgentConfig::default());
+        builder
+            .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+            .session_value(Arc::new(
+                dim_agent_capabilities::history::HistoryRenderer::default(),
+            ))
+            .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+            .session_value(Arc::new(ContextModelHost(None)))
+            .session_value(Arc::new(CompactionStrategyHost(None)))
+            .require_feature(
+                Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                    Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+                }),
+            );
+        builder.process_value(Arc::new(SessionFiles(files.clone())));
+        defaults::install_with_process_model(&mut builder);
+        let model = Arc::new(RecordingModel(requests.clone()));
+        let agent = MinimalHost::start_with(&builder, move |root, _| {
+            root.provide(ModelHost(model))?;
+            root.provide(ProviderConnectionResolver(Arc::new(NativeConnection(
+                protocol,
+            ))))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let session = agent
+            .create_session(SessionConfig {
+                model: model_with_vision("native-xai", true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(TOOL_IMAGE)
+            .unwrap();
+        let mut large = bytes;
+        large.resize(9 * 1024 * 1024, 0);
+        let encoded = dim_agent_capabilities::images::base64_len(large.len() as u64);
+        assert!(2 * encoded <= 32 * 1024 * 1024);
+        assert!(3 * encoded > 32 * 1024 * 1024);
+        for name in ["frame.gif", "photo.webp", "shot.png"] {
+            files
+                .put(
+                    session.id().into(),
+                    name.into(),
+                    large.clone(),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+        session
+            .input(
+                InputMessageData {
+                    user: Some(UserInput {
+                        content: vec![
+                            file_image("image/gif", "frame.gif"),
+                            file_image("image/webp", "photo.webp"),
+                            file_image("image/png", "shot.png"),
+                        ],
+                    }),
+                    mode: Some(InputMode::Queue),
+                    ..Default::default()
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        {
+            let requests = requests.lock().unwrap();
+            let sent = requests.last().unwrap_or_else(|| {
+                panic!("the {protocol:?} request is refused before the model host")
+            });
+            let images = sent_image_sources(sent);
+            assert_eq!(
+                images.len(),
+                1,
+                "only the PNG stays pixels on {protocol:?}: {sent:?}"
+            );
+            assert_eq!(images[0].media_type, "image/png", "{sent:?}");
+            assert_eq!(
+                sent_texts(sent)
+                    .iter()
+                    .filter(|text| text.starts_with("img:"))
+                    .count(),
+                2,
+                "the WebP and the GIF become references: {sent:?}"
+            );
+        }
+        agent.close().await.unwrap();
+    }
+}
+
+/// The connection a built-in xAI route resolves to in the test below: the
+/// compatible protocol with the preset that names the vendor package.
+struct CompatibleXaiConnection;
+impl ResolveModelConnection for CompatibleXaiConnection {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Http(HttpModelConnection {
+                    protocol: ModelProtocol::OpenaiCompatible,
+                    base_url: "http://xai.invalid/v1".into(),
+                    network: Default::default(),
+                    headers: Default::default(),
+                    bearer: None,
+                    api_key: None,
+                    preset: Some("xai".into()),
+                }),
+                failure_policy: None,
+                recovery: None,
+            })
+        })
+    }
+}
+
+/// The compatible protocol with the `xai` preset takes PNG and JPEG only, so
+/// the WebP and GIF in the same request become their references and never join
+/// the encoded-image budget, while the PNG stays pixels even though the three
+/// files together exceed the budget.
+#[tokio::test]
+async fn a_compatible_xai_request_turns_an_unsupported_image_into_its_reference() {
+    use base64::Engine;
+
+    let files = Arc::new(StoredImages::default());
+    let file_image = |media_type: &str, id: &str| ContentBlock::Image {
+        source: ImageSource {
+            source_type: ImageSourceType::File,
+            media_type: media_type.into(),
+            file_id: Some(id.into()),
+            data: None,
+            url: None,
+        },
+    };
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    builder.process_value(Arc::new(SessionFiles(files.clone())));
+    defaults::install_with_process_model(&mut builder);
+    let model = Arc::new(RecordingModel(requests.clone()));
+    let agent = MinimalHost::start_with(&builder, move |root, _| {
+        root.provide(ModelHost(model))?;
+        root.provide(ProviderConnectionResolver(Arc::new(
+            CompatibleXaiConnection,
+        )))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig {
+            model: model_with_vision("compatible-xai", true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(TOOL_IMAGE)
+        .unwrap();
+    let mut large = bytes;
+    large.resize(9 * 1024 * 1024, 0);
+    let encoded = dim_agent_capabilities::images::base64_len(large.len() as u64);
+    assert!(2 * encoded <= 32 * 1024 * 1024);
+    assert!(3 * encoded > 32 * 1024 * 1024);
+    for name in ["frame.gif", "photo.webp", "shot.png"] {
+        files
+            .put(
+                session.id().into(),
+                name.into(),
+                large.clone(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+    session
+        .input(
+            InputMessageData {
+                user: Some(UserInput {
+                    content: vec![
+                        file_image("image/gif", "frame.gif"),
+                        file_image("image/webp", "photo.webp"),
+                        file_image("image/png", "shot.png"),
+                    ],
+                }),
+                mode: Some(InputMode::Queue),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    {
+        let requests = requests.lock().unwrap();
+        let sent = requests.last().unwrap_or_else(|| {
+            panic!("the compatible xAI request is refused before the model host")
+        });
+        let images = sent_image_sources(sent);
+        assert_eq!(
+            images.len(),
+            1,
+            "only the PNG stays pixels on the compatible xAI route: {sent:?}"
+        );
+        assert_eq!(images[0].media_type, "image/png", "{sent:?}");
+        assert_eq!(
+            sent_texts(sent)
+                .iter()
+                .filter(|text| text.starts_with("img:"))
+                .count(),
+            2,
+            "the WebP and the GIF become references: {sent:?}"
+        );
+    }
+    agent.close().await.unwrap();
+}
+
+/// A vision model within the encoded-image budget receives a stored
+/// attachment and a stored tool image as their pixels.
+#[tokio::test]
+async fn a_vision_model_receives_stored_attachment_and_tool_images_as_pixels() {
+    use base64::Engine;
+
+    let files = Arc::new(StoredImages::default());
+    let stored = |id: &str| ContentBlock::Image {
+        source: ImageSource {
+            source_type: ImageSourceType::File,
+            media_type: "image/png".into(),
+            file_id: Some(id.into()),
+            data: None,
+            url: None,
+        },
+    };
+    let attachment = stored("attachment.png");
+    let tool_image = stored("tool.png");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut builder = builder(
+        Arc::new(RecordingModel(requests.clone())),
+        Arc::new(Screenshot(vec![tool_image])),
+    );
+    builder.process_value(Arc::new(SessionFiles(files.clone())));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig {
+            tools: Some(vec!["shot".into()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(TOOL_IMAGE)
+        .unwrap();
+    for name in ["attachment.png", "tool.png"] {
+        files
+            .put(
+                session.id().into(),
+                name.into(),
+                bytes.clone(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+    let mut model = model_with_vision("vision", true);
+    model.metadata = Some(RequestMetadata {
+        session_id: Some(session.id().into()),
+        ..Default::default()
+    });
+    session
+        .configure(
+            ConfigureUpdate {
+                model: Some(model),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    session
+        .input(
+            InputMessageData {
+                user: Some(UserInput {
+                    content: vec![attachment],
+                }),
+                mode: Some(InputMode::Queue),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    session
+        .submit("tool:shot {}".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+
+    let sent = requests.lock().unwrap().last().unwrap().clone();
+    let mut user_images = Vec::new();
+    let mut tool_images = Vec::new();
+    for message in &sent.messages {
+        let MessageContent::Parts(parts) = &message.content else {
+            continue;
+        };
+        for part in parts {
+            match part {
+                MessagePart::Image { source } => user_images.push(source.clone()),
+                MessagePart::ToolResult {
+                    content: ToolContent::Blocks(blocks),
+                    ..
+                } => tool_images.extend(blocks.iter().filter_map(|block| match block {
+                    ContentBlock::Image { source } => Some(source.clone()),
+                    _ => None,
+                })),
+                _ => {}
+            }
+        }
+    }
+    let pixels = |sources: &[ImageSource], from: &str| {
+        assert_eq!(sources.len(), 1, "{from} is sent");
+        let source = &sources[0];
+        assert_eq!(
+            source.source_type,
+            ImageSourceType::Base64,
+            "{from} is resolved to pixels: {source:?}"
+        );
+        assert_eq!(
+            source.data.as_deref(),
+            Some(TOOL_IMAGE),
+            "{from} carries its file bytes: {source:?}"
+        );
+        assert!(
+            source.file_id.is_none(),
+            "{from} carries no file id: {source:?}"
+        );
+    };
+    pixels(&user_images, "the stored attachment");
+    pixels(&tool_images, "the stored tool image");
+    let texts = sent_texts(&sent);
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text.starts_with("img:") || text.starts_with("[Image omitted")),
+        "no reference or placeholder replaces a pixel: {texts:?}"
+    );
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn store_result_replaces_an_oversized_tool_image_with_its_size_and_limit() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let files = Arc::new(StoredImages::default());
+    let oversized = STANDARD.encode(vec![0u8; 17 * 1024 * 1024]);
+    let mut result = ToolResult {
+        content: ToolContent::Blocks(vec![
+            ContentBlock::Text {
+                text: "screenshot".into(),
+            },
+            image("image/png", Some(&oversized), None),
+        ]),
+        ..Default::default()
+    };
+    dim_agent_capabilities::session_files::store_result(
+        &SessionFiles(files.clone()),
+        "session",
+        &mut result,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let ToolContent::Blocks(blocks) = &result.content else {
+        panic!("a blocks result stays blocks")
+    };
+    assert_eq!(
+        blocks.as_slice(),
+        [
+            ContentBlock::Text {
+                text: "screenshot".into(),
+            },
+            ContentBlock::Text {
+                text: "[Image omitted: the tool image is 17825792 bytes, above the 16 MiB limit.]"
+                    .into(),
+            },
+        ]
+    );
+    assert_eq!(result.is_error, None);
+}
+
+const IMAGE_LIMIT: usize = 16 * 1024 * 1024;
+
+fn encoded_zeroes(bytes: usize) -> String {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    STANDARD.encode(vec![0u8; bytes])
+}
+
+fn image_block(encoded: String) -> ContentBlock {
+    ContentBlock::Image {
+        source: ImageSource {
+            file_id: None,
+            source_type: ImageSourceType::Base64,
+            media_type: "image/png".into(),
+            data: Some(encoded),
+            url: None,
+        },
+    }
+}
+
+async fn stored_blocks(blocks: Vec<ContentBlock>) -> (ToolResult, Arc<StoredImages>) {
+    let files = Arc::new(StoredImages::default());
+    let mut result = ToolResult {
+        content: ToolContent::Blocks(blocks),
+        ..Default::default()
+    };
+    dim_agent_capabilities::session_files::store_result(
+        &SessionFiles(files.clone()),
+        "session",
+        &mut result,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    (result, files)
+}
+
+fn block_list(result: &ToolResult) -> &[ContentBlock] {
+    let ToolContent::Blocks(blocks) = &result.content else {
+        panic!("a blocks result stays blocks")
+    };
+    blocks
+}
+
+async fn omitted_for_its_size(bytes: usize) {
+    let (result, files) = stored_blocks(vec![image_block(encoded_zeroes(bytes))]).await;
+    assert_eq!(
+        block_list(&result),
+        [ContentBlock::Text {
+            text: format!(
+                "[Image omitted: the tool image is {bytes} bytes, above the 16 MiB limit.]"
+            ),
+        }],
+        "an image of {bytes} bytes is above the 16 MiB limit"
+    );
+    assert_eq!(result.is_error, None);
+    assert!(
+        files.0.lock().unwrap().is_empty(),
+        "an oversized image is not stored"
+    );
+}
+
+#[tokio::test]
+async fn store_result_keeps_an_image_at_the_limit_out_of_the_size_placeholder() {
+    let (result, _) = stored_blocks(vec![image_block(encoded_zeroes(IMAGE_LIMIT))]).await;
+    assert_eq!(
+        block_list(&result),
+        [ContentBlock::Text {
+            text: "[Image omitted: the image cannot be sent to this model.]".into(),
+        }],
+        "an image at the limit is decoded and scaled, not replaced for its size"
+    );
+}
+
+#[tokio::test]
+async fn store_result_replaces_an_image_one_byte_above_the_limit() {
+    omitted_for_its_size(IMAGE_LIMIT + 1).await;
+}
+
+#[tokio::test]
+async fn store_result_replaces_an_image_two_bytes_above_the_limit() {
+    omitted_for_its_size(IMAGE_LIMIT + 2).await;
+}
+
+#[tokio::test]
+async fn store_result_rejects_malformed_base64_at_the_encoded_limit() {
+    let mut encoded = encoded_zeroes(IMAGE_LIMIT + 3);
+    assert!(
+        encoded.len() as u64 > dim_agent_capabilities::images::base64_len(IMAGE_LIMIT as u64),
+        "the encoding is above the limit's length, so only validation decides the outcome"
+    );
+    encoded.replace_range(8..9, "!");
+    let files = Arc::new(StoredImages::default());
+    let mut result = ToolResult {
+        content: ToolContent::Blocks(vec![image_block(encoded)]),
+        ..Default::default()
+    };
+    let error = dim_agent_capabilities::session_files::store_result(
+        &SessionFiles(files.clone()),
+        "session",
+        &mut result,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            HostError::Failed {
+                kind: HostErrorKind::InvalidRequest,
+                ..
+            }
+        ),
+        "malformed base64 is an invalid request, not an omission: {error:?}"
+    );
+    assert!(files.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn store_result_replaces_only_the_oversized_image_between_its_neighbors() {
+    let oversized = encoded_zeroes(IMAGE_LIMIT + 2);
+    let (result, files) = stored_blocks(vec![
+        ContentBlock::Text {
+            text: "before".into(),
+        },
+        image_block(oversized),
+        ContentBlock::Text {
+            text: "between".into(),
+        },
+        image("image/png", Some(TOOL_IMAGE), None),
+        ContentBlock::Text {
+            text: "after".into(),
+        },
+    ])
+    .await;
+    assert_eq!(
+        block_list(&result),
+        [
+            ContentBlock::Text {
+                text: "before".into(),
+            },
+            ContentBlock::Text {
+                text: "[Image omitted: the tool image is 16777218 bytes, above the 16 MiB limit.]"
+                    .into(),
+            },
+            ContentBlock::Text {
+                text: "between".into(),
+            },
+            ContentBlock::Image {
+                source: ImageSource {
+                    source_type: ImageSourceType::File,
+                    media_type: "image/png".into(),
+                    file_id: Some("image".into()),
+                    data: None,
+                    url: None,
+                },
+            },
+            ContentBlock::Text {
+                text: "after".into(),
+            },
+        ]
+    );
+    assert_eq!(
+        files.0.lock().unwrap().len(),
+        1,
+        "only the image within the limit is stored"
+    );
 }
 
 #[tokio::test]
@@ -4715,17 +5534,25 @@ async fn replacing_a_tool_image_preserves_other_messages_and_the_stored_result()
             assert_eq!(
                 content,
                 &ToolContent::Blocks({
-                    let mut blocks = vec![
-                        ContentBlock::Text {
-                            text: "screenshot".into(),
+                    let image = || ContentBlock::Image {
+                        source: ImageSource {
+                            file_id: None,
+                            source_type: ImageSourceType::Base64,
+                            media_type: "image/png".into(),
+                            data: Some(TOOL_IMAGE.into()),
+                            url: None,
                         },
-                        ContentBlock::Text {
+                    };
+                    let mut blocks = vec![ContentBlock::Text {
+                        text: "screenshot".into(),
+                    }];
+                    if vision {
+                        blocks.extend([image(), image()]);
+                    } else {
+                        blocks.extend((0..2).map(|_| ContentBlock::Text {
                             text: TOOL_IMAGE_REFERENCE.into(),
-                        },
-                        ContentBlock::Text {
-                            text: TOOL_IMAGE_REFERENCE.into(),
-                        },
-                    ];
+                        }));
+                    }
                     blocks.extend((0..5).map(|_| {
                         ContentBlock::Text {
                             text: if vision {

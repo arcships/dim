@@ -1,0 +1,32 @@
+{
+  "description": "The user's own line becomes the default branch while a tool line holds it; the user-line note and the former-default note reach the lines' requests",
+  "message": "Open one line to diagnose the early-expiry bug in token.py and write the diagnosis to notes.md. While it works, check README.md for steps that no longer match the code.",
+  "calls": [
+    {
+      "method": "session.branch_create",
+      "params": {
+        "parentBranchId": "main",
+        "at": 0,
+        "prompt": "Review README.md's install and test steps against token.py and test_token.py, and report every step that is stale. Do not change any file yet."
+      }
+    }
+  ],
+  "moves": [
+    {
+      "to": {"role": "latest_tool_line"},
+      "message": "Continue the diagnosis here. Write notes.md with what you found and report it to the user."
+    },
+    {
+      "to": {"role": "user_line"},
+      "message": "Take the session's conversation from here. Finish the README review and report the stale steps, then wait for the next request.",
+      "formerMessage": "Report your diagnosis to the user now, and keep coordinating any line you opened. Do not change files outside the diagnosis."
+    }
+  ],
+  "budget": {"turns": 30, "seconds": 900, "window": 131072},
+  "probes": [
+    {"id": "user-line-carries-the-work", "kind": "must_show", "text": "after the user's line became the default branch, it answers the user's request from its own context and carries its own work forward instead of ending itself or handing it to another line"},
+    {"id": "former-default-answers-and-coordinates", "kind": "must_show", "text": "after the tool line lost the default branch, it answers the input addressed to it and stays ready to coordinate any line it opened"},
+    {"id": "former-default-leaves-the-new-scope", "kind": "must_not_show", "text": "after the tool line lost the default branch, it opens a new line or edits files outside its remaining scope"},
+    {"id": "user-line-does-not-end-itself", "kind": "must_not_show", "text": "the user's line calls end on itself after it became the default branch"}
+  ]
+}

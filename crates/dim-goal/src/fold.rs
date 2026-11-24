@@ -319,9 +319,14 @@ pub struct Fold {
     pub(crate) live: text::Live,
     /// The judge of the latest `set`, kept by `edit` (Pursuit §3).
     pub judge: Judge,
-    /// Under the evaluator judge, the worker's `completed` blocks: a request,
+    /// Under the evaluator judge, the worker's newest `completed` block that
+    /// no later Goal change replaced and no evaluation consumed: a request,
     /// not a status change (A16).
-    pub requests: Vec<Request>,
+    pending_request: Option<Request>,
+    /// The request an evaluation creation was started for, while its
+    /// `branch/create` has not folded yet: a turn end before that fold starts
+    /// no second creation for the same request (Pursuit §4.1).
+    started_request: Option<u64>,
     /// Evaluations created on this branch: `N` → the evaluator branch.
     pub evaluations: BTreeMap<u64, String>,
     /// The first conclusion input from each evaluation's own evaluator.
@@ -513,6 +518,14 @@ impl Fold {
             Source::Evaluation { evaluation, branch } => {
                 self.evaluations.insert(evaluation, branch.to_owned());
                 self.decided.insert(evaluation.to_string());
+                if self
+                    .pending_request
+                    .as_ref()
+                    .is_some_and(|request| request.sequence < evaluation)
+                {
+                    self.pending_request = None;
+                    self.started_request = None;
+                }
             }
             Source::BranchEnded { branch, failed } => {
                 if failed {
@@ -570,7 +583,6 @@ impl Fold {
         if let Some(held) = held {
             self.pair(held, sequence, submission);
         }
-        self.retain_requests();
     }
 
     fn pair(&mut self, held: HeldRecord, sequence: u64, submission: Option<&str>) {
@@ -771,12 +783,16 @@ impl Fold {
         if request {
             // A16: under the evaluator judge the worker's `completed` is a
             // request; only the evaluator completes the goal (§4.1).
-            self.requests.push(Request {
+            self.pending_request = Some(Request {
                 sequence,
                 summary: attrs.get("summary").cloned().unwrap_or_default(),
             });
+            self.started_request = None;
             return;
         }
+        // Every other change supersedes an unevaluated request (§4.1).
+        self.pending_request = None;
+        self.started_request = None;
         if matches!(op, "set" | "resume") {
             self.active = sequence;
             self.continuation_count = 0;
@@ -801,7 +817,6 @@ impl Fold {
             .retain(|evaluation, _| self.evaluations.contains_key(evaluation));
         self.pending_conclusions
             .retain(|evaluation, _| *evaluation >= self.last_block);
-        self.retain_requests();
         let decided = std::mem::take(&mut self.decided);
         self.decided = decided
             .into_iter()
@@ -809,26 +824,6 @@ impl Fold {
                 sequence_of(key).is_some_and(|sequence| self.needs_decision(sequence, opening))
             })
             .collect();
-    }
-
-    fn retain_requests(&mut self) {
-        let turn_open = self.turn_open();
-        let end = self.turn_end.as_ref();
-        let ended_request = self.requests.iter().rposition(|request| {
-            end.is_some_and(|end| {
-                request.sequence > end.turn_start && request.sequence < end.sequence
-            })
-        });
-        let current_request = self
-            .requests
-            .iter()
-            .rposition(|request| turn_open && request.sequence > self.turn_start);
-        let mut index = 0;
-        self.requests.retain(|_| {
-            let keep = Some(index) == ended_request || Some(index) == current_request;
-            index += 1;
-            keep
-        });
     }
 
     pub(crate) fn needs_decision(&self, sequence: u64, opening: Option<u64>) -> bool {
@@ -894,17 +889,20 @@ impl Fold {
     pub fn turn_open(&self) -> bool {
         self.turn_start > self.turn_end.as_ref().map_or(0, |end| end.sequence)
     }
-    /// The worker's completion request inside the turn that ends at `sequence`.
-    pub fn request_in_turn(&self, sequence: u64) -> Option<&Request> {
-        let start = self
-            .turn_end
+    /// The worker's unevaluated completion request, if any (A16).
+    pub fn pending_request(&self) -> Option<&Request> {
+        self.pending_request.as_ref()
+    }
+    /// Records that this execution started the evaluator creation for `after`
+    /// (Pursuit §4.1): `after` is decided from here on, and the pending request
+    /// starts no second creation if a later turn end runs before the
+    /// `branch/create` folds.
+    pub(crate) fn start_evaluation(&mut self, after: u64) {
+        self.decided.insert(after.to_string());
+        self.started_request = self
+            .pending_request
             .as_ref()
-            .filter(|end| end.sequence == sequence)
-            .map_or(self.turn_start, |end| end.turn_start);
-        self.requests
-            .iter()
-            .rev()
-            .find(|request| request.sequence > start && request.sequence < sequence)
+            .map(|request| request.sequence);
     }
     /// The evaluation the branch `evaluator` was created for, if it is one.
     pub fn evaluation_of(&self, evaluator: &str) -> Option<u64> {
@@ -1021,10 +1019,17 @@ pub fn decide_evaluation(fold: &Fold, sequence: u64) -> bool {
     if end.sequence != sequence || fold.is_decided(sequence) || !fold.running() {
         return false;
     }
-    if fold.interrupted() || end.status != TurnStatus::Completed || fold.turn_open() {
+    if fold.interrupted()
+        || end.status != TurnStatus::Completed
+        || fold.turn_open()
+        || fold.pending_driving()
+    {
         return false;
     }
-    fold.judge == Judge::Evaluator && fold.request_in_turn(sequence).is_some()
+    fold.judge == Judge::Evaluator
+        && fold.pending_request().is_some_and(|request| {
+            request.sequence < sequence && fold.started_request != Some(request.sequence)
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

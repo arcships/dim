@@ -1,12 +1,56 @@
 //! Shared image preparation and content references.
 use base64::Engine;
-use dim_agent_types::{ImageSource, ImageSourceType};
+use dim_agent_types::{ImageSource, ImageSourceType, ModelProtocol};
 use image::{
     AnimationDecoder, DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Rgb,
     RgbImage, codecs::jpeg::JpegEncoder, imageops::FilterType, metadata::Orientation,
 };
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, Cursor, Read, Seek, SeekFrom};
+
+/// The placeholder an image the request cannot carry becomes when it has no
+/// content reference.
+const UNSENDABLE: &str = "[Image omitted: the image cannot be sent to this model.]";
+
+/// The image formats Gemini accepts as pixels: its image understanding and
+/// generate-content guides list PNG, JPEG, WebP, HEIC and HEIF, and not GIF.
+const GEMINI_IMAGE_FORMATS: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+];
+
+/// The image formats an xAI destination accepts as pixels: its Chat
+/// Completions and Responses image input limits list JPEG and PNG only.
+const XAI_IMAGE_FORMATS: [&str; 2] = ["image/png", "image/jpeg"];
+
+/// The image formats a request may carry as pixels (the feature list), and the
+/// ones a destination whose protocol carries no narrower rule takes.
+pub(crate) const REQUEST_IMAGE_FORMATS: [&str; 4] =
+    ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/// Whether a destination takes this image format as pixels: one whitelist per
+/// protocol, and the four a request may carry for a destination whose protocol
+/// is unknown or lists no narrower rule (Attachments A.1). `preset` names the
+/// vendor package a compatible destination builds, because the protocol alone
+/// does not say whose limit applies: the built-in xAI entries serve the xAI
+/// limits over that protocol.
+pub fn takes_image_format(
+    protocol: Option<ModelProtocol>,
+    preset: Option<&str>,
+    media_type: &str,
+) -> bool {
+    match (protocol, preset) {
+        (Some(ModelProtocol::Gemini), _) => GEMINI_IMAGE_FORMATS.contains(&media_type),
+        (Some(ModelProtocol::Xai | ModelProtocol::XaiResponses), _)
+        | (Some(ModelProtocol::OpenaiCompatible), Some("xai")) => {
+            XAI_IMAGE_FORMATS.contains(&media_type)
+        }
+        _ => REQUEST_IMAGE_FORMATS.contains(&media_type),
+    }
+}
 
 /// Returns `img:` and the first 16 lowercase SHA-256 hex digits of the
 /// base64-decoded image file bytes, without scaling or re-encoding them.
@@ -16,10 +60,7 @@ use std::io::{BufRead, Cursor, Read, Seek, SeekFrom};
 /// cannot decode return `None`.
 pub fn image_reference(source: &ImageSource) -> Option<String> {
     if source.source_type != ImageSourceType::Base64
-        || !matches!(
-            source.media_type.as_str(),
-            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
-        )
+        || !REQUEST_IMAGE_FORMATS.contains(&source.media_type.as_str())
     {
         return None;
     }
@@ -29,6 +70,12 @@ pub fn image_reference(source: &ImageSource) -> Option<String> {
         .ok()?;
     let digest = format!("{:x}", Sha256::digest(bytes));
     Some(format!("img:{}", &digest[..16]))
+}
+
+/// The text an image becomes where the request cannot carry it: its content
+/// reference, or the omission placeholder when it has none.
+pub fn image_reference_or_placeholder(source: &ImageSource) -> String {
+    image_reference(source).unwrap_or_else(|| UNSENDABLE.into())
 }
 
 /// The longest edge an image may have and still be sent as it is, in pixels:

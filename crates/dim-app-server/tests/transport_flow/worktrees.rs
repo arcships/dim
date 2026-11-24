@@ -9,10 +9,14 @@ use dim_agent_capabilities::{
     workspace_tools::WorkspaceToolsConfig,
 };
 use dim_agent_runtime::testing::chain_events;
-use dim_agent_runtime::{Session, SessionConfig};
+use dim_agent_runtime::{AgentError, Session, SessionConfig};
 use dim_agent_types::{ApprovalCallData, InputMode, PermissionPolicy, PermissionPreset};
+use dim_app_server::protocol::SessionOrigin;
 use dim_app_server::storage::SessionStore;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct Work {
     home: PathBuf,
@@ -822,6 +826,780 @@ async fn a_swapped_task_directory_symlink_cannot_escape_the_managed_root() {
         std::fs::read_to_string(outside.join("repo/secret.txt")).unwrap(),
         "secret"
     );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+fn unregistered_task(work: &Work, task_id: &str) -> PathBuf {
+    let task = work.home.join("worktrees").join(task_id);
+    std::fs::create_dir_all(&task).unwrap();
+    task
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_with_an_ordinary_file_needs_force() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    let refused = client
+        .rpc("worktree.remove", json!({"taskId": "aaaaaa"}))
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert_eq!(
+        std::fs::read_to_string(task.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    assert!(task.is_dir());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_with_force_deletes_ordinary_content() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    let removed = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_ok(&removed);
+    assert_eq!(removed["result"]["removed"], true);
+    assert!(!task.exists());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_deletes_an_empty_repository_directory_without_force() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::create_dir_all(task.join("repo")).unwrap();
+    let removed = client
+        .rpc("worktree.remove", json!({"taskId": "aaaaaa"}))
+        .await;
+    assert_ok(&removed);
+    assert_eq!(removed["result"]["removed"], true);
+    assert!(!task.exists());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_checks_every_child_before_deleting() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::create_dir_all(task.join("empty")).unwrap();
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    let refused = client
+        .rpc("worktree.remove", json!({"taskId": "aaaaaa"}))
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(task.join("empty").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(task.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[cfg(unix)]
+struct RestorePermissions(PathBuf);
+#[cfg(unix)]
+impl Drop for RestorePermissions {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// A task directory that cannot be emptied must report the failure, and the
+/// permissions must not outlive the test. File permissions do not bind a user
+/// that bypasses them, such as root, so the test skips itself there.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_reports_a_failed_deletion() {
+    let work = Work::new();
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    std::fs::set_permissions(&task, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let _restore = RestorePermissions(task.clone());
+    if std::fs::write(task.join("probe"), b"").is_ok() {
+        return;
+    }
+    std::fs::set_permissions(&task, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let failed = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_eq!(failed["error"]["data"]["appError"], "worktree_store_failed");
+    assert_eq!(
+        std::fs::read_to_string(task.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_symlink_and_keeps_its_target() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    let target = work.home.join("outside");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("secret.txt"), "secret").unwrap();
+    std::os::unix::fs::symlink(&target, task.join("linked")).unwrap();
+    let refused = client
+        .rpc("worktree.remove", json!({"taskId": "aaaaaa"}))
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(
+        task.join("linked")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("secret.txt")).unwrap(),
+        "secret"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_git_entry_even_with_force() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join(".git"), "gitdir: elsewhere").unwrap();
+    let refused = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(task.join(".git").is_file());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A `.git` entry that is a dangling symlink still counts: the directory is
+/// never deleted, with or without `--force`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_dangling_git_symlink_even_with_force() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::os::unix::fs::symlink(work.home.join("missing-gitdir"), task.join(".git")).unwrap();
+    let refused = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(
+        task.join(".git")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A `.git` directory below a direct child is still inside the tree a forced
+/// removal deletes: the removal refuses and leaves the whole tree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_nested_git_directory_even_with_force() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    let nested = task.join("repo/a/b");
+    std::fs::create_dir_all(nested.join(".git")).unwrap();
+    std::fs::write(nested.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(nested.join("keep.txt"), "keep").unwrap();
+    let refused = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert_eq!(
+        std::fs::read_to_string(nested.join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/main\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested.join("keep.txt")).unwrap(),
+        "keep"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A gitdir file below a direct child is Git metadata too, even with `--force`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_nested_gitdir_file_even_with_force() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    let nested = task.join("repo/a");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join(".git"), "gitdir: elsewhere\n").unwrap();
+    std::fs::write(nested.join("keep.txt"), "keep").unwrap();
+    let refused = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert_eq!(
+        std::fs::read_to_string(nested.join(".git")).unwrap(),
+        "gitdir: elsewhere\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested.join("keep.txt")).unwrap(),
+        "keep"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A dangling `.git` symlink below a direct child still counts as Git metadata:
+/// the walk does not follow it, and the removal refuses the whole tree.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_nested_dangling_git_symlink_even_with_force() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    let nested = task.join("repo/a/b");
+    std::fs::create_dir_all(&nested).unwrap();
+    let target = work.home.join("missing-gitdir");
+    std::os::unix::fs::symlink(&target, nested.join(".git")).unwrap();
+    std::fs::write(nested.join("keep.txt"), "keep").unwrap();
+    let refused = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(
+        nested
+            .join(".git")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_link(nested.join(".git")).unwrap(), target);
+    assert_eq!(
+        std::fs::read_to_string(nested.join("keep.txt")).unwrap(),
+        "keep"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A deep tree without Git metadata is ordinary content: `--force` removes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_with_force_deletes_a_deep_tree_without_git_metadata() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    let nested = task.join("repo/a/b/c");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("notes.txt"), "delete").unwrap();
+    let removed = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "aaaaaa", "force": true}),
+        )
+        .await;
+    assert_ok(&removed);
+    assert_eq!(removed["result"]["removed"], true);
+    assert!(!task.exists());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A Session whose workspace is the task directory itself keeps it, with or
+/// without `--force`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_task_directory_a_session_uses() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let empty = unregistered_task(&work, "aaaaaa");
+    std::fs::create_dir_all(empty.join("repo")).unwrap();
+    assert_ok(&client.rpc("session.create", json!({"cwd": empty})).await);
+    let refused = client
+        .rpc("worktree.remove", json!({"taskId": "aaaaaa"}))
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(empty.join("repo").is_dir());
+    let filled = unregistered_task(&work, "bbbbbb");
+    std::fs::write(filled.join("notes.txt"), "keep").unwrap();
+    assert_ok(&client.rpc("session.create", json!({"cwd": filled})).await);
+    let refused = client
+        .rpc(
+            "worktree.remove",
+            json!({"taskId": "bbbbbb", "force": true}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert_eq!(
+        std::fs::read_to_string(filled.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A Session created after the content check but before the removal keeps
+/// the directory: the store re-checks under the ownership lock creation uses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_session_created_after_the_content_check() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::create_dir_all(task.join("repo")).unwrap();
+    let hold = server
+        .hold_next_unregistered_removal()
+        .expect("the ManagedWorktrees part exists");
+    let mut remover = Client::new_version(&server, false, 3).await;
+    let removal = tokio::spawn(async move {
+        remover
+            .rpc("worktree.remove", json!({"taskId": "aaaaaa"}))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(30), hold.reached.notified())
+        .await
+        .expect("the removal reaches the end of its content check");
+    let mut creator = Client::new_version(&server, false, 3).await;
+    assert_ok(&creator.rpc("session.create", json!({"cwd": task})).await);
+    hold.release.notify_one();
+    let refused = removal.await.unwrap();
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(task.is_dir());
+    assert!(task.join("repo").is_dir());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A directory recorded under the task root after the content check keeps the
+/// whole task directory: the store re-checks the directory records under the
+/// ownership lock an association takes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_directory_associated_after_the_content_check() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let store = server.service::<SessionStore>().unwrap();
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("session.create", json!({"cwd": work.repo}))
+        .await;
+    assert_ok(&created);
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let hold = server
+        .hold_next_unregistered_removal()
+        .expect("the ManagedWorktrees part exists");
+    let mut remover = Client::new_version(&server, false, 3).await;
+    let removal = tokio::spawn(async move {
+        remover
+            .rpc(
+                "worktree.remove",
+                json!({"taskId": "aaaaaa", "force": true}),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(30), hold.reached.notified())
+        .await
+        .expect("the removal reaches the end of its content check");
+    let sibling = task.join("repo");
+    git(
+        &work.repo,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            "-q",
+            sibling.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    store
+        .associate_worktree(
+            &session_id,
+            WorktreeDirectory {
+                repository: work.repo.clone(),
+                root: sibling.clone(),
+            },
+            sibling.clone(),
+        )
+        .await
+        .unwrap();
+    hold.release.notify_one();
+    let refused = removal.await.unwrap();
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert!(task.is_dir());
+    assert_eq!(
+        std::fs::read_to_string(task.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    assert!(sibling.join(".git").is_file());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A recorded directory at or under the task root is refused before the
+/// removal callback runs, even though no Session's cwd is under the task
+/// directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_removal_refuses_a_recorded_directory_before_the_callback() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let store = server.service::<SessionStore>().unwrap();
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("session.create", json!({"cwd": work.repo}))
+        .await;
+    assert_ok(&created);
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let sibling = task.join("repo");
+    git(
+        &work.repo,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            "-q",
+            sibling.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    store
+        .associate_worktree(
+            &session_id,
+            WorktreeDirectory {
+                repository: work.repo.clone(),
+                root: sibling.clone(),
+            },
+            sibling.clone(),
+        )
+        .await
+        .unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let error = store
+        .remove_unregistered_directory(task.clone(), {
+            let called = called.clone();
+            move |path| {
+                Box::pin(async move {
+                    called.store(true, Ordering::SeqCst);
+                    tokio::fs::remove_dir_all(&path)
+                        .await
+                        .map_err(|error| AgentError::Storage(error.to_string()))
+                })
+            }
+        })
+        .await
+        .expect_err("a recorded directory is refused");
+    assert!(
+        error.to_string().contains("recorded worktree directory"),
+        "{error}"
+    );
+    assert!(!called.load(Ordering::SeqCst));
+    assert!(task.is_dir());
+    assert_eq!(
+        std::fs::read_to_string(task.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    assert!(sibling.join(".git").is_file());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A `.git` entry that appears after the content check refuses the removal:
+/// the store re-checks the unregistered facts under the ownership lock before
+/// it deletes anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_refuses_a_git_entry_added_after_the_content_check() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    let hold = server
+        .hold_next_unregistered_removal()
+        .expect("the ManagedWorktrees part exists");
+    let mut remover = Client::new_version(&server, false, 3).await;
+    let removal = tokio::spawn(async move {
+        remover
+            .rpc(
+                "worktree.remove",
+                json!({"taskId": "aaaaaa", "force": true}),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(30), hold.reached.notified())
+        .await
+        .expect("the removal reaches the end of its content check");
+    std::fs::write(task.join(".git"), "gitdir: elsewhere").unwrap();
+    hold.release.notify_one();
+    let refused = removal.await.unwrap();
+    assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+    assert_eq!(
+        std::fs::read_to_string(task.join(".git")).unwrap(),
+        "gitdir: elsewhere"
+    );
+    assert_eq!(
+        std::fs::read_to_string(task.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A removal that holds the ownership lock first deletes the directory, so a
+/// creation queued behind it fails its own cwd check instead of leaving a
+/// Session that points at a deleted workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_creation_after_an_unregistered_removal_fails_its_workspace_check() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let store = server.service::<SessionStore>().unwrap();
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::create_dir_all(task.join("repo")).unwrap();
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let removal = tokio::spawn({
+        let store = store.clone();
+        let task = task.clone();
+        let reached = reached.clone();
+        let release = release.clone();
+        async move {
+            store
+                .remove_unregistered_directory(task, move |path| {
+                    Box::pin(async move {
+                        reached.notify_one();
+                        release.notified().await;
+                        tokio::fs::remove_dir_all(&path)
+                            .await
+                            .map_err(|error| AgentError::Storage(error.to_string()))
+                    })
+                })
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(30), reached.notified())
+        .await
+        .expect("the removal holds the ownership lock");
+    let config = SessionConfig {
+        cwd: task.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let creation = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .create_owned_session(
+                    "fixture-session",
+                    &config,
+                    "fixture-agent",
+                    4,
+                    None,
+                    SessionOrigin::Client,
+                    None,
+                )
+                .await
+        }
+    });
+    release.notify_one();
+    let error = creation
+        .await
+        .unwrap()
+        .expect_err("the removed workspace fails the creation check");
+    assert!(error.to_string().contains("no longer exists"), "{error}");
+    removal.await.unwrap().unwrap();
+    assert!(!task.exists());
+    assert!(!store.has_records("fixture-session").await.unwrap());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The store face is public to trusted plugins: a relative path or one with
+/// `..` compares lexically against stored workspaces while the filesystem
+/// resolves it, so the owner must refuse it before the removal runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_removal_refuses_a_path_that_is_not_absolute_and_normal() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let store = server.service::<SessionStore>().unwrap();
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    for path in [
+        PathBuf::from("relative/task"),
+        task.join("..").join("aaaaaa"),
+    ] {
+        let error = store
+            .remove_unregistered_directory(path, |path| {
+                Box::pin(async move {
+                    Err(AgentError::Storage(format!(
+                        "the refused path reached removal: {}",
+                        path.display()
+                    )))
+                })
+            })
+            .await
+            .expect_err("a path outside the store's absolute-normal form must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("absolute without relative components"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(task.join("notes.txt")).unwrap(),
+            "keep"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A removal that passed its content check but enters the ownership lock
+/// after another removal deleted the directory reports not found.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregistered_remove_reports_not_found_when_another_removal_won() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::write(task.join("notes.txt"), "keep").unwrap();
+    let hold = server
+        .hold_next_unregistered_removal()
+        .expect("the ManagedWorktrees part exists");
+    let mut parked = Client::new_version(&server, false, 3).await;
+    let parked_removal = tokio::spawn(async move {
+        parked
+            .rpc("worktree.remove", json!({"taskId":"aaaaaa","force":true}))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(30), hold.reached.notified())
+        .await
+        .expect("the parked removal reaches the end of its content check");
+    let mut winner = Client::new_version(&server, false, 3).await;
+    assert_ok(
+        &winner
+            .rpc("worktree.remove", json!({"taskId":"aaaaaa","force":true}))
+            .await,
+    );
+    assert!(!task.exists());
+    hold.release.notify_one();
+    let late = parked_removal.await.unwrap();
+    assert_eq!(late["error"]["data"]["appError"], "worktree_not_found");
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Dropping the caller of an unregistered removal must not release the
+/// ownership lock while the deletion is still running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_caller_keeps_the_removal_lock_until_the_deletion_finishes() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let store = server.service::<SessionStore>().unwrap();
+    let task = unregistered_task(&work, "aaaaaa");
+    std::fs::create_dir_all(task.join("repo")).unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let listed = client.rpc("agent.list", json!({})).await;
+    assert_ok(&listed);
+    let agent_id = listed["result"][0]["agentId"].as_str().unwrap().to_owned();
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let removal = tokio::spawn({
+        let store = store.clone();
+        let task = task.clone();
+        let reached = reached.clone();
+        let release = release.clone();
+        async move {
+            store
+                .remove_unregistered_directory(task, move |path| {
+                    Box::pin(async move {
+                        reached.notify_one();
+                        release.notified().await;
+                        tokio::fs::remove_dir_all(&path)
+                            .await
+                            .map_err(|error| AgentError::Storage(error.to_string()))
+                    })
+                })
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(30), reached.notified())
+        .await
+        .expect("the removal holds the ownership lock");
+    removal.abort();
+    assert!(removal.await.unwrap_err().is_cancelled());
+    let config = SessionConfig {
+        cwd: task.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let creation = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .create_owned_session(
+                    "dropped-caller-session",
+                    &config,
+                    &agent_id,
+                    4,
+                    None,
+                    SessionOrigin::Client,
+                    None,
+                )
+                .await
+        }
+    });
+    release.notify_one();
+    let error = creation
+        .await
+        .unwrap()
+        .expect_err("the removed workspace fails the creation check");
+    assert!(error.to_string().contains("no longer exists"), "{error}");
+    assert!(!task.exists());
     server.shutdown();
     server.join().await.unwrap();
 }

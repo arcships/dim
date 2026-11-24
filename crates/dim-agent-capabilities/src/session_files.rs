@@ -7,6 +7,9 @@ use dim_agent_types::{
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// The Session file limit on one image, in decoded bytes.
+const IMAGE_LIMIT: u64 = 16 * 1024 * 1024;
+
 /// Materializes a durable image at an external protocol boundary.
 pub async fn image(
     files: &SessionFiles,
@@ -39,7 +42,7 @@ pub async fn image(
             break;
         }
         bytes.extend(chunk);
-        if bytes.len() > 16 * 1024 * 1024 {
+        if bytes.len() as u64 > IMAGE_LIMIT {
             return Err(HostError::classified(
                 HostErrorKind::InvalidRequest,
                 "Image file exceeds its storage limit",
@@ -137,8 +140,17 @@ pub async fn materialize(
     }
 }
 
-fn check_image_budget(bytes: usize) -> Result<(), HostError> {
-    if bytes > 32 * 1024 * 1024 {
+/// The most encoded image data one model request carries, user and
+/// tool-result images together.
+#[cfg(not(test))]
+const IMAGE_BUDGET: usize = 32 * 1024 * 1024;
+/// The unit-test target crosses the same rule at a cap it reaches without
+/// allocating production-sized images; integration tests see the real limit.
+#[cfg(test)]
+const IMAGE_BUDGET: usize = 128;
+
+pub(crate) fn check_image_budget(bytes: usize) -> Result<(), HostError> {
+    if bytes > IMAGE_BUDGET {
         return Err(HostError::classified(
             HostErrorKind::InvalidRequest,
             "Model request images exceed 32 MiB of encoded data",
@@ -190,11 +202,16 @@ pub async fn store_result(
             let data = source.data.as_deref().ok_or_else(|| {
                 HostError::classified(HostErrorKind::InvalidRequest, "Image data is missing")
             })?;
-            if data.len() as u64 > crate::images::base64_len(16 * 1024 * 1024) {
-                return Err(HostError::classified(
-                    HostErrorKind::InvalidRequest,
-                    "Tool image exceeds 16 MiB",
-                ));
+            if data.len() as u64 >= crate::images::base64_len(IMAGE_LIMIT) {
+                let decoded = decoded_len(data)?;
+                if decoded > IMAGE_LIMIT {
+                    *block = ContentBlock::Text {
+                        text: format!(
+                            "[Image omitted: the tool image is {decoded} bytes, above the 16 MiB limit.]"
+                        ),
+                    };
+                    continue;
+                }
             }
             let bytes = STANDARD
                 .decode(data)
@@ -230,6 +247,38 @@ pub async fn store_result(
         }
     }
     Ok(())
+}
+
+/// The bytes base64 `data` decodes to, validated in fixed-size chunks so an
+/// image of unknown size is never decoded into one buffer. The validation is
+/// [`STANDARD`]'s: `=` only as the final one or two characters, and a final
+/// quad whose trailing bits are clear.
+fn decoded_len(data: &str) -> Result<u64, HostError> {
+    const CHUNK: usize = 64 * 1024;
+    let encoded = data.as_bytes();
+    let padding = encoded
+        .iter()
+        .rev()
+        .take(2)
+        .filter(|byte| **byte == b'=')
+        .count();
+    if encoded[..encoded.len() - padding].contains(&b'=') {
+        return Err(HostError::classified(
+            HostErrorKind::InvalidRequest,
+            "Invalid base64 padding",
+        ));
+    }
+    let mut buffer = vec![0u8; CHUNK / 4 * 3];
+    let mut decoded = 0u64;
+    for chunk in encoded.chunks(CHUNK) {
+        let written = STANDARD
+            .decode_slice(chunk, &mut buffer[..chunk.len() / 4 * 3])
+            .map_err(|error| {
+                HostError::classified(HostErrorKind::InvalidRequest, error.to_string())
+            })?;
+        decoded += written as u64;
+    }
+    Ok(decoded)
 }
 
 impl rutis_bridge::session::HostDispatch for SessionFiles {
@@ -284,13 +333,13 @@ impl rutis_bridge::session::HostDispatch for SessionFiles {
         }
         let parameters = args.json()?;
         let [mut object] = serde_json::from_value::<[serde_json::Value; 1]>(parameters)
-            .map_err(|e| Error::Value(e.to_string()))?;
+            .map_err(|e| Error::value(e.to_string()))?;
         object
             .as_object_mut()
-            .ok_or_else(|| Error::Value("Expected one request object".into()))?
+            .ok_or_else(|| Error::value("Expected one request object"))?
             .insert("method".into(), method.into());
         let operation: Operation =
-            serde_json::from_value(object).map_err(|e| Error::Value(e.to_string()))?;
+            serde_json::from_value(object).map_err(|e| Error::value(e.to_string()))?;
         let files = self.0.clone();
         Ok(Value::cancellable_future(async move {
             let cancel = CancellationToken::new();

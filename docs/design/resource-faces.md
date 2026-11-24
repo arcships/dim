@@ -734,6 +734,7 @@ resolve paths, decide permission or create a second Session lifecycle.
 | `worktreeUsages` | `{repository,root}` | `{usages:[{sessionId,subtree}]}` |
 | `removeWorktreeDirectory` | `{repository,root}` | `{removed}` |
 | `removeWorktree` | `{repository,root}`, asynchronous removal callback | `{removed}` |
+| `removeUnregisteredDirectory` | `{root}`, asynchronous removal callback | `{removed}` |
 | `catalog` | `{request,agent?,version,hosts,closed}` | existing catalog page |
 | `query` | `{scope,query,page?}` | `{result,next}` |
 
@@ -769,12 +770,26 @@ removal and directory-row deletion. Its callback receives the checked root path 
 is awaited; no SQL or Timeline commit lock is held while awaiting it. A callback failure
 leaves the directory row in place. As with the native callback, it must not await operations
 that acquire this same ownership mutex: `createOwnedSession`, `fork`, `delete`,
-`removeWorktreeDirectory`, `removeWorktree`, or `store.associateWorktree`. Reads and
+`removeWorktreeDirectory`, `removeWorktree`, `removeUnregisteredDirectory`, or
+`store.associateWorktree`. Reads and
 other operations that do not acquire that mutex remain available. The callback may refuse with `invalid`, `cancelled`
 or `storage`; unexpected callback or transport failures are `storage`. There is no
 separate check/remove lease and no window for a concurrent Session creation to use
 a directory being removed. `removeWorktreeDirectory` is the existing database-only
 candidate cleanup, with its existing association checks.
+
+`removeUnregisteredDirectory` takes `{root}` and the same asynchronous removal callback.
+It is the unregistered removal of
+[worktree management §5](worktree-management.md#5-列出删除与清理): the root is absolute
+without relative components, and the operation holds the owner exclusion from its
+directory-record and workspace checks through the callback, so a Session created or
+a directory recorded after the check fails the call and a creation after the removal
+re-checks its missing workspace. The callback receives the checked root and is awaited;
+it re-checks the unregistered filesystem facts before it deletes anything. A callback
+failure is `invalid`, `cancelled` or `storage` as above, and it must not await any
+operation in the list above. Dropping the caller does not release the lock while the callback runs. The lock has no time
+limit: it covers a recursive `--force` deletion of any size, and Session creation,
+fork, deletion and worktree association or removal wait for it.
 
 `catalog` takes the existing Session catalog request and the calling Agent owner's
 loaded/closed snapshots. Its result is the stored catalog page: sequence comes from the

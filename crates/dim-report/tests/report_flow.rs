@@ -1075,14 +1075,23 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
         "fixture-cookie-escaped-header",
         "fixture-cookie-next-line-json",
     ];
+    let folded_fixtures = [
+        "fixture-authorization-folded",
+        "fixture-x-api-key-folded",
+        "fixture-json-authorization-folded",
+    ];
     let message = format!(
         "{marker} {session_id} at {host_home}/sample.txt; /USERS/ISMAIL/other.txt; owner İsmail, ISMAIL, ısmail; {encoded_home}/mixed.txt\n\
-         {fake_key}\nAuthorization: Bearer fixture-not-a-real-credential\nservice_credential = fixture-value\naccess_token = fixture-spaced-value\n\"token\": \"fixture-json-value\"\n\
+         {fake_key}\nAuthorization: Bearer fixture-not-a-real-credential\nAuthorization: configured\n  inline_description: visible-inline-description\nservice_credential = fixture-value\naccess_token = fixture-spaced-value\n\"token\": \"fixture-json-value\"\n\
+         Authorization: Bearer\n  {}\nX-Api-Key:\n  {}\n{{\n  \"Authorization\":\n    \"{}\",\n  \"visible_sibling\": \"visible-sibling\"\n}}\npassword: configured\n  description: visible-nested-sibling\nThe authorization flow is documented below.\n\
          cOoKiE: sid={};\r\n\tother={}\n\
          curl -H 'Set-Cookie: sid={}; HttpOnly'\n\
          {{\"Cookie\": \"sid={}\"}}\n\
          HTTP/1.1 200 OK\\r\\nSet-Cookie: sid={}\n\
          {{\"Cookie\":\n\"sid={}\"}}\n{discussion}",
+        folded_fixtures[0],
+        folded_fixtures[1],
+        folded_fixtures[2],
         cookie_fixtures[0],
         cookie_fixtures[1],
         cookie_fixtures[2],
@@ -1122,6 +1131,7 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
         ]
         .into_iter()
         .chain(cookie_fixtures)
+        .chain(folded_fixtures)
         {
             assert!(!value.contains(forbidden), "fixture leaked: {forbidden}");
         }
@@ -1143,6 +1153,10 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
             assert!(line.contains("/sample.txt"));
             assert!(text.lines().any(|line| line == discussion));
             assert!(report.contains(discussion));
+            assert!(text.contains("visible_sibling"));
+            assert!(text.contains("visible-nested-sibling"));
+            assert!(text.contains("visible-inline-description"));
+            assert!(text.contains("The authorization flow is documented below."));
             assert_eq!(line.contains(encoded_home), !redact);
             assert_eq!(line.contains("/Users/userus/mixed.txt"), redact);
             assert_eq!(line.contains(session_id), !redact);

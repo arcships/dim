@@ -75,6 +75,20 @@ impl WorkflowReads {
         }
     }
 
+    /// A new run fact asks for a read, unless a failure stopped automatic
+    /// reads until the panel reopens.
+    pub fn schedule(&mut self) {
+        if self.error.is_none() {
+            self.next_at.get_or_insert_with(tokio::time::Instant::now);
+        }
+    }
+
+    /// A failed read stops automatic reads; no wake stays scheduled.
+    pub fn fail(&mut self, error: String) {
+        self.error = Some(error);
+        self.next_at = None;
+    }
+
     /// A fresh attachment knows no runs; an outstanding read keeps its slot.
     pub fn clear(&mut self) {
         *self = Self {
@@ -88,6 +102,15 @@ impl WorkflowReads {
 impl Worker {
     fn workflow_supported(&self) -> bool {
         self.client.supports(&["workflow.status"])
+    }
+
+    /// A status read may start now: the connection advertises the method, the
+    /// Session is attached, no read is in flight and no failure stopped reads.
+    pub(super) fn workflow_ready(&self) -> bool {
+        self.workflow_supported()
+            && !self.session_id.is_empty()
+            && self.workflow.request.is_none()
+            && self.workflow.error.is_none()
     }
 
     /// Finds run IDs in the producer-defined fields of tool results and
@@ -135,9 +158,7 @@ impl Worker {
         for (run_id, state) in observed {
             let known = self.workflow.known.entry(run_id).or_default();
             known.ended |= !state.unfinished();
-            self.workflow
-                .next_at
-                .get_or_insert_with(tokio::time::Instant::now);
+            self.workflow.schedule();
         }
     }
 
@@ -164,11 +185,13 @@ impl Worker {
     }
 
     pub(super) async fn poll_workflow(&mut self) {
-        if !self.workflow_supported()
-            || self.session_id.is_empty()
-            || self.workflow.request.is_some()
-            || self.workflow.error.is_some()
-        {
+        if !self.workflow_ready() {
+            // A read in flight is a busy slot, not a stopped reader: a
+            // replacement attachment's deadline waits for it and the timer
+            // shares this eligibility check, so the busy slot cannot spin it.
+            if self.workflow.request.is_none() {
+                self.workflow.next_at = None;
+            }
             return;
         }
         let run_id = if self.workflow.discovery {
@@ -212,7 +235,7 @@ impl Worker {
                     stale: false,
                 });
             }
-            Err(error) => self.workflow.error = Some(error.to_string()),
+            Err(error) => self.workflow.fail(error.to_string()),
         }
         self.changed();
     }
@@ -238,7 +261,7 @@ impl Worker {
                     .unavailable = true;
                 self.projection.workflow_unavailable(&run_id);
             }
-            (_, Err(error)) => self.workflow.error = Some(error.to_string()),
+            (_, Err(error)) => self.workflow.fail(error.to_string()),
             (None, Ok(value)) => match serde_json::from_value::<Vec<WorkflowRun>>(value) {
                 Ok(runs) => {
                     let runs: Vec<_> = runs
@@ -251,7 +274,9 @@ impl Worker {
                     self.workflow.observed = true;
                     self.projection.reconcile_workflows(runs);
                 }
-                Err(_) => self.workflow.error = Some("Invalid workflow.status response".into()),
+                Err(_) => self
+                    .workflow
+                    .fail("Invalid workflow.status response".into()),
             },
             (Some(run_id), Ok(value)) => match serde_json::from_value::<WorkflowRun>(value) {
                 Ok(run) if run.run_id == run_id => {
@@ -268,7 +293,9 @@ impl Worker {
                         }
                     }
                 }
-                _ => self.workflow.error = Some("Invalid workflow.status response".into()),
+                _ => self
+                    .workflow
+                    .fail("Invalid workflow.status response".into()),
             },
         }
     }
@@ -361,5 +388,235 @@ impl Worker {
             self.workflow.inventory(self.workflow_supported()),
             WorkflowInventory::Loading | WorkflowInventory::Failed { .. }
         )
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::client::Message;
+
+    fn step(sequence: u64, name: &str, data: serde_json::Value) -> Event {
+        serde_json::from_value(json!({
+            "id": format!("{name}-{sequence}"),
+            "sequence": sequence,
+            "create_at": 2000,
+            "type": "step",
+            "name": name,
+            "data": data,
+        }))
+        .expect("a step event")
+    }
+
+    fn call(sequence: u64, id: &str) -> Event {
+        step(
+            sequence,
+            "tool-call",
+            json!({
+                "turn_id": "turn",
+                "request_id": "request",
+                "calls": [{"id": id, "name": "workflow", "input": {"action": "start", "name": "nightly-check"}}],
+            }),
+        )
+    }
+
+    fn completed(sequence: u64, id: &str, run_id: &str) -> Event {
+        step(
+            sequence,
+            "tool-completed",
+            json!({
+                "turn_id": "turn",
+                "request_id": "request",
+                "call_id": id,
+                "call_event_id": format!("{id}-use"),
+                "result": {
+                    "content": format!(r#"{{"run_id":"{run_id}"}}"#),
+                    "structuredContent": {"run_id": run_id, "status": "running"},
+                },
+            }),
+        )
+    }
+
+    /// Answers the outstanding status read with `result`.
+    async fn reply(worker: &mut Worker, result: Result<serde_json::Value, client::RpcError>) {
+        let id = worker
+            .workflow
+            .request
+            .as_ref()
+            .expect("a status read in flight")
+            .id;
+        worker
+            .message(Message::Response { id, result })
+            .await
+            .unwrap();
+    }
+
+    /// A failed status read stops automatic reads: it keeps no wake for the
+    /// Session loop, a run fact that arrives while they are stopped does not
+    /// schedule one, and reopening the panel reads again. An RPC failure, a
+    /// discovery reply that is not a run list and a run record that does not
+    /// decode all end the same way; a successful reply schedules the next read.
+    #[tokio::test]
+    async fn a_failed_workflow_read_keeps_no_wake_for_the_next_read() {
+        let mut features = crate::session_host::TEST_FEATURES.to_vec();
+        features.push("workflow.status");
+        let (mut worker, _receiver, _sent) = crate::session_host::test_worker(&features).await;
+        worker.session_id = "s1".into();
+        worker.discover_workflow("main", &call(1, "wf-call"));
+        worker.discover_workflow("main", &completed(2, "wf-call", "run-a"));
+        assert!(
+            worker.workflow.next_at.is_some(),
+            "the run fact asks for a status read"
+        );
+
+        worker.poll_workflow().await;
+        reply(
+            &mut worker,
+            Err(client::RpcError {
+                code: -32000,
+                message: "store busy".into(),
+                data: Some(json!({"appError": "service_unavailable"})),
+            }),
+        )
+        .await;
+        assert!(worker.workflow.error.is_some(), "the failure is recorded");
+        assert!(
+            worker.workflow.next_at.is_none(),
+            "a failed read leaves no automatic read wake"
+        );
+
+        worker.discover_workflow("main", &call(3, "wf-call-2"));
+        worker.discover_workflow("main", &completed(4, "wf-call-2", "run-b"));
+        assert!(
+            worker.workflow.next_at.is_none(),
+            "a stopped reader schedules no read"
+        );
+        worker.poll_workflow().await;
+        assert!(
+            worker.workflow.request.is_none(),
+            "a stopped reader sends no read"
+        );
+
+        worker.discover_workflows();
+        worker.poll_workflow().await;
+        assert!(
+            worker.workflow.request.is_some(),
+            "reopening the panel reads again"
+        );
+        reply(&mut worker, Ok(json!({"not": "a run list"}))).await;
+        assert!(
+            worker.workflow.next_at.is_none(),
+            "a discovery reply that is not a run list leaves no wake"
+        );
+
+        worker.discover_workflows();
+        worker.poll_workflow().await;
+        reply(&mut worker, Ok(json!([]))).await;
+        assert!(
+            worker.workflow.next_at.is_some(),
+            "a successful reply schedules the next read"
+        );
+
+        worker.workflow.next_at = Some(tokio::time::Instant::now());
+        worker.poll_workflow().await;
+        reply(&mut worker, Ok(json!({"run_id": "run-a"}))).await;
+        assert!(
+            worker.workflow.next_at.is_none(),
+            "a run record that does not decode leaves no wake"
+        );
+    }
+
+    /// A replayed run fact asks for a status read even when the connection
+    /// does not advertise `workflow.status`; no read can follow, so the poll
+    /// drops the deadline instead of leaving the Session loop an expired one.
+    #[tokio::test]
+    async fn a_replayed_run_fact_without_the_workflow_method_keeps_no_wake() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        assert!(
+            !worker.client.supports(&["workflow.status"]),
+            "the test daemon advertises no workflow status"
+        );
+        worker.session_id = "s1".into();
+        worker.replay("main", call(1, "wf-call"));
+        worker.replay("main", completed(2, "wf-call", "run-a"));
+        assert!(
+            worker.workflow.next_at.is_some(),
+            "the replayed run fact asks for a status read"
+        );
+
+        worker.poll_workflow().await;
+        assert!(
+            worker.workflow.request.is_none(),
+            "a connection without workflow.status sends no read"
+        );
+        assert!(
+            worker.workflow.next_at.is_none(),
+            "a connection without workflow.status leaves no wake armed"
+        );
+    }
+
+    /// A replacement attachment relays its run facts while the old attachment's
+    /// read is still in flight. That reply frees the slot, and the deadline the
+    /// replay armed reads the replayed run without reopening the panel.
+    #[tokio::test]
+    async fn a_replaced_attachments_replayed_run_is_read_once_the_old_reply_lands() {
+        let mut features = crate::session_host::TEST_FEATURES.to_vec();
+        features.push("workflow.status");
+        let (mut worker, _receiver, _sent) = crate::session_host::test_worker(&features).await;
+        worker.session_id = "s1".into();
+        worker.discover_workflow("main", &call(1, "wf-call"));
+        worker.discover_workflow("main", &completed(2, "wf-call", "run-a"));
+        worker.poll_workflow().await;
+        let old = worker
+            .workflow
+            .request
+            .as_ref()
+            .expect("the old attachment's read is in flight")
+            .id;
+
+        worker.session_id = worker.invalidate_projection();
+        assert!(
+            worker.workflow.next_at.is_none(),
+            "a replacement starts with no deadline"
+        );
+        worker.replay("main", call(3, "wf-call-2"));
+        worker.replay("main", completed(4, "wf-call-2", "run-b"));
+        assert!(
+            worker.workflow.next_at.is_some(),
+            "the replayed run asks for a read"
+        );
+
+        worker.poll_workflow().await;
+        assert_eq!(
+            worker.workflow.request.as_ref().map(|request| request.id),
+            Some(old),
+            "the replayed run waits for the read in flight"
+        );
+        assert!(
+            worker.workflow.next_at.is_some(),
+            "a busy read keeps the replacement's deadline"
+        );
+
+        reply(&mut worker, Ok(json!({"run_id": "run-a"}))).await;
+        assert!(
+            worker.workflow.request.is_none(),
+            "the old reply frees the slot"
+        );
+        assert!(
+            worker.workflow.next_at.is_some(),
+            "the old reply leaves the replacement's deadline armed"
+        );
+
+        worker.poll_workflow().await;
+        assert_eq!(
+            worker
+                .workflow
+                .request
+                .as_ref()
+                .and_then(|request| request.run_id.as_deref()),
+            Some("run-b"),
+            "the replacement's replayed run is read without reopening the panel"
+        );
     }
 }

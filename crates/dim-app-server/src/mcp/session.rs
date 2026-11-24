@@ -35,10 +35,15 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 pub fn install(builder: &mut AgentBuilder) {
     crate::register_names(builder.catalog_mut());
     builder
-        .session_extension_part::<super::publication::ConnectionConfig>(
+        .session_extension_part::<dim_agent_runtime::SessionInstanceDefinition>(
             super::publication::GROUP,
             "McpServer",
-            |_, value| Ok(Box::new(super::publication::ConnectionPlugin::new(value))),
+            |names, value| {
+                Ok(Box::new(super::publication::ConnectionPlugin::new(
+                    value,
+                    names.instance(dim_agent_runtime::SESSION_GROUP)?,
+                )))
+            },
         )
         .require_part("McpSession")
         .require_part("TemporaryMcp");

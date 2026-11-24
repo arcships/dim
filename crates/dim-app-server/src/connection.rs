@@ -43,6 +43,50 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 const MAX_REQUESTS: usize = 64;
 const CONTROL_RESERVE: usize = 8;
 
+/// How many times one storeless listing row re-reads its Session's default
+/// branch when a concurrent move ends the line it started on.
+const SUMMARY_READ_ATTEMPTS: usize = 2;
+
+/// One storeless listing row's snapshot: the Session's default branch, its
+/// running state and the cutoffs both reads of the row use (session catalog
+/// §3.3). The line can end under the read, which only a move off it allows
+/// (timeline branches §10); the caller then reads the row from the Session's
+/// new default.
+fn summary_record(
+    host: &crate::agents::AgentHost,
+    session: &Session,
+) -> dim_agent_runtime::Result<(SessionInfo, crate::agents::SummaryCutoff)> {
+    let default = session.default_branch()?;
+    let status = session.state(&default)?;
+    let cutoff = crate::agents::SummaryCutoff {
+        preview_through: session.sequence(ROOT_BRANCH_ID)?,
+        activity_through: session.sequence(&default)?,
+        default,
+    };
+    Ok((
+        SessionInfo {
+            session_id: session.id().to_owned(),
+            cwd: session.config().cwd.clone(),
+            model: dim_agent_types::ModelId {
+                provider_id: session.config().model.provider_id.clone(),
+                model_id: session.config().model.model_id.clone(),
+            },
+            created_at: session.created_at(),
+            running: status.running,
+            // The row's sequence stays the root's, as the stored catalog row
+            // reads it; the running state and the activity follow the line the
+            // conversation is on (design §14, §15).
+            sequence: cutoff.preview_through,
+            attached_clients: 0,
+            agent_id: Some(host.agent_id.clone()),
+            origin: None,
+            parent_session_id: None,
+            title: Some(crate::storage::TitleFields::default()),
+        },
+        cutoff,
+    ))
+}
+
 /// The channel a connection declared at `hello`, for presence only.
 #[derive(Clone, Debug)]
 pub(crate) struct ClientIdentity {
@@ -271,6 +315,34 @@ impl Connection {
             .lock()
             .expect("attachments")
             .contains_key(id)
+    }
+    async fn scoped_route_admission(
+        &self,
+        usage: &SessionUse,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, RpcError> {
+        let admission = usage.admission().await;
+        let session = &usage.session;
+        let conflict = || {
+            RpcError::service(
+                "provider_route_conflict",
+                "Temporary routing requires a Session without active work or another client",
+            )
+        };
+        if session.is_closing() || !usage.is_exclusive(self.is_attached(session.id())) {
+            return Err(conflict());
+        }
+        for branch in session.branches() {
+            let dispatched = session.dispatch_watch(&branch.id)?.borrow().clone();
+            let publication = session.publication(&branch.id)?;
+            if dispatched.failure.is_some()
+                || publication.has_pending()
+                || dispatched.sequence < publication.sequence()
+                || session.state(&branch.id)?.running
+            {
+                return Err(conflict());
+            }
+        }
+        Ok(admission)
     }
     /// The channel `hello` declared; `unknown` before hello or for an
     /// unrecognized `other` client.
@@ -610,6 +682,26 @@ impl Connection {
     fn protocol_version(&self) -> u32 {
         *self.version.get().expect("handshake precedes requests")
     }
+    /// The line a call acts on when it omits `branchId`: the root while this
+    /// connection's event projection carries the root alone, the Session's
+    /// default branch otherwise (design §14, §15, §20.22). A v1 connection
+    /// receives no other line's turn events (`subscription::project`), so
+    /// routing its unnamed calls to the default branch would accept work whose
+    /// output that client cannot observe; the new meaning reaches clients that
+    /// can name a line, and v1 keeps the meaning it was built with.
+    fn unnamed_branch(&self, session: &Session) -> Result<String, AgentError> {
+        if self.projection_carries_the_root_alone() {
+            Ok(ROOT_BRANCH_ID.to_owned())
+        } else {
+            session.default_branch()
+        }
+    }
+    /// Whether this connection's negotiated protocol projects only the root's
+    /// events. v1 is the one: v2 carries every branch, and every later version
+    /// adds to v2's set.
+    fn projection_carries_the_root_alone(&self) -> bool {
+        self.protocol_version() == 1
+    }
     fn validate_call(&self, rpc: &RpcService, call: &Call) -> Result<(), RpcError> {
         if call.is_web_entry() || call.is_ui_host() {
             if self.protocol_version() < 3 {
@@ -668,6 +760,7 @@ impl Connection {
                     | Call::HistoryDetail(_)
                     | Call::Branches(_)
                     | Call::BranchGet(_)
+                    | Call::ModelGet(_)
                     | Call::Keys(_)
                     | Call::Summaries(_)
                     | Call::Catalog(_)
@@ -677,6 +770,7 @@ impl Connection {
                     | Call::Delete(_)
                     | Call::Fork(_)
                     | Call::BranchEnd(_)
+                    | Call::BranchSetDefault(_)
             )
         {
             return Err(RpcError::app(
@@ -717,9 +811,8 @@ impl Connection {
             Call::Stop(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Idle(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::ApprovalRespond(p) => (Some(&p.session_id), Some(&p.branch_id)),
-            Call::PermissionGet(p) | Call::SessionSkills(p) | Call::PromptRefresh(p) => {
-                (Some(&p.session_id), None)
-            }
+            Call::PermissionGet(p) | Call::SessionSkills(p) => (Some(&p.session_id), None),
+            Call::PromptRefresh(p) => (Some(&p.session_id), None),
             Call::PermissionUpdate(p) => (Some(&p.session_id), None),
             Call::ExecStop(p) => (Some(&p.session_id), None),
             Call::ModelUpdate(p) => (Some(&p.session_id), None),
@@ -764,8 +857,20 @@ impl Connection {
                 }
                 (Some(&p.session_id), None)
             }
+            Call::BranchSetDefault(p) => {
+                if p.branch_id.is_empty() {
+                    return Err(RpcError::invalid("branchId must not be empty"));
+                }
+                (Some(&p.session_id), None)
+            }
             Call::Branches(p) => (Some(&p.session_id), None),
             Call::BranchGet(p) => {
+                if p.branch_id.is_empty() {
+                    return Err(RpcError::invalid("branchId must not be empty"));
+                }
+                (Some(&p.session_id), None)
+            }
+            Call::ModelGet(p) => {
                 if p.branch_id.is_empty() {
                     return Err(RpcError::invalid("branchId must not be empty"));
                 }
@@ -818,20 +923,24 @@ impl Connection {
             _ => (None, None),
         };
         if let Some(branch) = branch {
+            // A v3 caller may omit the line on the calls that act on the
+            // Session's default branch (design §9, §15, §20.22); every other
+            // call names one, and a v1 caller has none to name.
             match (self.protocol_version(), branch) {
                 (1, None) => {}
                 (2..=4, Some(id)) if !id.is_empty() => {}
+                (3..=4, None) if call.defaults_to_the_default_branch() => {}
                 _ => {
-                    return Err(RpcError::invalid(
-                        "branchId is required in v2-v4 and absent in v1",
-                    ));
+                    return Err(RpcError::invalid(match self.protocol_version() {
+                        1 => "branchId must be absent in v1",
+                        _ => "branchId is required for this method",
+                    }));
                 }
             }
         }
         let product_branch = match call {
-            Call::PermissionGet(p) | Call::SessionSkills(p) | Call::PromptRefresh(p) => {
-                Some(p.branch_id.as_str())
-            }
+            Call::PermissionGet(p) | Call::SessionSkills(p) => Some(p.branch_id.as_str()),
+            Call::PromptRefresh(p) => p.branch_id.as_deref(),
             Call::PermissionUpdate(p) => {
                 if p.policy
                     .allowed_tools
@@ -844,7 +953,7 @@ impl Connection {
                 Some(p.branch_id.as_str())
             }
             Call::ExecStop(p) => Some(p.branch_id.as_str()),
-            Call::ModelUpdate(p) => Some(p.branch_id.as_str()),
+            Call::ModelUpdate(p) => p.branch_id.as_deref(),
             _ => None,
         };
         if product_branch.is_some_and(str::is_empty) {
@@ -931,13 +1040,13 @@ impl Connection {
             Call::HistoryDetail(p) => Some(&p.session_id),
             Call::Branches(p) => Some(&p.session_id),
             Call::BranchGet(p) => Some(&p.session_id),
+            Call::ModelGet(p) => Some(&p.session_id),
             Call::Keys(p) => Some(&p.session_id),
             Call::Stop(p) => Some(&p.session_id),
             Call::Idle(p) => Some(&p.session_id),
             Call::ApprovalRespond(p) => Some(&p.session_id),
-            Call::PermissionGet(p) | Call::SessionSkills(p) | Call::PromptRefresh(p) => {
-                Some(&p.session_id)
-            }
+            Call::PermissionGet(p) | Call::SessionSkills(p) => Some(&p.session_id),
+            Call::PromptRefresh(p) => Some(&p.session_id),
             Call::PermissionUpdate(p) => Some(&p.session_id),
             Call::ExecStop(p) => Some(&p.session_id),
             Call::ModelUpdate(p) => Some(&p.session_id),
@@ -947,6 +1056,7 @@ impl Connection {
             Call::Attach(p) => Some(&p.session_id),
             Call::BranchCreate(p) => Some(&p.session_id),
             Call::BranchEnd(p) => Some(&p.session_id),
+            Call::BranchSetDefault(p) => Some(&p.session_id),
             Call::SessionMethods(p) => Some(&p.session_id),
             Call::Close(p) if rpc.index.session_available(&p.session_id) => Some(&p.session_id),
             _ => None,
@@ -977,7 +1087,7 @@ impl Connection {
             return Some(tokio::select! {
                 biased;
                 _ = rpc.unloading.cancelled() => Err(RpcError::interrupted()),
-                result = self.execution_session(rpc, &usage.as_ref().expect("execution operation pins its Session").session, call) => result,
+                result = self.execution_session(rpc, usage.as_ref().expect("execution operation pins its Session"), call) => result,
             });
         }
         let delivery = match &call {
@@ -1152,7 +1262,7 @@ impl Connection {
                         },
                     );
                 }
-                let records = rpc
+                let sessions = rpc
                     .index
                     .hosts()
                     .into_iter()
@@ -1170,47 +1280,31 @@ impl Connection {
                             .version_of(session.id())
                             .is_some_and(|recorded| recorded <= self.protocol_version())
                     })
-                    .map(|(host, s)| {
-                        let status = s.state(DEFAULT_BRANCH_ID).map_err(RpcError::from)?;
-                        Ok(SessionInfo {
-                            session_id: s.id().to_owned(),
-                            cwd: s.config().cwd.clone(),
-                            model: dim_agent_types::ModelId {
-                                provider_id: s.config().model.provider_id.clone(),
-                                model_id: s.config().model.model_id.clone(),
-                            },
-                            created_at: s.created_at(),
-                            running: status.running,
-                            sequence: s.sequence(DEFAULT_BRANCH_ID).map_err(RpcError::from)?,
-                            attached_clients: 0,
-                            agent_id: Some(host.agent_id.clone()),
-                            origin: None,
-                            parent_session_id: None,
-                            title: Some(crate::storage::TitleFields::default()),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, RpcError>>();
-                let mut records = match records {
-                    Ok(records) => records,
-                    Err(error) => return Some(Err(error)),
-                };
-                for record in &mut records {
-                    record.attached_clients = self.hub.attached_clients(&record.session_id);
-                }
-                let mut summaries = Vec::with_capacity(records.len());
-                for session in records {
-                    let summary = rpc
-                        .index
-                        .session_summary(&session.session_id, session.sequence, session.created_at)
-                        .await;
-                    let (preview, updated_at) = match summary {
-                        Ok(summary) => summary,
-                        Err(AgentError::Closed(_)) => continue,
-                        Err(error) => return Some(Err(RpcError::from(error))),
+                    .collect::<Vec<_>>();
+                let mut summaries = Vec::with_capacity(sessions.len());
+                'sessions: for (host, session) in sessions {
+                    let mut attempt = 0;
+                    let (mut record, preview, updated_at) = loop {
+                        attempt += 1;
+                        let read = match summary_record(&host, &session) {
+                            Ok((record, cutoff)) => rpc
+                                .index
+                                .session_summary(session.id(), cutoff, session.created_at())
+                                .await
+                                .map(|(preview, updated_at)| (record, preview, updated_at)),
+                            Err(error) => Err(error),
+                        };
+                        match read {
+                            Ok(row) => break row,
+                            Err(AgentError::Closed(_)) => continue 'sessions,
+                            Err(AgentError::BranchEnded(_)) if attempt < SUMMARY_READ_ATTEMPTS => {}
+                            Err(error) => return Some(Err(RpcError::from(error))),
+                        }
                     };
+                    record.attached_clients = self.hub.attached_clients(&record.session_id);
                     summaries.push(SessionSummary {
-                        closed: rpc.index.closed(&session.session_id),
-                        session,
+                        closed: rpc.index.closed(&record.session_id),
+                        session: record,
                         preview,
                         updated_at,
                     });
@@ -1260,13 +1354,20 @@ impl Connection {
             },
             Call::Branches(params) => self.branches(rpc, params).await,
             Call::BranchGet(params) => self.branch_get(rpc, params).await,
+            Call::ModelGet(params) => self.model_get(rpc, params).await,
             Call::Keys(params) => self.keys(rpc, params).await,
             Call::Stop(params) => match self.session(rpc, &params.session_id) {
                 Ok(session) => {
-                    let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
+                    let branch = match params.branch_id {
+                        Some(branch) => branch,
+                        None => match self.unnamed_branch(&session) {
+                            Ok(branch) => branch,
+                            Err(error) => return Some(Err(error.into())),
+                        },
+                    };
                     let result = session
                         .stop(
-                            branch,
+                            &branch,
                             params
                                 .reason
                                 .unwrap_or_else(|| "User requested stop".into()),
@@ -1285,12 +1386,18 @@ impl Connection {
             },
             Call::Idle(params) => match self.session(rpc, &params.session_id) {
                 Ok(session) => {
-                    let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
+                    let branch = match params.branch_id {
+                        Some(branch) => branch,
+                        None => match self.unnamed_branch(&session) {
+                            Ok(branch) => branch,
+                            Err(error) => return Some(Err(error.into())),
+                        },
+                    };
                     let result = tokio::select! {
                         biased;
                         _ = self.closed.cancelled() => return None,
                         _ = rpc.unloading.cancelled() => Err(RpcError::reloading()),
-                        result = session.idle(branch) => result.map_err(RpcError::from),
+                        result = session.idle(&branch) => result.map_err(RpcError::from),
                     };
                     match result {
                         Ok(sequence) => self.barrier(sequence, delivery, &rpc.unloading).await,
@@ -1299,36 +1406,15 @@ impl Connection {
                 }
                 Err(e) => Err(e),
             },
-            Call::Close(params) => {
-                let session = rpc.index.session(&params.session_id).map(|(_, s)| s);
-                let result = match session {
-                    Some(session) => session
-                        .close()
-                        .await
-                        .map_err(|error| {
-                            tracing::error!(%error, session_id=%params.session_id, "Session cleanup failed");
-                            RpcError::wire(-32000, "Session cleanup failed")
-                        }),
-                    None => {
-                        if let Some(host) = rpc.index.host_by_session(&params.session_id)
-                            && let Some(session) = host.agent.get_session(&params.session_id)
-                        {
-                            session.closed().await.map_err(|error| {
-                                tracing::error!(
-                                    %error,
-                                    session_id=%params.session_id,
-                                    "Session cleanup failed"
-                                );
-                                RpcError::wire(-32000, "Session cleanup failed")
-                            })
-                        } else {
-                            Ok(())
-                        }
-                    }
-                };
-                rpc.index.remove_version(&params.session_id);
-                result.map(|_| Reply::empty())
-            }
+            Call::Close(params) => rpc
+                .index
+                .close_session(&params.session_id)
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, session_id=%params.session_id, "Session cleanup failed");
+                    RpcError::wire(-32000, "Session cleanup failed")
+                })
+                .map(|_| Reply::empty()),
             Call::Delete(params) if params.require_inactive => {
                 match rpc.index.delete_if_inactive(&params.session_id).await {
                     Ok(DeleteOutcome::Removed(deleted)) => {
@@ -1352,7 +1438,19 @@ impl Connection {
                     tracing::error!(%error, session_id=%params.session_id, "Session delete failed");
                     RpcError::from(error)
                 }),
-            Call::Fork(params) => match rpc.index.fork(&params.session_id, params.at).await {
+            Call::Fork(params) => match rpc
+                .index
+                .fork(
+                    &params.session_id,
+                    params.at,
+                    params.expected_config.as_ref(),
+                    rpc.ctx
+                        .get::<crate::provider::ProviderService>()
+                        .as_deref()
+                        .map(|provider| (provider, self.id.as_str())),
+                )
+                .await
+            {
                 Ok(fork) => fork
                     .sequence(ROOT_BRANCH_ID)
                     .map(|sequence| {
@@ -1362,7 +1460,7 @@ impl Connection {
                         })
                     })
                     .map_err(RpcError::from),
-                Err(error) => Err(RpcError::from(error)),
+                Err(error) => Err(error),
             },
             Call::ApprovalRespond(params) => {
                 let branch = params
@@ -1395,6 +1493,7 @@ impl Connection {
             }
             Call::BranchCreate(params) => self.create_branch(rpc, params).await,
             Call::BranchEnd(params) => self.end_branch(rpc, params).await,
+            Call::BranchSetDefault(params) => self.set_default_branch(rpc, params).await,
             Call::SessionMethods(_) => crate::methods::session_listed(
                 &rpc.management,
                 &usage.expect("session.methods pins its Session").session,
@@ -1447,9 +1546,10 @@ impl Connection {
     async fn execution_session(
         &self,
         rpc: &RpcService,
-        session: &Session,
+        usage: &SessionUse,
         call: Call,
     ) -> Result<Reply, RpcError> {
+        let session = &usage.session;
         Ok(match call {
             Call::SessionMcp(_) => Reply::McpState(mcp::session_state(session)?),
             Call::McpRefresh(_) => {
@@ -1551,9 +1651,49 @@ impl Connection {
                 Reply::SessionSkills(SessionSkillsResult { skills })
             }
             Call::ModelUpdate(p) => {
-                if p.branch_id != ROOT_BRANCH_ID {
-                    return Err(RpcError::invalid("Model updates only support main"));
+                // The update acts on the line it names, and on the default
+                // branch when it names none (design §20.23), instead of
+                // refusing every line but the root.
+                let branch = match p.branch_id {
+                    Some(branch) => branch,
+                    None => self.unnamed_branch(session).map_err(RpcError::from)?,
+                };
+                let route_owner = rpc.ctx.get::<crate::provider::ProviderService>();
+                let current = session
+                    .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch)?
+                    .and_then(|state| state.configuration);
+                let scoped_target = p.startup.is_none() && p.provider_id.is_some();
+                if p.require_expired_route
+                    && (self.entry != Entry::Local || !scoped_target || p.model_id.is_none())
+                {
+                    return Err(RpcError::invalid(
+                        "Expired route recovery requires a protected-local catalog model selection",
+                    ));
                 }
+                let recover_shared = if let Some(provider) = &route_owner {
+                    let metadata = match &current {
+                        Some(current) => current.metadata.as_ref(),
+                        None => session.config().model.metadata.as_ref(),
+                    };
+                    provider.scoped_connection_owner(
+                        &self.id,
+                        metadata,
+                        scoped_target && p.model_id.is_some(),
+                    )?
+                } else {
+                    false
+                };
+                if p.require_expired_route && !recover_shared {
+                    return Err(RpcError::service(
+                        "provider_route_not_expired",
+                        "Session does not have an expired temporary model route",
+                    ));
+                }
+                let mut scoped_admission = if recover_shared {
+                    Some(self.scoped_route_admission(usage).await?)
+                } else {
+                    None
+                };
                 let mut startup_admission = None;
                 let mut model = if let Some(startup) = p.startup {
                     if self.entry != Entry::Local || rpc.config.product_home.is_none() {
@@ -1569,7 +1709,7 @@ impl Connection {
                         ));
                     }
                     let state = session
-                        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&p.branch_id)?
+                        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch)?
                         .ok_or_else(RpcError::reloading)?;
                     let current = state
                         .configuration
@@ -1607,7 +1747,7 @@ impl Connection {
                                     model_id,
                                 }),
                                 Some(PathBuf::from(&session.config().cwd)),
-                                p.model_preferences.values(),
+                                p.model_preferences.values().into(),
                             )
                             .await?
                         }
@@ -1626,7 +1766,7 @@ impl Connection {
                             }
                             let state = session
                                 .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(
-                                    &p.branch_id,
+                                    &branch,
                                 )?
                                 .ok_or_else(RpcError::reloading)?;
                             let current = state.configuration.ok_or_else(|| {
@@ -1650,11 +1790,20 @@ impl Connection {
                         }
                     }
                 };
+                if scoped_target
+                    && !recover_shared
+                    && let Some(provider) = route_owner
+                    && let Some(admission) = provider.scoped_model(&self.id, &model)?
+                {
+                    scoped_admission = Some(self.scoped_route_admission(usage).await?);
+                    model = admission.model.clone();
+                    startup_admission = Some(admission);
+                }
                 // A model selection replaces the model, not the profile the
                 // branch adopted: the record names the profile whose prompt
                 // the branch runs, so it carries over until another adoption.
                 if let Some(agent_id) = session
-                    .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&p.branch_id)?
+                    .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch)?
                     .and_then(|state| state.configuration)
                     .and_then(|configuration| configuration.metadata)
                     .and_then(|metadata| metadata.agent_id)
@@ -1673,27 +1822,61 @@ impl Connection {
                             model: Some(model.clone()),
                             ..Default::default()
                         },
-                        &p.branch_id,
+                        &branch,
                     )
                     .await?;
                 let outcome = configuration_outcome(outcome)?;
                 if startup_admission.is_some() {
-                    rpc.ctx
-                        .get::<crate::provider::ProviderService>()
-                        .ok_or_else(RpcError::reloading)?
-                        .retain_startup(session, &model)
-                        .map_err(provider_error)?;
+                    let retained = if scoped_admission.is_some() && self.closed.is_cancelled() {
+                        Err(RpcError::closed())
+                    } else {
+                        rpc.ctx
+                            .get::<crate::provider::ProviderService>()
+                            .ok_or_else(RpcError::reloading)
+                            .and_then(|provider| {
+                                provider
+                                    .retain_startup(session, &model)
+                                    .map_err(provider_error)
+                            })
+                    };
+                    if let Err(error) = retained {
+                        if scoped_admission.is_some() {
+                            let previous = current.map_or_else(
+                                || session.config().model.clone(),
+                                |model| dim_agent_types::ModelSelection {
+                                    provider_id: model.provider_id,
+                                    model_id: model.model_id,
+                                    capability_snapshot: model.capability_snapshot,
+                                    config: model.config,
+                                    metadata: model.metadata,
+                                },
+                            );
+                            let rollback = session
+                                .configure(
+                                    dim_agent_runtime::ConfigureUpdate {
+                                        model: Some(previous),
+                                        ..Default::default()
+                                    },
+                                    &branch,
+                                )
+                                .await?;
+                            configuration_outcome(rollback)?;
+                        }
+                        return Err(error);
+                    }
                 }
+                drop(scoped_admission);
                 Reply::ModelUpdate(ModelUpdateResult { model: id, outcome })
             }
             Call::PromptRefresh(p) => {
-                if p.branch_id != ROOT_BRANCH_ID {
-                    return Err(RpcError::invalid("Prompt refresh only supports main"));
-                }
+                let branch = match p.branch_id {
+                    Some(branch) => branch,
+                    None => self.unnamed_branch(session).map_err(RpcError::from)?,
+                };
                 let outcome = session
                     .configure(
                         dim_agent_capabilities::prompt_sources::refresh_update(),
-                        &p.branch_id,
+                        &branch,
                     )
                     .await?;
                 Reply::Configuration(ConfigurationResult {
@@ -1784,9 +1967,16 @@ impl Connection {
                 .and_then(|metadata| metadata.startup.as_ref())
                 .and_then(|startup| startup.connection.as_ref())
             {
-                rpc.ctx
+                let provider = rpc
+                    .ctx
                     .get::<crate::provider::ProviderService>()
-                    .ok_or_else(RpcError::reloading)?
+                    .ok_or_else(RpcError::reloading)?;
+                provider.scoped_connection_owner(
+                    &self.id,
+                    config.model.metadata.as_ref(),
+                    false,
+                )?;
+                provider
                     .startup_connection(connection)
                     .map_err(provider_error)?;
             }
@@ -1800,6 +1990,13 @@ impl Connection {
                     params.startup,
                 )
                 .await?;
+        }
+        if startup_admission.is_none()
+            && let Some(provider) = rpc.ctx.get::<crate::provider::ProviderService>()
+            && let Some(admission) = provider.scoped_model(&self.id, &config.model)?
+        {
+            config.model = admission.model.clone();
+            startup_admission = Some(admission);
         }
         if let Some(prompt) = params.system_prompt {
             config.system_prompt = prompt;
@@ -1984,6 +2181,14 @@ pub(crate) struct ConnectionHub {
     /// Feature `testing`: holds the next subscription's `follow` task.
     #[cfg(feature = "testing")]
     follow_hold: Mutex<Option<Arc<crate::FollowHold>>>,
+    /// Feature `testing`: holds the next `session.branches` before its tree
+    /// snapshot.
+    #[cfg(feature = "testing")]
+    branches_hold: Mutex<Option<Arc<crate::BranchesHold>>>,
+    /// Feature `testing`: holds the next attach's `expectedConfig` check after
+    /// its record is captured.
+    #[cfg(feature = "testing")]
+    attach_check_hold: Mutex<Option<Arc<crate::AttachCheckHold>>>,
     /// Feature `testing`: fails the next attach before it registers its
     /// listener.
     #[cfg(feature = "testing")]
@@ -2015,6 +2220,10 @@ impl ConnectionHub {
             config,
             #[cfg(feature = "testing")]
             follow_hold: Mutex::new(None),
+            #[cfg(feature = "testing")]
+            branches_hold: Mutex::new(None),
+            #[cfg(feature = "testing")]
+            attach_check_hold: Mutex::new(None),
             #[cfg(feature = "testing")]
             fail_attach_before_registration: std::sync::atomic::AtomicBool::new(false),
         }
@@ -2146,6 +2355,33 @@ impl ConnectionHub {
     #[cfg(feature = "testing")]
     pub(crate) fn take_follow_hold(&self) -> Option<Arc<crate::FollowHold>> {
         self.follow_hold.lock().expect("follow hold").take()
+    }
+    /// Holds the next `session.branches` before its tree snapshot until
+    /// `release`. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub(crate) fn hold_next_branches(&self) -> Arc<crate::BranchesHold> {
+        let hold = Arc::new(crate::BranchesHold::default());
+        *self.branches_hold.lock().expect("branches hold") = Some(hold.clone());
+        hold
+    }
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_branches_hold(&self) -> Option<Arc<crate::BranchesHold>> {
+        self.branches_hold.lock().expect("branches hold").take()
+    }
+    /// Holds the next attach's `expectedConfig` check after its record is
+    /// captured until `release`. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub(crate) fn hold_next_attach_check(&self) -> Arc<crate::AttachCheckHold> {
+        let hold = Arc::new(crate::AttachCheckHold::default());
+        *self.attach_check_hold.lock().expect("attach check hold") = Some(hold.clone());
+        hold
+    }
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_attach_check_hold(&self) -> Option<Arc<crate::AttachCheckHold>> {
+        self.attach_check_hold
+            .lock()
+            .expect("attach check hold")
+            .take()
     }
     /// Feature `testing`: the next attach fails before it registers its
     /// listener.
@@ -2312,7 +2548,7 @@ impl RpcService {
                 &mut config,
                 &host.profile,
                 params.model,
-                params.model_preferences.unwrap_or_default(),
+                params.model_preferences.unwrap_or_default().into(),
                 params.startup,
             )
             .await?;
@@ -2333,15 +2569,20 @@ impl RpcService {
         config: &mut dim_agent_runtime::SessionConfig,
         profile: &crate::agents::AgentProfile,
         model: Option<ModelSelection>,
-        preferences: crate::provider::ModelPreferences,
+        preferences: ModelPreferenceUpdate,
         startup: Option<crate::provider::StartupInput>,
     ) -> Result<Option<crate::provider::StartupSelection>, RpcError> {
-        if !self.index.selects_models() && preferences != Default::default() {
+        if !self.index.selects_models() && !preferences.is_empty() {
             return Err(RpcError::invalid(
                 "Model preferences require the product provider",
             ));
         }
         if let Some(startup) = startup {
+            if preferences.clears_reasoning() || preferences.clears_service_tier() {
+                return Err(RpcError::invalid(
+                    "Startup preferences accept set values only",
+                ));
+            }
             if self.config.product_home.is_none() {
                 return Err(RpcError::invalid(
                     "Model startup requires the protected-local product entry",
@@ -2365,7 +2606,7 @@ impl RpcService {
                 .startup_configuration(
                     target,
                     Path::new(&config.cwd),
-                    preferences,
+                    preferences.values(),
                     startup,
                     None,
                     &self.unloading,
@@ -2422,7 +2663,7 @@ impl RpcService {
         &self,
         explicit: Option<dim_agent_types::ModelId>,
         cwd: Option<PathBuf>,
-        preferences: crate::provider::ModelPreferences,
+        preferences: ModelPreferenceUpdate,
     ) -> Result<dim_agent_types::ModelSelection, RpcError> {
         if self.config.product_home.is_some() {
             let provider = self
@@ -2430,11 +2671,16 @@ impl RpcService {
                 .get::<crate::provider::ProviderService>()
                 .ok_or_else(RpcError::reloading)?;
             return provider
-                .configuration(explicit, cwd.as_deref(), preferences, &self.unloading)
+                .configuration_with_preference_update(
+                    explicit,
+                    cwd.as_deref(),
+                    preferences,
+                    &self.unloading,
+                )
                 .await
                 .map_err(provider_error);
         }
-        if preferences != Default::default() {
+        if !preferences.is_empty() {
             return Err(provider_error(
                 dim_agent_capabilities::host::HostError::failed(
                     "Model preferences require a catalog with capability declarations; configure the API-key model's generation settings in --model-config",
@@ -2590,9 +2836,8 @@ impl HostDispatch for ForeignCallChannel {
         // Read the caller inside `invoke`: a future returned here runs later
         // and no longer sees it.
         let row = caller_row().ok_or_else(|| {
-            BridgeError::Value(
-                "callChannel needs the calling row's context: only a row of a language runtime can call it"
-                    .into(),
+            BridgeError::value(
+                "callChannel needs the calling row's context: only a row of a language runtime can call it",
             )
         })?;
         let instance = row.instance();
@@ -2650,7 +2895,7 @@ struct ClosedRequest {
 /// One request object; anything else is the caller's programming error.
 fn request<T: DeserializeOwned>(args: BridgeValue) -> Result<T, BridgeError> {
     let invalid = |detail: String| {
-        BridgeError::Value(format!("expected one callChannel request object: {detail}"))
+        BridgeError::value(format!("expected one callChannel request object: {detail}"))
     };
     let Value::Array(args) = args.json()? else {
         return Err(invalid("not an argument list".into()));

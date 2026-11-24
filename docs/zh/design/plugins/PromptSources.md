@@ -22,7 +22,7 @@ PromptSources 提供 Session 的具名提示词来源和 Session 的提示词注
 
 ### 1.1 策略
 
-`dim/base` 是策略：身份那句话和各项规则——安全、语气、客观、工程、git、工作方法、结束回合，以及链接约定。它是关于怎样工作的指引；无论它说什么，运行时都一样。工具的输入形状，以及其中各条目怎样应用，由该工具自身的声明说明，而不是由 `dim/base` 说明。
+`dim/base` 是策略：身份那句话和各项规则——安全、语气、进度更新、客观、工程、git、工作方法、结束回合，以及链接约定。它是关于怎样工作的指引；无论它说什么，运行时都一样。工具的输入形状，以及其中各条目怎样应用，由该工具自身的声明说明，而不是由 `dim/base` 说明。
 
 shell 指引也是策略。它是环境来源为操作者的 shell 携带的那句话（`Use POSIX shell syntax. …`，或 PowerShell、cmd、Git Bash 等版本），以及在 Windows 上的文件编码指引：怎样引用、怎样调用带空格的路径、向 read 工具请求哪种旧编码。它没有一句陈述运行时事实。
 
@@ -121,6 +121,18 @@ impl PromptSourcesPlugin {
         config: PromptSourcesConfig,
     ) -> rutis::Result<Self>;
 }
+
+/// 在出厂配置 `config` 下注册 PromptSources。
+pub fn install_with_config(
+    builder: &mut AgentBuilder,
+    today: Today,
+    every: Duration,
+    config: PromptSourcesConfig,
+);
+
+/// 用内建文字注册 PromptSources：`install` 与 `install_with_clock` 就是这个入口
+/// 配上默认配置。
+pub fn install(builder: &mut AgentBuilder);
 ```
 
 语言来源的绑定是来源加载器里多出来的一个分支：名字 `dim/language`、投递 `State`、顺序 220，有操作者设置时给出正文，没有时不产生条目。

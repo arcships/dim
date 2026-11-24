@@ -89,6 +89,108 @@ enum Command {
     Panic,
 }
 
+/// Holds one Timeline publication for race flow tests. Feature `testing` only;
+/// production builds have no hook.
+#[cfg(feature = "testing")]
+pub mod testing {
+    use super::{StoredEvent, TimelineKey};
+    use std::sync::{Arc, Condvar, Mutex};
+    use tokio::sync::mpsc;
+
+    type Hold = (
+        String,
+        String,
+        String,
+        mpsc::UnboundedSender<()>,
+        Arc<(Mutex<bool>, Condvar)>,
+    );
+    static HOLDS: Mutex<Vec<Hold>> = Mutex::new(Vec::new());
+
+    /// One line's publication of `kind`, stopped after its rows commit and
+    /// before the writer reports it.
+    pub struct HeldPublication {
+        session: String,
+        branch: String,
+        kind: String,
+        arrived: mpsc::UnboundedReceiver<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl HeldPublication {
+        /// Resolves once the batch is committed and held before publication.
+        pub async fn arrived(&mut self) {
+            let _ = self.arrived.recv().await;
+        }
+        /// Lets the held publication continue.
+        pub fn release(&self) {
+            let (released, wake) = &*self.release;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+    }
+    impl Drop for HeldPublication {
+        fn drop(&mut self) {
+            self.release();
+            let (session, branch, kind) = (
+                std::mem::take(&mut self.session),
+                std::mem::take(&mut self.branch),
+                std::mem::take(&mut self.kind),
+            );
+            HOLDS
+                .lock()
+                .unwrap()
+                .retain(|(held_session, held_branch, held_kind, ..)| {
+                    *held_session != session || *held_branch != branch || *held_kind != kind
+                });
+        }
+    }
+
+    /// Holds the next batch of `kind` on `branch_id` in `session_id` after its
+    /// rows commit and before it is published. The tests of one process run in
+    /// parallel, so the key is the Session, the line and the kind.
+    pub fn hold_publication(session_id: &str, branch_id: &str, kind: &str) -> HeldPublication {
+        let (arrived, arrivals) = mpsc::unbounded_channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        HOLDS.lock().unwrap().push((
+            session_id.to_owned(),
+            branch_id.to_owned(),
+            kind.to_owned(),
+            arrived,
+            release.clone(),
+        ));
+        HeldPublication {
+            session: session_id.to_owned(),
+            branch: branch_id.to_owned(),
+            kind: kind.to_owned(),
+            arrived: arrivals,
+            release,
+        }
+    }
+
+    /// Stops the writer when this batch carries the armed kind. It runs on the
+    /// writer thread, so the hold takes no async lock and holds none while it
+    /// waits.
+    pub(super) fn publication(key: &TimelineKey, events: &[StoredEvent]) {
+        let found = {
+            let mut holds = HOLDS.lock().unwrap();
+            let Some(index) = holds.iter().position(|(session, branch, kind, ..)| {
+                session == &key.session_id
+                    && branch == &key.branch_id
+                    && events.iter().any(|record| record.event.kind.key() == kind)
+            }) else {
+                return;
+            };
+            let hold = holds.remove(index);
+            (hold.3, hold.4)
+        };
+        let _ = found.0.send(());
+        let (released, wake) = &*found.1;
+        let mut released = released.lock().unwrap();
+        while !*released {
+            released = wake.wait(released).unwrap();
+        }
+    }
+}
+
 /// One process writer batches every Session; only pending events reside here.
 pub struct SqliteTimelineStore {
     pub(super) db: Arc<SqliteStorage>,
@@ -473,6 +575,8 @@ impl SqliteTimelineStore {
             }
         }
         for mut entry in accepted {
+            #[cfg(feature = "testing")]
+            testing::publication(&entry.batch.key, &entry.batch.events);
             entry.publish(outcomes[&entry.batch.key.session_id].clone());
         }
         self.db.checkpoint();
@@ -1796,6 +1900,56 @@ impl SessionStore {
         Ok(removed > 0)
     }
 
+    /// Removes an unregistered directory under the store's exclusion: the
+    /// ownership lock is held from the final record and workspace checks
+    /// through `remove`, so a Session created or a directory recorded after
+    /// the check fails this call and a creation after the removal re-checks
+    /// its missing workspace. The checks and the removal run in their own
+    /// task, so dropping the caller does not release the lock while the
+    /// removal is still running. The path is a store path, absolute without
+    /// relative components, and neither a recorded worktree directory nor a
+    /// stored Session workspace may be at or under it; `remove` re-checks the
+    /// unregistered facts and performs the deletion. Returns whether the
+    /// directory was still present when the lock was acquired; `false` means
+    /// another removal already finished.
+    pub async fn remove_unregistered_directory(
+        &self,
+        path: PathBuf,
+        remove: impl FnOnce(PathBuf) -> BoxFuture<'static, Result<()>> + Send + 'static,
+    ) -> Result<bool> {
+        stored_worktree_path(&path)?;
+        let store = self.clone();
+        tokio::spawn(async move {
+            let _ownership = store.ownership.lock().await;
+            match tokio::fs::symlink_metadata(&path).await {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(_) => {}
+            }
+            let directories = store.worktree_directories().await?;
+            if let Some(record) = directories
+                .iter()
+                .find(|record| record.directory.root.starts_with(&path))
+            {
+                return Err(AgentError::InvalidInput(format!(
+                    "{} is a recorded worktree directory; remove it by task id",
+                    record.directory.root.display()
+                )));
+            }
+            let sessions = store.sessions_under_workspace(&path).await?;
+            if let Some(session) = sessions.first() {
+                return Err(AgentError::InvalidInput(format!(
+                    "Session {session} uses {}",
+                    path.display()
+                )));
+            }
+            remove(path).await?;
+            Ok(true)
+        })
+        .await
+        .map_err(|error| AgentError::Storage(format!("the removal task failed: {error}")))?
+    }
+
     /// Lists the Session associations of a recorded directory. An unknown
     /// directory or a candidate without remaining associations has no usages.
     pub async fn worktree_usages(
@@ -2243,6 +2397,13 @@ fn write_batch(
                 create_anchor: Some(sequence),
             };
             insert_branch(connection, &batch.key.session_id, &info)?;
+        }
+        if let EventKind::BranchDefault(data) = &record.event.kind {
+            // A move is not activity: the catalog takes the new line's own
+            // latest activity in this transaction, so an idle move never
+            // leaves the catalog recent by the line it left (design §14,
+            // §15). One indexed read of that line; no scan of the history.
+            super::catalog::refresh_activity(connection, &batch.key.session_id, &data.branch)?;
         }
     }
     connection

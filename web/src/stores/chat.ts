@@ -8,9 +8,9 @@ import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
 import { readLoops as readLoopsReply, readStartedLoop, type Loop } from "../loop"
 import { readUploadedImage } from "../rpc/read"
-import { DEFAULT_BRANCH_ID, ROOT_BRANCH_ID, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type SubmitMode, type UserInput, type WithdrawResult } from "../rpc/protocol"
+import { ROOT_BRANCH_ID, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type PermissionState, type QueuedInput, type QuestionAnswer, type SessionEvent, type SubmitMode, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
-import { ProtocolError, readAttached, readBranches, readBranchDetail, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readSessionSkills, readWithdrawResult } from "../rpc/read"
+import { ProtocolError, readAdoptedConfiguration, type AdoptedConfiguration, readAttached, readBranches, readBranchDetail, readDefaultBranch, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readSessionSkills, readWithdrawResult } from "../rpc/read"
 import { useConnectionStore } from "./connection"
 import { useSessionsStore } from "./sessions"
 import { useUiStore } from "./ui"
@@ -36,10 +36,12 @@ export type BranchView = {
 /** What the chat page shows of one attached session. */
 export type SessionView = {
   sessionId: string
-  /** `loading` until the first main-history load finishes; `closed` once the session is gone. */
+  /** The line the Session's conversation is on (design §4): the centre, and the target a request that names no line reaches. */
+  defaultBranchId: string
+  /** `loading` until the first centre-history load finishes; `closed` once the session is gone. */
   status: "loading" | "ready" | "closed" | "failed"
   error: string
-  /** The default branch's transcript. */
+  /** The centre's transcript: the default branch's. */
   rows: readonly TimelineRow[]
   /** Whether main runs, and whether it is stopping. */
   running: boolean
@@ -56,6 +58,8 @@ export type SessionView = {
   methods: readonly string[]
   /** The default branch's policy: read after history loads, then kept current by `permission/changed`. */
   permission: PermissionPolicy | undefined
+  /** The version `permission` was published at: the line's last `permission/changed`, so a read that left earlier is stale. */
+  permissionVersion: number | undefined
   /** The default branch's current goal from its owner. */
   goal: Goal | undefined
   /** Messages queued on the default branch while it runs, oldest first. */
@@ -93,13 +97,23 @@ type Channel = {
   branches: Map<string, BranchStream>
   lines: Lines
   states: Map<string, { running: boolean; stopping: boolean }>
+  /** The newest move the server accepted; a completion older than it is stale. */
+  moves: number
+  /** Advances on every status write: a read accepts its result only while this is unchanged. */
+  statusSeq: number
+  /** The session's directory has been read once: the centre and every line it names are known. */
+  directoryRead: boolean
+  /** The retry reading the centre, so a second click and a resync never read beside it. */
+  retrying: Promise<void> | undefined
   /** While `syncing`, every notification waits here so history applies first. */
   syncing: boolean
   queued: Notification[]
   historyQueue: string[]
   historyRunning: boolean
-  goalRefreshing: boolean
-  goalDirty: boolean
+  /** The goal refresh running now; a caller that arrives meanwhile waits for its result. */
+  goalTask: Promise<boolean> | undefined
+  /** The lines a pending or running refresh still has to read, with the centre projection each read belongs to (none for a side line), oldest first. */
+  goalLines: { line: string; projection: Projection | undefined }[]
   publishTimer: ReturnType<typeof setTimeout> | undefined
 }
 
@@ -113,6 +127,16 @@ function stream(): BranchStream {
 
 function idleState(): { running: boolean; stopping: boolean } {
   return { running: false, stopping: false }
+}
+
+/** Whether the page is closed. Reads that await can be overtaken by `session.closed`, so a check after one calls this: a direct comparison would narrow the status and leave the next one no overlap to test. */
+function closed(view: SessionView): boolean {
+  return view.status === "closed"
+}
+
+function setStatus(channel: Channel, status: SessionView["status"]): void {
+  channel.view.status = status
+  channel.statusSeq++
 }
 
 /**
@@ -129,12 +153,13 @@ export const useChatStore = defineStore("chat", () => {
     return useConnectionStore().client
   }
 
-  /** Attaches the session (once) and loads its main history. */
+  /** Attaches the session (once) and loads the centre's history. */
   function open(sessionId: string): void {
     if (channels.has(sessionId)) return
     const stored = useSessionsStore().byId.get(sessionId)
     const view = shallowReactive<SessionView>({
       sessionId,
+      defaultBranchId: ROOT_BRANCH_ID,
       status: "loading",
       error: "",
       rows: [],
@@ -146,6 +171,7 @@ export const useChatStore = defineStore("chat", () => {
       questions: [],
       methods: [],
       permission: undefined,
+      permissionVersion: undefined,
       goal: undefined,
       queued: [],
       model: stored?.model,
@@ -160,11 +186,15 @@ export const useChatStore = defineStore("chat", () => {
       branches: new Map(),
       lines: new Lines(),
       states: new Map(),
+      moves: 0,
+      statusSeq: 0,
+      directoryRead: false,
+      retrying: undefined,
       syncing: false,
       queued: [],
       historyQueue: [],
       historyRunning: false,
-      goalRefreshing: false, goalDirty: false,
+      goalTask: undefined, goalLines: [],
       publishTimer: undefined,
     }
     channel.main.opened = true
@@ -181,15 +211,24 @@ export const useChatStore = defineStore("chat", () => {
   async function sync(channel: Channel): Promise<void> {
     if (channel.syncing) return
     const { view } = channel
+    // A retry already reads the centre: this fuller read waits for it and then
+    // supersedes it, so the two never read the same line beside each other.
+    // Waiting before the reset leaves what arrives meanwhile to `receive`, so a
+    // `session.closed` that ends the Session is not reset away here.
+    if (channel.retrying !== undefined) await channel.retrying
+    if (channel.syncing || closed(view)) return
+    const move = channel.moves
     channel.syncing = true
-    channel.view.status = "loading"
+    setStatus(channel, "loading")
     channel.states.clear()
-    channel.queued = []
     view.approvals = []
+    channel.directoryRead = false
     channel.main.syncing = true
     channel.main.done = false
     channel.main.error = ""
-    channel.main.queued = []
+    // The stream's queued events are kept: `loadHistory` drops the ones the
+    // window it installs already covers, so the events a retry buffered while it
+    // held the stream replay after this read instead of being dropped here.
     channel.main.progress = undefined
     for (const [id, branch] of channel.branches) {
       branch.syncing = branch.opened
@@ -207,9 +246,14 @@ export const useChatStore = defineStore("chat", () => {
         if (!view.methods.includes(required)) throw new ProtocolError(`This Session does not provide ${required}`)
       }
       const directory = await client().call("session.branches", { sessionId: view.sessionId }, readBranches)
-      channel.lines.directory(directory)
-      for (const entry of directory) {
-        if (entry.branchId === ROOT_BRANCH_ID) continue
+      channel.lines.directory(directory.branches)
+      // The centre is the default branch the directory reports: a resync that
+      // discovers a move hands the stream over once, as a local move does. An
+      // answer read before a move was accepted describes the centre that move
+      // replaced, so that move's own handover stands.
+      if (channel.moves === move && directory.defaultBranchId !== view.defaultBranchId) centre(channel, directory.defaultBranchId)
+      for (const entry of directory.branches) {
+        if (entry.branchId === ROOT_BRANCH_ID || entry.branchId === view.defaultBranchId) continue
         const branch = ensureBranch(channel, entry.branchId)
         if (!branch.opened) {
           const asks = await pendingQuestions(channel, entry.branchId, entry.head)
@@ -217,43 +261,135 @@ export const useChatStore = defineStore("chat", () => {
           branch.projection.restoreControls([], asks, entry.head)
         }
       }
-      const main = await loadHistory(channel, ROOT_BRANCH_ID)
+      // The directory counts as read once its lines' pending questions are in: a
+      // retry that finds it unread repeats the attach, which is how a reconnect
+      // that failed before this point gets its attachment back.
+      channel.directoryRead = true
+      const centreId = view.defaultBranchId
+      const target = channel.main
+      const main = await loadHistory(channel, centreId)
+      // The page this result would describe is the transcript the read installed
+      // when it started: a move accepted meanwhile replaced it with the line it
+      // names, and that line's own reads report it.
+      if (channel.main !== target) return
       if (main !== "ok") {
         if (main === "failed" && view.status !== "closed") {
-          view.status = "failed"
+          setStatus(channel, "failed")
           view.error = channel.main.error
         }
         return
       }
-      channel.main.projection.model = model
-      await refreshGoal(channel)
+      // The reply's model is the root's (design §14): a centre on a line keeps
+      // the model its own line adopted.
+      const shown = ensureBranch(channel, centreId)
+      if (centreId === ROOT_BRANCH_ID) shown.projection.model = model
+      try {
+        await adoptModel(channel, centreId, shown)
+      } catch {
+        // The model is the centre line's own read: a failure leaves it unset, not the page failed.
+      }
+      if (!(await refreshGoal(channel))) return
       if (view.status === "failed") return
-      const queued = channel.queued
-      channel.queued = []
       channel.syncing = false
-      for (const notification of queued) receive(notification)
-      if (view.status !== "closed") view.permission = await sessionPermission(view.sessionId)
-      if (view.status !== "closed") {
-        view.status = "ready"
-        view.error = ""
+      drainQueued(channel)
+      // The policy read is out while the page is the loading one this sync
+      // installed. A goal event that arrives meanwhile and fails owns the page:
+      // neither this read's result nor a ready page may take it back.
+      if (view.status === "loading" && channel.main === target) {
+        const policy = await sessionPermission(view.sessionId, centreId)
+        if (view.status === "loading" && channel.main === target) {
+          showPermission(view, centreId, policy)
+          setStatus(channel, "ready")
+          view.error = ""
+        }
       }
       publish(channel)
       if (view.status !== "closed") void pumpHistory(channel)
     } catch (error) {
-      if (error instanceof RpcError && error.appError === "session_closed") view.status = "closed"
-      else if (!(error instanceof ConnectionLost)) {
-        view.status = "failed"
+      if (error instanceof RpcError && error.appError === "session_closed") setStatus(channel, "closed")
+      else if (channel.moves === move && !closed(view) && !(error instanceof ConnectionLost)) {
+        setStatus(channel, "failed")
         view.error = error instanceof Error ? error.message : String(error)
       }
     } finally {
       channel.syncing = false
       channel.main.syncing = !channel.main.done || channel.main.error !== ""
-      if (channel.main.syncing) {
-        for (const notification of channel.queued) applyNotification(channel, notification)
-      }
-      channel.queued = []
+      drainQueued(channel)
       publish(channel)
     }
+  }
+
+  /**
+   * Reads the accepted centre again after a failure, from the page that shows
+   * it: the line is read as `sync` reads it, never moved again, and the live
+   * events buffered on its stream stay buffered for that read. A Session whose
+   * directory read did not finish has no centre to read: the retry repeats the
+   * whole attach instead, which is what an unread directory of a reconnect
+   * needs. A Session that closes while a read is out stays closed, as it does
+   * in `sync` and `setDefaultBranch`, and a failure that a read of this line
+   * publishes while the retry is out stands: the policy read and the ready page
+   * are written only while no status landed since the retry started.
+   */
+  async function readCentre(channel: Channel): Promise<void> {
+    const { view } = channel
+    if (!channel.directoryRead) {
+      await sync(channel)
+      return
+    }
+    const move = channel.moves
+    const centre = view.defaultBranchId
+    const statusAt = channel.statusSeq
+    try {
+      const loaded = await loadHistory(channel, centre)
+      // A later move owns the centre, and its own reads decide what it shows.
+      if (channel.moves !== move || channel.statusSeq !== statusAt || closed(view)) return
+      if (loaded !== "ok") {
+        if (loaded === "failed" && view.status !== "closed") {
+          setStatus(channel, "failed")
+          view.error = channel.main.error
+        }
+        return
+      }
+      await adoptModel(channel, centre, channel.main).catch(() => undefined)
+      if (channel.moves !== move || view.defaultBranchId !== centre || channel.statusSeq !== statusAt || closed(view)) return
+      publish(channel)
+      const refreshed = await refreshGoal(channel, centre)
+      if (channel.moves !== move || view.defaultBranchId !== centre || channel.statusSeq !== statusAt || closed(view) || !refreshed) return
+      const policy = await sessionPermission(view.sessionId, centre)
+      if (channel.moves !== move || view.defaultBranchId !== centre || channel.statusSeq !== statusAt || closed(view)) return
+      showPermission(view, centre, policy)
+      setStatus(channel, "ready")
+      view.error = ""
+      // The centre's events that arrived while these reads were out waited on
+      // the failed page's stream, which applies nothing: the guarded success
+      // resumes its consumer, so a reply that landed in that interval shows in
+      // order without another event or a resync. A failure belongs to the
+      // stream this consumer started on: a move, a reload or a close since then
+      // leaves the replacement to the reads of its own line.
+      const stream = channel.main
+      const projection = stream.projection
+      void consumeLive(channel, centre).catch(error => {
+        if (channel.main !== stream || stream.projection !== projection || !stream.done || closed(view)) return
+        stream.error = error instanceof Error ? error.message : String(error)
+        stream.syncing = true
+        changed(channel)
+      })
+      publish(channel)
+      void pumpHistory(channel)
+    } catch (error) {
+      if (error instanceof RpcError && error.appError === "session_closed") setStatus(channel, "closed")
+      else if (!(error instanceof ConnectionLost)) {
+        setStatus(channel, "failed")
+        view.error = error instanceof Error ? error.message : String(error)
+      }
+    }
+  }
+
+  /** Retries the centre's reads from the failed page; one retry runs at a time. */
+  function retryCentre(sessionId: string): void {
+    const channel = channels.get(sessionId)
+    if (channel === undefined || channel.view.status !== "failed" || channel.retrying !== undefined) return
+    channel.retrying = readCentre(channel).catch(() => undefined).finally(() => { channel.retrying = undefined })
   }
 
   function receive(notification: Notification): void {
@@ -268,6 +404,12 @@ export const useChatStore = defineStore("chat", () => {
       return
     }
     applyNotification(channel, notification)
+  }
+
+  function drainQueued(channel: Channel): void {
+    const queued = channel.queued
+    channel.queued = []
+    for (const notification of queued) applyNotification(channel, notification)
   }
 
   function applyNotification(channel: Channel, notification: Notification): void {
@@ -286,7 +428,10 @@ export const useChatStore = defineStore("chat", () => {
           applyEvent(channel, branchId, notification.event)
         } else {
           stream.queued.push(notification.event)
-          void consumeLive(channel, branchId).catch(error => {
+          // A failed centre is replaced by the retry's window: its events wait
+          // there instead of being applied to a transcript that read replaces.
+          // A side line's tab is not part of that read, so it keeps applying.
+          if (!(branchId === view.defaultBranchId && view.status === "failed")) void consumeLive(channel, branchId).catch(error => {
             stream.error = error instanceof Error ? error.message : String(error)
             stream.syncing = true
             changed(channel)
@@ -304,15 +449,15 @@ export const useChatStore = defineStore("chat", () => {
         break
       }
       case "session.state": {
-        if (notification.branchId === ROOT_BRANCH_ID) {
+        if (notification.branchId === view.defaultBranchId) {
           if (view.running && !notification.running) refreshDirectorySoon()
         }
         channel.states.set(notification.branchId, { running: notification.running, stopping: notification.stopping })
         channel.lines.setRunning(notification.branchId, notification.running)
-        if (notification.branchId !== ROOT_BRANCH_ID) ensureBranch(channel, notification.branchId)
+        ensureBranch(channel, notification.branchId)
         const running = anyRunning(channel)
-        view.running = stateOf(channel, ROOT_BRANCH_ID).running
-        view.stopping = stateOf(channel, ROOT_BRANCH_ID).stopping
+        view.running = stateOf(channel, view.defaultBranchId).running
+        view.stopping = stateOf(channel, view.defaultBranchId).stopping
         view.sessionRunning = running
         useSessionsStore().setRunning(view.sessionId, running)
         changed(channel)
@@ -336,7 +481,7 @@ export const useChatStore = defineStore("chat", () => {
         break
       }
       case "session.closed":
-        view.status = "closed"
+        setStatus(channel, "closed")
         view.running = false
         view.stopping = false
         view.sessionRunning = false
@@ -360,8 +505,10 @@ export const useChatStore = defineStore("chat", () => {
     const applied = event.content
     if (applied.kind === "turn-end" || ((applied.kind === "model-end" || applied.kind === "tool-use-start" || applied.kind === "tool-use") && applied.requestId === stream.progress?.requestId)) stream.progress = undefined
     if (event.content.kind === "branch-create") ensureBranch(channel, event.content.branchId)
-    if (branchId === ROOT_BRANCH_ID && event.content.kind === "permission-changed") channel.view.permission = event.content.policy
-    if (branchId === ROOT_BRANCH_ID && (applied.kind === "input-deleted" || ((applied.kind === "input" || applied.kind === "source-input") && applied.blocks.some(block => block.key?.startsWith("goal:"))))) void refreshGoal(channel)
+    if (branchId === channel.view.defaultBranchId && event.content.kind === "permission-changed") {
+      showPermission(channel.view, branchId, { policy: event.content.policy, version: event.sequence })
+    }
+    if (branchId === channel.view.defaultBranchId && (applied.kind === "input-deleted" || ((applied.kind === "input" || applied.kind === "source-input") && applied.blocks.some(block => block.key?.startsWith("goal:"))))) void refreshGoal(channel)
     changed(channel)
   }
 
@@ -401,8 +548,38 @@ export const useChatStore = defineStore("chat", () => {
     return branch.liveTask
   }
 
+  /**
+   * Hands the centre to `branchId`: the line that left the role falls back to
+   * an ordinary branch, and the line that took it is the centre itself, not a
+   * tab beside it (design §14). A local move and a resync that discovers one
+   * both hand the stream over once; a local move hands over the window it read
+   * before the call, so the centre and its transcript change in one step.
+   */
+  function centre(channel: Channel, branchId: string, branch: BranchStream = stream()): void {
+    // The policy shown belonged to the line that is no longer the centre; the
+    // new line's own read publishes its own (design §14).
+    channel.view.permission = undefined
+    channel.view.permissionVersion = undefined
+    // A failure published for the outgoing line belongs to it: the centre that
+    // took its place starts clean, and its own reads report their own (design
+    // §14).
+    if (channel.view.status === "failed") {
+      setStatus(channel, "ready")
+      channel.view.error = ""
+    }
+    channel.view.defaultBranchId = branchId
+    useUiStore().followDefault(channel.view.sessionId, branchId)
+    channel.branches.delete(branchId)
+    branch.opened = true
+    // The outgoing centre's consumer, if it is suspended on that stream's queue,
+    // ends with the handover: its events belong to the line that left the role.
+    if (channel.main !== branch) channel.main.syncing = true
+    channel.main = branch
+    publish(channel)
+  }
+
   function ensureBranch(channel: Channel, branchId: string): BranchStream {
-    if (branchId === ROOT_BRANCH_ID) return channel.main
+    if (branchId === channel.view.defaultBranchId) return channel.main
     let branch = channel.branches.get(branchId)
     if (branch === undefined) {
       branch = stream()
@@ -442,23 +619,51 @@ export const useChatStore = defineStore("chat", () => {
     if (!channel.states.has(branchId)) channel.states.set(branchId, { running: turn.turn !== undefined && !turn.turn.ended, stopping: false })
   }
 
-  async function refreshGoal(channel: Channel): Promise<void> {
-    if (!channel.view.methods.includes("session.goal.get")) return
-    channel.goalDirty = true
-    if (channel.goalRefreshing) return
-    channel.goalRefreshing = true
-    try {
-      while (channel.goalDirty) {
-        channel.goalDirty = false
-        channel.main.projection.goal = await client().call("session.goal.get", { sessionId: channel.view.sessionId, branchId: DEFAULT_BRANCH_ID }, readGoal)
-        changed(channel)
+  /**
+   * Reads `branchId`'s goal, which defaults to the centre at the call. The read
+   * belongs to the line it names, and a failure belongs to it too: a line that
+   * left the centre publishes nothing, and the centre that replaced it keeps
+   * the refresh it already asked for. A caller that arrives while a refresh
+   * runs queues its own line in that refresh and waits for its result. A failed
+   * read answers every caller waiting on that refresh with `false` and leaves
+   * the lines still queued behind it for the next call.
+   */
+  async function refreshGoal(channel: Channel, branchId = channel.view.defaultBranchId): Promise<boolean> {
+    if (!channel.view.methods.includes("session.goal.get")) return true
+    // A read asked for while `branchId` is the centre belongs to the projection
+    // it showed then: a move away and back, or a reload, replaces that
+    // projection, and the line's own read decides what the new centre shows.
+    const projection = branchId === channel.view.defaultBranchId ? channel.main.projection : undefined
+    if (!channel.goalLines.some(entry => entry.line === branchId && entry.projection === projection)) channel.goalLines.push({ line: branchId, projection })
+    if (channel.goalTask !== undefined) return channel.goalTask
+    channel.goalTask = (async () => {
+      try {
+        while (channel.goalLines.length > 0) {
+          const entry = channel.goalLines.shift()!
+          try {
+            const goal = await client().call("session.goal.get", { sessionId: channel.view.sessionId, branchId: entry.line }, readGoal)
+            if (channel.view.defaultBranchId !== entry.line || (entry.projection !== undefined && channel.main.projection !== entry.projection)) continue
+            channel.main.projection.goal = goal
+            changed(channel)
+          } catch (error) {
+            if (channel.view.defaultBranchId !== entry.line || (entry.projection !== undefined && channel.main.projection !== entry.projection)) continue
+            // The Session ending and the connection going away are not failures of
+            // this read: a closed page stays closed and a lost connection is the
+            // reconnect's to report.
+            if (error instanceof RpcError && error.appError === "session_closed") setStatus(channel, "closed")
+            else if (channel.view.status !== "closed" && !(error instanceof ConnectionLost)) {
+              setStatus(channel, "failed")
+              channel.view.error = error instanceof Error ? error.message : String(error)
+            }
+            return false
+          }
+        }
+        return true
+      } finally {
+        channel.goalTask = undefined
       }
-    } catch (error) {
-      channel.view.status = "failed"
-      channel.view.error = error instanceof Error ? error.message : String(error)
-    } finally {
-      channel.goalRefreshing = false
-    }
+    })()
+    return channel.goalTask
   }
 
   async function window(channel: Channel, branchId: string, before?: number, through?: number) {
@@ -476,6 +681,27 @@ export const useChatStore = defineStore("chat", () => {
       projection.apply(event)
     }
     return { window, events, projection }
+  }
+
+  /**
+   * One line's adopted configuration and its own cutoff, read through
+   * `session.model.get`. A server without that read cannot name this line's
+   * configuration, and the attach reply's is the root's, so none stands in
+   * for it (design §14).
+   */
+  async function lineConfiguration(channel: Channel, branchId: string, through: number): Promise<AdoptedConfiguration | undefined> {
+    if (!useConnectionStore().supports("session.model.get")) return undefined
+    const adopted = await client().call("session.model.get", { sessionId: channel.view.sessionId, branchId, through }, readAdoptedConfiguration)
+    if (adopted.branchId !== branchId) throw new ProtocolError("Configuration snapshot changed")
+    return adopted
+  }
+
+  /** Gives a centre the model its own line adopted when its window carried none. */
+  async function adoptModel(channel: Channel, branchId: string, branch: BranchStream): Promise<void> {
+    if (branch.projection.model !== undefined) return
+    const adopted = await lineConfiguration(channel, branchId, branch.through)
+    // A live configuration that arrived while the read was in flight is newer.
+    if (adopted?.configuration !== undefined && branch.projection.model === undefined) branch.projection.model = adopted.configuration.model
   }
 
   async function loadHistory(channel: Channel, branchId: string): Promise<"ok" | "lost" | "failed"> {
@@ -513,7 +739,7 @@ export const useChatStore = defineStore("chat", () => {
         branch.done = true
         branch.syncing = true
         branch.error = error instanceof Error ? error.message : String(error)
-        if (error instanceof RpcError && error.appError === "session_closed") channel.view.status = "closed"
+        if (error instanceof RpcError && error.appError === "session_closed") setStatus(channel, "closed")
         changed(channel)
         return "failed"
       }
@@ -555,7 +781,7 @@ export const useChatStore = defineStore("chat", () => {
     try {
       while (channel.historyQueue.length > 0) {
         const branchId = channel.historyQueue.shift()!
-        if (branchId === ROOT_BRANCH_ID || !channel.branches.has(branchId)) continue
+        if (!channel.branches.has(branchId)) continue
         await loadHistory(channel, branchId)
       }
     } finally {
@@ -566,7 +792,7 @@ export const useChatStore = defineStore("chat", () => {
 
   function retryLine(sessionId: string, branchId: string): void {
     const channel = channels.get(sessionId)
-    if (channel === undefined || branchId === ROOT_BRANCH_ID) return
+    if (channel === undefined) return
     const branch = channel.branches.get(branchId)
     if (branch === undefined) return
     branch.error = ""
@@ -594,22 +820,22 @@ export const useChatStore = defineStore("chat", () => {
     clearTimeout(channel.publishTimer)
     channel.publishTimer = undefined
     const view = channel.view
-    const main = stateOf(channel, ROOT_BRANCH_ID)
+    const centre = stateOf(channel, view.defaultBranchId)
     view.rows = channel.main.projection.rows.slice()
     view.lastTurnEnd = channel.main.projection.lastTurnEnd
     view.earlier = channel.main.before !== undefined
     view.loadingEarlier = channel.main.loadingEarlier
     view.historyError = channel.main.historyError
-    view.running = main.running
-    view.stopping = main.stopping
+    view.running = centre.running
+    view.stopping = centre.stopping
     view.retry = channel.main.progress?.retry
     view.sessionRunning = anyRunning(channel)
-    view.model = channel.main.projection.model ?? useSessionsStore().byId.get(view.sessionId)?.model
+    view.model = channel.main.projection.model ?? (view.defaultBranchId === ROOT_BRANCH_ID ? useSessionsStore().byId.get(view.sessionId)?.model : undefined)
     view.lines = channel.lines.views()
     view.goal = channel.main.projection.goal
     view.queued = channel.main.projection.queued()
     view.questions = [
-      ...channel.main.projection.waiting().map((ask) => ({ branchId: ROOT_BRANCH_ID, ...ask })),
+      ...channel.main.projection.waiting().map((ask) => ({ branchId: view.defaultBranchId, ...ask })),
       ...[...channel.branches].flatMap(([id, branch]) => branch.projection.waiting().map((ask) => ({ branchId: id, ...ask }))),
     ]
     const branches: Record<string, BranchView> = {}
@@ -794,34 +1020,39 @@ export const useChatStore = defineStore("chat", () => {
     return client().call("session.methods", { sessionId }, readSessionMethods).catch(() => [])
   }
 
-  /** Compacts the default branch's context. */
-  async function compact(sessionId: string) {
-    return client().call("session.context.compact", { sessionId, branchId: DEFAULT_BRANCH_ID }, readCompactResult)
+  /** The line the Session's conversation is on (design §4). */
+  function defaultBranch(sessionId: string): string {
+    return views[sessionId]?.defaultBranchId ?? ROOT_BRANCH_ID
   }
 
-  /** Writes the default branch's goal through `session.goal.<call>`; the goal changes when its events arrive. */
-  async function writeGoal(sessionId: string, call: GoalCall, objective: string | undefined): Promise<void> {
-    await client().call(`session.goal.${call}`, { sessionId, branchId: DEFAULT_BRANCH_ID, ...(objective === undefined ? {} : { objective }) }, readAck)
+  /** Compacts `branchId`'s context, or the centre's when no line is named. */
+  async function compact(sessionId: string, branchId = defaultBranch(sessionId)) {
+    return client().call("session.context.compact", { sessionId, branchId }, readCompactResult)
+  }
+
+  /** Writes `branchId`'s goal through `session.goal.<call>`; the goal changes when its events arrive. */
+  async function writeGoal(sessionId: string, call: GoalCall, objective: string | undefined, branchId = defaultBranch(sessionId)): Promise<void> {
+    await client().call(`session.goal.${call}`, { sessionId, branchId, ...(objective === undefined ? {} : { objective }) }, readAck)
     const channel = channels.get(sessionId)
     if (channel !== undefined) {
-      await refreshGoal(channel)
-      if (channel.view.status === "failed") throw new Error(channel.view.error)
+      await refreshGoal(channel, branchId)
+      if (channel.view.defaultBranchId === branchId && channel.view.status === "failed") throw new Error(channel.view.error)
     }
   }
 
-  /** Starts a loop on the default branch and returns its id. */
-  async function startLoop(sessionId: string, prompt: string, everySeconds: number | undefined): Promise<string> {
+  /** Starts a loop on `branchId` and returns its id. */
+  async function startLoop(sessionId: string, prompt: string, everySeconds: number | undefined, branchId = defaultBranch(sessionId)): Promise<string> {
     return await client().call("session.loop.start", {
       sessionId,
-      branchId: DEFAULT_BRANCH_ID,
+      branchId,
       prompt,
       ...(everySeconds === undefined ? {} : { everySeconds }),
     }, readStartedLoop)
   }
 
-  /** The default branch's loops, newest first. */
-  async function readLoops(sessionId: string): Promise<Loop[]> {
-    return [...await client().call("session.loop.list", { sessionId, branchId: DEFAULT_BRANCH_ID }, readLoopsReply)]
+  /** `branchId`'s loops, newest first. */
+  async function readLoops(sessionId: string, branchId = defaultBranch(sessionId)): Promise<Loop[]> {
+    return [...await client().call("session.loop.list", { sessionId, branchId }, readLoopsReply)]
   }
 
   /** Stops one loop of the default branch. */
@@ -829,14 +1060,98 @@ export const useChatStore = defineStore("chat", () => {
     await client().call("session.loop.stop", { sessionId, loopId }, readAck)
   }
 
-  /** Reads the default branch's context window usage. */
-  async function usage(sessionId: string) {
-    return client().call("session.context.usage", { sessionId, branchId: DEFAULT_BRANCH_ID }, readContextUsage)
+  /** Reads `branchId`'s context window usage, or the centre's when no line is named. */
+  async function usage(sessionId: string, branchId = defaultBranch(sessionId)) {
+    return client().call("session.context.usage", { sessionId, branchId }, readContextUsage)
   }
 
-  /** Forks the Session at `at` (a main-line cut) and returns the new Session's id. */
-  async function fork(sessionId: string, at: number): Promise<string> {
-    return client().call("session.fork", { sessionId, at }, readForkedSessionId)
+  /**
+   * Continues on a line: makes it the Session's default branch and shows it.
+   * The new centre's transcript, its state and its goal and permission are the
+   * one round trip's result (design §14, §20.27). The model is that line's own
+   * read: when it fails the move stands, the menu offers no model, and a later
+   * pick writes one.
+   */
+  async function setDefaultBranch(sessionId: string, branchId: string): Promise<void> {
+    const channel = channels.get(sessionId)
+    if (channel === undefined) return
+    const view = channel.view
+    const moved = await client().call("session.branch_set_default", { sessionId, branchId }, readDefaultBranch)
+    // A move the server accepted takes the next generation; one it refused takes
+    // none, so an earlier accepted move still finishes rather than being
+    // discarded as stale (design §14). Repeating the line already shown is
+    // complete unless a read still has the page loading: that read left the
+    // page to the line's own reads, which this move now is.
+    const move = ++channel.moves
+    if (moved === view.defaultBranchId && view.status !== "loading") return
+    // The new centre's window is read before the stream changes hands: the
+    // transcript on screen, its running state and every action that names
+    // the centre keep naming the outgoing line until its replacement is
+    // ready, then both change together.
+    const branch = ensureBranch(channel, moved)
+    branch.opened = true
+    const loaded = await loadHistory(channel, moved)
+    // A later move owns the centre: its completion, not this earlier load,
+    // decides what the page shows.
+    if (channel.moves !== move) return
+    // The server's default has already moved: install the accepted centre even
+    // when a read that describes it fails.
+    centre(channel, moved, branch)
+    if (loaded !== "ok") {
+      // The move stands, but the centre has no transcript to show: report a
+      // failure as `sync` does, and leave a lost connection in the pending
+      // state its reconnect reads again rather than a ready page with no
+      // messages.
+      if (view.status !== "closed") {
+        setStatus(channel, loaded === "lost" ? "loading" : "failed")
+        view.error = view.status === "failed" ? channel.main.error : ""
+      }
+      publish(channel)
+      return
+    }
+    await adoptModel(channel, moved, branch).catch(() => undefined)
+    if (channel.moves !== move) return
+    publish(channel)
+    const refreshed = await refreshGoal(channel, moved)
+    if (channel.moves !== move) return
+    if (!refreshed) {
+      // A failed read owns the page already. A read that lost the connection
+      // leaves the centre's goal unread: the page goes back to the pending
+      // state its reconnect reads again instead of a ready page with a stale
+      // goal and the policy the move cleared.
+      if (view.status === "ready") setStatus(channel, "loading")
+      return
+    }
+    if (view.status === "failed") return
+    if (view.status === "closed") return
+    const policy = await sessionPermission(sessionId, moved)
+    // Only the move that still owns the centre applies its policy, and only
+    // when no later edit or `permission/changed` on that line has overtaken
+    // the version it read: a later move's read and a newer policy both win.
+    if (channel.moves !== move || view.defaultBranchId !== moved) return
+    showPermission(view, moved, policy)
+    // This line's history, goal and policy are in: a page a resync put in its
+    // loading state leaves it here, through the reads of the centre it shows.
+    if (view.status === "loading") {
+      setStatus(channel, "ready")
+      view.error = ""
+    }
+    publish(channel)
+  }
+
+  /**
+   * Forks the Session's root at `at`, a point on its own timeline, or after its
+   * newest finished turn when no point is named; the copy is the root's, never
+   * the centred line's (timeline UI §4.3), and returns the new Session's id.
+   */
+  async function fork(sessionId: string, at?: number): Promise<string> {
+    let point = at
+    if (point === undefined) {
+      const turn = await client().call("session.turn.get", { sessionId, branchId: ROOT_BRANCH_ID }, readTurn)
+      if (turn.turn === undefined || !turn.turn.ended) throw new Error("No finished turn on the root to fork at")
+      point = turn.turn.sequence
+    }
+    return client().call("session.fork", { sessionId, at: point }, readForkedSessionId)
   }
 
   /** The files an `@` mention offers under the Session's workspace. */
@@ -846,7 +1161,7 @@ export const useChatStore = defineStore("chat", () => {
 
   /** The Skills the composer offers by `/skill:<name>`: enabled, unshadowed and user-invocable, from `session.skills`. */
   async function sessionSkills(sessionId: string) {
-    return client().call("session.skills", { sessionId, branchId: DEFAULT_BRANCH_ID }, readSessionSkills)
+    return client().call("session.skills", { sessionId, branchId: defaultBranch(sessionId) }, readSessionSkills)
   }
 
   /** Writes the default branch's reasoning effort through `session.model.update`'s preferences; returns the server's outcome. */
@@ -855,54 +1170,83 @@ export const useChatStore = defineStore("chat", () => {
     return client().call("session.input.withdraw", { sessionId, branchId, inputId, ...(steer === undefined ? {} : { steer }) }, readWithdrawResult)
   }
 
-  /** The default branch's policy, or undefined when the Session serves no permission method or the read fails. */
-  async function sessionPermission(sessionId: string): Promise<PermissionPolicy | undefined> {
+  /** The named line's policy and version, or undefined when the Session serves no permission method or the read fails. */
+  async function sessionPermission(sessionId: string, branchId = defaultBranch(sessionId)): Promise<PermissionState | undefined> {
     if (!useConnectionStore().supports("session.permission.get")) return undefined
-    return client().call("session.permission.get", { sessionId, branchId: DEFAULT_BRANCH_ID }, readPermissionState)
-      .then((state) => state.policy, () => undefined)
+    return client().call("session.permission.get", { sessionId, branchId }, readPermissionState)
+      .then((state) => state, () => undefined)
   }
 
-  /** Changes the preset, preserving tool exceptions; a conflict refreshes without retrying. */
+  /**
+   * Shows `state` for the centre when it is that line's and not older than the
+   * policy already shown: a read that left before a later edit or a newer
+   * `permission/changed` must not undo it (design §14).
+   */
+  function showPermission(view: SessionView, line: string, state: PermissionState | undefined): void {
+    if (state === undefined || view.defaultBranchId !== line) return
+    if (view.permissionVersion !== undefined && state.version < view.permissionVersion) return
+    view.permission = state.policy
+    view.permissionVersion = state.version
+  }
+
+  /**
+   * Changes the preset, preserving tool exceptions; a conflict refreshes without
+   * retrying. The policy and the write are one line's: a move while the read is
+   * in flight must not send its version and exceptions to the new centre, and
+   * its late reply must not become another centre's policy.
+   */
   async function setPermission(sessionId: string, preset: PermissionPreset): Promise<PermissionOutcome> {
-    const state = await client().call("session.permission.get", { sessionId, branchId: DEFAULT_BRANCH_ID }, readPermissionState)
+    const branchId = defaultBranch(sessionId)
+    const state = await client().call("session.permission.get", { sessionId, branchId }, readPermissionState)
     const view = views[sessionId]
-    if (view !== undefined) view.permission = state.policy
+    const publish = (state: PermissionState | undefined) => {
+      if (view !== undefined) showPermission(view, branchId, state)
+    }
+    publish(state)
     if (state.policy.preset === preset) return "unchanged"
     const policy = { ...state.policy, preset }
+    let version: number
     try {
-      await client().call("session.permission.update", {
+      version = await client().call("session.permission.update", {
         sessionId,
-        branchId: DEFAULT_BRANCH_ID,
+        branchId,
         expectedVersion: state.version,
         policy,
       }, readPermissionVersion)
     } catch (cause) {
       if (cause instanceof RpcError && cause.appError === "permission_conflict") {
-        if (view !== undefined) view.permission = await sessionPermission(sessionId)
+        publish(await sessionPermission(sessionId, branchId))
         return "conflict"
       }
       throw cause
     }
-    if (view !== undefined) view.permission = policy
+    publish({ version, policy })
     return "updated"
   }
 
-  async function setEffort(sessionId: string, effort: string): Promise<string> {
-    return client().call("session.model.update", { sessionId, branchId: DEFAULT_BRANCH_ID, modelPreferences: { reasoningEffort: effort } }, readConfigurationOutcome)
+  async function setEffort(sessionId: string, effort: string, branchId = defaultBranch(sessionId)): Promise<string> {
+    return client().call("session.model.update", { sessionId, branchId, modelPreferences: { reasoningEffort: effort } }, readConfigurationOutcome)
   }
 
   async function setModel(sessionId: string, model: ModelId): Promise<void> {
+    const channel = channels.get(sessionId)
+    if (channel === undefined) return
+    const branchId = defaultBranch(sessionId)
+    const branch = ensureBranch(channel, branchId)
+    const before = branch.projection.model
     const result = await client().call("session.model.update", {
       sessionId,
-      branchId: DEFAULT_BRANCH_ID,
+      branchId,
       providerId: model.providerId,
       modelId: model.modelId,
     }, readModelUpdate)
-    const channel = channels.get(sessionId)
-    if (channel === undefined) return
-    channel.main.projection.model = result.model
+    // The reply belongs to the line the request named: a move while it was out
+    // does not install it into the new centre, and a configuration fact that
+    // arrived meanwhile is newer (design §14).
+    if (channels.get(sessionId) !== channel || branch.projection.model !== before) return
+    branch.projection.model = result.model
     publish(channel)
   }
 
-  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, submit, stop, createLine, endLine, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, startLoop, readLoops, stopLoop, setEffort, setPermission, withdrawInput, searchFiles, sessionSkills, memberApproval, setModel }
+  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, retryCentre, submit, stop, createLine, endLine, setDefaultBranch, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, startLoop, readLoops, stopLoop, setEffort, setPermission, withdrawInput, searchFiles, sessionSkills, memberApproval, setModel }
 })

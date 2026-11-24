@@ -142,13 +142,15 @@ pub fn report(branch: &str, loops: &[Loop]) -> Vec<String> {
             .as_deref()
             .map(|at| format!(" next {at}"))
             .unwrap_or_default();
+        let prompt = record.prompt.replace('\n', " ");
+        let prompt = if prompt.is_empty() {
+            String::new()
+        } else {
+            format!(" {prompt}")
+        };
         lines.push(format!(
-            "{} {} round {}{} {}",
-            record.loop_id,
-            record.state,
-            record.round,
-            next,
-            record.prompt.replace('\n', " ")
+            "{} {} round {}{}{}",
+            record.loop_id, record.state, record.round, next, prompt
         ));
     }
     lines
@@ -156,6 +158,7 @@ pub fn report(branch: &str, loops: &[Loop]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// The four forms `/loop` accepts (design §12.6).
     #[test]
@@ -276,5 +279,35 @@ mod tests {
         assert_eq!(lines[0], USAGE);
         assert!(lines[1].starts_with("Loops on main (1):"));
         assert!(lines[2].contains("7f2 waiting round 3"));
+    }
+
+    /// The list line ends with the prompt on one line, at most 120
+    /// characters; a loop whose wire record carries no prompt ends at its
+    /// round and next due time, with no trailing separator.
+    #[test]
+    fn the_list_line_shows_the_prompt_on_one_line() {
+        let records = [
+            json!({"loopId":"7f2","state":"running","round":12,
+                "nextAt":"2026-11-13T09:41:00.000Z","prompt":"check\nthe deploy"}),
+            json!({"loopId":"8ab","state":"waiting","round":3,"prompt":"z".repeat(150)}),
+            json!({"loopId":"9cd","state":"stopped","round":1}),
+            json!({"loopId":"aef","state":"waiting","round":2,
+                "nextAt":"2026-11-13T10:00:00.000Z","prompt":""}),
+        ]
+        .iter()
+        .map(|record| Loop::from_wire(record).unwrap())
+        .collect::<Vec<_>>();
+        let lines = report("main", &records);
+        assert_eq!(
+            lines[2],
+            "7f2 running round 12 next 2026-11-13T09:41:00.000Z check the deploy"
+        );
+        let long = format!("8ab waiting round 3 {}", "z".repeat(120));
+        assert_eq!(lines[3], long);
+        assert_eq!(lines[4], "9cd stopped round 1");
+        assert_eq!(
+            lines[5],
+            "aef waiting round 2 next 2026-11-13T10:00:00.000Z"
+        );
     }
 }

@@ -697,6 +697,129 @@ pub struct ModelPreferences {
     pub service_tier: Option<String>,
 }
 
+/// One field of a Session preference update: a value sets it and
+/// `{action:"clear"}` removes the Session's value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PreferenceUpdate {
+    Value(String),
+    Clear(ClearPreference),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClearPreference {
+    action: ClearAction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ClearAction {
+    Clear,
+}
+
+/// A per-field request to set a preference or use its model-declared value.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPreferenceUpdate {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub reasoning_effort: Option<PreferenceUpdate>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub service_tier: Option<PreferenceUpdate>,
+}
+
+impl ModelPreferenceUpdate {
+    pub fn is_empty(&self) -> bool {
+        self.reasoning_effort.is_none() && self.service_tier.is_none()
+    }
+
+    /// The values to apply; a cleared field contributes none.
+    pub fn values(&self) -> ModelPreferences {
+        ModelPreferences {
+            reasoning_effort: self
+                .reasoning_effort
+                .as_ref()
+                .and_then(PreferenceUpdate::value)
+                .cloned(),
+            service_tier: self
+                .service_tier
+                .as_ref()
+                .and_then(PreferenceUpdate::value)
+                .cloned(),
+        }
+    }
+
+    pub fn clears_reasoning(&self) -> bool {
+        self.reasoning_effort
+            .as_ref()
+            .is_some_and(PreferenceUpdate::is_clear)
+    }
+
+    pub fn clears_service_tier(&self) -> bool {
+        self.service_tier
+            .as_ref()
+            .is_some_and(PreferenceUpdate::is_clear)
+    }
+}
+
+impl PreferenceUpdate {
+    pub const CLEAR: Self = Self::Clear(ClearPreference {
+        action: ClearAction::Clear,
+    });
+
+    pub fn value(&self) -> Option<&String> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Clear(_) => None,
+        }
+    }
+
+    fn is_clear(&self) -> bool {
+        matches!(self, Self::Clear(_))
+    }
+}
+
+impl From<ModelPreferences> for ModelPreferenceUpdate {
+    fn from(preferences: ModelPreferences) -> Self {
+        Self {
+            reasoning_effort: preferences.reasoning_effort.map(PreferenceUpdate::Value),
+            service_tier: preferences.service_tier.map(PreferenceUpdate::Value),
+        }
+    }
+}
+
+/// An assertion on the configuration inherited at a native Session cut.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionConfigExpectation {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub model_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub permission_preset: Option<crate::PermissionPreset>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub reasoning_effort: Option<PreferenceUpdate>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderReasoningConfig {

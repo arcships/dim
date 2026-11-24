@@ -688,7 +688,7 @@ fn tui_questions_keep_structured_answers_and_the_leader_draft() {
         terminal.write(b"\r");
         terminal.until("kept leader draft");
         terminal.write(b" and continue\r");
-        terminal.until("continued after question");
+        terminal.until_visible("continued after question");
         assert!(!terminal.transcript.contains("question-must-not-copy"));
         home.kill(&terminal);
         terminal.wait();
@@ -1020,7 +1020,7 @@ fn tui_commands_run_over_a_pending_question() {
         terminal.write(&[0x1b]);
         terminal.until("production");
         terminal.write(b"\r");
-        terminal.until("question answered after commands");
+        terminal.until_visible("question answered after commands");
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();
@@ -1112,7 +1112,7 @@ fn tui_command_arguments_run_over_a_pending_question() {
         terminal.until("Signed out");
 
         terminal.write(b"\r");
-        terminal.until("question answered after the argument");
+        terminal.until_visible("question answered after the argument");
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();

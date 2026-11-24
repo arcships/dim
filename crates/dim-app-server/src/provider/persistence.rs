@@ -395,6 +395,16 @@ pub(super) fn static_read(
     }
 }
 
+pub(super) fn has_endpoint_models(connection: &rusqlite::Connection, id: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM provider_models WHERE provider_id=?1 AND source='default')",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(storage)
+}
+
 pub(super) fn write_header(
     connection: &rusqlite::Connection,
     id: &str,

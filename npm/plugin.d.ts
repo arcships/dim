@@ -259,7 +259,7 @@ export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {
 /** The services Dim's Rust types serve to other languages, by name:
  * `ctx.use<Services['name']>('name')`. */
 export type {
-  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
+  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionFault, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
@@ -286,6 +286,9 @@ export interface Sessions {
    * restorable Session exists. Reads only; never acquires or restores a
    * Session. */
   exists(request: { sessionId: string }): Promise<SessionsResult<{ exists: boolean }>>;
+  /** The line the Session's conversation is on; reads the tree's current
+   * default and no history page. */
+  defaultBranchId(request: { sessionId: string }): Promise<SessionsResult<{ defaultBranchId: string }>>;
   history(request: HistoryRequest): Promise<SessionsResult<HistoryPage>>;
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
   pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
@@ -310,6 +313,7 @@ export interface EventHubDeclaration {
 /** One explicit target of a publish (design A.2). */
 export interface EventHubTarget {
   sessionId: string;
+  /** Defaults to the Session's current default branch. */
   branchId?: string;
   mode?: 'queue' | 'steer' | 'append';
 }
@@ -330,7 +334,9 @@ export type EventHubDelivery =
       inputId: string; sequence: number; truncated?: boolean; repeated?: boolean }
   | { status: 'gone'; sessionId: string; branchId: string; subscriptionIds: string[];
       code: 'branch_missing' | 'branch_ended' }
-  | { status: 'failed'; sessionId: string; branchId: string; subscriptionIds: string[];
+  | { status: 'failed'; sessionId: string;
+      /** Absent when an omitted branch could not be resolved: the target names no line. */
+      branchId?: string; subscriptionIds: string[];
       code: 'session_closed' | 'reloading' | 'rejected' | 'ambiguous' |
         'publication_unknown' | 'transport' | 'failed'; message: string };
 /** `publish`'s reply, after every target has an outcome (design A.2). */
@@ -358,7 +364,7 @@ export interface EventSubscriptionCall {
   types: string[];
   match?: Record<string, string>;
   mode?: 'queue' | 'steer' | 'append';
-  /** Defaults to `main`. */
+  /** Defaults to the Session's current default branch. */
   branchId?: string;
 }
 /** `eventSubscriptions.unsubscribe` (design A.3). */
@@ -559,13 +565,24 @@ export type MethodReply<T = BridgeJsonValue> = { kind: 'value'; value?: T } | Me
 export type CheckedData<T> = T extends BridgeJsonValue | undefined ? T
   : T extends ((...args: never[]) => unknown) | (abstract new (...args: never[]) => unknown) ? never
   : T extends object ? keyof T extends never ? never : { [K in keyof T]: CheckedData<T[K]> } : never;
-export type MethodProgress = <T>(data: T & CheckedData<T>) => void;
+export type MethodProgress = <T>(data: T & CheckedData<T>) => Promise<void>;
 export type SessionMethodDeclaration = MethodDeclaration;
 export type SessionMethodReply<T = BridgeJsonValue> = MethodReply<T>;
 /** How a registered management namespace serves one call. */
 export type MethodHandler<T = BridgeJsonValue> = (call: MethodCall, cancelled: Promise<void>, progress: MethodProgress) => Promise<MethodReply<T>>;
 /** How a registered Session namespace serves one call. */
 export type SessionMethodHandler<T = BridgeJsonValue> = (call: SessionMethodCall, cancelled: Promise<void>, progress: MethodProgress) => Promise<SessionMethodReply<T>>;
+export type SubmitCheckRequest = {
+  entry: 'submit' | 'branch' | 'steer'; branchId: string;
+  user?: import('./branch-services.js').UserInput | null; mode: import('./branch-services.js').InputMode;
+};
+export type SubmitCheckResult<W> = { kind: 'proceed'; blocks: string[]; warnings: W[] }
+  | { kind: 'block'; message: string };
+export interface SubmitChecks {
+  register(name: string, check: (request: SubmitCheckRequest, cancelled: () => Promise<void>) => Promise<SubmitCheckResult<string>>): Promise<void>;
+  check(request: SubmitCheckRequest, cancelled: () => Promise<void>): Promise<SubmitCheckResult<{check: string; message: string}>>;
+}
+
 /** Process service `managementMethods` (protected-local v3 only): a process row
  * registers each of its namespaces, which stays registered until the row unloads. */
 export interface ManagementMethods {
@@ -683,8 +700,10 @@ export interface Store {
   sessionsUnderWorkspace(request: { root: string }): Promise<{ sessionIds: string[] }>;
   removeWorktreeDirectory(request: WorktreeDirectory): Promise<{ removed: boolean }>;
   worktreeUsages(request: WorktreeDirectory): Promise<{ usages: { sessionId: string; subtree: string }[] }>;
-  /** Callback runs under the native ownership mutex: do not await createOwnedSession, fork, delete, removeWorktreeDirectory, removeWorktree or worktreeAssociations.associate from it. */
+  /** Callback runs under the native ownership mutex: do not await createOwnedSession, fork, delete, removeWorktreeDirectory, removeWorktree, removeUnregisteredDirectory or worktreeAssociations.associate from it. */
   removeWorktree(request: WorktreeDirectory, remove: (path: string) => Promise<void>): Promise<{ removed: boolean }>;
+  /** Removes an unregistered directory after the final workspace check; the callback runs under the native ownership mutex, which the removal holds until the callback finishes. */
+  removeUnregisteredDirectory(request: { root: string }, remove: (path: string) => Promise<void>): Promise<{ removed: boolean }>;
 }
 
 /** Session Timeline storage binding; resource-faces §5. Native append stays beside its state owner. */

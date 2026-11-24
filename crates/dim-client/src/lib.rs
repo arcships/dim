@@ -1,6 +1,7 @@
 //! Public RPC transport shared by native Dim clients; each connection negotiates its version.
 
 pub mod callback;
+pub mod configuration;
 pub mod question;
 pub mod window;
 pub mod wire;

@@ -9,7 +9,7 @@
 //! > Search models
 //! › Dim OAuth / deepseek-v4.1-flash      ‹ high ›  current
 //!   Dim OAuth / gpt-6-astra              medium
-//!   Previous page / Next page
+//!   … more models as the list scrolls …
 //! Selected: Dim OAuth / deepseek-v4.1-flash  unidentified
 //! Subagent models
 //! › Agent choice                                         Enter
@@ -35,8 +35,8 @@
 //!
 //! Tab/Shift+Tab moves between the three sections and Up/Down stays inside
 //! the focused one. The search filters the candidates only; the sections
-//! stay where they are. The daemon answers the search and the Previous page /
-//! Next page rows with bounded pages, one request at a time. Escape from a
+//! stay where they are. Searches and forward scrolling read bounded batches;
+//! empty batches are traversed without exposing a navigation row. Escape from a
 //! child page returns one level and restores the query, selection and list
 //! position; at the root it clears the search first, then closes.
 //!
@@ -78,8 +78,6 @@ const HINT: &str = "Enter select + default · ←/→ effort · Tab section · E
 const POLICY_SECTION_HINT: &str = "Enter change · Tab section · Esc clear/close";
 const MANAGEMENT_SECTION_HINT: &str = "Enter manage · Tab section · Esc clear/close";
 const POLICY_HINT: &str = "Enter select · Esc back";
-const PREVIOUS_MODELS: &str = "__previous_models__";
-const NEXT_MODELS: &str = "__next_models__";
 const MANAGE_HINT: &str = "Enter manage · Esc back";
 const CONVERSATION: &str = "Conversation model";
 const AGENT: &str = "agent";
@@ -123,7 +121,8 @@ pub struct ModelsPanel {
     /// Effort ←/→ chose for `provider::model`, kept across list replacements
     /// while the row is listed and advertises it.
     chosen: BTreeMap<String, String>,
-    pages: Vec<Option<ModelId>>,
+    pages: Vec<ModelList>,
+    refill: usize,
     requesting: bool,
 }
 
@@ -137,16 +136,83 @@ impl ModelsPanel {
             listed: None,
             policy: None,
             chosen: BTreeMap::new(),
-            pages: vec![None],
+            pages: Vec::new(),
+            refill: 0,
             requesting: false,
         }
     }
 
-    pub fn set_models(&mut self, models: Result<ModelList, String>) {
-        if models
-            .as_ref()
-            .is_ok_and(|page| page.query != self.list.query())
+    fn query(&self) -> &str {
+        match self.view {
+            View::Models | View::Fixed => self.list.query(),
+            View::Policy | View::Manage => self.root.query(),
+        }
+    }
+
+    pub fn refresh(&mut self) -> Effect {
+        self.refill = self.pages.len();
+        self.pages.clear();
+        self.request(None)
+    }
+
+    pub fn page(
+        &mut self,
+        query: &str,
+        after: Option<ModelId>,
+        result: Result<Vec<ModelList>, String>,
+    ) -> Effect {
+        if query != self.query()
+            || (after.is_some()
+                && after.as_ref() != self.pages.last().and_then(|page| page.next.as_ref()))
         {
+            return Effect::None;
+        }
+        let pages = match result {
+            Ok(pages) => pages,
+            Err(error) => {
+                if after.is_none() || self.refill != 0 || self.models().is_empty() {
+                    self.pages.clear();
+                    self.set_models(Err(error.clone()));
+                }
+                self.refill = 0;
+                self.requesting = false;
+                return Effect::Notice(error);
+            }
+        };
+        if after.is_none() {
+            self.pages.clear();
+        }
+        self.pages.extend(pages);
+        let last = self.pages.last().unwrap();
+        let empty = last.models.is_empty();
+        let next = last.next.clone();
+        if self.pages.len() < self.refill
+            && let Some(next) = next
+        {
+            return self.request(Some(next));
+        }
+        self.refill = 0;
+        let mut combined = self.pages[0].clone();
+        for page in &self.pages[1..] {
+            combined.models.extend(page.models.iter().cloned());
+            combined.empty.extend(page.empty.iter().cloned());
+            combined.limits.extend(page.limits.iter().cloned());
+            combined.next.clone_from(&page.next);
+        }
+        self.set_models(Ok(combined));
+        if let Some(next) = next
+            && empty
+        {
+            if self.models().is_empty() && matches!(self.view, View::Models | View::Fixed) {
+                self.list.loading();
+            }
+            return self.request(Some(next));
+        }
+        Effect::None
+    }
+
+    fn set_models(&mut self, models: Result<ModelList, String>) {
+        if models.as_ref().is_ok_and(|page| page.query != self.query()) {
             return;
         }
         if !self.requesting && models.is_err() && self.listed.as_ref().is_some_and(Result::is_ok) {
@@ -273,26 +339,19 @@ impl ModelsPanel {
         let items = match self.view {
             View::Policy => Some(Ok(self.policy_rows(mode))),
             View::Models | View::Fixed => self.listed.as_ref().map(|listed| {
-                listed.clone().map(|list| {
-                    let mut items = model_rows(
+                listed.as_ref().map_err(Clone::clone).map(|list| {
+                    model_rows(
                         &list.models,
                         marked.as_deref(),
                         if effort { focus.as_deref() } else { None },
                         if effort { Some(&self.chosen) } else { None },
-                    );
-                    if self.pages.len() > 1 {
-                        items.push(Item::new(PREVIOUS_MODELS, t("Previous page"), ""));
-                    }
-                    if list.next.is_some() {
-                        items.push(Item::new(NEXT_MODELS, t("Next page"), ""));
-                    }
-                    items
+                    )
                 })
             }),
             View::Manage => self
                 .listed
                 .as_ref()
-                .map(|listed| listed.clone().map(|list| provider_rows(&list))),
+                .map(|listed| listed.as_ref().map_err(Clone::clone).map(provider_rows)),
         };
         if let Some(items) = items {
             let preselect = preselect.or(selected.as_deref()).or(marked.as_deref());
@@ -497,7 +556,11 @@ impl ModelsPanel {
         }
         let mut lines = Vec::new();
         if let Some(model) = self.selected_model() {
-            lines.push(fg(&truncate_cells(&self.summary(model), inner), &p.muted));
+            let mut summary = self.summary(model);
+            if model.provider_id == crate::login::CHATGPT_PROVIDER_ID {
+                summary = format!("{} · {summary}", t("Using ChatGPT plan"));
+            }
+            lines.push(fg(&truncate_cells(&summary, inner), &p.muted));
         }
         if let Some(policy) = &self.policy {
             lines.push(title_plain(t("Subagent models"), inner, p));
@@ -601,6 +664,21 @@ impl ModelsPanel {
         }
     }
 
+    fn request(&mut self, after: Option<ModelId>) -> Effect {
+        self.requesting = true;
+        Effect::QueryModels {
+            query: self.query().to_owned(),
+            after,
+        }
+    }
+
+    fn search(&mut self) -> Effect {
+        self.pages.clear();
+        self.refill = 0;
+        self.list.loading();
+        self.request(None)
+    }
+
     /// A paste goes into the filter.
     pub fn paste(&mut self, text: &str) -> Effect {
         if self.view == View::Models {
@@ -611,13 +689,7 @@ impl ModelsPanel {
         if !matches!(self.view, View::Models | View::Fixed) {
             return Effect::None;
         }
-        self.pages = vec![None];
-        self.list.loading();
-        self.requesting = true;
-        Effect::QueryModels {
-            query: self.list.query().to_owned(),
-            after: None,
-        }
+        self.search()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
@@ -659,13 +731,7 @@ impl ModelsPanel {
         let query = self.list.query().to_owned();
         let event = self.list.handle_key(key);
         if matches!(self.view, View::Models | View::Fixed) && query != self.list.query() {
-            self.pages = vec![None];
-            self.list.loading();
-            self.requesting = true;
-            return Effect::QueryModels {
-                query: self.list.query().to_owned(),
-                after: None,
-            };
+            return self.search();
         }
         if self.view == View::Models
             && self.section == Section::Model
@@ -674,43 +740,38 @@ impl ModelsPanel {
         {
             self.rebuild(None);
         }
+        if matches!(self.view, View::Models | View::Fixed)
+            && matches!(
+                key.code,
+                KeyCode::Down | KeyCode::PageDown | KeyCode::End | KeyCode::Tab
+            )
+            && !self.requesting
+            && self.list.near_end()
+            && let Some(next) = self.pages.last().and_then(|page| page.next.clone())
+        {
+            return self.request(Some(next));
+        }
         self.dispatch(event)
     }
 
     fn dispatch(&mut self, event: Event) -> Effect {
         match (self.view, event) {
             (_, Event::None | Event::Refresh) => Effect::None,
-            (_, Event::Pick { id, .. }) if id == NEXT_MODELS => {
-                let after = self
-                    .listed
-                    .as_ref()
-                    .and_then(|v| v.as_ref().ok())
-                    .and_then(|v| v.next.clone());
-                self.pages.push(after.clone());
-                self.list.loading();
-                self.requesting = true;
-                Effect::QueryModels {
-                    query: self.list.query().to_owned(),
-                    after,
-                }
-            }
-            (_, Event::Pick { id, .. }) if id == PREVIOUS_MODELS => {
-                self.pages.pop();
-                self.list.loading();
-                self.requesting = true;
-                Effect::QueryModels {
-                    query: self.list.query().to_owned(),
-                    after: self.pages.last().cloned().flatten(),
-                }
-            }
             (View::Models, Event::Close) => Effect::Close,
             (View::Policy, Event::Close) => {
                 self.back_to_root(Section::Policy);
                 Effect::None
             }
             (View::Fixed, Event::Close) => {
+                let changed = self.list.query() != self.root.query();
                 self.open_child(View::Policy, Some(FIXED));
-                Effect::None
+                if changed {
+                    self.pages.clear();
+                    self.refill = 0;
+                    self.request(None)
+                } else {
+                    Effect::None
+                }
             }
             (View::Manage, Event::Close) => {
                 self.back_to_root(Section::Management);
@@ -757,22 +818,30 @@ impl ModelsPanel {
         // Clearing the saved preferences drops the row's cycled effort
         // too: the notice asks for the model to be selected again so it
         // adopts its defaults, and that only holds if the cycle is gone.
+        if self.requesting {
+            return Effect::None;
+        }
         let Some(id) = self.list.selected_id() else {
             return Effect::None;
         };
+        let Some(model) = self
+            .models()
+            .iter()
+            .find(|model| key(&model.provider_id, &model.model_id) == id)
+        else {
+            return Effect::None;
+        };
+        let effect = Effect::ClearModelPreferences {
+            query: self.query().to_owned(),
+            batches: self.pages.len().max(1),
+            provider_id: model.provider_id.clone(),
+            model_id: model.model_id.clone(),
+            expected_version: model.provider_version,
+        };
+        self.requesting = true;
         self.chosen.remove(&id);
         self.rebuild(None);
-        self.models()
-            .iter()
-            .find(|model| id == self::key(&model.provider_id, &model.model_id))
-            .map(|model| Effect::ClearModelPreferences {
-                query: self.list.query().to_owned(),
-                after: self.pages.last().cloned().flatten(),
-                provider_id: model.provider_id.clone(),
-                model_id: model.model_id.clone(),
-                expected_version: model.provider_version,
-            })
-            .unwrap_or(Effect::None)
+        effect
     }
 
     fn cycle(&mut self, forward: bool) -> Effect {
@@ -1039,11 +1108,43 @@ fn providers(list: &ModelList) -> Vec<Provider> {
     }
     for limits in &list.limits {
         let at = slot(&limits.provider_id, &limits.provider_name, &mut providers);
-        providers[at].limits = Some(limits.clone());
+        if let Some(total) = &mut providers[at].limits {
+            total.count += limits.count;
+            for candidate in &limits.candidates {
+                if !total.candidates.contains(candidate) {
+                    total.candidates.push(candidate.clone());
+                }
+            }
+        } else {
+            providers[at].limits = Some(limits.clone());
+        }
     }
+    let counts = |reason| match reason {
+        EmptyReason::Unavailable { count } => (count, 0),
+        EmptyReason::Disabled { count } => (0, count),
+        EmptyReason::Mixed {
+            unavailable,
+            disabled,
+        } => (unavailable, disabled),
+        EmptyReason::NoModels { .. } | EmptyReason::Unreadable => (0, 0),
+    };
     for empty in &list.empty {
         let at = slot(&empty.provider_id, &empty.provider_name, &mut providers);
-        providers[at].empty = Some(empty.clone());
+        if let Some(total) = &mut providers[at].empty {
+            let (u1, d1) = counts(total.reason);
+            let (u2, d2) = counts(empty.reason);
+            total.reason = match (u1 + u2, d1 + d2) {
+                (0, 0) => empty.reason,
+                (0, count) => EmptyReason::Disabled { count },
+                (count, 0) => EmptyReason::Unavailable { count },
+                (unavailable, disabled) => EmptyReason::Mixed {
+                    unavailable,
+                    disabled,
+                },
+            };
+        } else {
+            providers[at].empty = Some(empty.clone());
+        }
     }
     providers
 }

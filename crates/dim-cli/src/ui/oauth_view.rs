@@ -29,8 +29,8 @@
 //! Each entry goes straight into its flow; the flow shows only its own
 //! rows, and `Esc` after an error or a cancel returns to the menu. Signed
 //! in, the account's usage is asked for once and again on `Ctrl+R`. A
-//! described account starts its only flow on open when it is signed out, and
-//! shows its state and a sign-out entry when it is signed in.
+//! described account shows its sign-in or sign-out actions. The legacy Codex
+//! panel offers the switch to ChatGPT.
 
 use crate::model::session::{
     ACCOUNT_NAMESPACE, Account as AccountInfo, AccountDescriptor, AccountTarget, OauthEvent,
@@ -69,7 +69,9 @@ enum Focus {
     DeviceTab,
     Models,
     RefreshModels,
+    SwitchToChatGpt,
     Plan,
+    Profile,
     Logout,
     BrowserTab,
     Email,
@@ -108,6 +110,9 @@ pub struct OauthView {
     name: String,
     /// The described account is signed in: it offers sign-out, not sign-in.
     signed_in: bool,
+    migrate_legacy: bool,
+    chatgpt_profiles: Vec<crate::login::ChatGptProfile>,
+    profile_choice: usize,
     device: bool,
     phase: Phase,
     focus: Focus,
@@ -175,7 +180,11 @@ impl OauthView {
         device: bool,
         attempt: u64,
     ) -> Self {
-        let focus = if dim {
+        let focus = if provider_id == crate::login::LEGACY_CODEX_ID {
+            Focus::SwitchToChatGpt
+        } else if namespace == crate::login::CHATGPT_NAMESPACE && signed_in {
+            Focus::Models
+        } else if dim || namespace == crate::login::CHATGPT_NAMESPACE {
             Focus::Submit
         } else if signed_in {
             Focus::Logout
@@ -190,6 +199,9 @@ impl OauthView {
             dim,
             name: name.to_owned(),
             signed_in,
+            migrate_legacy: false,
+            chatgpt_profiles: Vec::new(),
+            profile_choice: 0,
             device,
             phase: Phase::Idle,
             focus,
@@ -206,10 +218,44 @@ impl OauthView {
         }
     }
 
+    pub fn chatgpt_panel(&self) -> bool {
+        self.namespace == crate::login::CHATGPT_NAMESPACE
+    }
+
+    pub fn set_chatgpt_profiles(
+        &mut self,
+        result: Result<Vec<crate::login::ChatGptProfile>, String>,
+    ) -> Effect {
+        match result {
+            Ok(profiles) => {
+                self.profile_choice = profiles
+                    .iter()
+                    .position(|profile| profile.active)
+                    .unwrap_or(0);
+                self.signed_in = profiles
+                    .get(self.profile_choice)
+                    .is_some_and(|profile| profile.active && profile.signed_in);
+                self.chatgpt_profiles = profiles;
+                if self.migrate_legacy && self.signed_in && self.phase == Phase::Idle {
+                    return self.start(false, None);
+                }
+                if self.phase == Phase::Idle && !self.signed_in {
+                    self.focus = if self.chatgpt_profiles.is_empty() {
+                        Focus::Submit
+                    } else {
+                        Focus::Profile
+                    };
+                }
+            }
+            Err(error) => self.error = Some(error),
+        }
+        Effect::None
+    }
+
     /// A described account that is not signed in begins its sign-in on
     /// open. The Dim panel keeps its menu.
     pub fn auto_start(&mut self) -> Effect {
-        if self.dim || self.signed_in {
+        if self.dim || self.signed_in || self.provider_id == crate::login::LEGACY_CODEX_ID {
             Effect::None
         } else {
             self.start(self.device, None)
@@ -244,6 +290,9 @@ impl OauthView {
 
     /// The signed-in account's plan page.
     fn plan_url(&self) -> Option<String> {
+        if self.chatgpt_panel() {
+            return Some(crate::login::CHATGPT_USAGE.into());
+        }
         match &self.account {
             Some(Account::SignedIn(info)) => Some(format!(
                 "{}/console/subscription",
@@ -258,6 +307,15 @@ impl OauthView {
     }
 
     fn start(&mut self, device: bool, email: Option<String>) -> Effect {
+        self.start_login(device, email, None)
+    }
+
+    fn start_login(
+        &mut self,
+        device: bool,
+        email: Option<String>,
+        profile_id: Option<String>,
+    ) -> Effect {
         self.attempt += 1;
         self.device = device;
         self.phase = Phase::Starting;
@@ -277,6 +335,8 @@ impl OauthView {
             namespace: self.namespace.clone(),
             device,
             email,
+            profile_id,
+            migrate_legacy: self.migrate_legacy,
         })
     }
 
@@ -286,6 +346,70 @@ impl OauthView {
     fn rows(&self, width: usize, p: Option<&Palette>) -> Vec<(Row, String)> {
         let mut rows: Vec<(Row, String)> = Vec::new();
         let dim = self.dim;
+        if self.provider_id == crate::login::LEGACY_CODEX_ID {
+            if p.is_some() {
+                rows.extend(
+                    wrap_cells(
+                        t("This sign-in method will be removed in a future version."),
+                        width.max(1),
+                    )
+                    .into_iter()
+                    .map(|line| (Row::Section, line)),
+                );
+            }
+            rows.push((
+                Row::Action(Focus::SwitchToChatGpt),
+                t("Switch to ChatGPT").into(),
+            ));
+            if self.signed_in {
+                rows.push((Row::Action(Focus::Logout), t("Sign out").into()));
+            }
+            return rows;
+        }
+        if self.chatgpt_panel() && matches!(self.phase, Phase::Idle | Phase::RefreshingModels) {
+            if self.signed_in {
+                rows.push((Row::Section, t("Using ChatGPT plan").into()));
+                if let Some(profile) = self.chatgpt_profiles.iter().find(|profile| profile.active) {
+                    rows.push((Row::Section, crate::sanitize::safe_line(&profile.label)));
+                }
+                rows.push((Row::Action(Focus::Models), t("Open models").into()));
+                rows.push((
+                    Row::Action(Focus::RefreshModels),
+                    t("Refresh model list").into(),
+                ));
+                rows.push((Row::Action(Focus::Plan), t("Manage usage").into()));
+                rows.push((Row::Action(Focus::Logout), t("Sign out").into()));
+            } else {
+                rows.push((
+                    Row::Section,
+                    t("OpenAI processes prompts, selected files and tool results.").into(),
+                ));
+                rows.push((
+                    Row::Section,
+                    t("Dim stores your ChatGPT connection on this computer.").into(),
+                ));
+            }
+            if let Some(profile) = self.chatgpt_profiles.get(self.profile_choice) {
+                rows.push((
+                    Row::Action(Focus::Profile),
+                    format!(
+                        "{}: {}  [←/→]",
+                        t("Switch account"),
+                        crate::sanitize::safe_line(&profile.label)
+                    ),
+                ));
+            }
+            rows.push((
+                Row::Action(Focus::Submit),
+                t(if self.chatgpt_profiles.is_empty() {
+                    "Continue with ChatGPT"
+                } else {
+                    "Add ChatGPT account"
+                })
+                .into(),
+            ));
+            return rows;
+        }
         if dim && matches!(self.phase, Phase::Idle | Phase::RefreshingModels) {
             match (&self.account, p) {
                 (_, None) => {}
@@ -348,8 +472,15 @@ impl OauthView {
             if let Some(url) = &self.auth_url {
                 rows.push((Row::Action(Focus::Link), url.clone()));
             }
-            rows.push((Row::Action(Focus::Input), t("Callback URL").into()));
-            rows.push((Row::Action(Focus::Submit), t("Submit callback").into()));
+            if self.chatgpt_panel() {
+                rows.push((
+                    Row::Section,
+                    t("Waiting for authorization in your browser").into(),
+                ));
+            } else {
+                rows.push((Row::Action(Focus::Input), t("Callback URL").into()));
+                rows.push((Row::Action(Focus::Submit), t("Submit callback").into()));
+            }
         }
         rows
     }
@@ -613,6 +744,9 @@ impl OauthView {
                     return Effect::None;
                 }
                 self.phase = Phase::Idle;
+                if after_login {
+                    self.migrate_legacy = false;
+                }
                 match result {
                     Ok(()) if after_login => return Effect::Connected(self.provider_id.clone()),
                     Ok(()) => self.message = Some(t("Model list refreshed").into()),
@@ -624,7 +758,9 @@ impl OauthView {
                         self.focus = Focus::RefreshModels;
                     }
                 }
-                if after_login {
+                if after_login && self.chatgpt_panel() {
+                    Effect::ChatGptProfiles
+                } else if after_login {
                     Effect::LoginStatus(self.provider_id.clone())
                 } else {
                     Effect::None
@@ -661,19 +797,32 @@ impl OauthView {
                         Effect::None
                     }
                     Phase::Idle | Phase::RefreshingModels => Effect::OauthBack,
-                    Phase::Error | Phase::Cancelled if self.dim => {
+                    Phase::Error | Phase::Cancelled if self.dim || self.chatgpt_panel() => {
                         self.phase = Phase::Idle;
                         self.error = None;
-                        self.focus = if self.dim_signed_in() {
-                            Focus::Models
-                        } else {
-                            Focus::Submit
-                        };
+                        self.focus =
+                            if self.dim_signed_in() || self.chatgpt_panel() && self.signed_in {
+                                Focus::Models
+                            } else {
+                                Focus::Submit
+                            };
                         Effect::None
                     }
                     Phase::Error | Phase::Cancelled => Effect::OauthBack,
                     _ => Effect::OauthCancel,
                 };
+            }
+            KeyCode::Left | KeyCode::Right
+                if self.focus == Focus::Profile && !self.chatgpt_profiles.is_empty() =>
+            {
+                let count = self.chatgpt_profiles.len();
+                let step = if key.code == KeyCode::Left {
+                    count - 1
+                } else {
+                    1
+                };
+                self.profile_choice = (self.profile_choice + step) % count;
+                return Effect::None;
             }
             KeyCode::Up | KeyCode::BackTab => {
                 self.move_focus(-1);
@@ -805,7 +954,37 @@ impl OauthView {
             Focus::DeviceTab if self.phase == Phase::Idle => self.start(true, None),
             Focus::DeviceTab | Focus::BrowserTab => Effect::None,
             Focus::Models => Effect::OpenModels,
-            Focus::RefreshModels if self.dim_signed_in() => {
+            Focus::SwitchToChatGpt => {
+                self.provider_id = crate::login::CHATGPT_PROVIDER_ID.into();
+                self.namespace = crate::login::CHATGPT_NAMESPACE.into();
+                self.name = "OpenAI ChatGPT".into();
+                self.signed_in = false;
+                self.migrate_legacy = true;
+                self.focus = Focus::Submit;
+                Effect::ChatGptProfiles
+            }
+            Focus::Profile => {
+                let Some(profile) = self.chatgpt_profiles.get(self.profile_choice) else {
+                    return Effect::None;
+                };
+                if profile.active && profile.signed_in {
+                    return Effect::OpenModels;
+                }
+                let profile_id = profile.id.clone();
+                if self.migrate_legacy || !profile.signed_in {
+                    return self.start_login(false, None, Some(profile_id));
+                }
+                self.attempt += 1;
+                self.phase = Phase::Exchanging;
+                self.error = None;
+                Effect::SelectChatGptProfile {
+                    profile_id,
+                    attempt: self.attempt,
+                }
+            }
+            Focus::RefreshModels
+                if self.dim_signed_in() || self.chatgpt_panel() && self.signed_in =>
+            {
                 self.attempt += 1;
                 self.phase = Phase::RefreshingModels;
                 self.message = None;
@@ -860,10 +1039,14 @@ impl OauthView {
 
     pub fn render(&self, width: usize, height: usize, p: &Palette) -> Vec<String> {
         let inner = width.saturating_sub(4).max(1);
-        let mut content = vec![
-            title_plain(&tf("{name} OAuth", &[("name", &self.name)]), inner, p),
-            String::new(),
-        ];
+        let title = if self.provider_id == crate::login::LEGACY_CODEX_ID {
+            tf("{name} (Legacy)", &[("name", &self.name)])
+        } else if self.chatgpt_panel() {
+            self.name.clone()
+        } else {
+            tf("{name} OAuth", &[("name", &self.name)])
+        };
+        let mut content = vec![title_plain(&title, inner, p), String::new()];
         let restart = matches!(self.phase, Phase::Error | Phase::Cancelled);
         let rows = self.rows(inner.saturating_sub(2), Some(p));
         let mut shortened = false;
@@ -1126,10 +1309,19 @@ mod tests {
             &["browser"],
             "OpenAI Codex",
         );
+        assert!(matches!(codex.auto_start(), Effect::None));
         assert!(matches!(
-            codex.auto_start(),
-            Effect::OauthStart(s) if !s.device && s.namespace == "account.codex"
+            codex.handle_key(key(KeyCode::Enter)),
+            Effect::ChatGptProfiles
         ));
+        assert!(matches!(
+            codex.set_chatgpt_profiles(Ok(vec![])),
+            Effect::None
+        ));
+        let start = started(&mut codex);
+        assert!(!start.device);
+        assert!(start.migrate_legacy);
+        assert_eq!(start.namespace, crate::login::CHATGPT_NAMESPACE);
         let mut grok = described("xai-grok-build", "account.grok", &["device"], "Grok Build");
         assert!(matches!(
             grok.auto_start(),
@@ -1146,11 +1338,41 @@ mod tests {
             0,
         );
         assert!(matches!(signed_in.auto_start(), Effect::None));
-        assert_eq!(labels(&signed_in), ["Signed in", "", "Sign out"]);
+        assert_eq!(
+            labels(&signed_in),
+            [
+                "This sign-in method will be removed in a future version.",
+                "Switch to ChatGPT",
+                "Sign out"
+            ]
+        );
+        signed_in.handle_key(key(KeyCode::Down));
         assert!(matches!(
             signed_in.handle_key(key(KeyCode::Enter)),
             Effect::Logout(t) if t.provider_id == "openai-codex" && t.namespace == "account.codex"
         ));
+        let mut codex = described(
+            "openai-codex",
+            "account.codex",
+            &["browser"],
+            "OpenAI Codex",
+        );
+        assert!(matches!(
+            codex.handle_key(key(KeyCode::Enter)),
+            Effect::ChatGptProfiles
+        ));
+        let Effect::OauthStart(start) =
+            codex.set_chatgpt_profiles(Ok(vec![crate::login::ChatGptProfile {
+                id: "connected-profile".into(),
+                label: "Connected profile".into(),
+                signed_in: true,
+                active: true,
+            }]))
+        else {
+            panic!("expected a switch using the connected profile");
+        };
+        assert!(start.migrate_legacy);
+        assert_eq!(start.namespace, crate::login::CHATGPT_NAMESPACE);
     }
 
     #[test]
@@ -1159,10 +1381,10 @@ mod tests {
         let rows = labels(&device);
         assert_eq!(rows, ["Device login", "Restart device login"]);
         let browser = described(
-            "openai-codex",
-            "account.codex",
+            "test-browser",
+            "account.fixture",
             &["browser"],
-            "OpenAI Codex",
+            "Test Browser",
         );
         assert_eq!(labels(&browser), ["Browser login"]);
     }
@@ -1170,10 +1392,10 @@ mod tests {
     #[test]
     fn pasted_callback_with_the_wrong_state_is_refused() {
         let mut view = described(
-            "openai-codex",
-            "account.codex",
+            "test-browser",
+            "account.fixture",
             &["browser"],
-            "OpenAI Codex",
+            "Test Browser",
         );
         view.auto_start();
         view.event(
@@ -1215,16 +1437,16 @@ mod tests {
             view.handle_key(key(KeyCode::Esc)),
             Effect::OauthBack
         ));
-        let mut codex = described(
-            "openai-codex",
-            "account.codex",
+        let mut browser = described(
+            "test-browser",
+            "account.fixture",
             &["browser"],
-            "OpenAI Codex",
+            "Test Browser",
         );
-        codex.auto_start();
-        codex.event(1, OauthEvent::Done(Err(Some("denied".into()))));
+        browser.auto_start();
+        browser.event(1, OauthEvent::Done(Err(Some("denied".into()))));
         assert!(matches!(
-            codex.handle_key(key(KeyCode::Esc)),
+            browser.handle_key(key(KeyCode::Esc)),
             Effect::OauthBack
         ));
     }

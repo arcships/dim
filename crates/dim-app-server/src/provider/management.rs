@@ -157,6 +157,9 @@ pub(super) fn provide(
             "provider.selection",
             "provider.select",
             "provider.list",
+            "provider.routes.list",
+            "provider.routes.set",
+            "provider.routes.disable",
             "provider.delete",
             "provider.import_legacy",
         ]
@@ -172,6 +175,7 @@ pub(super) fn provide(
                         | "provider.list"
                         | "provider.management"
                         | "provider.management.list"
+                        | "provider.routes.list"
                         | "provider.probe"
                 ),
                 Interruption::Drain,
@@ -182,12 +186,35 @@ pub(super) fn provide(
             let MethodCall {
                 method,
                 params: value,
-                ..
+                origin,
             } = call;
             let provider = provider.clone();
             Box::pin(async move {
                 let cancel = &stopping;
                 match method.as_str() {
+                    "provider.routes.list" | "provider.routes.set" | "provider.routes.disable" => {
+                        let caller = origin
+                            .caller
+                            .as_ref()
+                            .ok_or_else(RpcError::unknown_method)?;
+                        match method.as_str() {
+                            "provider.routes.list" => {
+                                let _: crate::protocol::Empty = params(value)?;
+                                reply(provider.scoped_routes(caller, cancel).await?)
+                            }
+                            "provider.routes.set" => {
+                                provider
+                                    .set_scoped_route(caller, params(value)?, cancel)
+                                    .await?;
+                                reply(crate::protocol::Empty::default())
+                            }
+                            _ => reply(
+                                provider
+                                    .disable_scoped_route(caller, params(value)?, cancel)
+                                    .await?,
+                            ),
+                        }
+                    }
                     "provider.models.query" => reply(
                         provider
                             .query_models(params(value)?, cancel)
@@ -414,7 +441,7 @@ pub(super) fn provide(
     Ok(())
 }
 
-fn error(error: impl Into<super::ProviderError>) -> RpcError {
+pub(super) fn error(error: impl Into<super::ProviderError>) -> RpcError {
     use super::ProviderError;
     let error = error.into();
     let kind = match &error {

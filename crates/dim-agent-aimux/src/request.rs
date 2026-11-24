@@ -18,12 +18,22 @@ use aimux_core::{
     tool::{FunctionTool, Tool},
 };
 use dim_agent_capabilities::host::{HostError, HostErrorKind};
+use dim_agent_capabilities::images::{image_reference_or_placeholder, takes_image_format};
 use dim_agent_types::{
     ContentBlock, ContentMetadata, ImageSource, ImageSourceType, MessageContent, MessagePart,
     ModelRequest, Role, SystemPrompt, SystemPromptPart, ToolContent,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::Arc;
+
+/// The destination an image's format is judged by: the protocol the request
+/// goes out as, and the vendor package a compatible destination builds by name.
+#[derive(Clone, Copy)]
+struct ImageDestination<'a> {
+    kind: ProviderKind,
+    preset: Option<&'a str>,
+}
 
 pub(crate) struct PreparedRequest {
     pub options: CallOptions,
@@ -31,10 +41,17 @@ pub(crate) struct PreparedRequest {
     pub recording: Option<crate::recording::Capture>,
 }
 
+/// A rewrite of the provider's serialized JSON request body.
+pub(crate) type BodyRewrite = Arc<dyn Fn(Value) -> Value + Send + Sync>;
+
 /// The tool result's text where an image moved to the following user message.
 const TOOL_IMAGE_MARKER: &str = "[Image: sent in the following user message as tool output.]";
+/// The first line of a failed tool result where the destination's wire form
+/// carries no field that reports the outcome.
+const TOOL_ERROR_MARKER: &str = "[Error: this tool result reports a failed tool call.]";
 /// Names the tool call an image came from, before that image.
 const TOOL_IMAGE_LABEL: &str = "Tool output from tool call";
+const CHATGPT_TOOL_NAMESPACE: &str = "dim";
 
 /// Anthropic's limit on cache breakpoints in one request.
 const ANTHROPIC_CACHE_BREAKPOINTS: usize = 4;
@@ -46,11 +63,77 @@ fn cache_breakpoint() -> SharedProviderOptions {
         .expect("a cache breakpoint is an object")
 }
 
+/// Whether a Bedrock model takes the optional `toolResult` members AWS
+/// restricts to Amazon Nova and Anthropic Claude 3 and 4: the `status` field
+/// and a nested image block.
+/// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultBlock.html
+fn bedrock_tool_result_fields(model_id: &str) -> bool {
+    model_id.contains("amazon.nova")
+        || model_id.contains("claude-3")
+        || ["claude-sonnet-4", "claude-opus-4", "claude-haiku-4"]
+            .iter()
+            .any(|family| model_id.contains(family))
+}
+
+/// Whether the destination takes an image inside a `toolResult` block.
+/// Bedrock supports that block only on the models
+/// [`bedrock_tool_result_fields`] names; every other model takes the image in
+/// the user message after the result.
+/// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultContentBlock.html
+fn tool_result_images(kind: &ProviderKind, model_id: &str) -> bool {
+    match kind {
+        ProviderKind::Anthropic => true,
+        ProviderKind::Bedrock => bedrock_tool_result_fields(model_id),
+        _ => false,
+    }
+}
+
+/// Whether the destination's wire form carries no field that reports a tool
+/// result's outcome: a Bedrock model AWS does not list for the optional
+/// `toolResult.status`. Anthropic reports it as `is_error`, and the Bedrock
+/// families keep `status`.
+fn tool_result_status_dropped(kind: &ProviderKind, model_id: &str) -> bool {
+    *kind == ProviderKind::Bedrock && !bedrock_tool_result_fields(model_id)
+}
+
+/// The body rewrite that drops `toolResult.status` for a Bedrock model AWS
+/// does not list for that optional field. The result text keeps the same
+/// meaning, and the families that support the field keep it.
+pub(crate) fn tool_result_status_rewrite(
+    kind: &ProviderKind,
+    model_id: &str,
+) -> Option<BodyRewrite> {
+    if !tool_result_status_dropped(kind, model_id) {
+        return None;
+    }
+    Some(Arc::new(|mut body: Value| {
+        if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+            for message in messages {
+                let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                for part in parts {
+                    if let Some(result) = part.get_mut("toolResult").and_then(Value::as_object_mut)
+                    {
+                        result.remove("status");
+                    }
+                }
+            }
+        }
+        body
+    }))
+}
+
 pub(crate) fn convert(
     request: &ModelRequest,
     kind: &ProviderKind,
     preset: Option<&str>,
 ) -> Result<PreparedRequest, HostError> {
+    let chatgpt = preset == Some(crate::driver::OPENAI_CHATGPT_PRESET);
+    let destination = ImageDestination {
+        kind: *kind,
+        preset,
+    };
     let mut tool_names = ToolNames::default();
     let mut prompt = Vec::new();
     let mut cache_breakpoints = 0;
@@ -130,9 +213,14 @@ pub(crate) fn convert(
                             &reason.to_string(),
                         )
                     })?;
-                    Ok(Tool::Function(
-                        FunctionTool::new(name, schema).with_description(&tool.description),
-                    ))
+                    let function = FunctionTool::new(name, schema);
+                    let mut function = function.with_description(&tool.description);
+                    if chatgpt {
+                        function.provider_options = Some(provider_namespace("openai", json!({
+                            "namespace": {"name": CHATGPT_TOOL_NAMESPACE, "description": "Tools available in the Dim workspace"}
+                        })).expect("tool namespace is an object"));
+                    }
+                    Ok(Tool::Function(function))
                 })
                 .collect::<Result<Vec<_>, HostError>>()
         })
@@ -151,7 +239,7 @@ pub(crate) fn convert(
         }
         let path = format!("messages[{index}].content");
         let message = match source.role {
-            Role::User => user_message(request, kind, &path, &source.content)?,
+            Role::User => user_message(request, destination, &path, &source.content)?,
             Role::Assistant => assistant_message(
                 request,
                 kind,
@@ -162,7 +250,7 @@ pub(crate) fn convert(
             )?,
             Role::ToolResult => tool_message(
                 request,
-                kind,
+                destination,
                 &path,
                 &source.content,
                 &calls,
@@ -323,6 +411,39 @@ pub(crate) fn convert(
             warn_dropped(kind);
         }
     }
+    if chatgpt {
+        options.max_output_tokens = None;
+        options.temperature = None;
+        options.top_p = None;
+        let openai = options
+            .provider_options
+            .get_or_insert_default()
+            .entry("openai".into())
+            .or_default();
+        openai.remove("serviceTier");
+        openai.remove("forceServiceTier");
+        openai.insert("store".into(), Value::Bool(false));
+        openai.insert(
+            "systemMessageMode".into(),
+            Value::String("developer".into()),
+        );
+        for message in &mut options.prompt {
+            if let LanguageModelMessage::Assistant { content, .. } = message {
+                for part in content {
+                    if let AssistantPart::ToolCall(call) = part {
+                        call.provider_options
+                            .get_or_insert_default()
+                            .entry("openai".into())
+                            .or_default()
+                            .insert(
+                                "namespace".into(),
+                                Value::String(CHATGPT_TOOL_NAMESPACE.into()),
+                            );
+                    }
+                }
+            }
+        }
+    }
     let call_id = request
         .metadata
         .as_ref()
@@ -411,7 +532,7 @@ fn reasoning_model_rules(
 /// One user message, built as the user role's own part type.
 fn user_message(
     request: &ModelRequest,
-    kind: &ProviderKind,
+    destination: ImageDestination<'_>,
     path: &str,
     content: &MessageContent,
 ) -> Result<LanguageModelMessage, HostError> {
@@ -425,8 +546,14 @@ fn user_message(
             for (index, part) in parts.iter().enumerate() {
                 let path = format!("{path}[{index}]");
                 let mut provider_options = None;
-                let include =
-                    continuation(request, kind, &path, part, &mut provider_options, false)?;
+                let include = continuation(
+                    request,
+                    &destination.kind,
+                    &path,
+                    part,
+                    &mut provider_options,
+                    false,
+                )?;
                 match part {
                     MessagePart::Text { text, .. } if include => {
                         content.push(UserPart::Text(TextPart {
@@ -435,7 +562,7 @@ fn user_message(
                         }));
                     }
                     MessagePart::Image { source } if include => {
-                        content.push(image_part(request, &path, source)?);
+                        content.push(image_part(request, destination, &path, source)?);
                     }
                     MessagePart::Text { .. } | MessagePart::Image { .. } => {}
                     _ => {
@@ -539,7 +666,7 @@ fn assistant_message<'a>(
 /// to name a tool call an earlier assistant message registered.
 fn tool_message<'a>(
     request: &ModelRequest,
-    kind: &ProviderKind,
+    destination: ImageDestination<'_>,
     path: &str,
     content: &'a MessageContent,
     calls: &HashMap<&'a str, String>,
@@ -575,7 +702,7 @@ fn tool_message<'a>(
                 })?;
                 let output = tool_result(
                     request,
-                    kind,
+                    destination,
                     &path,
                     tool_use_id,
                     tool_content,
@@ -583,7 +710,14 @@ fn tool_message<'a>(
                     following,
                 )?;
                 let mut provider_options = None;
-                if continuation(request, kind, &path, part, &mut provider_options, false)? {
+                if continuation(
+                    request,
+                    &destination.kind,
+                    &path,
+                    part,
+                    &mut provider_options,
+                    false,
+                )? {
                     content.push(ToolPart::ToolResult(ToolResultPart {
                         tool_call_id: tool_use_id.clone(),
                         tool_name: name.clone(),
@@ -604,9 +738,20 @@ fn tool_message<'a>(
 /// An image part as the protocols' user messages carry it.
 fn image_part(
     request: &ModelRequest,
+    destination: ImageDestination<'_>,
     path: &str,
     source: &ImageSource,
 ) -> Result<UserPart, HostError> {
+    if !takes_image_format(
+        Some(destination.kind),
+        destination.preset,
+        &source.media_type,
+    ) {
+        return Ok(UserPart::Text(TextPart {
+            text: image_reference_or_placeholder(source),
+            provider_options: None,
+        }));
+    }
     let data = match source.source_type {
         ImageSourceType::File => {
             return Err(HostError::classified(
@@ -648,12 +793,22 @@ fn image_part(
     }))
 }
 
+/// A failed result's text, naming the outcome where the wire form has no
+/// field that reports it ([`tool_result_status_dropped`]).
+fn failure_text(kind: &ProviderKind, model_id: &str, text: String) -> String {
+    if tool_result_status_dropped(kind, model_id) {
+        format!("{TOOL_ERROR_MARKER}\n{text}")
+    } else {
+        text
+    }
+}
+
 /// A tool result's output. Protocols whose tool message carries an image keep
 /// it inside the result; the others mark its place in the text and put the
 /// image in `following` (one user message after the step's tools).
 fn tool_result(
     request: &ModelRequest,
-    kind: &ProviderKind,
+    destination: ImageDestination<'_>,
     path: &str,
     tool_use_id: &str,
     content: &ToolContent,
@@ -664,7 +819,7 @@ fn tool_result(
         ToolContent::Text(text) => {
             return Ok(if is_error {
                 ToolResultOutput::ErrorText {
-                    value: text.clone(),
+                    value: failure_text(&destination.kind, &request.model_id, text.clone()),
                     provider_options: None,
                 }
             } else {
@@ -689,7 +844,7 @@ fn tool_result(
         }
         return Ok(if is_error {
             ToolResultOutput::ErrorText {
-                value: text,
+                value: failure_text(&destination.kind, &request.model_id, text),
                 provider_options: None,
             }
         } else {
@@ -699,7 +854,7 @@ fn tool_result(
             }
         });
     }
-    let inside = matches!(kind, ProviderKind::Anthropic | ProviderKind::Bedrock);
+    let inside = tool_result_images(&destination.kind, &request.model_id);
     let mut result = Vec::with_capacity(blocks.len());
     let mut text = String::new();
     for block in blocks {
@@ -715,22 +870,32 @@ fn tool_result(
                 }
                 continue;
             }
-            ContentBlock::Image { source } => match (inside, base64_data(source)) {
-                (true, Some(data)) => {
-                    result.push(inside_image(source, data));
+            ContentBlock::Image { source } => {
+                if !takes_image_format(
+                    Some(destination.kind),
+                    destination.preset,
+                    &source.media_type,
+                ) {
+                    text.push_str(&image_reference_or_placeholder(source));
                     continue;
                 }
-                _ => {
-                    following.push(UserPart::Text(TextPart {
-                        text: format!(
-                            "{TOOL_IMAGE_LABEL} {tool_use_id}: the image after this text is that call's result."
-                        ),
-                        provider_options: None,
-                    }));
-                    following.push(image_part(request, path, source)?);
-                    TOOL_IMAGE_MARKER
+                match (inside, base64_data(source)) {
+                    (true, Some(data)) => {
+                        result.push(inside_image(source, data));
+                        continue;
+                    }
+                    _ => {
+                        following.push(UserPart::Text(TextPart {
+                            text: format!(
+                                "{TOOL_IMAGE_LABEL} {tool_use_id}: the image after this text is that call's result."
+                            ),
+                            provider_options: None,
+                        }));
+                        following.push(image_part(request, destination, path, source)?);
+                        TOOL_IMAGE_MARKER
+                    }
                 }
-            },
+            }
         };
         if inside {
             result.push(ToolResultContent::Text(TextPart {
@@ -748,7 +913,7 @@ fn tool_result(
         })
     } else if is_error {
         Ok(ToolResultOutput::ErrorText {
-            value: text,
+            value: failure_text(&destination.kind, &request.model_id, text),
             provider_options: None,
         })
     } else {

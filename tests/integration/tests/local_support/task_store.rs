@@ -1,6 +1,6 @@
 use dim_agent_runtime::*;
 use dim_agent_types::*;
-use std::{ops::RangeInclusive, sync::Mutex};
+use std::{collections::BTreeMap, ops::RangeInclusive, sync::Mutex};
 use tokio::sync::{Notify, oneshot};
 
 #[derive(Default)]
@@ -8,6 +8,9 @@ pub struct TaskStore {
     memory: MemoryTimelineStore,
     pub fail_next_wake: std::sync::atomic::AtomicUsize,
     next_query: Mutex<Option<oneshot::Receiver<Result<()>>>>,
+    /// A failed Session's error: the store rejects its later batches with it
+    /// until the Session is released, as the SQLite store does.
+    failures: Mutex<BTreeMap<String, AgentError>>,
     pub entered: Notify,
 }
 
@@ -44,9 +47,11 @@ impl TimelineStore for TaskStore {
         self.memory.create_session(id, config)
     }
     fn rollback_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.failures.lock().unwrap().remove(id);
         self.memory.rollback_session(id)
     }
     fn release_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.failures.lock().unwrap().remove(id);
         self.memory.release_session(id)
     }
     fn session_config<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<SessionConfig>>> {
@@ -67,6 +72,9 @@ impl TimelineStore for TaskStore {
         events: Vec<StoredEvent>,
         publish: PublishCallback,
     ) -> Result<()> {
+        if let Some(failure) = self.failures.lock().unwrap().get(&key.session_id) {
+            return Err(failure.clone());
+        }
         if events.iter().any(|stored| {
             stored.event.tags.iter().flatten().any(|tag| {
                 tag.starts_with(
@@ -79,17 +87,24 @@ impl TimelineStore for TaskStore {
                 .swap(0, std::sync::atomic::Ordering::SeqCst)
             {
                 0 => {}
-                1 => return Err(AgentError::Storage("injected exec wake failure".into())),
-                2 => {
-                    tokio::spawn(async move {
-                        tokio::task::yield_now().await;
-                        publish(Err(AgentError::Storage(
-                            "injected exec wake failure".into(),
-                        )));
-                    });
-                    return Ok(());
+                mode => {
+                    let error = AgentError::Storage("injected exec wake failure".into());
+                    self.failures
+                        .lock()
+                        .unwrap()
+                        .insert(key.session_id.clone(), error.clone());
+                    match mode {
+                        1 => return Err(error),
+                        2 => {
+                            tokio::spawn(async move {
+                                tokio::task::yield_now().await;
+                                publish(Err(error));
+                            });
+                            return Ok(());
+                        }
+                        mode => panic!("unknown wake failure mode {mode}"),
+                    }
                 }
-                mode => panic!("unknown wake failure mode {mode}"),
             }
         }
         self.memory.append(key, events, publish)

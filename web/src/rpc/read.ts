@@ -305,6 +305,20 @@ export function readModelUpdate(value: unknown): ModelUpdateResult {
   return { model: modelId(source.model, "session.model.update.model"), outcome: str(source, "outcome", "session.model.update") }
 }
 
+/** `session.model.get`: one line's adopted configuration at that line's own committed cutoff (design §14). */
+export type AdoptedConfiguration = { branchId: string; through: number; configuration?: { model: ModelId } }
+
+export function readAdoptedConfiguration(value: unknown): AdoptedConfiguration {
+  const at = "session.model.get"
+  const source = obj(value, at)
+  const configuration = source.configuration === undefined || source.configuration === null ? undefined : obj(source.configuration, `${at}.configuration`)
+  return {
+    branchId: str(source, "branchId", at),
+    through: num(source, "through", at),
+    ...(configuration === undefined ? {} : { configuration: { model: modelId(configuration.model, `${at}.configuration.model`) } }),
+  }
+}
+
 /** A permission preset as the server names it; anything else is a protocol error. */
 function readPreset(value: unknown, at: string): PermissionPreset {
   if (value === "read-only" || value === "workspace-write" || value === "full-access") return value
@@ -981,8 +995,19 @@ export function readBranchEntry(value: unknown): BranchEntry {
   }
 }
 
-export function readBranches(value: unknown): BranchEntry[] {
-  return arr(obj(value, "session.branches").branches, "session.branches.branches").map(readBranchEntry)
+export type BranchDirectory = { branches: BranchEntry[]; defaultBranchId: string }
+
+export function readBranches(value: unknown): BranchDirectory {
+  const at = "session.branches"
+  const source = obj(value, at)
+  // A server that predates `session.branch_set_default` reports no line the
+  // conversation is on, and such a Session is on its root (design §4).
+  const defaultBranchId = source.defaultBranchId === undefined || source.defaultBranchId === null ? ROOT_BRANCH_ID : str(source, "defaultBranchId", at)
+  return { branches: arr(source.branches, `${at}.branches`).map(readBranchEntry), defaultBranchId }
+}
+
+export function readDefaultBranch(value: unknown): string {
+  return str(obj(value, "session.branch_set_default"), "defaultBranchId", "session.branch_set_default")
 }
 
 export function readBranchDetail(value: unknown): BranchEntry {

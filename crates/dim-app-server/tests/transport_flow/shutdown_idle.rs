@@ -242,6 +242,18 @@ async fn an_idle_shutdown_is_refused_while_a_turn_runs() {
     drop(owner);
 
     let mut requester = Client::new_version(&server, false, 3).await;
+    let settled = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let ping = requester.rpc("daemon.ping", json!({})).await;
+        if ping["result"]["connections"] == json!(1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < settled,
+            "the owner connection never left: {ping}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let listed = requester.rpc("session.summaries", json!({})).await;

@@ -1,4 +1,5 @@
 //! Process-owned access to the managed-provider service and its typed contract.
+pub(crate) mod chatgpt;
 pub mod management;
 use crate::model_catalog::{MAX_MODEL_TOKENS, ModelEntry, ModelStatus};
 use dim_agent_capabilities::host::ModelProtocol;
@@ -14,8 +15,16 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, Weak},
+    time::Duration,
 };
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+
+/// The longest a Session assembly or reconciliation waits for a provider's
+/// own account observation. The provider publishes the read through its watch;
+/// the bound ends the caller's wait and the observation it started, so a
+/// timed-out read leaves the last observation in place and no work behind.
+const ACCOUNT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -118,6 +127,7 @@ impl From<ManagedError> for ManagedSearchError {
         match error {
             ManagedError::TokenMissing
             | ManagedError::RefreshRejected
+            | ManagedError::PlanNotGranted
             | ManagedError::InvalidStore
             | ManagedError::UnsupportedSchema
             | ManagedError::AccountRecoveryRequired
@@ -155,6 +165,7 @@ pub enum ManagedError {
     IdentityRejected,
     TokenMissing,
     RefreshRejected,
+    PlanNotGranted,
     ResetDenied,
     Transient,
     ConfigError,
@@ -242,6 +253,25 @@ impl std::fmt::Debug for ManagedProviderRow {
 pub trait ManagedProvider: Send + Sync + 'static {
     fn providers(&self) -> Vec<ProviderDescriptor>;
     fn status(&self, provider: &str) -> ManagedFuture<AccountSnapshot>;
+    /// A replayable watch over whether this provider stores a signed-in
+    /// account, moved at every change of that account. The binding publishes
+    /// the watch's current value while its binding is current, so a login that
+    /// completes after every client polling it is gone still reaches open
+    /// Sessions. The first `Some` is the provider's initialized observation of
+    /// its store; `None` means the provider has not read it yet. The watch is
+    /// the only source of this provider's availability: account reads and
+    /// login attempt results never publish over it.
+    fn subscribe_account(&self) -> watch::Receiver<Option<bool>>;
+    /// Re-reads the stored account and publishes the result through
+    /// [`Self::subscribe_account`], so a store another process wrote becomes
+    /// visible without an `account.status` call. The managed provider owner
+    /// asks the provider for this observation once when managed search first
+    /// becomes necessary for a Session. A failed read leaves the watch as it
+    /// was.
+    fn observe_account(&self, provider: &str) -> ManagedFuture<()> {
+        let _ = provider;
+        Box::pin(async { Ok(()) })
+    }
     fn recover(&self, provider: &str) -> ManagedFuture<AccountSnapshot>;
     fn begin_browser(&self, login: BrowserLoginBegin) -> ManagedFuture<BrowserLogin>;
     fn complete_browser(
@@ -315,6 +345,10 @@ impl From<ManagedError> for ManagedProviderError {
             ManagedError::AccountResetBlocked => {
                 ("account_reset_blocked", "Managed account reset is blocked")
             }
+            ManagedError::PlanNotGranted => (
+                "chatgpt_plan_not_granted",
+                "ChatGPT plan access was not granted. Allow plan usage in ChatGPT and sign in again.",
+            ),
             ManagedError::IdentityRejected => (
                 "account_identity_rejected",
                 "Managed account identity was rejected",
@@ -350,11 +384,15 @@ impl From<ManagedError> for ManagedProviderError {
     }
 }
 
-/// Process-owned access to the bound provider. Without a binding the process
-/// has no managed providers.
+/// Process-owned access to the configured account binding and the product ChatGPT account.
 pub struct ManagedProviders {
     provider: Mutex<Option<Bound>>,
+    chatgpt: Option<(u64, Arc<chatgpt::ChatGpt>)>,
     stop: CancellationToken,
+    /// Whether the bound provider's watch last reported a signed-in account.
+    /// The owner publishes it from that watch and reads it in-process for
+    /// capabilities that depend on a usable account.
+    usable: watch::Sender<bool>,
 }
 /// A published provider and the identity of the binding that published it.
 /// A replacement, even of an equal provider, is a new binding.
@@ -362,6 +400,11 @@ pub struct ManagedProviders {
 struct Bound {
     provider: Arc<dyn ManagedProvider>,
     binding: u64,
+    /// The provider's own account watch. It is authoritative for
+    /// availability; an RPC result is only a historical observation for it.
+    /// The binding reads the current value from this receiver while
+    /// publishing, so a value subscribed earlier cannot overwrite a newer one.
+    account: watch::Receiver<Option<bool>>,
 }
 static NEXT_BINDING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 fn retired() -> ManagedProviderError {
@@ -371,9 +414,67 @@ fn retired() -> ManagedProviderError {
     }
 }
 impl ManagedProviders {
+    /// The account availability the bound provider's watch last reported.
+    /// Without a binding it is `false`.
+    pub fn usable(&self) -> bool {
+        *self.usable.borrow()
+    }
+    /// Notified when [`Self::usable`] changes.
+    pub fn subscribe_usable(&self) -> watch::Receiver<bool> {
+        self.usable.subscribe()
+    }
+    /// Observes the bound provider's account once and returns whether it is
+    /// signed in. The provider reads its own store and publishes through its
+    /// watch; only that watch is published here. Without a binding, while
+    /// `cancel` ends the wait, after the bounded wait, or when the observation
+    /// fails, the last value stays: a failed read is not a confirmed signed-out
+    /// account. The wait is bounded so a stalled read cannot hold assembly or
+    /// Settings reconciliation past [`ACCOUNT_OBSERVATION_TIMEOUT`].
+    pub async fn refresh_usable(&self, cancel: &CancellationToken) -> bool {
+        let Ok(bound) = self.bound(cancel) else {
+            return self.usable();
+        };
+        for descriptor in bound.provider.providers() {
+            let observation = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return self.usable(),
+                observation = tokio::time::timeout(
+                    ACCOUNT_OBSERVATION_TIMEOUT,
+                    bound.provider.observe_account(&descriptor.provider_id),
+                ) => observation,
+            };
+            // A failed or timed-out observation leaves the watch as it was,
+            // which is what this publishes below.
+            let _ = observation;
+        }
+        if !cancel.is_cancelled() {
+            self.observe_watch(bound.binding);
+        }
+        self.usable()
+    }
+    /// Publishes the binding's current account watch value while `binding` is
+    /// still the bound one. The watch read and the publication share the lock
+    /// with every other watch publication, so a value obtained earlier cannot
+    /// overwrite a newer one, and a retired binding cannot overwrite its
+    /// replacement.
+    fn observe_watch(&self, binding: u64) {
+        let slot = self.provider.lock().unwrap();
+        let Some(bound) = slot.as_ref() else {
+            return;
+        };
+        if bound.binding != binding {
+            return;
+        }
+        if let Some(usable) = *bound.account.borrow() {
+            self.usable.send_replace(usable);
+        }
+    }
     /// Called before Agent/RPC settlement, not only during plugin disposal.
     pub async fn quiesce(&self) {
         self.stop.cancel();
+        if let Some((_, chatgpt)) = &self.chatgpt {
+            chatgpt.close().await;
+        }
         let bound = self.provider.lock().unwrap().clone();
         if let Some(bound) = bound {
             bound.provider.quiesce().await;
@@ -411,6 +512,26 @@ impl ManagedProviders {
         &self,
         cancel: &CancellationToken,
     ) -> Result<Vec<ProviderDescriptor>, ManagedProviderError> {
+        let mut providers = self.external_providers(cancel).await?;
+        if self.chatgpt.is_some() {
+            providers.push(chatgpt::descriptor());
+        }
+        Ok(providers)
+    }
+    pub(crate) async fn legacy_codex_hidden(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<bool, ManagedProviderError> {
+        match &self.chatgpt {
+            Some((_, owner)) => Ok(owner.legacy_codex_hidden(cancel).await?),
+            None => Ok(false),
+        }
+    }
+
+    async fn external_providers(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<ProviderDescriptor>, ManagedProviderError> {
         let Some(Bound { provider, .. }) = self.provider.lock().unwrap().clone() else {
             return Ok(vec![]);
         };
@@ -418,7 +539,11 @@ impl ManagedProviders {
             return Err(unavailable());
         }
         let providers = provider.providers();
-        if !valid_descriptors(&providers) {
+        if !valid_descriptors(&providers)
+            || providers
+                .iter()
+                .any(|provider| provider.provider_id == chatgpt::ID)
+        {
             return Err(invalid());
         }
         Ok(providers)
@@ -439,6 +564,16 @@ impl ManagedProviders {
         id: &str,
         cancel: &CancellationToken,
     ) -> Result<AccountSnapshot, ManagedProviderError> {
+        if id == chatgpt::ID {
+            return checked_account(
+                self.chatgpt
+                    .as_ref()
+                    .ok_or_else(unavailable)?
+                    .1
+                    .status(cancel)
+                    .await?,
+            );
+        }
         checked_account(self.provider(cancel)?.status(id).await?)
     }
     pub async fn recover_account(
@@ -527,7 +662,16 @@ impl ManagedProviders {
         id: &str,
         cancel: &CancellationToken,
     ) -> Result<ManagedCatalog, ManagedProviderError> {
-        let catalog = self.provider(cancel)?.catalog(id, cancel.clone()).await?;
+        let catalog = if id == chatgpt::ID {
+            self.chatgpt
+                .as_ref()
+                .ok_or_else(unavailable)?
+                .1
+                .catalog(cancel)
+                .await?
+        } else {
+            self.provider(cancel)?.catalog(id, cancel.clone()).await?
+        };
         if !valid_catalog(&catalog) {
             return Err(invalid());
         }
@@ -539,9 +683,15 @@ impl ManagedProviders {
         model: &str,
         cancel: &CancellationToken,
     ) -> Result<CredentialLease, ManagedProviderError> {
-        let bound = self.bound(cancel)?;
-        let mut lease = checked_lease(bound.provider.credential(id, model).await?)?;
-        lease.binding = bound.binding;
+        let (binding, lease) = if id == chatgpt::ID {
+            let (binding, chatgpt) = self.chatgpt.as_ref().ok_or_else(unavailable)?;
+            (*binding, chatgpt.credential(None, cancel).await?)
+        } else {
+            let bound = self.bound(cancel)?;
+            (bound.binding, bound.provider.credential(id, model).await?)
+        };
+        let mut lease = checked_lease(lease)?;
+        lease.binding = binding;
         Ok(lease)
     }
     pub async fn recover(
@@ -549,9 +699,21 @@ impl ManagedProviders {
         lease: &CredentialLease,
         cancel: &CancellationToken,
     ) -> Result<CredentialLease, ManagedProviderError> {
-        let bound = self.issuer(lease, cancel)?;
-        let mut next = checked_lease(bound.provider.recover_rejected(lease).await?)?;
-        next.binding = bound.binding;
+        let (binding, next) = if let Some((binding, chatgpt)) = &self.chatgpt
+            && *binding == lease.binding
+        {
+            (
+                *binding,
+                chatgpt
+                    .credential(Some((&lease.account, &lease.bearer)), cancel)
+                    .await?,
+            )
+        } else {
+            let bound = self.issuer(lease, cancel)?;
+            (bound.binding, bound.provider.recover_rejected(lease).await?)
+        };
+        let mut next = checked_lease(next)?;
+        next.binding = binding;
         if next.account != lease.account {
             return Err(ManagedProviderError {
                 code: "account_changed",
@@ -669,12 +831,27 @@ pub fn owner_key() -> Key<ManagedProviders> {
 /// the `account` namespace where the profile hosts it.
 pub struct ManagedProvidersPlugin {
     account: Option<Key<crate::methods::ManagementMethods>>,
+    chatgpt: Option<(
+        Key<dim_agent_capabilities::file_storage::FileStorage>,
+        usize,
+    )>,
 }
 impl ManagedProvidersPlugin {
     /// `account` is the method table to place the `account` namespace on, as
     /// the product profile does; `None` serves the search face alone.
     pub fn new(account: Option<Key<crate::methods::ManagementMethods>>) -> Self {
-        Self { account }
+        Self {
+            account,
+            chatgpt: None,
+        }
+    }
+    pub(crate) fn with_chatgpt(
+        mut self,
+        files: Key<dim_agent_capabilities::file_storage::FileStorage>,
+        root: usize,
+    ) -> Self {
+        self.chatgpt = Some((files, root));
+        self
     }
 }
 impl DynPlugin for ManagedProvidersPlugin {
@@ -682,22 +859,50 @@ impl DynPlugin for ManagedProvidersPlugin {
         "ManagedProviders"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        self.account.iter().map(Key::erase).collect()
+        self.account
+            .iter()
+            .map(Key::erase)
+            .chain(self.chatgpt.iter().map(|(files, _)| files.erase()))
+            .collect()
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
+            let chatgpt = match &self.chatgpt {
+                Some((files, root)) => {
+                    let owner =
+                        chatgpt::ChatGpt::new(ctx.require_at(files)?, *root).map_err(|error| {
+                            rutis::Error::from(ErrorKind::PluginFailed(
+                                std::io::Error::other(ManagedProviderError::from(error).message)
+                                    .into(),
+                            ))
+                        })?;
+                    Some((
+                        NEXT_BINDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        owner,
+                    ))
+                }
+                None => None,
+            };
             let service = Arc::new(ManagedProviders {
                 provider: Mutex::new(None),
+                chatgpt,
                 stop: CancellationToken::new(),
+                usable: watch::Sender::new(false),
             });
             let owner = service.clone();
             ctx.effect(move || async move {
                 owner.stop.cancel();
+                if let Some((_, chatgpt)) = &owner.chatgpt {
+                    chatgpt.close().await;
+                }
                 Ok(())
             })?;
             if let Some(methods) = &self.account {
                 let methods = ctx.require_at(methods)?;
                 management::provide(ctx, &methods, service.clone())?;
+                if let Some((_, chatgpt)) = &service.chatgpt {
+                    chatgpt::provide(ctx, &methods, chatgpt.clone())?;
+                }
             }
             let search = Arc::new(ManagedSearch(service.clone()));
             ctx.provide_at(owner_key(), service)?;
@@ -715,6 +920,19 @@ impl DynPlugin for ManagedProvidersPlugin {
 pub struct ManagedSearch(Arc<ManagedProviders>);
 
 impl ManagedSearch {
+    /// The account availability the bound provider last reported, read
+    /// in-process by capabilities that depend on a usable signed-in account.
+    pub fn usable(&self) -> bool {
+        self.0.usable()
+    }
+    /// Notified when [`Self::usable`] changes.
+    pub fn subscribe_usable(&self) -> watch::Receiver<bool> {
+        self.0.subscribe_usable()
+    }
+    /// Re-reads the bound provider's account and publishes the result.
+    pub async fn refresh_usable(&self, cancel: &CancellationToken) -> bool {
+        self.0.refresh_usable(cancel).await
+    }
     /// Searches with the current managed provider. Dropping or cancelling the
     /// call cancels its provider request without cancelling the caller's token.
     pub async fn search(
@@ -739,13 +957,13 @@ impl HostDispatch for ManagedSearch {
 
     fn invoke(&self, method: &str, args: ServiceValue) -> Reply {
         if method != "search" {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "unknown managedSearch method {method}"
             )));
         }
         let [request]: [WebSearchRequest; 1] =
             serde_json::from_value(args.json()?).map_err(|error| {
-                BridgeError::Value(format!(
+                BridgeError::value(format!(
                     "expected one managedSearch request object: {error}"
                 ))
             })?;
@@ -780,21 +998,54 @@ impl DynPlugin for ManagedProviderBinding {
         Box::pin(async move {
             let owner = ctx.require_at(&owner_key())?;
             let provider = ctx.require::<dyn ManagedProvider>()?;
-            if !valid_descriptors(&provider.providers()) {
+            let descriptors = provider.providers();
+            if !valid_descriptors(&descriptors)
+                || descriptors
+                    .iter()
+                    .any(|provider| provider.provider_id == chatgpt::ID)
+            {
                 return Err(rutis::Error::from(ErrorKind::PluginFailed(
                     "Invalid managed provider description".into(),
                 )));
             }
             let binding = NEXT_BINDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *owner.provider.lock().unwrap() = Some(Bound {
-                provider: provider.clone(),
-                binding,
-            });
+            let mut account = provider.subscribe_account();
+            let initial = *account.borrow();
+            {
+                let mut slot = owner.provider.lock().unwrap();
+                *slot = Some(Bound {
+                    provider: provider.clone(),
+                    binding,
+                    account: account.clone(),
+                });
+                // A replacement starts from its own observation: a new
+                // generation that has not read its store must not inherit the
+                // retired generation's signed-in state.
+                owner.usable.send_replace(initial.unwrap_or(false));
+            }
+            let stop = ctx.cancellation_token();
+            let mirror = {
+                let owner = owner.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = stop.cancelled() => return,
+                            moved = account.changed() => if moved.is_err() {
+                                return;
+                            },
+                        }
+                        owner.observe_watch(binding);
+                    }
+                })
+            };
             ctx.effect(move || async move {
+                mirror.abort();
+                let _ = mirror.await;
                 {
                     let mut slot = owner.provider.lock().unwrap();
                     if slot.as_ref().is_some_and(|bound| bound.binding == binding) {
                         *slot = None;
+                        owner.usable.send_replace(false);
                     }
                 }
                 provider.quiesce().await;

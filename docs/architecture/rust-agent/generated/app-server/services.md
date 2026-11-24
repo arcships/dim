@@ -209,12 +209,14 @@ flowchart LR
   p16 -->|"dim_app_server::grok_oauth::GrokOAuthService"| p17
   p13 -->|"dim_app_server::managed_provider::ManagedProviders#managedProviderOwner"| p17
   p10 -->|"dim_app_server::methods::ManagementMethods"| p17
+  p8 -->|"dim_app_server::storage::face::Store"| p17
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p17
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p16
   p10 -->|"dim_app_server::methods::ManagementMethods"| p16
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p15
   p10 -->|"dim_app_server::methods::ManagementMethods"| p15
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p14
+  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p13
   p10 -->|"dim_app_server::methods::ManagementMethods"| p13
   p60 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p11

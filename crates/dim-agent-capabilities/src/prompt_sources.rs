@@ -53,7 +53,7 @@ pub type Today = Arc<dyn Fn() -> String + Send + Sync>;
 /// environment and the local date with what it adopted. Polling the wall clock, instead of sleeping
 /// until midnight on the monotonic clock, follows system sleep and clock or
 /// zone changes; polling the files avoids watchers tied to branch lifetimes.
-const DATE_CHECK: Duration = Duration::from_secs(60);
+pub(crate) const DATE_CHECK: Duration = Duration::from_secs(60);
 
 /// Registers PromptSources with the process-local clock.
 pub fn install(builder: &mut AgentBuilder) {
@@ -63,13 +63,33 @@ pub fn install(builder: &mut AgentBuilder) {
 /// Registers PromptSources with a replaceable date source, checked every
 /// `every`.
 pub fn install_with_clock(builder: &mut AgentBuilder, today: Today, every: Duration) {
+    install_with_config(builder, today, every, PromptSourcesConfig::default());
+}
+
+/// [`install_with_clock`] with the policy texts at their factory
+/// configuration: a candidate replaces its built-in text, and the default
+/// configuration keeps every built-in text ([PromptSources §2],
+/// [model-prompts §8.1]).
+///
+/// [PromptSources §2]: ../../../docs/design/plugins/PromptSources.md
+/// [model-prompts §8.1]: ../../../docs/design/model-prompts.md
+pub fn install_with_config(
+    builder: &mut AgentBuilder,
+    today: Today,
+    every: Duration,
+    config: PromptSourcesConfig,
+) {
     builder.require_feature(
         dim_agent_runtime::Feature::new("PromptSources")
             .session("PromptRegistry", |names| {
                 Ok(Box::new(PromptRegistryPlugin::new(names)?))
             })
             .session("PromptSources", move |names| {
-                Ok(Box::new(PromptSourcesPlugin::new(names, today.clone())?))
+                Ok(Box::new(PromptSourcesPlugin::with_config(
+                    names,
+                    today.clone(),
+                    config.clone(),
+                )?))
             })
             .branch("PromptSourcesBranch", move |names| {
                 Ok(Box::new(PromptSourcesBranchPlugin {
@@ -157,7 +177,13 @@ Do not weaken existing authentication, authorization, or input validation unless
 
 Tone and communication:
 Think and respond in the same language as the user unless asked otherwise.
-Keep responses concise; add detail only when it materially helps; skip preamble and wrap-up; use emojis only when asked.
+Keep responses concise; add detail only when it materially helps; skip unnecessary preamble and wrap-up; use emojis only when asked.
+
+Progress updates:
+The user reads your reply text, while your thinking and most tool call details stay hidden; say what they need to know in the text.
+Before the first substantive tool call of a task, say in one sentence what you are about to do.
+Exception: when the request asks for only a final answer, a patch or structured output, or when a task needs no tool or one quick read, write no text before or between tool calls.
+While you work, write one short sentence when you start a new phase, when a finding changes the plan, or when you hit a blocker.
 
 Objectivity:
 Prioritize technical accuracy over agreeing with the user. Disagree when warranted; correction beats false agreement.

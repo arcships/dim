@@ -13,7 +13,7 @@ export default definePlugin({
     let release: (() => void) | undefined
     await ctx.use<ManagementMethods>('managementMethods').register(
       'storefixture',
-      ['status', 'commit_round', 'timeline_directory', 'reserve_file', 'file_ownership', 'selection', 'agent_records', 'read_user', 'import_user', 'replace_user', 'report', 'create', 'cycle', 'remove', 'refuse', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
+      ['status', 'commit_round', 'timeline_directory', 'reserve_file', 'file_ownership', 'selection', 'agent_records', 'read_user', 'import_user', 'replace_user', 'report', 'create', 'cycle', 'remove', 'refuse', 'unregistered_refuse', 'unregistered_remove', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
       async (call: { method: string; params: any }): Promise<MethodReply> => {
         const params = call.params
         if (call.method === 'storefixture.status') return { kind: 'value', value: {} }
@@ -112,6 +112,28 @@ export default definePlugin({
             })
           }
           return { kind: 'value', value: { errors } }
+        }
+        if (call.method === 'storefixture.unregistered_refuse') {
+          let called = false
+          try {
+            await store.removeUnregisteredDirectory({ root: params.root }, async () => {
+              called = true
+            })
+            throw new Error('removal unexpectedly succeeded')
+          } catch (error) {
+            if (!(error instanceof Error) || !('code' in error) || typeof error.code !== 'string') throw error
+            return { kind: 'value', value: { code: error.code, message: error.message, called } }
+          }
+        }
+        if (call.method === 'storefixture.unregistered_remove') {
+          const removed = await store.removeUnregisteredDirectory({ root: params.root }, async path => {
+            const gate = new Promise<void>(resolve => { release = resolve })
+            await writeFile(`${params.ready}.pending`, path)
+            await rename(`${params.ready}.pending`, params.ready)
+            await gate
+            await rm(path, { recursive: true })
+          })
+          return { kind: 'value', value: removed }
         }
         if (call.method === 'storefixture.release') { release?.(); return { kind: 'value', value: {} } }
         if (call.method === 'storefixture.refuse') {

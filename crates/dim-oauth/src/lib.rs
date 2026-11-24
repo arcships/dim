@@ -212,6 +212,14 @@ impl Drop for CatalogWaiter {
     }
 }
 
+/// Cancels the operation it guards when its caller drops the wait.
+struct CancelOnDrop(CancellationToken);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 struct Inner {
     store: Store,
     client: Client,
@@ -275,11 +283,12 @@ impl Inner {
     }
     /// Renews the grant as it enters the freshness window, so an idle process
     /// keeps its refresh token alive. Request-time resolution stays the
-    /// correctness boundary; this only renews ahead of it. A signed-out or
-    /// unusable account waits for a login in this process.
+    /// correctness boundary; this only renews ahead of it, and a record that
+    /// needs normalization keeps it until an explicit account operation. A
+    /// signed-out or unusable account waits for a login in this process.
     async fn keep_fresh(self: Arc<Self>) {
         loop {
-            let wait = match self.store.resolve(None).await {
+            let wait = match self.store.renew().await {
                 Ok(grant) => Some(grant.renews_in().max(RENEW_MIN)),
                 Err(ManagedError::ServiceReloading) => return,
                 Err(ManagedError::Transient) => Some(RENEW_RETRY),
@@ -297,6 +306,14 @@ impl Inner {
                 _ = sleep => {}
             }
         }
+    }
+    /// Publishes the account file's current state as the watch's initialized
+    /// observation, so a binding installed over an existing account starts from
+    /// it instead of waiting for the next write. The read is read-only and
+    /// validated; a failed read leaves the watch uninitialized, and the next
+    /// write still moves it.
+    async fn initialize_account(self: Arc<Self>) {
+        let _ = self.store.observe_account(None).await;
     }
     fn update(&self, id: &str, change: impl FnOnce(&mut Attempt)) {
         if let Some(attempt) = self.attempts.lock().unwrap().get_mut(id) {
@@ -793,7 +810,7 @@ impl Inner {
         if cancel.is_cancelled() {
             return Err(ManagedError::Cancelled);
         }
-        let account = self.store.status().await?;
+        let account = self.store.read_status().await?;
         let (waiter, mut receiver) = {
             let closed = self.closed.lock().unwrap();
             if *closed {
@@ -877,7 +894,7 @@ impl Inner {
             return Err(rejected(status, &body));
         }
         let models = models::project_models(&body, self.bundled())?;
-        let account = self.store.status().await?;
+        let account = self.store.read_status().await?;
         if !same_account(&grant.account, &account) {
             return Err(ManagedError::AccountChanged);
         }
@@ -1088,6 +1105,24 @@ impl ManagedProvider for DimOAuth {
             inner.store.status().await
         })
     }
+    fn subscribe_account(&self) -> tokio::sync::watch::Receiver<Option<bool>> {
+        self.0.store.account()
+    }
+    /// The observation belongs to the caller: dropping the wait ends its lease
+    /// wait instead of leaving a retry behind.
+    fn observe_account(&self, provider: &str) -> ManagedFuture<()> {
+        let provider = provider.to_owned();
+        let cancel = CancellationToken::new();
+        let guard = CancelOnDrop(cancel.clone());
+        let operation = self.owned(move |inner| async move {
+            input(&provider)?;
+            inner.store.observe_account(Some(&cancel)).await
+        });
+        Box::pin(async move {
+            let _guard = guard;
+            operation.await
+        })
+    }
     fn recover(&self, provider: &str) -> ManagedFuture<AccountSnapshot> {
         let provider = provider.to_owned();
         self.owned(|inner| async move {
@@ -1263,6 +1298,10 @@ impl DynPlugin for DimOAuthPlugin {
                 Ok(())
             })?;
             service.0.tasks.spawn(service.0.clone().keep_fresh());
+            service
+                .0
+                .tasks
+                .spawn(service.0.clone().initialize_account());
             ctx.provide_at(
                 rutis_bridge::session::host_key(dim_session_title::GENERATOR),
                 service.clone() as Arc<dyn rutis_bridge::session::HostDispatch>,

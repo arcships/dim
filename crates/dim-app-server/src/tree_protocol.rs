@@ -68,10 +68,21 @@ impl From<BranchDirectoryEntry> for BranchDirectoryView {
     }
 }
 
+/// `session.branches`: every line of the Session, and the one its conversation
+/// is on. `defaultBranchId` is top level rather than a flag on a row, because a
+/// row cannot express zero or two defaults (design §14).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchesResult {
     pub branches: Vec<BranchDirectoryView>,
+    pub default_branch_id: String,
+}
+
+/// `session.branch_set_default`: the line the Session's conversation is on now.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDefaultResult {
+    pub default_branch_id: String,
 }
 
 #[derive(Debug)]
@@ -172,6 +183,11 @@ impl Serialize for ProductEvent {
             ) {
                 view["data"]["model_preferences"] =
                     serde_json::to_value(preferences).map_err(serde::ser::Error::custom)?;
+            }
+            if let Some(provider) = crate::provider::scoped_routes::logical_provider(
+                configured.settings.metadata.as_ref(),
+            ) {
+                view["data"]["catalog_provider_id"] = provider.into();
             }
             if let Some(snapshot) = &configured.settings.capability_snapshot {
                 view["data"]["capability_snapshot"] =

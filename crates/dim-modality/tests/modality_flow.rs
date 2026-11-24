@@ -1,6 +1,5 @@
 //! Modality image slice through the management methods: the owner's snapshot,
 //! resolution order and CAS, with a fixture adapter in the process.
-#![cfg(unix)]
 use dim_agent_capabilities::file_storage::{FileStorage, FileStoragePlugin};
 use dim_agent_capabilities::host::ModalityConnection;
 use dim_agent_capabilities::{adapters::MockTools, defaults, host::ToolDriver};
@@ -694,6 +693,7 @@ fn home(prefix: &str) -> std::path::PathBuf {
     home
 }
 
+const IMAGE_OPERATIONS: [&str; 3] = ["image.generate", "image.edit", "image.enhance"];
 async fn create_provider(client: &mut Client) {
     let mut vision = CatalogCapabilities::with_limits(128_000, 16_384);
     vision.vision = true;
@@ -707,8 +707,8 @@ async fn create_provider(client: &mut Client) {
                     "displayName": "Fixture",
                     "connection": {"driverKind": "openai-compatible", "baseUrl": "http://127.0.0.1:1/v1", "auth": {"type": "anonymous"}},
                     "models": [
-                        {"modelId": "alpha", "displayName": "alpha", "status": "active", "capabilities": vision},
-                        {"modelId": "beta", "displayName": "beta", "status": "active", "capabilities": text}
+                        {"modelId": "alpha", "displayName": "alpha", "status": "active", "capabilities": vision, "metadata": {"raw": {"modalityCapabilities": IMAGE_OPERATIONS}}},
+                        {"modelId": "beta", "displayName": "beta", "status": "active", "capabilities": text, "metadata": {"raw": {"modalityCapabilities": IMAGE_OPERATIONS}}}
                     ],
                     "enabled": true
                 }),
@@ -1451,14 +1451,19 @@ async fn capabilities_and_configure_resolve_defaults_through_the_fixture_adapter
             json!({"expectedRevision": cleared["result"]["revision"], "category": "image", "operation": "edit", "model": model("beta")}),
         )
         .await;
+    assert_ok(&beta_edit);
+    let edit = operation(&beta_edit, "edit");
     assert_eq!(
-        beta_edit["error"]["data"]["appError"], "modality_invalid_selection",
-        "the adapter serves edit only for the models it declares"
+        edit["default"],
+        json!({"providerId": PROVIDER, "modelId": "beta", "available": false,
+            "reason": {"dimension": "adapter", "detail": "No available adapter serves the model"}}),
+        "a declared model saves as a default before an adapter serves it, and says so: {edit}"
     );
+    assert!(edit["effective"].is_null());
     let beta_generate = client
         .rpc(
             "modality.configure",
-            json!({"expectedRevision": cleared["result"]["revision"], "category": "image", "operation": "generate", "model": model("beta")}),
+            json!({"expectedRevision": beta_edit["result"]["revision"], "category": "image", "operation": "generate", "model": model("beta")}),
         )
         .await;
     assert_ok(&beta_generate);
@@ -1482,6 +1487,7 @@ async fn capabilities_and_configure_resolve_defaults_through_the_fixture_adapter
         "a selectable default that no adapter serves is unavailable: {edit}"
     );
     assert_eq!(edit["default"]["reason"]["dimension"], "adapter");
+    assert_eq!(edit["reasons"][0]["dimension"], "adapter");
     assert!(edit["effective"].is_null());
 
     fixture.set_available(false);
@@ -1489,15 +1495,27 @@ async fn capabilities_and_configure_resolve_defaults_through_the_fixture_adapter
     let generate = operation(&offline, "generate");
     assert_eq!(generate["available"], false);
     assert_eq!(generate["reasons"][0]["dimension"], "runtime");
+    assert_eq!(
+        generate["default"]["reason"],
+        json!({"dimension": "runtime", "detail": "The adapter is unavailable"}),
+        "the default agrees with the operation: {generate}"
+    );
+    assert!(generate["effective"].is_null());
+    let edit = operation(&offline, "edit");
+    assert_eq!(edit["reasons"][0]["dimension"], "adapter");
+    assert_eq!(
+        edit["reasons"][0]["dimension"],
+        edit["default"]["reason"]["dimension"]
+    );
     let refused = client
         .rpc(
             "modality.configure",
-            json!({"expectedRevision": offline["result"]["revision"], "category": "image", "operation": "generate", "model": model("beta")}),
+            json!({"expectedRevision": offline["result"]["revision"], "category": "image", "operation": "generate", "model": model("gamma")}),
         )
         .await;
     assert_eq!(
         refused["error"]["data"]["appError"], "modality_invalid_selection",
-        "an unavailable adapter cannot serve a new default"
+        "a model Provider does not list is no option"
     );
 
     let mut bare = Client::new_version(&server, true, 3).await;
@@ -1555,9 +1573,50 @@ async fn a_declared_media_model_served_by_the_adapter_is_an_option() {
     );
     let edit = operation(&snapshot, "edit");
     assert_eq!(edit["available"], false);
+    assert_eq!(edit["reasons"][0]["dimension"], "adapter");
     assert_eq!(
-        edit["reasons"][0]["detail"], "No selectable model is served by an available adapter",
-        "the adapter narrows the candidates per operation"
+        operation(&snapshot, "enhance")["reasons"][0]["dimension"],
+        "adapter"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_online_speech_adapter_does_not_hide_the_offline_image_adapter() {
+    let image = Arc::new(FixtureAdapter::default());
+    image.serve(&[("image-media", &["image.generate"])]);
+    image.set_available(false);
+    let speech = Arc::new(FixtureAdapter::default());
+    speech.serve(&[("voice", &["speech.synthesize"])]);
+    let home = home("dm-mixed-adapters");
+    let server = start_with_copies(home.clone(), speech, image).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(&mut client, vec![media("image-media", &["image.generate"])]).await;
+    assert_ok(
+        &client
+            .rpc(
+                "provider.create",
+                json!({
+                    "providerId": "018ec73f-0000-7000-8000-0000000000bb",
+                    "displayName": "Speech fixture",
+                    "connection": {"driverKind": "openai-compatible", "baseUrl": "http://127.0.0.1:1/v1", "auth": {"type": "anonymous"}},
+                    "models": [chat("voice", &["speech.synthesize"])],
+                    "enabled": true
+                }),
+            )
+            .await,
+    );
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let generate = operation(&snapshot, "generate");
+    assert_eq!(generate["available"], false, "{generate}");
+    assert_eq!(generate["options"][0]["reason"]["dimension"], "runtime");
+    assert_eq!(generate["reasons"][0], generate["options"][0]["reason"]);
+    assert_eq!(
+        operation_in(&snapshot, "speech", "synthesize")["available"],
+        true
     );
     server.shutdown();
     server.join().await.unwrap();
@@ -1565,7 +1624,8 @@ async fn a_declared_media_model_served_by_the_adapter_is_an_option() {
 }
 
 /// An adapter that serves no model either Provider read names is not the same
-/// as a build without an adapter: the operation says which case it is.
+/// as a build without an adapter: the operation says which case it is, and
+/// its options, default and effective model agree with it (#1887).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_adapter_serving_no_provider_model_is_not_reported_as_missing() {
     let fixture = Arc::new(FixtureAdapter::default());
@@ -1582,11 +1642,27 @@ async fn an_adapter_serving_no_provider_model_is_not_reported_as_missing() {
         generate["reasons"][0]["detail"], "The adapter serves no image model Provider lists",
         "a collected adapter that serves no candidate is not a missing adapter: {generate}"
     );
+    let unserved = json!({"providerId": PROVIDER, "modelId": "image-media", "available": false,
+        "reason": {"dimension": "adapter", "detail": "No available adapter serves the model"}});
     assert_eq!(
         generate["options"],
-        json!([{"providerId": PROVIDER, "modelId": "image-media", "available": true}]),
-        "an operation no adapter serves falls back to the declared models"
+        json!([unserved]),
+        "a declared model no adapter serves is listed as unavailable"
     );
+    assert!(generate["effective"].is_null(), "{generate}");
+    let configured = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": snapshot["result"]["revision"], "category": "image", "operation": "generate", "model": model("image-media")}),
+        )
+        .await;
+    assert_ok(&configured);
+    let generate = operation(&configured, "generate");
+    assert_eq!(
+        generate["default"], unserved,
+        "a saved default that cannot run says why"
+    );
+    assert!(generate["effective"].is_null(), "{generate}");
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
@@ -1606,32 +1682,46 @@ async fn the_product_build_reports_image_operations_without_an_adapter() {
         .filter(|category| category["category"] != "image")
     {
         assert_eq!(category["available"], false, "{category}");
-        assert_eq!(category["reasons"][0]["dimension"], "build", "{category}");
+        let dimension = if category["category"] == "ocr" && !dim_ocr::apple_vision_available() {
+            "platform"
+        } else {
+            "build"
+        };
+        assert_eq!(category["reasons"][0]["dimension"], dimension, "{category}");
         assert!(
             category["operations"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|operation| operation["reasons"][0]["dimension"] == "build"),
+                .all(|operation| operation["reasons"][0]["dimension"] == dimension),
             "{category}"
         );
     }
     for name in ["generate", "edit", "enhance"] {
         let entry = operation(&snapshot, name);
         assert_eq!(entry["available"], false, "{entry}");
-        assert_eq!(entry["reasons"][0]["dimension"], "adapter");
-        assert!(entry["options"].as_array().unwrap().is_empty());
+        let reason = json!({"dimension": "adapter", "detail": "No image adapter in this build"});
+        assert_eq!(entry["reasons"], json!([reason]));
+        let unserved = |model_id: &str| {
+            json!({"providerId": PROVIDER, "modelId": model_id, "available": false,
+                "reason": reason})
+        };
+        assert_eq!(
+            entry["options"],
+            json!([unserved("alpha"), unserved("beta")]),
+            "declared models are listed and none can run: {entry}"
+        );
         assert!(entry["default"].is_null());
         assert!(entry["effective"].is_null());
         let refused = client
             .rpc(
                 "modality.configure",
-                json!({"expectedRevision": snapshot["result"]["revision"], "category": "image", "operation": name, "model": model("alpha")}),
+                json!({"expectedRevision": snapshot["result"]["revision"], "category": "image", "operation": name, "model": model("gamma")}),
             )
             .await;
         assert_eq!(
             refused["error"]["data"]["appError"], "modality_invalid_selection",
-            "{name} cannot have a default without an adapter: {refused}"
+            "{name} refuses a model Provider does not list: {refused}"
         );
     }
     let understand = operation(&snapshot, "understand");
@@ -1685,8 +1775,8 @@ async fn clearing_an_operation_after_all_defaults_matches_the_next_read() {
                     "displayName": "Fixture",
                     "connection": {"driverKind": "openai-compatible", "baseUrl": "http://127.0.0.1:1/v1", "auth": {"type": "anonymous"}},
                     "models": [
-                        {"modelId": "alpha", "displayName": "alpha", "status": "active", "capabilities": vision},
-                        {"modelId": "gamma", "displayName": "gamma", "status": "active", "capabilities": vision}
+                        {"modelId": "alpha", "displayName": "alpha", "status": "active", "capabilities": vision, "metadata": {"raw": {"modalityCapabilities": IMAGE_OPERATIONS}}},
+                        {"modelId": "gamma", "displayName": "gamma", "status": "active", "capabilities": vision, "metadata": {"raw": {"modalityCapabilities": IMAGE_OPERATIONS}}}
                     ],
                     "enabled": true
                 }),
@@ -1883,23 +1973,23 @@ async fn declared_models_are_the_options_of_an_operation_without_an_adapter() {
     let generate = operation_in(&snapshot, "video", "generate");
     assert_eq!(generate["available"], false);
     assert_eq!(generate["reasons"][0]["dimension"], "build");
+    let unbuilt = |model_id: &str| {
+        json!({"providerId": PROVIDER, "modelId": model_id, "available": false,
+            "reason": {"dimension": "build", "detail": "Not in this build"}})
+    };
     assert_eq!(
         generate["options"],
-        json!([{"providerId": PROVIDER, "modelId": "video-generate", "available": true}]),
-        "only a declared model is an option, in Provider's order"
+        json!([unbuilt("video-generate")]),
+        "only a declared model is an option, in Provider's order, unavailable with the operation"
     );
-    assert_eq!(
-        generate["effective"],
-        json!({"providerId": PROVIDER, "modelId": "video-generate", "source": "automatic"}),
-        "the global selection does not serve video, so the first declared option resolves"
+    assert!(
+        generate["effective"].is_null(),
+        "no option can run, so nothing resolves: {generate}"
     );
     let edit = operation_in(&snapshot, "video", "edit");
     assert_eq!(
         edit["options"],
-        json!([
-            {"providerId": PROVIDER, "modelId": "video-edit", "available": true},
-            {"providerId": PROVIDER, "modelId": "video-generate", "available": true}
-        ])
+        json!([unbuilt("video-edit"), unbuilt("video-generate")])
     );
     let enhance = operation_in(&snapshot, "video", "enhance");
     assert!(enhance["options"].as_array().unwrap().is_empty());
@@ -2073,13 +2163,13 @@ async fn operations_without_a_default_key_or_unknown_answers_are_unknown() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn effective_resolves_over_declared_options_and_stays_null_for_an_unavailable_default() {
-    let (server, home) = start(None, "dm-effective").await;
+    let (server, home) = start(Some(Arc::new(FixtureAdapter::default())), "dm-effective").await;
     let mut client = Client::new_version(&server, false, 3).await;
     create_provider_with(
         &mut client,
         vec![
-            media("media-option", &["video.generate"]),
-            chat("chat-option", &["video.generate"]),
+            media("media-option", &["image.generate"]),
+            chat("chat-option", &["image.generate"]),
         ],
     )
     .await;
@@ -2093,7 +2183,7 @@ async fn effective_resolves_over_declared_options_and_stays_null_for_an_unavaila
     );
     let initial = client.rpc("modality.capabilities", json!({})).await;
     assert_ok(&initial);
-    let generate = operation_in(&initial, "video", "generate");
+    let generate = operation(&initial, "generate");
     assert!(generate["default"].is_null());
     assert_eq!(
         generate["effective"],
@@ -2103,12 +2193,12 @@ async fn effective_resolves_over_declared_options_and_stays_null_for_an_unavaila
     let configured = client
         .rpc(
             "modality.configure",
-            json!({"expectedRevision": initial["result"]["revision"], "category": "video", "operation": "generate", "model": model("chat-option")}),
+            json!({"expectedRevision": initial["result"]["revision"], "category": "image", "operation": "generate", "model": model("chat-option")}),
         )
         .await;
     assert_ok(&configured);
     assert_eq!(
-        operation_in(&configured, "video", "generate")["effective"]["source"],
+        operation(&configured, "generate")["effective"]["source"],
         "default"
     );
     let catalog = client
@@ -2125,7 +2215,7 @@ async fn effective_resolves_over_declared_options_and_stays_null_for_an_unavaila
     );
     let disabled = client.rpc("modality.capabilities", json!({})).await;
     assert_ok(&disabled);
-    let generate = operation_in(&disabled, "video", "generate");
+    let generate = operation(&disabled, "generate");
     assert_eq!(generate["default"]["available"], false, "{generate}");
     assert_eq!(generate["default"]["reason"]["dimension"], "provider");
     assert!(
@@ -2144,12 +2234,12 @@ async fn effective_resolves_over_declared_options_and_stays_null_for_an_unavaila
     let cleared = client
         .rpc(
             "modality.configure",
-            json!({"expectedRevision": disabled["result"]["revision"], "category": "video", "operation": "generate", "model": null}),
+            json!({"expectedRevision": disabled["result"]["revision"], "category": "image", "operation": "generate", "model": null}),
         )
         .await;
     assert_ok(&cleared);
     assert_eq!(
-        operation_in(&cleared, "video", "generate")["effective"],
+        operation(&cleared, "generate")["effective"],
         json!({"providerId": PROVIDER, "modelId": "media-option", "source": "automatic"})
     );
     server.shutdown();
@@ -2317,7 +2407,11 @@ async fn a_provider_copy_serves_its_provider_and_the_family_copy_takes_over() {
     assert_eq!(operation(&capabilities, "edit")["available"], false);
     assert_eq!(
         operation(&capabilities, "generate")["options"],
-        json!([{"providerId": PROVIDER, "modelId": "alpha", "available": true}]),
+        json!([
+            {"providerId": PROVIDER, "modelId": "alpha", "available": true},
+            {"providerId": PROVIDER, "modelId": "beta", "available": false,
+                "reason": {"dimension": "adapter", "detail": "No available adapter serves the model"}}
+        ]),
         "the next snapshot uses the family copy's narrower operation support"
     );
     let submitted = submit_task(
@@ -4789,6 +4883,7 @@ async fn result_bytes(client: &mut Client, task_id: &str, name: &str, length: us
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_offers_the_local_target_and_configure_sets_the_default() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4867,6 +4962,7 @@ async fn ocr_offers_the_local_target_and_configure_sets_the_default() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn an_ocr_task_publishes_the_helper_artifacts() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4910,6 +5006,7 @@ async fn an_ocr_task_publishes_the_helper_artifacts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn data_carries_at_most_one_mebibyte_of_page_text() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4945,6 +5042,7 @@ async fn data_carries_at_most_one_mebibyte_of_page_text() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_layout_task_publishes_the_page_image() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4968,6 +5066,7 @@ async fn a_layout_task_publishes_the_page_image() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn helper_artifacts_that_are_not_regular_files_are_refused_without_blocking() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5016,6 +5115,7 @@ async fn helper_artifacts_that_are_not_regular_files_are_refused_without_blockin
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn an_oversized_helper_result_is_refused_before_it_is_read() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5049,6 +5149,7 @@ async fn an_oversized_helper_result_is_refused_before_it_is_read() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_failed_host_task_removes_its_work_directory() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5109,6 +5210,7 @@ impl ArtifactHook for ReplaceAfterCount {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn the_host_path_publishes_the_bytes_the_cap_counted() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5153,6 +5255,7 @@ async fn the_host_path_publishes_the_bytes_the_cap_counted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn typed_and_broken_helpers_fail_with_the_mapped_code() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5171,6 +5274,7 @@ async fn typed_and_broken_helpers_fail_with_the_mapped_code() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_helper_over_its_output_limit_fails_executor_error() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5191,6 +5295,7 @@ async fn a_helper_over_its_output_limit_fails_executor_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn cancel_stops_a_running_helper() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5244,6 +5349,7 @@ async fn cancel_stops_a_running_helper() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_named_node_is_unavailable() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5259,6 +5365,7 @@ async fn a_named_node_is_unavailable() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_foreign_explicit_model_is_refused() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5271,6 +5378,7 @@ async fn a_foreign_explicit_model_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_takes_one_input_file() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5283,6 +5391,7 @@ async fn ocr_takes_one_input_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn queued_ocr_keeps_its_input_after_the_source_is_removed() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5332,7 +5441,12 @@ async fn ocr_is_absent_when_the_build_starts_no_helper() {
     let recognize = operation_in(&snapshot, "ocr", "recognize");
     assert_eq!(recognize["available"], false);
     assert_eq!(recognize["options"], json!([]));
-    assert_eq!(recognize["reasons"][0]["dimension"], "build");
+    let dimension = if dim_ocr::apple_vision_available() {
+        "build"
+    } else {
+        "platform"
+    };
+    assert_eq!(recognize["reasons"][0]["dimension"], dimension);
     let refused = client
         .rpc(
             "modality.configure",
@@ -5358,8 +5472,12 @@ async fn ocr_is_absent_when_the_build_starts_no_helper() {
         .await;
     assert_eq!(
         app_error(&submit),
-        "modality_unavailable",
-        "a build reason names the code: {submit}"
+        if dimension == "build" {
+            "modality_unavailable"
+        } else {
+            "unavailable"
+        },
+        "{submit}"
     );
     let message = submit["error"]["message"].as_str().unwrap();
     assert_eq!(
@@ -5660,6 +5778,21 @@ fn plugin_ocr_submit(name: &str, mode: &str) -> Value {
     submit
 }
 
+fn assert_plugin_ocr_refused(reply: &Value, recognize: &Value, detail: &str) {
+    assert_eq!(app_error(reply), "unavailable");
+    let message = reply["error"]["message"].as_str().unwrap();
+    if recognize["available"] == true {
+        assert_eq!(message, detail);
+    } else {
+        let reason = format!("runtime: {detail}");
+        assert!(
+            message.starts_with("ocr.recognize is unavailable.\n"),
+            "{reply}"
+        );
+        assert!(message.lines().any(|line| line == reason), "{reply}");
+    }
+}
+
 async fn wait_for_path(path: &std::path::Path) {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while !path.exists() {
@@ -5780,11 +5913,7 @@ async fn ocr_plugin_target_is_absent_without_the_service() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin is not running",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin is not running");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5827,11 +5956,7 @@ async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin needs an update",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin needs an update");
     let configured = client
         .rpc(
             "modality.configure",
@@ -5875,11 +6000,7 @@ async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin is not running",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin is not running");
 }
 
 /// A service that declares `describe` sync is never called: it reads as
@@ -5923,11 +6044,7 @@ async fn ocr_plugin_target_declaring_describe_sync_needs_an_update() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable", "{refused}");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin needs an update",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin needs an update");
     assert_eq!(
         fixture.describes(),
         0,
@@ -5980,11 +6097,7 @@ async fn ocr_plugin_removal_after_describe_keeps_the_admitted_task() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin is not running",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin is not running");
     std::fs::write(work.join("go"), b"go").unwrap();
     let done = wait_terminal(&mut client, &task_id).await;
     assert_eq!(state_of(&done), "succeeded", "{done}");

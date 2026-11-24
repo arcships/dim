@@ -292,7 +292,7 @@ partial failure would still need per-id results.
 
 ### 6.1 Method
 
-`session.fork {sessionId: string, at: u64} -> {sessionId: string, sequence: u64}`
+`session.fork {sessionId: string, at: u64, expectedConfig?} -> {sessionId: string, sequence: u64}`
 
 | Item | Rule |
 | --- | --- |
@@ -300,7 +300,7 @@ partial failure would still need per-id results.
 | Protocol and callers | As for `session.delete` (§3.1). The source's recorded version must not exceed the connection's, and the fork records the source's version |
 | `at` | The last `main` sequence the fork inherits. 0 inherits no event |
 | Reply | The fork's id and its `main` head once it is published. The client then attaches. The fork's default branch is `main`, whatever the source's was (§6.2) |
-| No other params | No `branchId` or configuration fields. The fork's configuration is the source's (§6.3). A client changes it afterwards with `session.permission.update` or `session.model.update`, as [#26](https://github.com/arcships/dim/issues/26) decided for the preset |
+| `expectedConfig` | Optional when `session.fork.expectedConfig` is advertised. Check [the configuration expectation](../contracts/session-access.md#3-flows) at `at`, with the same creation configuration that the child receives as the fallback for fields with no adopted facts. A mismatch creates no fork. The child's configuration is inherited (§6.3). Clients change it afterwards with `session.permission.update` or `session.model.update` as specified by [#26](https://github.com/arcships/dim/issues/26). |
 
 A fork is not idempotent: a retry after an uncertain reply can create a second fork, which the client finds in
 `session.summaries`.

@@ -378,10 +378,13 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
                 "{format}: {uri}"
             );
             assert!(
-                body.to_string().contains(&reference),
-                "{format}: the provider receives the image reference: {body}"
+                body.to_string().contains(png),
+                "{format}: the provider receives the image pixels: {body}"
             );
-            assert!(!body.to_string().contains(png), "{format}: {body}");
+            assert!(
+                !body.to_string().contains(&reference),
+                "{format}: a vision model needs no reference: {body}"
+            );
             assert!(!body.to_string().contains(image["fileId"].as_str().unwrap()));
             assert!(
                 history
@@ -1278,6 +1281,133 @@ async fn an_output_limit_above_the_window_is_adopted_with_the_derived_allowance(
     submit(&mut client, &sid, "main").await;
     let body = seen.lock().unwrap().last().unwrap().2.clone();
     assert_eq!(body["max_tokens"], 32000, "{body}");
+    server.shutdown();
+    server.join().await.unwrap();
+    fixture.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A temporary route on the built-in `xai` provider is still an xAI
+/// destination: the route connection names the `xai` vendor package, so a GIF in
+/// the conversation becomes its reference while the PNG stays pixels.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_temporary_route_on_the_builtin_xai_takes_only_the_native_xai_image_formats() {
+    use base64::Engine;
+    let home = std::env::temp_dir().join(format!("dim-xai-route-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4zwAE/xkgFAAb8gP9PpddpAAAAABJRU5ErkJggg==";
+    let gif = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/gateway/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let view = client
+        .rpc("provider.management", json!({"providerId":"xai"}))
+        .await;
+    assert_ok(&view);
+    let version = view["result"]["providers"][0]["version"].as_u64().unwrap();
+    let keyed = client
+        .rpc(
+            "provider.update",
+            json!({"providerId":"xai","expectedVersion":version,
+                "patch":{"credential":{"action":"set","value":"xai-route-key"},"enabled":true}}),
+        )
+        .await;
+    assert_ok(&keyed);
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":"xai","modelId":"grok-4.7"}}),
+        )
+        .await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":sid,"branchId":"main"}))
+            .await,
+    );
+    let routed = client
+        .rpc(
+            "provider.routes.set",
+            json!({"providerId":"xai",
+                "connection":{"apiFormat":"openai-compatible","baseUrl":base}}),
+        )
+        .await;
+    assert_ok(&routed);
+    let selected = client
+        .rpc(
+            "session.model.update",
+            json!({"sessionId":sid,"branchId":"main",
+                "providerId":"xai","modelId":"grok-4.7"}),
+        )
+        .await;
+    assert_ok(&selected);
+    assert_ne!(
+        selected["result"]["model"]["providerId"],
+        json!("xai"),
+        "the temporary route is the execution identity: {selected}"
+    );
+    let mut images = Vec::new();
+    for (name, data) in [("route.png", png), ("route.gif", gif)] {
+        let path = home.join(name);
+        std::fs::write(
+            &path,
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap(),
+        )
+        .unwrap();
+        let imported = client
+            .rpc(
+                "attachment.import",
+                json!({"sessionId":sid,"path":path,"image":true}),
+            )
+            .await;
+        assert_ok(&imported);
+        images.push(imported["result"]["image"].clone());
+    }
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":sid,"branchId":"main","user":{"content":[
+                    {"type":"text","text":"compare"},
+                    {"type":"image","source":images[0]},
+                    {"type":"image","source":images[1]}
+                ]}}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":sid,"branchId":"main"}))
+            .await,
+    );
+    let (uri, _, body) = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(uri.path(), "/gateway/v1/chat/completions", "{uri}");
+    let wire = body.to_string();
+    assert!(
+        wire.contains(png),
+        "the PNG reaches the route as pixels: {wire}"
+    );
+    assert!(
+        !wire.contains(gif),
+        "no GIF reaches the route as pixels: {wire}"
+    );
+    assert_eq!(
+        wire.matches("img:").count(),
+        1,
+        "the GIF becomes its reference: {wire}"
+    );
     server.shutdown();
     server.join().await.unwrap();
     fixture.abort();

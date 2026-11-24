@@ -36,8 +36,9 @@ in `session.submit`. Web clients first upload the browser file through the
 [Web HTTP API](../web-workspace.md#session-file-http-api). Rpc validates reference
 shape and ownership. A failed import preserves the client's draft.
 
-The per-request image reference view and final provider encoding are requirements
-to their owners in A.4. The context flow is defined by the cross-module design.
+The per-request image view — pixels, a reference or a placeholder (A.1) — and the
+final provider encoding are requirements to their owners in A.4. The context flow
+is defined by the cross-module design.
 
 ### 3.2 Text paste
 
@@ -119,17 +120,51 @@ The accepted image formats and scaling rule are owned by
 Image preparation uses that same rule. A submission accepts at most 20 images.
 Image bytes follow the Session file limit; the submission carries file IDs.
 
-ModelProvider replaces every image block in a conversational request, in user
-content and tool results alike, with `img:` followed by the first 16 lowercase
-hexadecimal characters of SHA-256 of the base64-decoded image file bytes, not
-the pixels or base64 text. The rule applies to vision, text-only and
-unknown-capability models alike. Equal bytes have equal references; the
-reference contract is [ImageUnderstanding §3](ImageUnderstanding.md#3-references).
+ModelProvider routes every image block in a conversational request, in user
+content and tool results alike, by the request model's vision capability and
+the resolved destination's format support. A vision-capable model, or a request
+whose model capability is unknown, receives a sendable image as an image block
+when the destination takes its format; a file-backed source is resolved to its
+bytes and checked by the same rule before it is sent, so an empty owned file
+takes the placeholder. A model without image input never receives pixels, and
+an image in a format the destination does not take takes the reference or
+placeholder. An image that cannot be sent — a URL source, a file without an id,
+empty, missing or undecodable base64, or a format this build cannot decode —
+becomes the omission placeholder:
+`[Image omitted: the current model does not accept images.]` for a model
+without image input, otherwise `[Image omitted: the image cannot be sent to this model.]`.
+
+When the pixels are not sent, a decodable image becomes `img:` followed by the
+first 16 lowercase hexadecimal characters of SHA-256 of the base64-decoded
+image file bytes, not the pixels or base64 text. Equal bytes have equal
+references; the reference contract is [ImageUnderstanding §3](ImageUnderstanding.md#3-references).
 File-backed sources must be resolved before computing the reference.
 
-URL sources, missing or undecodable base64, and formats this build cannot decode
-keep their existing omission placeholders: `[Image omitted: the current model does not accept images.]`
-for a text-only model, otherwise `[Image omitted: the image cannot be sent to this model.]`.
+The destination's format support is part of that routing rule: one whitelist
+per protocol, and for the compatible protocol the vendor package the connection
+names. The preparation formats are PNG, JPEG, WebP and GIF. Gemini takes all but
+GIF (its guides list PNG, JPEG, WebP, HEIC and HEIF), so a GIF becomes its
+reference there; every xAI destination takes JPEG and PNG only (the Chat
+Completions and Responses image input limits) — a native xAI route by its
+protocol and the built-in entries that serve xAI over the compatible protocol by
+the vendor package their connections carry — so a WebP or a GIF becomes its
+reference there; and every other destination takes the four a request may carry,
+as a destination whose protocol is unknown does. A standalone image
+question follows the same rule and fails instead of sending
+([ImageUnderstanding §3](ImageUnderstanding.md#3-references)). The provider
+request encoder applies the destination's message-placement support: Bedrock
+takes an image inside a `toolResult` block only on Amazon Nova and Anthropic
+Claude 3 and 4, and AWS supports that block's `status` field only on the same
+families; on the other Bedrock models the image follows the result in a user
+message, and a failed result's text starts with
+`[Error: this tool result reports a failed tool call.]` because that wire form
+carries no field which reports the outcome.
+
+Only images the request sends as pixels join its encoded-image budget as they
+are added: at most 32 MiB across user and tool-result images. An image that
+becomes a reference after its file is resolved adds no bytes. A request over
+the budget fails during adaptation, before the remaining images are read.
+
 Only the request changes: history, the Timeline and adopted input retain their
 original image blocks. There is no persisted reference or cross-request cache.
 
@@ -165,9 +200,9 @@ continue to show the accepted image's format and dimensions.
 ### A.4 Requirements to other owners
 
 ModelProvider preserves each image's position in user and tool content and applies
-A.1's reference rule after resolving file-backed sources. Read failures fail
-execution and preserve history. Model changes never restore conversational image
-pixels; references are recomputed only for images still in effective context.
+A.1's routing after resolving file-backed sources. Read failures fail execution
+and preserve history. Model changes route the stored images again; references are
+computed only for images routed away from the current model.
 
 ## Appendix B. Full conflict table
 

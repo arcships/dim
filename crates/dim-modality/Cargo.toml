@@ -7,6 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "Modality: the process owner of the non-conversational multimodal surface"
+autotests = false
+
+[[test]]
+name = "modality_suite"
+path = "tests/modality_suite.rs"
 
 [dependencies]
 base64 = "0.22"

@@ -1,4 +1,5 @@
 use crate::model::session::{ExecutionSnapshot, SandboxBackend};
+use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
 use crate::ui::render::panel::confirm_panel;
@@ -33,7 +34,7 @@ impl IsolationPanel {
     fn list() -> ListPanel {
         ListPanel::new(
             "Process isolation",
-            "↑↓ move · Enter select · Esc close",
+            t("↑↓ move · Enter select · Esc close"),
             "Loading process isolation…",
             "",
             "",
@@ -83,37 +84,43 @@ impl IsolationPanel {
             items.push(Item::heading(message));
         }
         if let Some(SandboxBackend::Unavailable { reason }) = &self.backend {
-            items.push(Item::heading(format!(
-                "Sandbox is unavailable on this host: {reason}"
+            items.push(Item::heading(tf(
+                "Sandbox is unavailable on this host: {reason}",
+                &[("reason", reason)],
             )));
         }
         if let (Some(_snapshot), Some(draft)) = (&self.snapshot, &self.draft) {
-            notes.push("Applies to new processes and shells.".into());
+            notes.push(t("Applies to new processes and shells.").into());
             if !draft.sandbox {
-                notes.push("Off: commands use your OS permissions, not file-tool limits.".into());
+                notes
+                    .push(t("Off: commands use your OS permissions, not file-tool limits.").into());
             }
             for (id, label, selected) in [
-                ("off", "Off", !draft.sandbox),
+                ("off", t("Off"), !draft.sandbox),
                 (
                     "no-network",
-                    "Sandboxed · No network",
+                    t("Sandboxed · No network"),
                     draft.sandbox && !draft.network,
                 ),
                 (
                     "network",
-                    "Sandboxed · Network allowed",
+                    t("Sandboxed · Network allowed"),
                     draft.sandbox && draft.network,
                 ),
             ] {
-                items.push(Item::new(id, label, if selected { "selected" } else { "" }));
+                items.push(Item::new(
+                    id,
+                    label,
+                    if selected { t("selected") } else { "" },
+                ));
             }
-            items.push(Item::new("save", "Save", ""));
-            items.push(Item::new("reset", "Reset to defaults", ""));
+            items.push(Item::new("save", t("Save"), ""));
+            items.push(Item::new("reset", t("Reset to defaults"), ""));
         }
         items.push(Item::new(
             "reload",
-            "Reload",
-            "Discard edits and read the current settings",
+            t("Reload"),
+            t("Discard edits and read the current settings"),
         ));
         let selected = self.list.selected_id();
         self.list = Self::list().with_notes(notes);
@@ -193,20 +200,55 @@ impl IsolationPanel {
     pub fn render(&self, width: usize, rows: usize, palette: &Palette) -> Vec<String> {
         if self.confirm_reset || self.confirm_discard {
             return confirm_panel(
-                "Process isolation",
-                &[if self.confirm_reset {
+                t("Process isolation"),
+                &[t(if self.confirm_reset {
                     "Reset the execution switches to defaults?"
                 } else {
                     "Discard unsaved changes?"
-                }
+                })
                 .into()],
-                &["Yes (y)".into(), "Cancel (n)".into()],
+                &[t("Yes (y)").into(), t("Cancel (n)").into()],
                 1,
-                "y confirm · Enter/Esc cancel",
+                t("y confirm · Enter/Esc cancel"),
                 width,
                 palette,
             );
         }
         self.list.render(width, rows, palette)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::render::panel::strip_escapes;
+    use crate::ui::theme::palette::terminal_palette;
+    use crate::ui::theme::{Appearance, ColorMode};
+
+    /// The panel's title, its rows and its notes follow the interface
+    /// language, not only the English defaults.
+    #[test]
+    fn the_panel_draws_its_title_and_rows_in_the_interface_language() {
+        let previous = crate::ui::i18n::active();
+        crate::ui::i18n::set(crate::ui::i18n::Locale::ZhCn);
+        let mut panel = IsolationPanel::new();
+        panel.set_snapshot(Ok(ExecutionSnapshot {
+            revision: "r1".into(),
+            sandbox: false,
+            network: false,
+        }));
+        let palette = terminal_palette(ColorMode::TrueColor, Appearance::Dark);
+        let drawn = panel
+            .render(80, 24, &palette)
+            .iter()
+            .map(|row| strip_escapes(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        crate::ui::i18n::set(previous);
+        for english in ["Process isolation", "Applies to new processes and shells."] {
+            let translated = crate::ui::i18n::t_in(crate::ui::i18n::Locale::ZhCn, english);
+            assert_ne!(translated, english, "{english} has no translation");
+            assert!(drawn.contains(translated), "{english} drew as {drawn}");
+        }
     }
 }

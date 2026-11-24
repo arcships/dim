@@ -227,10 +227,10 @@ export const part = definePlugin({
           if (call.method.endsWith('.wait_fast') && !fastFinished) await new Promise<void>(resolve => { finishFast = resolve })
           if (call.method.endsWith('.wait_tool') && !toolStarted) await new Promise<void>(resolve => { startTool = resolve })
           const hold = call.method.endsWith('.report') || call.method.endsWith('.drain')
-          progress({ phase: 'started', generation })
+          await progress({ phase: 'started', generation })
           if (hold) await cancelled
           alive()
-          progress({ phase: 'settled', generation })
+          await progress({ phase: 'settled', generation })
           return { kind: 'value', value: { sessionId: call.params.sessionId, generation, pid: process.pid, calls, cancelled: hold, alive: !stopped, refused } }
         } finally {
           pending.delete(settled)

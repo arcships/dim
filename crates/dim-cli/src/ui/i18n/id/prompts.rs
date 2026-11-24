@@ -36,6 +36,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Finish or stop the current work first (a running turn, shell command, or pending prompt)." => {
             "Selesaikan atau hentikan dulu pekerjaan yang berjalan (giliran, perintah shell, atau pertanyaan tertunda)."
         }
+        "Waiting for this Session's state after the switch." => {
+            "Menunggu status sesi ini setelah peralihan."
+        }
+        "Waiting for the Session switch to finish." => "Menunggu peralihan sesi selesai.",
         "Checking for updates…" => "Memeriksa pembaruan…",
         "DimCode {version} is up to date." => "DimCode {version} sudah terbaru.",
         "Skip this version" => "Lewati versi ini",
@@ -137,6 +141,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "editing" => "sedang mengedit",
         "changed" => "mengubah",
         "changing" => "sedang mengubah",
+        "Ran code" => "menjalankan kode",
+        "Running code" => "sedang menjalankan kode",
         "checked on" => "memeriksa",
         "checking on" => "sedang memeriksa",
         "Explored" => "Menjelajahi",
@@ -181,6 +187,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Checked on background task" => "Memeriksa tugas latar",
         "Waiting…" => "Menunggu…",
         "… +{count} lines" => "… +{count} baris",
+        "New members from main inherit this policy; existing members retain theirs." => {
+            "Anggota baru dari main mewarisi kebijakan ini; anggota yang sudah ada tetap memakai miliknya."
+        }
+        "Subagent tool approval" => "Persetujuan tool subagen",
         _ => return None,
     })
 }

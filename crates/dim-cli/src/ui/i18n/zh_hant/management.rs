@@ -312,6 +312,59 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "請在行內提示字元或 dimcode permissions 中使用。"
         }
+        "Tool call timeout: {millis} ms" => "工具呼叫逾時：{millis} 毫秒",
+        "Variables: {names}" => "變數：{names}",
+        "Unset variables: {names}" => "未設定的變數：{names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "MCP 來源在預覽之後已變更；沒有匯入任何項目，原本會被它替換的項目現在可能已停用。請重新預覽。"
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "專案項目已寫入，保留未寫的值沒有寫入；再次替換即可重試。"
+        }
+        "Replaced {id}." => "已替換 {id}。",
+        "Added {id}." => "已新增 {id}。",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "投遞到工作階段 {session} 的分支 {branch}（{mode}）。"
+        }
+        "Launches a new Session in {cwd}." => "在 {cwd} 啟動新的工作階段。",
+        "Disabled: {code} at {instant}." => "已停用：{code}，時間 {instant}。",
+        "The definition changed since it was read; nothing was written." => {
+            "定義在讀取之後已變更；沒有寫入任何內容。"
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "欄位：ID、用戶端、範圍、路徑、狀態、項目數或錯誤。"
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "不會讀出或印出儲存中的任何值；--from ID 會在守護進程內預覽其中一個。"
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "欄位：ID、動作、目標 ID。\n重新命名的項目會以其目標 id 寫入；來源中舊 id 的項目保持原狀。"
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "匯入和替換的項目一開始為停用：使用者項目寫入時帶 enabled: false，專案項目在你於本機啟用前沒有啟用記錄。"
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "此守護進程無法列出其他用戶端的 MCP 儲存。"
+        }
+        "This daemon cannot import MCP servers." => "此守護進程無法匯入 MCP 伺服器。",
+        "The document holds no mcpServers entries." => "文件中沒有 mcpServers 項目。",
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "欄位：ID、狀態、傳輸方式、變更的欄位、不受支援的欄位、錯誤。\n變更的欄位說明寫入會改變什麼以及值的類型；不印出任何值。\n不受支援的欄位會依欄位後面的說明保持未使用或被丟棄。"
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "專案項目只寫入其公開骨架：工作區檔案會得到指令、宣告的 cwd、URL 來源和公開的 OAuth 欄位。它的參數、環境變數和標頭值、bearer token、帶 userinfo、路徑、查詢或片段的 URL，以及未知成員，都會寫入你的使用者層級 mcp-secrets 記錄，絕不寫入工作區檔案。"
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id} 還有 {count} 個欄位名稱未在上面的清單中顯示。"
+        }
+        "Top-level members the import does not carry: none." => "匯入未攜帶的頂層成員：無。",
+        "Top-level members the import does not carry: {names}." => {
+            "匯入未攜帶的頂層成員：{names}。"
+        }
+        "Applying the selection at this revision." => "正依此修訂套用所選內容。",
+        "An unchanged entry was already in the source and was not written." => {
+            "未變更的項目已存在於來源中，未寫入。"
+        }
         _ => return None,
     })
 }

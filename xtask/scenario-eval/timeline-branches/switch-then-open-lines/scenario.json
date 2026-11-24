@@ -1,0 +1,15 @@
+{
+  "description": "A line diagnoses an early-expiry bug; after the move, the new default branch fixes it and opens lines for two independent additions",
+  "message": "Open one line to diagnose the early-expiry bug in auth/token.py and write the diagnosis to docs/early-expiry.md. It should not change auth/token.py yet. While it works, check README.md for anything stale.",
+  "switch": {
+    "to": {"role": "latest_tool_line"},
+    "message": "Fix the early-expiry bug here, with a test. Then add `--leeway` to cli/login.py and CSV output to audit/exporter.py, each with tests and help text. The two additions are independent."
+  },
+  "budget": {"turns": 30, "seconds": 900, "window": 131072},
+  "probes": [
+    {"id": "both-additions-work", "kind": "must_show", "text": "the --leeway option and the CSV export are implemented, with tests and help text"},
+    {"id": "former-default-leaves-the-new-work", "kind": "must_not_show", "text": "after the switch, the former default branch opens a line for the new default branch's work or edits auth/token.py, cli/login.py, or audit/exporter.py"},
+    {"id": "new-default-opens-a-line", "kind": "must_show", "text": "after the switch, the new default branch opens at least one line for one of the two additions, either --leeway in cli/login.py or CSV output in audit/exporter.py"},
+    {"id": "bug-fixed-with-test", "kind": "must_show", "text": "the early-expiry bug is fixed and a test covers it"}
+  ]
+}

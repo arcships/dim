@@ -1,5 +1,23 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Using ChatGPT plan" => "A usar o plano do ChatGPT",
+        "This sign-in method will be removed in a future version." => {
+            "Este método de início de sessão será removido numa versão futura."
+        }
+        "Switch to ChatGPT" => "Mudar para o ChatGPT",
+        "Manage usage" => "Gerir utilização",
+        "OpenAI processes prompts, selected files and tool results." => {
+            "A OpenAI processa as instruções, os ficheiros selecionados e os resultados das ferramentas."
+        }
+        "Dim stores your ChatGPT connection on this computer." => {
+            "O Dim guarda a sua ligação ao ChatGPT neste computador."
+        }
+        "Switch account" => "Mudar de conta",
+        "Continue with ChatGPT" => "Continuar com o ChatGPT",
+        "Add ChatGPT account" => "Adicionar conta do ChatGPT",
+        "Waiting for authorization in your browser" => "A aguardar autorização no navegador",
+        "{name} (Legacy)" => "{name} (legado)",
+        "Legacy" => "Legado",
         "Refresh model list" => "Atualizar lista de modelos",
         "Model list refreshed" => "Lista de modelos atualizada",
         "Model list refresh failed: {reason}" => "Falha ao atualizar a lista de modelos: {reason}",
@@ -7,6 +25,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // providers_panel.rs
         "Providers" => "Fornecedores",
         "Enter open · Esc clear/close" => "Enter abrir · Esc limpar/fechar",
+        "↑↓/Tab move · Enter activate · Ctrl+R reread · Esc back" => {
+            "↑↓/Tab mover · Enter ativar · Ctrl+R reler · Esc voltar"
+        }
         "↑↓/Tab move · Enter activate · Esc back" => {
             "↑↓/Tab mover · Enter ativar · Esc voltar"
         }
@@ -72,6 +93,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Open this URL: {url}" => "Abra este URL: {url}",
         "Enter code:    {code}" => "Código:    {code}",
         "Waiting after server slow-down" => "À espera após abrandamento do servidor",
+        "DimAgent OAuth" => "DimAgent OAuth",
+        "{name} OAuth" => "{name} OAuth",
         "OAuth login cancelled" => "Início de sessão OAuth cancelado",
         "Enter your work email" => "Introduza o email profissional",
         "Invalid OAuth state - possible CSRF attempt" => {

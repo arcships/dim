@@ -11,7 +11,7 @@ part apply: tools.register(ctx, ToolContribution)
             (other languages: toolRegistry.register(declaration, execute))
 Session services Active
     -> ToolBinding reads ToolRegistry (first snapshot takes in what is registered)
-    -> existing Prompt adoption and BranchOpening finish
+    -> existing Prompt adoption and BranchLifecycle finish
     -> Session publication and first input
 a part registers, or unloads and its registration is withdrawn
     -> registry task rereads -> sources_state() changes
@@ -161,7 +161,7 @@ remain. Replacements retain old connections for existing bindings; disabling or
 removing an entry closes its instances across Sessions, even with bindings.
 New bindings automatically adopt the replacement through the existing flow below.
 
-- **收集来源**：宿主工具（`S:ToolHost`）、注册的工具（部件经 `register` 注册，如 `skill`、`branch`、`wait`）、注册的动态来源（部件经 `register_source` 注册；当前只有 App Server 的 McpSession：来源名 `mcp`，键 `mcp:<serverId>`，版本随连接代次与工具列表变化且不复用，工具名带 server 前缀避免跨来源重名，连接失败时撤销该键）。挂载列表（`SessionConfig.tools`）只涉及宿主工具与注册的工具；动态来源的可见性由来源方自己的配置决定。
+- **收集来源**：宿主工具（`S:ToolHost`）、注册的工具（部件经 `register` 注册，如 `skill`、`branch`、`wait`）、注册的动态来源（部件经 `register_source` 注册；当前有三处：App Server 的 McpSession，来源名 `mcp`，键 `mcp:<serverId>`，版本随连接代次与工具列表变化且不复用，工具名带 server 前缀避免跨来源重名，连接失败时撤销该键；临时 MCP 的每个绑定，来源名 `temporary_mcp_<绑定 id>`，键为 `<来源名>:<连接 id>`，工具名与 McpSession 同一格式；Web 部件，来源名与键都是 `web`，只在搜索服务可用时提供 `web_search`）。挂载列表（`SessionConfig.tools`）只涉及宿主工具与注册的工具；动态来源的可见性由来源方自己的配置决定。挂载列表列出某个名称不会阻止动态来源提供它：只有宿主工具与已注册工具的名称归各自所有者，来源不能占用。
 - **MCP 启用**：已配置的服务器启用即运行，没有宿主本地批准（[ADR 003](../../adr/003-approval-scope.md)）；项目 `.mcp.json` 的条目默认禁用，只由用户的本地记录启用。已禁用或删除的服务器不发现、不连接，McpSession 不提供其集合（状态 `Disabled`）；配置或启用变化时立即撤销旧集合（仅刷新时保留旧集合至替换就绪）。配置替换时，已绑定请求所持的旧版本 handler 保留其代次直到释放；停用、删除或显式断开会在所有 Session 中关闭它，包括已绑定的请求；停用在来源文件不可读时也生效，被撤回的条目报告为 `Disabled` 而非连接失败。协调者的应用状态变化时各 McpSession 重读选择，外部编辑经目录读取或连接操作被发现后到达每个 Session；Session 开始关闭后不再发现或创建连接。文件根授权、工具权限预设与 Session 回放都不启用条目。McpSession 在首次发现及任何目录或设置读取之前先订阅 settings/applied，避免在初次读取与订阅之间提交的变更永远不被观察。
 - **维护变化**：动态来源按整组校验、原子替换；分支采用新的工具集合，作为 `context/configured` 的工具部分写入 Timeline（工具声明属于模型上下文）。
 - **请求一致**：在 Loop 构造请求时固定本请求的声明与实现（同一版本），供 ToolExecutor 按名取实现；本请求结算后释放。Loop 在 `turn/end` 统一 `retain_only(None)`，不在每种结束路径各自释放。
@@ -174,12 +174,12 @@ New bindings automatically adopt the replacement through the existing flow below
 | 组件 | 作用域 | 注入 | 提供 | 被谁注入 |
 | --- | --- | --- | --- | --- |
 | `ToolRegistryPlugin` | Session | `S:ToolHost`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle` | `S:ToolRegistry`、`S:ToolSourcesView` | ToolBinding；注册工具或来源的部件（BranchTool、Questions、Skills、Wait、CollaborationSession、McpSession） |
-| `ToolBindingPlugin` | 分支 | `S:ToolRegistry`、`B:Prompt`（采用入口）、`B:Timeline`、`B:BranchLifecycle`、`B:Dispatcher`、`B:BranchOpening` | `B:ToolBinding` | Loop、ToolExecutor |
+| `ToolBindingPlugin` | 分支 | `S:ToolRegistry`、`B:Prompt`（采用入口）、`B:Timeline`、`B:BranchLifecycle`、`B:Dispatcher` | `B:ToolBinding` | Loop、ToolExecutor |
 
 - 来源方注入 ToolRegistry 以注册来源（沿用第 3 节），不注入 ToolBinding。
 - 审批由 ToolExecutor 注入 `B:Approval` 调用，Tools 不涉及。
 - 类型位置：`ToolProvider`、`ToolSourceSet`、`ToolSourcesState` 在 `dim-agent-capabilities/src/tool_registry.rs`；注册表按名保存注册的表 `Registrations` 在 `dim-agent-runtime/src/registrations.rs`，PromptRegistry 共用；`ToolBinding` 在 `tool_binding.rs`。`Prompt::adopt_tools` 是 crate 内部入口，因此 ToolBinding 与 Prompt 同在该 crate。持久化类型 `ToolSourceVersion` 在 `dim-agent-types`。
-- 注册：来源方在 `apply` 中调用 `register_source(ctx, name, provider)`，注册在其卸载时撤回。来源名须满足 `[A-Za-z0-9_-]{1,64}`（与工具名语法相同，不含注册表自有键使用的 `#`），否则注册失败：`tool source name <name> must match [A-Za-z0-9_-]{1,64}`；同名已被注册时也失败。App Server 的 McpSession 注册 `mcp`。只有 Rust 部件注册来源，直到其他语言的部件需要。
+- 注册：来源方在 `apply` 中调用 `register_source(ctx, name, provider)`，注册在其卸载时撤回。来源名须满足 `[A-Za-z0-9_-]{1,64}`（与工具名语法相同，不含注册表自有键使用的 `#`），否则注册失败：`tool source name <name> must match [A-Za-z0-9_-]{1,64}`；同名已被注册时也失败。App Server 注册 `mcp`（McpSession）、`temporary_mcp_<绑定 id>`（临时 MCP）与 `web`（Web 部件）三个来源。只有 Rust 部件注册来源，直到其他语言的部件需要。
 - `ToolSourcesState` 经只读的 `S:ToolSourcesView`（`PublicService`）对外提供；ToolRegistry 能交出处理器，不公开。
 
 动态来源端口：
@@ -267,7 +267,7 @@ Rust 绑定的 `ToolSourcesView::get/subscribe` 直接读取同一个状态和 w
 
 | 步骤 | 规定 |
 | --- | --- |
-| 校验 | `key` 属于提供它的来源名；`version` 未被本注册表持有过；工具名满足 `[A-Za-z0-9_-]{1,64}`、集合内唯一，且不与保留名（挂载列表中的名称、宿主工具定义名与全部已注册工具名，这些名称只能由其自身的 `#contributed:` 集合提供）或其他键当前集合重名 |
+| 校验 | `key` 属于提供它的来源名；`version` 未被本注册表持有过；工具名满足 `[A-Za-z0-9_-]{1,64}`、集合内唯一，且不与保留名（宿主工具定义名与全部已注册工具名，这些名称只能由其自身的 `#contributed:` 集合提供）或其他键当前集合重名 |
 | 失败 | 整组拒绝，保留旧集合，记 `rejected` 与诊断。被拒版本不算已持有，任一来源下次变化时重新校验；先占名的来源撤销后被拒来源自动恢复 |
 | 成功 | 原子替换，旧版本转弱引用，更新 `ToolSourcesState`，通知 |
 | 撤销 | 移除该键，不会失败 |
@@ -302,7 +302,7 @@ apply:
   完成后才提供 B:ToolBinding（已有模型时，Loop 因此在采用落入 Timeline 后才开始请求）
 
 branch/start、branch/resume 分发时（Prompt 已在同一事件写入模型配置，ToolBinding 依赖 Prompt，分发在其后）:
-  登记为 BranchOpening 工作：等 Prompt 初始采用完成，按 apply 的同一规则比较 ──> 一致则 pin，否则 adopt_tools ──> pin
+  登记为 BranchLifecycle 工作：等 Prompt 初始采用完成，按 apply 的同一规则比较 ──> 一致则 pin，否则 adopt_tools ──> pin
   开启工作完成后分支才接受输入，首个请求已有对齐的工具部分
 
 ToolRegistry.changed()（分支 activated() 之后才处理；之前的变化保留在 watch 中）:

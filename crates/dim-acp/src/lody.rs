@@ -1,7 +1,9 @@
 //! Lody Core 0.2.0 boundary controls and snapshot-only delegation projection.
 use crate::projection::tool_id;
 use agent_client_protocol::Error;
-use dim_agent_types::{CollaborationDelivery, CollaborationOutcome, PermissionPreset};
+use dim_agent_types::{
+    CollaborationDelivery, CollaborationOutcome, PreferenceUpdate, SessionConfigExpectation,
+};
 use dim_client::wire::{Event, EventContent};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -9,8 +11,7 @@ use std::collections::HashMap;
 
 #[derive(Default)]
 pub(crate) struct Controls {
-    pub startup: Option<String>,
-    pub mode: Option<PermissionPreset>,
+    pub configuration: SessionConfigExpectation,
     pub fork_turn: Option<String>,
 }
 pub(crate) fn controls(method: &str, value: &Value) -> Result<Controls, Error> {
@@ -52,13 +53,13 @@ pub(crate) fn controls(method: &str, value: &Value) -> Result<Controls, Error> {
         if let Some(key) = startup
             .config_option_values
             .keys()
-            .find(|key| !matches!(key.as_str(), "model" | "mode"))
+            .find(|key| !matches!(key.as_str(), "model" | "mode" | "effort"))
         {
             return Err(unsupported(&format!(
                 "sessionConfig.configOptionValues.{key}"
             )));
         }
-        controls.startup = match startup.model_id {
+        controls.configuration.model_id = match startup.model_id {
             Some(model) => Some(model),
             None => match startup.config_option_values.get("model") {
                 Some(OptionValue::Text(model)) => Some(model.clone()),
@@ -68,19 +69,31 @@ pub(crate) fn controls(method: &str, value: &Value) -> Result<Controls, Error> {
                 None => None,
             },
         };
-        if controls.startup.as_ref().is_some_and(String::is_empty) {
+        if controls
+            .configuration
+            .model_id
+            .as_ref()
+            .is_some_and(String::is_empty)
+        {
             return Err(Error::invalid_params());
         }
-        controls.mode = match startup.config_option_values.get("mode") {
+        controls.configuration.permission_preset = match startup.config_option_values.get("mode") {
             Some(OptionValue::Text(mode)) => {
                 Some(serde_json::from_value(json!(mode)).map_err(|_| Error::invalid_params())?)
             }
             Some(OptionValue::Boolean(_)) => return Err(Error::invalid_params()),
             None => None,
         };
-        if method != "session/new" && (controls.startup.is_some() || controls.mode.is_some()) {
-            return Err(unsupported("sessionConfig"));
-        }
+        controls.configuration.reasoning_effort = match startup.config_option_values.get("effort") {
+            Some(OptionValue::Text(effort)) if effort == crate::config::PROVIDER_DEFAULT => {
+                Some(PreferenceUpdate::CLEAR)
+            }
+            Some(OptionValue::Text(effort)) if !effort.trim().is_empty() => {
+                Some(PreferenceUpdate::Value(effort.clone()))
+            }
+            Some(_) => return Err(Error::invalid_params()),
+            None => None,
+        };
     }
     if let Some(value) = meta.get("forkAtTurn") {
         #[derive(Deserialize)]
@@ -101,7 +114,7 @@ pub(crate) fn controls(method: &str, value: &Value) -> Result<Controls, Error> {
     }
     Ok(controls)
 }
-fn unsupported(field: &str) -> Error {
+pub(crate) fn unsupported(field: &str) -> Error {
     Error::new(-32602, format!("Unsupported Lody control: {field}"))
         .data(json!({"code":"unsupported_control","field":field}))
 }

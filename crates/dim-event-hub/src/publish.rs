@@ -13,7 +13,7 @@ use crate::{
     text::{digest, preview, stamp},
 };
 use dim_agent_capabilities::host::{SessionFiles, StoredSessionFile};
-use dim_agent_types::{DEFAULT_BRANCH_ID, InputMode, markup::escaped};
+use dim_agent_types::{InputMode, markup::escaped};
 use futures_util::{StreamExt, stream};
 use jiff::Timestamp;
 use rutis::Ctx;
@@ -63,7 +63,10 @@ pub(crate) enum Delivery {
     #[serde(rename_all = "camelCase")]
     Failed {
         session_id: String,
-        branch_id: String,
+        /// Absent when an omitted branch could not be resolved: the target
+        /// names no line.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        branch_id: Option<String>,
         subscription_ids: Vec<String>,
         code: String,
         message: String,
@@ -142,15 +145,85 @@ pub(crate) async fn publish(
                 request.source, request.r#type
             ))
         })?;
+    // Admission, source ownership and the type all answer first: only an
+    // admitted publish resolves its omitted targets, so a refused one never
+    // restores a cold Session (design §2.3, timeline branches §20.22).
+    let (to, unresolved) = resolved_to(&shared, request.to).await;
+    let request = PublishRequest { to, ..request };
     // Once the publish starts it runs to completion in a task EventHub owns:
     // a caller that drops its reply, or a reload, neither stops it nor frees
     // the event lock (design §2.4).
     tokio::spawn(async move {
         let _activity = activity;
-        publish_to_completion(shared, request, declaration, declared_mode).await
+        publish_to_completion(shared, request, unresolved, declaration, declared_mode).await
     })
     .await
     .map_err(|error| EventHubError::transport(format!("the publish task ended: {error}")))?
+}
+
+/// A `to` target whose omitted branch could not be resolved: its failure is
+/// the target's own receipt entry, and the rest of the publish is planned and
+/// delivered as usual (design §2.3, §3.2).
+#[derive(Clone)]
+struct UnresolvedTarget {
+    session_id: String,
+    code: String,
+    message: String,
+}
+
+/// One explicit `to` target with its branch filled in (timeline branches
+/// §20.22); an admitted `publish` resolves them once per request before the
+/// task starts, reading a Session named by two entries once and holding the
+/// hub's delivery budget across each cold read. A Session's answer, its
+/// branch or its failure, serves every entry that names it, so a failed read
+/// cannot turn a later duplicate into a delivery. A target that cannot be
+/// resolved is answered in its own receipt entry instead of failing the
+/// publish, whatever the read answered.
+async fn resolved_to(
+    shared: &Shared,
+    to: Vec<crate::model::ToTarget>,
+) -> (Vec<crate::model::ToTarget>, Vec<UnresolvedTarget>) {
+    let mut defaults: HashMap<String, Result<String, UnresolvedTarget>> = HashMap::new();
+    let mut resolved = Vec::with_capacity(to.len());
+    let mut unresolved = Vec::new();
+    for mut target in to {
+        if target.branch_id.is_none() {
+            let answer = match defaults.get(&target.session_id) {
+                Some(answer) => answer.clone(),
+                None => {
+                    let permit = shared.state.delivery_permit().await;
+                    let answer = shared.default_branch(&target.session_id).await;
+                    drop(permit);
+                    let answer = match answer {
+                        Ok(branch_id) => Ok(branch_id),
+                        Err(error) => Err(UnresolvedTarget {
+                            session_id: target.session_id.clone(),
+                            code: error.code.to_owned(),
+                            message: error.message,
+                        }),
+                    };
+                    defaults.insert(target.session_id.clone(), answer.clone());
+                    answer
+                }
+            };
+            match answer {
+                Ok(branch_id) => target.branch_id = Some(branch_id),
+                Err(failure) => {
+                    // The resolution is the Session's, so duplicate entries
+                    // for it answer one receipt entry, not one each.
+                    if !unresolved
+                        .iter()
+                        .any(|seen: &UnresolvedTarget| seen.session_id == failure.session_id)
+                    {
+                        unresolved.push(failure);
+                    }
+                    continue;
+                }
+            }
+        }
+        resolved.push(target);
+    }
+    (resolved, unresolved)
 }
 
 /// One publish from taking its event lock to its receipt, in the task
@@ -158,6 +231,7 @@ pub(crate) async fn publish(
 async fn publish_to_completion(
     shared: Arc<Shared>,
     request: PublishRequest,
+    unresolved: Vec<UnresolvedTarget>,
     declaration: Declaration,
     declared_mode: InputMode,
 ) -> Result<Value, EventHubError> {
@@ -254,8 +328,18 @@ async fn publish_to_completion(
         .buffered(width)
         .collect()
         .await;
-    let (deliveries, refreshes): (Vec<Delivery>, Vec<Option<GuideRecord>>) =
+    let (mut deliveries, refreshes): (Vec<Delivery>, Vec<Option<GuideRecord>>) =
         outcomes.into_iter().unzip();
+    // A target whose line was never resolved has no branch to plan; its answer
+    // follows the planned deliveries as the same failed receipt entry a
+    // delivery to a gone Session would give (design §2.3, §3.2).
+    deliveries.extend(unresolved.into_iter().map(|target| Delivery::Failed {
+        session_id: target.session_id,
+        branch_id: None,
+        subscription_ids: Vec::new(),
+        code: target.code,
+        message: target.message,
+    }));
     let refreshes: Vec<GuideRecord> = refreshes.into_iter().flatten().collect();
     // A Session Agents says is gone takes its subscriptions with it (design
     // §3.4); the notice stays the prompt path.
@@ -271,8 +355,8 @@ async fn publish_to_completion(
     }))
 }
 
-/// Builds one target per branch: the `to` targets plus the in-memory matches
-/// as they stand when the publish starts, in that order (design §3.1).
+/// Builds one target per branch: the resolved `to` targets plus the in-memory
+/// matches as they stand when the publish starts, in that order (design §3.1).
 fn plan_targets(
     subscriptions: &[Subscription],
     request: &PublishRequest,
@@ -300,7 +384,10 @@ fn plan_targets(
         let index = find(
             &mut plans,
             &target.session_id,
-            target.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID),
+            target
+                .branch_id
+                .as_deref()
+                .expect("publish targets resolve their branch before planning"),
         );
         if plans[index].explicit_mode.is_none() {
             plans[index].explicit_mode = target.mode;
@@ -561,7 +648,7 @@ async fn deliver(
             },
             _ => Delivery::Failed {
                 session_id: session_id.clone(),
-                branch_id: branch_id.clone(),
+                branch_id: Some(branch_id.clone()),
                 subscription_ids: subscription_ids.clone(),
                 code: TRANSPORT.into(),
                 message: "sessions.input answered without an input".into(),
@@ -579,7 +666,7 @@ async fn deliver(
             } else {
                 Delivery::Failed {
                     session_id: session_id.clone(),
-                    branch_id: branch_id.clone(),
+                    branch_id: Some(branch_id.clone()),
                     subscription_ids: subscription_ids.clone(),
                     code: failure.code,
                     message: failure.message,
@@ -590,7 +677,7 @@ async fn deliver(
         // was written is unknown (design Appendix C's `transport`).
         Err(message) => Delivery::Failed {
             session_id: session_id.clone(),
-            branch_id: branch_id.clone(),
+            branch_id: Some(branch_id.clone()),
             subscription_ids: subscription_ids.clone(),
             code: TRANSPORT.into(),
             message,

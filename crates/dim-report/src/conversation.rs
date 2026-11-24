@@ -14,8 +14,14 @@ const MAX_SOURCE: usize = 64 * 1024;
 const EXCERPT_LIMIT: usize = 2048;
 const TOTAL_LIMIT: usize = 8 * 1024;
 const WITHHELD: &str = "[excerpt withheld]";
+static CREDENTIAL_FIELD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)(?:^|[^a-z0-9_-]|\\[rn])(?:set-)?(?:cookie|authorization|x-api-key|api[_-]?key|[a-z0-9_-]*(?:password|passwd|credential|secret|token))(?:\\?["'`])?[ \t]*[:=]"#,
+    )
+    .expect("static credential field pattern")
+});
 static COOKIE_FIELD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:^|[^a-z0-9_-]|\\[rn])(?:set-)?cookie(?:\\?["'`])?[ \t]*[:=]"#)
+    Regex::new(r#"(?i)(?:^|[^a-z0-9_-]|\\[rn])(?:set-)?cookie(?:\\?["'`])?[ \t]*[:=]"#)
         .expect("static cookie field pattern")
 });
 
@@ -232,52 +238,49 @@ fn guarded(value: &str) -> String {
     let masked = mask_credentials(value);
     let normalized = masked.replace("\r\n", "\n").replace('\r', "\n");
     let mut lines = Vec::new();
-    let mut cookie_continuation = false;
-    let mut cookie_value_pending = false;
+    let mut credential_continuation = None;
+    let mut value_pending = false;
     for line in normalized.lines() {
         let lower = line.to_ascii_lowercase();
-        let field = COOKIE_FIELD.find(&lower);
-        cookie_continuation = field.is_some()
-            || (cookie_continuation && line.starts_with([' ', '\t']))
-            || (cookie_value_pending && line.trim_start().starts_with(['"', '\'']));
-        cookie_value_pending = field.is_some_and(|m| line[m.end()..].trim().is_empty())
-            || (cookie_value_pending && line.trim().is_empty());
+        let field = CREDENTIAL_FIELD.find(&lower);
+        let indentation = line
+            .chars()
+            .take_while(|character| matches!(character, ' ' | '\t'))
+            .count();
+        let continuation = credential_continuation
+            .is_some_and(|base| !line.trim().is_empty() && indentation > base);
+        let quoted_continuation = value_pending && line.trim_start().starts_with(['"', '\'', '`']);
+        let field_value_is_pending = field.is_some_and(|field| {
+            let value = line[field.end()..].trim();
+            value.is_empty()
+                || matches!(value, "'" | "\"" | "`")
+                || value.eq_ignore_ascii_case("bearer")
+        });
+        let folded_header = COOKIE_FIELD.is_match(&lower);
         if lower.contains("-----begin") && lower.contains("private key") {
             lines.push(WITHHELD);
             break;
         }
-        if [
-            "authorization",
-            "bearer ",
-            "api_key",
-            "api-key",
-            "apikey",
-            "password",
-            "passwd",
-            "credential",
-            "secret",
-            "sk-",
-            "ghp_",
-            "github_pat_",
-            "xoxb-",
-            "xoxp-",
-            "-----begin",
-            "akia",
-            "eyj",
-        ]
-        .iter()
-        .any(|p| lower.contains(p))
-            || cookie_continuation
-            || lower.match_indices("token").any(|(at, _)| {
-                lower[at + "token".len()..]
-                    .trim_start_matches(['\'', '"', ' ', '\t'])
-                    .starts_with(['=', ':'])
-            })
-        {
+        let withheld = field.is_some()
+            || continuation
+            || quoted_continuation
+            || lower.contains("-----begin")
+            || lower.contains("akia")
+            || lower.contains("eyj");
+        if withheld {
             lines.push(WITHHELD);
         } else {
             lines.push(line);
         }
+
+        credential_continuation = if field_value_is_pending || folded_header {
+            Some(indentation)
+        } else if continuation {
+            credential_continuation
+        } else {
+            None
+        };
+        value_pending = field_value_is_pending;
     }
     lines.join("\n")
 }

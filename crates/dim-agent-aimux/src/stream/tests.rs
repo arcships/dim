@@ -10,7 +10,7 @@ use std::{
 
 use aimux_core::result::Source;
 use aimux_core::types::{FinishReason, InputTokenUsage, OutputTokenUsage};
-use futures_util::Stream;
+use futures_util::{FutureExt, Stream};
 use serde_json::json;
 
 use super::*;
@@ -18,6 +18,7 @@ use super::*;
 struct NativeStream {
     parts: VecDeque<Result<StreamPart, AiMuxError>>,
     dropped: Arc<AtomicBool>,
+    end_when_empty: bool,
 }
 
 impl Stream for NativeStream {
@@ -26,6 +27,7 @@ impl Stream for NativeStream {
     fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.parts.pop_front() {
             Some(part) => Poll::Ready(Some(part)),
+            None if self.end_when_empty => Poll::Ready(None),
             None => Poll::Pending,
         }
     }
@@ -40,11 +42,26 @@ impl Drop for NativeStream {
 fn fixture(
     parts: Vec<Result<StreamPart, AiMuxError>>,
 ) -> (ModelStream, CancellationToken, AbortSignal, Arc<AtomicBool>) {
+    fixture_with(parts, false)
+}
+
+/// A fixture whose stream ends instead of stalling once its parts are read.
+fn fixture_ending(
+    parts: Vec<Result<StreamPart, AiMuxError>>,
+) -> (ModelStream, CancellationToken, AbortSignal, Arc<AtomicBool>) {
+    fixture_with(parts, true)
+}
+
+fn fixture_with(
+    parts: Vec<Result<StreamPart, AiMuxError>>,
+    end_when_empty: bool,
+) -> (ModelStream, CancellationToken, AbortSignal, Arc<AtomicBool>) {
     let dropped = Arc::new(AtomicBool::new(false));
     let result = StreamResult {
         stream: Box::pin(NativeStream {
             parts: parts.into(),
             dropped: dropped.clone(),
+            end_when_empty,
         }),
         request: None,
         response: None,
@@ -113,6 +130,25 @@ fn call(id: &str, name: &str, input: &str) -> RawToolCall {
 
 fn tool(input: &str) -> StreamPart {
     StreamPart::ToolCall(call("call-1", "lookup", input))
+}
+
+fn tool_start() -> StreamPart {
+    StreamPart::ToolInputStart {
+        id: "call-1".into(),
+        tool_name: "lookup".into(),
+        provider_executed: None,
+        dynamic: None,
+        title: None,
+        provider_metadata: None,
+    }
+}
+
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 #[tokio::test]
@@ -583,6 +619,58 @@ async fn unsupported_parameters_and_results_end_the_call() {
     }
 }
 
+/// A finish reason that fails the reply is the one failure no provider error
+/// object describes, so the bridge names its kind from the reason alone: a
+/// content filter is `content_filtered`, and a provider generation error or an
+/// unrecognized reason is `unknown`.
+#[tokio::test]
+async fn finish_reason_failures_carry_their_kind() {
+    for (reason, kind, reason_sentence, line) in [
+        (
+            FinishReasonUnified::ContentFilter,
+            ModelFailureKind::ContentFiltered,
+            "the stream ended on a content-filter finish reason",
+            "The provider's content filter blocked the response: the stream ended on a content-filter finish reason. Rephrase the request.",
+        ),
+        (
+            FinishReasonUnified::Error,
+            ModelFailureKind::Unknown,
+            "the provider reported a generation error",
+            "The model request failed: the provider reported a generation error. See the details.",
+        ),
+        (
+            FinishReasonUnified::Other,
+            ModelFailureKind::Unknown,
+            "the stream ended on an unsupported finish reason",
+            "The model request failed: the stream ended on an unsupported finish reason. See the details.",
+        ),
+    ] {
+        let case = reason_sentence;
+        let (stream, _, abort, dropped) = fixture(vec![
+            Ok(start()),
+            Ok(finish(reason, NativeUsage::default())),
+        ]);
+        let failure = collect_or_stall(stream, case)
+            .await
+            .into_iter()
+            .find_map(Result::err)
+            .unwrap_or_else(|| panic!("{case}: the reply completed"));
+        let HostError::Failed {
+            message,
+            model: Some(model),
+            ..
+        } = failure
+        else {
+            panic!("{case}: {failure:?}");
+        };
+        assert_eq!(model.kind, kind, "{case}");
+        assert_eq!(model.reason.as_deref(), Some(reason_sentence), "{case}");
+        assert_eq!(message, line, "{case}");
+        assert!(abort.is_aborted(), "{case}");
+        assert!(dropped.load(Ordering::SeqCst), "{case}");
+    }
+}
+
 #[tokio::test]
 async fn dropping_output_stream_releases_transport_without_another_poll() {
     let (mut stream, _, _, dropped) = fixture(vec![Ok(start())]);
@@ -713,6 +801,339 @@ async fn whole_tool_with_input_end_and_truncated_open_blocks_remain_valid() {
             assert!(matches!(chunks.last(), Some(Err(_))));
         }
     }
+}
+
+/// An interrupted tool call keeps its parse failure when the stream reports no
+/// finish reason at all: a stream that ends, an error part and a stream error
+/// all keep the malformed response the call already caused.
+#[tokio::test]
+async fn an_interrupted_tool_call_keeps_its_failure_without_a_finish_reason() {
+    let interrupted = || {
+        vec![
+            Ok(StreamPart::ToolInputStart {
+                id: "call-1".into(),
+                tool_name: "lookup".into(),
+                provider_executed: None,
+                dynamic: None,
+                title: None,
+                provider_metadata: None,
+            }),
+            Ok(tool("{\"query\":")),
+        ]
+    };
+    let mut error_part = interrupted();
+    error_part.push(Ok(StreamPart::Error {
+        error: AiMuxError::invalid_response_data("the stream broke"),
+    }));
+    let mut stream_error = interrupted();
+    stream_error.push(Err(AiMuxError::invalid_response_data(
+        "the transport broke",
+    )));
+    for (case, parts) in [
+        ("a stream that ends", interrupted()),
+        ("an error part", error_part),
+        ("a stream error", stream_error),
+    ] {
+        let (stream, _, abort, dropped) = fixture_ending(parts);
+        let chunks = collect_or_stall(stream, case).await;
+        let Some(Err(failure)) = chunks.last() else {
+            panic!("{case}: missing failure: {chunks:?}")
+        };
+        let HostError::Failed {
+            model: Some(model), ..
+        } = failure
+        else {
+            panic!("{case}: {failure:?}")
+        };
+        assert_eq!(model.kind, ModelFailureKind::MalformedResponse, "{case}");
+        assert_eq!(
+            model.reason.as_deref(),
+            Some("invalid arguments for tool 'lookup'"),
+            "{case}"
+        );
+        assert!(abort.is_aborted(), "{case}");
+        assert!(dropped.load(Ordering::SeqCst), "{case}");
+    }
+}
+
+/// A content-filter finish reason the stream delivers behind a call whose
+/// arguments it cut short is the reply's terminal: the failure is
+/// `content_filtered`, and the interrupted call is never announced as a
+/// completed call.
+#[tokio::test]
+async fn a_cut_tool_call_takes_a_content_filter_queued_behind_it() {
+    let (stream, _, abort, dropped) = fixture_ending(vec![
+        Ok(start()),
+        Ok(StreamPart::ToolInputStart {
+            id: "call-1".into(),
+            tool_name: "lookup".into(),
+            provider_executed: None,
+            dynamic: None,
+            title: None,
+            provider_metadata: None,
+        }),
+        Ok(tool("{\"query\":")),
+        Ok(finish(
+            FinishReasonUnified::ContentFilter,
+            NativeUsage::default(),
+        )),
+    ]);
+    let chunks = stream.collect::<Vec<_>>().await;
+    let Some(Err(failure)) = chunks.last() else {
+        panic!("missing failure: {chunks:?}")
+    };
+    let HostError::Failed {
+        model: Some(model), ..
+    } = failure
+    else {
+        panic!("{failure:?}");
+    };
+    assert_eq!(model.kind, ModelFailureKind::ContentFiltered);
+    assert!(
+        !chunks
+            .iter()
+            .any(|chunk| matches!(chunk, Ok(ModelChunk::ToolUse(_)))),
+        "the interrupted call is not announced as a completed call: {chunks:?}"
+    );
+    assert!(abort.is_aborted());
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+/// A stream that stops after a call whose arguments cannot be parsed has no
+/// terminal to explain the call, so the parse failure is final at once and the
+/// transport is released instead of the request being held open.
+#[tokio::test]
+async fn a_stalled_stream_after_a_cut_tool_call_keeps_its_parse_failure() {
+    let (mut stream, _, abort, dropped) = fixture(vec![
+        Ok(start()),
+        Ok(StreamPart::ToolInputStart {
+            id: "call-1".into(),
+            tool_name: "lookup".into(),
+            provider_executed: None,
+            dynamic: None,
+            title: None,
+            provider_metadata: None,
+        }),
+        Ok(tool("{\"query\":")),
+    ]);
+    let mut chunks = Vec::new();
+    while let Some(next) = stream.next().now_or_never() {
+        let Some(chunk) = next else { break };
+        let failed = chunk.is_err();
+        chunks.push(chunk);
+        if failed {
+            break;
+        }
+    }
+    assert!(
+        matches!(chunks.last(), Some(Err(_))),
+        "the bridge waited for a terminal the stream never delivered: {chunks:?}"
+    );
+    let Some(Err(failure)) = chunks.last() else {
+        unreachable!()
+    };
+    let HostError::Failed {
+        model: Some(model), ..
+    } = failure
+    else {
+        panic!("{failure:?}");
+    };
+    assert_eq!(model.kind, ModelFailureKind::MalformedResponse);
+    assert_eq!(
+        model.reason.as_deref(),
+        Some("invalid arguments for tool 'lookup'")
+    );
+    assert!(abort.is_aborted());
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(
+        stream
+            .next()
+            .now_or_never()
+            .is_some_and(|next| next.is_none()),
+        "the stream did not end after the failure"
+    );
+}
+
+/// Cancelling after a cut tool call wins over a part the stream has already
+/// delivered: the cut call settles as cancelled rather than as its parse
+/// failure.
+#[tokio::test]
+async fn cancelling_a_cut_tool_call_wins_a_ready_part() {
+    let cancel = CancellationToken::new();
+    let abort = AbortSignal::new();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = DropFlag(dropped.clone());
+    let stream_cancel = cancel.clone();
+    let result = StreamResult {
+        stream: Box::pin(async_stream::stream! {
+            let _flag = flag;
+            yield Ok(start());
+            yield Ok(tool_start());
+            yield Ok(tool("{\"query\":"));
+            stream_cancel.cancel();
+            yield Ok(StreamPart::TextDelta {
+                id: "text".into(),
+                delta: "late".into(),
+                provider_metadata: None,
+            });
+            std::future::pending::<()>().await;
+        }),
+        request: None,
+        response: None,
+    };
+    let mut stream = convert(
+        result,
+        ToolNames::default(),
+        ModelProtocol::OpenaiChat,
+        cancel,
+        abort.clone(),
+        CancellationToken::new(),
+        tokio_util::task::TaskTracker::new().token(),
+    );
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        ModelChunk::MessageStart { .. }
+    ));
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        ModelChunk::ToolStart { .. }
+    ));
+    let next = stream.next().await;
+    assert!(
+        matches!(next, Some(Err(HostError::Cancelled(_)))),
+        "{next:?}"
+    );
+    assert!(abort.is_aborted());
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(stream.next().await.is_none());
+}
+
+/// The real Responses adapter with strict streaming, the assembly every
+/// request uses, delivers a cut client call and the content-filter terminal
+/// that explains it next to each other: the strict stream holds the call
+/// until `Finish`, so the bridge sees the terminal on its next read even
+/// though the adapter queues the call and the terminal in separate events.
+#[tokio::test]
+async fn a_strict_responses_stream_delivers_a_cut_call_next_to_its_filter() {
+    use std::sync::Mutex;
+
+    use aimux_core::language_model::LanguageModel;
+    use aimux_core::language_model_message::convert_to_language_model_prompt;
+    use aimux_core::message::ModelMessage;
+    use aimux_core::options::CallOptions;
+    use aimux_providers::openai::{OpenAIProviderSettings, create_openai};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Seen {
+        ToolCall,
+        Finish(FinishReasonUnified),
+        Other,
+    }
+
+    struct Observed {
+        inner: Pin<Box<dyn Stream<Item = Result<StreamPart, AiMuxError>> + Send>>,
+        seen: Arc<Mutex<Vec<Seen>>>,
+    }
+
+    impl Stream for Observed {
+        type Item = Result<StreamPart, AiMuxError>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let this = self.get_mut();
+            let polled = this.inner.as_mut().poll_next(cx);
+            if let Poll::Ready(Some(Ok(part))) = &polled {
+                this.seen.lock().unwrap().push(match part {
+                    StreamPart::ToolCall(_) => Seen::ToolCall,
+                    StreamPart::Finish { finish_reason, .. } => Seen::Finish(finish_reason.unified),
+                    _ => Seen::Other,
+                });
+            }
+            polled
+        }
+    }
+
+    let server = MockServer::start().await;
+    let body = [
+        json!({"type":"response.created","response":{"id":"resp-order","created_at":1,"model":"test-model"}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"lookup","arguments":""}}),
+        json!({"type":"response.function_call_arguments.delta","item_id":"fc-1","output_index":0,"delta":"{\"query\":"}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"lookup","arguments":"{\"query\":"}}),
+        json!({"type":"response.incomplete","response":{"id":"resp-order","incomplete_details":{"reason":"content_filter"},"usage":{"input_tokens":3,"output_tokens":2}}}),
+    ]
+    .into_iter()
+    .map(|event| format!("data: {event}\n\n"))
+    .collect::<String>();
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let model = create_openai(OpenAIProviderSettings {
+        api_key: Some("test-key".into()),
+        base_url: Some(format!("{}/v1", server.uri())),
+        ..Default::default()
+    })
+    .unwrap()
+    .responses("test-model");
+    let mut options = CallOptions::new(
+        convert_to_language_model_prompt(&[ModelMessage::user("hi")], None, None).unwrap(),
+    );
+    options.strict_stream = Some(true);
+    let result = model.do_stream(&options).await.unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let stream = convert(
+        StreamResult {
+            stream: Box::pin(Observed {
+                inner: result.stream,
+                seen: seen.clone(),
+            }),
+            request: result.request,
+            response: result.response,
+        },
+        ToolNames::default(),
+        ModelProtocol::OpenaiResponses,
+        CancellationToken::new(),
+        AbortSignal::new(),
+        CancellationToken::new(),
+        tokio_util::task::TaskTracker::new().token(),
+    );
+    let chunks = stream.collect::<Vec<_>>().await;
+    {
+        let seen = seen.lock().unwrap();
+        assert!(
+            matches!(
+                seen.as_slice(),
+                [
+                    ..,
+                    Seen::ToolCall,
+                    Seen::Finish(FinishReasonUnified::ContentFilter)
+                ]
+            ),
+            "the terminal was not handed over right after the cut call: {seen:?}"
+        );
+    }
+    assert!(
+        !chunks
+            .iter()
+            .any(|chunk| matches!(chunk, Ok(ModelChunk::ToolUse(_)))),
+        "the interrupted call is not announced as a completed call: {chunks:?}"
+    );
+    let Some(Err(failure)) = chunks.last() else {
+        panic!("missing failure: {chunks:?}")
+    };
+    let HostError::Failed {
+        model: Some(model), ..
+    } = failure
+    else {
+        panic!("{failure:?}");
+    };
+    assert_eq!(model.kind, ModelFailureKind::ContentFiltered);
+    server.verify().await;
 }
 
 #[tokio::test]

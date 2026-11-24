@@ -27,7 +27,8 @@ for the old writer.
 ## 1. Summary
 
 Agents exposes the process service `sessions`, so a process plugin in any language can start and drive Sessions as
-Collaboration does. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `stop`, `idle` and `delete`.
+Collaboration does. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `pending`, `stop`,
+`idle`, `defaultBranchId` and `delete`.
 Each one maps onto Agents' existing Session creation and admission (`AgentIndex`) and the public Session facade.
 `withdraw` forwards to the InputQueue withdrawal service that S1 added, and `delete` to S5c's `AgentIndex::delete`.
 
@@ -434,13 +435,15 @@ retry and no event of its own. S1 owns the command, the decision, the result fac
 ([A.4](../contracts/session-access.md#a4-withdrawal)); §14.1 records what it delivered.
 
 Errors: `rejected` (S1's validation: an empty `inputId`, a `reason` over 2048 bytes), `session_closed`,
-`branch_missing`, `reloading`, `publication_unknown`. A `reloading` reply after the command was written leaves the
-outcome to InputQueue's successor. A close that starts after the command was written also replies `reloading`, not
-`session_closed`: InputQueue ends with the close before it decides, and S1 reports that as `Reloading`. That is the
-accurate code, because `session_closed` promises that nothing was written, while the command is committed and is
-decided from history when the Session next loads. A retry then fails `session_closed`. Once dispatch has passed the
-command, which every later `idle` cutoff has, history holds exactly one of `input/applied` and `input/deleted` for an
-input the caller wrote.
+`branch_missing`, `reloading`, `publication_unknown`. §9 lists where `reloading` comes from. After the command was
+written, only an index unload during the call replies it, and the outcome is InputQueue's: an index unload does not end
+the branch's queue, so in the same Session, once dispatch reaches the command, that queue decides it `deleted` with
+the deletion's sequence or `notHeld`, with no Session load. A close that starts after the command was written replies
+neither `reloading` nor `session_closed`: the command is committed, and the close's branch `stop/interrupt` is written
+after it, so dispatch reaches the command first and InputQueue decides it the same way. The command stays in history,
+so a Session loaded again after the close reads its outcome from there. A retry after the close fails `session_closed`.
+Once dispatch has passed the command, which every later `idle` cutoff has, history holds exactly one of `input/applied`
+and `input/deleted` for an input the caller wrote.
 
 ### 6.7 history
 
@@ -459,7 +462,8 @@ input the caller wrote.
 `{sessionId}` → `{}`. Agents runs S5c's `AgentIndex::delete`
 ([S5c §3.2](session-deletion-and-fork.md#32-sequence)): it checks the id, takes the Session's admission gate, closes
 the Session if it is loaded, has SessionStore remove its command output and then all its rows in one transaction, and
-forgets it. Calls in flight on the Session end `session_closed`, `idle` included (§6.4), and so do later calls. An
+forgets it. Calls in flight on the Session end `session_closed`, `idle` included (§6.4), and so do later calls; a
+`withdraw` whose command was written before the close is decided by InputQueue instead (§6.6). An
 absent or already deleted Session replies `{}`. Like every `sessions` method, the call carries no caller identity, so
 it does not check that the caller launched the Session (§11).
 
@@ -492,6 +496,12 @@ a caller keeps its records and asks again later.
 The read answers whether the input is still pending on that branch under the rule of [session access §2](../contracts/session-access.md#2-data-and-state): pending from its `input/message` until `input/applied` followed by `input/consumed`, or `input/deleted`, references it. The read synchronizes with dispatch at the captured published head as defined in session access §2, then reads the same InputQueue through `Session::service::<InputQueue>(branch)` — the path `withdraw` uses (§6.6). It reads no history and does not wait for turn completion. Dispatch failures return `failed`; branch closure and index reload end the wait with the existing lifecycle errors. It acquires the Session like every method except `launch`, `delete` and `exists`, so an unloaded branch is restored for the answer.
 
 An `inputId` the branch does not hold answers `false`; that covers both an id that was consumed or deleted and one a restart lost. A fixed loop reads this before it delivers its next window, so a round still held behind a running turn defers that window instead of queueing a second one.
+
+### 6.11 defaultBranchId
+
+`{sessionId}` → `{defaultBranchId}`; errors `rejected`, `session_closed`, `reloading`, `failed`.
+
+The read answers the line the Session's conversation is on: the tree's current default, read from its owner (`TreeCommands::default_branch`) after the Session is acquired, so an idle-unloaded Session is restored for the answer as for §6.10. It reads no history page and writes no event. It exists for the request-side defaults that name no line: a management `schedule.save` that records the default branch for a new job ([Scheduler §2.1](plugins/Scheduler.md#21-the-two-targets)), and the `loops`, `wakeups` and EventHub faces when a request omits a branch ([timeline branches §20.22](../timeline-branches.md#20-acceptance)). A caller resolves it once per request.
 
 ## 7. Sequence
 
@@ -562,7 +572,8 @@ own work, not a `sessions` rule.
 
 A delete ([#97](https://github.com/arcships/dim/pull/97)), by a client through `session.delete` or by a process plugin
 through `sessions.delete` (§6.8), takes the Session's admission gate and closes it. Calls in flight on that Session,
-`idle` included, end `session_closed`, and so do later calls. A launch whose starter was
+`idle` included, end `session_closed`, and so do later calls, except a `withdraw` whose command was written before
+the close: InputQueue decides it (§6.6). A launch whose starter was
 deleted fails `session_closed`. A launched Session whose starter is deleted keeps running.
 
 ### 8.6 Target: idle unload (follow-up)
@@ -616,7 +627,7 @@ job every five minutes adds about 288 a day. So the consumers delete them (D14):
 | `agent_unknown` | `launch` | No loaded Agent has that id | false |
 | `session_closed` | All but `delete` (for `launch`, the starter) | The Session is closed, deleted or unknown; nothing written | false |
 | `branch_missing` | All but `delete` (for `launch`, the starter) | No such branch; nothing written | false |
-| `reloading` | All | The Agents index, the model-selection host, the starter's Permission or S1's withdrawal service is not active (also when the Session closes after a `withdraw` wrote its command, §6.6), or the index unloaded during the call. For `input`, resubmit with the same `submissionId`; for `withdraw` the outcome is uncertain: `history` first. A `delete` fails `reloading` only before it starts (§6.8) | true |
+| `reloading` | All | The Agents index, the model-selection host, the starter's Permission or S1's withdrawal service is not active, or the index unloaded during the call. For `input`, resubmit with the same `submissionId`; for `withdraw` the outcome is uncertain: `history` first. A `delete` fails `reloading` only before it starts (§6.8) | true |
 | `future_sequence` | `history` | `atLeast` or `through` beyond the published head | false |
 | `ambiguous` | `input`, `lookup` | More than one input has that `submissionId`, written before branches accepted each id once; nothing written | false |
 | `publication_unknown` | `input`, `withdraw` | Committed, publication not confirmed; resubmit, `lookup` or `history` after recovery | true |
@@ -636,7 +647,7 @@ job every five minutes adds about 288 a day. So the consumers delete them (D14):
 | Loop reloads between an input's `input/applied` and a `stop/interrupt` | applied < interrupt, no `turn/start` | Queue inputs behind it are still held at the `idle` cutoff, until a later turn ends; the caller withdraws or writes again | InputQueue, Loop |
 | Agents index reload during a call | — | `reloading`, except an admitted `launch` and a `delete`, which reply their own outcome; the consumer stays loaded | Agents |
 | Consumer reload during `idle` | — | The old wait runs to its end, its reply discarded; the new generation reads again | Agents, consumer |
-| Session closed or deleted during a call | — | `session_closed` | Agents |
+| Session closed or deleted during a call | — | `session_closed`, except a `withdraw` whose command was written before the close: InputQueue decides it (§6.6) | Agents |
 | Two callers write one Session | Timeline order | Applied by mode in sequence order | InputQueue |
 | Restart after a commit, reply lost | — | `lookup`: `accepted` if published, `unknown` if lost with the unpublished tail | Caller |
 
@@ -923,6 +934,7 @@ plugin in another crate uses the named service. The following is a binding excer
 
 ```rust
 pub struct SessionRef { pub session_id: String, pub branch_id: String }
+pub struct SessionRequest { pub session_id: String }
 pub struct LaunchRequest {
     pub agent: Option<String>,
     pub cwd: String,
@@ -953,6 +965,7 @@ pub struct WithdrawRequest {
 }
 pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
 pub struct PendingReply { pub pending: bool }
+pub struct DefaultBranchReply { pub default_branch_id: String }
 pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
 pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() follows the code
 
@@ -964,6 +977,8 @@ impl AgentIndex {
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal from S1
     /// Whether the input is still pending on the branch (§6.10).
     pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
+    /// The line the Session's conversation is on (§6.11).
+    pub async fn default_branch_id(&self, request: SessionRequest) -> Result<DefaultBranchReply, SessionsError>;
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
     pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
     /// S5c's delete, served as `sessions.delete {sessionId}` (§6.8).

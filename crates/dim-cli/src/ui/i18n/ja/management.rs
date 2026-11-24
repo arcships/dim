@@ -360,6 +360,65 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Use the line prompt or dimcode permissions." => {
             "行内プロンプトまたは dimcode permissions で使用してください。"
         }
+        "Tool call timeout: {millis} ms" => "ツール呼び出しのタイムアウト：{millis} ミリ秒",
+        "Variables: {names}" => "変数：{names}",
+        "Unset variables: {names}" => "未設定の変数：{names}",
+        "The MCP source changed since the preview; no entry was imported, and an entry it would have replaced may now be disabled. Preview again." => {
+            "MCP ソースがプレビュー後に変更されました。エントリはインポートされておらず、置き換えるはずだったエントリは無効になっている可能性があります。もう一度プレビューしてください。"
+        }
+        "The project entries were written and their withheld values were not; replace them again to retry." => {
+            "プロジェクトエントリは書き込まれましたが、保留された値は書き込まれていません。もう一度置き換えて再試行してください。"
+        }
+        "Replaced {id}." => "{id} を置き換えました。",
+        "Added {id}." => "{id} を追加しました。",
+        "Delivers to Session {session} branch {branch} ({mode})." => {
+            "セッション {session}、ブランチ {branch}（{mode}）に配信します。"
+        }
+        "Launches a new Session in {cwd}." => "{cwd} で新しいセッションを起動します。",
+        "Disabled: {code} at {instant}." => "無効：{instant} の {code}。",
+        "The definition changed since it was read; nothing was written." => {
+            "定義は読み取り後に変更されました。何も書き込まれていません。"
+        }
+        "Columns: ID, client, scope, path, state, entries or error." => {
+            "列：ID、クライアント、スコープ、パス、状態、エントリ数またはエラー。"
+        }
+        "No value from a store is read out or printed; --from ID previews one inside the daemon." => {
+            "ストアから値を読み出したり出力したりしません。--from ID はデーモン内で 1 件をプレビューします。"
+        }
+        "Columns: ID, action, destination ID.\nA renamed entry is written under its destination id; the source's entry with the old id is left as it was." => {
+            "列：ID、操作、移動先 ID。\n名前を変更したエントリは移動先 id で書き込まれ、ソースにある古い id のエントリはそのまま残ります。"
+        }
+        "Imported and replaced entries start disabled: a user entry is written with enabled: false, and a project entry has no enablement record until you enable it locally." => {
+            "インポートおよび置き換えられたエントリは無効な状態で始まります。ユーザーエントリは enabled: false で書き込まれ、プロジェクトエントリはローカルで有効にするまで有効化レコードを持ちません。"
+        }
+        "This daemon cannot list other clients' MCP stores." => {
+            "このデーモンは他のクライアントの MCP ストアを一覧できません。"
+        }
+        "This daemon cannot import MCP servers." => {
+            "このデーモンは MCP サーバーをインポートできません。"
+        }
+        "The document holds no mcpServers entries." => {
+            "ドキュメントに mcpServers エントリはありません。"
+        }
+        "Columns: ID, status, transport, changed fields, unsupported fields, error.\nA changed field names what a write would change and the kind of value it holds; no value is printed.\nAn unsupported field is kept unused or dropped, as shown after the field." => {
+            "列：ID、状態、トランスポート、変更フィールド、未対応フィールド、エラー。\n変更フィールドは、書き込みで何が変わるかと値の種類を示します。値は表示されません。\n未対応フィールドは、フィールドの後ろの表示どおり未使用のままか破棄されます。"
+        }
+        "A project entry is written as its public skeleton: the workspace file gets the command, declared cwd, URL origin and public OAuth fields. Its arguments, environment and header values, bearer token, a URL with userinfo, path, query or fragment, and unknown members go to your user-scope mcp-secrets record, never to the workspace file." => {
+            "プロジェクトエントリは公開される骨格だけが書き込まれます。ワークスペースファイルにはコマンド、宣言された cwd、URL のオリジン、公開 OAuth フィールドが入ります。引数、環境変数とヘッダーの値、bearer トークン、userinfo・パス・クエリ・フラグメントを含む URL、未知のメンバーはユーザースコープの mcp-secrets 記録に書き込まれ、ワークスペースファイルには書き込まれません。"
+        }
+        "{id} has {count} more field names than the lists above show." => {
+            "{id} には上の一覧に表示されないフィールド名がさらに {count} 個あります。"
+        }
+        "Top-level members the import does not carry: none." => {
+            "インポートが引き継がないトップレベルメンバー：なし。"
+        }
+        "Top-level members the import does not carry: {names}." => {
+            "インポートが引き継がないトップレベルメンバー：{names}。"
+        }
+        "Applying the selection at this revision." => "このリビジョンで選択内容を適用しています。",
+        "An unchanged entry was already in the source and was not written." => {
+            "変更のないエントリは既にソースにあり、書き込まれていません。"
+        }
         _ => return None,
     })
 }

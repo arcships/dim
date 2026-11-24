@@ -33,11 +33,11 @@ echo-plugin/
 - `code.entry`: the entry file, relative to the directory.
 - `code.inject`: every service the entry's default export injects, the same list as its `inject`.
 
-`package.json` (the SDK version must be exactly the one Dim runs, 0.17.1):
+`package.json` (the SDK version must be exactly the one Dim runs):
 
 ```json
 { "name": "echo-plugin", "private": true, "type": "module",
-  "dependencies": { "@arcships/rutis": "0.17.1" } }
+  "dependencies": { "@arcships/rutis": "0.23.0" } }
 ```
 
 Run `npm install` in the directory before installing the plugin.

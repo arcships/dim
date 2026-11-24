@@ -6,6 +6,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{io::IsTerminal, time::Duration};
 
+pub(crate) const LEGACY_CODEX_ID: &str = "openai-codex";
+pub(crate) const CHATGPT_PROVIDER_ID: &str = "openai-chatgpt";
+pub(crate) const CHATGPT_NAMESPACE: &str = "account.chatgpt";
+pub(crate) const CHATGPT_USAGE: &str = "https://chatgpt.com/settings/usage";
+
 /// What an account command reports when the build has no Dim account
 /// provider.
 pub const ACCOUNT_UNAVAILABLE: &str = "This build has no Dim account provider, so the Dim account is unavailable; configure an API-key provider instead.";
@@ -189,8 +194,13 @@ pub async fn login(
         }
         println!("Sign in to an account provider:");
         for provider in providers {
+            let legacy = if provider.provider_id == LEGACY_CODEX_ID {
+                " [Legacy]"
+            } else {
+                ""
+            };
             println!(
-                "  {} ({}): {}",
+                "  {} ({}){legacy}: {}",
                 provider.provider_id,
                 safe(&provider.display_name),
                 provider.login_methods.join(", ")
@@ -199,7 +209,21 @@ pub async fn login(
         println!("Run dimcode login PROVIDER.");
         return Ok(0);
     };
-    let provider = described_account(client, provider_id).await?;
+    let provider = if provider_id == LEGACY_CODEX_ID {
+        let Some(provider) = described(client)
+            .await?
+            .into_iter()
+            .find(|provider| provider.provider_id == provider_id)
+        else {
+            return Err("Run dimcode login openai-chatgpt to sign in with ChatGPT.".into());
+        };
+        eprintln!(
+            "OpenAI Codex sign-in will be removed in a future version. Use Switch to ChatGPT in /connect."
+        );
+        provider
+    } else {
+        described_account(client, provider_id).await?
+    };
     let method = if options.device {
         "device"
     } else if provider
@@ -245,6 +269,9 @@ pub async fn login(
     let begin = browser_begin(&provider.namespace);
     if !client.supports(&[&begin]) {
         return Err(format!("This daemon does not offer {begin}").into());
+    }
+    if provider.namespace == CHATGPT_NAMESPACE {
+        return chatgpt_login(client, &provider, &begin, params).await;
     }
     if !std::io::stdin().is_terminal() {
         return Err("Browser login requires a terminal to enter the callback URL; use --device if supported".into());
@@ -295,6 +322,72 @@ pub async fn login(
     Ok(finish_sign_in(client, &provider).await)
 }
 
+async fn chatgpt_login(
+    client: &mut Client,
+    provider: &Described,
+    begin: &str,
+    mut params: Value,
+) -> Result<i32> {
+    if !std::io::stdin().is_terminal()
+        || std::env::var_os("SSH_CONNECTION").is_some()
+        || std::env::var_os("SSH_TTY").is_some()
+    {
+        return Err("Continue with ChatGPT from a terminal on this computer".into());
+    }
+    println!("Continue with ChatGPT");
+    println!(
+        "OpenAI processes prompts, selected files and tool results to run Dim. Dim stores the connection on this computer. Manage access at {CHATGPT_USAGE}."
+    );
+    let capture = crate::mcp::Capture::bind_ipv4("/auth/callback").await?;
+    params["redirectUri"] = json!(capture.redirect_uri());
+    let profile = client
+        .typed::<Vec<ChatGptProfile>>("account.chatgpt.profiles", json!({}))
+        .await?;
+    if let Some(active) = profile.iter().find(|item| item.active) {
+        params["profileId"] = json!(active.id);
+    }
+    let browser: Browser = client.typed(begin, params).await?;
+    println!("Open: {}", safe(&browser.authorization_url));
+    crate::browser::open(&browser.authorization_url);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+    let remaining = Duration::from_millis(browser.expires_at.saturating_sub(now));
+    let outcome = tokio::select! {
+        _ = tokio::signal::ctrl_c() => None,
+        callback = tokio::time::timeout(remaining, capture.receive()) => Some(callback),
+    };
+    let Some(Ok(Ok((callback, stream)))) = outcome else {
+        cancel(client, provider, &browser.attempt_id).await?;
+        return if outcome.is_none() {
+            Ok(130)
+        } else {
+            Err("ChatGPT callback timed out or was unavailable".into())
+        };
+    };
+    let mut complete = attempt(
+        &provider.namespace,
+        &provider.provider_id,
+        &browser.attempt_id,
+    );
+    complete["callbackUrl"] = json!(callback);
+    let result = client
+        .rpc("account.chatgpt.login.browser.complete", complete)
+        .await;
+    crate::session_host::answer_browser(stream, result.is_ok()).await;
+    result?;
+    Ok(finish_sign_in(client, provider).await)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatGptProfile {
+    pub id: String,
+    pub label: String,
+    pub active: bool,
+    pub signed_in: bool,
+}
+
 /// `dimcode account PROVIDER`: the non-secret identity the account reports.
 pub async fn account(client: &mut Client, provider_id: &str) -> Result<i32> {
     let provider = described_account(client, provider_id).await?;
@@ -302,7 +395,10 @@ pub async fn account(client: &mut Client, provider_id: &str) -> Result<i32> {
     if !client.supports(&[&method]) {
         return Err(format!("This daemon does not offer {method}").into());
     }
-    if provider.namespace == ACCOUNT_NAMESPACE {
+    if matches!(
+        provider.namespace.as_str(),
+        ACCOUNT_NAMESPACE | CHATGPT_NAMESPACE
+    ) {
         #[derive(Deserialize)]
         struct Snapshot {
             account: Option<Identity>,
@@ -311,6 +407,7 @@ pub async fn account(client: &mut Client, provider_id: &str) -> Result<i32> {
         struct Identity {
             issuer: String,
             subject: String,
+            email: Option<String>,
         }
         let snapshot: Snapshot = client
             .typed(&method, target(&provider.namespace, provider_id))
@@ -318,7 +415,11 @@ pub async fn account(client: &mut Client, provider_id: &str) -> Result<i32> {
         match snapshot.account {
             Some(account) => println!(
                 "Signed in: {} ({})",
-                safe(&account.subject),
+                safe(if provider.namespace == CHATGPT_NAMESPACE {
+                    account.email.as_deref().unwrap_or(&account.subject)
+                } else {
+                    &account.subject
+                }),
                 safe(&account.issuer)
             ),
             None => println!("Signed out."),
@@ -349,10 +450,15 @@ pub async fn logout(client: &mut Client, provider_id: &str) -> Result<i32> {
     if !client.supports(&[&method]) {
         return Err(format!("This daemon does not offer {method}").into());
     }
-    client
+    let response = client
         .rpc(&method, target(&provider.namespace, provider_id))
         .await?;
     println!("Signed out.");
+    if provider.namespace == CHATGPT_NAMESPACE
+        && response.get("revocationConfirmed").and_then(Value::as_bool) == Some(false)
+    {
+        eprintln!("OpenAI did not confirm revocation. Disconnect Dim at {CHATGPT_USAGE}.");
+    }
     Ok(0)
 }
 
@@ -385,8 +491,10 @@ async fn poll(client: &mut Client, provider: &Described, attempt_id: &str) -> Re
 
 async fn finish_sign_in(client: &mut Client, provider: &Described) -> i32 {
     println!("Signed in.");
-    if provider.namespace == ACCOUNT_NAMESPACE
-        && let Err(error) = refresh_models(client, &provider.provider_id).await
+    if matches!(
+        provider.namespace.as_str(),
+        ACCOUNT_NAMESPACE | CHATGPT_NAMESPACE
+    ) && let Err(error) = refresh_models(client, &provider.provider_id).await
     {
         eprintln!(
             "Model list refresh failed: {error}. Retry with dimcode models {} --refresh.",

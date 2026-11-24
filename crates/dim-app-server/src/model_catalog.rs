@@ -27,8 +27,12 @@ fn bundled_model(bytes: &[u8]) -> ModelEntry {
 }
 
 fn bundled_record<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> T {
-    serde_json::from_reader(flate2::read::GzDecoder::new(bytes))
-        .expect("checked-in bundled catalog records deserialize")
+    use std::io::Read as _;
+    let mut decoded = Vec::with_capacity(bytes.len().saturating_mul(3));
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_end(&mut decoded)
+        .expect("checked-in bundled catalog records decompress");
+    serde_json::from_slice(&decoded).expect("checked-in bundled catalog records deserialize")
 }
 const REASONING_OFF: &str = include_str!("../resources/reasoning-off-overrides.json");
 
@@ -66,6 +70,16 @@ pub struct ModelEntry {
     pub model_guide_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ModelMetadata>,
+}
+
+impl ModelEntry {
+    pub(crate) fn codex_context_window_ceiling(&self) -> Option<u64> {
+        self.metadata
+            .as_ref()?
+            .raw
+            .get("max_context_window")?
+            .as_u64()
+    }
 }
 
 /// The editable surface excludes model identity, lookup diagnostics and raw
@@ -466,6 +480,19 @@ impl BundledCatalog {
         }
     }
 
+    pub(crate) fn bundled_model_count(&self, provider_id: &str) -> Option<usize> {
+        if let Some(data) = self.data {
+            let provider = data.provider_named(provider_id)?;
+            Some((provider.first..provider.end).len())
+        } else {
+            Some(
+                self.providers[*self.by_provider.get(provider_id)?]
+                    .models
+                    .len(),
+            )
+        }
+    }
+
     pub fn providers(&self) -> impl Iterator<Item = CatalogProvider> + '_ {
         self.provider_ids()
             .map(|id| self.provider(id).expect("a catalog provider id"))
@@ -813,7 +840,21 @@ impl BundledCatalog {
             .collect::<Vec<_>>();
         for item in overrides {
             if let Some(pos) = models.iter().position(|m| m.model_id == item.model_id) {
-                models[pos] = inherit_limits(item.clone(), &models[pos])
+                let base = &models[pos];
+                let mut model = inherit_limits(item.clone(), base);
+                if provider.provider_id == "openai-codex"
+                    && let Some(maximum) = base.codex_context_window_ceiling()
+                {
+                    model
+                        .metadata
+                        .get_or_insert_default()
+                        .raw
+                        .insert("max_context_window".into(), maximum.into());
+                    if let Some(window) = &mut model.capabilities.context_window {
+                        *window = (*window).min(maximum);
+                    }
+                }
+                models[pos] = model;
             } else {
                 models.push(item.clone())
             }

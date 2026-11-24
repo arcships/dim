@@ -1454,3 +1454,73 @@ async fn a_fork_of_a_branch_awaiting_prompt_migration_answers_its_instruction() 
     server.shutdown();
     server.join().await.unwrap();
 }
+
+/// A fork copies the root through its cut, so its `expectedConfig` checks the
+/// root even when the Session's conversation is on another line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fork_checks_its_expected_configuration_on_the_root() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let sid = forked(
+        &client
+            .rpc("session.create", create(json!(["branch"])))
+            .await,
+    );
+    let source = agent.get_session(&sid).unwrap();
+    source.idle("main").await.unwrap();
+    adopt(&source, "main", "alpha").await;
+
+    let head = source.sequence("main").unwrap();
+    let line = branch(&mut client, &sid, head, "worker work").await;
+    source.idle(&line).await.unwrap();
+    adopt(&source, &line, "beta").await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":sid,"branchId":line}),
+            )
+            .await,
+    );
+
+    let refused = fork_expecting(&mut client, &sid, head, json!({"modelId":"beta"})).await;
+    let (code, message) = error(&refused);
+    assert_eq!(code, "session_config_mismatch", "{message}");
+    assert!(message.contains("modelId"), "{message}");
+    let created = fork_expecting(&mut client, &sid, head, json!({"modelId":"alpha"})).await;
+    assert!(!forked(&created).is_empty(), "{created}");
+
+    drop((client, agent));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+async fn adopt(session: &Session, branch: &str, model: &str) {
+    session
+        .configure(
+            dim_agent_runtime::ConfigureUpdate {
+                model: Some(dim_agent_types::ModelSelection {
+                    provider_id: "mock".into(),
+                    model_id: model.into(),
+                    capability_snapshot: None,
+                    config: None,
+                    metadata: None,
+                }),
+                ..Default::default()
+            },
+            branch,
+        )
+        .await
+        .unwrap();
+}
+
+async fn fork_expecting(client: &mut Client, session: &str, at: u64, expected: Value) -> Value {
+    let request = client
+        .send(
+            "session.fork",
+            json!({"sessionId":session,"at":at,"expectedConfig":expected}),
+        )
+        .await;
+    client.response_with_timeout(request, FORK_ANSWER).await
+}

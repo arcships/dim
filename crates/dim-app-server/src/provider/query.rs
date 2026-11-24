@@ -75,8 +75,12 @@ impl ProviderService {
                 );
             }
         }
+        let show_legacy = input.provider_id.is_some() || self.legacy_codex_visible(cancel).await;
         let mut native = HashMap::new();
-        for id in ["openai-codex", "grok-build"] {
+        for id in [LEGACY_CODEX_ID, "grok-build"] {
+            if id == LEGACY_CODEX_ID && !show_legacy {
+                continue;
+            }
             if input.provider_id.as_ref().is_none_or(|p| p == id) {
                 native.insert(id.to_owned(), self.account_available(id, cancel).await?);
             }
@@ -100,6 +104,7 @@ impl ProviderService {
                 let query = input.query.as_ref().map(|q|q.to_lowercase());
                 let mut candidates = Vec::new();
                 for id in provider_ids {
+                    if id == LEGACY_CODEX_ID && !show_legacy { continue; }
                     if cancel.is_cancelled() { return Err(storage("Provider query cancelled")); }
                     if input.after.as_ref().is_some_and(|a| id < a.provider_id) { continue; }
                     let mut header = persistence::read(&tx,&id,persistence::Models::Header);
@@ -139,6 +144,17 @@ impl ProviderService {
                     let provider_matches = query
                         .as_ref()
                         .is_none_or(|q| display.to_lowercase().contains(q));
+                    let scan_models = match &header {
+                        Ok(Some(PersistedProviderRecord::Managed(record))) => {
+                            match accounts.get(&id) {
+                                Some(account) if account.account.is_some()
+                                    && same_account(&record.account, account) => true,
+                                Some(_) => continue,
+                                None => false,
+                            }
+                        }
+                        _ => true,
+                    };
                     let mut after = input
                         .after
                         .as_ref()
@@ -147,6 +163,7 @@ impl ProviderService {
                         .unwrap_or_default();
                     let mut saw_model = false;
                     loop {
+                        if !scan_models { break; }
                         let batch = persistence::model_keys(
                             &tx,
                             &bundled,
@@ -275,11 +292,7 @@ impl ProviderService {
                                 .unwrap_or_default();
                             (catalog, preferences)
                         }
-                        Ok(Some(PersistedProviderRecord::Managed(record)))
-                            if accounts.get(&provider_id).is_some_and(|a| {
-                                a.account.is_some() && same_account(&record.account, a)
-                            }) =>
-                        {
+                        Ok(Some(PersistedProviderRecord::Managed(record))) => {
                             let catalog = record.catalog(&bundled);
                             let preferences = record
                                 .model_preferences

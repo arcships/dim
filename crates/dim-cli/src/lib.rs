@@ -152,7 +152,7 @@ async fn open_tui(
             .fullscreen
             .unwrap_or_else(|| ui::config::saved_fullscreen(&options.home)),
         initial,
-        resume: options.resume.is_some(),
+        resume: options.resume.clone(),
     };
     let (leave, mut left) = tokio::sync::oneshot::channel();
     let (leaf_end, mut leaf_ended) = tokio::sync::oneshot::channel();
@@ -862,7 +862,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         return open_tui(root, &options, initial, locale).await;
     }
     if matches!(options.action, Action::WebInstall) {
-        if !dim_agent_capabilities::build::RELEASE {
+        if !dim_agent_capabilities::build::release() {
             return Err("A build from source has no published Web workspace; set DIMCODE_WEB_ASSETS to a frontend built from this source, or build the App Server with the embedded-web feature".into());
         }
         let executable = std::env::current_exe().unwrap_or_default();

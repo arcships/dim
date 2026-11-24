@@ -8,7 +8,7 @@ use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
 use crate::ui::theme::Palette;
 use dim_agent_types::ROOT_BRANCH_ID;
 
-const HINT: &str = "Enter show the line · x end it · Esc close";
+const HINT: &str = "Enter show · p continue from here · x end it · Esc close";
 
 /// The rows in tree order: the session itself, then each line under the line
 /// that opened it, children by where they were cut from it and then in the
@@ -45,7 +45,7 @@ fn tree_order(lines: &[LineView]) -> Vec<(usize, usize)> {
                 !seen[*index] && lines[*index].parent.as_deref() == Some(lines[parent].id.as_str())
             })
             .collect();
-        children.sort_by_key(|index| lines[*index].cut.map(|cut| cut.sequence));
+        children.sort_by_key(|index| lines[*index].branch_point);
         for index in children {
             if seen[index] {
                 continue;
@@ -77,10 +77,14 @@ pub struct LinesPanel {
     session_id: String,
     projection_id: u64,
     focus: String,
+    default_branch_id: String,
     lines: Vec<LineView>,
     list: ListPanel,
     /// The line the confirmation names, until the user answers.
     confirm: Option<String>,
+    /// Why an action was refused and the line it was raised on, until the
+    /// choice changes (design §14).
+    refusal: Option<(String, String)>,
 }
 
 impl LinesPanel {
@@ -89,16 +93,18 @@ impl LinesPanel {
             session_id: snapshot.session_id.clone(),
             projection_id: snapshot.projection_id,
             focus: snapshot.focus.clone(),
+            default_branch_id: snapshot.default_branch_id.clone(),
             lines: Vec::new(),
             list: ListPanel::new(
                 "Lines",
-                HINT,
+                t(HINT),
                 "",
                 "This session has no lines.",
                 "No matching lines.",
                 false,
             ),
             confirm: None,
+            refusal: None,
         };
         panel.set_lines(snapshot);
         panel
@@ -109,9 +115,30 @@ impl LinesPanel {
         self.session_id == snapshot.session_id && self.projection_id == snapshot.projection_id
     }
 
+    /// Shows why an action was refused, in the panel that raised it, on the
+    /// line that raised it, until the choice changes (design §14).
+    pub fn refuse(&mut self, projection_id: u64, branch_id: &str, text: String) -> bool {
+        if projection_id != self.projection_id {
+            return false;
+        }
+        self.refusal = Some((branch_id.to_owned(), text));
+        self.refresh_note();
+        true
+    }
+
+    /// Refuses the action on the selected line, without a round trip.
+    fn refuse_selected(&mut self, text: String) {
+        let line = self.list.selected_id().unwrap_or_default();
+        self.refuse(self.projection_id, &line, text);
+    }
+
     pub fn set_lines(&mut self, snapshot: &ViewSnapshot) {
         let selected = self.list.selected_id();
         self.focus = snapshot.focus.clone();
+        if snapshot.default_branch_id != self.default_branch_id {
+            self.default_branch_id = snapshot.default_branch_id.clone();
+            self.refusal = None;
+        }
         self.lines = snapshot.lines.clone();
         let order = tree_order(&snapshot.lines);
         let items = order
@@ -125,6 +152,15 @@ impl LinesPanel {
                 } else {
                     String::new()
                 };
+                let mut mark = String::new();
+                if line.id == self.default_branch_id {
+                    mark.push_str(" · ");
+                    mark.push_str(t("Main line"));
+                }
+                if line.id == ROOT_BRANCH_ID {
+                    mark.push_str(" · ");
+                    mark.push_str(t("Start"));
+                }
                 let mut detail = String::new();
                 let unread = snapshot.unread_lines.contains(&line.id);
                 if unread {
@@ -146,6 +182,7 @@ impl LinesPanel {
                     safe(&line.purpose)
                 };
                 detail.push_str(&state);
+                detail.push_str(&mark);
                 detail.push_str(&viewed);
                 Item::new(
                     line.id.clone(),
@@ -169,6 +206,7 @@ impl LinesPanel {
             })
             .or_else(|| Some(self.focus.clone()));
         self.list.set_items(Ok(items), preselect.as_deref());
+        self.refresh_note();
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -195,36 +233,99 @@ impl LinesPanel {
             }
             return Effect::None;
         }
-        if key.code == KeyCode::Char('x')
-            && key.mods == Modifiers::NONE
+        if key.mods == Modifiers::NONE
             && self.list.filter_is_empty()
             && let Some(id) = self.list.selected_id()
         {
-            if id == ROOT_BRANCH_ID {
-                return Effect::Notice(
-                    t("main is the session itself; a line ends, main does not").into(),
-                );
-            }
-            if let Some(line) = self.lines.iter().find(|line| line.id == id) {
-                if matches!(
-                    line.state,
-                    LineState::Ended
-                        | LineState::EndedItself
-                        | LineState::EndedByOperation
-                        | LineState::EndedWith(_)
-                        | LineState::CreationFailed
-                ) {
-                    return Effect::Notice(format!("{} {id}", t("Line has ended:")));
+            if key.code == KeyCode::Char('x') {
+                let refusal = if id == ROOT_BRANCH_ID {
+                    Some(t("main is the session itself; a line ends, main does not").to_owned())
+                } else if self.is_default_or_above(&id) {
+                    Some(
+                        t("the default branch and the lines it continues from stay open; continue on another line first")
+                            .to_owned(),
+                    )
+                } else {
+                    self.lines
+                        .iter()
+                        .find(|line| line.id == id)
+                        .filter(|line| {
+                            matches!(
+                                line.state,
+                                LineState::Ended
+                                    | LineState::EndedItself
+                                    | LineState::EndedByOperation
+                                    | LineState::EndedWith(_)
+                                    | LineState::CreationFailed
+                            )
+                        })
+                        .map(|_| format!("{} {id}", t("Line has ended:")))
+                };
+                if let Some(refusal) = refusal {
+                    self.refuse_selected(refusal.clone());
+                    return Effect::Notice(refusal);
                 }
-                self.ask_to_end(id);
+                if self.lines.iter().any(|line| line.id == id) {
+                    self.ask_to_end(id);
+                }
+                return Effect::None;
             }
-            return Effect::None;
+            if key.code == KeyCode::Char('p') {
+                self.confirm = None;
+                self.refusal = None;
+                self.list.set_hint(t(HINT).to_owned());
+                return Effect::SetDefaultLine {
+                    session_id: self.session_id.clone(),
+                    projection_id: self.projection_id,
+                    branch_id: id,
+                };
+            }
         }
-        match self.list.handle_key(key) {
+        let effect = match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
             Event::Pick { id, .. } => Effect::FocusLine(id),
+        };
+        self.refresh_note();
+        effect
+    }
+
+    /// Whether `id` is the default branch or an ancestor of it: no end of it
+    /// is admitted, because an end takes every line below it (design §10).
+    fn is_default_or_above(&self, id: &str) -> bool {
+        let mut current = Some(self.default_branch_id.as_str());
+        while let Some(line) = current {
+            if line == id {
+                return true;
+            }
+            current = self
+                .lines
+                .iter()
+                .find(|candidate| candidate.id == line)
+                .and_then(|candidate| candidate.parent.as_deref());
         }
+        false
+    }
+
+    /// The panel's own paragraphs: what a move leaves in place, and the line
+    /// the last refusal named. The root keeps its right to open a line in
+    /// either direction, so it never trades it with the role (design §14).
+    fn refresh_note(&mut self) {
+        let selected = self.list.selected_id().unwrap_or_default();
+        let keeps_its_right =
+            selected == ROOT_BRANCH_ID || self.default_branch_id == ROOT_BRANCH_ID;
+        let mut notes = vec![t(if keeps_its_right {
+            "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction."
+        } else {
+            "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line."
+        })
+        .to_owned()];
+        if let Some((line, refusal)) = &self.refusal
+            && *line == selected
+        {
+            notes.push(refusal.clone());
+        }
+        self.list.set_notes(notes);
     }
 
     pub fn cursor(&self, width: usize) -> Option<(usize, usize)> {
@@ -243,7 +344,7 @@ impl LinesPanel {
     /// Drops the question and gives the panel its key hint back.
     fn answer(&mut self) {
         self.confirm = None;
-        self.list.set_hint(HINT.to_owned());
+        self.list.set_hint(t(HINT).to_owned());
     }
 
     pub fn render(
@@ -272,12 +373,15 @@ mod tests {
             session_id: "s1".into(),
             projection_id: 3,
             focus: focus.into(),
+            default_branch_id: "main".into(),
             lines: vec![
                 LineView {
                     id: "main".into(),
                     parent: None,
                     purpose: String::new(),
                     state: LineState::Main,
+                    running: Some(false),
+                    branch_point: None,
                     cut: None,
                 },
                 LineView {
@@ -285,6 +389,8 @@ mod tests {
                     parent: Some("main".into()),
                     purpose: "parser race".into(),
                     state: LineState::Working,
+                    running: Some(true),
+                    branch_point: Some(1),
                     cut: Some(crate::model::view::LineCut {
                         sequence: 1,
                         messages: 0,
@@ -295,6 +401,8 @@ mod tests {
                     parent: Some("main".into()),
                     purpose: "docs pass".into(),
                     state: LineState::EndedItself,
+                    running: None,
+                    branch_point: Some(1),
                     cut: Some(crate::model::view::LineCut {
                         sequence: 1,
                         messages: 0,
@@ -305,6 +413,8 @@ mod tests {
                     parent: Some("b-7c".into()),
                     purpose: "review".into(),
                     state: LineState::Waiting,
+                    running: Some(false),
+                    branch_point: Some(1),
                     cut: Some(crate::model::view::LineCut {
                         sequence: 1,
                         messages: 0,
@@ -325,6 +435,25 @@ mod tests {
         MarkdownRenderer::new(&Theme::system(ColorMode::TrueColor, Appearance::Dark, None))
     }
 
+    fn rows(panel: &LinesPanel) -> Vec<String> {
+        panel
+            .render(100, 20, &palette(), &markdown())
+            .into_iter()
+            .map(|row| crate::ui::render::panel::strip_escapes(&row))
+            .collect()
+    }
+
+    /// The drawn rows as one string, borders and padding dropped, so a phrase
+    /// a wrap split still reads.
+    fn text(panel: &LinesPanel) -> String {
+        rows(panel)
+            .join(" ")
+            .replace(['│', '╭', '╮', '╰', '╯', '─'], " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     #[test]
     fn main_is_the_session_and_only_lines_end_after_a_confirmation() {
         let mut panel = LinesPanel::new(&snapshot("main"));
@@ -332,6 +461,10 @@ mod tests {
             panel.handle_key(key(KeyCode::Char('x'))),
             Effect::Notice(_)
         ));
+        assert!(
+            text(&panel).contains(t("main is the session itself; a line ends, main does not")),
+            "the refusal is drawn in the panel"
+        );
         assert!(matches!(panel.handle_key(key(KeyCode::Down)), Effect::None));
         assert!(matches!(
             panel.handle_key(key(KeyCode::Char('x'))),
@@ -367,6 +500,10 @@ mod tests {
             panel.handle_key(key(KeyCode::Char('x'))),
             Effect::Notice(_)
         ));
+        assert!(
+            text(&panel).contains(t("Line has ended:")),
+            "the refusal is drawn in the panel"
+        );
     }
 
     #[test]
@@ -387,11 +524,7 @@ mod tests {
     fn a_line_below_a_line_is_listed_under_its_parent_and_can_be_ended() {
         let snapshot = snapshot("main");
         let mut panel = LinesPanel::new(&snapshot);
-        let rows = panel
-            .render(100, 20, &palette(), &markdown())
-            .into_iter()
-            .map(|row| crate::ui::render::panel::strip_escapes(&row))
-            .collect::<Vec<_>>();
+        let rows = rows(&panel);
         let position = |id: &str| {
             rows.iter()
                 .position(|row| row.contains(id))
@@ -421,19 +554,17 @@ mod tests {
     #[test]
     fn lines_are_listed_where_they_were_cut_from_their_parent() {
         let mut snapshot = snapshot("main");
+        snapshot.lines[2].branch_point = Some(0);
         snapshot.lines[2].cut = Some(crate::model::view::LineCut {
             sequence: 0,
             messages: 0,
         });
+        snapshot.lines[1].branch_point = Some(9);
         snapshot.lines[1].cut = Some(crate::model::view::LineCut {
             sequence: 9,
             messages: 3,
         });
-        let rows = LinesPanel::new(&snapshot)
-            .render(100, 20, &palette(), &markdown())
-            .into_iter()
-            .map(|row| crate::ui::render::panel::strip_escapes(&row))
-            .collect::<Vec<_>>();
+        let rows = rows(&LinesPanel::new(&snapshot));
         let position = |id: &str| rows.iter().position(|row| row.contains(id)).unwrap();
         assert!(
             position("b-02") < position("b-7c"),
@@ -446,16 +577,89 @@ mod tests {
     }
 
     #[test]
-    fn a_line_an_ancestor_ended_names_that_ancestor() {
+    fn a_line_whose_count_is_unknown_is_listed_where_it_was_cut() {
+        let mut projection = crate::projection::Projection::default();
+        projection.missing_history("main");
+        let created = |sequence: u64, branch: &str, at: u64| {
+            serde_json::json!({
+                "id": format!("create-{branch}"), "sequence": sequence, "create_at": 2000,
+                "type": "branch", "name": "create",
+                "data": {
+                    "branch": branch, "at": {"kind": "sequence", "sequence": at},
+                    "source": {"kind": "tool", "turn_id": "t1", "request_id": "r1", "call_id": "c1"},
+                    "prompt": branch,
+                },
+            })
+        };
+        for (sequence, branch, at) in [(9, "b-02", 9), (10, "b-7c", 3)] {
+            let event = serde_json::from_value(created(sequence, branch, at)).expect("a creation");
+            projection.line_event("main", &event);
+        }
         let mut snapshot = snapshot("main");
-        snapshot.lines[1].state = LineState::EndedWith("main".into());
-        let mut panel = LinesPanel::new(&snapshot);
-        let rows = panel
+        snapshot.lines.truncate(1);
+        snapshot
+            .lines
+            .extend(projection.line_views().iter().cloned());
+        assert!(
+            snapshot.lines.iter().all(|line| line.cut.is_none()),
+            "the parent history is incomplete, so no count is known"
+        );
+        let rows = LinesPanel::new(&snapshot)
             .render(100, 20, &palette(), &markdown())
             .into_iter()
             .map(|row| crate::ui::render::panel::strip_escapes(&row))
             .collect::<Vec<_>>();
-        let row = rows
+        let position = |id: &str| rows.iter().position(|row| row.contains(id)).unwrap();
+        assert!(
+            position("b-7c") < position("b-02"),
+            "the earlier cut comes first although neither count is known: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn a_directory_row_sorts_by_the_branch_point_it_names() {
+        let mut projection = crate::projection::Projection::default();
+        projection.missing_history("main");
+        let row = |branch: &str, at: u64| dim_client::wire::BranchEntry {
+            purpose: Some(branch.into()),
+            cut_messages: None,
+            end: None,
+            branch_id: branch.into(),
+            parent_branch_id: Some("main".into()),
+            branch_point: Some(at),
+            state: "open".into(),
+            head: 1,
+        };
+        projection.directory(&row("b-02", 9));
+        projection.directory(&row("b-7c", 3));
+        let mut snapshot = snapshot("main");
+        snapshot.lines.truncate(1);
+        snapshot
+            .lines
+            .extend(projection.line_views().iter().cloned());
+        assert!(
+            snapshot.lines.iter().all(|line| line.cut.is_none()),
+            "the directory carries no count and the history is incomplete"
+        );
+        let rows = LinesPanel::new(&snapshot)
+            .render(100, 20, &palette(), &markdown())
+            .into_iter()
+            .map(|row| crate::ui::render::panel::strip_escapes(&row))
+            .collect::<Vec<_>>();
+        let position = |id: &str| rows.iter().position(|row| row.contains(id)).unwrap();
+        assert!(
+            position("b-7c") < position("b-02"),
+            "the branch point the directory names orders the lines: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn a_line_an_ancestor_ended_names_that_ancestor() {
+        let mut snapshot = snapshot("main");
+        snapshot.lines[1].state = LineState::EndedWith("main".into());
+        let mut panel = LinesPanel::new(&snapshot);
+        let drawn = rows(&panel);
+        let row = drawn
             .iter()
             .find(|row| row.contains("b-7c"))
             .expect("the line is listed");
@@ -466,5 +670,91 @@ mod tests {
             panel.handle_key(key(KeyCode::Char('x'))),
             Effect::Notice(_)
         ));
+        assert!(
+            text(&panel).contains(t("Line has ended:")),
+            "an ended line is refused in the panel"
+        );
+    }
+
+    #[test]
+    fn the_root_and_the_default_branch_are_marked_and_p_chooses_a_line() {
+        let mut snapshot = snapshot("main");
+        snapshot.default_branch_id = "b-7c".into();
+        let mut panel = LinesPanel::new(&snapshot);
+        let drawn = rows(&panel);
+        let row = |id: &str| {
+            drawn
+                .iter()
+                .find(|row| row.contains(id))
+                .unwrap_or_else(|| panic!("{id} is listed: {drawn:#?}"))
+                .clone()
+        };
+        assert!(row("main").contains(t("Start")), "{drawn:#?}");
+        assert!(row("b-7c").contains(t("Main line")), "{drawn:#?}");
+        assert!(!row("b-7c").contains(t("Start")), "{drawn:#?}");
+        assert!(!row("b-91").contains(t("Main line")), "{drawn:#?}");
+        panel.handle_key(key(KeyCode::Down));
+        match panel.handle_key(key(KeyCode::Char('p'))) {
+            Effect::SetDefaultLine { branch_id, .. } => assert_eq!(branch_id, "b-7c"),
+            _ => panic!("p continues on the selected line"),
+        }
+    }
+
+    #[test]
+    fn x_is_refused_on_the_default_branch_and_on_a_line_above_it() {
+        let mut snapshot = snapshot("main");
+        snapshot.default_branch_id = "b-91".into();
+        let mut panel = LinesPanel::new(&snapshot);
+        for _ in 0..2 {
+            panel.handle_key(key(KeyCode::Down));
+        }
+        let refusal = t(
+            "the default branch and the lines it continues from stay open; continue on another line first",
+        );
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Char('x'))),
+            Effect::Notice(_)
+        ));
+        assert!(
+            text(&panel).contains(refusal),
+            "x on the default branch is refused in the panel"
+        );
+        panel.handle_key(key(KeyCode::Up));
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Char('x'))),
+            Effect::Notice(_)
+        ));
+        assert!(
+            text(&panel).contains(refusal),
+            "x on an ancestor of the default branch is refused in the panel"
+        );
+    }
+
+    #[test]
+    fn a_refused_move_is_shown_on_the_line_that_raised_it() {
+        let mut panel = LinesPanel::new(&snapshot("main"));
+        assert!(panel.refuse(
+            3,
+            "b-7c",
+            "branch_already_default: the line is already the default branch".into()
+        ));
+        assert!(
+            !text(&panel).contains("branch_already_default"),
+            "the refusal belongs to the line that raised it: {:#?}",
+            rows(&panel)
+        );
+        assert!(matches!(panel.handle_key(key(KeyCode::Down)), Effect::None));
+        let drawn = rows(&panel);
+        assert!(
+            drawn
+                .iter()
+                .any(|row| row.contains("branch_already_default")),
+            "{drawn:#?}"
+        );
+        assert!(
+            text(&panel).contains("old default branch stays open"),
+            "the panel keeps its own paragraph: {drawn:#?}"
+        );
+        assert!(!panel.refuse(4, "b-7c", "another attachment".into()));
     }
 }

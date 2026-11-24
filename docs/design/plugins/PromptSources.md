@@ -22,7 +22,7 @@ The delivery decides where a change takes effect. A `System` source is part of t
 
 ### 1.1 Policy
 
-`dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says. The shape of a tool's input, and how its entries apply, is stated by the tool's own declaration rather than by `dim/base`.
+`dim/base` is policy: the identity sentence and the rules — safety, tone, progress updates, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says. The shape of a tool's input, and how its entries apply, is stated by the tool's own declaration rather than by `dim/base`.
 
 The shell guidance is policy too. It is the sentence the environment source carries for the operator's shell (`Use POSIX shell syntax. …`, or the PowerShell, cmd, Git Bash and other editions), plus the file-encoding guidance on Windows: how to quote, how to invoke a path with spaces, which legacy encodings to ask the read tool for. None of it states a runtime fact.
 
@@ -126,6 +126,18 @@ impl PromptSourcesPlugin {
         config: PromptSourcesConfig,
     ) -> rutis::Result<Self>;
 }
+
+/// Registers PromptSources with the policy texts at `config`.
+pub fn install_with_config(
+    builder: &mut AgentBuilder,
+    today: Today,
+    every: Duration,
+    config: PromptSourcesConfig,
+);
+
+/// Registers PromptSources with the built-in texts: `install` and
+/// `install_with_clock` are this entry with the default configuration.
+pub fn install(builder: &mut AgentBuilder);
 ```
 
 The language source's binding is one more arm of the source loader: name `dim/language`, delivery `State`, order 220, body from the operator's setting when one is carried and no entry when none is.

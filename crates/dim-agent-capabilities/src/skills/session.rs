@@ -205,7 +205,9 @@ impl DynPlugin for SkillsPlugin {
                     async { Ok(None) }
                 })?;
             let contents = Arc::new(tokio::sync::Mutex::new(super::content::Contents::new(
+                ctx.clone(),
                 self.session,
+                loader.clone(),
             )));
             let tasks = TaskTracker::new();
             let cleanup = contents.clone();
@@ -217,18 +219,17 @@ impl DynPlugin for SkillsPlugin {
             })?;
             let initial = tasks
                 .spawn({
-                    let (contents, catalog, cwd, loader, stopped) = (
+                    let (contents, catalog, cwd, stopped) = (
                         contents.clone(),
                         catalog.clone(),
                         cwd.clone(),
-                        loader.clone(),
                         lifecycle.clone(),
                     );
                     async move {
                         contents
                             .lock()
                             .await
-                            .update(catalog.query(Some(&cwd)).await, &loader, &stopped)
+                            .update(catalog.query(Some(&cwd)).await, &stopped)
                             .await
                     }
                 })
@@ -283,7 +284,7 @@ impl DynPlugin for SkillsPlugin {
                     let cancel = stopped.child_token();
                     let update = async {
                         let view = catalog.query(Some(&cwd)).await;
-                        contents.lock().await.update(view, &loader, &cancel).await
+                        contents.lock().await.update(view, &cancel).await
                     };
                     tokio::pin!(update);
                     let view = tokio::select! {

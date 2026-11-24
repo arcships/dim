@@ -140,7 +140,7 @@ dim 通过
 | `connection` | 下表静态记录安全连接；连接配置只在可选账号包内时为 `null` |
 | `models` | `{model:ModelEntry,source:"default"\|"override"\|"user",enabled:boolean,endpoint:ModelProtocol\|null,unavailableReason:string\|null,missingLimits:("contextWindow"\|"maxOutputTokens")[],actions:string[],endpointOverride?:NewApiEndpoint}[]`；路由覆盖限 §6 可执行子集。仅账号无本地目录记录时为 `null`，坏目录报错。`missingLimits` 指出没有任何来源声明的上限（§3.5），否则为空。`catalogName` 是 `provider.catalog` 为该行发布的名字，仅当它不同于 `model.displayName` 时出现；字段缺失表示显示名就是应显示的名字。它是计算所得，因此 `model.displayName` 始终是 Provider 或用户声明的名字，编辑也不会把计算出的名字写回。模型操作为 `set_enabled`、`edit`、`reset`、`delete`，按来源/authority 限制；`set_enabled` 只出现在没有 `unavailableReason` 的条目上，因为集合会保留不可用条目的启用状态 |
 | `preferences` | model ID 到既有 `ModelPreferences` 的映射 |
-| `modelsListed` | 读取和不改 `baseUrl`、`credential`、`headers` 的更新不含该字段；其余更新说明本次写入如何处理记录自身的模型：`listed`、`bundled`、`unsupported` 或 `disabled` |
+| `modelsListed` | 读取不含该字段。连接更新用 `listed`、`bundled`、`unsupported` 或 `disabled` 说明如何处理模型列表；按 §3.2 的规则启用并填充空目录时也返回 `listed`，其他更新省略此字段 |
 
 `ManagementDriver` 为 `driverKind:string`、`authTypes:StaticAuth["type"][]`、
 `remoteModelList:boolean`，由可执行 driver 推导，只列允许自定义创建的 driver。
@@ -168,8 +168,8 @@ actions 只说明当前可用性，
 
 ### 启动、选择与内存
 
-远程模型列表共用的默认 HTTP 客户端在首次列表请求时创建。本地读取、模型选择和
-内置连接配置不会创建它。构建失败通过既有 Provider 错误返回给该操作，不使进程
+远程模型列表共用的默认 HTTP 客户端在首次使用默认网络设置的列举请求时创建，包括 Provider 更新触发的列举（§3.2）。
+本地读取和模型选择不会创建它。构建失败通过既有 Provider 错误返回给该操作，不使进程
 装配失败；指定代理或超时的请求仍按自己的网络配置创建客户端。
 
 显式选择读取指定 Provider 和模型。默认选择先尝试工作区，再尝试全局保存的选择；
@@ -253,13 +253,13 @@ Provider 列表 -> 连接配置 -> 保存（摘要与提交版本）
 ### 3.2 写入与字段操作
 
 下表的 `ManagementProvider` 均为 §3.1 的编辑快照。已有方法除明确新增
-`ModelEdit.endpoint` 和 §3.4 错误分类外，保持请求/回复；已有写方法继续
+`provider.update.reply`、`ModelEdit.endpoint` 和 §3.4 错误分类外，保持请求/回复；已有写方法继续
 `mutating:true`、`interruption:Drain`。
 
 | 方法 | 请求 | 回复与语义 | mutating | interruption |
 | --- | --- | --- | --- | --- |
 | `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled,gluedPrefix?}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突；`gluedPrefix` 按 patch 的规则：去空白，空值即未声明 | true | `Drain` |
-| `provider.update` | `{providerId,expectedVersion,patch}` | `ManagementProvider`；校验后单事务局部写入；patch 改动 `baseUrl`、`credential` 或 `headers` 时，同一次 CAS 写入还用新 endpoint 的列举结果替换记录自身的模型，`modelsListed` 说明结果；只改 `network` 时单独保存 | true | `Drain` |
+| `provider.update` | `{providerId,expectedVersion,patch,reply?:"full" \| "summary"}` | 默认返回 `ManagementProvider`；`reply:"summary"` 返回已提交的安全 `ManagementInfo` 和可选的 `modelsListed`。连接变更和启用遵循下方的列举规则 | true | `Drain` |
 | `provider.probe` | `{providerId,connection}` | `{models:ModelEntry[]}`；只做 §3.3 网络探测，不写入或检查版本 | false | `Drain` |
 | `provider.models.create` | `{providerId,expectedVersion,model:ModelEntry,reply?:"full" \| "summary"}` | 默认返回既有 catalog，`reply:"summary"` 返回 `{version}`；写独立用户新增列表，与默认/用户项重复的 ID 拒绝；以启用状态新增，同事务清掉该 ID 遗留的 modelConfigOverrides、disabledModelIds、modelPreferences 和 endpointOverrides 项 | true | `Drain` |
 | `provider.models.delete` | `{providerId,expectedVersion,modelId,reply?:"full" \| "summary"}` | 默认返回既有 catalog，`reply:"summary"` 返回 `{version}`；仅删用户新增项，同事务移除该 ID 的 disabledModelIds 项并清理自有偏好/路由/选择 | true | `Drain` |
@@ -282,18 +282,19 @@ Provider 列表 -> 连接配置 -> 保存（摘要与提交版本）
 按 `{providerId,modelId}` 复制完整公开 `ModelEntry`，不保存模板引用或客户端 bundled catalog。
 客户端不反向转换执行投影 `ProviderModel`。
 
-`update` 改动 `baseUrl`、`credential` 或 `headers`（记录所达 endpoint 或账户）时，若记录自身的模型不属于
-bundled catalog（bundled 未定义该 Provider，或 `remoteModels` 已为真），就在写入之外列举
-新 endpoint 的模型，并与连接在同一次 CAS 写入中提交；用户模型冲突规则与 `refresh` 相同。
-非法 patch 在列举之前就被拒绝，返回带原因的 `provider_invalid_config`。列举
-失败则更新失败、不写入任何内容，重新指向不会把旧 endpoint 的模型留在新 endpoint 上。
-记录已停用而模型属于自身时，同一次写入丢弃这些模型、不发送请求：它们属于旧 endpoint，
-空的、可列举的 catalog 由记录启用后选择器的填充补齐。
-只改 `network`（代理或超时）时单独保存、不列举：它改变到达 endpoint 的方式而非其内容，
-若要求列举成功，列举失败时这些设置就无法保存。driver 不能列举时只保存连接。
-模型属于 bundled catalog 的记录在连接改动后仍保留它们，
-之后的 bundled 更新也照常到达；显式替换仍走 `dimcode models PROVIDER --refresh`。写入的
-列举结果按 `refresh` 的方式置 `remoteModels`；回复的 `modelsListed` 说明属于哪种情况。
+改动 `baseUrl`、`credential` 或 `headers` 会改变记录所达的端点或账户。若 Provider 支持远端列举，
+且更新后处于启用状态，owner 会列举端点模型；仍继承非空内置目录的记录除外，它保留内置目录并继续接收其更新。
+连接变更后若记录处于停用状态，则不发请求，并丢弃原有的端点模型（如有）。启用内置目录原本为空且支持列举的
+Provider（如 Magpie）时，会填充空的继承目录或空的已保存端点列表，包括停用期间修改连接而清空的列表。
+已有非空的端点列表时，启用会保留该列表，不发请求。用户新增模型不算端点模型。
+仅启用自定义 Provider 或内置目录原本非空的 Provider 不会补齐已清空的端点列表，需显式刷新。
+只改 `network`（代理或超时）时单独保存、不列举：它改变的是到达端点的方式，而不是端点所提供的模型。
+驱动不支持列举时只保存连接。
+
+非法 patch 在列举前被拒绝，返回带原因的 `provider_invalid_config`。列举请求在写入之外执行，
+沿用 `refresh` 的用户模型冲突规则。成功时将连接和列表在同一次 CAS 写入中提交，并按 `refresh` 的方式设置
+`remoteModels`。列举失败则记录保持原样。模型区的 `Ctrl+R` 和 `dimcode models PROVIDER --refresh`
+仍可显式刷新，包括已经启用但没有模型的记录。
 
 | patch 字段 | 操作 | 可写记录 |
 | --- | --- | --- |
@@ -435,6 +436,19 @@ Rpc 沿用 service_reloading/service_unavailable 和准入；调用由 owner 追
 | Provider 描述 | 存储描述上的 `capabilityOverrideFields`；描述中的非正值视为未声明 | 该描述所述的模型 |
 | 捆绑目录 | `metadataSource` 指向匹配的捆绑 Provider：条目仅在其 `metadata.raw` 声明处才有上限，其余取值在捆绑加载时删除；该 Provider 的 `contextWindowOverride`、`contextWindowFallback` 元数据仍是声明 | 匹配到的模型，或该 Provider 的全部模型 |
 | 用户 | 同一 `capabilityOverrideFields` 字段，写在描述覆盖或用户模型上：`models.edit` 为它编辑的每项上限写入，两个旧版导入器为导入时保留的每项值写入 | 覆盖所指的模型 |
+
+内置 `openai-codex` 对话模型按条目声明默认 `contextWindow` 和只读的配置上限
+`metadata.raw.max_context_window`。数值采用
+[Codex 目录](https://github.com/openai/codex/blob/8653ca9e99b2c805107bde7b7d6f57a634c643d0/codex-rs/models-manager/models.json)
+的标称 token 数，GPT-5.4 和 GPT-5.4 Mini 采用
+[旧版目录](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/models-manager/models.json)，
+Spark 采用[公开窗口](https://openai.com/index/introducing-gpt-5-3-codex-spark/)。
+Dim 根据自己的规则计算输入与压缩预算。例如，GPT-6.2 Sol、GPT-6.1 Sol 和
+GPT-6.1 Terra 默认都是 500,000 token，可配置到 872,000。可用
+`dimcode models openai-codex edit gpt-6.2-sol` 或 `provider.models.edit`
+修改 `contextWindow`，重置后恢复目录默认值。接纳新版目录时保留显式覆盖，其生效值
+受当前模型上限约束。新写入的值超出上限会收到 `provider_invalid_config`。
+[会话启动覆盖](../../../design/model-startup.md)设置新值时遵守同一上限。
 
 清单以同样的方式声明模型的推理档位，且它声明的第一个形状就是模型自己的列表：先取
 `reasoning_options` 中 `type` 为 `effort` 那一项的 `values`，否则取各项
@@ -616,9 +630,15 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 **第二个操作：`selectableForModality`。** 同一端口还提供一次面向非对话用途的进程读取
 （Modality §9.2）：操作 `selectableForModality`，异步，请求 `{}`，回复
 `{models: ModalityModelSnapshot[]}`，元素为
-`{target: {providerId, modelId}, operations: string[]}`。`operations` 是该模型目录条目在
-`metadata.raw.modalityCapabilities` 中声明的 `<category>.<operation>` id，按条目中的顺序；
-未声明任何操作的模型被省略。本次读取应用与 `selectableModels` 相同的 provider、账号、模型、
+`{target: {providerId, modelId}, operations: string[]}`。`operations` 是该模型目录条目声明的
+`<category>.<operation>` id，按条目中的顺序；未声明任何操作的模型被省略。条目在
+`metadata.raw.modalityCapabilities` 中声明操作，显式列表（包括空列表）就是全部答案。没有列表的
+条目会被识别为图像模型，因为中转与账号目录列出这类模型时不带媒体元数据：其 id 是已知图像模型之一
+（`arcship-image`、`gpt-image-2` 和 `grok-imagine-image` 系列中的已知 ID）或包含 `seedream`；或其 `type`
+为 `image`/`image-generation` 且输出包含图像或未说明；或 `imageGeneration` 为 true；或其唯一输出是
+`image`。这样的模型声明 `image.generate`，当它也读取图像或是已知模型时还声明 `image.edit`；`type`
+为 `image-edit` 时只声明 `image.edit`，`imageGeneration: false` 不识别任何操作。下面的连接规则读取
+同一份声明。本次读取应用与 `selectableModels` 相同的 provider、账号、模型、
 路由、凭据与状态规则，但去掉其 text modality、chat 类型与已声明文本上限三项要求：没有
 `text` modality 的模型、非 chat 模型与 `limits_undeclared` 的模型只要声明了 modality 操作
 仍是候选；不可用状态、停用的 Provider 或模型、缺少路由、已登出的账号与缺少静态凭据仍会排除
@@ -708,7 +728,7 @@ owner 实现是 `ProviderService::selectable_models` 与
 跨语言操作契约由 [#1613](https://github.com/arcships/dim/issues/1613) 跟踪。
 
 **规则。** 它应用 `selectableForModality` 读取的同一组规则——provider、账号、模型、路由、
-凭据与状态——并要求模型目录条目在其 `metadata.raw.modalityCapabilities` 中声明 `operation`。
+凭据与状态——并要求模型目录条目声明 `operation`，按上面读取的推导方式。
 任何一条不满足的模型都在任何网络调用之前被拒绝：可用性类失败带执行对该模型报告的原因，
 未声明的操作作为指明它的 invalid request 拒绝。读取与连接不会给出不同结论，因为二者共用
 目录与其选择判定。托管账号的凭据租约读取同一条规则：只拒绝排除所有用途的原因，因此目录标记为

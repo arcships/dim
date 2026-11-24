@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+autotests = false
+
+[[test]]
+name = "capabilities_flow"
+path = "tests/capabilities_flow.rs"
 
 [dependencies]
 dim-agent-types.workspace = true
@@ -40,8 +45,10 @@ libc = "0.2.189"
 windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell"] }
 
 [features]
-# Hooks that race flow tests use to hold an operation open.
-testing = []
+# Hooks that race flow tests use to hold an operation open. They read the
+# runtime's testing-only APIs, so the feature enables it for this crate's build
+# too, not just for the test that links both.
+testing = ["dim-agent-runtime/testing"]
 
 [dev-dependencies]
 dim-agent-runtime = { workspace = true, features = ["testing"] }
