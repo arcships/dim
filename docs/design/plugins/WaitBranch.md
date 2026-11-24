@@ -84,7 +84,7 @@ The `wait` data face takes one request object instead of positional arguments: `
 
 ## Supersedes
 
-- [Wait](https://github.com/arcships/dim/pull/2103) (#2103): the branch arrival table and its `wait` operation; the tool declaration, its texts and the tool-result settlement remain that document's.
+None: the Wait document (#2103) keeps only the tool declaration, its texts and the tool-result settlement, and already calls this owner's `wait`; no old branch section remains to replace.
 
 ## Verification
 
