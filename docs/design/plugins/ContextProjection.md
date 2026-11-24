@@ -106,7 +106,7 @@ else {
 
 - A fold at a cutoff returns the events that place context and the compaction in force, with positions that compare across the branch chain.
 - `renderedStream` releases each page and its reply carries no event list: a fold larger than one page keeps only the current projection. `renderedContext` materializes the events and is the inspection read.
-- `snapshot` encodes the checkpoint of a completed compaction; a snapshot of another interpreter or a mismatched anchor is `invalid` or answers none.
+- `snapshot` encodes the checkpoint of a completed compaction and answers `invalid` for another interpreter or a cut outside the chain; it never answers none. `snapshotFromCheckpoint` answers none when the anchor does not match.
 - `context_in` no longer exists; every read is the caller's own branch.
 - A call in flight when the branch closes ends `closed`.
 
@@ -149,7 +149,7 @@ This contract replaces the `historyRenderer` value; the delivery in #2025 carrie
 
 Rule D: no client wire protocol or user-visible behavior changes; the streamed reply keeps the fields the callers use, and the model-visible text is unchanged.
 
-Left to the upper layer: #2102's `PrepareRequest.projection` still names the internal `history::StreamedContext`. The wire types are `contextProjection::StreamedContext`, `contextProjection::Entry` and `contextProjection::History` as defined here; #2102 aligns its import to these names when it rebases on this contract.
+Left to the upper layer: #2102's `PrepareRequest.projection` still names the internal `history::StreamedContext`. The wire types are `crate::context_projection::{StreamedContext, Entry, History}` as defined here; #2102 aligns its import to these names when it rebases on this contract.
 
 ## Binding appendix
 

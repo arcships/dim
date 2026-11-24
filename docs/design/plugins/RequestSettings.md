@@ -9,7 +9,7 @@ The owner publishes the model settings a turn starts from: the Session's model s
 The owner publishes:
 
 - **The default settings value.** `{providerId, modelId, capabilitySnapshot?, config?, system?, metadata?}` derived once, when the Session is assembled, from the creation record and — when the profile has one — the model catalog.
-- **The allowance repair.** The adopted output allowance is bounded by the model's declared output and half the window before the value is published. The same repair runs when Prompt adopts a configuration into `context/configured`, so Loop reads the adopted record and never recomputes it.
+- **The allowance repair, at the read boundary.** The adopted output allowance is bounded by the model's declared output and half the window at the point where Loop reads the value, including a restored Session that replays an older `context/configured` fact: the same rule runs on the replay path, so an allowance equal to or above the window never reaches the request. Prompt's repair at adoption may run too, but it is not the only place.
 
 Callers keep:
 
@@ -69,7 +69,7 @@ None: the operation holds no resource and waits for nothing.
 ## Exceptions with reasons
 
 - `config` may already be the adopted allowance repair: the owner repairs the stored allowance against the declared limits, so a request started from this value cannot exceed the model's capacity.
-- The value is fixed at creation: a model change during the run is a Timeline record (`context/configured`) that Prompt wrote after repairing the allowance, and Loop reads that record; the value is never stale for its one use.
+- The value is fixed at creation: a model change during the run is a Timeline record (`context/configured`), and Loop reads that record through the same repair; the value is never stale for its one use.
 - `metadata` carries the profile's static extensions. The per-request members — session, turn and request id — are Loop's: the aimux request log reads `requestId` from the request in flight, so the value cannot carry it.
 
 ## Verification

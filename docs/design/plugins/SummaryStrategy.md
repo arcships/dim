@@ -221,7 +221,7 @@ pub struct CompactionRequest {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(rename_all = "camelCase", tag = "status", rename_all_fields = "camelCase")]
 pub enum StrategyOutcome {
     Completed {
         retain_from: String,

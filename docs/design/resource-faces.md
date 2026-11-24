@@ -657,7 +657,7 @@ notification {subscriptionId, batchId, branchId, through, result: "committed" | 
 
 #### Binding shapes and lifecycle
 
-The Timeline methods take one request object. Keys are `{sessionId, branchId}`;
+The process store's Timeline engine methods take one request object. Keys are `{sessionId, branchId}`;
 `head` returns `{sequence}`, `branches {sessionId}` returns `{branches:[{info,sequence}]}`.
 `readPage {sessionId,branchId,after,limit,through}` returns `{events}`. `limit` is a target event
 count: the final complete atomic batch may exceed it. `readSegments {sessionId,segments:
@@ -669,7 +669,7 @@ it does not introduce a separate wire operation or replace an override with fall
 `batchEnd {sessionId,branchId,sequence}` validates the boundary and returns `{}`;
 `batchEndAt` returns `{sequence}` for the containing batch's end through the backend's existing
 operation, without repeated remote probes. `trace` takes the same position and returns `{trace}`.
-`query` takes the scope, query and optional page described in §5.2 and keeps that canonical reply.
+`query` takes the scope, query and optional page described in §5.2 and keeps that canonical reply; on the Session-scoped binding, the request carries no `sessionId` because the instance identity supplies it.
 
 `createSession {sessionId,config}`, `releaseSession {sessionId}`, `rollbackSession {sessionId}`
 and `saveSnapshot {sessionId,branchId,snapshot}` return `{}`. `sessionConfig {sessionId}` returns
