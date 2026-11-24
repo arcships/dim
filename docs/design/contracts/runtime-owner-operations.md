@@ -5,9 +5,9 @@
 | Caller → owner | Final API |
 | --- | --- |
 | Branch management, input and history callers → `timelineTree` | `create/end/info/input/list/page/query` retain their existing signatures on the single Session tree face. Creation returns the branch ID. |
-| Language readers → PromptSources | `sessionLanguage.get`. |
+| Language readers → PromptSources | `sessionLanguage.get` returns `{language?, version}`; `sessionLanguage.set` is the write. |
 | Language updates → App Server | [`session.language.update`](session-access.md) accepts the existing language code or clear action. The owner serializes persistence, live-state replacement and Prompt adoption on main and loaded branches before replying. |
-| Prompt → PromptRegistry; guide and tool contributors → their registries | `initialPromptConfiguration.get`, `promptHost.load`, `guideEntries.register`, `toolRegistry.register`, `toolSourcesView.get/observe`. |
+| Prompt → PromptSources; guide and tool contributors → their registries | `promptSources.initial/load/register`, `guideEntries.register/compose/observe`, `toolRegistry.register/register_source/adopt/release/run/resolve_write/ordering/claim/release_claims/declarations/sources/observe_sources`. The shapes are the owners' contracts ([PromptSources](../plugins/PromptSources.md#own-contract), [ToolRegistry](../plugins/ToolRegistry.md#own-contract)). |
 | Session and branch parts → their lifecycle; branch fact consumers → Dispatcher | `sessionLifecycle.activated/closing/hold/release`, `branchLifecycle.activated/closing`, `dispatcher.listen/consume/committed`. |
 
 ## New rutis APIs on existing owners

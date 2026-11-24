@@ -32,17 +32,18 @@ An operation or parameter exists only where the row says No.
 The tool registers with its declaration and claim callback; the claim inserts the waiter and returns nothing:
 
 ```rust
-tools.register(RegisterTool {
-    declaration: ask_user_definition(),
-    execute: Arc::new(|call, context, cancelled| Box::pin(run_ask_user(call, context, cancelled))),
-    claim: Some(Arc::new(|call, context| claim_question(call, context))),
-}).await?;
+tools.register(
+    ctx,
+    ask_user_definition(),
+    |call, context, cancelled| Box::pin(run_ask_user(call, context, cancelled)),
+    |call, context| Box::pin(claim_question(call, context)),
+).await?;
 ```
 
 A client answers; the method resolves the waiter and the call's result follows:
 
 ```rust
-methods.respond(RespondQuestion { line, request_id, call_id, answers })?; // {} once the waiting call takes it
+// The `session.question.respond` handler resolves the waiter; it answers {} once the waiting call takes it.
 ```
 
 ## Own contract
@@ -62,7 +63,7 @@ No service of its own. The table is reached only through the tool call's wait an
 | Contribution | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- |
 | `session.question.respond` | `{sessionId, branchId, requestId, callId, answers? \| declined: true}` | `{}` | The call's own admission | `invalid`, `not_pending` |
-| `session.question.pending` | `{sessionId, branchId}` | `{requests}` | None | `invalid` |
+| `session.question.pending` | A line's pending question batches at a cutoff | `{sessionId, branchId, through?, after?}` | `{branchId, through, batches, next}` | The caller's token stops the read | `invalid`, `cancelled` |
 
 The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, invalid input, cancelled, and the part's reload settlement.
 
@@ -70,8 +71,10 @@ The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, 
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | The answer names no question, repeats one, chooses an unoffered label, or the call's input is malformed |
-| `not_pending` | No waiting call matches the three ids; re-read `pending` |
+| `invalid` | The answer names no question, repeats one, chooses an unoffered label, or the call's input is malformed; the wire code is `invalid_params` |
+| `not_pending` | No waiting call matches the three ids; the wire code is `question_not_pending`; re-read `pending` |
+
+The pending read's `invalid` is the wire's `invalid_params`; its `cancelled` leaves the inventory unchanged.
 
 ### Flows
 
@@ -85,7 +88,7 @@ The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, 
 
 - An answer accepted between the claim and a refused append is delivered and then dropped with the claim: the call's result is the refusal, and the question does not stay open.
 - A wait left by a reload or restart is settled by ToolExecutor, not rebuilt: the waiter is a human I/O, and the line's facts do not hold it.
-- `pending` reads the table directly: a waiting question is the owner's own state, not a Timeline fact.
+- `pending` reads the line's facts at the cutoff through `timelineTree.query`, not the waiter table: the batches are the line's published facts, and a waiting question is only the table's live entry.
 
 ## Verification
 
@@ -118,7 +121,8 @@ The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, 
 
 ## Requirements raised to mechanism owners
 
-None beyond the claim contract recorded in [ToolRegistry](ToolRegistry.md#requirements-raised-to-mechanism-owners).
+1. [#2127](https://github.com/arcships/dim/issues/2127) ([#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)): `line_owner::<T>(line)` gives this Session part a branch owner's data face by id; `session.question.pending` reads the line through `timelineTree.query`, and the tool's key uses the calling line id. Registration points and lifecycle services are excluded.
+2. The claim lifecycle recorded in [ToolRegistry](ToolRegistry.md#requirements-raised-to-mechanism-owners).
 
 ## Supersedes
 
@@ -126,7 +130,7 @@ None beyond the claim contract recorded in [ToolRegistry](ToolRegistry.md#requir
 
 ## Binding appendix
 
-The claim callback is the tool contract's `ClaimFn`; the method handler is the table's `call` callback. The waiter table and its entries stay private.
+The claim callback is the tool contract's claim parameter (`register(..., claim)`); the method handler is the table's `call` callback. The waiter table and its entries stay private. The pending reply's batch type is `dim_agent_types::PendingQuestionBatch`.
 
 ```rust
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -148,12 +152,28 @@ pub struct Answer { pub question_id: String, pub selected: Vec<String>, #[serde(
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PendingReply { pub requests: Vec<PendingQuestion> }
+pub struct PendingRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    #[serde(default)] pub through: Option<u64>,
+    #[serde(default)] pub after: Option<String>,
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReply {
+    pub branch_id: String,
+    pub through: u64,
+    pub batches: Vec<dim_agent_types::PendingQuestionBatch>,
+    #[serde(default)] pub next: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum QuestionError {
+    #[error("{message}")]
     Invalid { message: String },
+    #[error("no ask_user call is waiting for this answer")]
     NotPending,
 }
 ```
@@ -197,3 +217,25 @@ branch main, two clients
 | A late answer or decline to a settled call whose call id a later call reuses | `question_not_pending`: the `requestId` differs. The later call keeps waiting and accepts its own answer |
 | `exec` without terminal input | The CLI stops the turn with exit code 3 |
 | Steer, Queue, Append while waiting | No effect on the question; consumed after the batch or turn as usual |
+
+## Previous sections
+
+## 2. Data and state
+
+See [Use and scope](#use-and-scope-responsibility-split) and [Own contract](#own-contract).
+
+### 2.1 The claim before the fact
+
+See [Own contract](#own-contract).
+
+### 3.5 Pending-question read
+
+See [Own contract](#own-contract).
+
+## 9. Requirements raised to mechanism owners
+
+See [Requirements raised to mechanism owners](#requirements-raised-to-mechanism-owners).
+
+### A.1 Tool `ask_user`
+
+See [Caller example](#caller-example) and [Binding appendix](#binding-appendix).

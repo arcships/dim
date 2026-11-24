@@ -40,19 +40,25 @@ The built-in sources register at apply, and Skills registers its own source the 
 
 ```rust
 for name in SOURCES {
-    sources.register(ctx, name.into(), |target, cancelled| Box::pin(sources.load_one(target, cancelled))).await?;
+    sources.register(ctx, name.into(), |target| Box::pin(sources.load_one(target))).await?;
 }
 ```
 
 A branch adopts at open and reloads one source when its periodic check moves it:
 
 ```rust
-let Some(update) = sources.initial().await? else { return Ok(()) };
-prompt.configure(ConfigureRequest::Initial(update), cancelled.clone()).await?;
+// The branch's open reads the targets and model; Prompt adoption loads each target's current content.
+let Some(update) = sources.initial().configuration else { return Ok(()) };
+let ConfigureUpdate { sources: targets, model } = update;
 
-if let Some(entry) = sources.load(LoadSource { source: "dim/instructions/project".into(), scope }, cancelled.clone()).await? {
+// A periodic check adopts one changed entry; ConfigureRequest is Prompt adoption's.
+if let Some(entry) = sources.load("dim/instructions/project".into(), scope, cancelled.clone()).await? {
     if adopted.version != entry.version {
-        prompt.configure(ConfigureRequest::Loaded { sources: vec![entry] }, cancelled.clone()).await?;
+        prompt.configure(ConfigureRequest {
+            sources: Some(vec![(target, Some(entry))]),
+            model: None,
+            tools: None,
+        }, cancelled.clone()).await?;
     }
 }
 ```
@@ -60,10 +66,14 @@ if let Some(entry) = sources.load(LoadSource { source: "dim/instructions/project
 The language update entry composes the record, the value and each loaded branch:
 
 ```rust
-store.set_session_language(&session_id, language).await?; // #2018's record
-let Changed { previous, version } = language.set(SetLanguage { language }).await?;
+store.set_language(&session_id, language).await?; // #2018's record
+let Changed { previous, version } = language.set(language).await?;
 for line in tree.directory(None)?.lines {
-    line_owner::<Prompt>(line.line)?.configure(LanguageUpdate { version }, cancelled.clone()).await?;
+    line_owner::<Prompt>(line.line)?.configure(ConfigureRequest {
+        sources: Some(vec![(language_target(), Some(language_entry(language)))]),
+        model: None,
+        tools: None,
+    }, cancelled.clone()).await?;
 }
 ```
 
@@ -87,7 +97,7 @@ for line in tree.directory(None)?.lines {
 | `get` | The reply language and its version | `{}` | `{language?, version}` | None | None |
 | `set` | Change the reply language | `{language?}` | `{previous?, version}` | None; the owner completes it | None |
 
-`load` is a callback by reference on the owner's side: the contributor's load runs outside the owner's locks and outside the Timeline's commit lock; an accepted load settles even after its source withdraws. `get` and `set` are values and a transition; no lock, version or wait crosses.
+`load` is a callback by reference on the owner's side: the contributor's load runs outside the owner's locks and outside the Timeline's commit lock; the callback's future is dropped when the caller's token fires; an accepted load settles even after its source withdraws. `get` and `set` are values and a transition; no lock, version or wait crosses.
 
 ### Errors
 
@@ -185,11 +195,12 @@ The value is `SessionConfig.language`, seeded by `session.create {language?}` an
 
 ## Binding appendix
 
-The services are marked on their owner types under `promptSources` and `sessionLanguage`. `PromptHost`, `PromptRegistry` as a second name and `InitialPromptConfiguration` leave. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the cancellation argument and is not a request field. A source's failure arrives as `CallError`; `PromptCallbackError` keeps its own `code` and `message`.
+The services are marked on their owner types under `promptSources` and `sessionLanguage`; `ConfigureRequest` and `ConfigureOutcome` are [Prompt adoption](https://github.com/arcships/dim/pull/2102)'s types, used by the examples. `PromptHost`, `PromptRegistry` as a second name and `InitialPromptConfiguration` leave. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the cancellation argument and is not a request field. A source's failure arrives as `CallError`; `PromptCallbackError` keeps its own `code` and `message`.
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_runtime::{ConfigureUpdate, PromptEntry, PromptScope, PromptSourceTarget, ReplyLanguage};
+use dim_agent_types::{PromptEntry, PromptScope};
+use dim_agent_runtime::{ConfigureUpdate, PromptSourceTarget, ReplyLanguage};
 use rutis::host::{BoxFuture, CallError};
 use rutis::Ctx;
 
@@ -218,7 +229,10 @@ pub struct PromptCallbackError { pub code: String, pub message: String }
 impl From<CallError> for PromptCallbackError {
     fn from(error: CallError) -> Self {
         match error.raw().and_then(|raw| raw.downcast_ref::<rutis_bridge::session::Error>()) {
-            Some(remote) => Self { code: remote.code().unwrap_or("failed").into(), message: remote.message().into() },
+            Some(rutis_bridge::session::Error::Remote { name, message, .. }) => {
+                Self { code: name.clone(), message: message.clone() }
+            }
+            Some(other) => Self { code: other.code().unwrap_or("failed").into(), message: other.to_string() },
             None => Self { code: "failed".into(), message: error.message().into() },
         }
     }
@@ -246,12 +260,12 @@ impl PromptSources {
         &self,
         caller: &Ctx,
         name: String,
-        load: impl Fn(PromptSourceTarget, CancelledFn) -> BoxFuture<'static, Result<Option<PromptEntry>, PromptCallbackError>> + Send + Sync + 'static,
+        load: impl Fn(PromptSourceTarget) -> BoxFuture<'static, Result<Option<PromptEntry>, PromptCallbackError>> + Send + Sync + 'static,
     ) -> Result<(), SourceError> { /* ... */ }
 
     pub async fn load(&self, source: String, scope: PromptScope, cancelled: CancelledFn) -> Result<LoadReply, SourceError> { /* ... */ }
 
-    pub fn initial(&self) -> Result<InitialReply, SourceError> { /* ... */ }
+    pub fn initial(&self) -> InitialReply { /* ... */ }
 }
 
 #[rutis::service(name = "sessionLanguage")]
@@ -260,3 +274,17 @@ impl SessionLanguage {
     pub async fn set(&self, language: Option<ReplyLanguage>) -> Changed { /* ... */ }
 }
 ```
+
+## Previous sections
+
+### 1.3 Content
+
+See [Sources and classes](#sources-and-classes).
+
+## 2. Policy at the factory configuration
+
+See [Sources and classes](#sources-and-classes).
+
+## 3. The "Agent prompt language" state source
+
+See [The language source](#the-language-source).

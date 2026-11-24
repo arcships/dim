@@ -40,7 +40,7 @@ methods.register(
     ctx,
     "session.input",
     declarations,
-    |call, cancelled| Box::pin(withdraw(call, cancelled)),
+    |call| Box::pin(withdraw(call)),
 ).await?;
 ```
 
@@ -55,9 +55,9 @@ let reply = match methods.call(
 ).await {
     Ok(reply) => reply,
     Err(MethodError::UnknownMethod { .. }) => return Err(RpcError::unknown_method()),
-    Err(MethodError::Reloading { .. }) => return Err(RpcError::reloading()),
-    Err(MethodError::Unavailable { .. }) => return Err(RpcError::unavailable()),
-    Err(MethodError::Interrupted { .. }) => return Err(RpcError::interrupted()),
+    Err(MethodError::Reloading) => return Err(RpcError::reloading()),
+    Err(MethodError::Unavailable) => return Err(RpcError::app(-32000, "service_unavailable", "The service is unavailable")),
+    Err(MethodError::Interrupted) => return Err(RpcError::interrupted()),
     Err(MethodError::Invalid { .. }) => return Err(RpcError::invalid("Invalid request parameters")),
     Err(MethodError::Reserved { .. }) | Err(MethodError::Duplicate { .. }) => unreachable!("dispatch cannot register"),
 };
@@ -87,7 +87,7 @@ let listed = methods.into_iter().filter(|decl| !management.holds(&decl.name)).co
 | `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `{reply}` | The calling connection closing ends the call as interrupted; the provider's unload ends it by its declaration (`report` or `drain`) | `unknown_method`, `reloading`, `unavailable`, `interrupted`, `invalid`, `closed` |
 | `methods` | The declarations registered now | `{}` | `{methods}` | None | `closed` |
 
-`caller` is `{connectionId, callId}`: the connection the call arrived on and the call id the reply ordering uses; absent for an in-process call. The table passes the caller identity to the handler unchanged and writes no socket. The call callback is a direct parameter; it never runs inside the Timeline's commit lock.
+`caller` is `{connectionId, callId}`: the connection the call arrived on and the call id the reply ordering uses; absent for an in-process call. The table passes the caller identity to the handler unchanged and writes no socket. The call callback is a direct parameter; it never runs inside the Timeline's commit lock; its future is dropped when the call is interrupted.
 
 A handler's reply is `MethodReply` data: `{kind: "value", value}` or the handler's own error as `{code, message}`. The table adds no meaning.
 
@@ -167,13 +167,49 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field. A handler's error is `MethodReply` data, so the table returns it unchanged.
+The service is marked on `SessionMethods` under the wire name `sessionMethods`. `MethodTable`, `ForeignMethods` and the `SessionMethods` deref leave; the table's storage is private. `MethodCall`, `MethodDecl` and `RpcError` are the capabilities crate's types; `MethodReply` is the dispatch data defined below. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the binding's cancellation argument and is not a request field. A handler's error is `MethodReply` data, so the table returns it unchanged.
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_types::{MethodCall, MethodDecl, MethodReply};
-use rutis::host::BoxFuture;
+use crate::methods::{MethodDecl, RpcError};
+use rutis::host::{BoxFuture, CallError};
 use rutis::Ctx;
+
+/// One admitted call as the handler receives it: the declared method, the raw
+/// params and the connection that called, when one did.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MethodCall {
+    pub call_id: String,
+    pub method: String,
+    pub params: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+}
+
+/// A handler's own failure, carried to the client as its `code` and `message`.
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{code}: {message}")]
+pub struct MethodCallbackError { pub code: String, pub message: String }
+
+impl From<CallError> for MethodCallbackError {
+    fn from(error: CallError) -> Self {
+        match error.raw().and_then(|raw| raw.downcast_ref::<rutis_bridge::session::Error>()) {
+            Some(rutis_bridge::session::Error::Remote { name, message, .. }) => Self { code: name.clone(), message: message.clone() },
+            Some(other) => Self { code: other.code().unwrap_or("failed").into(), message: other.to_string() },
+            None => Self { code: "failed".into(), message: error.message().into() },
+        }
+    }
+}
+
+/// The dispatch reply: the handler's value, or its own error as data.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MethodReply {
+    Value { value: serde_json::Value },
+    Error { code: i32, app_error: String, message: String },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -211,7 +247,7 @@ impl SessionMethods {
         caller: &Ctx,
         namespace: String,
         declarations: Vec<MethodDecl>,
-        call: impl Fn(MethodCall, CancelledFn) -> BoxFuture<'static, MethodReply> + Send + Sync + 'static,
+        call: impl Fn(MethodCall) -> BoxFuture<'static, Result<serde_json::Value, MethodCallbackError>> + Send + Sync + 'static,
     ) -> Result<(), MethodError> { /* ... */ }
 
     pub async fn call(

@@ -38,7 +38,7 @@ let WaitReply { reason, task_ids, waited_ms } = line_owner::<WaitBranch>(line)?
     .await
     .map_err(|error| match error {
         WaitError::AlreadyWaiting => ToolResult::error("wait is already running in this session."),
-        WaitError::Closed => ToolResult::error("The wait was cancelled: capability reloading."),
+        WaitError::Closed => return Err(cancelled_call("capability reloading")),
     })?;
 let text = match reason {
     Reason::Notification => format!("wait ended: notification ({})", task_ids.join(", ")),
@@ -76,7 +76,7 @@ The tool's own input rules are its schema's: `timeoutMs` is 1 through 300,000, d
 
 ## Exceptions with reasons
 
-- The tool's result texts are protocol: the model reads the task ids and the end reason, and a change to either changes what it can do next.
+- The tool's result texts are protocol: the model reads the task ids and the end reason, and a change to either changes what it can do next. A reload ends the call as cancelled with the text `capability reloading`, not as a tool result; the turn fails.
 - A notice the model already read does not end a later wait: the line's owner answers `already_notified`, and the tool tells the model it was delivered.
 
 ## Verification

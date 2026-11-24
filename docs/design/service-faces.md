@@ -99,7 +99,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
 | `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.8。 |
 | `worktreeAssociations` | `store.associateWorktree` | 形状见 §4.8。 |
-| `toolSourcesView` | `toolRegistry.sources()`、`toolRegistry.observe_sources(listener)` | 不再有独立面：观察是 `toolRegistry` 上的只读操作，见 [ToolRegistry](plugins/ToolRegistry.md#own-contract)。 |
+| `promptSources` | `promptSources.register/load/initial` | 形状见 [PromptSources](plugins/PromptSources.md#own-contract)；观察仍由 `toolRegistry.sources()`/`observe_sources` 提供。 |
 
 宿主读取端口的数据面（§4.10）包括 `executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`。模型选择与列表统一由 `providerService` 提供；调用方和配置见[进程操作](contracts/process-owner-operations.md)；其余读取端口沿用现名。
 
@@ -127,7 +127,6 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
 | `sqliteStorage` | 连接与事务 | Session 行走 `store`；原生 Agent、Provider 和 Settings 的记录操作直接调用 `sqliteStorage`，连接与事务由 SQLite 插件持有。`sqliteStorage.storageReport({})` 返回 SQLite 文件和 WAL 的容量指标（[存储契约](appserver/native-storage-format.md)） |
 | `timelineStore` | 连接与批次 | Session 作用域的 `timelineStore` 数据面（resource-faces §9 允许与仓储族分名）：`createSession`/`sessionConfig`/`releaseSession`/`rollbackSession`/`append`（同步受理）/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`batchEndAt`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
-| `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
 

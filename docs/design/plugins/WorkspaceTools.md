@@ -38,22 +38,22 @@ An operation or parameter exists only where the row says No.
 ToolRegistry injects the host tools owner and reads the table at apply:
 
 ```rust
-let Declarations { tools } = host.declarations().await?;
-for definition in tools { registry.register(HostTool { definition, host: host.clone() }).await?; }
+let tools = host.declarations();
+// ToolRegistry registers each host tool with its execute and a no-op claim; the host owner's table is read, not handed over.
 ```
 
 The registry runs a host tool call, and resolves a write target before admission:
 
 ```rust
-let RunReply { result } = host.execute(ExecuteTool { call, caller }).await?;
-let Resolved { call } = host.resolve_write(ResolveWrite { call }).await?;
-let OrderReply { class } = host.ordering(OrderCall { call }).await?;
+let result = host.execute(call, caller, cancelled.clone()).await?;
+let call = host.resolve_write(call, cancelled.clone()).await?;
+let class = host.ordering(call)?;
 ```
 
 A client searches, and the Session part reads its own line's task:
 
 ```rust
-let SearchReply { candidates } = index.search(SearchFiles { root, query, limit }).await?;
+let SearchReply { candidates } = index.search(root, query, limit, cancelled.clone()).await?;
 let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).await?;
 ```
 
@@ -95,6 +95,8 @@ let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).aw
 | `unavailable` | The task's output file is gone; treat the output as unavailable |
 | `cancelled` | The call stopped before its effect; nothing was written or started |
 | `closed` | This Session or line is closing; a later generation serves the next Session |
+
+The `session.exec.*` methods keep the client's codes: `missing` is `exec_task_unknown` and `unavailable` is `exec_output_unavailable`; `invalid` is `invalid_params`.
 
 ### Flows
 
@@ -159,8 +161,8 @@ let ExecOutput { text } = line_owner::<BackgroundExec>(line)?.output(task_id).aw
 The host tools' face is marked on the host tools owner under `toolHost`; the index's face is marked on the process owner under `mentionIndex`. `ToolHost` and `ToolDriver` no longer exist. `CancelledFn` is the binding's cancellation argument and is not a request field; `context` is `{turnId, requestId, branchId}` data.
 
 ```rust
-use crate::host::CancelledFn;
-use dim_agent_types::{ToolCall, ToolDefinition, ToolExecutionContext, ToolResult};
+use crate::host::{CancelledFn, ToolExecutionContext};
+use dim_agent_types::{ToolCall, ToolDefinition, ToolResult};
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
@@ -198,7 +200,7 @@ impl WorkspaceTools {
         call: ToolCall,
         context: ToolExecutionContext,
         cancelled: CancelledFn,
-    ) -> ToolResult { /* ... */ }
+    ) -> Result<ToolResult, ToolHostError> { /* ... */ }
 
     pub async fn resolve_write(&self, call: ToolCall, cancelled: CancelledFn) -> Result<ToolCall, ToolHostError> { /* ... */ }
 

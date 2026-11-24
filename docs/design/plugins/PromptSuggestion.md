@@ -57,7 +57,7 @@ suggestion.respond(RespondParams { session_id: session.clone(), turn_id: turn, a
 | `session.suggestion.request` | Ask for a suggestion for one completed turn | `{sessionId, turnId}` | `{accepted: bool, reason?}` | The caller's token stops the preflight and the model call; the offer is dropped | `invalid`, `cancelled`, `closed` |
 | `session.suggestion.respond` | Accept or dismiss one offer | `{sessionId, turnId, action: "accept" \| "dismiss"}` | `{}` | None | `invalid`, `closed` |
 
-The reply stays the client's: `accepted` means the model call started, and `reason` is one of the stable codes (`disabled`, `not_root`, `branch_changed`, `not_latest_turn`, `turn_not_completed`, `no_text`, `throttled`, `compaction_due`, `new_input`, `turn_started`, `dismissed`, `session_closed`, `timeout`, `failed`, `invalid`). The offer and its clearing arrive as the `PromptSuggestion` notices `offer {turnId, text}` and `cleared {turnId, reason}`.
+The reply stays the client's: `accepted` means the model call started, and `reason` is one of the stable codes (`disabled`, `not_root`, `branch_changed`, `not_latest_turn`, `turn_not_completed`, `no_text`, `throttled`, `compaction_due`, `new_input`, `turn_started`, `dismissed`, `accepted`, `session_closed`, `timeout`, `failed`, `invalid`). The offer and its clearing arrive as the `PromptSuggestion` notices `offer {turnId, text}` and `cleared {turnId, reason}`.
 
 ### Errors
 
@@ -145,3 +145,13 @@ pub struct RequestReply {
 #[serde(rename_all = "camelCase")]
 pub struct RespondParams { pub session_id: String, pub turn_id: String, pub action: Action }
 ```
+
+## Previous sections
+
+## 9. Relation to Timeline branches
+
+See [Own contract](#own-contract).
+
+## 15. Acceptance
+
+See [Verification](#verification).

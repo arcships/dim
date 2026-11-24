@@ -102,7 +102,7 @@ The tool answers `ToolResult`s; the tree's read errors become the tool's content
 
 ## Requirements raised to mechanism owners
 
-None.
+1. [#2127](https://github.com/arcships/dim/issues/2127) ([#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)): `line_owner::<T>(line)` gives this Session tool the line's `timelineTree.read` by id; registration points and lifecycle services are excluded.
 
 ## Supersedes
 
@@ -111,3 +111,21 @@ None.
 ## Binding appendix
 
 No service. The tool registers through the tool contract; its input is `{query?, after?, limit?}` and its result is one `ToolResult` whose content is the rendered page.
+
+## Previous sections
+
+## 1. Problem and scope
+
+See [Use and scope](#use-and-scope-responsibility-split).
+
+## 3. The narrative projection
+
+See [Own contract](#own-contract).
+
+## 4. Handles: time and event id
+
+See [Own contract](#own-contract).
+
+## 14. Acceptance (flow tests)
+
+See [Verification](#verification).

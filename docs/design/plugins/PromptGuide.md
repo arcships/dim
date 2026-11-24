@@ -62,8 +62,8 @@ None.
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `register` | Publish an entry for the calling row's lifetime | `{scope, entry}` | `{}` | None | `invalid`, `duplicate_marker`, `too_large`, `closed` |
-| `compose` | The System for one line over a base | `{line, base?}` | `{system}` | None; a pure read | `invalid` (a malformed line id or base) |
+| `register` | Publish an entry for the calling row's lifetime | `{scope, entry}` | `{}` | None | `invalid_entry`, `no_caller_row`, `duplicate_marker`, `too_large`, `closed` |
+| `compose` | The System for one line over a base | `{line, base?}` | `{system}` | None; a pure read | `invalid_entry` (a malformed line id or base) |
 | `observe` | The composition version now and on each change until the row unloads | `{listener}` | `{}` | The row's unload ends the subscription | `closed` |
 
 `scope` is `"session"` or `{branch: lineId}`; `entry` is `{markers, order, text}`, `markers` at least one and each `[a-z][a-z0-9_-]{0,63}`, `text` at most 4096 bytes. `listener` is a callback by reference; it runs outside the table's lock and outside the Timeline's commit lock.
@@ -72,7 +72,8 @@ None.
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | A marker is outside the grammar, the scope's line id is empty or the entry has no marker; fix the entry |
+| `invalid_entry` | A marker is outside the grammar, the scope's line id is empty or the entry has no marker; fix the entry |
+| `no_caller_row` | The registration came from a caller with no row; register from a part's `apply` |
 | `duplicate_marker` | A marker the entry names has an entry whose scope meets this one; change the marker or the scope |
 | `too_large` | The text is over 4096 bytes; shorten it |
 | `closed` | This Session is closing; a later generation serves the next Session |
@@ -147,9 +148,27 @@ pub struct GuideEntry { pub markers: Vec<String>, pub order: i32, pub text: Stri
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
+/// A listener's own failure, reported to the table; it does not undo the composition.
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{code}: {message}")]
+pub struct GuideListenerError { pub code: String, pub message: String }
+
+impl From<rutis::host::CallError> for GuideListenerError {
+    fn from(error: rutis::host::CallError) -> Self {
+        match error.raw().and_then(|raw| raw.downcast_ref::<rutis_bridge::session::Error>()) {
+            Some(rutis_bridge::session::Error::Remote { name, message, .. }) => Self { code: name.clone(), message: message.clone() },
+            Some(other) => Self { code: other.code().unwrap_or("failed").into(), message: other.to_string() },
+            None => Self { code: "failed".into(), message: error.message().into() },
+        }
+    }
+}
+
 pub enum GuideError {
     #[error("{message}")]
-    Invalid { message: String },
+    InvalidEntry { message: String },
+    #[error("the registration has no caller row")]
+    NoCallerRow,
     #[error("{message}")]
     DuplicateMarker { message: String },
     #[error("{message}")]
@@ -167,7 +186,7 @@ impl GuideEntries {
     pub async fn observe(
         &self,
         caller: &Ctx,
-        listener: impl Fn(u64) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+        listener: impl Fn(u64) -> BoxFuture<'static, Result<(), GuideListenerError>> + Send + Sync + 'static,
     ) -> Result<(), GuideError> { /* ... */ }
 }
 ```

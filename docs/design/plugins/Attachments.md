@@ -73,7 +73,7 @@ let ReadReply { data, eof } = attachments.read(ReadAttachment {
 | `storage` | The store failed; retry or report it |
 | `closed` | The Session is closing; write nothing |
 
-The Session method entry maps these kinds to the client codes `invalid_params`, `attachment_invalid`, `attachment_too_large`, `session_closed`, `storage_failed`; a cancelled call answers `service_reloading`, and a WebEntry transport failure keeps `node_unavailable`.
+The Session method entry maps each kind to the client's code: `invalid` is `invalid_params` for a malformed request or `attachment_invalid` for an empty text or a bad name; `too_large` is `attachment_too_large`; `not_found` is `session_closed`; `storage` is `storage_failed`; `closed` is `session_closed`. A cancelled call answers `service_reloading`; a WebEntry transport failure keeps `node_unavailable`.
 
 ### Flows
 
@@ -190,3 +190,21 @@ pub enum AttachmentError {
     Closed,
 }
 ```
+
+## Previous sections
+
+### A.1 Image handling (CLI checks and ModelProvider)
+
+See [Security](#security) and [Exceptions with reasons](#exceptions-with-reasons).
+
+### File import and read
+
+See [Own contract](#own-contract).
+
+### A.2 `attachment.put`
+
+See [Own contract](#own-contract).
+
+### A.3 CLI contract
+
+See [CLI protocol](#cli-protocol).

@@ -59,7 +59,7 @@ shell.stop(StopParams { session_id: session.clone(), run_id }, cancelled).await?
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `shell.run` | Run one command and, in `record` mode, write its result as the line's input | `{sessionId, branchId?, runId, command, mode}` | `{runId, status, output, truncated, durationMs}`, with `progress` while it runs | The wait for the reply ends as `operation_interrupted`; the run stays with this generation and its result is still written | `invalid`, `shell_busy`, `closed` |
+| `shell.run` | Run one command and, in `record` mode, write its result as the line's input | `{sessionId, branchId?, runId, command, mode}` | `{runId, status, output, truncated, durationMs, exitCode?, signal?, reason?, recorded?}`, with `progress` while it runs | The wait for the reply ends as `operation_interrupted`; the run stays with this generation and its result is still written | `invalid`, `shell_busy`, `closed` |
 | `shell.stop` | Stop a running command | `{sessionId, runId}` | `{stopped}` | None; the stop settles | `invalid`, `closed` |
 | `shell.list` | The commands running now | `{sessionId}` | `{runs: [{runId, branchId, mode, command, startedAt}]}` | None | `invalid`, `closed` |
 
@@ -69,12 +69,15 @@ shell.stop(StopParams { session_id: session.clone(), run_id }, cancelled).await?
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | The command is empty, the run id is reused with a different call, or the parameters are malformed |
+| `invalid` | The command is empty or the parameters are malformed; the wire code is `invalid_params` |
+| `duplicate_run` | The run id was already used; the command never runs twice under one id |
+| `spawn_failed` | The process could not start; report the reason, do not retry the same command unchanged |
+| `shell_unavailable` | The operator's shell is not configured; fix the shell setting |
 | `shell_busy` | Another run of this Session is running; wait for it or stop it |
-| `closed` | The Session or the line is closing; no command starts |
+| `closed` | The Session or the line is closing; the wire code is `session_closed` |
 | `operation_interrupted` | The wait ended before the run did; the run continues and its result still arrives |
 
-The wire codes stay the client's: `shell_busy`, `shell_unavailable`, `spawn_failed`, `operation_interrupted`, `service_reloading`, `invalid_params`.
+The wire codes stay the client's: `invalid` is `invalid_params` or `duplicate_run`, `shell_busy` is `shell_busy`, a failed spawn is `spawn_failed`, an absent platform is `shell_unavailable`, `closed` is `session_closed` (or `service_reloading` while the part reloads), and an interrupted wait is `operation_interrupted`. `recorded` is `{sequence}` when the `record` input was written or `{error: {message, appError?}}` when it was not.
 
 ### Flows
 
@@ -92,7 +95,7 @@ The wire codes stay the client's: `shell_busy`, `shell_unavailable`, `spawn_fail
 
 ## Verification
 
-- `shell.run` answers the run's status, output, truncation and duration; a `record` run writes one input on the named line carrying `<dim-shell-input>`; a `private` run writes none.
+- `shell.run` answers the run's status, output, truncation, duration and, when present, `exitCode`, `signal`, `reason` and `recorded`; a `record` run writes one input on the named line carrying `<dim-shell-input>` and reports its sequence in `recorded`, or the write's error; a `private` run reports no `recorded`.
 - A cancelled wait ends `operation_interrupted` and the run continues; a `shell.stop` before the run starts makes it start nothing.
 - `shell.stop` answers `{stopped}`; an unknown run id is `invalid`; `shell.list` answers the running set with the client fields.
 - A Session closing before the spawn answers `closed`; a hold taken before the spawn keeps an idle release from ending the Session; a second run answers `shell_busy`.
@@ -158,6 +161,29 @@ pub struct RunReply {
     pub output: String,
     pub truncated: bool,
     pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded: Option<Recorded>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Recorded {
+    Sequence { sequence: u64 },
+    Rejected { error: RecordedError },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedError {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_error: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -180,3 +206,29 @@ pub struct RunInfo { pub run_id: String, pub branch_id: String, pub mode: Mode, 
 #[serde(rename_all = "camelCase")]
 pub struct ListReply { pub runs: Vec<RunInfo> }
 ```
+
+## Previous sections
+
+### A.1 Methods
+
+See [Own contract](#own-contract).
+
+### A.2 Execution
+
+See [Own contract](#own-contract).
+
+### A.3 Recorded input
+
+See [Own contract](#own-contract) and [Exceptions with reasons](#exceptions-with-reasons).
+
+### 5.2 The guide entry
+
+See [Own contract](#own-contract) and [Exceptions with reasons](#exceptions-with-reasons).
+
+## 9. Requirements raised to mechanism owners
+
+See [Requirements raised to mechanism owners](#requirements-raised-to-mechanism-owners).
+
+### A.5 Changes to other plugins
+
+See [Requirements raised to mechanism owners](#requirements-raised-to-mechanism-owners).

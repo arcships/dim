@@ -47,7 +47,7 @@ A part registers a tool and a claim callback; the registration lives with the pa
 registry.register(
     ctx,
     ask_user_definition(),
-    |call, context, cancelled| Box::pin(run_ask_user(call, context, cancelled)),
+    |call, context| Box::pin(run_ask_user(call, context)),
     |call, context| Box::pin(claim_question(call, context)), // inserts the waiter; no object comes back
 ).await?;
 ```
@@ -58,9 +58,11 @@ ToolBinding fixes a request's generation; ToolExecutor runs one of its calls:
 let Adoption { adoption } = registry.adopt(ctx, settings.tools.clone(), settings.tool_sources.clone()).await?;
 // ...
 let result = registry.run(
-    adoption.clone(),
-    ToolCall { id, name, input },
-    ToolExecutionContext { turn_id, request_id, branch_id },
+    RunCall {
+        adoption: adoption.clone(),
+        call: ToolCall { id, name, input },
+        caller: ToolExecutionContext { turn_id, request_id, branch_id },
+    },
     cancelled.clone(),
 ).await?;
 // A refusal or a bad call is a ToolResult; only the kinds below reach this caller.
@@ -69,16 +71,16 @@ let result = registry.run(
 Before the call is published, ToolBinding claims it for Loop's request; ToolBinding releases the claims the request never dispatched at the request's terminal fact:
 
 ```rust
-let claimed = registry.claim(ctx, request_id.clone(), calls.clone()).await?;
+let claimed = registry.claim(ctx, ClaimCalls { request: request_id.clone(), calls: calls.clone(), context }).await?;
 // A refused append, an interrupt before dispatch, a refused admission or a Loop error:
-registry.release_claims(ctx, request_id.clone(), calls).await?;
+registry.release_claims(ctx, ReleaseClaims { request: request_id.clone(), calls }).await?;
 ```
 
 A context fingerprint and a management view read values:
 
 ```rust
-let Declarations { tools, sources } = registry.declarations()?;
-let status = registry.sources()?; // adopted or rejected per source key
+let Declarations { tools, sources } = registry.declarations().await?;
+let status = registry.sources(); // adopted or rejected per source key
 ```
 
 ## Own contract
@@ -100,16 +102,16 @@ The registry provides `toolRegistry` on its owner type and nothing else; `toolSo
 | `register_source` | Publish a dynamic source: the sets it declares now and the callback that runs them | `{name}`, a sets callback and an execute callback | `{}` | None | `invalid`, `closed` |
 | `adopt` | Fix the generation a request prefix runs | `{tools, sources}` | `{adoption}` | None; the owner completes it | `invalid`, `unavailable`, `closed` |
 | `release` | Stop keeping an adoption's versions before the row unloads | `{adoption}` | `{released}` | None | `invalid`, `closed` |
-| `run` | Run one call of an adopted generation | `{adoption, call, caller}` | `{result}` | The caller's token stops the call; the tool's own settlement stays with its contributor | `invalid`, `unavailable`, `cancelled`, `closed` |
+| `run` | Run one call of an adopted generation | `{adoption, call, caller}` | `{result}` | The caller's token stops the call; the registry drops the callback's future and the tool's own settlement stays with its contributor | `invalid`, `unavailable`, `cancelled`, `closed` |
 | `resolve_write` | Resolve a write's target without effects, before admission | `{adoption, call}` | `{call}` | The caller's token stops the resolution | `invalid`, `unavailable`, `cancelled`, `closed` |
 | `ordering` | The class deciding whether the call shares its step | `{adoption, call}` | `{class: "concurrent" \| "exclusive"}` | None | `invalid`, `unavailable`, `closed` |
-| `claim` | Make the calls' pre-publish registrations exist before `step/tool-call` | `{request, calls}` | `{claimed: [callId]}` | None; the owner completes it | `invalid`, `callback`, `closed` |
+| `claim` | Make the calls' pre-publish registrations exist before `step/tool-call` | `{request, calls, context}` | `{claimed: [callId]}` | None; the owner completes it | `invalid`, `callback`, `closed` |
 | `release_claims` | Drop the claims a request never dispatched | `{request, calls}` | `{}` | None | `invalid`, `closed` |
-| `declarations` | The current declarations and source versions | `{}` | `{tools, sources}` | None | None |
+| `declarations` | The current declarations and source versions | `{}` | `{tools, sources}` | None | `closed` |
 | `sources` | Each source key's adopted version or rejection | `{}` | `{sources}` | None | None |
 | `observe_sources` | The status now and on each change until the row unloads | a listener callback | `{}` | The row's unload ends the subscription | `closed` |
 
-The execute, claim, sets and listener callbacks are direct parameters, not request fields; they run outside the registry's locks and outside the Timeline's commit lock. A source's sets callback returns data (key, version, declarations); its execute callback receives `{key, tool, call, context}` and returns the result. `caller` is `{turnId, requestId, branchId}` data, not an object. A `ToolResult` a contributor returns is data and is returned unchanged; the tool's own failure is `isError`, not an owner error.
+The execute, claim, sets and listener callbacks are direct parameters, not request fields; they run outside the registry's locks and outside the Timeline's commit lock. A callback's arguments are data; the callback's future is dropped when the call's token fires, and the contributor's own work settles by its own rule. A source's sets callback returns data (key, version, declarations); its execute callback receives `{key, tool, call, context}` and returns the result. `claim`'s `context` is the request's `{turnId, requestId, branchId}`, passed to each contributor's claim callback. `caller` in `RunCall` is the same data, not an object. A `ToolResult` a contributor returns is data and is returned unchanged; the tool's own failure is `isError`, not an owner error. The host tools are registered with a no-op claim (returns `false`) because a host tool has no pre-publish registration; the registry's host table read at apply uses that path.
 
 An adoption id and a claim's `(request, call)` entry are bound to the calling row: the row's unload releases them, so a caller that loses the id leaks nothing. `release` and `release_claims` only free them sooner.
 
@@ -198,7 +200,8 @@ The service is marked on `ToolRegistry` under the wire name `toolRegistry`. `For
 
 ```rust
 use crate::host::CancelledFn;
-use dim_agent_types::{ToolCall, ToolDefinition, ToolExecutionContext, ToolResult, ToolSourceVersion};
+use crate::host::ToolExecutionContext;
+use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSourceVersion};
 use rutis::host::{BoxFuture, CallError};
 use rutis::Ctx;
 
@@ -219,6 +222,22 @@ pub enum ToolError {
     Closed,
 }
 
+/// A listener's own failure; it does not undo the source status.
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[error("{code}: {message}")]
+pub struct ToolListenerError { pub code: String, pub message: String }
+
+impl From<CallError> for ToolListenerError {
+    fn from(error: CallError) -> Self {
+        match error.raw().and_then(|raw| raw.downcast_ref::<rutis_bridge::session::Error>()) {
+            Some(rutis_bridge::session::Error::Remote { name, message, .. }) => Self { code: name.clone(), message: message.clone() },
+            Some(other) => Self { code: other.code().unwrap_or("failed").into(), message: other.to_string() },
+            None => Self { code: "failed".into(), message: error.message().into() },
+        }
+    }
+}
+
 /// A source's or a claim's own failure, carried unchanged.
 #[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,7 +247,10 @@ pub struct ToolCallbackError { pub code: String, pub message: String }
 impl From<CallError> for ToolCallbackError {
     fn from(error: CallError) -> Self {
         match error.raw().and_then(|raw| raw.downcast_ref::<rutis_bridge::session::Error>()) {
-            Some(remote) => Self { code: remote.code().unwrap_or("failed").into(), message: remote.message().into() },
+            Some(rutis_bridge::session::Error::Remote { name, message, .. }) => {
+                Self { code: name.clone(), message: message.clone() }
+            }
+            Some(other) => Self { code: other.code().unwrap_or("failed").into(), message: other.to_string() },
             None => Self { code: "failed".into(), message: error.message().into() },
         }
     }
@@ -274,13 +296,29 @@ pub struct SourcesReply { pub sources: std::collections::BTreeMap<String, Source
 #[serde(rename_all = "snake_case")]
 pub enum OrderClass { Concurrent, Exclusive }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunCall { pub adoption: AdoptionId, pub call: ToolCall, pub caller: ToolExecutionContext }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveWrite { pub adoption: AdoptionId, pub call: ToolCall }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimCalls { pub request: String, pub calls: Vec<ToolCall>, pub context: ToolExecutionContext }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseClaims { pub request: String, pub calls: Vec<ToolCall> }
+
 #[rutis::service(name = "toolRegistry")]
 impl ToolRegistry {
     pub async fn register(
         &self,
         caller: &Ctx,
         declaration: ToolDefinition,
-        execute: impl Fn(ToolCall, ToolExecutionContext, CancelledFn) -> BoxFuture<'static, Result<ToolResult, ToolCallbackError>> + Send + Sync + 'static,
+        execute: impl Fn(ToolCall, ToolExecutionContext) -> BoxFuture<'static, Result<ToolResult, ToolCallbackError>> + Send + Sync + 'static,
         claim: impl Fn(ToolCall, ToolExecutionContext) -> BoxFuture<'static, Result<bool, ToolCallbackError>> + Send + Sync + 'static,
     ) -> Result<(), ToolError> { /* ... */ }
 
@@ -289,18 +327,18 @@ impl ToolRegistry {
         caller: &Ctx,
         name: String,
         sets: impl Fn() -> BoxFuture<'static, Result<Vec<SourceSet>, ToolCallbackError>> + Send + Sync + 'static,
-        execute: impl Fn(SourceCall, CancelledFn) -> BoxFuture<'static, Result<ToolResult, ToolCallbackError>> + Send + Sync + 'static,
+        execute: impl Fn(SourceCall) -> BoxFuture<'static, Result<ToolResult, ToolCallbackError>> + Send + Sync + 'static,
     ) -> Result<(), ToolError> { /* ... */ }
 
     pub async fn adopt(&self, caller: &Ctx, tools: Vec<ToolDefinition>, sources: Vec<ToolSourceVersion>) -> Result<Adoption, ToolError> { /* ... */ }
     pub async fn release(&self, caller: &Ctx, adoption: AdoptionId) -> Result<Released, ToolError> { /* ... */ }
-    pub async fn run(&self, adoption: AdoptionId, call: ToolCall, context: ToolExecutionContext, cancelled: CancelledFn) -> Result<ToolResult, ToolError> { /* ... */ }
-    pub async fn resolve_write(&self, adoption: AdoptionId, call: ToolCall, cancelled: CancelledFn) -> Result<ToolCall, ToolError> { /* ... */ }
+    pub async fn run(&self, request: RunCall, cancelled: CancelledFn) -> Result<ToolResult, ToolError> { /* ... */ }
+    pub async fn resolve_write(&self, request: ResolveWrite, cancelled: CancelledFn) -> Result<ToolCall, ToolError> { /* ... */ }
     pub fn ordering(&self, adoption: AdoptionId, call: ToolCall) -> Result<OrderClass, ToolError> { /* ... */ }
-    pub async fn claim(&self, caller: &Ctx, request: String, calls: Vec<ToolCall>) -> Result<Claimed, ToolError> { /* ... */ }
-    pub async fn release_claims(&self, caller: &Ctx, request: String, calls: Vec<ToolCall>) -> Result<(), ToolError> { /* ... */ }
-    pub fn declarations(&self) -> Result<Declarations, ToolError> { /* ... */ }
-    pub fn sources(&self) -> Result<SourcesReply, ToolError> { /* ... */ }
-    pub async fn observe_sources(&self, caller: &Ctx, listener: impl Fn(SourcesReply) -> BoxFuture<'static, ()> + Send + Sync + 'static) -> Result<(), ToolError> { /* ... */ }
+    pub async fn claim(&self, caller: &Ctx, request: ClaimCalls) -> Result<Claimed, ToolError> { /* ... */ }
+    pub async fn release_claims(&self, caller: &Ctx, request: ReleaseClaims) -> Result<(), ToolError> { /* ... */ }
+    pub async fn declarations(&self) -> Result<Declarations, ToolError> { /* ... */ }
+    pub fn sources(&self) -> SourcesReply { /* ... */ }
+    pub async fn observe_sources(&self, caller: &Ctx, listener: impl Fn(SourcesReply) -> BoxFuture<'static, Result<(), ToolListenerError>> + Send + Sync + 'static) -> Result<(), ToolError> { /* ... */ }
 }
 ```
