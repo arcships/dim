@@ -102,7 +102,7 @@ The `account.*` namespace keeps its published methods; handlers call the same ow
 ## Exceptions with reasons
 
 - The bearer's boundary is [ManagedAccount](ManagedAccount.md#the-bearers-boundary); DimOAuth's replies and errors omit it.
-- The account file is shared with the TypeScript subscriber under the published `auth.json.lock` marker protocol; FileStorage's contract records the marker exception, and DimOAuth keeps the file format.
+- The account file is guarded by the published `auth.json.lock` marker protocol. The writers are this owner and the App Server's managed OAuth flow, both Rust (`crates/dim-oauth/src/store.rs`, `crates/dim-app-server/src/managed_oauth.rs`); no TypeScript source writes `auth.json`. The marker is FileStorage's claim protocol for this file ([#2080](https://github.com/arcships/dim/pull/2080)), not a cross-language exception.
 
 ## Client-visible changes
 
@@ -131,7 +131,7 @@ None. The `account.*` method names, fields, error codes and user-visible behavio
 
 ## Requirements raised to mechanism owners
 
-- **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `read`, `update` and `write` for `auth.json` and its backup; the `auth.json.lock` marker exception is already recorded there.
+- **FileStorage ([#2080](https://github.com/arcships/dim/pull/2080)).** `read`, `update` and `write` for `auth.json` and its backup, with `claim`/`release` for the `auth.json.lock` marker.
 - **Settings, storage, session directory.** None.
 
 ## Supersedes
