@@ -41,14 +41,14 @@ let reference = resources.publish(PublishRequest {
 An interface reads it in pages:
 
 ```rust
-let page = resources.read(ReadRequest { reference: reference.clone(), offset: 0, limit: None }).await?;
+let page = resources.read(ReadRequest { session_id, id: reference.id.clone(), offset: 0, limit: None }).await?;
 ```
 
 ## Own contract
 
 ### Dependencies
 
-FileStorage's offset read `read {path, offset, length}` and its path resolution for the file; SessionLifecycle's `closing` for the Session's end. No pinned reader id crosses.
+FileStorage's `open_read` (`{path} → {read_id, size}`), `read_at {read_id, offset}` and `close_read {read_id}`; SessionLifecycle's `closing`. The reader id stays inside UiResources: no client and no other owner sees it.
 
 ### Operations
 
@@ -56,9 +56,9 @@ FileStorage's offset read `read {path, offset, length}` and its path resolution 
 | --- | --- | --- | --- | --- | --- |
 | `publish` | Publish a finalized regular file for interfaces | `{path, media_type}` | `{session_id, id}` | While the file is opened; nothing is registered | `invalid_params`, `resource_unavailable`, `session_closed` |
 | `withdraw` | Withdraw a reference this row published | `{reference}` | `{}` | None; the owner waits for admitted reads | `resource_gone`, `invalid_params`, `session_closed` |
-| `read` | One bounded page of a published file | `{reference, offset?, limit?}` | `{offset, bytes, total, media_type, data}` | The caller's token; the page stops, the reference stays | `resource_gone`, `invalid_params` |
+| `read` | One bounded page of a published file | `{sessionId, id, offset?, limit?}` (the client method's flat shape) | `{offset, bytes, total, media_type, data}` | The caller's token; the page stops, the reference stays | `resource_gone`, `invalid_params`, `session_closed` |
 
-`publish` takes the calling row's context as the binding's caller parameter, not as a request field: the reference belongs to the row that calls, and the owner registers the cleanup on that row. The Rust binding and the wire call the same method; rutis supplies the calling row's context on the wire.
+`publish` takes the calling row's context as the binding's caller parameter, not as a request field: the reference belongs to the row that calls, and the owner registers the cleanup on that row. The FileStorage reader opened at `publish` is owned by UiResources and closed with the reference; its id never crosses. The Rust binding and the wire call the same method; rutis supplies the calling row's context on the wire.
 
 The media type decides inline display: a listed image, audio, video, text or PDF type is served as declared; any other type is served as `application/octet-stream` and marked as an attachment.
 
@@ -69,15 +69,15 @@ The media type decides inline display: a listed image, audio, video, text or PDF
 | `invalid_params` | The path is relative or outside every authorized root, the reference names another Session, or a page offset is beyond the file |
 | `resource_unavailable` | The file is gone or unreadable; publish again or show the caller that the resource is unavailable |
 | `resource_gone` | The reference was withdrawn; stop reading |
-| `session_closed` | The Session is closing; the reference is settled |
+| `session_closed` | The Session is closing or is gone; the reference is settled |
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `publish` | Check the Session phase, resolve the path in FileStorage and read its size, register the reference and the row's cleanup | Nothing is registered | The reference is removed by the row's cleanup | Every reference is removed | UiResources: the reference and its read counter |
+| `publish` | Check the Session phase, `open_read` the path in FileStorage, register the reference (with its read id and size) and the row's cleanup | The reader is closed, nothing is registered | The reference and its reader are removed by the row's cleanup | Every reference and reader is closed and removed | UiResources: the reference and the reader |
 | `withdraw` | Check the owner row, cancel and wait for admitted reads, remove the reference | — | Already removed | Already removed | UiResources |
-| `read` | Resolve the reference, take a read token, call FileStorage's offset read for one page, release the token | The page stops; the token is released | The read ends with the row | Admitted reads are cancelled before the reference goes | UiResources: the token; FileStorage: the page |
+| `read` | Resolve the reference, take a read token, call FileStorage's `read_at` for one page, release the token | The page stops; the token is released | The read ends with the row | Admitted reads are cancelled before the reference and its reader go | UiResources: the token and the reader; FileStorage: the page |
 
 The `session.ui.resources.read` client method is the same `read`, served to RPC clients; the web entry's HTTP route is its transport. Both stay.
 
@@ -112,7 +112,7 @@ The checks below cite [design rules §7, PR #2029](https://github.com/arcships/d
 
 ## Requirements raised to mechanism owners
 
-None. FileStorage's contract (#2016) supplies the offset read.
+None. FileStorage's contract (#2016) supplies `open_read`, `read_at` and `close_read`.
 
 ## Binding appendix
 
@@ -128,7 +128,8 @@ pub struct ResourceRef { pub session_id: String, pub id: String }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadRequest {
-    pub reference: ResourceRef,
+    pub session_id: String,
+    pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

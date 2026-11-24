@@ -101,7 +101,7 @@ A Session can outlive every client. The presence snapshot says no connection is 
 | §4 rule 4 Core carries no business meaning | Bodies are module projections; no core branch. |
 | §4 rule 5 Batch | A snapshot is one input; the settings tool performs no write. |
 | §4 rule 6 Context from consumed events | Snapshots are inputs; tool results are tool results; no second path. |
-| §4 rule 7 Public services | `SessionClientsHost` and the setting modules' read ports are public. |
+| §4 rule 7 Public services | `connection.presences` and the setting modules' read ports are public. |
 | §4 rule 8 Infrastructure unchanged | No Timeline, Dispatcher, envelope, assembly or facade change. |
 | §4 rule 9 Timeline holds decision facts | Only the delivered snapshot is an input fact; the live connection and settings stores remain outside the Timeline. |
 | ADR 002 D1 | Each fact stays with its producer; parts are placed in Session or branch. |

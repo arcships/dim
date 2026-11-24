@@ -192,7 +192,7 @@
 
 - **场景/状态**：当前客户端 presence 的字符串快照和本代 last；输入只是声称的客户端环境，不授予信任或权限。
 - **转换**：先注册 ClientsChanged listener，再在 activation 后读当前值；变化才 append 自己的 input/message，成功后更新 last；关闭/代取消结束任务。
-- **恢复**：重新读 SessionClientsHost 当前状态，不恢复已断开的客户端；last 清空允许本代再次报告当前值。
+- **恢复**：重新读 `connection.presences` 当前状态，不恢复已断开的客户端；last 清空允许本代再次报告当前值。
 - **性质/论证**：先监听再初读避免丢初值期间的改变，notify 合并后重读当前值而不是逐个回放连接通知。失败 append 不更新 last，但这里没有定时 retry，直到下次唤醒才再试；不能承诺无新信号时必然重试成功。
 - **对应**：[environment_clients.rs](../../../crates/dim-agent-capabilities/src/environment_clients.rs)；environment_clients。它只写采用输入，按现有行为更接近输入发布部件，不为它增加恢复状态机。
 

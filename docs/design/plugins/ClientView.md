@@ -47,7 +47,7 @@ The App Server supplies `connectionId` from the calling connection's process-loc
 
 ### 2.3 Read
 
-The proposed management/UI read returns these per-connection records and their viewed branch. It is separate from `SessionClientsHost::presences`, whose model-facing projection contains only `channel` and `label`; no connection handle enters that projection or the model body. The App Server uses the same connection identity to clear the record on detach or close.
+The proposed management/UI read returns these per-connection records and their viewed branch. It is separate from `connection.presences`, whose model-facing projection contains only `channel` and `label`; no connection handle enters that projection or the model body. The App Server uses the same connection identity to clear the record on detach or close.
 
 ## 3. Model visibility
 

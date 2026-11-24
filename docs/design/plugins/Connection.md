@@ -95,7 +95,7 @@ The owner type is `ConnectionHub`. `accept` is crate-internal because a socket c
 | `attached` | Whether a connection views a Session now | `{connection_id, session_id}` | `{attached}` | None | none |
 | `presences` | The live clients of a Session | `{session_id}` | `{presences: [{channel, label?}]}` | None | none |
 | `counts` | Live connections and attached Sessions, excluding one connection | `{exclude_connection_id}` | `{connections, attached_sessions}` | None | none |
-| `close_for_idle` | Commit the daemon's refusal of new clients when nothing uses it | `{exclude_connection_id, running}` | `{connections, attached_sessions, running}` | None | `busy {connections, attached_sessions, running}` |
+| `close_for_idle` | Commit the daemon's refusal of new clients when nothing uses it | `{exclude_connection_id, running}` | `Counts` | None | `busy {connections, attached_sessions, running}` |
 | `close_all` | Close every connection and wait for its tasks | `{}` | `{}` | None; the owner completes the close | none |
 | `settle` (crate-internal) | One connection ended: release its attachment, tell UiHost, end its writer | `{connection_id, reason}` | `{}` | None | none |
 
@@ -103,7 +103,7 @@ The owner type is `ConnectionHub`. `accept` is crate-internal because a socket c
 
 `close_for_idle` takes `running` from Agents' `sessions` value, read immediately before. The owner rechecks only its own counts under the admission lock and commits the refusal in the same step, so no hello or attach joins after the decision.
 
-After the commit the assembly asks Agents to `quiesce` every Session. A `running` answer means a Session accepted work between the read and the pause; the refusal stands and the graceful close settles that work — admission is never reopened after the commit.
+The caller's sequence is Rpc's: read Agents' `sessions`, then `close_for_idle`; on `Busy` answer `daemon_busy` with the counts; the assembly then asks Agents to `quiesce`. Quiesce runs after the commit because Agents' pause is one-way; [#2098](https://github.com/arcships/dim/pull/2098)'s `Busy { running }` answer belongs to its own call site, and at this one a `running` answer is settled by the graceful close — admission is never reopened after the commit.
 
 ### Errors
 
@@ -144,7 +144,7 @@ Only the kinds with a wire code reach a client. The others are in-process outcom
 ## Client-visible changes
 
 - `daemon.shutdown {ifIdle:true}` keeps the wire error `daemon_busy` with `connections`, `attachedSessions` and `running`; the field `running` counts Sessions with accepted work or an activity hold, as before.
-- One narrow behaviour changes: when a Session accepts work between the caller's read and Agents' `quiesce`, the daemon now closes gracefully instead of answering `daemon_busy`, because Agents' pause is one-way and cannot be reverted. Accepted work still settles; the affected client is the CLI's `daemon stop --if-idle` and any start that stops an idle daemon. Maintaining the old refusal would need a revertable pause from Agents; this contract asks the maintainer to confirm the change.
+- One narrow behaviour changes: when a Session accepts work between the caller's read and Agents' `quiesce`, the daemon closes gracefully instead of answering `daemon_busy`, because Agents' pause is one-way and cannot be reverted; the alternative order (quiesce before the commit) would leave a paused daemon running when the commit is refused. Accepted work still settles; the affected client is the CLI's `daemon stop --if-idle` and any start that stops an idle daemon. Maintaining the old refusal would need a revertable pause from Agents; this contract asks the maintainer to confirm the change.
 
 ## Supersedes
 

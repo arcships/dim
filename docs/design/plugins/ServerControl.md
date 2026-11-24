@@ -39,7 +39,7 @@ A process part that starts work before any Session exists:
 if !activity.activated().await.activated {
     return Err(WorkError::HostClosed); // startup failed or shutdown began
 }
-let hold = activity.hold(ctx).await?; // the id is bound to this row
+let hold = activity.hold(ctx).await?; // the id is bound to this row; WorkError: From<ActivityError>
 let result = run_work().await;
 activity.release(ReleaseRequest { hold_id: hold.hold_id }).await;
 ```
@@ -49,9 +49,9 @@ The `daemon.shutdown` handler:
 ```rust
 match activity.shutdown(ShutdownRequest { mode: ShutdownMode::Graceful }).await {
     Ok(()) => { /* hold the reply until the assembly settles, then write it */ }
-    // Rpc maps this kind to the protocol's `invalid_params`: "Shutdown already requested".
-    Err(ActivityError::Conflict) => return Err(RpcError::invalid("Shutdown already requested")),
-    Err(error) => return Err(error.into()),
+    // Rpc maps these kinds: Conflict -> invalid_params ("Shutdown already requested"), Closed -> service_unavailable.
+    Err(ActivityError::Conflict) => { /* answer invalid_params */ }
+    Err(ActivityError::Closed) => { /* answer service_unavailable */ }
 }
 ```
 

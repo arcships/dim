@@ -68,11 +68,13 @@ The loader's row status (`rutis/loader`), read when a withdrawn namespace answer
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `register` | Publish a namespace for the registering row's lifetime | `{namespace, declarations, call}` + `caller: &Ctx` | `{}` | None; the owner completes it | `reserved`, `duplicate`, `invalid_params` |
-| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `MethodReply`: a value, or the handler's own error | The caller's token stops the wait; a caller disconnect stops delivery only and does not cancel the accepted call | `unknown_method`, `service_reloading`, `service_unavailable`, `operation_interrupted`, `invalid_params` |
+| `call` | Dispatch one call to the namespace that holds it | `{method, params, caller?}` | `CallOutcome`: the handler's `MethodReply` or its own `MethodError` | The calling load's token (A.1); a caller disconnect stops delivery only and does not cancel the accepted call | `unknown_method`, `service_reloading`, `service_unavailable`, `operation_interrupted`, `invalid_params` |
 
 `caller` is `{connectionId, callId}`: the connection the call arrived on and the call id the reply ordering uses. It is absent for an in-process call. The table passes it to the handler unchanged; a handler that notifies uses it with `callChannel`.
 
-`register`'s `call` is a callback parameter, not a request field, and the registration is bound to `caller`'s row: the table removes it when that row unloads. The callback runs on the registering row and is never called inside a commit lock.
+The handler's own failure is `MethodError` data inside `CallOutcome::Error` (A.1's `{code, appError, message}`), never a table error; the table returns only its routing failures.
+
+`register`'s `call` is a callback parameter, not a request field, and the registration is bound to `caller`'s row: the table removes it when that row unloads. The callback runs on the registering row and is never called inside a commit lock; it returns `Result<CallOutcome, TableError>` with `TableError: From<rutis::host::CallError>`, the form rutis accepts for a callback parameter.
 
 ### Errors
 
@@ -93,7 +95,7 @@ The wire codes are the existing ones from the methods contract.
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `register` | Check the name and declarations, record them under the row, refuse a duplicate | — | The registration is withdrawn and the row recorded | New registrations are refused; the table reloads with the process | The registering row |
-| `call` | Find the owner, admit the call, run the handler, return the reply; on unload, interrupt `report` and wait for `drain` | The caller stops waiting; the accepted call continues and settles by its declaration | The call ends and its commands settle | A withdrawn namespace answers from its row's status | The table for the call's settlement; the handler for its effects |
+| `call` | Find the owner, admit the call, run the handler, return its outcome; on unload, interrupt `report` and wait for `drain` | The caller stops waiting; the accepted call continues and settles by its declaration | The call ends and its commands settle | A withdrawn namespace answers from its row's status | The table for the call's settlement; the handler for its effects |
 
 ## Exceptions with reasons
 
@@ -125,7 +127,7 @@ The checks below cite [design rules §7, PR #2029](https://github.com/arcships/d
 
 ## Requirements raised to mechanism owners
 
-- **Session registration (#2026)**: the Session method table takes the same `call` request and `MethodReply`, so Rpc has one call path for both tables.
+- **Session registration (#2026)**: the Session method table's shape is [SessionMethods](https://github.com/arcships/dim/pull/2103) (#2103), the owner's latest head; Rpc calls each table by its own contract. This contract covers only the management table.
 
 ## Binding appendix
 
@@ -152,13 +154,24 @@ pub struct CallRequest {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MethodError { pub code: String, pub message: String }
+pub struct MethodError {
+    pub code: i32,
+    pub app_error: String,
+    pub message: String,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MethodReply {
     Value { value: serde_json::Value },
-    Error { code: String, message: String },
+    HandedOff,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CallOutcome {
+    Reply { reply: MethodReply },
+    Error { error: MethodError },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -176,10 +189,6 @@ pub struct MethodDecl {
     #[serde(default)]
     pub progress: bool,
 }
-
-pub type HandlerFn = Arc<
-    dyn Fn(MethodCall) -> BoxFuture<'static, Result<MethodReply, MethodError>> + Send + Sync,
->;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -210,11 +219,16 @@ pub enum TableError {
 
 #[rutis::service(name = "managementMethods")]
 impl MethodTable {
-    pub async fn register(&self, caller: &Ctx, request: RegisterRequest,
-        declarations: Vec<MethodDecl>, call: HandlerFn) -> Result<(), TableError> { /* ... */ }
+    pub async fn register(
+        &self,
+        caller: &Ctx,
+        request: RegisterRequest,
+        declarations: Vec<MethodDecl>,
+        call: impl Fn(MethodCall) -> BoxFuture<'static, Result<CallOutcome, TableError>> + Send + Sync,
+    ) -> Result<(), TableError> { /* ... */ }
     pub async fn call(&self, request: CallRequest, cancelled: CancelledFn)
-        -> Result<MethodReply, TableError> { /* ... */ }
+        -> Result<CallOutcome, TableError> { /* ... */ }
 }
 ```
 
-`MethodError` is the handler's own `{code, message}` data; the handler returns it inside `MethodReply::Error` and the table never rewrites it.
+`MethodError` is A.1's `{code, appError, message}` data; the handler returns it inside `CallOutcome::Error` and the table never rewrites it. `HandedOff` is A.1's reply kind for a call whose final answer is written later by the provider.

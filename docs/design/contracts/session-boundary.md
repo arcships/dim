@@ -282,7 +282,7 @@ Session namespaces registered today: `session.question` (Questions), `session.go
 
 ### A.2 Call channel
 
-`progress`, `notify` and `closed` are implemented (C1, #1158); `takeFinalReply` is not. App Server provides the process service `callChannel` to method providers, from its own `CallChannel` row so that a row naming it does not reload with Rpc; the Rust binding is the handler's per-call `Progress` and `Caller` (Appendix F).
+`progress`, `notify` and `closed` are implemented (C1, #1158); `takeFinalReply` is not. App Server provides the process service `callChannel` to method providers, from its own `CallChannel` row so that a row naming it does not reload with Rpc; the Rust binding is the handler's per-call `Progress` and the [CallChannel contract](../plugins/CallChannel.md)'s `notify`/`progress`/`closed` with `{connectionId, callId}` (Appendix F).
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
@@ -564,7 +564,7 @@ The neutral services map to the native owners below. Tools register with ToolReg
 | `managementMethods` | `ManagementMethods`, a process service holding a `MethodTable`, provided by App Server's `ManagementMethodsPlugin` row | A process part depends on `Keyed<ManagementMethods>` and calls `methods.register(ctx, ns, Vec<MethodDecl>, Handler)` in its `apply` | Rpc depends on the table and reads it per call (`management_provider`, §3.2), with row status from `loader.get(row)`; no provider is in Rpc's `Deps` | Implemented (#14, #382) |
 | `sessionMethods` | `SessionMethods`, a Session service holding a `MethodTable`, provided by the `SessionMethodsPlugin` Session part; its check is the process value `ReservedMethods` App Server provides | A Session part depends on `Keyed<SessionMethods>` and calls `methods.register(ctx, ns, Vec<MethodDecl>, Handler)` in its `apply` | Per call: `Session::session_service::<SessionMethods>()` on the Session `sessionId` names, after `index.acquire`, then `session_provider` (A.1); no provider is in Rpc's `Deps` | Implemented (C1, #382) |
 | Tool registration | `ToolContribution {definition, handler}`, registered with the Session's `ToolRegistry` (`Keyed<ToolRegistry>`) | `tools.register(ctx, ToolContribution)` in the part's `apply`; a dynamic source uses `tools.register_source(ctx, name, provider)` | Every read takes in what is registered; a name the mount list gives that nothing has registered is omitted and reported in diagnostics; each registration is a registry-owned versioned set (A.5, #241) | Implemented (#382) |
-| `callChannel` | `progress`: the handler's `Progress` argument, one per call; `notify` and `closed`: the `Caller` of the handler's `MethodCall.origin`, one per call; for other languages the process service `callChannel` | — | Rpc gives each admitted call a sink to its calling connection; the index records a foreign call by its `callId` until its reply is written, and removes the connection's entries on close or unload | `progress`, `notify` and `closed` implemented (C1, #1158); `takeFinalReply` not implemented |
+| `callChannel` | `progress`: the handler's `Progress` argument, one per call; `notify` and `closed`: `{connectionId, callId}` from the handler's `MethodCall.origin`, per call; for other languages the process service `callChannel` | — | Rpc gives each admitted call a sink to its calling connection; the CallChannel entry records the row instance and connection until the connection closes, the Rpc load unloads or the row unloads | `progress`, `notify` and `closed` implemented (C1, #1158); `takeFinalReply` not implemented |
 
 ```rust
 // crates/dim-agent-capabilities/src/methods.rs (C1), shared by both services
@@ -618,19 +618,15 @@ pub struct ManagementMethods(pub Arc<MethodTable>); // Deref<Target = MethodTabl
 ```rust
 // crates/dim-agent-capabilities/src/methods.rs, shared by both services
 pub struct MethodCall { pub method: String, pub params: Value, pub origin: Origin }
-pub struct Origin { pub caller: Option<Caller> }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotifyError { Undeclared, Gone, TooLarge } // code(): "undeclared", "gone", "too_large"
-impl Caller {
-    pub fn id(&self) -> &str; // the contract's connectionId
-    pub fn notify(&self, method: &str, params: serde_json::Map<String, Value>) -> Result<(), NotifyError>;
-    pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static;
-}
+pub struct Origin { pub caller: Option<CallerRef> }
+#[derive(Clone, Debug)]
+pub struct CallerRef { pub connection_id: String, pub call_id: String }
+// notify/progress/closed are the operations of the CallChannel contract.
 ```
 
-`Caller` binds A.2 `notify` and `closed` per call, like `Progress`: `MethodProvider::accept` builds it only when the call arrived on a client connection, bound to the notifications its declaration set declared, so a name outside that set is `Undeclared` before anything is written, and a generation that has unloaded is `Gone` first. It holds the connection through a trait object (`CallerConnection`) that keeps no strong reference to it, so a provider that keeps a `Caller` does not keep a closed connection alive. Rpc writes each notification after the reply of the call that produced the caller: one sent while the call runs is encoded once, admitted under the connection's held allowance, held in order and flushed right after the reply; one over the frame limit is `TooLarge` and the connection stays open, and one the held allowance cannot take closes the connection as a slow consumer. The caller resolves `closed` when the connection closes or the admitting Rpc load unloads.
+`Caller` and `Callers` are replaced by the [CallChannel contract](../plugins/CallChannel.md): the provider keeps `{connectionId, callId}` and calls `notify`, `progress` and `closed`, and `run` binds the call around the table dispatch. The delivery rules above — declared before gone, after-reply ordering, the held allowance, `unsupported`/`undeclared`/`gone`/`too_large` and the lifetime of the entry — are unchanged; the binding holds no connection handle.
 
-`Callers` is private transport wiring shared by the CallChannel and Rpc rows at its Rust type key; it has no service catalog name. The public operation surface remains `callChannel`. `Callers` is the process's only caller index: per row instance it holds the notification names its generation declared, kept after a connection of that instance closes so `Undeclared` is decided before `Gone`, and per row instance and connection the connection's direct writer and the row's unfinished calls by `callId`. `MethodProvider::accept` mints a foreign call's `callId` where the call's sink, the instance and the provider's declarations meet, and records the call; `Connection::answer` removes it after the reply is written. The entries of a connection are removed when it closes, when the admitting Rpc load unloads and when the row's generation unloads; the declared names go with the instance's generation. A native provider keeps its own `Caller` and records nothing. App Server provides A.2 `callChannel` for other languages as the process service `callChannel` (`ForeignCallChannel`, at `host_key("callChannel")`, from the `CallChannel` row that has no dependencies): its `notify` and `closed` read the calling row's instance with `rutis_bridge::session::caller_row()` and end in the same call's sink the Rust binding uses, so both bindings share one delivery path.
+`Callers` has no service catalog name; the public operation surface is `callChannel`.
 
 The foreign `register` (`ForeignMethods`, shared by both tables) decodes the declarations once, with the required fields above. It calls `call` with `{callId, method, params}` and, when the call came from a connection, `origin: {connectionId}`, a cancellation Promise and a per-call progress callback, and decodes `{kind:"value", value}` or a `{code, message}` error, whose `code` is the `appError`; an omitted `value`, including JavaScript `undefined` omitted by JSON serialization, becomes JSON `null`. A method may instead rethrow a service error it received. Unsupported declaration/reply fields and malformed data fail at this boundary. Not implemented: final-reply handoff, `origin.entry` and `origin.peer`, and the `reply` declaration field.
 

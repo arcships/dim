@@ -46,18 +46,20 @@ connection.reply(ReplyRequest { connection_id: id, call_id, frame: reply.reply }
 
 ### Dependencies
 
-Connection's `reply` and `attached`; ManagementMethods' `call`; the Session's method table (the same shape, per [ManagementMethods](ManagementMethods.md)); Agents' `acquire` and `sessions` ([Agents contract, PR #2098](https://github.com/arcships/dim/pull/2098)); CallChannel's `run`; ServerControl's `shutdown`.
+Connection's `reply` and `attached`; ManagementMethods' `call`; the Session's method table by its own contract ([SessionMethods, PR #2103](https://github.com/arcships/dim/pull/2103)); Agents' `acquire` and `sessions` ([Agents contract, PR #2098](https://github.com/arcships/dim/pull/2098)); CallChannel's `run`; ServerControl's `shutdown`.
 
 ### Operations
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `hello` | Answer a client's greeting for this generation | `{connection_id, params}` | `{reply, instance, methods}`: the frame, this generation's instance id and the management method names | The caller's token; the handshake stops before anything is recorded | `service_reloading`, `invalid_params`, `service_unavailable` |
-| `request` | Dispatch one call and settle what it starts | `{connection_id, call_id, request}` | `{reply}`: the frame | The caller's token stops the wait; the provider's call is not cancelled by it (see below) | `service_reloading`, `service_unavailable`, `unknown_method`, `operation_interrupted`, `invalid_params`, and the method's own error |
+| `request` | Dispatch one call and settle what it starts | `{connection_id, call_id, request}` | `{reply}`: the frame, built from the table's `CallOutcome` | The calling load's token (A.1); the provider's call is not cancelled by the connection closing (see below) | `service_reloading`, `service_unavailable`, `unknown_method`, `operation_interrupted`, `invalid_params`, and the method's own error |
 
 `request` mints nothing: the `call_id` comes from Connection, so the provider, CallChannel and the reply ordering name one call. The method's own error is the data the table returns; Rpc maps it to the protocol envelope and does not add kinds.
 
-A calling connection closing stops delivery only: the admitted call belongs to the provider generation and settles according to its declaration, as the [methods contract A.1 and A.2](../contracts/session-boundary.md) require. Rpc's `request` returns the reply frame; writing it is Connection's.
+A calling connection closing stops delivery only: the admitted call belongs to the provider generation and settles according to its declaration, as the [methods contract A.1 and A.2](../contracts/session-boundary.md) require. The token `request` receives is the admitting Rpc load's, never the connection's. Rpc's `request` returns the reply frame; writing it is Connection's.
+
+An idle close reads Agents' `sessions` value and calls `connection.close_for_idle`; on `Busy` it answers `daemon_busy` with the three counts. After the refusal is committed the assembly quiesces Agents and settles. Agents' `quiesce` answer is [#2098](https://github.com/arcships/dim/pull/2098)'s; at this call site it runs after the commit, so a `Busy { running }` answer is settled by the graceful close and cannot reopen admission — Agents' pause is one-way and cannot be reverted.
 
 ### Errors
 
@@ -107,7 +109,7 @@ The checks below cite [design rules §7, PR #2029](https://github.com/arcships/d
 
 ## Requirements raised to mechanism owners
 
-- **Session registration (#2026)**: the Session method table's dispatch takes the same `{method, params, caller: {connectionId, callId}}` request and returns the same `MethodReply`, so one call path serves both tables.
+- **Session registration (#2026)**: none. The Session table's shape is [#2103](https://github.com/arcships/dim/pull/2103)'s latest head; Rpc calls each table by its own contract.
 
 ## Binding appendix
 

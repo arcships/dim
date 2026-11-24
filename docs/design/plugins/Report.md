@@ -112,7 +112,7 @@ TimelineTree's bounded branch read and branch summary ([#2024](https://github.co
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `prepare` | Capture a bounded snapshot and open a draft | `{error?}`; the process namespace requires `error` in the observed variant | `{reportId, defaultModel?, plan}` | Before the snapshot is captured; nothing is drafted | `caller_required`, `invalid_params`, `unavailable`, `report_cancelled` |
+| `prepare` | Capture a bounded snapshot and open a draft | `{error?}`; the process namespace requires `error` in the observed variant | `{reportId, defaultModel?, plan}` | Before the snapshot is captured; nothing is drafted | `caller_required`, `invalid_params`, `report_cancelled` |
 | `plan` | Bind the exact material, generation and directives | `{reportId, generation, redact, instructions?}` | `{planId, generation, evidence, instructionsStatus, material, maxOutputTokens, estimatedCost}` | None; the plan is a value | `report_not_found`, `invalid_params`, `report_busy`, `report_model_unavailable` |
 | `generate` | Consume the plan and produce the archive | `{reportId, planId}` | `{title, body, files, archive, sharing}` | The named plan stops; the evidence stays for a new plan | `report_not_found`, `report_plan_stale`, `report_busy`, `report_generation_failed`, `report_cancelled` |
 | `cancel` | Stop a generation or drop a draft | `{reportId, target: "generation", planId}` or `{reportId, target: "report"}` | `{cancelled}` | — | `report_not_found` |
@@ -124,8 +124,7 @@ The draft is keyed by the calling connection and the part instance; a missing, e
 | Kind | What the caller does next |
 | --- | --- |
 | `caller_required` | The method needs a client connection; an in-process caller cannot prepare a report. Never reaches a client |
-| `invalid` | Fix the request: a missing or malformed error reference, a model id outside the admitted catalog, an out-of-range field |
-| `unavailable` | No draft can be prepared now: the Session is closing or its evidence cannot be read; use the local template or retry later |
+| `invalid_params` | Fix the request: a missing or malformed error reference, a model id outside the admitted catalog, an out-of-range field |
 | `report_not_found` | The draft expired or belongs to another connection; prepare again |
 | `report_plan_stale` | The plan was replaced or consumed; review the new plan before generating |
 | `report_busy` | A generation is running for this draft; cancel it or wait for it to settle |

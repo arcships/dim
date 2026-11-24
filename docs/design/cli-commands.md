@@ -1901,7 +1901,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode account PROVIDER` | Print the described account's non-secret state. |
 | `dimcode logout PROVIDER` | Sign the described account out. |
 | `/connect` | List the Providers `provider.management` reports; a described account opens its sign-in or sign-out step, and any other Provider opens the connection form. |
-| `/report` | Report the current Session, including during a turn or when no error occurred. Save the local report ZIP, see its path, or open a share destination after saving. [Report contract](plugins/Report.md#2-client-interaction). |
+| `/report` | Report the current Session, including during a turn or when no error occurred. Save the local report ZIP, see its path, or open a share destination after saving. [Report contract](plugins/Report.md#client-interaction). |
 | `/exit` | Detach and exit from the idle interactive prompt. |
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 | `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |
