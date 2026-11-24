@@ -58,7 +58,7 @@ flowchart LR
 | `managementMethods` | 从没有命名空间持有过该名称，或注册它的行已禁用或不存在时返回 `unknown_method`；其他情况下，已撤回的命名空间按该行的状态作答（§3.2） |
 | 工具注册 | Session 挂载列表列出但没有部件注册的工具不声明，并在诊断中报告；有部件注册后从下一个请求起声明（A.5） |
 
-本文定义的合同：这两张方法表及其注册、工具注册、`MethodDecl`、`MethodCall`、`MethodReply`、`MethodError`、列出方法的 `session.methods`、配套服务 `callChannel`（`progress`、`notify` 与 `closed` 已实现）、`ToolDeclaration`、`ToolCall`、`ToolResult` 及其效果声明、各入口获得的服务范围、命名、保留名、现有管理方法的迁移以及兼容性表。使用的合同：`SessionConfig`（[session-access](session-access.md#a3-sessionconfig-字段)）、来源输入约定（[session-access A.2](session-access.md#a2-来源输入约定)）、Rpc 命令信封以及 `appError` 码。
+本文定义的合同：这两张方法表及其注册、工具注册、列出方法的 `session.methods`、配套服务 `callChannel`（`progress`、`notify` 与 `closed` 已实现）、`ToolDeclaration`、`ToolCall`、`ToolResult` 及其效果声明、各入口获得的服务范围、命名、保留名、现有管理方法的迁移以及兼容性表。调用数据——`MethodDecl`、`MethodCall`、`MethodReply`、`MethodError`——归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。使用的合同：`SessionConfig`（[session-access](session-access.md#a3-sessionconfig-字段)）、来源输入约定（[session-access A.2](session-access.md#a2-来源输入约定)）、Rpc 命令信封以及 `appError` 码。
 
 ## 2. 数据与状态
 
@@ -81,11 +81,11 @@ sequenceDiagram
   Rpc->>Rpc: 非内建方法，没有管理命名空间持有它，params 中带 sessionId，授权 Session 访问
   Rpc->>AI: acquire(sessionId)，未装载时恢复
   AI-->>Rpc: Session 租约
-  Rpc->>S: session.question.respond 的所有者
-  S-->>Rpc: 命名空间 session.question 的提供方
-  Rpc->>Q: call(MethodCall)
+  Rpc->>S: call {method, params, caller}
+  S->>Q: 持有该名称的最长命名空间的处理函数
   Q->>H: 把回答交给等待中的调用 (branchId, requestId, callId)
-  Q-->>Rpc: MethodReply
+  Q-->>S: MethodReply
+  S-->>Rpc: MethodReply
   Rpc-->>CL: 结果
 ```
 
@@ -116,9 +116,9 @@ sequenceDiagram
 | 场景 | 顺序 | 结果 | 所有者 |
 | --- | --- | --- | --- |
 | Session 级提供方在调用中途重载 | call < reload | `report`：`operation_interrupted`；`drain`：调用自己的结果；提供方的卸载等待每个已受理的调用（AGENTS.md 规则 8） | 提供方 |
-| Session 的 Capability 重载期间调用 Session 方法 | — | `service_reloading` | Rpc |
+| Session 的 Capability 重载期间调用 Session 方法 | — | `service_reloading` | Session 方法表 |
 | 命名空间已撤回、且注册它的部件已失败或无法运行时调用 Session 方法 | — | 该部件修复前返回 `service_unavailable`（A.1） | Rpc |
-| 调用该 Session 从没有命名空间持有过的 Session 方法 | — | `unknown_method` | Rpc |
+| 调用该 Session 从没有命名空间持有过的 Session 方法 | — | `unknown_method` | Session 方法表 |
 | 管理方法所有者重载 | — | 新一代重新注册前，调用其已撤回的命名空间返回 `service_reloading`；处于 Failed、Unresolved、Stopped 或 Disposed 的所有者返回 `service_unavailable`（§3.2）；已受理的调用属于提供方，按 `interruption` 处理；Rpc 不重载，连接保持打开 | Rpc |
 | 在带 `deviceId` 的连接上调用管理方法或 `daemon.shutdown` | — | `unknown_method` | Rpc |
 | 两个部件在同一张表中注册同一命名空间 | 注册 | 第二次注册被拒绝（`<ns> is registered already`），发起它的部件失败 | 方法表 |
@@ -141,6 +141,8 @@ sequenceDiagram
 | `sessionMethods.register(namespace, MethodDecl[], call)` | async | 注册一个 Session 方法命名空间，直到调用方部件卸载；注册行是绑定的 `&Ctx`，不是请求字段，形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) |
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | 注册一个管理命名空间，直到调用方部件卸载 |
 | `call(MethodCall, cancelled, progress) -> MethodReply`（注册部件自己的函数） | async | 执行该命名空间的方法 |
+| `sessionMethods.call {method, params, caller?}` | async | 分发一个 Session 方法；方法表回答 `unknown_method`、`reloading`、`unavailable`、`interrupted` 或 `closed`（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)） |
+| `sessionMethods.methods {}` | sync | 该 Session 现在注册的命名空间的声明 |
 | `session.methods {sessionId}`（线上方法，Rpc 内建） | async | 列出某个 Session 的方法（协议 v3） |
 | `callChannel.progress / notify / closed`（App Server） | sync / async | 逐次调用的进度与绑定连接的通知（已实现，附录 F） |
 | `toolRegistry.register(ToolDeclaration, execute)` | async | 注册一个工具，直到调用方部件卸载 |
@@ -335,7 +337,7 @@ Client A             Rpc                  call admission            provider han
 送达方式与进度不同：
 
 - **可靠。** 提供方发送通知时只编码一次。调用的回复尚未写出时发出的通知经连接的暂存额度受理：其上限与回复与通知额度相同（1024 帧、32 MiB）但彼此独立，因此暂存的通知不会占用回复所需的空间。一次调用暂存的通知超过暂存额度时，该客户端像慢消费者一样被断开，之后的 `notify` 返回 `gone`。回复只经回复与通知额度受理。回复写出后，暂存的通知按序连同它们已占用的额度进入发送队列，并在各自写出后释放；因此连接的排队帧由两个额度共同界定，至多 2048 帧、64 MiB。超过帧上限的通知返回 `too_large`：不写任何内容，连接保持。
-- **回复之后。** 通知写在它 `callId` 所指调用的回复之后，该 `callId` 即报告该工作的 `MethodCall` 的 `callId`。调用仍进行时发出的通知按序暂存，紧接回复之后写出，因此客户端不会先看到回复尚未告知的对象的通知（例如回复才返回的 id）。该回复写出后，或该 id 不在途时，通知直接进入发送队列；同一连接上另一个未完成的调用既不会暂存它，也不会改变它的顺序。每条路径都会写出回复，包括被中断的调用和连接已消失的调用。
+- **回复之后。** 通知写在它 `callId` 所指调用的回复之后，该 `callId` 即报告该工作的 `MethodCall` 的 `Caller` 携带的 id。调用仍进行时发出的通知按序暂存，紧接回复之后写出，因此客户端不会先看到回复尚未告知的对象的通知（例如回复才返回的 id）。该回复写出后，或该 id 不在途时，通知直接进入发送队列；同一连接上另一个未完成的调用既不会暂存它，也不会改变它的顺序。每条路径都会写出回复，包括被中断的调用和连接已消失的调用。
 - **生命周期。** 连接关闭，或受理该调用的 Rpc 代际卸载后，`closed` 完成，之后的 `notify` 返回 `gone`。提供方代际卸载后发出的通知在两种绑定中都返回 `gone`：原生调用方持有该代际的停止信号，外来索引在同一次卸载时删除该实例的条目。调用方断开不取消任何调用。未从某连接收到过调用的行，其 `notify` 与 `closed` 对该连接返回 `gone`。服务按行实例与连接保存一个条目，内含该连接按 `callId` 记录的未完成调用；连接关闭、受理该调用的 Rpc 代际卸载或该行代际卸载时删除条目，调用在回复写出后从条目中移除。
 - **拒绝顺序。** 代际已装载时，两种绑定都先判定 `undeclared`，再看连接状态：连接已关闭也不会掩盖该代际未声明的名称。已卸载的代际对任何名称都返回 `gone`，无论是否声明过。
 
@@ -520,7 +522,7 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 
 | 语言中立服务 | Rust 类型 | Rust 中的注册 | 收集 | 状态 |
 | --- | --- | --- | --- | --- |
-| `managementMethods` | `ManagementMethods`，持有方法命名空间的进程服务，由 App Server 的 `ManagementMethodsPlugin` 行提供 | 进程部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作与线上形状归进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） | Rpc 按调用分发 `call`，并按 `heldNamespaces` 路由（§3.2）；没有提供方在 Rpc 的 `Deps` 中 | 已实现（#14、#382）；目标操作见进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） |
+| `managementMethods` | `ManagementMethods`，持有方法命名空间的进程服务，由 App Server 的 `ManagementMethodsPlugin` 行提供 | 进程部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作与线上形状归进程表的契约（[#2021](https://github.com/arcships/dim/issues/2021)） | Rpc 依赖这张表并按调用读取（§3.2）；没有提供方在 Rpc 的 `Deps` 中 | 已实现（#14、#382） |
 | `sessionMethods` | `SessionMethods`，由 `SessionMethodsPlugin` 部件提供的 Session 服务；其检查是 App Server 提供的进程值 `ReservedMethods` | Session 部件在其 `apply` 中调用 `register(ctx, namespace, declarations, call)`；操作、值与线上形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | Rpc 在 `sessionId` 指定、经 `index.acquire` 获取的 Session 上调用 `call`，并为 `session.methods` 调用 `methods`；没有提供方在 Rpc 的 `Deps` 中 | 已实现（C1、#382）；目标操作见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) |
 | 工具注册 | `ToolContribution {definition, handler}`，注册到本 Session 的 `ToolRegistry`（`Keyed<ToolRegistry>`） | 在部件的 `apply` 中调用 `tools.register(ctx, ToolContribution)`；动态来源用 `tools.register_source(ctx, name, provider)` | 每次读取纳入已注册的内容；挂载列表中没有注册的名称被省略并记录诊断；每次注册是注册表自有的带版本集合（A.5，#241） | 已实现（#382） |
 | `callChannel` | `progress`：处理函数的 `Progress` 参数，每次调用一个；`notify` 与 `closed`：处理函数 `MethodCall.origin` 上的 `Caller`，每次调用一个；其他语言使用进程服务 `callChannel`。调用数据归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | — | Rpc 为每个已受理调用提供一个通向发起调用连接的 sink；索引按 `callId` 记录其他语言的调用直到其回复写出，并在连接关闭或卸载时删除该连接的条目 | `progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现 |

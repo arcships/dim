@@ -58,7 +58,7 @@ flowchart LR
 | `managementMethods` | `unknown_method` when no namespace ever held the name, or the row that registered it is disabled or absent; a withdrawn namespace otherwise answers from that row's status (§3.2) |
 | Tool registration | A tool the Session's mount list names that no part has registered is not declared and is reported in diagnostics; it is declared from the next request once a part registers it (A.5) |
 
-Contracts defined here: the two method tables and their registration, tool registration, `MethodDecl`, `MethodCall`, `MethodReply`, `MethodError`, the `session.methods` listing method, the `callChannel` companion service (`progress`, `notify` and `closed` implemented), `ToolDeclaration`, `ToolCall`, `ToolResult`, its effect declaration, what each entry is served, naming, reserved names, the migration of existing management methods and the compatibility table. Contracts used: `SessionConfig` ([session-access](session-access.md#a3-sessionconfig-fields)), source input conventions ([session-access A.2](session-access.md#a2-source-input-conventions)), the Rpc command envelope and `appError` codes.
+Contracts defined here: the two method tables and their registration, tool registration, the `session.methods` listing method, the `callChannel` companion service (`progress`, `notify` and `closed` implemented), `ToolDeclaration`, `ToolCall`, `ToolResult`, its effect declaration, what each entry is served, naming, reserved names, the migration of existing management methods and the compatibility table. The call data — `MethodDecl`, `MethodCall`, `MethodReply`, `MethodError` — is [SessionMethods](../plugins/SessionMethods.md#own-contract)'s. Contracts used: `SessionConfig` ([session-access](session-access.md#a3-sessionconfig-fields)), source input conventions ([session-access A.2](session-access.md#a2-source-input-conventions)), the Rpc command envelope and `appError` codes.
 
 ## 2. Data and state
 
@@ -81,11 +81,11 @@ sequenceDiagram
   Rpc->>Rpc: not a built-in, no management namespace holds it, sessionId in params, authorize Session access
   Rpc->>AI: acquire(sessionId), restoring if unloaded
   AI-->>Rpc: Session lease
-  Rpc->>S: owner of session.question.respond
-  S-->>Rpc: provider of namespace session.question
-  Rpc->>Q: call(MethodCall)
+  Rpc->>S: call {method, params, caller}
+  S->>Q: the handler of the longest namespace holding the name
   Q->>H: hand the answer to the waiting call (branchId, requestId, callId)
-  Q-->>Rpc: MethodReply
+  Q-->>S: MethodReply
+  S-->>Rpc: MethodReply
   Rpc-->>CL: result
 ```
 
@@ -116,9 +116,9 @@ Each process part that serves management methods depends on `managementMethods` 
 | Scenario | Order | Outcome | Owner |
 | --- | --- | --- | --- |
 | Session-scoped provider reloads mid-call | call < reload | `report`: `operation_interrupted`; `drain`: the call's own result; the provider's unload waits for every admitted call (AGENTS.md rule 8) | Provider |
-| Session method while the Session's capabilities reload | — | `service_reloading` | Rpc |
-| Session method whose namespace is withdrawn and whose registering part failed or cannot run | — | `service_unavailable` until the part is fixed (A.1) | Rpc |
-| Session method that no namespace of the Session ever held | — | `unknown_method` | Rpc |
+| Session method while the Session's capabilities reload | — | `service_reloading` | Session method table |
+| Session method whose namespace is withdrawn and whose registering part failed or cannot run | — | `service_unavailable` until the part is fixed (A.1) | Session method table |
+| Session method that no namespace of the Session ever held | — | `unknown_method` | Session method table |
 | Management owner reloads | — | Calls into its withdrawn namespace return `service_reloading` until the new generation registers it again; a Failed, Unresolved, Stopped or Disposed owner returns `service_unavailable` (§3.2); admitted calls belong to the provider and follow their `interruption`; Rpc does not reload and connections stay open | Rpc |
 | Management method or `daemon.shutdown` on a connection with a `deviceId` | — | `unknown_method` | Rpc |
 | Two parts register one namespace in one table | registration | The second registration is refused (`<ns> is registered already`) and the part that made it fails | Method table |
@@ -141,6 +141,8 @@ Methods have no model-visible effect. A method that changes model context does s
 | `sessionMethods.register(namespace, MethodDecl[], call)` | async | Register a Session method namespace until the calling part unloads; the registering row is the binding's `&Ctx`, not a request field, and the shape is [SessionMethods](../plugins/SessionMethods.md#own-contract) |
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | Register a management namespace until the calling part unloads |
 | `call(MethodCall, cancelled, progress) -> MethodReply` (the registering part's function) | async | Execute a method of the namespace |
+| `sessionMethods.call {method, params, caller?}` | async | Dispatch one Session method; the table answers `unknown_method`, `reloading`, `unavailable`, `interrupted` or `closed` ([SessionMethods](../plugins/SessionMethods.md#own-contract)) |
+| `sessionMethods.methods {}` | sync | The declarations of the namespaces the Session registered now |
 | `session.methods {sessionId}` (wire, Rpc built-in) | async | List a Session's methods (protocol v3) |
 | `callChannel.progress / notify / closed` (App Server) | sync / async | Per-call progress and connection-bound notifications (implemented, Appendix F) |
 | `toolRegistry.register(ToolDeclaration, execute)` | async | Register a tool until the calling part unloads |
@@ -336,7 +338,7 @@ Client A             Rpc                  call admission            provider han
 Delivery differs from progress:
 
 - **Reliable.** A notification is encoded once when the provider sends it. One sent while its call's reply is not written is admitted against the connection's held allowance: the same limits as the reply-and-notice allowance (1024 frames, 32 MiB), separate from it, so held notifications never take the room a reply needs. A call that holds past the held allowance is disconnected like a slow consumer, and later `notify` calls answer `gone`. The reply is admitted against the reply-and-notice allowance only. After the reply, the held frames are queued in order with the room they already hold, which is freed as each is written; the connection's queued frames are therefore bounded by the two allowances together, at most 2048 frames and 64 MiB. A notification over the frame limit is refused with `too_large`: nothing is written and the connection stays open.
-- **After the reply.** A notification is written after the reply of the call named by its `callId`, which is the `callId` of the `MethodCall` that reported the work. One sent while that call is still running is held in order and written right after its reply, so a client never sees an event that names something the reply has not told it yet (for example an id the reply returns). Once that reply is written, or the id is not in flight, it is written straight to the outbound queue; another unfinished call on the same connection neither holds it nor reorders it. The reply is written on every path, including an interrupted call and a call whose connection is gone.
+- **After the reply.** A notification is written after the reply of the call named by its `callId`, which is the id the `Caller` of the `MethodCall` that reported the work carries. One sent while that call is still running is held in order and written right after its reply, so a client never sees an event that names something the reply has not told it yet (for example an id the reply returns). Once that reply is written, or the id is not in flight, it is written straight to the outbound queue; another unfinished call on the same connection neither holds it nor reorders it. The reply is written on every path, including an interrupted call and a call whose connection is gone.
 - **Lifetime.** `closed` resolves, and later `notify` calls answer `gone`, once the connection has closed or the Rpc load that admitted the call has unloaded. A notification after the provider's generation unloads answers `gone` in both bindings: a native caller holds the generation's stopping signal, and the foreign index removes the instance's entries on the same unload. A caller's disconnect cancels no call. `notify` and `closed` answer `gone` for a connection the row received no call from. The service holds one entry per row instance and connection, with that connection's unfinished calls by `callId`; the entry is removed when the connection closes, when the admitting Rpc load unloads and when the row's generation unloads, and a call leaves it when its reply is written.
 - **Refusal order.** While the generation is loaded, `undeclared` is decided before the connection's state in both bindings: a closed connection does not hide a name the generation did not declare. A generation that has unloaded answers `gone` for every name, declared or not.
 
@@ -557,7 +559,7 @@ The neutral services map to the native owners below. Tools register with ToolReg
 
 | Neutral service | Rust type | Registration in Rust | Collection | Status |
 | --- | --- | --- | --- | --- |
-| `managementMethods` | `ManagementMethods`, a process service holding the method namespaces, provided by App Server's `ManagementMethodsPlugin` row | A process part calls `register(ctx, namespace, declarations, call)` in its `apply`; the operations and wire form are the process table's contract ([#2021](https://github.com/arcships/dim/issues/2021)) | Rpc dispatches `call` per call and routes by `heldNamespaces` (§3.2); no provider is in Rpc's `Deps` | Implemented (#14, #382); the target operations are the process table's contract ([#2021](https://github.com/arcships/dim/issues/2021)) |
+| `managementMethods` | `ManagementMethods`, a process service holding the method namespaces, provided by App Server's `ManagementMethodsPlugin` row | A process part calls `register(ctx, namespace, declarations, call)` in its `apply`; the operations and wire form are the process table's contract ([#2021](https://github.com/arcships/dim/issues/2021)) | Rpc depends on the table and reads it per call (§3.2); no provider is in Rpc's `Deps` | Implemented (#14, #382) |
 | `sessionMethods` | `SessionMethods`, the Session service from the `SessionMethodsPlugin` part; its check is the process value `ReservedMethods` App Server provides | A Session part calls `register(ctx, namespace, declarations, call)` in its `apply`; the operations, values and wire form are [SessionMethods](../plugins/SessionMethods.md#own-contract) | Rpc calls `call` for the Session `sessionId` after `index.acquire`, and `methods` for `session.methods`; no provider is in Rpc's `Deps` | Implemented (C1, #382); the target operations are [SessionMethods](../plugins/SessionMethods.md#own-contract) |
 | Tool registration | `ToolContribution {definition, handler}`, registered with the Session's `ToolRegistry` (`Keyed<ToolRegistry>`) | `tools.register(ctx, ToolContribution)` in the part's `apply`; a dynamic source uses `tools.register_source(ctx, name, provider)` | Every read takes in what is registered; a name the mount list gives that nothing has registered is omitted and reported in diagnostics; each registration is a registry-owned versioned set (A.5, #241) | Implemented (#382) |
 | `callChannel` | `progress`: the handler's `Progress` argument, one per call; `notify` and `closed`: the `Caller` of the handler's `MethodCall.origin`, one per call; for other languages the process service `callChannel`. The call data is [SessionMethods](../plugins/SessionMethods.md#own-contract)'s | — | Rpc gives each admitted call a sink to its calling connection; the index records a foreign call by its `callId` until its reply is written, and removes the connection's entries on close or unload | `progress`, `notify` and `closed` implemented (C1, #1158); `takeFinalReply` not implemented |
