@@ -223,7 +223,7 @@ selection, persistence or fallback. Its only method is async `generate(request, 
 
 After an unavailable or failed service call, SessionTitle uses the adopted model through
 `auxiliaryModel`. A missing model, auxiliary error, empty normalized output or the shared 30 s
-generation deadline uses the input excerpt as a fallback title: collapse whitespace, trim and apply the configured Unicode length bound while preserving punctuation, and write through the same revision-checked
+generation deadline uses the input excerpt as a fallback title: collapse whitespace, trim and apply the configured Unicode length bound while preserving punctuation, and write through the same change
 metadata operation with source `auto`. Account-service failure alone does not consume one of
 the three failed attempts that cannot complete a metadata write. Session closing or explicit cancellation never falls back.
 The deadline includes both generation paths; timing out cancels and joins the active call before
@@ -288,7 +288,7 @@ sequenceDiagram
   Note over G: automatic title discarded
 ```
 
-The revision check is the recheck: a manual title always wins.
+The change sees the current title: a manual title always wins.
 
 | Scenario | Order | Outcome | Owner |
 | --- | --- | --- | --- |
@@ -329,7 +329,7 @@ The first eligible input's text is sent only to the generation paths selected by
 
 | Rule | How this document complies |
 | --- | --- |
-| Principles §4 rule 1 (commands for others' state) | The title is SessionStore's process-level state with no Timeline; SessionTitle changes it only through SessionStore's typed `setTitle`, and SessionStore decides through its revision check (principles §4 rule 9). |
+| Principles §4 rule 1 (commands for others' state) | The title is SessionStore's process-level state with no Timeline; SessionTitle changes it only through SessionStore's typed `setTitle`, and SessionStore serializes the writes; a manual title always wins inside the change (principles §4 rule 9). |
 | Principles §4 rule 2 (handover) | SessionTitle reads an input only after its handover (`input/applied`) and never acts on the input itself. |
 | Principles §4 rule 3 (before callbacks only) | No intervention before a write; rename rules are checked by SessionTitle's own method, not at an entry. |
 | Principles §4 rule 4 (no business meaning in core) | The delivered C6 Session broadcast notice in §9 is a generic record for any owner of process-level Session state. |
@@ -407,7 +407,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 
 | Step | Path |
 | --- | --- |
-| Listen | The Session's copy of the part listens to its Session's `session/{sessionId}` from `apply`, filters main input/applied, registers an owned task and returns; SessionScope's `closing()` or copy cleanup ends owned work |
+| Listen | The Session's copy of the part starts observing on SessionScope's `activated()` (the Session is published), listens to its Session's `session/{sessionId}`, filters main input/applied, registers an owned task and returns; `closing()` or copy cleanup ends owned work |
 | Eligibility | C4 creation snapshot: `interactive !== false && collaborationRole === "leader"` for generation; native omission means true. A requested initial title (`initialTitle`, §3.4) is written for interactive and non-interactive Sessions alike: it needs no model, and it is the caller's own text |
 | Trigger | On `input/applied` at `N`: skip if not eligible, disabled, in flight or failed attempts ≥ 3 (A5); otherwise start a generation task owned by the plugin's lifetime |
 | Check | `store.title({id})`: the change decides from the current title and revision; a `rejected` change discards |

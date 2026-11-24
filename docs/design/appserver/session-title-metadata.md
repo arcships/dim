@@ -43,7 +43,7 @@ protocol version.
  ----------------------------           --------------------------------------------------------------
  SessionTitle (Session part)          SessionStore (existing plugin)
    inject 'store'                         store (HostDispatch)
-     read -------------------------->       read     -> metadata()   ------------------+
+     title ------------------------->       title    -> metadata()   ------------------+
      setTitle ---------------------->       setTitle -> set_title()                    |
                                                           |                            v
                                           title writer: one write at a time ---> SqliteStorage
@@ -108,8 +108,8 @@ The `store` face, process scope, control node only, no instance key, provided by
 
 ### 4.2 Rust
 
-Rust consumers inject the `store` owner and call `title`/`set_title`. The pre-migration binding was `SessionMetadataService`, the typed binding of `sessionMetadata`; the target calls
-`read` and `set_title`. The binding is the existing dispatcher, published at both its typed key
+Rust consumers inject the `store` owner and call `title`/`set_title`; the target operations are
+`title` and `set_title`. The binding is the existing dispatcher, published at both its typed key
 and `host_key("store")` delegate directly to the same SessionStore owner.
 The existing `SessionMetadata` reply type is unchanged.
 
@@ -213,8 +213,8 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 | Event | Title |
 | --- | --- |
 | Session created | None, revision 0; no row is written |
-| Load, unload, close, restart | Unchanged: the title is stored with the Session's rows, not with its instance. `read` and `setTitle` work on a Session that is not loaded; their notices are dropped, as nobody listens |
-| `session.delete` (S5c) | Removed in S5c's single delete transaction, before the Session record. Afterwards `read` and `setTitle` fail `not_found` |
+| Load, unload, close, restart | Unchanged: the title is stored with the Session's rows, not with its instance. `title` and `setTitle` work on a Session that is not loaded; their notices are dropped, as nobody listens |
+| `session.delete` (S5c) | Removed in S5c's single delete transaction, before the Session record. Afterwards `title` and `setTitle` fail `not_found` |
 | Creation rollback | The same transaction as a delete; it removes a row that a racing write committed |
 | `session.fork` (S5c) | Not copied ([SessionTitle A7](../plugins/SessionTitle.md#appendix-e-assumptions)): the fork starts untitled at revision 0 |
 | SessionStore or SqliteStorage reload | Settles as in §6. Consumers of `store` reload with SessionStore ([ADR 002](../../adr/002-plugin-scope.md) D3), which SessionTitle §1 accepts. SessionStore reloads only with SqliteStorage, which has no dependencies |
@@ -262,7 +262,7 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
   `settings_documents` belongs to Settings. Columns added to `agent_sessions` change its stored SQL, so they need a
   new version as well, and they would mix a mutable value into the creation record.
 - **Why one row per Session.** Only the current title and revision are read. No decision uses earlier titles.
-- **Index.** The primary key serves `read`, `setTitle`, the list join and the delete. No other index.
+- **Index.** The primary key serves `title`, `setTitle`, the list join and the delete. No other index.
 
 | Store found | Action at startup, in the existing admission transaction (`IMMEDIATE`, before writable PRAGMAs) |
 | --- | --- |
@@ -283,7 +283,7 @@ after the upgrade commits (S5a's log line, with the version the store came from)
 | --- | --- |
 | Identity | `dyn HostDispatch` at `host_key("store")`, provided by SessionStore; `register_shared("store")` in App Server's service catalog, beside `sessions` and `settings` |
 | Use | A C4 Session part declares `inject: ['store']` and calls `ctx.use('store')`, the path `settings` takes from a Session part ([settings-owner fixture](../../../runtime/fixtures/settings-owner.ts)). Types are in [npm/plugin.d.ts](../../../npm/plugin.d.ts) |
-| Modes | `read` and `setTitle` are both `async` |
+| Modes | `title` and `setTitle` are both `async` |
 | Writer | The service carries no caller identity, as for `settings` (AGENTS.md rule 11). SessionTitle is the title's one writer by design ([SessionTitle §2](../plugins/SessionTitle.md#2-data-and-state)); other packages only read |
 | Reload | A consuming row reloads with SessionStore. SessionStore reloads only with SqliteStorage, so no directory part that never reloads is needed, unlike `sessions`, whose index reloads with Settings ([sessions D1](sessions-service.md#3-decisions)) |
 | Missing provider | A daemon without a native store has no SessionStore, so a row that injects `store` stays Pending under the existing rules; native Sessions continue |
@@ -330,12 +330,12 @@ None. S5b uses C6's `notify`, the existing service catalog and `HostDispatch`, a
 
 ## 16. Acceptance (flow tests)
 
-1. `setTitle` commits and returns the next revision; `read` returns it. Two v3 clients attached over IPC and
+1. `setTitle` commits and returns the next revision; `title` returns it. Two v3 clients attached over IPC and
    WebSocket each receive exactly one `session.notice` per commit, in commit order, with `data` equal to the list's
    title fields. A rejected change and an unknown Session announce nothing.
 2. Concurrent writers: every commit is announced once, in increasing `titleRevision` order.
 3. A clear (`null`) commits a revision with no title and announces nulls.
-4. `read` and `setTitle` of a Session that was never created, or was deleted: `not_found`.
+4. `title` and `setTitle` of a Session that was never created, or was deleted: `not_found`.
 5. A failed transaction (a disposable store with a failing trigger): `storage`, no notice, state unchanged; the next
    write at the same revision commits.
 6. A `setTitle` call whose caller awaits the reply and then drops it, while the write is held before its transaction,
