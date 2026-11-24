@@ -153,7 +153,7 @@ fixed project ancestors, without creating siblings or replacing non-directories.
 
 These are new binding authorization checks, not existing FileStorage guarantees.
 Root registration and root paths are host values under the [FileStorage
-contract](plugins/FileStorage.md), not a path-to-index lookup. Use the
+contract](../architecture/rust-agent/plugins/FileStorage.md), not a path-to-index lookup. Use the
 project indices Settings already owns and package indices from trusted assembly;
 the workflow binding exposes neither root lookup nor registration. Reserved resources,
 symlinks, generation validity and mutation locking remain FileStorage's checks.

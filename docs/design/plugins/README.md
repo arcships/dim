@@ -8,7 +8,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Plugin | Process part | Session part | Branch part | Phase / issue |
 | --- | --- | --- | --- | --- |
-| [FileStorage](FileStorage.md) (owner contract) | roots, byte storage, exclusion and stateless reads behind the `fsHost` operations | — | — | [#2016](https://github.com/arcships/dim/issues/2016) |
 | [Migration](Migration.md) | on-demand import tasks, source mappings, progress and retry records; unloaded after settlement | — | — | [Delivery plan](../../plan/analysis/legacy-migration.md) |
 | [Provider management](../appserver/provider-management.md) | existing Provider: configuration, catalogs, client preferences and management methods | — | — | #329 |
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
@@ -52,6 +51,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | FileStorage, Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
 | Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
 | Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |

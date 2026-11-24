@@ -16,12 +16,12 @@ Resource and state operations use these public data faces:
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
-| `fsHost` | the [FileStorage contract](plugins/FileStorage.md) operations: `addRoot`, `rootPath`, `stat`, `read`, `claim`, `release`, `write`, `import`, `update`, `createDirectory`, `list`, `remove` | the file-storage owner | #2016 |
+| `fsHost` | the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md) operations: `addRoot`, `rootPath`, `stat`, `read`, `claim`, `release`, `write`, `import`, `update`, `createDirectory`, `list`, `remove` | the file-storage owner | #2016 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
 
 
-The tool family (`resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`) is the file-tools owner's operations and is not part of `fsHost`; [#1297](https://github.com/arcships/dim/issues/1297) tracks that design. `fsHost` is the storage face of the [FileStorage contract](plugins/FileStorage.md).
+The tool family (`resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`) is the file-tools owner's operations and is not part of `fsHost`; [#1297](https://github.com/arcships/dim/issues/1297) tracks that design. `fsHost` is the storage face of the [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md).
 
 ```text
  control node                                        resource leaf (mounted per #1296)
@@ -344,7 +344,7 @@ client reads and writes them through the node's own management methods, not thro
 ## 4. File storage (`fsHost`) and the file tools
 
 The storage family in §4.1 and the error table in §4.7 are superseded by the [FileStorage
-contract](plugins/FileStorage.md). The tool-family table in §4.1 and subsections §4.2–§4.5
+contract](../architecture/rust-agent/plugins/FileStorage.md). The tool-family table in §4.1 and subsections §4.2–§4.5
 belong to the file-tools face, whose name [#1297](https://github.com/arcships/dim/issues/1297)
 settles, and are not part of `fsHost`.
 
@@ -363,7 +363,7 @@ Tool family — the file-tools face's operations, one call each (not `fsHost`):
 | `mentions` | async | `{path, query, limit?}` | `{candidates}` |
 
 Storage family — the raw operations the other file owners use: [FileStorage
-contract](plugins/FileStorage.md) § Own contract. The owner's face is `addRoot`, `rootPath`,
+contract](../architecture/rust-agent/plugins/FileStorage.md) § Own contract. The owner's face is `addRoot`, `rootPath`,
 `stat`, `read`, `claim`, `release`, `write`, `import`, `update`, `createDirectory`, `list` and
 `remove`.
 
@@ -559,7 +559,7 @@ and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 ### 4.7 Errors
 
 The storage face's error kinds are defined by the [FileStorage
-contract](plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own
+contract](../architecture/rust-agent/plugins/FileStorage.md#errors). Operation refusals arrive as the tool result's own
 `isError` with the code the operation already uses, so one code vocabulary serves the local and the
 remote path.
 
@@ -805,7 +805,7 @@ original path argument and ownership exclusion.
 | Old name | Face | What the name is now |
 | --- | --- | --- |
 | `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
-| `fileStorage` | `fsHost` | The [FileStorage contract](plugins/FileStorage.md): roots, keys and generations are internals; the face is the contract's operations |
+| `fileStorage` | `fsHost` | The [FileStorage contract](../architecture/rust-agent/plugins/FileStorage.md): roots, keys and generations are internals; the face is the contract's operations |
 | `sqliteStorage` | `sqliteStorage.storageReport({})` | SQLite file, WAL and reclaimable bytes ([native storage](appserver/native-storage-format.md)). Session repository operations belong to `store`. |
 | `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
 
