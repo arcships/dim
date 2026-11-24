@@ -12,7 +12,7 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "The vendored terminal stack uses ratatui 0.29 and its paste macro dependency; no compatible maintained paste release exists." },
     { id = "RUSTSEC-2026-0002", reason = "Only ratatui 0.29 uses lru 0.12.5: its private layout cache calls new, resize and get_or_insert, never IterMut. Recheck on terminal dependency upgrades." },
     { id = "RUSTSEC-2026-0253", reason = "Ratatui 0.29's private lru 0.12.5 cache never calls pop; its (Rect, Layout) keys also have no panicking Drop. Recheck on terminal dependency upgrades." },
-    { id = "RUSTSEC-2026-0543", reason = "Dim's direct chrono use moved to jiff (#1766). chrono remains only through aimux 0.6.1 and rmcp/oauth2; remove once aimux publishes without chrono and modelcontextprotocol/rust-sdk#1469 and ramosbugs/oauth2-rs#351 release without it." },
+    { id = "RUSTSEC-2026-0543", reason = "Dim's direct chrono use moved to jiff (#1766). chrono remains only through rmcp 3.9.0 and its oauth2 5.0.0 dependency; remove once modelcontextprotocol/rust-sdk#1469 and ramosbugs/oauth2-rs#351 release without it." },
 ]
 
 [licenses]

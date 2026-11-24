@@ -73,4 +73,4 @@ cargo run --release --locked -p xtask -- measure --model-config crates/dim-agent
 
 ## 依赖与验证
 
-协议实现来自 crates.io 的 `aimux-core`、`aimux-provider-utils`、`aimux-providers` 与 `aimux-stream`，在根 `Cargo.toml` 中按 `=0.6.1` 固定。`cargo test -p dim-agent-aimux` 同时运行请求映射、结果转换、真实 HTTP/SSE Agent 流程和上游契约回归。
+协议实现来自 crates.io 的 `aimux-core`、`aimux-provider-utils`、`aimux-providers` 与 `aimux-stream`，在根 `Cargo.toml` 中按 `=0.7.0` 固定。`cargo test -p dim-agent-aimux` 同时运行请求映射、结果转换、真实 HTTP/SSE Agent 流程和上游契约回归。
