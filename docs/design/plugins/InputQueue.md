@@ -152,7 +152,7 @@ A withdrawal of an input the queue no longer holds is `notHeld`, not an error: t
 
 - #2026 (SubmitChecks): `check` must accept `{entry, branchId, user, mode}` and answer proceed with blocks and warnings or a block, with the caller's cancellation; InputQueue calls it for an operator Steer.
 - #2026 (InputMethods): `session.input.withdraw` calls `withdraw` by line id; `session.input.pending` keeps its page read on TimelineTree and does not call `pending`. The Session entry keeps the operator's content validation and the client's reply shape.
-- #2025 (Session access): a Session part calls `line_owner::<InputQueue>(line)?.submit/withdraw/pending`; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
+- #2025 (Session access): a Session part calls `line_owner::<InputQueue>(line)?.submit/withdraw/pending`; the route is [ADR 027](https://github.com/arcships/dim/pull/2029) D1 and the mechanism is [#2127](https://github.com/arcships/dim/issues/2127).
 
 ## Binding appendix
 

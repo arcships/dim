@@ -158,7 +158,7 @@ No request rebuilds the System from history: the System a line runs with is the 
 
 - #2026 (PromptGuide): `compose` must answer the System for one line and a base System as data, and `observe` must deliver a callback the branch part can register; the current `compose_system` takes Rust values and the watch is Rust-only.
 - #2026 (PromptSources): `initial` and `load` as the target contract states; `configure`'s `Initial` loads through them, and the branch part loads for its periodic checks.
-- #2025 (Session access): the Session language and Agent configuration entries reach `line_owner::<Prompt>(line)?.configure(..)` and `line_owner::<Prompt>(line)?.adoptedConfiguration()` by line id; ADR 027's id-to-instance step resolves the branch group's data face.
+- #2025 (Session access): the Session language and Agent configuration entries reach `line_owner::<Prompt>(line)?.configure(..)` and `line_owner::<Prompt>(line)?.adoptedConfiguration()` by line id; the route is [ADR 027](https://github.com/arcships/dim/pull/2029) D1 and the mechanism is [#2127](https://github.com/arcships/dim/issues/2127).
 
 ## Binding appendix
 

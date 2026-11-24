@@ -131,7 +131,7 @@ None: the contract adds the owner's first public read and keeps the provider and
 
 - #2019 (Provider): `invoke` must accept the branch consumer callback, the failure chain and the image-adapted request, as the Provider contract states; ModelProvider adds nothing to that request beyond durable image bytes.
 - #2018 (SessionFiles): `read` must answer one file-backed image's bytes for the Session named in the request metadata, within the owner's limit.
-- #2025 (Session access): `session.turn.get` reads `line_owner::<ModelProvider>(line)?.progress()`; ADR 027's id-to-instance step resolves the branch group's data face.
+- #2025 (Session access): `session.turn.get` reads `line_owner::<ModelProvider>(line)?.progress()`; the route is [ADR 027](https://github.com/arcships/dim/pull/2029) D1 and the mechanism is [#2127](https://github.com/arcships/dim/issues/2127).
 
 ## Binding appendix
 

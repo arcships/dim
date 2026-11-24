@@ -142,7 +142,7 @@ A missing predecessor makes the numbers unavailable rather than recounting histo
 - #2026 (ToolRegistry): `declarations` answers `{tools, sources}` as data ([ToolRegistry](https://github.com/arcships/dim/pull/2103), target, pending); ContextUsage reads it when the adopted configuration names no tools.
 - #2025 (ContextFacts): `contributions` and `estimate` must accept the model selection as data, as the target contract states.
 - #2025 (ContextProjection): `estimate` counts the line's sources at a cutoff; it does not take a `StreamedContext`. The projection stays in ContextPreparation.
-- #2025 (Session access): the Session methods read `line_owner::<ContextUsage>(line)?.read(..)`; ADR 027's id-to-instance step resolves the branch group's data face.
+- #2025 (Session access): the Session methods read `line_owner::<ContextUsage>(line)?.read(..)`; the route is [ADR 027](https://github.com/arcships/dim/pull/2029) D1 and the mechanism is [#2127](https://github.com/arcships/dim/issues/2127).
 
 ## Binding appendix
 

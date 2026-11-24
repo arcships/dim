@@ -144,7 +144,7 @@ None. Every cross-owner call lands on an operation above or on a sibling's opera
 
 - #2028 (ToolBinding): Loop needs `bind`, `adopted`, `claim`, `transfer`, `release` and `retain_only` as data operations. Settlement otherwise follows `step/tool-result` and `turn/end`; `retain_only` is the Loop's own rebuild step, since ToolBinding keeps its records across a Loop reload, and `release` lets the Loop settle a request it knows has ended.
 - #2026 (GuideEntries): Loop needs `compose` as a data operation returning the System text for one line and a base System; the current `compose_system` takes Rust values.
-- #2025 (Session access): the Session entry `session.turn.get` reaches `line_owner::<Loop>(line)?.state()` and `timelineTree.read` by line id; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
+- #2025 (Session access): the Session entry `session.turn.get` reaches `line_owner::<Loop>(line)?.state()` and `timelineTree.read` by line id; the route is [ADR 027](https://github.com/arcships/dim/pull/2029) D1 and the mechanism is [#2127](https://github.com/arcships/dim/issues/2127).
 
 ## Binding appendix
 

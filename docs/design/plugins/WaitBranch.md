@@ -119,7 +119,7 @@ None: the Wait document (#2103) keeps only the tool declaration, its texts and t
 ## Requirements raised to mechanism owners
 
 - #2026 (`wait` tool): the tool calls `wait` by the calling line id and keeps the model-facing texts and the tool-result settlement; it no longer holds the branch `Wait` object or calls a private method. The Wait document keeps only the tool; the arrival table and the operation are this contract's, so the two documents do not both define a table or a reply shape.
-- #2025 (Session access): the tool calls `line_owner::<WaitBranch>(line)?.wait(..)`; ADR 027's id-to-instance step resolves the branch group's data face, except registration points and lifecycle services.
+- #2025 (Session access): the tool calls `line_owner::<WaitBranch>(line)?.wait(..)`; the route is [ADR 027](https://github.com/arcships/dim/pull/2029) D1 and the mechanism is [#2127](https://github.com/arcships/dim/issues/2127).
 
 ## Binding appendix
 

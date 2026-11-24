@@ -171,7 +171,7 @@ Loop writes `context/prepare` before the call. `prepare` then writes `model/call
 - #2025 (PrepareContextHost): the model profile's request builder remains the host port `prepare` calls; the owner contract does not replace it.
 - #2025 (ContextFacts, SummaryStrategy): the counting and summary operations above replace `contextModelHost` and `compactionStrategyHost`; this contract uses only those operations.
 - #2026 (GuideEntries): `register` must accept a line-scoped entry and withdraw it with the part.
-- #2025 (Session access): the client's `session.context.compact` reaches `line_owner::<ContextPreparation>(line)?.compact(..)` by line id; ADR 027's id-to-instance step resolves the branch group's data face.
+- #2025 (Session access): the client's `session.context.compact` reaches `line_owner::<ContextPreparation>(line)?.compact(..)` by line id; the route is [ADR 027](https://github.com/arcships/dim/pull/2029) D1 and the mechanism is [#2127](https://github.com/arcships/dim/issues/2127).
 
 ## Binding appendix
 
