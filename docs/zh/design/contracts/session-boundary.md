@@ -2,7 +2,7 @@
 
 状态：草案。总体设计：[总览 §3 集成](../overview.md#3-基于现有机制的集成)、[附录 B Rpc 与 ToolRegistry](../overview.md#附录-b-现有插件的补充)；规则：[ADR 002](../../adr/002-plugin-scope.md) D2、D3、D5。阶段：P0。语言：语言中立合同；Rust 绑定见[附录 F](#附录-f-rust-绑定)。[C4 绑定](../../../design/session-typescript.md) 已实现非 Rust Session 工具和方法子集；原生广播仍待定。
 
-本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；注册接收命名空间及其声明的数据，以及调用方的函数回调；Session 方法表的 `call` 是所有者进程内的操作（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务（方法表或注册表），并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时分发各张方法表的 `call`，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 已实现逐次调用的 `progress`（C1）以及绑定连接的通知 `notify` 与 `closed`（#1158）；`takeFinalReply` 及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
+本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；注册接收命名空间及其声明的数据，以及调用方的函数回调；Session 方法表的 `call` 是所有者进程内的操作（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)）；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务（方法表或注册表），并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时分发各张方法表的 `call`，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 与各所有者契约的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 已实现逐次调用的 `progress`（C1）以及绑定连接的通知 `notify` 与 `closed`（#1158）；`takeFinalReply` 及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
 
 | 服务 | 作用域 | 注册什么 | 注册方 | 读取方 |
 | --- | --- | --- | --- | --- |
@@ -159,7 +159,7 @@ sequenceDiagram
 | §4 第 1 条（指令事件） | 不适用：这些服务自身不写 Timeline 事件；改变分支状态的方法调用状态所有者，由所有者写入（例如 InputQueue 为 `session.input.withdraw` 写入的 `input/deleted`）。 |
 | §4 第 2 条（交接） | 不适用：方法与工具贡献不交接任何对象；工具调用按现有 `step/tool-call` 合同交给 ToolExecutor。 |
 | §4 第 3 条（只用 before 回调） | Rpc 只校验参数格式和 `sessionId` 授权；功能检查归方法所有者，提交前的处理只用 Timeline before 回调。 |
-| §4 第 4 条（核心不带业务含义） | 方法表与 ToolRegistry 保存部件注册的内容，Rpc 读取方法表；它们都不点名提供方，也不解释方法。效果声明随结果原样携带，核心没有任何部分认识它的类型（A.6）。 |
+| §4 第 4 条（核心不带业务含义） | 方法表与 ToolRegistry 保存部件注册的内容，Rpc 调用它们的操作；它们都不点名提供方，也不解释方法。效果声明随结果原样携带，核心没有任何部分认识它的类型（A.6）。 |
 | §4 第 5 条（批次） | 不适用：本文没有依据 Timeline 事件做的决定；所有者依据自己的事实决定。 |
 | §4 第 6 条（模型上下文） | 方法对模型不可见，注册的工具只通过其声明和 `ToolResult` 到达模型（§5）。 |
 | §4 第 7 条（公开事件与服务） | 提供方只通过分支的公开服务到达分支，Rpc 只经 Session 的 `sessionMethods` 分发。 |
@@ -527,7 +527,7 @@ ToolBinding 沿既有 Prompt / BranchLifecycle 流程完成匹配与必要的采
 | 工具注册 | `ToolContribution {definition, handler}`，注册到本 Session 的 `ToolRegistry`（`Keyed<ToolRegistry>`） | 在部件的 `apply` 中调用 `tools.register(ctx, ToolContribution)`；动态来源用 `tools.register_source(ctx, name, provider)` | 每次读取纳入已注册的内容；挂载列表中没有注册的名称被省略并记录诊断；每次注册是注册表自有的带版本集合（A.5，#241） | 已实现（#382） |
 | `callChannel` | `progress`：处理函数的 `Progress` 参数，每次调用一个；`notify` 与 `closed`：处理函数 `MethodCall.origin` 上的 `Caller`，每次调用一个；其他语言使用进程服务 `callChannel`。调用数据归 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) | — | Rpc 为每个已受理调用提供一个通向发起调用连接的 sink；索引按 `callId` 记录其他语言的调用直到其回复写出，并在连接关闭或卸载时删除该连接的条目 | `progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现 |
 
-调用数据——`MethodDecl`、`Interruption`、`MethodCall`、`Origin`、`Caller`、`CallerConnection`、`CallSite`、`MethodReply`、`MethodCallbackError`、`MethodError`、`Handler`、`Progress` 与 `NotifyError`——连同两张方法表共用的调用受理，是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix) 的绑定，位于 dim-agent-capabilities 的 `methods` 模块。`RpcError` 是 Rpc 的线上错误，其契约归 [#2021](https://github.com/arcships/dim/issues/2021)，与这些类型同处一个模块以便转换。Session 表不再对它 `Deref`。`RpcError` 在同一处保留 `From<AgentError>`，因此 Rpc 与 Session 提供方都对运行时错误保留 `?`。Session 方法表的检查是 App Server 的数据面 `ReservedMethods`：`reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]} -> {}` 拒绝宿主保留的命名空间，Rust 方法表在进程内调用同一个操作（[service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)）；宿主不登记它时只检查语法。
+调用数据——`MethodDecl`、`Interruption`、`MethodCall`、`Origin`、`Caller`、`CallerConnection`、`CallSite`、`MethodReply`、`MethodCallbackError`、`MethodError`、`Handler`、`Progress` 与 `NotifyError`——连同两张方法表共用的调用受理，是 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix) 的绑定，位于 dim-agent-capabilities 的 `methods` 模块。`RpcError` 是 Rpc 的线上错误，其契约归 [#2021](https://github.com/arcships/dim/issues/2021)，与这些类型同处一个模块以便转换。Session 表不再对 `MethodTable` `Deref`。`RpcError` 在同一处保留 `From<AgentError>`，因此 Rpc 与 Session 提供方都对运行时错误保留 `?`。Session 方法表的检查是 App Server 的数据面 `ReservedMethods`：`reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]} -> {}` 拒绝宿主保留的命名空间，Rust 方法表在进程内调用同一个操作（[service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)）；宿主不登记它时只检查语法。
 
 注册被拒绝会使注册它的部件失败：命名空间及其声明按名称语法与保留名检查，同一张表内已被注册的命名空间失败，注册持续到发起它的行卸载（A.1 注册）。
 

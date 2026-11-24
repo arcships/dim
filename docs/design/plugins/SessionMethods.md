@@ -124,7 +124,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 | --- | --- | --- | --- |
 | `invalid` | `register` | — | The namespace or a declaration is refused: outside the name grammar, in a reserved root, equal to, containing or inside a built-in, a declared notification equal to a built-in notification's name, or a declaration that is malformed or repeated — the table checks the declarations and the host's check answers its reserved names. Fix the name or the declaration and register again |
 | `duplicate` | `register` | — | The namespace is registered already; the row may register another namespace instead |
-| `unknown_method` | `call` | `unknown_method` | No registered namespace holds the name, the name is outside the grammar, the owning namespace's provider does not declare it, or the row that registered its withdrawn namespace is disabled or absent. Check the name and the namespace's declarations; an absent row is a configuration problem |
+| `unknown_method` | `call` | `unknown_method` | No namespace holds the name — registered or withdrawn — the name is outside the grammar, the owning namespace's provider does not declare it, or the row that registered its withdrawn namespace is disabled or absent. Check the name and the namespace's declarations; an absent row is a configuration problem |
 | `reloading` | `call` | `service_reloading` | The registering row is starting or reloading, its copy in this Session is Active because a child plugin reloads, or the row has no copy in this Session because its part is between generations; retry after it is Active and registered the namespace again |
 | `unavailable` | `call` | `service_unavailable` | The registering row failed or cannot run. Retrying fails the same way until that row is fixed or restarted |
 | `interrupted` | `call` | `operation_interrupted` | A `report` call's provider generation or admitting Rpc load unloaded while it ran; the call may have committed, so read the current state before retrying. A `drain` call answers with its own result instead |
@@ -200,15 +200,16 @@ Flow tests on the owner:
 ## Supersedes
 
 - [session boundary A.1](../contracts/session-boundary.md#a1-method-contributions): the `MethodTable`/`MethodProvider`/`Accepted` shapes and the Session table's `owner`/`provider`/`holds`/`listed` readers are replaced by `register`, `call` and `methods`; `Caller`, `CallSite` and `Callers` stay the binding's, stated below and in A.2; the `MethodCall`, `MethodReply` and `MethodError` shapes of A.1's interface block are defined in `crate::methods` as stated here, and A.1 links to them.
-- [session boundary Appendix F](../contracts/session-boundary.md#appendix-f-rust-binding): its `Handler`, `MethodCall`/`Origin` and foreign `register` decode are this contract's [binding below](#binding-appendix), and Appendix F links here. `MethodProvider`, `Check`, `Owner`, `MethodTable` and the `SessionMethods` deref leave; Appendix F keeps what CallChannel, ManagementMethods and ToolRegistry bind.
+- [session boundary Appendix F](../contracts/session-boundary.md#appendix-f-rust-binding): its `Handler`, `MethodCall`/`Origin` and foreign `register` decode are this contract's [binding below](#binding-appendix), and Appendix F links here. `MethodProvider`, `Check`, `Owner`, the Session table's `MethodTable` storage and the `SessionMethods` deref leave; Appendix F keeps what CallChannel, ManagementMethods (its own storage and read) and ToolRegistry bind.
 
 No method changes and no new error kinds. A handler's `code` is the client's `appError` today and stays so, a native handler's owner fields already reach the client, and an error a handler rethrows from a nested call keeps the code Rpc gives it. Three client-visible failure changes:
 
 - A withdrawn Session namespace whose registering row is absent from the loader answers `unknown_method`; today `session_provider` falls through to `service_reloading` (`crates/dim-app-server/src/methods.rs:240-249`), which retrying could not fix. A disabled row already answers `unknown_method`.
-- A failure that carries no remote error — a native handler's error without a code, or a reply that failed to cross — carries `appError: "failed"`; a reply that never crossed keeps today's `-32603` (`crates/dim-agent-capabilities/src/methods.rs:905-918`).
-- A foreign handler that throws an error without an application code now carries that error's name as `appError` with `-32000`; today it is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:843-853`).
+- A failure that carries no remote error — a native handler's error without a code — carries `appError: "failed"` under the service rule (`-32000`), where today it is `-32603` with none (`crates/dim-agent-capabilities/src/methods.rs:129-137,905-918`).
+- A malformed foreign reply carries `appError: "bad-value"` with `-32000`; today it is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:905-918`).
+- A foreign handler that throws an error without an application code now carries that error's name as `appError` with `-32000`; today it is `-32603` "Method binding failed" with none (`crates/dim-agent-capabilities/src/methods.rs:843-853,905-918`).
 
-Two request and reply shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`, and its handler's owner fields now reach the client, where today the `{code, message}` decode rejects a reply that carries them. A third change is a declaration's `reply` field: accepted and ignored, so it is not client-visible.
+Three shapes change for a part of another language: its `call` request nests the caller as `origin.caller` where today it sends a top-level `callId` and a flat `origin.connectionId`, and its handler's owner fields now reach the client, where today the `{code, message}` decode rejects a reply that carries them. The third is a declaration's `reply` field: accepted and ignored, so it is not client-visible.
 
 ## Binding appendix
 
@@ -397,10 +398,12 @@ impl From<CallError> for MethodCallbackError {
         if let Some(wire) = remote.and_then(rethrown) {
             return Self::from_wire(wire);
         }
-        // Otherwise: a remote error keeps its own application code, or its
-        // variant name when it has none, under the service-error rule; a call
-        // that crossed nothing is the binding's own failure, `failed`, and keeps
-        // today's `-32603`.
+        // Otherwise, by case: a remote error keeps its own application code,
+        // or its variant name when it has none; a bridge error (`bad-value`,
+        // `peer-gone`, a `Binding` code) keeps its code; both take the
+        // service-error rule. A bridge error without a code is `failed`. A
+        // `CallError` that is not a session error is the binding's own failure:
+        // `failed`, keeping today's `-32603`.
         let (code, wire) = match remote {
             Some(error) => (
                 error.code().map(str::to_owned).or_else(|| match error {
