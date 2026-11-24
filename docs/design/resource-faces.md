@@ -846,7 +846,7 @@ The owners that read node files or start node processes, and the operations they
 | SessionStore Session files and command output | `createDirectory`, `replace`, `list`, `remove`, `execHost.removeOutputDirectory` |
 | Settings sources and their CAS writes | `readBytes`, `stat`, `lock`, `readBytes {leaseId}`, `replace {leaseId}`, `unlock` |
 | MCP auth store | `readBytes`, `lock`, `readBytes {leaseId}`, `backup`, `replace {leaseId}`, `unlock` |
-| Managed OAuth and OAuth token stores | `read`, `update`, `write`; the account owner answers [ManagedAccount](../plugins/ManagedAccount.md) |
+| Managed OAuth and OAuth token stores | `read`, `update`, `write`; the account owner answers [ManagedAccount](plugins/ManagedAccount.md) |
 | Hooks project file (`.dimcode/hooks.json`) | `stat`, `readBytes` |
 | PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
 | UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |

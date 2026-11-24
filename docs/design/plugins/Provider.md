@@ -50,8 +50,8 @@ The Rpc entry chooses a model while creating a Session:
 let selection = provider
     .resolve(ResolveRequest { target: requested, cwd: Some(cwd) }, cancelled.clone())
     .await?;
-line_owner::<PromptAdoption>(line)?.configure(
-    ConfigureRequest { sources: None, model: Some(selection), tools: None },
+line_owner::<Prompt>(line)?.configure(
+    ConfigureRequest::Initial(ConfigureUpdate { sources: targets, model: Some(selection) }),
     cancelled.clone(),
 ).await?;
 ```
@@ -62,11 +62,13 @@ The Rpc entry changes only the preferences of the model already adopted:
 let next = provider
     .preferences(PreferencesRequest { selection: current, update: patch })
     .await?;
-line_owner::<PromptAdoption>(line)?.configure(
-    ConfigureRequest { sources: None, model: Some(next), tools: None },
+line_owner::<Prompt>(line)?.configure(
+    ConfigureRequest::Initial(ConfigureUpdate { sources: targets, model: Some(next) }),
     cancelled.clone(),
 ).await?;
 ```
+
+`targets` is the line's current source targets. `configure` adopts sources and a model as one configuration, so a model change re-adopts the same targets with the new model ([Prompt adoption](https://github.com/arcships/dim/pull/2102), target, pending).
 
 Modality lists the options for an operation:
 
