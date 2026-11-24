@@ -17,7 +17,7 @@ Resource and state operations use these public data faces:
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
 | `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
-| `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
+| `store` | This row is superseded by [the SessionStore contract](plugins/SessionStore.md). | — | #1298 |
 | `timelineStore` | This row is superseded by [the SessionStore contract](plugins/SessionStore.md). | — | #1298 |
 
 

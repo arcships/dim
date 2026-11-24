@@ -96,7 +96,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- | --- |
 | `sessions` | 进程 | Agents | 是 | 启动或驱动另一个 Session |
 | `sessionPermissions` | 进程 | Agents | 是 | 标记了 `#[rutis::service]` |
-| `sessionMetadata` | 进程 | SessionStore | 是 | SessionTitle 是标题的唯一写入方 |
+| `store` | 进程 | SessionStore | 是 | 标题、授权、语言、worktree 记录与关联；契约见 [SessionStore](../../design/plugins/SessionStore.md) |
 | `settings` | 进程 | Settings | 是 | 业务配置 |
 | `auxiliaryModel` | 进程 | 该配置中模型选择的所有者 | 是 | 辅助模型请求 |
 | `pluginFiles` | 进程 | 宿主 | 是，当宿主提供根目录时 | 进程部件自己的文件 |

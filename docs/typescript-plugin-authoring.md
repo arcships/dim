@@ -40,7 +40,7 @@ provider and the methods it serves to other languages. This table says which to 
 | Start or drive another Session | `sessions`, process | Implemented by Agents; all nine methods are typed. |
 | Publish events to subscribed branches | `eventHub`, process | Implemented by EventHub: `declare` and `publish`, served to the calling row. Inject it: the row loads only while EventHub runs and declares at `apply`. |
 | Read current branch permissions or host defaults | `sessionPermissions`, process | Generated from Agents: `permission({sessionId, branchId})` and `permissionDefaults({})`. |
-| Read or set a Session's title | `sessionMetadata`, process | Implemented by SessionStore: `read` and the revision-checked `setTitle` ([title metadata](design/appserver/session-title-metadata.md)). SessionTitle is the title's one writer; other plugins only read. |
+| Read or set a Session's title | `store`, process | This row is superseded by [the SessionStore contract](design/plugins/SessionStore.md#operations): `title` and `setTitle(id, change)`. SessionTitle is the title's one writer; other plugins only read. |
 | Read/update business configuration | `settings`, process | Owner registration, read/write and Settings event delivery implemented; a row registers its sources with `register` in its `apply`. |
 | Read/save Workflow definition files | `workflowFiles`, process | Generated `read/list/replace/createDirectory`; fixed project directories and the calling row's read-only packages ([contract](design/p6-p7-bindings.md#3-workflow-definition-files)). |
 | Offer model tools | `toolRegistry`, Session | A Session part registers each tool with `register` ([Session tools](#session-tools-and-client-methods)). |

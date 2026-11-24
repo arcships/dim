@@ -71,10 +71,11 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `import` | Copy a regular host file into the Session namespace and commit ownership | `{sessionId, name, source}` | `{fileId, path, bytes}` | Before the replacement; a cancelled import leaves no owned row | `invalid`, `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `write` | Replace one Session file's bytes under the same id and path | `{sessionId, fileId, content}`, `content` is base64 | `{fileId, path, bytes}` | Before the replacement; the old bytes stay | `too_large`, `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `read` | One page of a Session file, at most 64 KiB | `{sessionId, fileId, offset}` | `{data, eof}`, `data` is base64 and `eof` is true exactly when it is empty | While the page is read; nothing changes | `not_found`, `node_unavailable`, `cancelled`, `closed`, `storage` |
-| `register` | Record a caller-owned output path for the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `storage` |
+| `register` | Record a caller-owned output path for the Session | `{sessionId, path}` | `{}` | None | `invalid`, `not_found`, `closed`, `storage` |
 | `owns` | Whether a path or file id belongs to the Session | `{sessionId, path}` | `{owned}` | While the path is resolved | `node_unavailable`, `cancelled`, `closed`, `storage` |
 | `remove` | Remove one Session file and its ownership row; an absent or foreign file answers success | `{sessionId, fileId}` | `{}` | None; the owner completes the removal during close | `node_unavailable`, `closed`, `storage` |
-| `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `storage` |
+| `releaseSession` | Delete every ownership row of a deleted Session and schedule the sweep; a repeated call succeeds | `{sessionId}` | `{}` | None; the owner completes the release | `closed`, `storage` |
+| `ownedPaths` | Every path the Session owns | `{sessionId}` | `{paths}` | None | `closed`, `storage` |
 
 `path` is absolute on the Session's resource node; `bytes` is the stored length. `offset` at the file size answers an empty `data` with `eof`; an offset above the size is clamped to the size before the page read, because FileStorage refuses an offset above it with `invalid`. The rule is stated once in both documents: at `size` an empty page with `eof`, above `size` `invalid` at FileStorage; this owner clamps so its own callers keep the empty page their client contract states. A `fileId` outside the Session, or a name that is not one component, is `not_found` for reads and writes and `invalid` for a name `put` or `import` receives.
 
@@ -86,7 +87,7 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `too_large` | Treat the file as not storable; store a smaller representation or refuse the attachment |
 | `not_found` | The Session has no such file, the file belongs to another Session, or the Session no longer exists; the caller refuses the request |
 | `node_unavailable` | The Session's resource node cannot be reached; retry later or report the node as unavailable |
-| `cancelled` | Nothing was committed; the caller stops |
+| `cancelled` | The reservation and any copy are left to the sweep; no ownership row was committed, and the caller stops |
 | `closed` | This generation is unloading; call the replacement generation |
 | `storage` | The store or the file system failed; the caller reports the failure and keeps its own copy |
 
@@ -99,9 +100,10 @@ let stored = files.import(Import { session_id, name, source }, cancelled).await?
 | `write` | Resolve the file id, write the new bytes through FileStorage under the same path, keep the row | Before the replacement: the old bytes stay | The write completes or is abandoned | As `put` | File and path by FileStorage; row by SessionFiles |
 | `read` | Resolve the file id, read one page at the offset; an offset at or past the end is an empty page | The page stops; nothing changes | The read stops | Pending reads end `closed` | FileStorage |
 | `remove` | Resolve the file id; an absent or foreign id answers success; remove the directory entry through FileStorage, delete the row | None | The call ends | A new call is refused `closed`; an admitted removal finishes | File and row by SessionFiles |
-| `register` | Check the Session, record the path the caller resolved | None | The row stays; a later Session delete removes it | Rows stay for the next generation | SessionFiles |
+| `releaseSession` | Delete every ownership row of the Session, schedule the sweep; the bytes are deleted outside the transaction | None | The release continues under the owner's task | A new call is refused `closed`; an admitted release finishes | Rows by SessionFiles; bytes by the sweep |
+| `register` | Check the Session, record the path the caller resolved | None | The row stays; a later Session delete removes it | A new call is refused `closed`; rows stay for the next generation | SessionFiles |
 | `owns` | Resolve the path against the owner's directory, check the output row, else the file id row | The resolution stops | Nothing to release | Pending calls end `closed` | SessionFiles |
-| `ownedPaths` | Read both ownership rows, map file ids to the directory | None | Nothing to release | Rows stay | SessionFiles |
+| `ownedPaths` | Read both ownership rows, map file ids to the directory | None | Nothing to release | A new call is refused `closed`; rows stay | SessionFiles |
 
 A Session delete releases this owner's rows before the sweep runs; the sweep deletes bytes no row owns. Files another Session owns are never removed by one Session's delete.
 
@@ -111,7 +113,7 @@ A Session delete releases this owner's rows before the sweep runs; the sweep del
 - The generation is the store's generation: a stale writer cannot commit into a Session that a newer store generation created.
 - `read` pages by offset instead of opening a read id: the callers (Attachments' `attachment.read`, the web download, image materialization) already page by offset, and a read id would put its release on every error path.
 - `register` records a path the caller resolved and owns the root of: WorkspaceTools and HostPlatform have two different output roots, and the owner cannot decide which root a path belongs to without depending on both.
-- `write` and `remove` serve MCP result files ([#2022](https://github.com/arcships/dim/pull/2101)): a result file is rewritten as the child reports progress and removed when the child's result is discarded.
+- `write` and `remove` serve MCP result files ([#2101](https://github.com/arcships/dim/pull/2101)): a result file is rewritten as the child reports progress and removed when the child's result is discarded.
 - The ownership rows live in the engine's database but belong to this owner: the engine executes the transaction, SessionFiles decides when it commits.
 
 ## Client-visible changes
@@ -123,6 +125,7 @@ None. `read` keeps the offset page and the 64 KiB bound; `put` and `import` keep
 - [Session files §9.1](../appserver/session-files.md#91-language-neutral-adr-002-d5): the operation table, the paging note, the register root rule and the paragraph that says SessionStore offers no operation that changes or removes one file.
 - [Service faces §3.2](../service-faces.md): the `sessionFiles` row.
 - [Resource faces §4.6](../resource-faces.md): the Session files paragraph.
+- [Overview](../overview.md): the SessionStore row's Session files clause.
 
 ## Verification
 
@@ -164,7 +167,7 @@ Flow tests on the owner:
 
 ## Requirements raised to mechanism owners
 
-1. **FileStorage (#2016): the operations this owner calls.** `root_path`, `read` with `{offset, length}` and `{data, eof, size}`, `write` with its `source` and `privateReadOnly`, `import` with `max_bytes` and `privateReadOnly`, `create_directory`, `list` and `remove` exist in [FileStorage's contract](https://github.com/arcships/dim/pull/2080) at head `7224c0cd4`. The owner reads the store directory's root with `root_path`; the host registers the native store directory as a root, and a comment on #2016 records the dependency.
+1. **FileStorage (#2016): the operations this owner calls.** `root_path`, `read` with `{offset, length}` and `{data, eof, size}`, `write` with its `source` and `privateReadOnly`, `import` with `max_bytes` and `privateReadOnly`, `create_directory`, `list` and `remove` exist in [FileStorage's contract](https://github.com/arcships/dim/pull/2080) at head `2a312945c`. The owner reads the store directory's root with `root_path`; the host registers the native store directory as a root, and a comment on #2016 records the dependency.
 2. **Service type placement (#2015): a process owner in the app server.** The owner type is in `dim-app-server`, where the engine and the rows are; callers in plugin crates cannot depend on the app server. The request and reply types are plain data in `dim-agent-capabilities::host`, and callers outside the crate call the operations by the `sessionFiles` name. If the maintainers decide every process face must be annotated on a type plugin crates can name, the type moves to a shared crate; a comment on #2015 states the requirement.
 
 ## Binding appendix

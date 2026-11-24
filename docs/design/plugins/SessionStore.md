@@ -15,7 +15,7 @@ SessionStore owns:
 - **Worktree records.** A recorded directory, its last-use time and the Session associations that point into it.
 - **The Session exclusion.** One lock that keeps creation, fork, deletion, association and worktree removal from observing each other's partial state.
 - **The Timeline storage engine.** The admitted batch queue, the grouped commit, paging, snapshots and release, executed over the Session rows. `timelineStore` publishes the same engine per Session; the Session face belongs to SessionScope.
-- **The Session reads.** `query` and `sessionConfig` exist only on the process `store`; both take `{id}` and serve loaded and unloaded Sessions. No Session-scoped or `timelineStore` operation carries them.
+- **The Session reads.** `sessionConfig {id}` and `query {scope, query, page?}` exist only on the process `store` and serve loaded and unloaded Sessions. `query` keeps the read scope: `scope` carries the Session key, the committed `through` cutoff and the branch segments, and `page.after` is checked against the same binding. No Session-scoped or `timelineStore` operation carries them.
 
 Callers keep:
 
@@ -98,7 +98,7 @@ store.removeWorktree(Directory { repository, root }, remove, cancelled.clone()).
 
 ### Dependencies
 
-The engine's crate-private transaction operations for every row read and write and for the Timeline batches; the engine's public face is the capacity read. The file owner `sessionFiles` for the Session file steps a delete releases. Neither dependency crosses back into SessionStore. The assembly provides both; deployment chooses the instance.
+The engine's crate-private transaction operations for every row read and write and for the Timeline batches; the engine's public face is the capacity read. The file owner `sessionFiles` for the `releaseSession` step a delete calls. Neither dependency crosses back into SessionStore. The assembly provides both; deployment chooses the instance.
 
 ### Operations
 
@@ -106,39 +106,67 @@ Every operation takes one request object and answers one reply object. Writes ar
 
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `create` | Write one admitted Session and its optional worktree association | `{id, config, agentId, protocolVersion, leader?, origin, worktree?}` | `{}` | Before the transaction starts; a dropped future does not undo a commit | `invalid`, `workspace_missing`, `closed`, `storage` |
+| `create` | Write one admitted Session and its optional worktree association | `{id, config, agentId, protocolVersion, leader?, origin, worktree?}` | `{}` | Before the transaction starts; a dropped future does not undo a commit | `invalid`, `workspace_missing`, `rejected` (reason `exists`), `closed`, `storage` |
 | `delete` | Remove a closed Session's output, visible rows and Timeline rows | `{id}` | `{hadRows}` | Before the first step; after the first commit the steps run to their end | `invalid`, `closed`, `storage` |
-| `fork` | Copy a source's rows at a cut, with the target text decided from the source text under the fork's exclusion | `{source, id, at}` + `text` | `{}` | Before the first transaction; the callback's future is dropped | `invalid`, `rejected`, `closed`, `storage` |
+| `fork` | Copy a source's rows at a cut, with the target text decided from the source text under the fork's exclusion | `{source, id, at}` + `text` | `{}` | Before the first transaction; the callback's future is dropped | `invalid`, `not_found`, `rejected`, `closed`, `storage` |
 | `creationRecord` | One Session's origin and leader link | `{id}` | `{origin, leader?}` | None | `not_found`, `closed`, `storage` |
 | `owner` | The Agent that owns a stored Session | `{id}` | `{agentId?}` | None | `closed`, `storage` |
 | `hasRecords` | Whether an id has any stored row | `{id}` | `{exists}` | None | `closed`, `storage` |
 | `sessionConfig` | A stored Session's decoded configuration | `{id}` | `{config?}` | None | `not_found`, `closed`, `storage` |
 | `catalog` | One stored Session page | `{request, agent?, version, hosts, closed}` | the stored page | While the page is read | `invalid`, `cancelled`, `closed`, `storage` |
-| `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{id, query, page?}` | the query result | While the page is read | `storage`, `cancelled`, `closed` |
+| `query` | One consistent history read of a Session's stored rows, for a caller outside the Session (loaded or not) | `{scope, query, page?}`; `scope` is `{key:{sessionId,branchId}, through, segments}` | `{result, next}` | While the page is read | `invalid`, `storage`, `cancelled`, `closed` |
 | `grants` | The Session's grant set | `{id}` | `{grants}` | None | `closed`, `storage` |
 | `addGrant` | Add one grant, never downgrading a write grant | `{id, path, kind, mode}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
 | `removeGrant` | Remove one grant; an absent grant counts as removed | `{id, path}` | `{}` | None | `closed`, `storage` |
 | `setLanguage` | Write the reply language into the stored configuration | `{id, language?}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
 | `title` | The title, its source and its committed revision | `{id}` | `{revision, title?: {text, source}}` | None | `not_found`, `closed`, `storage` |
 | `setTitle` | Commit the title the caller's change returns and announce it; the owner serializes writes | `{id}` + `change` | `{revision}` | The reply may be dropped; the admitted write is not cancelled | `not_found`, `rejected`, `closed`, `storage` |
-| `associateWorktree` | Record a verified directory and the Session's subtree in one commit | `{id, repository, root, subtree}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
+| `associateWorktree` | Record a verified directory and the Session's subtree in one commit; the same Session+directory association replaces the subtree | `{id, repository, root, subtree}` | `{}` | None | `not_found`, `invalid`, `closed`, `storage` |
 | `worktrees` | Recorded directories, with their last use when known | `{}` | `{directories}` | None | `closed`, `storage` |
 | `worktreeUsages` | The Session associations of one recorded directory | `{repository, root}` | `{usages}` | None | `invalid`, `closed`, `storage` |
 | `sessionsUnder` | Stored Sessions whose workspace is a root or lies under it | `{root}` | `{sessionIds}` | None | `invalid`, `closed`, `storage` |
-| `removeWorktree` | Remove one recorded directory under the Session exclusion, with the caller's own removal step | `{repository, root}` + `remove` | `{removed}` | The caller's step ends; the record stays | `invalid`, `in_use`, `rejected`, `closed`, `storage` |
-| `removeUnregisteredDirectory` | Remove a directory no record names, under the Session exclusion, with the caller's own removal step | `{root}` + `remove` | `{removed}` | The caller's step runs to its end; no record is involved | `invalid`, `in_use`, `rejected`, `closed`, `storage` |
+| `removeWorktree` | Remove one recorded directory under the Session exclusion, with the caller's own removal step | `{repository, root}` + `remove` | `{removed}` | The caller's step ends; the record stays | `invalid`, `not_found`, `in_use`, `rejected`, `closed`, `storage` |
+| `removeUnregisteredDirectory` | Remove a directory no record names, under the Session exclusion, with the caller's own removal step | `{root}` + `remove` | `{removed}` | The caller's step runs to its end; no record is involved | `invalid`, `not_found`, `in_use`, `rejected`, `closed`, `storage` |
 
-`worktree` in `create` and `associateWorktree` is `{repository, root, subtree}`: absolute UTF-8 paths, `subtree` inside `root`. The caller passes paths it already resolved; the owner re-checks that each is absolute, UTF-8 and, for an association, that the root still is a directory.
+`worktree` in `create` and `associateWorktree` is `{repository, root, subtree}`: absolute UTF-8 paths, `subtree` inside `root`, and no `.` or `..` component. The caller passes paths it already resolved; the owner re-checks that each is absolute, UTF-8, has no relative component and, for an association, that the root still is a directory.
+
+#### Timeline face
+
+`timelineStore` is the same owner's Session-scoped Timeline face; SessionScope installs the binding at the Session instance (#2093). This contract owns the spellings. The face carries the line reads and the completion subscriptions; `createSession`, `releaseSession`, `rollbackSession` and `append` are the store's own creation and commit steps, and `sessionConfig`/`query` are the process `store` reads.
+
+| Operation | Intent | Request | Reply | Cancellation | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `head` | A branch's last committed sequence | `{sessionId, branchId}` | `{sequence}` | None | `invalid`, `not_found`, `closed`, `storage` |
+| `branches` | The branch set with its heads | `{sessionId}` | `{branches:[{info, sequence}]}` | None | `invalid`, `not_found`, `closed`, `storage` |
+| `readPage` | One page of a branch's stored events | `{sessionId, branchId, after, limit, through}` | `{events}` | Before the reply | `invalid`, `not_found`, `cancelled`, `closed`, `storage` |
+| `readSegments` | Several branch intervals in request order | `{sessionId, segments:[{branchId, from, through}]}` | `{segments}` | Before the reply | `invalid`, `not_found`, `cancelled`, `closed`, `storage` |
+| `trace` | One stored trace at a position | `{sessionId, branchId, sequence}` | `{trace}` | None | `invalid`, `not_found`, `closed`, `storage` |
+| `batchEnd` | Validate a batch boundary | `{sessionId, branchId, sequence}` | `{}` | None | `invalid`, `not_found`, `closed`, `storage` |
+| `batchEndAt` | The containing batch's end sequence | `{sessionId, branchId, sequence}` | `{sequence}` | None | `invalid`, `not_found`, `closed`, `storage` |
+| `saveSnapshot` | Store an acceleration snapshot | `{sessionId, branchId, snapshot}` | `{}` | None | `invalid`, `not_found`, `closed`, `storage` |
+| `latestSnapshot` | The newest snapshot at or before a position | `{sessionId, branchId, through, interpreter}` | `{snapshot}` | None | `invalid`, `not_found`, `closed`, `storage` |
+| `commits` | Register a completion listener for a Session | `{sessionId}` + `listener` | `{subscriptionId}` | The caller's unload withdraws it; an admitted batch is not replayed | `invalid`, `not_found`, `closed`, `storage` |
+| `closeCommits` | Withdraw a completion listener; idempotent | `{subscriptionId}` | `{}` | None | `invalid`, `closed` |
+
+`readPage`'s `limit` is a target event count; the final complete atomic batch may exceed it. `through` is an inclusive committed sequence; a read never returns unpublished events. `readSegments` replies in request order with `{event, trace, batchEnd}` records.
+
+The completion notification is `{subscriptionId, batchId, branchId, through, result: "committed" | {code, message}}`, delivered after the batch is durable or has failed, in branch sequence order. `through` is the inclusive sequence of the batch's last event on `branchId`; it advances the durable watermark only for `"committed"`. A failed batch is reported once with its `batchId`, and later admissions for that Session are refused `storage` until the store releases it. A listener registered after a batch is admitted does not observe that batch; there is no replay. A slow observer never delays completion or release.
+
+Flows:
+
+- Admission is the store's internal step. A Session close waits for the store's release, which answers only after every admitted batch settled.
+- The owner registers a listener with the calling row before returning; the row's unload withdraws it.
+- `commits` and `closeCommits` on a closing generation answer `closed`; a pending read ends `closed`.
 
 ### Errors
 
 | Kind | What the caller does next |
 | --- | --- |
-| `invalid` | Fix the request: an id that is not one path component, a relative or non-UTF-8 path, a subtree outside the root, an unknown language code, an invalid catalog cursor |
+| `invalid` | Fix the request: an id that is not one path component, a relative or non-UTF-8 path or a `.`/`..` component, a subtree outside the root, an unknown language code, an invalid catalog cursor. A `removeUnregisteredDirectory` root that lies under a registered directory answers `invalid`; call `removeWorktree` for it |
 | `workspace_missing` | The creation's `cwd` no longer is a directory; the caller reports the failed creation and discards the worktree |
-| `not_found` | No stored Session has the id; the caller decides whether that is a business error or an answer |
+| `not_found` | No stored Session has the id, a fork source has no rows, or a removal has no matching record or directory; the caller decides whether that is a business error or an answer. A second removal answers `not_found` and does not call the removal step |
 | `in_use` | A Session association or a stored workspace still names the directory; delete that Session or refuse the removal |
-| `rejected` | The caller's change, text or removal step refused with its own `code` and `message`; nothing was written and the caller acts on that code |
+| `rejected` | The caller's change, text or removal step refused with its own `code` and `message`; nothing was written and the caller acts on that code. `create` with an id that already has rows answers reason `exists`; the caller reads the id instead of retrying |
 | `cancelled` | The caller stopped the read; nothing changed |
 | `closed` | This generation is unloading; call the replacement generation |
 | `storage` | The store failed; the caller reports the failure and keeps the Session or worktree for a retry |
@@ -150,14 +178,14 @@ When a change, text or removal callback refuses, the operation answers `rejected
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
 | `create` | Validate the id, take the exclusion, validate the workspace, write the rows, the owner row, the main branch, the catalog row and the association, commit | Before the transaction: nothing written. During: the transaction completes or fails; the reply may be lost | The transaction still completes; the caller keeps the id it supplied and decides whether to publish or delete the Session | New calls are refused `closed`; admitted work ends before the writer closes | Rows by SessionStore; the workspace by the caller |
-| `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove visible and Timeline rows, schedule the file sweep | Before the first commit: every row stays. After: the steps run to their end | The work continues under the owner's task; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
-| `fork` | Take the exclusion, read the source body, call `text`, copy in bounded transactions, write the target body and target rows in the last batch transaction, commit | Before the first copy; a refused text step copies nothing | The copy continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
+| `delete` | Take the exclusion, read whether rows exist, remove output, touch worktree use, remove visible and Timeline rows, call `sessionFiles.releaseSession` | Before the handover: every row stays. After: the owner task runs to its end; dropping the caller's future does not stop it | The owner task continues; the reply may be lost | The admitted delete ends before close | Output and rows by SessionStore; files by SessionFiles |
+| `fork` | Take the exclusion, read the source body, call `text`, copy in bounded transactions, write the target body and target rows in the last batch transaction, commit | Before the handover; a refused text step copies nothing | The owner task continues; the reply may be lost | The admitted fork ends before close | Rows by SessionStore |
 | `title`, `creationRecord`, `owner`, `hasRecords`, `sessionConfig`, `grants` | One read; no lock | Before the read | Nothing to release | Pending reads end `closed` | SessionStore |
 | `catalog`, `query` | One consistent read under the caller's token | The read stops; no partial page | Nothing to release | Pending reads end `cancelled`; a new call ends `closed` | SessionStore |
 | `addGrant`, `removeGrant`, `setLanguage`, `associateWorktree` | One write transaction | None after it starts | The write completes; the reply may be lost | Admitted writes end before close | SessionStore |
 | `setTitle` | Admit the write behind earlier admitted writes, read the current title, call `change` under the serialization, write the returned title as revision + 1, commit, announce, answer the revision | Dropping the reply never cancels the admitted write; a change that refuses leaves the title unchanged | The change callback is revoked before it returns; the admitted write fails and the title stays | Close stops admission, waits for every admitted write | SessionStore; the change computes only |
 | `removeWorktree` | Validate the paths, take the exclusion, check associations and stored workspaces, call `remove`, delete the record on success, release | The removal step refuses with its own code (for example `cancelled`); the record stays | The callback ends; the record stays; the exclusion releases | New calls are refused `closed`; an in-flight removal ends, and the record stays unless the step succeeded | Directory by the caller; record by SessionStore |
-| `removeUnregisteredDirectory` | Validate the root, take the exclusion, check stored workspaces under it, call `remove`, release | The removal step refuses with its own code; nothing changes | The callback ends; the exclusion releases | New calls are refused `closed`; an in-flight removal ends | Directory by the caller; exclusion by SessionStore |
+| `removeUnregisteredDirectory` | Validate the root, take the exclusion, check stored workspaces under it, run the removal step as the owner's task, release | The removal step refuses with its own code; nothing changes | The owner task continues to the end and the exclusion is not released to the caller | New calls are refused `closed`; the running removal finishes and keeps the lock until it ends | Directory by the caller; exclusion by SessionStore |
 
 ## Exceptions with reasons
 
@@ -166,6 +194,8 @@ When a change, text or removal callback refuses, the operation answers `rejected
 - `setTitle` runs the caller's change under the owner's serialization: the change only computes the next title from the current title and revision, and returns its own refusal; the reply may be lost, so the caller re-reads rather than assumes failure.
 - `removeWorktree` runs ManagedWorktrees' removal step under the Session exclusion: the directory is that owner's resource, and the checks and the record deletion cannot interleave with a Session creation that would point into the removed root. The caller must not call SessionStore operations from the step; a failed or cancelled step keeps the record, and a row unload or owner close keeps it too. The exclusion has no time bound: a recursive forced deletion of an unregistered directory may run to its end, and `removeUnregisteredDirectory` uses the same exclusion for a directory no record names.
 - `owner` answers the Agent id for a delete notice; the Agent directory's own records are not returned here.
+- `associateWorktree` dedupes the directory record by `(repository, root)`: a repeated association for the same Session and directory replaces the subtree and updates its last use, and a new directory inserts one record. A retry after a lost reply therefore leaves one record and the caller's latest subtree.
+- `setTitle`'s change runs inside the owner's serialization and must not call `store` operations that take the same lock; it computes the next title only.
 
 ## Client-visible changes
 
@@ -180,6 +210,12 @@ None. The client methods (`session.rename`, `sessions.list`, `session.delete`, `
 - [Session title metadata](../appserver/session-title-metadata.md): §1 Write and Binding, §4.1, §4.2, §5, §6, §10 and Appendix A.
 - [SessionTitle](SessionTitle.md): the metadata/notice row, the A.4 Write row and the Appendix G title metadata row.
 - [Worktree access §4](../worktree-access.md): the `associateWorktree` sentence.
+- [TypeScript plugin authoring](../../typescript-plugin-authoring.md): the title row (`sessionMetadata`, revision-checked `setTitle`).
+- [Plugin contract](../plugin-contract.md): the `sessionMetadata` process-name row.
+- [Session deletion and fork](../appserver/session-deletion-and-fork.md): the Worktree association port paragraph.
+- [Overview](../overview.md): the SessionStore row.
+- [Resource faces §1](../resource-faces.md): the `store` and `timelineStore` rows.
+- [Service faces §4.8](../service-faces.md): the `associateWorktree` code block.
 
 ## Verification
 
@@ -192,6 +228,7 @@ Flow tests on the owner:
 - The change receives the current title, its source and revision; a change that returns `Rejected` leaves the title and revision unchanged; concurrent changes commit in admission order and each announces its revision; a dropped reply still commits and announces; close waits for the admitted write.
 - `removeWorktree` answers `in_use` while an association or a stored workspace remains; a failed or cancelled removal keeps the record; a successful removal deletes it; a concurrent creation waits for the removal and then either associates with the surviving directory or fails on the missing workspace.
 - A call in flight when the generation closes ends `closed`; a dropped callback keeps the record.
+- A dropped `delete` or `fork` future still runs to its end on the owner task: the delete leaves rows and output consistent, and a fork never becomes visible half-copied.
 
 Material uncertainty: a process death during the caller's removal step leaves the record; the directory state is Git's, and a later `worktrees`/`remove` reconciles the pair. Review checks that no caller treats `rejected` as success.
 
@@ -226,6 +263,9 @@ Material uncertainty: a process death during the caller's removal step leaves th
 
 2. **SessionScope (#2025): `timelineStore` ownership aligned.** This owner owns the Timeline operations and the `timelineStore` face; SessionScope binds that face at the Session instance. The face does not carry `createSession`, `releaseSession`, `rollbackSession` or `append`; those belong to the store's own creation and commit paths. The process `store.query` and `store.sessionConfig` are the same engine's reads for callers outside a Session (loaded or not) and keep one implementation. A comment on #2025 records the alignment.
 
+
+The delivery part maps the current codes to these kinds: `creationRecord`, `title` and `associateWorktree` move from `closed` to `not_found`; a worktree removal conflict moves from `invalid` to `in_use`; a missing `cwd` moves from `invalid` to `workspace_missing`; `delete` answers `hadRows` instead of `removed`.
+
 ## Binding appendix
 
 The `store` face is one hand-written `HostDispatch` on `SessionStore`; the wire name stays `store`. `setTitle` is admitted in `invoke` before its reply future is returned, so a wire caller that drops the reply still commits. `Store` the wrapper, `SessionMetadata` and `WorktreeAssociations` no longer exist. `caller: &Ctx` is rutis's caller parameter: the dispatch fills it from the calling row, so no caller sends or names a row. `CancelledFn` is the binding's cancellation argument.
@@ -236,6 +276,15 @@ use dim_agent_runtime::{PublicService, SessionConfig};
 use std::future::Future;
 use dim_agent_types::grant::{GrantKind, GrantMode, SessionGrant};
 use rutis::Ctx;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionOrigin {
+    Client,
+    Acp,
+    Internal,
+    Automation,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -274,7 +323,7 @@ pub struct CreateSession {
     pub agent_id: String,
     pub protocol_version: u32,
     pub leader: Option<String>,
-    pub origin: dim_agent_types::SessionOrigin,
+    pub origin: SessionOrigin,
     pub worktree: Option<Worktree>,
 }
 

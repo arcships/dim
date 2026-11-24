@@ -250,7 +250,7 @@ workflowRuns.call(RunRequest)
 
 本节由 [SessionFiles 契约](plugins/SessionFiles.md) 取代。
 
-文件导入、分块读取、归属操作的参数、回复、错误及取消语义均由 §9.1 定义。文件传输使用按路径导入与有界读取操作。
+文件导入、分块读取与归属操作的参数、回复、错误及取消语义见 [SessionFiles 契约](plugins/SessionFiles.md)。
 
 进程内绑定和 wire 的行为一致性由 `session_files_flow.rs` 与 `attachments_flow.rs` 验证。
 
@@ -311,8 +311,7 @@ skillsConfig.get() -> {instructions?}
 collaborationConfig.get() -> {leaderDescription?, memberDescription?}
   -- Collaboration 的 factory 文本；null 表示内置
 store.associateWorktree {id, repository, root, subtree} -> {}
-  -> error {code: failed, message}
-  -- 路径按 §1 是 UTF-8 字符串；一次写入仍由 SessionStore 的原子事务保证
+  -- 路径与错误见 [SessionStore 契约](plugins/SessionStore.md#operations)
 ```
 
 - `agentConfig` 在 runtime 的 catalog 注册 shared instance；`SessionScope` 已经提供值，`get` 返回同一个快照。 配置快照直接使用所有者的数据定义，接收端允许未知字段；公开类型名称的迁移见[插件配置类型兼容性说明](../release/README.md#plugin-configuration-type-compatibility)。

@@ -846,8 +846,8 @@ path (`TimelineStore::rollback_session`) calls the same row removal as `delete_s
 
 ### Worktree association port
 
-SessionStore provides the process service `worktreeAssociations` to the Session file-facts owner.
-The operation is the data face `associate {sessionId, repository, root, subtree}`, all paths as
+This section is superseded by [the SessionStore contract](../plugins/SessionStore.md): the association is
+`store.associateWorktree {id, repository, root, subtree}`, all paths as
 UTF-8 strings, with the same atomicity and errors as §17; a Rust caller calls the same method. The
 file-access contract owns the directory definition, containing repository common directory and
 worktree root. The port writes usage only and performs no Git discovery or authorization.

@@ -55,24 +55,34 @@ None. The assembly provides the store; deployment chooses its instance. Offline 
 
 ### Operations
 
+`storageReport` is the only service operation on the `sqliteStorage` face.
+
 | Operation | Intent | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `storageReport` | The store's own file bytes, WAL bytes and reclaimable bytes | `{}` | `{databaseBytes, walBytes, reclaimableBytes}` | None | `closed`, `storage` |
-| `backup` | Copy a closed store and its sidecar files into an archive | the database path and the destination | `{}` | None; the tool runs alone | `owned`, `format`, `storage` |
-| `restore` | Write a store from an archive produced by `backup` into a destination that does not exist | the archive and the destination | `{}` | None; the tool runs alone | `format`, `storage` |
-| `vacuum` | Remove the content rows no stored reference reaches and reclaim the file's free pages | the database path | the removed rows, content bytes and sizes | None; the tool runs alone | `owned`, `format`, `storage` |
 
-`storage.report` is the client method registered through `managementMethods`; the registration point calls `storageReport` and is not a second operation. The transaction operations the data owners use are private to the storage crate and are listed in their owners' contracts.
+`storage.report` is the client method registered through `managementMethods`; the registration point calls `storageReport` and is not a second operation.
+
+### Offline operations (not service)
+
+These are the owner's Rust functions for the CLI, the migration tool and the operator. They do not cross the service face, take no request object and are not in the catalog.
+
+| Function | Intent | Input | Reply | Exclusion | Errors |
+| --- | --- | --- | --- | --- | --- |
+| `backup` | Copy a closed store and its sidecar files into an archive | the database path and the destination | `{}` | the store's file lease | `owned`, `format`, `storage` |
+| `restore` | Write a store from an archive into a destination that does not exist | the archive and the destination | `{}` | the destination must not exist | `format`, `storage` |
+| `vacuum` | Remove content rows no stored reference reaches and reclaim free pages | the database path | the removed rows, content bytes and sizes | the store's file lease | `owned`, `format`, `storage` |
+
+The transaction operations the data owners use are private to the storage crate and are listed in their owners' contracts.
 
 ### Errors
 
+The face answers `storage` or `closed` only; the offline functions answer their own `owned`, `format` or `storage` in the section above.
+
 | Kind | What the caller does next |
 | --- | --- |
-| `storage` | The read or the offline operation failed; the caller reports its own failure |
-| `owned` | Another process holds the file's lease; wait for it to exit and retry the offline operation |
-| `format` | The file is not the current format; open it with the daemon that upgrades it, or with a matching version |
-
-The engine answers no business error: a missing row, a stale version or a refused change is the data owner's, expressed by that owner's operation.
+| `storage` | The read failed; the caller reports its own failure |
+| `closed` | This generation is unloading; call the replacement generation |
 
 ### Flows
 
@@ -164,10 +174,6 @@ pub struct Capacity {
 pub enum StorageError {
     #[error("{message}")]
     Storage { message: String },
-    #[error("{message}")]
-    Owned { message: String },
-    #[error("{message}")]
-    Format { message: String },
     #[error("the store is unloading")]
     Closed,
 }
@@ -186,4 +192,4 @@ impl SqliteStorage {
 }
 ```
 
-`backup_store`, `restore_store` and `vacuum_store` remain the owner's functions with the signatures the CLI and the migration tool use; they take the same lease and are not service operations.
+`backup_store`, `restore_store` and `vacuum_store` remain the owner's functions with the signatures the CLI and the migration tool use; they are not service operations, and their `owned`/`format` errors belong to those functions, not to `StorageError`.
