@@ -12,7 +12,7 @@ Settings owns:
 - **Documents and revisions.** The user document (a file, or a row in the native store) and the project document (a file under an authorized project); the opaque revision that changes on every committed write; one writer at a time per document.
 - **Change application.** Running a caller's change against the current document under the owner's exclusion, checking the result, writing it, publishing the fact, and reporting whether durability is confirmed.
 - **Authority.** An owner change and an agent change may not alter a user-only member; a user edit may. Every member marked `writeOnly` that is reachable through `properties` is withheld from the agent, and the agent may not set it; the rule does not scan `items`, `$defs` or `anyOf`.
-- **Authorized projects.** The cwd → project table, the host-registered project root each authorized cwd denotes, and the fact announcing a new one.
+- **Authorized projects.** The cwd → project table, the FileStorage root it registers with `add_root` for each authorized cwd, and the fact announcing a new one.
 - **Facts.** `settings/<source>` with `{source, scope, revision}` after a commit, and `settings/projects` with `{root, cwd}` after a new authorization.
 
 Callers keep:
@@ -107,7 +107,7 @@ let project = projects
     .find(|project| project.cwd == cwd)
     .ok_or(WorkflowError::WorkspaceNotAuthorized)?;
 let definitions = format!("{}/.dimcode/workflows/{}", project.cwd, name);
-let bytes = storage.read(definitions, cancelled).await?; // FileStorage's operation
+let bytes = storage.read(definitions, None, None, cancelled).await?; // FileStorage's operation
 ```
 
 ## Own contract
@@ -206,14 +206,14 @@ A fact is published after the commit and never carries a document. A failed fact
 - [Settings service](../appserver/settings-service.md) §4.1 (common shapes: `Snapshot`, `Sources`, `SettingsScope`), §4.2 (the `settings` service), §4.5 (the Rust binding), §5 (the operations' flows), §6 (the error codes) and §11 (acceptance). §4.3 is [SettingsMethods](SettingsMethods.md)'s. The document's §3 state, §4.4 events, §7 security, §8.1, §9 and §10 stay in force; §4.4's `project_authorized` payload keeps `{root, cwd}`, and the new acceptance is the delivery's flow tests.
 - [Settings service](../appserver/settings-service.md) §8.1's note that Rust owners keep their own methods stays; the methods' shapes are in each owner's contract.
 - [Resource owner operations](../contracts/resource-owner-operations.md) §Settings.
-- [Service faces](../service-faces.md) §3.3's `settingsService` row, §3.2's host-port sentence for the three prompt ports, and §4.1's `settingsService` paragraph.
+- [Service faces](../service-faces.md) §3.3's `settingsService` row, §3.2's host-port sentence (`executionSettings`, `promptSuggestionSettings`), §4's prompt-ports paragraph, and §4.1's `settingsService` paragraph.
 - [Management methods](../appserver/management-methods.md)'s `settings.read`/`update`/`sources`/`projects` list.
 - [Prompt overrides](../appserver/prompt-overrides.md) §3.1 (the three prompt ports are one service; see [PromptSettings](PromptSettings.md)).
 - [Permission command rules](../appserver/permission-command-rules.md) §4.1's `commandRules` service (see [PermissionRules](PermissionRules.md)).
 
 ## Rule check
 
-Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
+Rules: [§7](https://github.com/arcships/dim/pull/2029), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -297,7 +297,7 @@ impl Scope {
 
 /// One document's replacement from the change callback: its own `reason` and `message`.
 #[derive(Debug, thiserror::Error)]
-#[error("{code}: {message}")]
+#[error("{reason}: {message}")]
 pub struct ChangeRefused {
     pub reason: String,
     pub message: String,

@@ -10,7 +10,7 @@ SettingsMethods owns:
 
 - The `settings` management namespace: which methods exist, their request and reply data, and the mapping from Settings' errors to the client's error codes.
 - The declared-only rule and the source-name resolution: the namespace maps the client's `source` name to the registered declared source's id, and refuses a name whose owner is a Rust document.
-- Admission: paired devices are never served the namespace; the authenticated loopback Web entry is served `settings.read` and `settings.update` for its allowlisted sources (`model-log` and `execution`).
+- Admission: paired devices are never served the namespace; the authenticated loopback Web entry is served `settings.read` and `settings.update` for its allowlisted sources (`WEB_SETTINGS_SOURCES` in `crates/dim-app-server/src/protocol.rs`: `model-log` and `execution`).
 
 Callers keep:
 
@@ -25,7 +25,7 @@ Callers keep:
 | A client lists authorized projects to pass a project scope | Yes, and no client asks: no declared source declares a project file | Not an operation; `settings.projects` is deleted |
 | A client edits a Rust-typed source | Yes, through that owner's own namespace (`permission.*`, `collaboration.*`, and so on) | Business |
 
-Every caller of the namespace: the CLI reads `prompts`, `prompt-suggestion`, `execution`, `model-log` and `workflow`; the Web `DiagnosticsSettings` and `PermissionsSettings` pages read `model-log` and `execution`; the Workflow TypeScript plugin reads the plugin-face `settings` service `projects`, which is not this namespace.
+Every caller of the namespace: the CLI reads `prompts` (`crates/dim-cli/src/prompt_command.rs`, `crates/dim-cli/src/session_host.rs`), `prompt-suggestion` and `execution` (`session_host.rs`), `model-log` (`crates/dim-cli/src/recording.rs`) and `workflow` (`crates/dim-cli/src/management/workflow.rs`); the Web `DiagnosticsSettings` and `PermissionsSettings` pages (`web/src/features/settings/`) read `model-log` and `execution`; the Workflow TypeScript plugin (`runtime/plugins/workflow/catalog.ts`) reads the plugin-face `settings` service, which is not this namespace.
 
 ## Caller example
 
@@ -127,7 +127,7 @@ Invalid params covers a malformed request, an unknown field, a missing revision,
 
 ## Rule check
 
-Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
+Rules: [§7](https://github.com/arcships/dim/pull/2029), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |

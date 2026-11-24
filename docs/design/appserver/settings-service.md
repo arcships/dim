@@ -17,10 +17,12 @@ each source with Settings when it starts ([ADR 007](../../adr/007-plugin-configu
 the source name, its files, a JSON Schema (with `default` values) and its user-only fields
 (§3.1). Settings then offers three things over JSON documents:
 
-- the process service `settings`, which the owner uses: `register`, `read`, `update` (CAS on
-  the revision) and `projects`;
-- the client management methods `settings.read`, `settings.update`, `settings.sources` and
-  `settings.projects`;
+- the process service `settings`, which the owner uses: `register` (with its `userOnly` list),
+  `read`, `change`, `read_user`, `replace_user`, `agent_read`, `agent_set`, `declared_sources`,
+  `authorize_project` and `authorized_projects` (the target shapes are in
+  [Settings](../plugins/Settings.md));
+- the client management methods `settings.read` and `settings.update` for declared sources
+  ([SettingsMethods](../plugins/SettingsMethods.md));
 - the same rutis events as S8a, `settings.changed` and `settings.project_authorized`. Their
   payloads become serializable. There is no `subscribe(source)`.
 
@@ -38,10 +40,9 @@ way (§4.5). Rust sources keep their owners' management methods. F2's `permissio
 
 No new plugin, no Timeline event, no change to Timeline, Dispatcher, rutis or assembly.
 
-The same Settings provider supplies generated `workflowFiles` for definition
-directories. It reads the existing project authorization map and the original
-process caller’s declared package scope, without exporting FileStorage or raw
-root indices. See the [native definition-file contract](../p6-p7-bindings.md#3-workflow-definition-files).
+Workflow definition files are not a Settings operation: Workflow composes the project's cwd
+from `authorized_projects` with FileStorage's path operations
+([#2033](https://github.com/arcships/dim/issues/2033)).
 
 ### 1.1 What this does not do
 
@@ -49,8 +50,9 @@ root indices. See the [native definition-file contract](../p6-p7-bindings.md#3-w
   event bus (issue comment). Settings keeps no watch channel of its own.
 - No generic client access to Rust sources (`mcp`, `mcp-projects`, `mcp-plugins`, `skills`, `permission`).
   Their validation is Rust code that Settings cannot run on client JSON.
-- Source discovery is `settings.sources` (§4.3): local connections can list the declared
-  sources and their schemas, never their documents. There is still no settings UI.
+- Source discovery is by name: a local client reads and writes the declared sources it knows
+  through `settings.read`/`settings.update`; no method lists every declaration (`settings.sources`
+  is deleted in [#2017](https://github.com/arcships/dim/issues/2017)). There is still no settings UI.
 - No secret store, credential service or field-name rule (§1.2). The one marker is the schema's
   `writeOnly` annotation.
 - MCP's inline tokens, `env` and `headers` stay where they are (ADR 004 D4).
@@ -95,17 +97,17 @@ depended on a store nobody owned. That service and the `*Ref` rule are withdrawn
  Process scope
  +-------------------------------------------------------------------------+
  |  Settings (existing plugin)                                             |
- |   SettingsService                                                       |
+ |   one service and the source registry                                   |
  |     registered sources, each until its registering plugin unloads:      |
  |       BusinessDocument types (Rust owners)                              |
  |       declared sources: schema, defaults, files, user-only pointers     |
- |   named service `settings` (HostDispatch)  <-- owner writes             |
- |   managementMethods `settings`             <-- client writes            |
+ |   service `settings`                       <-- owner operations         |
+ |   managementMethods `settings.*`           <-- client operations        |
  |   emits settings.changed on settings/<source>,                          |
  |         settings.project_authorized on settings/projects                |
  +------^-------------------------------^----------------------------------+
-        | register/read/update/projects | settings.read / settings.update
-        |                               | settings.sources / settings.projects
+        | register/read/change/...      | settings.read / settings.update
+        |                               | (declared sources only)
         |                               |
   TypeScript owner (rutis runtime row)  Rpc  <--  local client
 ```
@@ -119,7 +121,7 @@ owner depends on `settings`.
 
 Every owner, built-in Rust and TypeScript alike, registers its sources from its own process row's
 `apply`. Declared sources use `settings.register(declaration)` through their language binding
-(§4.2, §4.5); native `BusinessDocument` sources use `SettingsService::register::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
+(§4.2, §4.5); native `BusinessDocument` sources use `Settings::register_typed::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
 declares sources. A registration belongs to the plugin that made it and is withdrawn when that
 plugin unloads (turned off, removed or reloaded); a reload registers again from the new
 generation. The stored documents stay in the home whether or not their source is registered: an
@@ -307,7 +309,7 @@ F2 left open whether to fold its methods into `settings.read/update`. They stay:
 | §4 rule 4 (core has no business meaning) | Settings validates against declared schemas and names no owner |
 | §4 rule 5 (batches) | No Timeline writes |
 | §4 rule 6 (context) | Nothing enters model context. A tool's view of settings is its owner's business |
-| §4 rule 7 (public interfaces only) | Owners use the `settings` service; clients use management methods, and read the declarations through `settings.sources`, never from a plugin package |
+| §4 rule 7 (public interfaces only) | Owners use the `settings` service; clients use management methods for the declared sources they know by name, never a plugin package |
 | §4 rule 8 (infrastructure unchanged) | No change to Timeline, Dispatcher, event envelope, rutis, loader, Agent assembly or Session facade. Existing `HostDispatch`, `ServiceCatalog`, `managementMethods` and rutis events are used as they are |
 | §4 rule 9 (only needed facts in Timeline) | No event is added; settings are not Timeline facts |
 | ADR 002 D1 (scope) | Settings is a process plugin; the sources outlive Sessions |
@@ -329,12 +331,10 @@ question 2); that is no new requirement on dim runtime or rutis.
    plugin itself (§3.1), so installing, replacing or removing a plugin does not reload Settings.
 4. ~~**Which plugin provides `credentials` in the product.**~~ Withdrawn with the service: each
    owner handles its own secrets (§1.2).
-5. ~~**Source discovery for a settings UI.**~~ Settled 2026-11-05: discovery is
-   `settings.sources` (§4.3), a management method served to local connections only that lists
-   each declared source, its schema and its scopes, never a document. The question was whether
-   a generic `/settings` page would need the declared sources and their schemas (for example a
-   `settings.sources` method); nothing required it for S8b, so it stayed with the CLI settings
-   design until now.
+5. ~~**Source discovery for a settings UI.**~~ Settled 2026-11-05, then superseded by
+   [#2017](https://github.com/arcships/dim/issues/2017): `settings.sources` is deleted. A client
+   reads the declared sources it knows by name; an out-of-repo page that needs the list would
+   have to be given it again through its owner's namespace.
 6. **User-only fields for Rust sources.** No Rust owner writes its source on behalf of a tool
    today. If one does (Scheduler, Workflow), it needs a user-only declaration on its
    `BusinessDocument`. That is decided with that owner's design.

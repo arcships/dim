@@ -29,11 +29,8 @@ Callers keep:
 PromptSources reads the base text once, while its Session part applies.
 
 ```rust
-let base = prompt_settings
-    .base(cancelled.child_token())
-    .await
-    .ok()
-    .and_then(|view| view.text);
+// `prompt_settings` is the BasePromptSettings port; its read answers the text or none.
+let base = prompt_settings.base(cancelled.child_token()).await.ok().flatten();
 let text = factory.base.or(base).unwrap_or_else(|| BUILT_IN.into());
 ```
 
@@ -77,7 +74,7 @@ A read returns the member as stored after the schema check; an absent member is 
 
 ## Rule check
 
-Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
+Rules: [§7](https://github.com/arcships/dim/pull/2029), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
@@ -106,7 +103,7 @@ None new. The consumers ([PromptSources](../../architecture/rust-agent/plugins/P
 
 ## Binding appendix
 
-The three reads are one service on the owner type; the old `BasePromptSettingsHost`, `SkillsInstructionsSettingsHost` and `SummaryPromptSettingsHost` types and their traits are deleted.
+The three reads are one service on the owner type; the old `BasePromptSettingsHost`, `SkillsInstructionsSettingsHost` and `SummaryPromptSettingsHost` wrapper types are deleted, while the traits `BasePromptSettings`, `SkillsInstructionsSettings` and `SummaryPromptSettings` stay in `dim-agent-capabilities` and the owner implements them.
 
 ```rust
 use dim_agent_runtime::PublicService;

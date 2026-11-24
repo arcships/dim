@@ -8,7 +8,7 @@ ExecutionSettings owns the `execution` document and the process execution switch
 
 ExecutionSettings owns:
 
-- The `execution` source: its file, its schema, and the two switches `sandbox` and `network`, both defaulting to `false` and declared as user-only members. This contract changes their authority: today the source declares no user-only member, so an owner or agent write could change the switches; under this contract such a write is `user_only`, and the delivery lists the change.
+- The `execution` source: its file, its schema, and the two switches `sandbox` and `network`, both defaulting to `false` and declared as user-only members. This contract changes their authority: today the source declares no user-only member (`crates/dim-app-server/src/execution_settings.rs`), so an owner or agent write could change the switches; under this contract such a write is `user_only`, and the delivery lists the change.
 - The value `{sandbox, network}`: the switches in force now, read at each use.
 
 Callers keep:
@@ -73,7 +73,7 @@ let switches = execution_settings.read(cancelled.clone()).await.map_err(|error| 
 
 ## Rule check
 
-Rules: [§7](https://github.com/arcships/dim/blob/2fc4f50b47529e17d51e92b1d7441734771226fc/docs/architecture/rust-agent/principles.md#7-所有者与操作), [ADR 002](../../adr/002-plugin-scope.md).
+Rules: [§7](https://github.com/arcships/dim/pull/2029), [ADR 002](../../adr/002-plugin-scope.md).
 
 | Rule | Application |
 | --- | --- |
