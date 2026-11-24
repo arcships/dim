@@ -90,7 +90,7 @@ binding.bind(BindRequest {
 }).await?;
 ```
 
-A budget-recovery retry keeps the generation the first attempt declared; `transfer`, `release` and `retain_only` are synchronous:
+A budget-recovery retry keeps the generation the first attempt declared; `transfer` is synchronous, and `release` and `retain_only` are awaited:
 
 ```rust
 binding.transfer(TransferRequest { from: old_request_id, to: new_request_id })?; // NoRecord
@@ -128,7 +128,7 @@ let declared: Vec<ToolDefinition> = binding.adopted(execution.request_id.clone()
 | `B:Timeline`, `B:Dispatcher` | Reconcile the prefix's last configuration at branch opening; consume `step/tool-result` and `turn/end` for settlement; write nothing. |
 | `B:BranchLifecycle` | Gate the registry-change watcher on activation and closing. |
 
-The registry's `adopt`, `release`, `claim` and `release_claims` are called only by ToolBinding; Loop calls them through this owner and calls the registry only for `declarations`.
+The registry's `adopt`, `release`, `claim` and `release_claims` are async and take the calling row; ToolBinding calls them only through these operations, and Loop calls the registry only for `declarations`.
 
 ### Operations
 
@@ -231,7 +231,7 @@ Flow tests on the owner:
 
 ## Binding appendix
 
-The service is marked on the owner type; the name stays `toolBinding`. Every operation completes without waiting; the registry's operations take the cancellation argument. `ToolDefinition` and `ToolSourceVersion` are `dim_agent_types` values; `ToolExecutionContext` is the crate's existing execution context (`dim_agent_capabilities::host`), not a type of this owner.
+The service is marked on the owner type; the name stays `toolBinding`. `adopted` and `transfer` read or move the record and complete without waiting; `bind`, `claim`, `release` and `retain_only` are async because they call the registry's async operations. None of them takes the cancellation argument, and an admitted operation completes. `ToolDefinition` and `ToolSourceVersion` are `dim_agent_types` values; `ToolExecutionContext` is the crate's existing execution context (`dim_agent_capabilities::host`), not a type of this owner.
 
 ```rust
 use crate::host::ToolExecutionContext;
@@ -296,8 +296,8 @@ impl ToolBinding {
     pub async fn bind(&self, request: BindRequest) -> Result<(), BindingError> { /* ... */ }
     pub fn adopted(&self, request_id: String) -> Result<Adopted, BindingError> { /* ... */ }
     pub async fn claim(&self, request: ClaimRequest) -> Result<(), BindingError> { /* ... */ }
-    pub fn release(&self, request_id: String) -> Result<(), BindingError> { /* ... */ }
-    pub fn retain_only(&self, request_id: String) -> Result<(), BindingError> { /* ... */ }
+    pub async fn release(&self, request_id: String) -> Result<(), BindingError> { /* ... */ }
+    pub async fn retain_only(&self, request_id: String) -> Result<(), BindingError> { /* ... */ }
     pub fn transfer(&self, request: TransferRequest) -> Result<(), BindingError> { /* ... */ }
 }
 ```
