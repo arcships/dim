@@ -135,7 +135,7 @@ None. Both tools keep their names, schemas, descriptions, results and error code
 | §7 cross-language | Both tools are declared with data schemas and their results are data. |
 | §7 one change | Replacing the search face with the account owner's operations happens in the same change that migrates the declaration and the call. |
 | ADR 002 D1 | Session scope: no state is shared across Sessions. |
-| ADR 027 D2 | Web resolves no service by id: Settings and the account owner are process dependencies declared at load, and no registration point is reached by id. |
+| ADR 027 | Not applicable: Web resolves no service by id; Settings and the account owner are process dependencies declared at load. |
 | ADR 002 D2 | No wiring plugin: the tools are on the part; the source is the registry's registration point. |
 | ADR 002 D3 | Dependencies point from Web to Settings, the account owner and the registry. |
 | ADR 002 D4 | The `web` document is business configuration read at use; the plugin's on/off state is structural. |

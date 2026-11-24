@@ -156,7 +156,7 @@ None. The `codemode` tool keeps its name, description, schema, risk and v4 gate;
 | §7 cross-language | The tool, the run and the quota are data and callbacks; the program's bridge is `tools.list/describe/call`. |
 | §7 one change | Deleting the process runner table, the runner trait and the executor wrapper happens in the same change that adds the quota operation and the line's run operation. |
 | ADR 002 D1 | Slots are process state; the run is line state; the declaration is Session state. |
-| ADR 027 D1, D4 | The tool handler reaches `codeModeLine` and the line's ToolExecutor by the line id on its execution context; the resolution is not a dependency and is not kept across calls. |
+| ADR 027 | Applies: D1 and D4. The mechanism is [#2127](https://github.com/arcships/dim/issues/2127). |
 | ADR 027 D3 | `codeModeLine` and ToolExecutor are branch data faces; no registration point or lifecycle service is resolved by id. |
 | ADR 002 D2 | No wiring plugin: both operations are on their owners' types; the mechanism resolves the line. |
 | ADR 002 D3 | Dependencies point from Code Mode to the registry, the mechanism and ToolExecutor. |
