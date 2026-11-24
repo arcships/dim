@@ -221,7 +221,7 @@ The call data of both tables — `MethodCall`, `MethodReply`, the handler's own 
   "mutating": true,
   "interruption": "report" | "drain",  // the provider replies on unload: report → operation_interrupted; drain → the call's own result
   "progress": false,
-  "notifications?": ["session.goal.changed"], // inside the namespace
+  "notifications?": ["session.goal.changed"], // equal to or inside the namespace
   "reply?": "direct" | "handoff" }     // handoff: daemon.shutdown; accepted and ignored until handoff exists
 // MethodCall, MethodReply and the table's errors: [SessionMethods](../plugins/SessionMethods.md#binding-appendix).
 ```
@@ -318,7 +318,7 @@ reply ----------> reply and notice allowance ----+
                   full: a slow consumer, the connection closes
 ```
 
-A notification is the JSON-RPC notification `{"jsonrpc":"2.0","method":"<declared name>","params":{...}}`, written to the calling connection only; other clients of the Session do not receive it. `params` is a JSON object. `callId` is required and names the call whose work the notification reports: it is the id minted for a call served by a registration of another language, which its `origin.caller.callId` carries. A native handler has no such id: it notifies through its `Caller`. While that call's reply is not written its notifications are held and written right after it, in order; once the reply is written, or the id is not in flight, they are written directly. `connectionId` is the address: a row that received no call from it answers `gone`. Only a name a generation that served the connection declared, inside its namespace, may be sent; any other name answers `undeclared` and nothing is written.
+A notification is the JSON-RPC notification `{"jsonrpc":"2.0","method":"<declared name>","params":{...}}`, written to the calling connection only; other clients of the Session do not receive it. `params` is a JSON object. `callId` is required and names the call whose work the notification reports: it is the id minted for a call served by a registration of another language, which its `origin.caller.callId` carries. A native handler has no such id: it notifies through its `Caller`. While that call's reply is not written its notifications are held and written right after it, in order; once the reply is written, or the id is not in flight, they are written directly. `connectionId` is the address: a row that received no call from it answers `gone`. Only a name a generation that served the connection declared, equal to or inside its namespace, may be sent; any other name answers `undeclared` and nothing is written.
 
 How a notification of one call reaches its caller:
 
@@ -527,7 +527,7 @@ carry the native event whole, and the frozen fixtures stay unchanged.
 | `report` call interrupted | `-32000`, `operation_interrupted` |
 | Handler error | the handler's own JSON-RPC code when it carries one (`MethodCallbackError.wire`), otherwise the code Rpc chooses for a service error (`invalid_params` → -32602, `unknown_method` → -32601, otherwise -32000), with the handler's `appError` and its owner fields |
 
-Native method errors may include owner-defined JSON fields beside `data.appError`.
+A handler's failure may carry owner-defined JSON fields in `data` beside `data.appError`.
 The method owner defines and supplies their safe public shape; the method table
 and Rpc preserve them without interpreting them. These fields must not shadow
 `appError` or built-in error fields. An error without additional fields keeps its

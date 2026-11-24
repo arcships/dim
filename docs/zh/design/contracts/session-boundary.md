@@ -221,7 +221,7 @@ sequenceDiagram
   "mutating": true,
   "interruption": "report" | "drain",  // 卸载时由提供方回复：report → operation_interrupted；drain → 调用自己的结果
   "progress": false,
-  "notifications?": ["session.goal.changed"], // 位于命名空间内
+  "notifications?": ["session.goal.changed"], // 等于或位于命名空间内
   "reply?": "direct" | "handoff" }     // handoff：daemon.shutdown；交接落地前接受并忽略
 // MethodCall、MethodReply 与方法表的错误：见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)。
 ```
@@ -317,7 +317,7 @@ reply ----------> 回复与通知额度 ----------------+
                   已满：慢消费者，关闭连接
 ```
 
-通知是 JSON-RPC 通知 `{"jsonrpc":"2.0","method":"<声明的名称>","params":{...}}`，只写到发起调用的连接；该 Session 的其他客户端收不到。`params` 是 JSON 对象。`callId` 必填，指通知所报告工作所属的调用：即另一种语言注册所提供的调用被铸出的 id，由 `origin.caller.callId` 携带。原生处理函数没有这个 id：它经自己的 `Caller` 通知。该调用的回复尚未写出时，它的通知按序暂存并在回复之后写出；回复写出后，或该 id 不在途时，直接写出。`connectionId` 是地址：未从该连接收到过调用的行返回 `gone`。只能发送服务过该连接的代际声明过、且位于其命名空间内的名称；其他名称返回 `undeclared`，不写任何内容。
+通知是 JSON-RPC 通知 `{"jsonrpc":"2.0","method":"<声明的名称>","params":{...}}`，只写到发起调用的连接；该 Session 的其他客户端收不到。`params` 是 JSON 对象。`callId` 必填，指通知所报告工作所属的调用：即另一种语言注册所提供的调用被铸出的 id，由 `origin.caller.callId` 携带。原生处理函数没有这个 id：它经自己的 `Caller` 通知。该调用的回复尚未写出时，它的通知按序暂存并在回复之后写出；回复写出后，或该 id 不在途时，直接写出。`connectionId` 是地址：未从该连接收到过调用的行返回 `gone`。只能发送服务过该连接的代际声明过、且等于或位于其命名空间内的名称；其他名称返回 `undeclared`，不写任何内容。
 
 一次调用的通知如何到达调用方：
 
