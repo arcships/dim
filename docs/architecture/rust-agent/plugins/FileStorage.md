@@ -136,17 +136,23 @@ With the dispatch's `caller` in scope, a claimed change and the directory operat
 
 ```rust
 let claim = storage.claim(caller, auth_path.clone(), cancelled.clone()).await?;
-let record = storage.read(auth_path.clone(), None, None, cancelled.clone()).await?;
-let applied = storage.update_claimed(
-    caller,
-    auth_path,
-    change,
-    claim.claim_id.clone(),
-    None,
-    Some(Permissions::Private),
-    cancelled.clone(),
-).await?;
-storage.release(caller, claim.claim_id).await?;
+// Release on both the success and failure paths; a failed release is reported
+// before the business error.
+let outcome = async {
+    let _record = storage.read(auth_path.clone(), None, None, cancelled.clone()).await?;
+    storage.update_claimed(
+        caller,
+        auth_path,
+        change,
+        claim.claim_id.clone(),
+        None,
+        Some(Permissions::Private),
+        cancelled.clone(),
+    ).await
+}.await;
+let released = storage.release(caller, claim.claim_id).await;
+released?;
+outcome?;
 
 let directory = storage.create_directory(path, cancelled.clone()).await?;
 let entries = storage.list(directory.clone(), cancelled.clone()).await?;
@@ -212,7 +218,7 @@ Request fields use the wire's camelCase names; the Rust binding parameters below
 
 `keep_replaced_as` is either an absolute path in the target's parent or a bare name the owner joins to that parent. Under the file's lock (the key, or the credential record's marker) the owner reads the current content, copies it to the path exclusively before calling `change`: an existing entry at that path answers `rejected` with reason `backup_exists` and the change does not run; an absent target, an absolute path outside the target's parent, the target itself or a reserved name is `invalid`. The copy is `private` (0600). Any failure while creating, writing or syncing the copy removes the partial copy and syncs the parent before returning `io`. If `change` returns `None`, refuses, returns content equal to the current one (`applied: false`), returns content above 8 MiB (`too_large`), or the replacement fails before the rename, the owner removes the copy and syncs the parent, so a later call is not blocked by a stale copy. A committed replacement, including `unsynced`, leaves the copy. A crash between the copy and the replacement can leave a copy of bytes that are still the file; `backup_exists` reports it and the caller resolves it deliberately. `update_claimed` does the same under the held marker.
 
-`claim`'s `path` is a credential record: `auth.json`, `mcp-oauth.json` or `chatgpt-account.json`; the owner derives that file's published marker beside it and answers `invalid` for any other path. A claim is bound to the caller's row for ownership and cleanup: the row's unload releases it and `release` accepts only the claim that row holds. A second `claim` from the same row, including one for the same record, waits like any caller and can cancel; only one refresh or token request per row runs at a time. `release` takes the claim id; a row that lost it recovers by unloading. A claim whose work is cancelled or refused before its write releases the claim without writing. `update_claimed` checks the marker's nonce before the change runs; a reclaimed claim is `rejected` with reason `claim-lost`. A write or update of a credential record without a claim takes its marker for the call; a claim holder passes `claim_id` only to `update_claimed`; it releases the claim first for an operation that waits for the marker (`write`, `import`, `remove`, `update`).
+`claim`'s `path` is a credential record: `auth.json`, `mcp-oauth.json` or `chatgpt-account.json`; the owner derives that file's published marker beside it and answers `invalid` for any other path. A claim is bound to the caller's row for ownership and cleanup: the row's unload releases it and `release` accepts only the claim that row holds. A second `claim` from the same row, including one for the same record, waits like any caller and can cancel; only one refresh or token request per row runs at a time. `release` takes the claim id. A row that still runs but lost the id recovers by unloading the row; a caller whose `update_claimed` answered `claim-lost` re-claims because the marker no longer carries its nonce. A claim whose work is cancelled or refused before its write releases the claim without writing. `update_claimed` checks the marker's nonce before the change runs; a reclaimed claim is `rejected` with reason `claim-lost`. A write or update of a credential record without a claim takes its marker for the call; a claim holder passes `claim_id` only to `update_claimed`; it releases the claim first for an operation that waits for the marker (`write`, `import`, `remove`, `update`).
 
 `permissions` is absent for "keep the existing mode; a new file gets `private`": `private` is owner-only (0600), `privateReadOnly` is owner-only and read-only (0400), the attribute Session files use. `max_bytes` is absent for the owner's 8 MiB default; a caller with a different business cap passes it. A listed name is passed back to `remove` unchanged. FileStorage waits for a file's key until the caller cancels or the owner closes; there is no fixed bound, so a call that must not wait ends with its cancellation.
 
