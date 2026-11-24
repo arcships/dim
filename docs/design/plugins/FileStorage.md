@@ -232,7 +232,7 @@ None. This contract changes the plugin-facing `fsHost` surface only. Client prot
 - `docs/design/process-typescript.md`: `scope.openRead` and `fsHost.readAt`/`closeRead`.
 - `docs/architecture/rust-agent/plugins/FileStorage.md`: the current implementation page; it describes the code, not this contract.
 
-The sibling contracts that call this face use these operations: #2091 SessionFiles uses `root_path`, `create_directory`, `write`, `import`, `list`, `remove` and `read`; #2093 FileAccessFacts uses `stat`; #2094 Settings uses `add_root`, `read` and `update`, and ModelLog uses `root_path`; #2095 UiResources uses `read`'s `size` and offset pages. #2091's page-past-end rule is aligned with `read`'s `invalid` above in step 2.
+The sibling contracts that call this face use these operations: #2091 SessionFiles uses `root_path`, `create_directory`, `write`, `import`, `list`, `remove` and `read`; #2093 FileAccessFacts uses `stat`; #2094 Settings uses `add_root`, `read` and `update`, and ModelLog uses `root_path`; #2095 UiResources uses `read`'s `size` and offset pages. The page-past-end rule is one rule in both documents: an offset equal to `size` answers an empty page with `eof`, an offset above `size` is `invalid`, and #2091 SessionFiles clamps an offset above `size` to `size` before calling `read`, so its own callers keep the empty page its client contract states.
 
 ## Verification
 
