@@ -146,8 +146,6 @@ pub enum GuideScope { Session, Branch(String) }
 #[serde(rename_all = "camelCase")]
 pub struct GuideEntry { pub markers: Vec<String>, pub order: i32, pub text: String }
 
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "code", rename_all = "snake_case")]
 /// A listener's own failure, reported to the table; it does not undo the composition.
 #[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,6 +162,8 @@ impl From<rutis::host::CallError> for GuideListenerError {
     }
 }
 
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum GuideError {
     #[error("{message}")]
     InvalidEntry { message: String },

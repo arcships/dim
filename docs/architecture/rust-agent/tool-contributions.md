@@ -92,11 +92,24 @@ impl ToolRegistry {
 
 ### 2.1 宿主工具的 `toolHost` 数据面
 
-宿主工具的面是 [WorkspaceTools 契约](../../design/plugins/WorkspaceTools.md#own-contract) 的 `toolHost`：
-`declarations()`、`execute(call, context, cancelled)`、`resolve_write(call, cancelled)`、`ordering(call)`。
-`ToolHost` 与 `ToolDriver` 作为公开类型不再存在；宿主工具的声明由 ToolRegistry 在 apply 时读 `declarations`，
-随工具采用进入模型配置。`context` 是 `{turnId, requestId, branchId}` 数据，不是授权凭据；模型决定的工具调用仍经
-ToolExecutor 的写入目标解析、风险判定、Approval 与 Permission 后才执行。
+宿主工具的实现是 Session 的 `ToolHost`，`ToolDriver` 是实现而不是第二个契约；同一操作按名暴露给其他语言
+（[服务面 §3.4](../../design/service-faces.md#34-对象句柄拆成操作加-id)）：
+
+```text
+toolHost.execute(call: ToolCall, caller: ToolExecutionContext, cancelled: () => void | Promise<void>)
+  call   = {id, name, input}
+  caller = {turnId, requestId, branchId}
+  -> ToolResult
+  -> error {code, message}
+```
+
+`definitions` 不进数据面：宿主工具的声明由 ToolRegistry 在 Session 内读取，随工具采用进入模型配置。
+`cancelled` 完成时取消这次调用的 token。桥调用方须在放弃调用前触发取消；仅丢弃桥返回值不会取消工作。直接丢弃 Rust 调用 future 会取消它。
+数据面是直接调用驱动的执行入口，只委托 `ToolDriver::execute`；它不调用 `resolve_write`、Permission 或 Approval。
+调用方负责准入。模型决定的工具调用必须经分支 [ToolExecutor](plugins/ToolExecution.md#toolexecutor) 的既有流程解析写入目标、判定风险并经 Approval 准入后才执行。
+`caller` 只标识执行上下文，不是授权凭据；持有此面的受信任插件不能把直接调用当作已经过模型工具审批。
+配置启用与模型决策的授权边界见 [ADR 003](../../adr/003-approval-scope.md)，服务部署的可达性见[服务面 §2.1](../../design/service-faces.md#21-目标)。
+各宿主绑定（`WorkspaceTools`、`ShellSession`、嵌入方自己的 `ToolHost`）给出同一个原始执行面。
 
 ## 3. 依赖方向
 
@@ -224,11 +237,56 @@ ToolBinding 先取得注册表的来源状态 watch 再初读注册表，状态�
 
 ### 7.5 服务接口
 
-工具面是 [ToolRegistry 契约](../../design/plugins/ToolRegistry.md#own-contract) 的 `toolRegistry`：
-`register`、`register_source`、`adopt`、`release`、`run`、`resolve_write`、`ordering`、`claim`、`release_claims`、
-`declarations`、`sources`、`observe_sources`。`toolSourcesView` 不再有独立面，观察是 `sources`/`observe_sources`。
-`ToolContribution`、`ToolHandler`、`ToolSourceSet` 不再跨所有者交出；`snapshot`、`source`、`fixed`、`contributed`
-由 `adopt`、`release` 与 `declarations` 取代。
+Session 数据面 `toolSourcesView` 是同一 ToolRegistry owner 的只读观察面；
+`toolRegistry` 负责贡献注册，观察面不暴露 handler 或注册操作。
+`get({})` 返回当前来源状态：按 source key 映射到
+`{adopted: string|null, rejected: {version, reason}|null}`。
+`observe({}, onState)` 返回持续观察的异步操作，先发送当前快照，再发送变化后的最新快照。
+它沿用 watch 语义，连续变化可以合并；不是持久事件日志，不保证每次变更都单独回调。
+回调在所有状态借用及提交锁之外运行。调用方取消、放弃等待或 owner 卸载结束观察，
+即使回调仍未返回也释放其等待；来源关闭正常结束，回调错误结束该观察并传播给调用方。
+这些操作不刷新来源或改变采用/拒绝规则，也不影响其他观察者。
+Rust 绑定的 `ToolSourcesView::get/subscribe` 直接读取同一个状态和 watch receiver，
+没有额外回调任务、通道或快照复制循环。
+
+
+**`ToolRegistry`（Session）**
+
+| 方法 | 输入 → 输出 | 错误 |
+| --- | --- | --- |
+| `register(ctx, ToolContribution)` | 代表 `ctx` 所属部件注册工具，直到该部件卸载 | 名称不合语法、为宿主工具名或已被注册 |
+| `register_source(ctx, name, provider)` | 代表 `ctx` 所属部件注册动态来源，直到该部件卸载 | 来源名不合语法或已被注册 |
+| `definitions()` | → 先纳入当前已注册的内容（同 `snapshot()`），再给出挂载的宿主工具与当前集合的全部声明（顺序同 7.4） | — |
+| `snapshot()` | → 纳入当前已注册的内容后，同一锁内读出的声明与其所来自的当前集合；ToolBinding 以此构造采用内容 | — |
+| `sources()` | → 当前集合，按键排序 | — |
+| `source(key, version)` | → `Option<Arc<ToolSourceSet>>`，当前或仍被引用的旧版本 | — |
+| `fixed(name)` | → 挂载的宿主工具 `Option<Arc<ToolContribution>>` | — |
+| `contributed(name)` | → 注册工具当前版本 `Option<Arc<ToolContribution>>` | — |
+
+整组替换是注册表内部的刷新，不对外开放。注册表在 `apply` 读全部来源，之后每次读取、注册变化与来源通知时重读，对版本与已持有不同的键执行：
+
+| 步骤 | 规定 |
+| --- | --- |
+| 校验 | `key` 属于提供它的来源名；`version` 未被本注册表持有过；工具名满足 `[A-Za-z0-9_-]{1,64}`、集合内唯一，且不与保留名（宿主工具定义名与全部已注册工具名，这些名称只能由其自身的 `#contributed:` 集合提供）或其他键当前集合重名 |
+| 失败 | 整组拒绝，保留旧集合，记 `rejected` 与诊断。被拒版本不算已持有，任一来源下次变化时重新校验；先占名的来源撤销后被拒来源自动恢复 |
+| 成功 | 原子替换，旧版本转弱引用，更新 `ToolSourcesState`，通知 |
+| 撤销 | 移除该键，不会失败 |
+
+**`ToolBinding`（分支）**
+
+| 方法 | 调用方 | 输入 → 输出 | 错误 |
+| --- | --- | --- | --- |
+| `bind(request_id, through, tools, tool_sources)` | Loop | 前缀（至 `through`）中已采用配置的声明与来源版本 → 登记快照；成功后按 7.6 释放旧 pin | `tool source <key>@<version> is unavailable`；`tool <name> has no handler`（声明名在所绑集合与固定表中都不存在）；`request_id` 已登记 |
+| `bind_current(request_id, declared: Option<_>)` | Loop | `None`：配置没有工具部分，声明注册表当前的宿主与注册工具；`Some`：核对显式声明 → 按注册表当前状态登记快照 | 声明名不存在或与当前定义不等 |
+| `prepare(request_id, prepare)` | Loop | 捕获并持有当前声明与来源集合，让宿主从这些声明选择本请求的工具，再以同一快照绑定其返回的声明 | 宿主准备失败；声明名不存在或与捕获的定义不等 |
+| `handler(request_id, name)` | ToolExecutor | → 快照中的 `Arc<ToolContribution>`（`handler` 用于执行；审批用 `handler.risk(call)` 给出的单次 risk，没有时用 `definition.risk`） | `request <id> has no active tool binding`；`Unknown tool: <name>`。ToolExecutor 写成工具错误结果 |
+| `transfer(from, to)` | Loop（预算恢复） | 原请求快照改登记到新 `request_id` | `from` 无快照 |
+| `release(request_id)` | Loop | 释放快照；不存在时无操作 | — |
+| `retain_only(request_id: Option<_>)` | Loop（重建后） | 释放其余快照 | — |
+
+`handler` 只读快照，不读注册表当前表：来源在调用途中被替换或撤销，不影响本请求。
+
+**`Prompt::adopt_tools`（crate 内部，归 Prompt）**：`adopt_tools(ToolSetAdoption { tools, tool_sources }, cancel) -> Result<ToolAdoptOutcome>`，`ToolAdoptOutcome` 为 `Adopted { sequence }`、`Unchanged`、`Superseded`。排入 Prompt 现有串行采用队列，不调用 `LoadPrompt`，不写 `prompt/configure-*`；合成并提交 `context/configured` 后返回（不等分发：ToolBinding 在分支 `apply` 中调用，Dispatcher 此时尚未启动）；发布前 `cancel` 已取消返回 `Superseded`。
 
 ### 7.6 关键流程
 

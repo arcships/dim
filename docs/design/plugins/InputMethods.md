@@ -77,7 +77,7 @@ None beyond the line's input owner, reached by line id.
 | `register` | Publish a check for the calling row's lifetime | `{name, check}` | `{}` | None | `duplicate`, `invalid`, `closed` |
 | `check` | Turn a candidate input into the input an entry writes | `{entry, branchId, user, mode}` | `{proceed: {user, warnings}}` or `{blocked: {message}}` | The caller's token stops the checks; a check already running stops with the token | `cancelled`, `closed` |
 | `session.input.withdraw` | Withdraw a pending input on a line | `{sessionId, branchId, inputId, reason?, steer?}` | the queue's receipt | The caller's token; a committed withdrawal is not undone | `invalid`, `input_blocked`, `publication_unknown`, `cancelled`, `closed` |
-| `session.input.pending` | A line's pending inputs at a cutoff, one page | `{sessionId, branchId, through?, after?}` | `{branchId, through, inputs, next}` | The caller's token stops the read | `invalid`, `cancelled`, `closed` |
+| `session.input.pending` | A line's pending inputs at a cutoff, one page | `{sessionId, branchId, through?, after?, includeBlockPresence?}` | `{branchId, through, inputs, next}` | The caller's token stops the read; the wire code is `operation_interrupted` | `invalid`, `cancelled`, `closed` |
 
 `check` is a callback by reference; it never runs inside the Timeline's commit lock; its future is dropped when the caller's token fires. `check` returns the input the entry writes, with the checks' marker blocks already placed after the operator's content, and the warnings the client shows; a non-marker block is dropped with a diagnostic, as today.
 
@@ -169,15 +169,13 @@ pub enum InputError {
     #[error("the call was cancelled")]
     Cancelled,
     #[error("{message}")]
-    Blocked { message: String },
-    #[error("the withdrawal committed and its publication is unconfirmed")]
-    Interrupted,
+    InputBlocked { message: String },
+    #[error("the withdrawal committed but its publication was not confirmed")]
+    PublicationUnknown,
     #[error("the Session or line is closing")]
     Closed,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 /// A check's own failure; the table treats it as no opinion and proceeds.
 #[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -194,6 +192,8 @@ impl From<CallError> for CheckCallbackError {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Checked {
     Proceed { user: Option<UserInput>, warnings: Vec<SubmitWarning> },
     Blocked { message: String },
@@ -206,7 +206,8 @@ pub struct PendingRequest {
     pub session_id: String,
     pub branch_id: String,
     #[serde(default)] pub through: Option<u64>,
-    #[serde(default)] pub after: Option<String>,
+    #[serde(default)] pub after: Option<dim_agent_runtime::QueryCursor>,
+    #[serde(default)] pub include_block_presence: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -215,7 +216,7 @@ pub struct PendingReply {
     pub branch_id: String,
     pub through: u64,
     pub inputs: Vec<PendingInput>,
-    #[serde(default)] pub next: Option<String>,
+    #[serde(default)] pub next: Option<dim_agent_runtime::QueryCursor>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

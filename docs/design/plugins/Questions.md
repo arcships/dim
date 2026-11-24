@@ -55,6 +55,7 @@ A client answers; the method resolves the waiter and the call's result follows:
 | `S:sessionScope` | `config` for `interactive`, read per call; a non-interactive Session gets an error result. |
 | `S:toolRegistry` | Register `ask_user` until this part unloads. |
 | `S:sessionMethods` | Register `session.question` until this part unloads. |
+| `S:timelineTree` | `query` for the pending read at the line's cutoff. |
 
 ### Contributions
 
@@ -63,7 +64,7 @@ No service of its own. The table is reached only through the tool call's wait an
 | Contribution | Request | Reply | Cancellation | Errors |
 | --- | --- | --- | --- | --- |
 | `session.question.respond` | `{sessionId, branchId, requestId, callId, answers? \| declined: true}` | `{}` | The call's own admission | `invalid`, `not_pending` |
-| `session.question.pending` | A line's pending question batches at a cutoff | `{sessionId, branchId, through?, after?}` | `{branchId, through, batches, next}` | The caller's token stops the read | `invalid`, `cancelled` |
+| `session.question.pending` | `{sessionId, branchId, through?, after?}` | `{branchId, through, batches, next}` | The caller's token stops the read; the wire code is `operation_interrupted` | `invalid`, `cancelled` |
 
 The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, invalid input, cancelled, and the part's reload settlement.
 
@@ -74,7 +75,7 @@ The tool's own outcomes are `ToolResult`s: answered, declined, non-interactive, 
 | `invalid` | The answer names no question, repeats one, chooses an unoffered label, or the call's input is malformed; the wire code is `invalid_params` |
 | `not_pending` | No waiting call matches the three ids; the wire code is `question_not_pending`; re-read `pending` |
 
-The pending read's `invalid` is the wire's `invalid_params`; its `cancelled` leaves the inventory unchanged.
+The pending read's `invalid` is the wire's `invalid_params`; its `cancelled` is the wire's `operation_interrupted` and leaves the inventory unchanged.
 
 ### Flows
 
@@ -121,8 +122,7 @@ The pending read's `invalid` is the wire's `invalid_params`; its `cancelled` lea
 
 ## Requirements raised to mechanism owners
 
-1. [#2127](https://github.com/arcships/dim/issues/2127) ([#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)): `line_owner::<T>(line)` gives this Session part a branch owner's data face by id; `session.question.pending` reads the line through `timelineTree.query`, and the tool's key uses the calling line id. Registration points and lifecycle services are excluded.
-2. The claim lifecycle recorded in [ToolRegistry](ToolRegistry.md#requirements-raised-to-mechanism-owners).
+None beyond the claim lifecycle recorded in [ToolRegistry](ToolRegistry.md#requirements-raised-to-mechanism-owners). The pending read uses the Session's `timelineTree` service, already a dependency; the line id is a value from the execution context, so no branch access is needed.
 
 ## Supersedes
 
@@ -156,7 +156,7 @@ pub struct PendingRequest {
     pub session_id: String,
     pub branch_id: String,
     #[serde(default)] pub through: Option<u64>,
-    #[serde(default)] pub after: Option<String>,
+    #[serde(default)] pub after: Option<dim_agent_runtime::QueryCursor>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -165,7 +165,7 @@ pub struct PendingReply {
     pub branch_id: String,
     pub through: u64,
     pub batches: Vec<dim_agent_types::PendingQuestionBatch>,
-    #[serde(default)] pub next: Option<String>,
+    #[serde(default)] pub next: Option<dim_agent_runtime::QueryCursor>,
 }
 
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]

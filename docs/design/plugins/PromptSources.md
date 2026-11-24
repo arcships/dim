@@ -49,16 +49,12 @@ A branch adopts at open and reloads one source when its periodic check moves it:
 ```rust
 // The branch's open reads the targets and model; Prompt adoption loads each target's current content.
 let Some(update) = sources.initial().configuration else { return Ok(()) };
-let ConfigureUpdate { sources: targets, model } = update;
+prompt.configure(ConfigureRequest::Initial(update), cancelled.clone()).await?;
 
-// A periodic check adopts one changed entry; ConfigureRequest is Prompt adoption's.
+// A periodic check adopts one changed entry; ConfigureRequest is Prompt adoption's enum (#2102).
 if let Some(entry) = sources.load("dim/instructions/project".into(), scope, cancelled.clone()).await? {
     if adopted.version != entry.version {
-        prompt.configure(ConfigureRequest {
-            sources: Some(vec![(target, Some(entry))]),
-            model: None,
-            tools: None,
-        }, cancelled.clone()).await?;
+        prompt.configure(ConfigureRequest::Loaded { sources: vec![entry] }, cancelled.clone()).await?;
     }
 }
 ```
@@ -66,14 +62,10 @@ if let Some(entry) = sources.load("dim/instructions/project".into(), scope, canc
 The language update entry composes the record, the value and each loaded branch:
 
 ```rust
-store.set_language(&session_id, language).await?; // #2018's record
+store.set_language(&session_id, language).await?; // #2091's record
 let Changed { previous, version } = language.set(language).await?;
 for line in tree.directory(None)?.lines {
-    line_owner::<Prompt>(line.line)?.configure(ConfigureRequest {
-        sources: Some(vec![(language_target(), Some(language_entry(language)))]),
-        model: None,
-        tools: None,
-    }, cancelled.clone()).await?;
+    line_owner::<Prompt>(line.line)?.configure(ConfigureRequest::LanguageUpdate { version }, cancelled.clone()).await?;
 }
 ```
 
@@ -195,7 +187,7 @@ The value is `SessionConfig.language`, seeded by `session.create {language?}` an
 
 ## Binding appendix
 
-The services are marked on their owner types under `promptSources` and `sessionLanguage`; `ConfigureRequest` and `ConfigureOutcome` are [Prompt adoption](https://github.com/arcships/dim/pull/2102)'s types, used by the examples. `PromptHost`, `PromptRegistry` as a second name and `InitialPromptConfiguration` leave. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the cancellation argument and is not a request field. A source's failure arrives as `CallError`; `PromptCallbackError` keeps its own `code` and `message`.
+The services are marked on their owner types under `promptSources` and `sessionLanguage`; `ConfigureRequest` (an enum: `Initial`, `Loaded`, `LanguageUpdate`, `Tools`) and `ConfigureOutcome` are [Prompt adoption](https://github.com/arcships/dim/pull/2102)'s types, used by the examples. `PromptHost`, `PromptRegistry` as a second name and `InitialPromptConfiguration` leave. `caller: &Ctx` is the rutis caller parameter for `register`; `CancelledFn` is the cancellation argument and is not a request field. A source's failure arrives as `CallError`; `PromptCallbackError` keeps its own `code` and `message`.
 
 ```rust
 use crate::host::CancelledFn;

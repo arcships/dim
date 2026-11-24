@@ -102,7 +102,7 @@ The tool answers `ToolResult`s; the tree's read errors become the tool's content
 
 ## Requirements raised to mechanism owners
 
-1. [#2127](https://github.com/arcships/dim/issues/2127) ([#2024](https://github.com/arcships/dim/issues/2024)/[#2025](https://github.com/arcships/dim/issues/2025)): `line_owner::<T>(line)` gives this Session tool the line's `timelineTree.read` by id; registration points and lifecycle services are excluded.
+None. The history read is the Session's `timelineTree.read`, already a dependency; the line id is a value and no branch access is needed.
 
 ## Supersedes
 

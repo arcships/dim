@@ -83,7 +83,7 @@ The wire codes stay the client's: `invalid` is `invalid_params` or `duplicate_ru
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `shell.run` | Check the phase, take the hold, admit the run id, spawn the process, stream progress, answer the run's result, write the `record` input, release the hold | The wait ends `operation_interrupted`; the run continues; a stop that arrived first leaves the run stopped | The run's process tree is released; the part's unload joins the runs | New runs are refused; running commands stop and settle | ShellInput for the run and the process tree; the line's queue for the input's order |
+| `shell.run` | Check the phase, take the hold, admit the run id, spawn the process, stream progress, answer the run's result, write the `record` input, release the hold | The wait ends `operation_interrupted`; the run continues; a stop that arrived first leaves the run stopped | The wait ends `operation_interrupted`; the run stays with this generation and its result is still written | New runs are refused; running commands stop and settle | ShellInput for the run and the process tree; the line's queue for the input's order |
 | `shell.stop` | Stop the run and settle it | Nothing | Nothing | Refused `closed` | ShellInput |
 | `shell.list` | Read the run table | — | Nothing | Answers the state it observed | ShellInput |
 
