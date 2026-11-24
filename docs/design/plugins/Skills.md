@@ -52,15 +52,15 @@ Callers keep:
 `PluginManager` registers a package's Skills root:
 
 ```rust
-let issues = skills_catalog.register(ctx, plugin, dir, document).await?;
+let issues = skills_catalog.register(ctx, plugin, dir).await?;
 report_issues(plugin, issues); // the package is installed; the root is refused or partly scanned
 ```
 
 The local client previews and installs:
 
 ```rust
-let preview = skills.preview(source, selection, cancelled.clone()).await?;
-let installed = skills.install(preview.token, selection, cancelled).await?;
+let preview = skills.preview(source, id, cwd, cancelled.clone()).await?;
+let installed = skills.install(source, id, skills, overwrite, cancelled).await?;
 ```
 
 `Skills` mounts one content instance:
@@ -99,10 +99,10 @@ if list.generation != seen {
 | `skills.catalog` | The client catalog | `{project?}` | `{skills, projects, invalid}` | The read can be cancelled | `invalid`, `closed`, `cancelled` |
 | `skills.set_enabled` | Enable or disable a Skill or project | `{id, enabled, project?}` | `{}` | Accepted write is not cancelled | `missing`, `invalid`, `conflict`, `closed` |
 | `skills.refresh` | Rescan the roots | `{}` | `{generation}` | None; the scan is the owner's | `closed` |
-| `skills.preview` | Preview a local or Git source | `{source, skills}` | `{source, skills, conflicts, shadows, issues}` | The read can be cancelled | `skills_invalid_source`, `skills_fetch_failed`, `skills_too_large`, `cancelled`, `closed` |
-| `skills.install` | Install the selected entries | `{source, id?, skills, overwrite}` | `{installation, previous?}` | Accepted work is not cancelled; it settles or restores | `skills_preview_stale`, `skills_install_exists`, `skills_install_unmanaged`, `skills_install_unknown`, `skills_write_failed`, `closed` |
-| `skills.update` | Update installed entries | `{id, revision?}` | `{installed}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `conflict`, `write_failed`, `closed` |
-| `skills.remove` | Remove installed entries | `{id}` | `{}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `delete_failed`, `closed` |
+| `skills.preview` | Preview a local or Git source | `{source, id?, cwd?}` | `{source, skills, conflicts, shadows, issues}` | The read can be cancelled | `skills_invalid_source`, `skills_fetch_failed`, `skills_too_large`, `cancelled`, `closed` |
+| `skills.install` | Install the selected entries | `{source, id, skills, overwrite}` | `{installation, previous?, version, issues}` | Accepted work is not cancelled; it settles or restores | `skills_preview_stale`, `skills_install_exists`, `skills_install_unmanaged`, `skills_install_unknown`, `skills_write_failed`, `closed` |
+| `skills.update` | Update installed entries | `{id}` | `{installation, previous?, version, issues}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `conflict`, `write_failed`, `closed` |
+| `skills.remove` | Remove installed entries | `{id}` | `{version}` | Accepted work is not cancelled; it settles or restores | `missing`, `unmanaged`, `delete_failed`, `closed` |
 | `skills.installations` | The install records | `{}` | `{installations}` | None | `closed` |
 | `Skills` view | The `SessionSkills` value and its generation | `{}` | `{list, generation}` | The Session close stops the read | `unavailable`, `closed` |
 | `skill` tool | Read one Skill's content for the model | `{name}` | tool result content | The tool call's cancel | `unknown`, `disabled`, `unavailable`, `invalid` |
@@ -129,6 +129,7 @@ The `SkillsCatalog`'s management methods are registered through #2095; the `skil
 | `skills_preview_stale` | Re-preview; the source moved |
 | `skills_install_exists`, `skills_install_unmanaged`, `skills_install_unknown` | Re-read the record and choose an id/selection |
 | `skills_write_failed` | Report the partial state; retry update/remove |
+| `skills_selection_invalid`, `skills_install_conflict`, `skills_install_failed`, `skills_remove_failed` | Fix the selection or retry the write/remove |
 | `closed` | The owner is unloading; use the replacement generation |
 
 #### Flows
@@ -197,7 +198,7 @@ None. `skills.*` keep their client-visible behavior; `skills.install/update/remo
 ```rust
 #[rutis::service(name = "skillsCatalog")]
 impl SkillsCatalog {
-    pub async fn register(&self, caller: &Ctx, plugin: String, dir: String, document: SkillDocument, cancelled: CancelledFn) -> Result<SkillIssues, SkillContentError>;
+    pub async fn register(&self, caller: &Ctx, plugin: String, dir: String, cancelled: CancelledFn) -> Result<Vec<SkillIssue>, SkillsError>;
     pub async fn withdraw(&self, caller: &Ctx, plugin: String, cancelled: CancelledFn) -> Result<(), SkillContentError>;
     pub fn plugins(&self) -> Vec<String>;
     pub fn issues(&self, plugin: &str) -> SkillIssues;

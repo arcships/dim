@@ -17,7 +17,7 @@ Replaces the public-surface sections of [mcp-management.md](../appserver/mcp-man
 - **Configuration documents.** The Settings sources `mcp`, `mcp-projects`, `mcp-plugins` and `mcp-secrets`; `.mcp.json` is the project file of `mcp-projects` under a project Settings authorizes.
 - **Content registration.** The MCP document a plugin package carries, the holding plugin, and the refusal reason.
 - **Connection definitions and credentials.** The resolved server definitions, the OAuth records and refresh, and the disposable probe connection.
-- **Client operations.** `mcp.catalog`, `mcp.configuration`, `mcp.update`, `mcp.save`, `mcp.remove`, `mcp.set_enabled`, `mcp.move`, `mcp.import.preview`, `mcp.import.apply`, `mcp.test`, `mcp.inspect`, `mcp.disconnect` and `mcp.auth.*`.
+- **Client operations.** `mcp.catalog`, `mcp.configuration`, `mcp.update`, `mcp.save`, `mcp.remove`, `mcp.set_enabled`, `mcp.move`, `mcp.import.sources`, `mcp.import.preview`, `mcp.import.apply`, `mcp.test`, `mcp.inspect`, `mcp.disconnect`, `mcp.temporary.capabilities` and `mcp.auth.*`.
 - **Session-facing values and commands.** The selection, definition and credential reference a Session reads; the connection-state registry that Sessions report into; the disconnect command a Session observes.
 
 `McpSession` owns:
@@ -115,9 +115,9 @@ let binding = temporary.attach(ctx, server, cancelled).await?;
 | `mcpService.withdraw` | Withdraw a package's MCP document | `{plugin}` | `{}` | Accepted write is not cancelled | `closed` |
 | `mcpService.plugins` | List the packages holding MCP content | `{}` | `{plugins}` | None | `closed` |
 | `mcpService.refusal` | The refusal reason of a package | `{plugin}` | `{reason?}` | None | `closed` |
-| `mcp.catalog` | The merged servers and their revisions | `{project?}` | `{servers, userRevision, projectRevision, userApplication, pluginApplication, projectApplication, invalid}` | Read can be cancelled | `mcp_invalid_config`, `service_reloading`, `operation_interrupted`, `closed`, `cancelled` |
+| `mcp.catalog` | The merged servers and their revisions | `{cwd?}` | `{servers, userRevision, projectRevision, userApplication, pluginApplication, projectApplication, invalid}` | Read can be cancelled | `mcp_invalid_config`, `service_reloading`, `operation_interrupted`, `closed`, `cancelled` |
 | `mcp.configuration` | One entry's declared and effective view | `{id, project?}` | `{entry}` | Read can be cancelled | `missing`, `closed`, `cancelled` |
-| `mcp.save` | Create or replace one entry at a revision | `{id?, revision?, entry}` | `{entry, revision}` | Accepted write is not cancelled | `invalid`, `conflict`, `user_scope`, `settings_write`, `closed` |
+| `mcp.save` | Create or replace one entry at a revision | `{cwd?, id, source, expectedVersion, configuration}` | `{}` | Accepted write is not cancelled | `mcp_invalid_config`, `mcp_settings_read`, `service_reloading`, `operation_interrupted`, `closed` |
 | `mcp.update` | Change selected fields at a revision | `{id, revision, patch}` | `{entry, revision}` | Accepted write is not cancelled | `invalid`, `missing`, `conflict`, `closed` |
 | `mcp.remove` | Remove an entry | `{id, revision}` | `{}` | Accepted write is not cancelled | `missing`, `conflict`, `closed` |
 | `mcp.set_enabled` | Enable or disable an entry | `{id, enabled, project?}` | `{}` | Accepted write is not cancelled | `invalid`, `missing`, `closed` |
@@ -125,7 +125,7 @@ let binding = temporary.attach(ctx, server, cancelled).await?;
 | `mcp.import.preview` | Parse an import payload without writing | `{document, project?}` | `{entries, invalid}` | Read can be cancelled | `invalid`, `closed`, `cancelled` |
 | `mcp.import.apply` | Write the selected imported entries | `{document, selection, project?}` | `{applied, invalid}` | Accepted write is not cancelled | `invalid`, `conflict`, `closed` |
 | `mcp.import.sources` | Discover import sources | `{cwd?}` | `{sources}` | Read can be cancelled | `invalid`, `closed`, `cancelled` |
-| `mcp.temporary.capabilities` | The temporary binding capabilities ACP reads | `{}` | `{capabilities}` | None | `closed` |
+| `mcp.temporary.capabilities` | The temporary binding capabilities ACP reads | `{}` | `{transports, leaseSeconds}` | None | `closed` |
 | `mcp.test` | Probe one server definition with a disposable connection | `{config, timeout?}` | `{status, latency, tools, reason}` | Cancel or timeout stops the probe; the owner settles it | `invalid`, `timeout`, `refused`, `cancelled`, `closed` |
 | `mcp.inspect` | One entry's enabled state, configuration and live connections, read from the report registry | `{cwd?, id, source}` | `{enabled, configuration, connections}` | None | `mcp_invalid_config`, `closed` |
 | `mcp.disconnect` | Ask every Session to close one source or server | `{source?, server?}` | `{}` | None; the command is a value | `closed` |
@@ -137,7 +137,7 @@ let binding = temporary.attach(ctx, server, cancelled).await?;
 | `mcpSession.refresh` | Ask the owner to rediscover the enabled entries | `{}` | `{}` | None; the signal is a value | `closed` |
 | `mcpSession.widget` | The view for one published tool | `{publishedTool}` | `{view}` or absent | The client dropping the call cancels the read | `absent`, `unsupported`, `not_callable`, `unknown_server`, `unavailable`, `refused`, `unknown`, `closed` |
 | `mcpSession.call` | One MCP Apps call | `{server, tool, args}` | `{result}` | The client dropping the call cancels the resource read | `unknown_server`, `unavailable`, `refused`, `unknown`, `cancelled`, `closed` |
-| `session.mcp_temporary.attach` | Mount a client temporary binding | `{sessionId, bindingId, servers}` | `{}` | The caller dropping the call shuts the half-made binding | `invalid`, `mount_failed`, `cancelled`, `closed` |
+| `session.mcp_temporary.attach` | Mount a client temporary binding | `{sessionId, bindingId, servers}` | `{}` | The caller dropping the call shuts the half-made binding | `invalid_params`, `mcp_binding_failed`, `mcp_binding_conflict`, `mcp_binding_missing`, `cancelled`, `closed` |
 | `session.mcp_temporary.renew` | Extend the binding lease | `{binding}` | `{}` | None | `invalid`, `missing`, `closed` |
 | `session.mcp_temporary.detach` | Remove the binding and its children | `{binding}` | `{}` | None; the owner completes the removal | `missing`, `closed` |
 
@@ -230,12 +230,12 @@ None. `mcp.inspect` keeps `{cwd?, id, source}` and `{enabled, configuration, con
 impl McpSession {
     pub fn state(&self) -> McpSessionState;
     pub fn refresh(&self) -> Result<(), McpSessionError>;
-    pub async fn widget(&self, caller: &Ctx, published_tool: PublishedTool, cancelled: CancelledFn) -> Result<Option<McpView>, McpAppError>;
+    pub async fn widget(&self, caller: &Ctx, published_tool: PublishedToolRef, cancelled: CancelledFn) -> Result<Option<McpView>, McpAppError>;
     pub async fn call(&self, caller: &Ctx, server: String, tool: String, args: serde_json::Value, cancelled: CancelledFn) -> Result<serde_json::Value, McpAppError>;
 }
 ```
 
-`session.mcp_temporary.attach/renew/detach` are `SessionMethods` registrations; `attach` takes `caller: &Ctx` and the binding id is bound to the caller's Session row. Current types: `McpPluginDocument`, `McpPluginRefusal`, `McpWidgetResult` and the `mcp/management.rs`/`mcp/session.rs` request and reply structs; `PublishedTool` is private, so the target exposes a public `PublishedToolRef` value instead. Target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. The current `McpAppError` is a non-serializable `thiserror` enum and is marked target. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check with rustc 1.100.0 passed; every target error enum carries `#[error("...")]` for `Display`.
+`session.mcp_temporary.attach/renew/detach` are `SessionMethods` registrations; `attach` takes `caller: &Ctx` and the binding id is bound to the caller's Session row. Current types: `McpPluginDocument`, `McpPluginRefusal`, `McpWidgetResult` and the `mcp/management.rs`/`mcp/session.rs` request and reply structs; `PublishedTool` is private, so the target exposes a public `PublishedToolRef` value instead. Target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. The current `McpAppError` is a non-serializable `thiserror` enum and is marked target. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check with rustc 1.100.0 passed; every target error enum carries `#[error("...")]` for `Display`. Wire-code mapping (internal variant -> published code): mcp_invalid_config, mcp_settings_read, service_reloading, operation_interrupted.
 
 ```rust
 #[rutis::service(name = "mcpService")]

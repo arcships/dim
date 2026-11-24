@@ -12,9 +12,9 @@ The owners are `HooksSettings` (process), `HooksSession` (Session) and `HooksBra
 
 `HooksSettings` owns:
 
-- **Sources.** The Settings documents `hooks` (user), `hooks-projects` and `hooks-plugins`; `.dimcode/hooks.json` is read through FileStorage under the project root Settings authorizes. The `hooksService.sources` data face is the only reader; there is no agent-crate port.
+- **Sources.** The Settings documents `hooks` (user), `hooks-projects` and `hooks-plugins`; `.dimcode/hooks.json` is read through FileStorage under the project root Settings authorizes. The `hooksService.sources` data face is the only reader; `HooksSettings` and the management methods use it, and `HooksSession`/`HooksBranch` read it through the process face. There is no agent-crate port.
 - **Content registration.** The hook document a plugin package carries, the holding plugin and its refusal.
-- **One reader.** `sources(cwd)` resolves the user, project and plugin sources into the value a hook point reads. The management methods and the agent-crate port use this same reader.
+- **One reader.** `sources(cwd)` resolves the user, project and plugin sources into the value a hook point reads. The management methods and the Session/branch parts use this same reader; the port is removed.
 - **Client operations.** `hooks.catalog`, `hooks.save` and `hooks.set_enabled`.
 
 `HooksSession` owns:
@@ -94,7 +94,7 @@ branch.input(source, HookInput::observation(text));
 | `hooksService.sources` | The merged hook sources for a cwd | `{cwd}` | `{sources, project?}` | The read can be cancelled | `unreadable`, `closed`, `cancelled` |
 | `hooks.catalog` | The client's hook catalog | `{cwd?}` | `{userRevision, userDocument, projectsRevision, disableAllHooks, sources, hooks}` | The read can be cancelled | `hooks_invalid`, `hooks_failed`, `closed`, `cancelled` |
 | `hooks.save` | Save the user document at a revision | `{expectedRevision, document}` | `{revision}` | Accepted write is not cancelled | `hooks_invalid`, `hooks_conflict`, `hooks_failed`, `closed` |
-| `hooks.set_enabled` | Enable or disable a project source | `{cwd, enabled, expectedRevision}` | `{}` | Accepted write is not cancelled | `hooks_invalid`, `hooks_conflict`, `hooks_failed`, `closed` |
+| `hooks.set_enabled` | Enable or disable a project source | `{cwd, enabled, expectedRevision}` | `{revision}` | Accepted write is not cancelled | `hooks_invalid`, `hooks_conflict`, `hooks_failed`, `closed` |
 | `HooksSession` runner | Run one hook command with a payload | `{hook, payload}` | `{decision, output}` | The Session's cancel kills the process tree; the owner settles | `failed`, `timeout`, `block`, `cancelled`, `closed` |
 | `HooksSession` submit check | Check operator input before it is written | `{input}` | `{context?}` or block | The entry's call cancel stops the check and its command | `block`, `warnings`, `proceed` |
 | `HooksBranch` advice | Advise a tool admission | `{call, source}` | deny/ask/allow | The admission's cancel stops the advisor | `deny`, `ask`, `allow`; failures map to allow/ask |
@@ -142,7 +142,7 @@ The `HooksRuntime` runner is Session-private; `HooksSession` and `HooksBranch` u
 
 ### Client-visible changes
 
-None. `hooks.*` and the six hook points keep their client-visible behavior; `hooksService.sources` is a plugin-facing owner operation, `HookSourcesHost` was agent-crate-private, and `Permission.advise`/`Approval.decide` are #2100's contract names.
+None. `hooks.*` and the six hook points keep their client-visible behavior; `hooksService.sources` is a plugin-facing owner operation, the removed source port was private, and `Permission.advise`/`Approval.decide` are #2100's contract names.
 
 ### Rule check
 
@@ -192,7 +192,7 @@ impl HooksSettings {
 }
 ```
 
-Current types: `HookRefusal`, `HookSourcesSnapshot`, `HooksContentError` and the `hooks_settings.rs`/`hooks/sources.rs` structs; the target uses the same names and adds `Serialize` to the wire values. The target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check with rustc 1.100.0 passed; every target error enum carries `#[error("...")]` for `Display`.
+Current types: `HookRefusal`, `HookSourcesSnapshot`, `HooksContentError` and the `hooks_settings.rs`/`hooks/sources.rs` structs; the target uses the same names and adds `Serialize` to the wire values. The target error enums use `#[derive(Debug, serde::Serialize, thiserror::Error)]` and `#[serde(tag = "code", rename_all = "snake_case")]`; one variant per error table code; a callback failure is `Rejected { reason, message }` with wire code `rejected`. `From<rutis::host::CallError>` is implemented where a callback failure must propagate. `CancelledFn` is the binding's cancellation argument, never a request field. The temporary-crate check with rustc 1.100.0 passed; every target error enum carries `#[error("...")]` for `Display`. Wire-code mapping (internal variant -> published code): hooks_invalid, hooks_conflict, hooks_failed.
 
 The Session and branch parts keep their internal types; `hooksService.sources`' request and reply are `{cwd}` and `HookSources`.
 
