@@ -406,6 +406,8 @@ export function Composer({ session, connected, branchId, readOnly = false, actio
           ? <ModelPicker ref={modelPicker} model={branch?.model} disabled={!enabled} choose={(model) => chat.setModel(session.sessionId, model, branchId)} />
           : branch?.model && <span className="rw-model">{branch.model.modelId}</span>}
         <div className="rw-send-actions">
+          {!branch?.running && focused && hasDraft && !busy && !composing && !menuOpen && !mentions.open &&
+            <span className="rw-compose-hint">{translate("composer.newlineHint")}</span>}
           {branch?.running && <>
             <Button size="sm" variant="tertiary" isDisabled={!enabled || branch.stopping || busy}
               onPress={() => { void operate(() => chat.stop(session.sessionId, branchId)) }}><Square size={13} />{translate("composer.stopResponse")}</Button>

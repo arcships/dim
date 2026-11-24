@@ -1,6 +1,6 @@
 import { Button, Popover } from "@heroui/react"
-import { Archive, ArrowDownUp, ChevronRight, Folder, GitBranch, GitFork, MessageSquare, Plus, Search, Settings } from "lucide-react"
-import { useCallback, useId, useState } from "react"
+import { Archive, ArrowDownUp, ChevronRight, Folder, GitBranch, GitFork, MessageSquare, Plus, Search, Settings, X } from "lucide-react"
+import { useCallback, useId, useRef, useState, type KeyboardEvent } from "react"
 import { sortKey } from "../components/sidebar-sort"
 import { ROOT_BRANCH_ID, type SessionSummary } from "../rpc/protocol"
 import type { LineView } from "../lines"
@@ -55,6 +55,8 @@ type DirectoryRow = { session: SessionSummary; members: SessionSummary[]; direct
 
 export function SessionDirectory({ workspaces, members, openMember, active, phase, loaded, error, query, setQuery, runningOnly, setRunningOnly, select, newSession, archiveSession, openArchive, openSettings, settingsLabel, ...branchProps }: SessionDirectoryProps) {
   const sort = useStoreValue(readSort)
+  const list = useRef<HTMLElement>(null)
+  const searchField = useRef<HTMLInputElement>(null)
   const search = query.trim().toLocaleLowerCase()
   const includes = (text: string | undefined) => text?.toLocaleLowerCase().includes(search) ?? false
   const bySort = (left: SessionSummary, right: SessionSummary) => sortKey(right, sort) - sortKey(left, sort)
@@ -78,11 +80,25 @@ export function SessionDirectory({ workspaces, members, openMember, active, phas
     return rows.length ? [{ workspace, rows }] : []
   }).sort((left, right) => bySort(left.rows[0]!.session, right.rows[0]!.session))
 
+  function moveFocus(event: KeyboardEvent) {
+    if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return
+    const searching = event.target === searchField.current
+    if (searching && event.key === "ArrowUp") return
+    const rows = [...list.current!.querySelectorAll<HTMLButtonElement>(".rw-directory-session:enabled")]
+      .filter(row => !row.closest("[hidden], [inert]"))
+    const index = rows.indexOf(event.target as HTMLButtonElement)
+    if (!searching && index < 0) return
+    event.preventDefault()
+    if (index === 0 && event.key === "ArrowUp") searchField.current?.focus()
+    else rows[index + (event.key === "ArrowDown" ? 1 : -1)]?.focus()
+  }
+
   return <>
     <div className="rw-directory-controls">
       <label className="rw-directory-search">
         <Search size={15} aria-hidden="true" />
-        <input type="search" aria-label={translate("sidebar.searchPlaceholder")} placeholder={translate("sidebar.searchPlaceholder")} value={query} onChange={(event) => setQuery(event.target.value)} />
+        <input ref={searchField} type="search" aria-label={translate("sidebar.searchPlaceholder")} placeholder={translate("sidebar.searchPlaceholder")} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={moveFocus} />
       </label>
       <Popover>
         <Button className="rw-sidebar-icon" variant="tertiary" isIconOnly aria-label={translate("sidebar.sortFilters")}><ArrowDownUp size={15} aria-hidden="true" /></Button>
@@ -98,14 +114,17 @@ export function SessionDirectory({ workspaces, members, openMember, active, phas
         </Popover.Content>
       </Popover>
     </div>
-    <div className="rw-workspaces">
+    {runningOnly && <button className="rw-running-filter" type="button" aria-label={translate("sidebar.clearRunningFilter")} onClick={() => {
+      setRunningOnly(false); searchField.current?.focus()
+    }}><span className="rw-live" aria-hidden="true" />{translate("sidebar.runningOnly")}<X size={13} aria-hidden="true" /></button>}
+    <nav ref={list} className="rw-workspaces" aria-label={translate("sidebar.workspaces")} onKeyDown={moveFocus}>
       {phase !== "connected" && <p className="rw-muted" role="status">{translate(phase === "reconnecting" ? "connection.reconnecting" : "connection.connecting")}</p>}
       {error && <p className="rw-error" role="alert">{error}</p>}
       {loaded && visible.length === 0 && <p className="rw-directory-empty">{translate(search || runningOnly ? "sidebar.noMatches" : "sidebar.noWorkspaces")}</p>}
       {visible.map(({ workspace, rows }) => <SessionGroup key={workspace.cwd} workspace={workspace} rows={rows} active={active}
         searching={search !== ""} phase={phase} {...branchProps} openMember={openMember}
         select={select} newSession={newSession} archiveSession={archiveSession} />)}
-    </div>
+    </nav>
     <footer className="rw-directory-footer">
       <button type="button" className="rw-sidebar-action" onClick={openArchive}>
         <Archive size={15} aria-hidden="true" /> {translate("sidebar.archived")}

@@ -29,11 +29,12 @@ export function AppearanceSettings() {
     {preferences.error && <p className="rw-error" role="alert">{preferences.error}</p>}
     <fieldset>
       <legend>{text("Theme", "主题")}</legend>
-      <div className="rw-setting-options">
-        {themes.map(({ value, Icon, en, zh }) => <Button key={value} variant={preferences.theme === value ? "primary" : "secondary"}
-          aria-pressed={preferences.theme === value} onPress={() => { appearance.theme = value }}>
-          <Icon size={17} /> {text(en, zh)}
-        </Button>)}
+      <div className="rw-themes">
+        {themes.map(({ value, Icon, en, zh }) => <label key={value}>
+          <span className="rw-theme-preview" data-theme={value} aria-hidden="true" />
+          <span><Icon size={14} aria-hidden="true" />{text(en, zh)}</span>
+          <input type="radio" name="workspace-theme" value={value} checked={preferences.theme === value} onChange={() => { appearance.theme = value }} />
+        </label>)}
       </div>
     </fieldset>
     <fieldset>
