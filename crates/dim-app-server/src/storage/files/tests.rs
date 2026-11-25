@@ -377,7 +377,6 @@ async fn a_delete_returns_the_booked_name_to_a_later_creation() {
         .join("reused");
     fixture.session("reused").await;
     std::fs::create_dir_all(&booking).unwrap();
-    std::fs::write(booking.join("owner"), b"store").unwrap();
     std::fs::create_dir_all(output.join("reused")).unwrap();
     std::fs::write(output.join("reused/exec.log"), b"output").unwrap();
 
