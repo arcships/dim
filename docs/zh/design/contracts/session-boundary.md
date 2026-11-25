@@ -202,7 +202,7 @@ sequenceDiagram
 
 ## 附录 A. 接口细节
 
-结构为 camelCase 字段的 JSON；字段名后的 `?` 表示可选，`|` 分隔备选项。这些结构是规范形式：插件文档使用这些字段名（Rust 绑定把它们映射为 snake_case）。调用数据与方法表的错误种类归 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix) 契约；处理函数以自己的 `{code, message, ...所有者字段}` 作答，客户端收到的每个错误都是 Rpc 信封 `{code, message, data: {appError, ...所有者字段}}`。
+结构为 camelCase 字段的 JSON；字段名后的 `?` 表示可选，`|` 分隔备选项。这些结构是规范形式：插件文档使用这些字段名（Rust 绑定把它们映射为 snake_case）。调用数据与方法表的错误种类归 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix) 契约；处理函数以自己的 `{code, message, ...所有者字段}` 作答，客户端收到的每个错误都是 Rpc 信封 `{code, message, data: {appError, ...所有者字段}}`。另一种语言的处理函数收到的调用是 `{method, params, origin?: {caller: {connectionId, callId}}}`，即 `MethodCall` 的桥接编码；`callId` 只在调用来自连接时出现，未来自连接的调用没有 `origin`。
 
 ### A.1 方法贡献
 

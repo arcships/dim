@@ -202,7 +202,7 @@ The implemented foreign Session subset is [C4](../session-typescript.md); genera
 
 ## Appendix A. Interface details
 
-Shapes are JSON with camelCase fields; a `?` after a field name marks it optional and `|` separates alternatives. These shapes are canonical: plugin documents use these field names (Rust bindings map them to snake_case). The call data and the table's error kinds are the [SessionMethods](../plugins/SessionMethods.md#binding-appendix) contract's; a handler answers its own `{code, message, ...owner fields}` failure, and the client receives every error in the Rpc envelope `{code, message, data: {appError, ...owner fields}}`. A handler of another language receives its call as `{method, params, origin?: {caller: {connectionId, callId?}}}`, the bridge's encoding of `MethodCall`.
+Shapes are JSON with camelCase fields; a `?` after a field name marks it optional and `|` separates alternatives. These shapes are canonical: plugin documents use these field names (Rust bindings map them to snake_case). The call data and the table's error kinds are the [SessionMethods](../plugins/SessionMethods.md#binding-appendix) contract's; a handler answers its own `{code, message, ...owner fields}` failure, and the client receives every error in the Rpc envelope `{code, message, data: {appError, ...owner fields}}`. A handler of another language receives its call as `{method, params, origin?: {caller: {connectionId, callId}}}`, the bridge's encoding of `MethodCall`; `callId` is present exactly when the call arrived on a connection, and `origin` is absent for a call that did not.
 
 ### A.1 Method contributions
 
