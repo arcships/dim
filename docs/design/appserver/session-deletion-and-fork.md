@@ -66,8 +66,13 @@ Rpc checks the params and the Session's protocol version and calls Agents. Agent
 admission gate `acquire` already holds while it restores a Session, `Session::close`, and prepared creation
 (`Agent::create_session` with `CreateSessionOptions::prepare`). A creation books its new id's output name first —
 `<output root>/.session-ids/<id>`, one directory named by the id in the root its command output addresses — before its
-prepare step writes the rows: an id this filesystem cannot back with a directory, or one another Session already
-books, is refused before anything prepares, writes or publishes. SessionStore owns the rows and the files under the database directory. Its new steps
+prepare step writes the rows: an id this filesystem cannot back with a directory, and an id it folds to a name another
+creation booked, are refused before anything prepares, writes or publishes. What the booking protects is a booked name:
+a Session stored before this step, or written by another face of the store, holds none, so an id this filesystem folds to
+its name is accepted and both address one directory. The booking proves the name in the output root's volume; the
+persistent shell's directory lies below the host home, which may be another volume. Two databases that share one output
+root refuse each other's booked names, because one name addresses one directory, and `.session-ids` is no Session id in
+any spelling a case-insensitive filesystem folds to it. SessionStore owns the rows and the files under the database directory. Its new steps
 are Rust methods over the native store, not services: only Agents calls them.
 
 ## 3. Deletion

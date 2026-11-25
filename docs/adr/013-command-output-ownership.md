@@ -72,10 +72,14 @@ to this database and the cross-database case is accepted.
 
 A creation books its id's name before it prepares or writes, at
 `<output root>/.session-ids/<S>`: one directory named by the id itself, created exclusively, so a
-name this filesystem cannot back with a directory and a name that resolves to another Session's
-directory are both refused before anything is written. A booking holds no output and has no row;
-the deleting session's booking is a candidate under the same rows-here rule as its own output
-directory, and a failed creation's own cleanup removes it.
+name this filesystem cannot back with a directory, and a name it folds to one another creation
+booked, are both refused before anything is written. A booking protects a booked name only: a
+Session stored before this step holds none, and the proof is the output root's volume rather than
+the host home's `exec` tree. Two databases sharing an output root refuse each other's booked
+names, and `.session-ids` is not a Session id in any spelling a case-insensitive filesystem folds
+to it. A booking holds no output and has no row; the deleting session's booking is a candidate
+under the same rows-here rule as its own output directory, and a failed creation's own cleanup
+removes it.
 
 The session-files owner supplies the paths and the last-owner answer; HostPlatform removes the
 `.dim/exec` directory it owns and makes the removal durable (the parent is synced) before the row

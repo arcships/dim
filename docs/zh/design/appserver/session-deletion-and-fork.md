@@ -43,7 +43,7 @@
  资源节点（P1/P2 即控制节点）              FileStorage: remove(command-output/<S>)
 ```
 
-Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负责 Session 的生命周期：`acquire` 恢复 Session 时已经持有的准入门、`Session::close` 和预备创建（`Agent::create_session` 带 `CreateSessionOptions::prepare`）。创建先把新 id 的输出名字占下——`<输出根>/.session-ids/<id>`，在它命令输出所在的根下、以该 id 本身命名的一个目录——再进入准备步骤写行：文件系统无法承载成目录的 id，或已被另一个 Session 占下的 id，在任何准备、写入、发布之前就被拒绝。SessionStore 负责数据库目录下的行和文件。它新增的步骤是作用于原生存储的 Rust 方法，不是服务：只有 Agents 调用。
+Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负责 Session 的生命周期：`acquire` 恢复 Session 时已经持有的准入门、`Session::close` 和预备创建（`Agent::create_session` 带 `CreateSessionOptions::prepare`）。创建先把新 id 的输出名字占下——`<输出根>/.session-ids/<id>`，在它命令输出所在的根下、以该 id 本身命名的一个目录——再进入准备步骤写行：文件系统无法承载成目录的 id，以及文件系统会折叠到另一个创建已占下的名字的 id，都在任何准备、写入、发布之前被拒绝。占位保护的是已经占下来的名字：本次改动之前存下的 Session、以及由 store 其它面写入的 Session 都没有占位，所以一个会被文件系统折叠到它的名字的 id 仍会被接受，两者因而共用一个目录。占位证明的是输出根所在卷上的名字；持久 shell 的目录在宿主 home 下，可能在另一个卷上。共用一个输出根的两个数据库会拒绝对方已占下的名字，因为一个名字只对应一个目录；`.session-ids` 在任何会被大小写不敏感文件系统折叠到它的写法下都不是合法的 Session id。SessionStore 负责数据库目录下的行和文件。它新增的步骤是作用于原生存储的 Rust 方法，不是服务：只有 Agents 调用。
 
 ## 3. 删除
 
