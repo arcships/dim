@@ -334,6 +334,8 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
         ".SESSION-IDS",
         ".session-ids.",
         ".session-ids ",
+        ".\u{017f}ession-ids",
+        ".se\u{00df}ion-ids",
     ] {
         let entered = Arc::new(AtomicBool::new(false));
         let error = rejected(
