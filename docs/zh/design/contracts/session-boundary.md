@@ -141,7 +141,7 @@ sequenceDiagram
 | `sessionMethods.register(namespace, MethodDecl[], call)` | async | 注册一个 Session 方法命名空间，直到调用方部件卸载；注册行是绑定的 `&Ctx`，不是请求字段，形状见 [SessionMethods](../../../design/plugins/SessionMethods.md#own-contract) |
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | 注册一个管理命名空间，直到调用方部件卸载 |
 | `call(MethodCall, cancelled, progress) -> MethodReply`（注册部件自己的函数） | async | 执行该命名空间的方法 |
-| `sessionMethods.call {method, params, caller?}` | 进程内 | 分发一个 Session 方法；方法表回答 `unknown_method`、`reloading`、`unavailable` 或 `closed`，中断在其回复里作答（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)） |
+| `sessionMethods.call {method, params, caller?}` | 进程内 | 分发一个 Session 方法；Session 一开始 closing 就答 `closed`，否则为 `unknown_method`、`reloading` 或 `unavailable`，中断在其回复里作答（[SessionMethods](../../../design/plugins/SessionMethods.md#own-contract)） |
 | `sessionMethods.methods {}` | sync | 该 Session 现在注册的命名空间的声明 |
 | `session.methods {sessionId}`（线上方法，Rpc 内建） | async | 列出某个 Session 的方法（协议 v3） |
 | `callChannel.progress / notify / closed`（App Server） | sync / async | 逐次调用的进度与绑定连接的通知（已实现；`Progress` 与 `Caller` 归 [SessionMethods](../../../design/plugins/SessionMethods.md#binding-appendix)） |
