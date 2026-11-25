@@ -262,7 +262,7 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
                 }),
         );
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let session = soon(agent.create_session(SessionConfig::default()))
+        let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
             .await
             .unwrap();
         let diagnostics = session.branch_diagnostics("main").unwrap();
@@ -442,7 +442,7 @@ async fn input_written_before_an_interrupt_waits_for_the_next_driving_input() {
         }),
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -533,7 +533,7 @@ fn echoed(events: &[Arc<AgentEvent>], text: &str) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_steer_input_after_a_stop_starts_a_turn() {
     let (agent, _gate) = gated().await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.stop("main", "operator stop".into()))
@@ -634,7 +634,7 @@ async fn a_tool_call_already_committed_when_the_interrupt_arrives_is_not_execute
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -708,7 +708,7 @@ async fn stop_waits_for_an_interrupted_turn_whose_start_is_not_yet_dispatched() 
         }),
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -896,7 +896,7 @@ async fn a_stop_during_output_keeps_its_text_and_closes_every_started_call() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -1061,7 +1061,7 @@ async fn a_replaced_request_commits_no_output_its_host_still_streams() {
     let mut builder = channel_builder(model.clone());
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -1205,7 +1205,7 @@ async fn a_steer_during_preparation_ends_the_request_before_the_model_call() {
     defaults::tool_host(&mut builder, Arc::new(MockTools));
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -1315,7 +1315,7 @@ async fn a_steer_consumed_after_the_first_output_waits_for_the_output_end() {
     );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -1527,7 +1527,7 @@ async fn a_steer_is_not_consumed_between_a_failed_call_and_its_terminal() {
     let (gate, hold) = hold_terminal(&mut builder);
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -1590,7 +1590,7 @@ async fn a_steer_is_not_consumed_between_a_failed_preparation_and_its_terminal()
     let (gate, hold) = hold_terminal(&mut builder);
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -1614,7 +1614,7 @@ async fn stop_turn_stops_only_the_open_turn_it_names() {
     let mut builder = channel_builder(model.clone());
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -1841,14 +1841,17 @@ async fn an_interrupt_while_a_later_segment_waits_cancels_those_calls() {
     dim_agent_capabilities::register_names(&mut builder);
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec!["x0".into(), "x1".into(), "c2".into()]),
-        permission_policy: PermissionPolicy {
-            preset: PermissionPreset::FullAccess,
-            ..Default::default()
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec!["x0".into(), "x1".into(), "c2".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                ..Default::default()
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     session

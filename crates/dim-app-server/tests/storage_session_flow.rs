@@ -151,7 +151,10 @@ async fn storage_failure_during_generic_cleanup_supersedes_the_session_fault() {
                 move |names| Ok(Box::new(GenericCleanupFault::new(names, captured_tree.clone())?)),
             ));
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let session = agent.create_session(SessionConfig::default()).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         let idle = session.branch("main".into(), 0, BranchOptions {
             prompt: "idle sibling".into(), source: BranchSource::Host { operation_id: "idle sibling".into() },
         }).await.unwrap();
@@ -198,7 +201,10 @@ async fn sqlite_session_failure_rejects_writes_on_an_idle_sibling_timeline() {
                 move |names| Ok(Box::new(CaptureTimeline::new(names, captured.clone())?)),
             ));
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let session = agent.create_session(SessionConfig::default()).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         let mut siblings = Vec::new();
         for name in ["failed sibling", "idle sibling"] {
             let branch = session.branch("main".into(), 0, BranchOptions {
@@ -331,7 +337,7 @@ async fn session_close_and_idle_unload_persist_finalizers_and_release_branch_par
                 ));
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
             session

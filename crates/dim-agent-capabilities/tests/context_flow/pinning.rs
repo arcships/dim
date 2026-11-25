@@ -98,14 +98,17 @@ async fn tool_session(
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["wait".into()]),
-            permission_policy: dim_agent_runtime::PermissionPolicy {
-                preset: dim_agent_runtime::PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["wait".into()]),
+                permission_policy: dim_agent_runtime::PermissionPolicy {
+                    preset: dim_agent_runtime::PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     (agent, session)
@@ -337,14 +340,17 @@ async fn a_queued_input_consumed_at_the_next_turns_start_is_pinned() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["wait".into()]),
-            permission_policy: dim_agent_runtime::PermissionPolicy {
-                preset: dim_agent_runtime::PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["wait".into()]),
+                permission_policy: dim_agent_runtime::PermissionPolicy {
+                    preset: dim_agent_runtime::PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     session
@@ -477,7 +483,7 @@ async fn a_compaction_with_no_running_turn_pins_nothing() {
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     for text in ["x".repeat(1_500), "second".into()] {
@@ -588,14 +594,17 @@ async fn cycles_session(
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["wait".into()]),
-            permission_policy: dim_agent_runtime::PermissionPolicy {
-                preset: dim_agent_runtime::PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["wait".into()]),
+                permission_policy: dim_agent_runtime::PermissionPolicy {
+                    preset: dim_agent_runtime::PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     (agent, session)

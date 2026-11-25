@@ -199,11 +199,14 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
     .await?;
     let process = agent.root().clone();
     let session = agent
-        .create_session(SessionConfig {
-            cwd: work.canonicalize()?.to_string_lossy().into_owned(),
-            tools: Some(TOOLS.map(String::from).to_vec()),
-            ..SessionConfig::default()
-        })
+        .create_session(
+            SessionConfig {
+                cwd: work.canonicalize()?.to_string_lossy().into_owned(),
+                tools: Some(TOOLS.map(String::from).to_vec()),
+                ..SessionConfig::default()
+            },
+            Default::default(),
+        )
         .await?;
     let session_diagnostics = session.diagnostics()?;
     let main_diagnostics = session.branch_diagnostics("main")?;

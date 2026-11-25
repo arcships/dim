@@ -69,7 +69,7 @@ outside it and unchanged: the first `idle` that `restore_cost` waits for makes n
 notifies its `SessionRestored` listeners (Collaboration) on the published Session. In between:
 
 ```text
-Agent::restore_session(id)
+Agent::restore_session(id, options)
   store.session_config(id)
   Agent::create(Restore), in its build task
     store.branches(id)                     storage validates every branch and row   ........ read A

@@ -302,7 +302,7 @@ async fn a_part_without_layer_types_mounts_in_every_group() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -386,7 +386,7 @@ async fn a_part_provides_by_name_and_each_instance_sees_its_own_copy() {
     let mut ids = Vec::new();
     for _ in 0..2 {
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         ids.push(session.id().to_owned());
@@ -420,7 +420,7 @@ async fn a_rust_part_reads_a_crossing_name_at_its_catalog_key() {
     let mut ids = Vec::new();
     for _ in 0..2 {
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         ids.push(session.id().to_owned());
@@ -451,7 +451,7 @@ async fn a_misplaced_part_fails_where_it_is_mounted_naming_the_group() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let error = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .err()
         .expect("a Session part reading branch names fails");
@@ -556,7 +556,7 @@ async fn a_session_and_its_main_branch_keep_opening_while_rows_become_active() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = tokio::time::timeout(
         Duration::from_secs(20),
-        agent.create_session(SessionConfig::default()),
+        agent.create_session(SessionConfig::default(), Default::default()),
     )
     .await
     .expect("a progressing opening finishes")
@@ -602,7 +602,7 @@ async fn a_row_blocking_in_apply_fails_creation_after_no_progress() {
     let started = std::time::Instant::now();
     let error = tokio::time::timeout(
         Duration::from_secs(20),
-        agent.create_session(SessionConfig::default()),
+        agent.create_session(SessionConfig::default(), Default::default()),
     )
     .await
     .expect("creation returns after no progress")
@@ -637,7 +637,7 @@ async fn activity_outside_an_opening_cannot_keep_a_stuck_session_alive() {
         }
     };
     let error = tokio::select! {
-        result = agent.create_session(SessionConfig::default()) => result.err().expect("the stuck opening fails"),
+        result = agent.create_session(SessionConfig::default(), Default::default()) => result.err().expect("the stuck opening fails"),
         () = unrelated => panic!("unrelated Active rows kept the opening alive"),
     };
     assert!(error.to_string().contains("test.stuck"), "{error}");
@@ -658,7 +658,7 @@ async fn restarting_an_optional_row_cannot_keep_a_stuck_opening_alive() {
     }));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let root = agent.root().clone();
-    let mut opening = Box::pin(agent.create_session(SessionConfig::default()));
+    let mut opening = Box::pin(agent.create_session(SessionConfig::default(), Default::default()));
     let churn = async {
         let view = loop {
             if let Some(view) = root
@@ -727,7 +727,8 @@ async fn optional_rows_extend_a_session_or_branch_opening_until_required_rows_ar
         }
         let agent = MinimalHost::start(&builder).await.unwrap();
         let root = agent.root().clone();
-        let mut opening = Box::pin(agent.create_session(SessionConfig::default()));
+        let mut opening =
+            Box::pin(agent.create_session(SessionConfig::default(), Default::default()));
         tokio::select! {
             result = &mut opening => panic!("gated opening finished before publication: {:?}", result.err()),
             _ = tokio::time::sleep(Duration::from_millis(200)) => {}

@@ -3,7 +3,9 @@
 //! that fails fails creation with its own error (#602).
 use dim_agent_capabilities::defaults;
 use dim_agent_runtime::testing::MinimalHost;
-use dim_agent_runtime::{AgentBuilder, AgentConfig, SessionConfig, SessionLifecycle, SessionPhase};
+use dim_agent_runtime::{
+    AgentBuilder, AgentConfig, CreateSessionOptions, SessionConfig, SessionLifecycle, SessionPhase,
+};
 use rutis::Ctx;
 use rutis::Plugin;
 use rutis::host::{CtxHost, DynPlugin, ErrorKind, Key};
@@ -73,7 +75,10 @@ async fn a_requested_extension_mounts_before_publication_and_leaves_with_its_ses
         });
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session_with_extension(SessionConfig::default(), GROUP, 7_u32)
+            .create_session(
+                SessionConfig::default(),
+                CreateSessionOptions::default().extension(GROUP, 7_u32),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -109,7 +114,10 @@ async fn a_failing_extension_fails_creation_with_its_error() {
         });
         let agent = MinimalHost::start(&builder).await.unwrap();
         let error = agent
-            .create_session_with_extension(SessionConfig::default(), GROUP, 7_u32)
+            .create_session(
+                SessionConfig::default(),
+                CreateSessionOptions::default().extension(GROUP, 7_u32),
+            )
             .await
             .err()
             .expect("a failing extension rejects its Session");

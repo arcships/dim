@@ -523,7 +523,7 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -630,7 +630,7 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
     drop(session);
     store.context_pages.lock().unwrap().clear();
     let agent = MinimalHost::start(&profile).await.unwrap();
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     session
         .service::<ContextPreparation>("main")
         .unwrap()
@@ -738,7 +738,10 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
             },
         ));
         let agent = MinimalHost::start(&profile).await.unwrap();
-        let session = agent.restore_session("growth".into()).await.unwrap();
+        let session = agent
+            .restore_session("growth".into(), Default::default())
+            .await
+            .unwrap();
         session
             .submit(
                 "initialize on a real request".into(),
@@ -794,7 +797,10 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
         agent.close().await.unwrap();
         drop(session);
         let agent = MinimalHost::start(&profile).await.unwrap();
-        let session = agent.restore_session("growth".into()).await.unwrap();
+        let session = agent
+            .restore_session("growth".into(), Default::default())
+            .await
+            .unwrap();
         session
             .service::<ContextPreparation>("main")
             .unwrap()
@@ -870,7 +876,7 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let session_id = session.id().to_owned();
@@ -952,7 +958,10 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
         );
         resumed_builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&resumed_builder).await.unwrap();
-        let restored = agent.restore_session(session_id.clone()).await.unwrap();
+        let restored = agent
+            .restore_session(session_id.clone(), Default::default())
+            .await
+            .unwrap();
         let usage = restored
             .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
             .unwrap()
@@ -1005,7 +1014,10 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
         store.context_pages.lock().unwrap().clear();
         store.property_queries.lock().unwrap().clear();
         let agent = MinimalHost::start(&resumed_builder).await.unwrap();
-        let restored = agent.restore_session(session_id).await.unwrap();
+        let restored = agent
+            .restore_session(session_id, Default::default())
+            .await
+            .unwrap();
         let usage = restored
             .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
             .unwrap()
@@ -1072,7 +1084,7 @@ async fn closing_during_usage_result_publication_is_not_a_statistics_fault() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1163,7 +1175,7 @@ async fn unavailable_usage_counter_does_not_fault_resume_and_can_recover() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -1198,7 +1210,10 @@ async fn unavailable_usage_counter_does_not_fault_resume_and_can_recover() {
     resolver.0.store(false, Ordering::SeqCst);
     store.context_pages.lock().unwrap().clear();
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session(id.clone()).await.unwrap();
+    let session = agent
+        .restore_session(id.clone(), Default::default())
+        .await
+        .unwrap();
     let unavailable = session
         .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
         .unwrap()
@@ -1216,7 +1231,7 @@ async fn unavailable_usage_counter_does_not_fault_resume_and_can_recover() {
 
     resolver.0.store(true, Ordering::SeqCst);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     let restored = session
         .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
         .unwrap()
@@ -1248,7 +1263,7 @@ async fn unsupported_usage_counter_does_not_fall_back_to_history_projection() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1390,7 +1405,10 @@ async fn unconfigured_usage_does_not_project_legacy_messages() {
     );
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session("unconfigured".into()).await.unwrap();
+    let session = agent
+        .restore_session("unconfigured".into(), Default::default())
+        .await
+        .unwrap();
     let preparation = session
         .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
         .unwrap();
@@ -1450,7 +1468,7 @@ async fn usage_reads_the_published_head_while_a_fact_is_in_flight() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1598,7 +1616,7 @@ async fn model_reload_recovers_the_old_terminal_before_its_publication() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
 
@@ -1727,7 +1745,10 @@ async fn stop_waits_for_an_unpublished_turn_end_seen_by_a_reloaded_loop() {
         reload.install(&mut builder, model.clone());
         defaults::install(&mut builder);
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let session = agent.create_session(SessionConfig::default()).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         let old_loop = session.service::<dyn LoopState>("main").unwrap();
         let generation = || session.branch_diagnostics("main").unwrap().plugins
             .into_iter().find(|plugin| plugin.name == "Loop").unwrap();
@@ -1779,7 +1800,7 @@ async fn either_context_read_failure_ends_the_turn_and_allows_the_next_input() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         store.fail_at.store(
@@ -1854,7 +1875,7 @@ async fn each_model_step_reads_full_context_for_policy_and_streams_otherwise() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         for input in ["x".repeat(1_500), "next".into(), "third".into()] {
@@ -2002,7 +2023,7 @@ async fn a_second_compaction_saves_a_snapshot_that_decodes() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     for input in [
@@ -2122,7 +2143,7 @@ async fn stop_is_dispatched_while_either_context_read_is_waiting() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         store.pause_at.store(
@@ -2213,7 +2234,7 @@ async fn configuration_reference_read_failure_aborts_resume_and_allows_retry() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let update = ConfigureUpdate {
@@ -2245,7 +2266,7 @@ async fn configuration_reference_read_failure_aborts_resume_and_allows_retry() {
     agent.close().await.unwrap();
 
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let failed = match agent.restore_session(id.clone()).await {
+    let failed = match agent.restore_session(id.clone(), Default::default()).await {
         Ok(_) => panic!("a missing configuration read must prevent publication"),
         Err(error) => error,
     };
@@ -2259,7 +2280,7 @@ async fn configuration_reference_read_failure_aborts_resume_and_allows_retry() {
     agent.close().await.unwrap();
 
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     session
         .submit("after recovery retry".into(), InputMode::Queue, "main")
         .await
@@ -2313,7 +2334,7 @@ async fn concurrent_system_adoptions_include_previous_unpublished_updates() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -2480,7 +2501,7 @@ async fn a_request_written_after_an_interrupt_loop_has_not_handled_does_not_run(
     let mut setup = None;
     for _ in 0..50 {
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         store.pause_preparation.store(true, Ordering::SeqCst);
@@ -2633,7 +2654,7 @@ async fn progress_keeps_committed_output_until_it_is_published() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let mut progress = session.on::<ModelProgress>("main").unwrap().unwrap();
@@ -2689,7 +2710,7 @@ async fn a_steer_during_the_context_read_ends_the_request_before_it_is_handed_ov
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     store.pause_preparation.store(true, Ordering::SeqCst);
@@ -2773,7 +2794,7 @@ async fn a_below_threshold_preparation_reads_no_growing_turn_order() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let mut per_turn: Vec<Vec<Vec<String>>> = Vec::new();
@@ -3414,10 +3435,13 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     ));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["echo".into()]),
-            ..Default::default()
-        })
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["echo".into()]),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let timeline = cell.get().unwrap();
@@ -3533,7 +3557,7 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     agent.close().await.unwrap();
     let messages = counter.messages.load(Ordering::SeqCst);
     let agent = MinimalHost::start(&profile).await.unwrap();
-    let restored = agent.restore_session(id).await.unwrap();
+    let restored = agent.restore_session(id, Default::default()).await.unwrap();
     let reading = restored
         .service::<ContextPreparation>("main")
         .unwrap()
@@ -3572,7 +3596,7 @@ async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_reques
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(source.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -3641,7 +3665,7 @@ async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_reques
     let mut profile = builder_with_usage_resolver(counter.clone());
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     assert!(matches!(
         session
             .service::<ContextPreparation>("main")
@@ -3690,7 +3714,7 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(source.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -3881,7 +3905,10 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
         let mut profile = builder_with_usage_resolver(counter.clone());
         profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&profile).await.unwrap();
-        let session = agent.restore_session(id.clone()).await.unwrap();
+        let session = agent
+            .restore_session(id.clone(), Default::default())
+            .await
+            .unwrap();
         let value = session
             .service::<ContextPreparation>("main")
             .unwrap()
@@ -3943,7 +3970,10 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
             counter.messages.store(0, Ordering::SeqCst);
             store.context_pages.lock().unwrap().clear();
             let agent = MinimalHost::start(&profile).await.unwrap();
-            let session = agent.restore_session(id.clone()).await.unwrap();
+            let session = agent
+                .restore_session(id.clone(), Default::default())
+                .await
+                .unwrap();
             let reloaded = session
                 .service::<ContextPreparation>("main")
                 .unwrap()
@@ -3983,7 +4013,10 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
         counter.messages.store(0, Ordering::SeqCst);
         store.context_pages.lock().unwrap().clear();
         let agent = MinimalHost::start(&profile).await.unwrap();
-        let session = agent.restore_session(id.clone()).await.unwrap();
+        let session = agent
+            .restore_session(id.clone(), Default::default())
+            .await
+            .unwrap();
         let value = session
             .service::<ContextPreparation>("main")
             .unwrap()
@@ -4017,7 +4050,10 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
         assert!(value.estimated_input_tokens > expected.estimated_input_tokens);
         agent.close().await.unwrap();
         let agent = MinimalHost::start(&profile).await.unwrap();
-        let session = agent.restore_session(id.clone()).await.unwrap();
+        let session = agent
+            .restore_session(id.clone(), Default::default())
+            .await
+            .unwrap();
         let reloaded = session
             .service::<ContextPreparation>("main")
             .unwrap()
@@ -4062,7 +4098,10 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                 .await
                 .unwrap();
             let agent = MinimalHost::start(&profile).await.unwrap();
-            let session = agent.restore_session(id.clone()).await.unwrap();
+            let session = agent
+                .restore_session(id.clone(), Default::default())
+                .await
+                .unwrap();
             assert!(matches!(
                 session
                     .service::<ContextPreparation>("main")
@@ -4124,7 +4163,7 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
     ));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -4191,7 +4230,10 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
     let id = session.id().to_owned();
     agent.close().await.unwrap();
     let agent = MinimalHost::start(&profile).await.unwrap();
-    let session = agent.restore_session(id.clone()).await.unwrap();
+    let session = agent
+        .restore_session(id.clone(), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .service::<ContextPreparation>("main")
@@ -4258,7 +4300,7 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
         .await
         .unwrap();
     let agent = MinimalHost::start(&profile).await.unwrap();
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     assert!(matches!(
         session
             .service::<ContextPreparation>("main")
@@ -4376,7 +4418,10 @@ async fn legacy_prompt_references_migrate_explicitly_and_preserve_domain_task_st
     );
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let error = match agent.restore_session(key.session_id.clone()).await {
+    let error = match agent
+        .restore_session(key.session_id.clone(), Default::default())
+        .await
+    {
         Ok(_) => panic!("legacy prompt adoption must require migration"),
         Err(error) => error,
     };
@@ -4417,7 +4462,10 @@ async fn legacy_prompt_references_migrate_explicitly_and_preserve_domain_task_st
         .await
         .unwrap();
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session(key.session_id).await.unwrap();
+    let session = agent
+        .restore_session(key.session_id, Default::default())
+        .await
+        .unwrap();
     let state = session
         .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
         .unwrap()
@@ -4472,7 +4520,7 @@ async fn a_restore_asks_for_consumptions_only_for_the_inputs_it_adopts() {
         profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&profile).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let id = session.id().to_owned();
@@ -4547,7 +4595,10 @@ async fn a_restore_asks_for_consumptions_only_for_the_inputs_it_adopts() {
         profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&profile).await.unwrap();
         store.property_queries.lock().unwrap().clear();
-        let session = agent.restore_session(id.clone()).await.unwrap();
+        let session = agent
+            .restore_session(id.clone(), Default::default())
+            .await
+            .unwrap();
         // The checkpoint rows the walk read: one per query whose kind is the
         // recovery key. Read them before anything else queries the store.
         let rows = store
@@ -4676,7 +4727,7 @@ async fn a_change_naming_two_inputs_waits_for_both() {
         profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&profile).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let id = session.id().to_owned();
@@ -4784,7 +4835,10 @@ async fn a_change_naming_two_inputs_waits_for_both() {
         if let Some(at) = hidden {
             *store.hidden_consumptions.lock().unwrap() = vec![change.inputs[at].clone()];
         }
-        let session = agent.restore_session(id.clone()).await.unwrap();
+        let session = agent
+            .restore_session(id.clone(), Default::default())
+            .await
+            .unwrap();
         let state = session
             .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
             .unwrap()
@@ -4824,7 +4878,7 @@ async fn a_restore_reads_a_v1_checkpoints_boundary_from_source_through() {
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -4912,7 +4966,7 @@ async fn a_restore_reads_a_v1_checkpoints_boundary_from_source_through() {
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .restore_session(id)
+        .restore_session(id, Default::default())
         .await
         .expect("a v1 checkpoint restores");
     let state = session
@@ -4947,7 +5001,7 @@ async fn a_line_starts_before_an_undelivered_removal_under_a_later_system_change
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -5151,7 +5205,7 @@ async fn a_line_starts_before_an_undelivered_removal_under_a_later_system_change
     );
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     let child = session
         .branch(
             "main".into(),
@@ -5239,7 +5293,7 @@ async fn a_long_inherited_suffix_keeps_each_consumption_query_bounded() {
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -5374,7 +5428,7 @@ async fn a_long_inherited_suffix_keeps_each_consumption_query_bounded() {
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
-        .restore_session(id)
+        .restore_session(id, Default::default())
         .await
         .expect("the restore succeeds");
     let child = session
@@ -5513,7 +5567,7 @@ async fn model_only_reload_hands_off_a_running_preparation_at_its_recovery_cut()
             builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
             let parts = session.branch_diagnostics("main").unwrap().plugins;

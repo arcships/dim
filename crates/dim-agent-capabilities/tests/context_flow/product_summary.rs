@@ -452,7 +452,10 @@ async fn product_session_on(
     })
     .await
     .unwrap();
-    let session = agent.create_session(config_session).await.unwrap();
+    let session = agent
+        .create_session(config_session, Default::default())
+        .await
+        .unwrap();
     (agent, session)
 }
 

@@ -904,7 +904,9 @@ async fn restore_settles_interrupted_creates_and_keeps_failed_directories_inacti
     let batch = vec![Ok(vec![1]), Ok(vec![1]), Ok(vec![1, 2]), Ok(vec![2])];
     for _ in 0..2 {
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let session = soon(agent.restore_session("saved".into())).await.unwrap();
+        let session = soon(agent.restore_session("saved".into(), Default::default()))
+            .await
+            .unwrap();
         soon(session.idle("main")).await.unwrap();
         let opening = probe.opening_reads.lock().unwrap().pop().unwrap();
         let main = probe.main_timeline.lock().unwrap().clone().unwrap();
@@ -1066,7 +1068,9 @@ async fn a_restart_completes_an_end_without_its_result() {
     let mut builder = builder(&probe);
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
     assert_eq!(
         session
@@ -1249,7 +1253,9 @@ async fn a_restart_completes_an_interrupted_descendants_end_first() {
     let mut builder = builder(&Arc::new(Probe::default()));
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
     assert_eq!(
         session
@@ -1746,7 +1752,9 @@ async fn a_restore_reads_a_line_end_in_one_page_and_no_range() {
     let counting = Arc::new(TestStore::refusing_ranges(store));
     let builder = builder_with_store(&Arc::new(Probe::default()), counting.clone());
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
 
     assert_eq!(counting.range_reads(), 0, "a restore reads no stored range");
@@ -1925,7 +1933,9 @@ async fn an_end_at_load_finds_the_restored_line_published() {
         },
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
     soon(async {
         while ends.lock().unwrap().is_empty() {
@@ -1969,7 +1979,7 @@ async fn an_end_refuses_a_line_that_is_still_opening() {
     let probe = Arc::new(Probe::default());
     probe.delay_child.store(true, Ordering::SeqCst);
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.idle("main")).await.unwrap();
@@ -2034,7 +2044,7 @@ async fn a_line_that_is_ending_opens_no_more_lines() {
     let mut builder = builder(&probe);
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "hold the dispatcher").await;
@@ -2117,7 +2127,7 @@ async fn wait_create(session: &Session, after: u64) -> Arc<AgentEvent> {
 async fn ending_a_line_ends_its_children_first_and_records_one_result_each() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("ancestor".into(), InputMode::Queue, "main"))
@@ -2242,7 +2252,7 @@ async fn ending_a_line_ends_its_children_first_and_records_one_result_each() {
 async fn a_branch_this_session_never_had_is_unknown() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     assert!(matches!(
@@ -2260,7 +2270,7 @@ async fn a_branch_this_session_never_had_is_unknown() {
 async fn an_ancestors_end_closes_a_descendants_pending_tool_end() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let ancestor = soon(session.branch("main".into(), 0, options("ancestor")))
@@ -2363,7 +2373,7 @@ async fn an_ancestors_end_closes_a_descendants_pending_tool_end() {
 async fn an_ancestors_end_names_itself_on_every_descendant() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let ancestor = soon(session.branch("main".into(), 0, options("ancestor")))
@@ -2419,7 +2429,7 @@ async fn an_ancestors_end_names_itself_on_every_descendant() {
 async fn a_line_that_ended_itself_names_itself_on_its_descendants() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.idle("main")).await.unwrap();
@@ -2502,7 +2512,7 @@ async fn a_line_that_ended_itself_names_itself_on_its_descendants() {
 async fn a_line_cannot_open_under_an_ending_ancestor() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.idle("main")).await.unwrap();
@@ -2584,7 +2594,7 @@ async fn a_line_cannot_open_under_an_ending_ancestor() {
 async fn ending_a_line_waits_for_a_child_still_building() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.idle("main")).await.unwrap();
@@ -2659,7 +2669,7 @@ async fn a_failed_child_of_an_ended_parent_stays_unknown_after_a_restart() {
     let mut build = builder(&probe);
     build.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&build).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.idle("main")).await.unwrap();
@@ -2721,7 +2731,9 @@ async fn a_failed_child_of_an_ended_parent_stays_unknown_after_a_restart() {
     let mut build = builder(&probe);
     build.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&build).await.unwrap();
-    let session = soon(agent.restore_session(id)).await.unwrap();
+    let session = soon(agent.restore_session(id, Default::default()))
+        .await
+        .unwrap();
     assert_eq!(session.ended_head(&child), None);
     let commands = probe.commands.lock().unwrap().clone().unwrap();
     assert!(commands.info(child.clone()).is_err());
@@ -2732,7 +2744,7 @@ async fn a_failed_child_of_an_ended_parent_stays_unknown_after_a_restart() {
 async fn a_host_line_opens_with_its_identity_block_and_the_creator_prompt() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = soon(session.branch("main".into(), 0, options("what this line is for")))
@@ -2817,7 +2829,7 @@ async fn a_line_reports_the_source_its_create_recorded_open_or_restored() {
         }),
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("ancestor".into(), InputMode::Queue, "main"))
@@ -2864,7 +2876,9 @@ async fn a_line_reports_the_source_its_create_recorded_open_or_restored() {
         }),
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.restore_session(id)).await.unwrap();
+    let session = soon(agent.restore_session(id, Default::default()))
+        .await
+        .unwrap();
     assert_eq!(source(session.branches(), &child), Some(host));
     assert_eq!(source(session.branches(), "main"), None);
     assert_eq!(
@@ -2886,7 +2900,7 @@ async fn a_line_reports_the_source_its_create_recorded_open_or_restored() {
 async fn data_creation_releases_its_cancellation_wait_when_the_caller_leaves() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     pause(&session, &probe).await;
@@ -2947,7 +2961,7 @@ async fn data_creation_releases_its_cancellation_wait_when_the_caller_leaves() {
 async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -3084,7 +3098,7 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
 async fn delayed_create_uses_its_anchor_and_survives_an_abandoned_waiter() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     pause(&session, &probe).await;
@@ -3139,7 +3153,7 @@ async fn delayed_create_uses_its_anchor_and_survives_an_abandoned_waiter() {
 async fn close_releases_an_unconsumed_create_without_waiting_for_dispatch() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     pause(&session, &probe).await;
@@ -3178,7 +3192,7 @@ async fn close_releases_an_unconsumed_create_without_waiting_for_dispatch() {
 async fn parent_close_waits_for_dispatch_before_releasing_branch_reservations() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     pause(&session, &probe).await;
@@ -3239,7 +3253,7 @@ async fn parent_close_waits_for_dispatch_before_releasing_branch_reservations() 
 async fn failed_build_rolls_back_and_releases_capacity_even_without_its_waiter() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     probe.fail_child.store(true, Ordering::SeqCst);
@@ -3312,7 +3326,7 @@ async fn failed_build_rolls_back_and_releases_capacity_even_without_its_waiter()
 async fn candidates_remain_private_until_the_initial_input_is_accepted() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     *probe.session.lock().unwrap() = Some(session.clone());
@@ -3367,7 +3381,7 @@ async fn candidates_remain_private_until_the_initial_input_is_accepted() {
 async fn invalid_batch_cut_settles_creation_without_faulting_the_session() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let timeline = probe.main_timeline.lock().unwrap().clone().unwrap();
@@ -3415,7 +3429,7 @@ async fn invalid_batch_cut_settles_creation_without_faulting_the_session() {
 async fn model_output_cannot_be_inherited_as_an_asymmetric_prefix() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -3462,7 +3476,7 @@ async fn a_tool_call_on_main_opens_a_line_before_its_own_request() {
     let probe = Arc::new(Probe::default());
     let agent = MinimalHost::start(&builder(&probe)).await.unwrap();
     let root = agent.root().clone();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let broadcast = Broadcast::listen(&root, session.id());
@@ -3771,7 +3785,7 @@ async fn settle_line(session: &Session, branch: &str) -> (u64, String, u64) {
 async fn a_refused_branch_call_writes_nothing() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let host = soon(session.branch("main".into(), 0, options("host line")))
@@ -3971,7 +3985,7 @@ async fn a_refused_branch_call_writes_nothing() {
 async fn a_line_messages_and_reads_its_parent_and_the_lines_it_opened() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let tool_line = open_line(&session, "opened with the tool").await;
@@ -4197,7 +4211,7 @@ async fn a_line_messages_and_reads_its_parent_and_the_lines_it_opened() {
 async fn a_host_line_sends_the_line_it_was_cut_from_no_message() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let host = soon(session.branch("main".into(), 0, options("a plugin line")))
@@ -4280,7 +4294,7 @@ async fn messages_written(session: &Session, lines: &[&String]) -> Vec<usize> {
 async fn a_sibling_or_grandparent_is_refused_with_nothing_written() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let sibling = |prompt: &'static str| {
@@ -4388,7 +4402,7 @@ async fn a_sibling_or_grandparent_is_refused_with_nothing_written() {
 async fn session_close_cancels_an_active_build_and_waits_for_rollback() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     probe.delay_child.store(true, Ordering::SeqCst);
@@ -4486,7 +4500,7 @@ async fn quiet(session: &Session, line: &str) {
 async fn the_root_lists_its_open_tool_lines_under_the_roster_key() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let first = open_line(&session, "first purpose").await;
@@ -4552,7 +4566,7 @@ async fn a_configured_roster_closing_reaches_the_roster() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -4592,7 +4606,7 @@ async fn a_configured_note_block_reaches_the_note() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "the configured line").await;
@@ -4649,7 +4663,7 @@ async fn the_default_configuration_writes_no_guidance_block() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, config))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, purpose).await;
@@ -4709,7 +4723,7 @@ async fn a_user_lines_default_note_reaches_the_model_request() {
         ))
         .await
         .unwrap();
-        let session = soon(agent.create_session(SessionConfig::default()))
+        let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
             .await
             .unwrap();
         let cut = idle_cut(&session, "main").await;
@@ -4798,7 +4812,7 @@ async fn a_former_default_tool_lines_note_reaches_the_model_request() {
         ))
         .await
         .unwrap();
-        let session = soon(agent.create_session(SessionConfig::default()))
+        let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
             .await
             .unwrap();
         let line = open_line(&session, "the parser race").await;
@@ -4888,7 +4902,7 @@ async fn an_appended_note_does_not_wake_the_idle_former_default() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "the parser race").await;
@@ -4973,7 +4987,7 @@ async fn a_configured_description_reaches_the_request_declaration() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("hello".into(), InputMode::Queue, "main"))
@@ -5040,7 +5054,7 @@ async fn last_system(session: &Session, branch: &str) -> String {
 async fn each_line_carries_the_entry_of_the_marker_its_part_writes() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -5108,7 +5122,7 @@ async fn system_at(session: &Session, branch: &str, sequence: u64) -> String {
 async fn a_childs_first_system_is_its_parents_at_the_cut() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -5135,7 +5149,7 @@ async fn a_childs_first_system_is_its_parents_at_the_cut() {
 async fn a_line_names_the_stale_file_failure_the_way_the_tool_reports_it() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -5212,7 +5226,7 @@ async fn file_call(
 async fn the_branch_tool_declares_its_actions_and_modes() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("hello".into(), InputMode::Queue, "main"))
@@ -5283,7 +5297,7 @@ async fn the_branch_tool_declares_its_actions_and_modes() {
 async fn the_branch_tool_reports_invalid_arguments() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     for (arguments, text) in [
@@ -5314,7 +5328,7 @@ async fn the_branch_tool_reports_invalid_arguments() {
 async fn a_title_is_refused_with_what_names_a_line() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let refused = tool_call(
@@ -5412,7 +5426,7 @@ async fn a_title_is_refused_with_what_names_a_line() {
 async fn a_message_reaches_its_receiver_in_the_mode_it_asked_for() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -5582,7 +5596,7 @@ async fn a_message_reaches_its_receiver_in_the_mode_it_asked_for() {
 async fn a_first_parent_read_starts_after_the_cut() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("BEFORE-THE-CUT".into(), InputMode::Queue, "main"))
@@ -5681,15 +5695,18 @@ async fn a_parent_read_carries_the_effects_its_tool_results_declared() {
     let mut builder = builder_with_tools(&probe, Arc::new(EffectTools));
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec![
-            "echo".into(),
-            "wait".into(),
-            "branch".into(),
-            "touch".into(),
-        ]),
-        ..SessionConfig::default()
-    }))
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec![
+                "echo".into(),
+                "wait".into(),
+                "branch".into(),
+                "touch".into(),
+            ]),
+            ..SessionConfig::default()
+        },
+        Default::default(),
+    ))
     .await
     .unwrap();
     soon(session.submit("BEFORE-THE-CUT".into(), InputMode::Queue, "main"))
@@ -5753,7 +5770,7 @@ async fn a_parent_read_carries_the_effects_its_tool_results_declared() {
 async fn an_after_below_the_cut_is_raised_to_it() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("BEFORE-THE-CUT".into(), InputMode::Queue, "main"))
@@ -5793,7 +5810,7 @@ async fn an_after_below_the_cut_is_raised_to_it() {
 async fn an_after_past_the_targets_head_is_refused_and_the_cursor_stays() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     // A host line writes no idle notice, so main has no turn in flight and
@@ -5836,7 +5853,7 @@ async fn an_after_past_the_targets_head_is_refused_and_the_cursor_stays() {
 async fn a_read_without_after_continues_from_the_last_page_in_both_directions() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "check the parser").await;
@@ -5901,7 +5918,7 @@ async fn a_read_without_after_continues_from_the_last_page_in_both_directions() 
 async fn main_re_reads_a_line_from_zero_and_the_cursor_follows_that_read() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "check the parser").await;
@@ -5982,7 +5999,7 @@ async fn a_read_cursor_survives_a_restore() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let id = session.id().to_string();
@@ -6000,7 +6017,9 @@ async fn a_read_cursor_survives_a_restore() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store))
         .await
         .unwrap();
-    let session = soon(agent.restore_session(id)).await.unwrap();
+    let session = soon(agent.restore_session(id, Default::default()))
+        .await
+        .unwrap();
     until_branch(&session, &child).await;
     soon(session.idle(&child)).await.unwrap();
     let page = page_of(&tool_call(&session, &child, r#"{"action":"read","branch":"main"}"#).await);
@@ -6017,7 +6036,7 @@ async fn a_read_cursor_survives_a_restore() {
 async fn an_idle_line_is_told_its_parent_moved_without_being_woken() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -6111,7 +6130,7 @@ async fn a_running_line_gets_the_block_with_its_next_request_once() {
     let agent = MinimalHost::start(&builder_with_gates(&probe, &gates))
         .await
         .unwrap();
-    let session = patient(agent.create_session(SessionConfig::default()))
+    let session = patient(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -6220,7 +6239,7 @@ async fn two_parent_turns_while_the_line_is_idle_write_one_block() {
     let agent = MinimalHost::start(&builder_with_gates(&probe, &gates))
         .await
         .unwrap();
-    let session = patient(agent.create_session(SessionConfig::default()))
+    let session = patient(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -6292,7 +6311,7 @@ async fn a_move_while_a_block_is_held_is_written_after_the_block_is_consumed() {
     let agent = MinimalHost::start(&builder_with_gates(&probe, &gates))
         .await
         .unwrap();
-    let session = patient(agent.create_session(SessionConfig::default()))
+    let session = patient(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     // A host line writes no idle notice, so main's turn stays where the test
@@ -6337,7 +6356,7 @@ async fn a_move_while_a_block_is_held_is_written_after_the_block_is_consumed() {
 async fn a_move_while_a_block_is_held_is_written_after_the_block_is_deleted() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_host_line(&session, "main", "watch the tests").await;
@@ -6383,7 +6402,7 @@ async fn a_move_while_a_block_is_held_is_written_after_the_block_is_interrupted(
     let agent = MinimalHost::start(&builder_with_gates(&probe, &gates))
         .await
         .unwrap();
-    let session = patient(agent.create_session(SessionConfig::default()))
+    let session = patient(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_host_line(&session, "main", "watch the tests").await;
@@ -6472,7 +6491,7 @@ async fn a_nested_line_is_told_its_own_parent_at_open() {
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let outer = open_host_line(&session, "main", "outer line").await;
@@ -6640,7 +6659,7 @@ async fn a_nested_line_whose_opening_read_fails_is_a_failed_create() {
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let outer = open_host_line(&session, "main", "outer line").await;
@@ -6766,7 +6785,9 @@ async fn a_restore_writes_a_due_parent_block_once_and_none_without_movement() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
         .await
         .unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     let events = until_events(&session, "line", |events| {
         !parent_block_events(events).is_empty()
     })
@@ -6876,7 +6897,9 @@ async fn a_restore_writes_a_due_parent_block_once_and_none_without_movement() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store))
         .await
         .unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     until_branch(&session, "line").await;
     soon(session.idle("line")).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -6965,7 +6988,9 @@ async fn an_ending_line_and_main_get_no_parent_block() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store))
         .await
         .unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     until_branch(&session, "main").await;
     soon(session.idle("main")).await.unwrap();
     until_branch(&session, "line").await;
@@ -7000,7 +7025,7 @@ async fn the_parent_block_replays_after_a_compaction() {
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "compact my line").await;
@@ -7035,7 +7060,7 @@ async fn the_parent_block_replays_after_a_compaction() {
 async fn the_creating_turn_alone_does_not_tell_the_line() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7065,7 +7090,7 @@ async fn a_second_tool_call_in_the_creating_turn_tells_the_line() {
     let agent = MinimalHost::start(&builder_with_model(&probe, Arc::new(ActingModel)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7101,7 +7126,7 @@ async fn a_second_tool_call_in_the_creating_turn_tells_the_line() {
 async fn a_line_message_answered_with_text_tells_the_line_nothing() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7132,7 +7157,7 @@ async fn a_host_line_is_told_when_its_parent_makes_a_tool_call() {
     let agent = MinimalHost::start(&builder_with_model(&probe, Arc::new(ActingModel)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "watch the tests").await;
@@ -7196,7 +7221,7 @@ async fn a_purpose_tool_call_is_the_lines_first_step() {
     let agent = MinimalHost::start(&builder_with_model(&probe, Arc::new(PurposeModel)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "tool:echo {\"text\":\"purpose\"}").await;
@@ -7224,7 +7249,7 @@ async fn a_host_line_opened_after_main_moved(
     older_cut: bool,
 ) -> (MinimalHost, Session, String, String, u64) {
     let agent = setup(probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let at = if older_cut {
@@ -7365,7 +7390,7 @@ async fn a_host_line_cut_before_it_was_opened_is_not_told_about_the_gap() {
 async fn the_creating_call_is_written_before_the_line_was_opened() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7395,7 +7420,7 @@ async fn the_creating_call_is_written_before_the_line_was_opened() {
 async fn an_idle_line_tells_main_once_when_its_turn_ends_without_a_word() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7461,7 +7486,7 @@ async fn a_tool_line_without_idle_notices_stays_quiet_after_restore() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -7495,7 +7520,9 @@ async fn a_tool_line_without_idle_notices_stays_quiet_after_restore() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store))
         .await
         .unwrap();
-    let session = soon(agent.restore_session(id)).await.unwrap();
+    let session = soon(agent.restore_session(id, Default::default()))
+        .await
+        .unwrap();
     soon(session.idle(&child)).await.unwrap();
     let before = local_events(&session, &child)
         .await
@@ -7540,7 +7567,7 @@ async fn a_tool_line_without_idle_notices_stays_quiet_after_restore() {
 async fn a_turn_that_steered_main_writes_no_idle_notice() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7575,7 +7602,7 @@ async fn a_turn_that_steered_main_writes_no_idle_notice() {
 async fn a_stop_with_a_held_steer_still_tells_main_the_line_stopped() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7638,7 +7665,7 @@ async fn a_stop_with_a_held_steer_still_tells_main_the_line_stopped() {
 async fn a_tool_line_ends_itself_and_main_learns_it_from_the_roster() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7745,7 +7772,7 @@ async fn a_tool_line_ends_itself_and_main_learns_it_from_the_roster() {
 async fn a_second_end_in_the_same_turn_writes_no_second_final_message() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -7811,7 +7838,7 @@ async fn a_second_end_in_the_same_turn_writes_no_second_final_message() {
 async fn a_host_lines_end_says_nothing_to_main() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let host = soon(session.branch("main".into(), 0, options("host line")))
@@ -7943,7 +7970,7 @@ async fn a_host_lines_end_says_nothing_to_main() {
 async fn a_tree_page_refuses_a_through_inside_a_batch() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "read the batch").await;
@@ -7982,7 +8009,7 @@ async fn a_tree_page_refuses_a_through_inside_a_batch() {
 async fn an_end_from_outside_a_tool_line_wakes_main_with_a_notice() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -8133,7 +8160,7 @@ async fn an_idle_line_wakes_the_wait_of_the_main_that_opened_it() {
     let agent = MinimalHost::start(&builder_with_wait(&probe, gates.clone()))
         .await
         .unwrap();
-    let session = patient(agent.create_session(SessionConfig::default()))
+    let session = patient(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -8163,7 +8190,7 @@ async fn an_ended_line_wakes_the_wait_of_the_main_that_opened_it() {
     let agent = MinimalHost::start(&builder_with_wait(&probe, Arc::new(FlowModel)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -8194,7 +8221,7 @@ async fn a_steer_message_from_a_line_wakes_the_wait_of_the_main_that_opened_it()
     let agent = MinimalHost::start(&builder_with_wait(&probe, Arc::new(FlowModel)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
@@ -8324,7 +8351,7 @@ async fn a_roster_and_an_identity_replay_separately_after_a_compaction() {
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let first = open_line(&session, "compact my line").await;
@@ -8437,16 +8464,19 @@ async fn a_manual_compaction_replays_a_lines_identity() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     // The Session's own model: a manual compaction at idle has no request to
     // adopt one from.
-    let session = soon(agent.create_session(SessionConfig {
-        model: ModelSelection {
-            provider_id: "test".into(),
-            model_id: "flow".into(),
-            capability_snapshot: None,
-            config: None,
-            metadata: None,
+    let session = soon(agent.create_session(
+        SessionConfig {
+            model: ModelSelection {
+                provider_id: "test".into(),
+                model_id: "flow".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     let line = open_line(&session, "compact my line").await;
@@ -8572,7 +8602,7 @@ async fn compact_line(session: &Session, line: &str) {
 async fn a_child_cut_after_a_roster_retires_it_and_one_cut_before_gets_nothing() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let before = open_line(&session, "cut before the roster").await;
@@ -8691,7 +8721,7 @@ async fn closing_after_dispatch_before_the_build_first_poll_is_a_normal_cancella
             }),
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let (tree, dispatcher, root) = ports.lock().unwrap().take().unwrap();
@@ -8729,7 +8759,7 @@ fn interrupt() -> EventKind {
 async fn a_stop_settles_the_branch_tool_while_the_tree_still_builds_the_child() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     probe.delay_child.store(true, Ordering::SeqCst);
@@ -8846,7 +8876,7 @@ async fn an_ancestors_end_closes_a_pending_end_whose_delivery_was_held() {
     let probe = Arc::new(Probe::default());
     let gate = Arc::new(Gate::default());
     let agent = MinimalHost::start(&gated(&probe, &gate)).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let ancestor = soon(session.branch("main".into(), 0, options("ancestor")))
@@ -9000,7 +9030,7 @@ async fn a_turn_spanning_a_restart_after_a_steer_writes_no_idle_notice() {
     let mut builder1 = builder(&probe);
     builder1.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(first.clone()));
     let agent = MinimalHost::start(&builder1).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -9038,7 +9068,9 @@ async fn a_turn_spanning_a_restart_after_a_steer_writes_no_idle_notice() {
     let mut builder2 = builder(&probe);
     builder2.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(second));
     let agent = MinimalHost::start(&builder2).await.unwrap();
-    let session = soon(agent.restore_session(id)).await.unwrap();
+    let session = soon(agent.restore_session(id, Default::default()))
+        .await
+        .unwrap();
     soon(session.idle(&child)).await.unwrap();
     soon(session.idle("main")).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -9119,7 +9151,7 @@ async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
     let config = builder_with_store(&probe, store);
     let agent = MinimalHost::start(&config).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -9185,7 +9217,10 @@ async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
     let session_id = session.id().to_owned();
     soon(agent.close()).await.unwrap();
     let agent = MinimalHost::start(&config).await.unwrap();
-    let restored = agent.restore_session(session_id).await.unwrap();
+    let restored = agent
+        .restore_session(session_id, Default::default())
+        .await
+        .unwrap();
     let tree = restored.session_service::<TreeCommands>().unwrap();
     assert_eq!(texts(&tree, &leaf).await, expected);
     assert_eq!(texts(&tree, &zero).await, ["visible-root"]);
@@ -9198,7 +9233,7 @@ async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
 async fn a_chain_read_continues_past_a_page_that_ended_in_an_ancestor() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     session
@@ -9265,7 +9300,7 @@ async fn a_chain_read_continues_past_a_page_that_ended_in_an_ancestor() {
 async fn the_directory_lists_open_and_cascade_ended_lines_with_their_end_events() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("ancestor".into(), InputMode::Queue, "main"))
@@ -9354,7 +9389,7 @@ async fn the_directory_lists_open_and_cascade_ended_lines_with_their_end_events(
 async fn the_directory_reports_a_line_whose_end_is_pending_as_ending() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let ancestor = soon(session.branch("main".into(), 0, options("ancestor")))
@@ -9478,7 +9513,7 @@ async fn the_directory_reports_a_host_end_as_ending_before_its_ended_row() {
     let probe = Arc::new(Probe::default());
     let gate = Arc::new(Gate::default());
     let agent = MinimalHost::start(&gated(&probe, &gate)).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = soon(session.branch("main".into(), 0, options("host line")))
@@ -9559,7 +9594,7 @@ async fn the_directory_reports_a_cascaded_end_as_ending_before_its_ended_row() {
     let probe = Arc::new(Probe::default());
     let gate = Arc::new(Gate::default());
     let agent = MinimalHost::start(&gated(&probe, &gate)).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let ancestor = soon(session.branch("main".into(), 0, options("ancestor")))
@@ -9690,7 +9725,9 @@ async fn timeline_store_binding_preserves_memory_batch_publication_and_wire_read
         },
     ));
     let host = MinimalHost::start(&builder).await.unwrap();
-    host.create_session(SessionConfig::default()).await.unwrap();
+    host.create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
     let (native, wire) = binding.get().unwrap();
     native
         .create_session("parity", &SessionConfig::default())
@@ -9853,7 +9890,7 @@ fn refusal(error: &Result<()>) -> (&'static str, String) {
 async fn the_default_branch_starts_at_the_root_and_survives_a_restart() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     assert_eq!(session.default_branch().unwrap(), "main");
@@ -9886,7 +9923,9 @@ async fn the_default_branch_starts_at_the_root_and_survives_a_restart() {
     assert_eq!(fact.from, None);
     let id = session.id();
     soon(session.close()).await.unwrap();
-    let session = soon(agent.restore_session(id.into())).await.unwrap();
+    let session = soon(agent.restore_session(id.into(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
     assert_eq!(
         session.default_branch().unwrap(),
@@ -9900,7 +9939,7 @@ async fn the_default_branch_starts_at_the_root_and_survives_a_restart() {
 async fn a_restore_reads_one_fact_for_a_multi_line_session_and_none_for_a_single_line() {
     let single = Arc::new(TestStore::default());
     let agent = setup_with(&single).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let id = session.id();
@@ -9912,7 +9951,9 @@ async fn a_restore_reads_one_fact_for_a_multi_line_session_and_none_for_a_single
     ))
     .await
     .unwrap();
-    let session = soon(restored.restore_session(id.into())).await.unwrap();
+    let session = soon(restored.restore_session(id.into(), Default::default()))
+        .await
+        .unwrap();
     assert_eq!(session.default_branch().unwrap(), "main");
     assert_eq!(
         single.pages("main", &["branch/default", "session/forked"]),
@@ -9923,7 +9964,7 @@ async fn a_restore_reads_one_fact_for_a_multi_line_session_and_none_for_a_single
 
     let multi = Arc::new(TestStore::default());
     let agent = setup_with(&multi).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "one more line").await;
@@ -9944,7 +9985,9 @@ async fn a_restore_reads_one_fact_for_a_multi_line_session_and_none_for_a_single
     ))
     .await
     .unwrap();
-    let session = soon(restored.restore_session(id.into())).await.unwrap();
+    let session = soon(restored.restore_session(id.into(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
     assert_eq!(
         multi.pages("main", &["branch/default", "session/forked"]),
@@ -10026,7 +10069,9 @@ async fn a_restore_of_a_fork_that_opened_a_line_keeps_the_root_default() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.restore_session("forked".into())).await.unwrap();
+    let session = soon(agent.restore_session("forked".into(), Default::default()))
+        .await
+        .unwrap();
     assert_eq!(
         session.default_branch().unwrap(),
         "main",
@@ -10043,7 +10088,7 @@ async fn a_restore_of_a_fork_that_opened_a_line_keeps_the_root_default() {
 async fn an_end_whose_final_message_fails_is_delivered_by_the_next_restore() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let session_id = session.id().to_owned();
@@ -10099,7 +10144,7 @@ async fn an_end_whose_final_message_fails_is_delivered_by_the_next_restore() {
     ))
     .await
     .unwrap();
-    let session = soon(restored.restore_session(session_id.clone()))
+    let session = soon(restored.restore_session(session_id.clone(), Default::default()))
         .await
         .unwrap();
     let events = local_events(&session, "main").await;
@@ -10127,7 +10172,9 @@ async fn an_end_whose_final_message_fails_is_delivered_by_the_next_restore() {
     ))
     .await
     .unwrap();
-    let session = soon(again.restore_session(session_id)).await.unwrap();
+    let session = soon(again.restore_session(session_id, Default::default()))
+        .await
+        .unwrap();
     assert_eq!(
         deliveries(&local_events(&session, "main").await, &submission),
         1,
@@ -10146,7 +10193,7 @@ async fn an_end_whose_final_message_fails_is_delivered_by_the_next_restore() {
 async fn a_second_end_retries_an_undelivered_final_message() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "deliver me").await;
@@ -10222,7 +10269,7 @@ async fn a_second_end_retries_an_undelivered_final_message() {
 async fn ending_the_parent_of_a_line_with_an_undelivered_message_answers() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let parent = open_line(&session, "outer").await;
@@ -10283,7 +10330,7 @@ async fn ending_the_parent_of_a_line_with_an_undelivered_message_answers() {
 async fn ending_the_root_the_default_branch_or_an_ancestor_is_refused() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "outer").await;
@@ -10344,7 +10391,7 @@ async fn ending_the_root_the_default_branch_or_an_ancestor_is_refused() {
 async fn a_user_opened_line_records_its_own_source() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = soon(session.branch(
@@ -10390,7 +10437,7 @@ async fn a_user_opened_line_records_its_own_source() {
 async fn a_user_opened_line_states_the_end_rule_that_never_changes() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = soon(session.branch(
@@ -10436,7 +10483,7 @@ async fn a_user_opened_line_states_the_end_rule_that_never_changes() {
 async fn a_default_branch_that_was_a_tool_line_stops_sending_its_idle_notice() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "work alone").await;
@@ -10528,7 +10575,7 @@ async fn a_switched_line_keeps_its_identity_after_a_compaction() {
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
 
@@ -10678,7 +10725,7 @@ async fn a_multi_paragraph_purpose_survives_a_move_and_a_compaction() {
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(
@@ -10748,7 +10795,7 @@ fn identity_block_applied(events: &[Arc<AgentEvent>]) -> bool {
 async fn a_move_leaves_the_new_default_branchs_prefix_unchanged() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "keep this prefix").await;
@@ -10817,7 +10864,7 @@ async fn default_notes(session: &Session, lines: &[&str]) -> Vec<(String, usize)
 async fn a_move_writes_one_note_per_participant_that_is_not_the_root() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "b").await;
@@ -10896,7 +10943,7 @@ async fn a_move_writes_one_note_per_participant_that_is_not_the_root() {
 async fn moves_that_overtake_their_writer_each_reach_their_participants() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "b").await;
@@ -10983,7 +11030,7 @@ async fn moves_that_overtake_their_writer_each_reach_their_participants() {
 async fn a_move_answers_only_after_its_fact_is_durable() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "continue on").await;
@@ -11038,7 +11085,7 @@ async fn a_move_answers_only_after_its_fact_is_durable() {
 async fn a_move_whose_write_fails_changes_nothing() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let session_id = session.id().to_owned();
@@ -11081,7 +11128,9 @@ async fn a_move_whose_write_fails_changes_nothing() {
     ))
     .await
     .unwrap();
-    let session = soon(restored.restore_session(session_id)).await.unwrap();
+    let session = soon(restored.restore_session(session_id, Default::default()))
+        .await
+        .unwrap();
     assert_eq!(
         session.default_branch().unwrap(),
         "main",
@@ -11109,7 +11158,7 @@ async fn a_restore_falls_back_to_the_root_for_a_target_it_cannot_select() {
         let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
             .await
             .unwrap();
-        let session = soon(agent.create_session(SessionConfig::default()))
+        let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
             .await
             .unwrap();
         let line = soon(session.branch(
@@ -11141,7 +11190,9 @@ async fn a_restore_falls_back_to_the_root_for_a_target_it_cannot_select() {
         let restored = MinimalHost::start(&builder_with_store(&Arc::new(Probe::default()), store))
             .await
             .unwrap();
-        let session = soon(restored.restore_session(id.into())).await.unwrap();
+        let session = soon(restored.restore_session(id.into(), Default::default()))
+            .await
+            .unwrap();
         assert_eq!(
             session.default_branch().unwrap(),
             "main",
@@ -11260,7 +11311,9 @@ async fn a_restore_falls_back_to_the_root_for_a_target_that_has_ended() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
         .await
         .unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     assert_eq!(
         session.default_branch().unwrap(),
         "main",
@@ -11276,7 +11329,7 @@ async fn a_restore_falls_back_to_the_root_for_a_target_that_has_ended() {
 async fn every_refusal_of_a_move_writes_nothing() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let tree = session.session_service::<TreeCommands>().unwrap();
@@ -11361,7 +11414,7 @@ async fn every_refusal_of_a_move_writes_nothing() {
 async fn a_former_default_branch_keeps_no_stale_instruction_and_ends_after_a_move_back() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -11469,7 +11522,7 @@ async fn a_former_default_branch_keeps_no_stale_instruction_and_ends_after_a_mov
 async fn a_former_default_branch_resumes_its_idle_notice_and_may_end_itself() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "a line").await;
@@ -11534,7 +11587,7 @@ async fn a_switch_and_an_end_admit_in_one_order_and_the_refusal_writes_nothing()
     for end_first in [true, false] {
         let probe = Arc::new(Probe::default());
         let agent = setup(&probe).await;
-        let session = soon(agent.create_session(SessionConfig::default()))
+        let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
             .await
             .unwrap();
         let a = open_line(&session, "a").await;
@@ -11615,7 +11668,7 @@ async fn a_switch_and_an_end_admit_in_one_order_and_the_refusal_writes_nothing()
 async fn a_pre_upgrade_host_line_is_refused_and_a_user_line_is_accepted() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let legacy = soon(session.branch("main".into(), 0, options("opened before the upgrade")))
@@ -11685,7 +11738,7 @@ async fn a_switch_and_a_tool_lines_end_admit_in_one_order_without_a_refused_ones
     for end_first in [true, false] {
         let probe = Arc::new(Probe::default());
         let agent = setup(&probe).await;
-        let session = soon(agent.create_session(SessionConfig::default()))
+        let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
             .await
             .unwrap();
         let line = open_line(&session, "the line that ends").await;
@@ -11843,7 +11896,9 @@ async fn a_restart_delivers_a_tool_ends_final_message_exactly_once() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.restore_session("saved".into())).await.unwrap();
+    let session = soon(agent.restore_session("saved".into(), Default::default()))
+        .await
+        .unwrap();
     let events = until_events(&session, "main", |events| !finals(events).is_empty()).await;
     let delivered = finals(&events);
     assert_eq!(delivered.len(), 1, "{delivered:?}");
@@ -11884,7 +11939,9 @@ async fn a_restart_delivers_a_tool_ends_final_message_exactly_once() {
     let again = MinimalHost::start(&builder_with_store(&Arc::new(Probe::default()), store))
         .await
         .unwrap();
-    let session = soon(again.restore_session(id.into())).await.unwrap();
+    let session = soon(again.restore_session(id.into(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
     let events = local_events(&session, "main").await;
     assert_eq!(
@@ -11915,7 +11972,7 @@ async fn a_clean_restart_writes_no_status_note() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "the purpose of B").await;
@@ -11958,7 +12015,9 @@ async fn a_clean_restart_writes_no_status_note() {
     let again = MinimalHost::start(&builder_with_store(&Arc::new(Probe::default()), store))
         .await
         .unwrap();
-    let session = soon(again.restore_session(id.clone())).await.unwrap();
+    let session = soon(again.restore_session(id.clone(), Default::default()))
+        .await
+        .unwrap();
     assert_eq!(session.default_branch().unwrap(), d, "the fact stands");
     for line in [&b, &c, &d] {
         soon(session.submit("next request".into(), InputMode::Queue, line))
@@ -12027,7 +12086,7 @@ async fn a_stale_note_is_replaced_once(old: &str, user: bool) {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = if user {
@@ -12092,7 +12151,9 @@ async fn a_stale_note_is_replaced_once(old: &str, user: bool) {
     ))
     .await
     .unwrap();
-    let session = soon(agent.restore_session(id.clone())).await.unwrap();
+    let session = soon(agent.restore_session(id.clone(), Default::default()))
+        .await
+        .unwrap();
     assert_eq!(session.default_branch().unwrap(), b, "the fact stands");
     let stopped = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -12158,7 +12219,9 @@ async fn a_stale_note_is_replaced_once(old: &str, user: bool) {
     let third = MinimalHost::start(&builder_with_store(&Arc::new(Probe::default()), second))
         .await
         .unwrap();
-    let session = soon(third.restore_session(id)).await.unwrap();
+    let session = soon(third.restore_session(id, Default::default()))
+        .await
+        .unwrap();
     soon(session.idle(&b)).await.unwrap();
     assert_eq!(
         status_notes(&local_events(&session, &b).await).len(),
@@ -12213,7 +12276,7 @@ async fn the_roots_roster_from_before_the_key_split_is_retired_at_load() {
     let agent = MinimalHost::start(&compacting_builder(first.clone()))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "the purpose of the line").await;
@@ -12260,7 +12323,9 @@ async fn the_roots_roster_from_before_the_key_split_is_retired_at_load() {
     let again = MinimalHost::start(&compacting_builder(second.clone()))
         .await
         .unwrap();
-    let session = soon(again.restore_session(id.clone())).await.unwrap();
+    let session = soon(again.restore_session(id.clone(), Default::default()))
+        .await
+        .unwrap();
     let mut events = local_events(&session, "main").await;
     for _ in 0..500 {
         if roster_block(&events).is_some() {
@@ -12311,7 +12376,9 @@ async fn the_roots_roster_from_before_the_key_split_is_retired_at_load() {
     let third = MinimalHost::start(&compacting_builder(second))
         .await
         .unwrap();
-    let session = soon(third.restore_session(id.clone())).await.unwrap();
+    let session = soon(third.restore_session(id.clone(), Default::default()))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     let local = local_events(&session, "main").await;
     assert_eq!(
@@ -12341,7 +12408,7 @@ async fn a_move_that_stopped_between_its_fact_and_its_notes_is_completed_at_load
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "the purpose of B").await;
@@ -12409,7 +12476,9 @@ async fn a_move_that_stopped_between_its_fact_and_its_notes_is_completed_at_load
     ))
     .await
     .unwrap();
-    let session = soon(agent.restore_session(id.clone())).await.unwrap();
+    let session = soon(agent.restore_session(id.clone(), Default::default()))
+        .await
+        .unwrap();
     assert_eq!(session.default_branch().unwrap(), c, "the fact stands");
     let mut arrived = std::collections::BTreeSet::new();
     let stopped = tokio::time::timeout(Duration::from_secs(5), async {
@@ -12473,7 +12542,9 @@ async fn a_move_that_stopped_between_its_fact_and_its_notes_is_completed_at_load
     let again = MinimalHost::start(&builder_with_store(&Arc::new(Probe::default()), store))
         .await
         .unwrap();
-    let session = soon(again.restore_session(id.clone())).await.unwrap();
+    let session = soon(again.restore_session(id.clone(), Default::default()))
+        .await
+        .unwrap();
     soon(session.idle("main")).await.unwrap();
     assert_eq!(
         default_notes(&session, &["main", &b, &c]).await,
@@ -12500,7 +12571,7 @@ async fn a_restore_writes_the_owed_note_before_the_line_answers() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "the purpose of B").await;
@@ -12545,7 +12616,9 @@ async fn a_restore_writes_the_owed_note_before_the_line_answers() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.restore_session(id.clone())).await.unwrap();
+    let session = soon(agent.restore_session(id.clone(), Default::default()))
+        .await
+        .unwrap();
     assert_eq!(session.default_branch().unwrap(), b, "the fact stands");
     let stopped = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -12664,7 +12737,7 @@ async fn records_end(session: &Session, line: &str) {
 async fn a_move_committed_before_its_writer_starts_still_owes_its_note() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let mut held = dim_agent_capabilities::timeline_tree::testing::hold_writers(session.id());
@@ -12764,7 +12837,7 @@ async fn a_move_committed_before_its_writer_starts_still_owes_its_note() {
 async fn a_move_cancelled_after_admission_settles_under_the_tree() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "switched while cancelled").await;
@@ -12811,7 +12884,7 @@ async fn a_move_cancelled_after_admission_settles_under_the_tree() {
 async fn a_cancelled_move_whose_publication_fails_keeps_the_tree_until_it_settles() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let first = open_line(&session, "first switch").await;
@@ -12871,7 +12944,7 @@ async fn a_cancelled_move_whose_publication_fails_keeps_the_tree_until_it_settle
 async fn an_end_retry_cancelled_after_admission_settles_under_the_tree() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let line = open_line(&session, "deliver me").await;
@@ -12942,7 +13015,7 @@ async fn an_end_retry_cancelled_after_admission_settles_under_the_tree() {
 async fn a_close_waits_for_an_admitted_move_and_a_restore_reads_its_fact() {
     let store = Arc::new(TestStore::default());
     let agent = setup_with(&store).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -12966,7 +13039,7 @@ async fn a_close_waits_for_an_admitted_move_and_a_restore_reads_its_fact() {
 
     let failed = Arc::new(TestStore::default());
     let agent = setup_with(&failed).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -13023,7 +13096,9 @@ async fn restore_default(store: &Arc<TestStore>, id: &str) -> String {
     ))
     .await
     .unwrap();
-    let session = soon(restored.restore_session(id.into())).await.unwrap();
+    let session = soon(restored.restore_session(id.into(), Default::default()))
+        .await
+        .unwrap();
     let default = session.default_branch().unwrap();
     soon(session.close()).await.unwrap();
     soon(restored.close()).await.unwrap();
@@ -13128,7 +13203,7 @@ fn creates(events: &[Arc<AgentEvent>]) -> usize {
 async fn the_root_opens_a_line_while_another_line_is_default() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     // C inherits the root's history through a completed turn: the cut ends a
@@ -13230,7 +13305,7 @@ async fn the_root_opens_a_line_while_another_line_is_default() {
 async fn the_default_branch_opens_a_line() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "b").await;
@@ -13288,7 +13363,7 @@ async fn the_default_branch_opens_a_line() {
 async fn a_former_default_branch_keeps_its_lines_and_opens_none() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -13366,7 +13441,7 @@ async fn a_former_default_branch_keeps_its_lines_and_opens_none() {
 async fn a_plugin_line_never_opens_a_line() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let host = open_host_line(&session, "main", "a plugin line").await;
@@ -13392,7 +13467,7 @@ async fn a_plugin_line_never_opens_a_line() {
 async fn a_tool_line_still_cannot_open_a_line() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -13420,7 +13495,7 @@ async fn the_cap_does_not_count_the_default_branch_or_its_ancestors() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "b").await;
@@ -13456,7 +13531,7 @@ async fn a_switch_over_the_cap_closes_nothing() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -13487,7 +13562,7 @@ async fn a_switch_that_frees_a_slot_admits_the_next_open() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -13516,7 +13591,7 @@ async fn the_cap_is_refused_under_the_tree_lock() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -13540,7 +13615,7 @@ async fn the_cap_is_refused_under_the_tree_lock() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -13618,7 +13693,7 @@ async fn an_open_after_a_move_waits_and_counts_the_moves_result() {
     let agent = MinimalHost::start(&builder_with_store_config(&probe, store.clone(), capped(1)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let cut = idle_cut(&session, "main").await;
@@ -13679,7 +13754,7 @@ async fn an_open_from_the_moving_line_is_refused_once_the_move_settles() {
     let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "b").await;
@@ -13739,7 +13814,7 @@ async fn a_paused_build_does_not_hold_the_tree_lock() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let cut = idle_cut(&session, "main").await;
@@ -13786,7 +13861,7 @@ async fn an_open_admitted_before_a_move_still_stands() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(1)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let a = open_line(&session, "a").await;
@@ -13815,7 +13890,7 @@ async fn an_opener_that_is_not_the_root_keeps_its_identity_and_its_roster() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "b").await;
@@ -13868,7 +13943,7 @@ async fn an_opener_that_is_not_the_root_keeps_its_identity_and_its_roster() {
 async fn a_user_opened_default_branch_coordinates_the_line_it_opens() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let cut = session.sequence("main").unwrap();
@@ -13931,7 +14006,7 @@ async fn a_status_note_and_a_live_roster_do_not_retire_each_other() {
     let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let b = open_line(&session, "b").await;
@@ -14010,7 +14085,7 @@ async fn measure_e3_cold_restore_with_two_openers() {
     for _ in 0..5 {
         let probe = Arc::new(Probe::default());
         let agent = setup(&probe).await;
-        let session = soon(agent.create_session(SessionConfig::default()))
+        let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
             .await
             .unwrap();
         let opener = tool_line(&session, "main", "the default branch").await;
@@ -14024,7 +14099,9 @@ async fn measure_e3_cold_restore_with_two_openers() {
         let id = session.id();
         soon(session.close()).await.unwrap();
         let started = std::time::Instant::now();
-        let restored = soon(agent.restore_session(id.into())).await.unwrap();
+        let restored = soon(agent.restore_session(id.into(), Default::default()))
+            .await
+            .unwrap();
         soon(restored.idle("main")).await.unwrap();
         elapsed.push(started.elapsed());
         soon(agent.close()).await.unwrap();

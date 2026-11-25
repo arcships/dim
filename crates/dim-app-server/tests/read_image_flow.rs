@@ -261,16 +261,19 @@ async fn accumulated_user_and_read_images_follow_model_routing() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            cwd: work.to_str().unwrap().into(),
-            tools: Some(vec!["read".into()]),
-            model: vision,
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                cwd: work.to_str().unwrap().into(),
+                tools: Some(vec!["read".into()]),
+                model: vision,
+                permission_policy: PermissionPolicy {
+                    preset: PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
 
@@ -527,15 +530,18 @@ async fn an_offloaded_read_result_registers_its_output_path() {
     .unwrap();
 
     let session = agent
-        .create_session(SessionConfig {
-            cwd: work.to_string_lossy().into_owned(),
-            tools: Some(vec!["read".into()]),
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                cwd: work.to_string_lossy().into_owned(),
+                tools: Some(vec!["read".into()]),
+                permission_policy: PermissionPolicy {
+                    preset: PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     session

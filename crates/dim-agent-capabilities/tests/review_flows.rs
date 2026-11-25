@@ -127,14 +127,17 @@ async fn one_tool_panic_does_not_abandon_other_native_cleanup_or_reorder_actual_
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec!["panic".into(), "slow".into()]),
-        permission_policy: PermissionPolicy {
-            preset: PermissionPreset::FullAccess,
-            ..Default::default()
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec!["panic".into(), "slow".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                ..Default::default()
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     session
@@ -238,7 +241,7 @@ async fn a_branch_failing_after_its_root_is_built_rolls_it_back_before_releasing
                 }),
         );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     assert_eq!(live.load(Ordering::SeqCst), 1);
@@ -394,14 +397,17 @@ async fn a_read_of_a_batch_does_not_start_before_the_exclusive_call_before_it_re
     let agent = MinimalHost::start(&builder(Arc::new(BatchModel(&["x0", "c1"])), tools.clone()))
         .await
         .unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec!["x0".into(), "c1".into()]),
-        permission_policy: PermissionPolicy {
-            preset: PermissionPreset::FullAccess,
-            ..Default::default()
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec!["x0".into(), "c1".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                ..Default::default()
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     session
@@ -434,14 +440,17 @@ async fn a_read_starts_after_the_step_before_it_and_before_the_step_after() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec!["c0".into(), "x1".into(), "c2".into()]),
-        permission_policy: PermissionPolicy {
-            preset: PermissionPreset::FullAccess,
-            ..Default::default()
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec!["c0".into(), "x1".into(), "c2".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                ..Default::default()
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     session
@@ -468,15 +477,18 @@ async fn both_calls_of_one_batch_ask_before_either_is_answered() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec!["ask0".into(), "ask1".into()]),
-        // Under workspace-write, an unclassified risk asks.
-        permission_policy: PermissionPolicy {
-            preset: PermissionPreset::WorkspaceWrite,
-            ..Default::default()
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec!["ask0".into(), "ask1".into()]),
+            // Under workspace-write, an unclassified risk asks.
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::WorkspaceWrite,
+                ..Default::default()
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     session
@@ -521,14 +533,17 @@ async fn an_approved_concurrent_call_runs_while_its_sibling_still_waits() {
     ))
     .await
     .unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec!["ask0".into(), "ask1".into()]),
-        permission_policy: PermissionPolicy {
-            preset: PermissionPreset::WorkspaceWrite,
-            ..Default::default()
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec!["ask0".into(), "ask1".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::WorkspaceWrite,
+                ..Default::default()
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     session
@@ -672,17 +687,20 @@ async fn a_denied_step_settles_first_without_starting_the_steps_after_it() {
         tools.clone(),
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig {
-        tools: Some(vec!["x0".into(), "x1".into(), "x2".into(), "x3".into()]),
-        permission_policy: PermissionPolicy {
-            // `x2` is unclassified, so it asks; the test denies it at
-            // admission, which settles its own step while `x0` runs.
-            preset: PermissionPreset::WorkspaceWrite,
-            allowed_tools: vec!["x0".into(), "x1".into(), "x3".into()],
-            ..Default::default()
+    let session = soon(agent.create_session(
+        SessionConfig {
+            tools: Some(vec!["x0".into(), "x1".into(), "x2".into(), "x3".into()]),
+            permission_policy: PermissionPolicy {
+                // `x2` is unclassified, so it asks; the test denies it at
+                // admission, which settles its own step while `x0` runs.
+                preset: PermissionPreset::WorkspaceWrite,
+                allowed_tools: vec!["x0".into(), "x1".into(), "x3".into()],
+                ..Default::default()
+            },
+            ..SessionConfig::default()
         },
-        ..SessionConfig::default()
-    }))
+        Default::default(),
+    ))
     .await
     .unwrap();
     session

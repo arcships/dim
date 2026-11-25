@@ -3725,15 +3725,18 @@ mod toolhost {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig {
-                cwd: workspace.to_string_lossy().into_owned(),
-                tools: Some(vec!["write".into()]),
-                permission_policy: PermissionPolicy {
-                    preset: PermissionPreset::FullAccess,
+            .create_session(
+                SessionConfig {
+                    cwd: workspace.to_string_lossy().into_owned(),
+                    tools: Some(vec!["write".into()]),
+                    permission_policy: PermissionPolicy {
+                        preset: PermissionPreset::FullAccess,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            })
+                Default::default(),
+            )
             .await
             .unwrap();
         session

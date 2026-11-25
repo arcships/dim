@@ -324,7 +324,9 @@ async fn grow(
 ) -> std::result::Result<Vec<(u64, String)>, Error> {
     let mut sessions = vec![];
     for &target in sizes {
-        let session = agent.create_session(SessionConfig::default()).await?;
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await?;
         session.idle("main").await?;
         let start = Instant::now();
         let mut turns = 0;
@@ -678,7 +680,9 @@ async fn main() -> std::result::Result<(), Error> {
             allocation::reset_peak();
             probe.recording.store(true, Ordering::Relaxed);
             let start = Instant::now();
-            let session = agent.restore_session(id.clone()).await?;
+            let session = agent
+                .restore_session(id.clone(), Default::default())
+                .await?;
             let called = Instant::now();
             session.idle("main").await?;
             let end = Instant::now();
@@ -737,7 +741,9 @@ async fn main() -> std::result::Result<(), Error> {
             tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
         }
         let start = Instant::now();
-        let session = agent.create_session(SessionConfig::default()).await?;
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await?;
         session.idle("main").await?;
         create.push(ms(start, Instant::now()));
         if std::env::var_os("RESTORE_COST_SPANS").is_some() {

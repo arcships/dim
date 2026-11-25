@@ -309,11 +309,14 @@ impl Fixture {
     }
     async fn session(&self, interactive: bool) -> Session {
         self.agent
-            .create_session(SessionConfig {
-                tools: Some(vec!["ask_user".into(), "wait".into()]),
-                interactive,
-                ..SessionConfig::default()
-            })
+            .create_session(
+                SessionConfig {
+                    tools: Some(vec!["ask_user".into(), "wait".into()]),
+                    interactive,
+                    ..SessionConfig::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap()
     }
@@ -981,7 +984,7 @@ async fn interrupt_reload_and_close_settle_a_waiting_call() {
         .unwrap();
     let restored = fixture
         .agent
-        .restore_session(session.id().to_owned())
+        .restore_session(session.id().to_owned(), Default::default())
         .await
         .unwrap();
     let events = turn(&restored, "main").await;

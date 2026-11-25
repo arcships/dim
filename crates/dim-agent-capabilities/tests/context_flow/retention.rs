@@ -25,7 +25,7 @@ async fn compact_after_small_turns(
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -84,7 +84,7 @@ async fn a_cut_on_the_retention_window_boundary_stays_a_legal_cut() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -212,7 +212,7 @@ async fn a_tail_that_cannot_fit_the_bound_is_replaced_entirely() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -388,7 +388,7 @@ async fn recovery_compares_the_provider_baseline_estimate_with_the_input_budget(
             profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
             let agent = MinimalHost::start(&profile).await.unwrap();
             let session = agent
-                .restore_session("provider-recovery".into())
+                .restore_session("provider-recovery".into(), Default::default())
                 .await
                 .unwrap();
             for text in ["x".repeat(1_500), "second".into()] {
@@ -487,7 +487,7 @@ async fn automatic_compaction_waits_for_a_quarter_of_the_budget_of_new_history()
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let starts = |events: &[Arc<AgentEvent>]| {
@@ -558,7 +558,7 @@ async fn compact_marked(
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -641,7 +641,7 @@ async fn a_summary_that_overshoots_the_budget_fails_the_recovery_request() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -728,7 +728,7 @@ async fn a_child_branch_regrows_from_its_own_history() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     for text in ["p".repeat(1_500), "q".repeat(1_500)] {
@@ -860,7 +860,7 @@ async fn a_budget_retry_reuses_a_cut_before_the_latest_turn_start() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session

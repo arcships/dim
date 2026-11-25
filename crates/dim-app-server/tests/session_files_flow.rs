@@ -403,15 +403,18 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
 
     for preset in [PermissionPreset::WorkspaceWrite, PermissionPreset::ReadOnly] {
         let session = agent
-            .create_session(SessionConfig {
-                cwd: work.to_string_lossy().into_owned(),
-                tools: Some(vec!["read".into()]),
-                permission_policy: PermissionPolicy {
-                    preset,
+            .create_session(
+                SessionConfig {
+                    cwd: work.to_string_lossy().into_owned(),
+                    tools: Some(vec!["read".into()]),
+                    permission_policy: PermissionPolicy {
+                        preset,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            })
+                Default::default(),
+            )
             .await
             .unwrap();
         let stored = store

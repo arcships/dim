@@ -77,7 +77,11 @@ async fn agent_close_joins_cancelled_construction_and_retains_async_rollback_fai
     let host = MinimalHost::start(&builder).await.unwrap();
     let agent = host.agent().clone();
     let owner = agent.clone();
-    let create = tokio::spawn(async move { owner.create_session(SessionConfig::default()).await });
+    let create = tokio::spawn(async move {
+        owner
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+    });
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
         .await
         .unwrap();
@@ -138,8 +142,11 @@ fn agent_close_freezes_build_ownership_before_the_close_task_can_be_polled() {
         .unwrap();
     let agent = host.agent().clone();
     let creator = agent.clone();
-    let create = construction_runtime
-        .spawn(async move { creator.create_session(SessionConfig::default()).await });
+    let create = construction_runtime.spawn(async move {
+        creator
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+    });
     construction_runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(2), entered.notified())
             .await

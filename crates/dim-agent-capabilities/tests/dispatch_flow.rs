@@ -90,7 +90,7 @@ async fn handler_panic_is_attributed_and_freezes_the_dispatch_cursor() {
         },
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     let input = soon(session.submit("hello".into(), InputMode::Queue, "main"))
@@ -170,7 +170,7 @@ async fn domain_wildcard_subscribes_to_every_key_in_that_domain() {
         }),
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("hello".into(), InputMode::Queue, "main"))
@@ -231,7 +231,7 @@ async fn loop_publishes_running_only_once_turn_start_is_dispatched() {
         },
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = soon(agent.create_session(SessionConfig::default()))
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     soon(session.submit("hello".into(), InputMode::Queue, "main"))

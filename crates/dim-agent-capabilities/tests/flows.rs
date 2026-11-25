@@ -18,7 +18,10 @@ async fn agent() -> MinimalHost {
 async fn echo_tools_and_observable_state_follow_the_public_flow() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let agent = agent().await;
-        let session = agent.create_session(SessionConfig::default()).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         session.submit("hello".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
@@ -55,7 +58,7 @@ async fn stop_ends_the_turn_and_a_waiting_queue_input_runs_next() {
         let agent = agent().await;
         let root = agent.root().clone();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let mut events = Events::follow(&root, &session, "main", 0).await;
@@ -114,7 +117,7 @@ async fn branch_tool_reuses_capabilities_without_replaying_ancestor_inputs() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let agent = agent().await;
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -184,7 +187,7 @@ async fn closed_default_memory_sessions_release_history_but_shared_stores_retain
         }
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -195,7 +198,7 @@ async fn closed_default_memory_sessions_release_history_but_shared_stores_retain
         let id = session.id().to_owned();
         session.close().await.unwrap();
         drop(session);
-        let restored = agent.restore_session(id).await;
+        let restored = agent.restore_session(id, Default::default()).await;
         if shared {
             let session = restored.unwrap();
             assert!(chain_events(&session, "main", ..).await.unwrap().iter().any(|event|
@@ -217,7 +220,7 @@ async fn the_prompt_projection_covers_the_facts_a_restored_branch_published() {
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let model = |model_id: &str| ConfigureUpdate {
@@ -247,7 +250,7 @@ async fn the_prompt_projection_covers_the_facts_a_restored_branch_published() {
     );
     let id = session.id().to_owned();
     session.close().await.unwrap();
-    let restored = agent.restore_session(id).await.unwrap();
+    let restored = agent.restore_session(id, Default::default()).await.unwrap();
     assert_eq!(
         projection(&restored),
         loaded,
@@ -278,7 +281,7 @@ async fn repeated_idle_release_checks_never_reject_a_running_turn() {
         let agent = MinimalHost::start(&builder).await.unwrap();
         let root = agent.root().clone();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let mut events = Events::follow(&root, &session, "main", 0).await;
@@ -356,7 +359,7 @@ async fn a_refused_idle_release_reopens_the_branch_for_the_running_turn() {
         let agent = MinimalHost::start(&builder).await.unwrap();
         let root = agent.root().clone();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let mut events = Events::follow(&root, &session, "main", 0).await;

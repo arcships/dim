@@ -139,7 +139,7 @@ async fn replanned_session_with(
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     (agent, session)

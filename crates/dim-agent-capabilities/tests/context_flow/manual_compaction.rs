@@ -337,7 +337,7 @@ async fn steers_wait_for_compaction_and_explicit_interrupts_still_cancel() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         turns(&session, &[first().as_str(), "second", "third"]).await;
@@ -583,7 +583,7 @@ async fn a_manual_compaction_with_no_turn_writes_only_its_facts() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
@@ -683,7 +683,7 @@ async fn a_checkpointed_step_renders_its_context_once() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
@@ -797,7 +797,7 @@ async fn a_manual_compaction_keeps_at_most_the_latest_turn() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         turns(&session, &[first().as_str(), latest.as_str()]).await;
@@ -847,7 +847,7 @@ async fn a_manual_compaction_inside_a_turn_runs_at_the_next_step_boundary() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second"]).await;
@@ -1079,7 +1079,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
@@ -1170,7 +1170,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
     let agent = MinimalHost::start(&builder).await.unwrap();
     let main_head = head("main").await;
     *store.fail_range.lock().unwrap() = Some(("main".into(), 1..=main_head, 1));
-    let failed = agent.restore_session(id.clone()).await;
+    let failed = agent.restore_session(id.clone(), Default::default()).await;
     assert!(
         matches!(&failed, Err(error) if error.to_string().contains("injected history read failure")),
         "{:?}",
@@ -1184,10 +1184,13 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
     // the part's own read of this range is the second one.
     *store.hold_range.lock().unwrap() = Some(("main".into(), 1..=main_head, 2));
     armed.store(true, Ordering::SeqCst);
-    let session = tokio::time::timeout(Duration::from_secs(5), agent.restore_session(id))
-        .await
-        .expect("a read of a part does not wait for the held read")
-        .unwrap();
+    let session = tokio::time::timeout(
+        Duration::from_secs(5),
+        agent.restore_session(id, Default::default()),
+    )
+    .await
+    .expect("a read of a part does not wait for the held read")
+    .unwrap();
     store.ranges.lock().unwrap().clear();
     let queries = std::mem::take(&mut *store.queries.lock().unwrap());
     // The opening part reads `main` from its start and the child from its own.
@@ -1296,7 +1299,7 @@ async fn an_interrupt_cancels_a_running_step_and_a_pending_command() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
@@ -1357,7 +1360,7 @@ async fn a_reload_during_a_step_settles_it_without_another_strategy_call() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
@@ -1416,7 +1419,7 @@ async fn a_failed_manual_compaction_lets_the_turn_continue_and_recovery_compacts
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let first = "f".repeat(1_000);
@@ -1541,7 +1544,7 @@ async fn repeated_and_concurrent_requests_join_the_outstanding_command() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
@@ -1611,7 +1614,7 @@ async fn a_second_command_consumed_while_one_is_outstanding_is_skipped() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;

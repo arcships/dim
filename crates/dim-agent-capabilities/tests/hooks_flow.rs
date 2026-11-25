@@ -718,13 +718,16 @@ impl Env {
 
     async fn session_with(&self, preset: PermissionPreset) -> Session {
         self.agent
-            .create_session(SessionConfig {
-                permission_policy: PermissionPolicy {
-                    preset,
-                    ..Default::default()
+            .create_session(
+                SessionConfig {
+                    permission_policy: PermissionPolicy {
+                        preset,
+                        ..Default::default()
+                    },
+                    ..self.session_config()
                 },
-                ..self.session_config()
-            })
+                Default::default(),
+            )
             .await
             .unwrap()
     }
@@ -2138,16 +2141,19 @@ async fn member_session_payloads_carry_collaboration_role() {
     })));
     let member = env
         .agent
-        .create_session(SessionConfig {
-            cwd: env.dir.join("work").to_string_lossy().into_owned(),
-            tools: Some(env.mounted.clone()),
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                cwd: env.dir.join("work").to_string_lossy().into_owned(),
+                tools: Some(env.mounted.clone()),
+                permission_policy: PermissionPolicy {
+                    preset: PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
+                collaboration_role: CollaborationRole::Member,
                 ..Default::default()
             },
-            collaboration_role: CollaborationRole::Member,
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     let leader = env.session().await;
@@ -2441,7 +2447,11 @@ async fn a_second_session_start_does_not_run_the_hooks_again() {
     wait_blocks(&session, "session-start", 1).await;
     let id = session.id().to_owned();
     session.close().await.unwrap();
-    let restored = env.agent.restore_session(id).await.unwrap();
+    let restored = env
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(std::fs::read_to_string(&runs).unwrap(), "start\n");
     assert_eq!(hook_blocks(&restored, "session-start").await.len(), 1);
@@ -4106,7 +4116,11 @@ async fn matchers_keep_selecting_tools_with_an_adopted_tool_part() {
     assert_eq!(last_result(&session).await.is_error, None);
     let id = session.id().to_owned();
     session.close().await.unwrap();
-    let restored = env.agent.restore_session(id).await.unwrap();
+    let restored = env
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     std::fs::remove_file(&bash).unwrap();
     std::fs::remove_file(&mcp).unwrap();
     turn(&restored, "tool:exec {\"command\":\"true\"}").await;
@@ -4581,7 +4595,11 @@ async fn a_queued_follow_up_keeps_its_round_after_session_restore() {
         "Stop": [command(serde_json::json!({"type":"command", "command":format!("{{ cat; echo; }} >> {}; echo again >&2; exit 2",payloads.display())}))]
     })));
     stored_session(&env, "follow-up", vec![queued_follow_up(Some(2))]).await;
-    let session = env.agent.restore_session("follow-up".into()).await.unwrap();
+    let session = env
+        .agent
+        .restore_session("follow-up".into(), Default::default())
+        .await
+        .unwrap();
     wait_blocks(&session, "follow-up", 2).await;
     wait_event(&session, |kind| match kind {
         EventKind::InputMessage(data)
@@ -4639,7 +4657,7 @@ async fn a_legacy_queued_follow_up_finishes_without_starting_another_hook() {
     stored_session(&env, "legacy-follow-up", vec![queued_follow_up(None)]).await;
     let session = env
         .agent
-        .restore_session("legacy-follow-up".into())
+        .restore_session("legacy-follow-up".into(), Default::default())
         .await
         .unwrap();
     wait_event(&session, |kind| {
@@ -4702,7 +4720,7 @@ async fn recovery_settlements_start_no_hook_but_new_tool_failures_do() {
     stored_session(&env, "unfinished-tool", prefix).await;
     let session = env
         .agent
-        .restore_session("unfinished-tool".into())
+        .restore_session("unfinished-tool".into(), Default::default())
         .await
         .unwrap();
     wait_event(&session, |kind| matches!(kind, EventKind::ToolResult(data) if data.call_event_id.as_deref() == Some(batch.id.as_str())).then_some(())).await;

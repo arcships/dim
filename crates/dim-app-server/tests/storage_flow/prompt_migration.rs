@@ -24,7 +24,7 @@ async fn legacy_session(database: &Path) -> String {
     let store = SqliteTimelineStore::new(db.clone());
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -86,7 +86,11 @@ async fn resume(
     let db = SqliteStorage::open(database.to_owned()).unwrap();
     let store = SqliteTimelineStore::new(db.clone());
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
-    let result = settled("the branch settles", agent.restore_session(id.to_owned())).await;
+    let result = settled(
+        "the branch settles",
+        agent.restore_session(id.to_owned(), Default::default()),
+    )
+    .await;
     let snapshot = match result {
         Ok(session) => session
             .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
@@ -113,7 +117,7 @@ async fn a_legacy_branch_answers_its_migration_instruction_on_the_wire() {
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
     let failure = settled(
         "the guard refuses a branch with no saved references",
-        agent.restore_session(id),
+        agent.restore_session(id, Default::default()),
     )
     .await
     .err()

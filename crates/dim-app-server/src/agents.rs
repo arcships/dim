@@ -7,10 +7,10 @@ use crate::{
 };
 use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
-    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, InUse, Modules, Names,
-    NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QueryRow, QuerySelect,
-    QuerySpec, QueryValue, Session, SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope,
-    TimelineReadScope, TimelineReadSegment,
+    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, CreateSessionOptions, InUse,
+    Modules, Names, NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
+    QueryRow, QuerySelect, QuerySpec, QueryValue, RestoreSessionOptions, Session, SessionConfig,
+    TimelineKey, TimelineQuery, TimelineQueryScope, TimelineReadScope, TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
 use dim_agent_types::{ROOT_BRANCH_ID, TimelinePosition};
@@ -1015,7 +1015,10 @@ impl AgentIndex {
                 tokio::spawn(async move {
                     let session = host
                         .agent
-                        .restore_session_for_version(id.clone(), version)
+                        .restore_session(
+                            id.clone(),
+                            RestoreSessionOptions::default().protocol_version(version),
+                        )
                         .await?;
                     if slot.closing.load(Ordering::Acquire) {
                         // The close stopped this Session's restoration while
@@ -1591,13 +1594,17 @@ impl AgentIndex {
             .await
         {
             Some((id, prepare)) => {
-                let creation = host
-                    .agent
-                    .create_prepared_session(id.clone(), config, prepare);
+                let creation = host.agent.create_session(
+                    config,
+                    CreateSessionOptions::default().prepare(id.clone(), prepare),
+                );
                 self.admit(&id, &host.agent_id, version, creation).await
             }
             None => {
-                let session = host.agent.create_session(config).await?;
+                let session = host
+                    .agent
+                    .create_session(config, Default::default())
+                    .await?;
                 self.insert_version(session.id(), &host.agent_id, version);
                 Ok(session)
             }
@@ -2031,10 +2038,10 @@ impl AgentIndex {
         let (id, prepare) = self.prepared(config.cwd.clone(), move |fork| {
             Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
         });
-        let creation = usage
-            .host
-            .agent
-            .create_prepared_session(id.clone(), config, prepare);
+        let creation = usage.host.agent.create_session(
+            config,
+            CreateSessionOptions::default().prepare(id.clone(), prepare),
+        );
         let fork = self
             .admit(&id, &usage.host.agent_id, version, creation)
             .await?;

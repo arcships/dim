@@ -29,7 +29,7 @@ v17 之后，恢复一个 Session 仍要把每个分支的历史解码十来次�
 恢复从 `Agent::restore_session` 开始，到 Session 发布结束。调用方之后做的事在恢复之外，也不改变：`restore_cost` 等待的首次 `idle` 没有存储调用，Agents 的 `acquire` 则在已发布的 Session 上通知它的 `SessionRestored` 监听者（Collaboration）。中间的步骤：
 
 ```text
-Agent::restore_session(id)
+Agent::restore_session(id, options)
   store.session_config(id)
   Agent::create(Restore)，在其构建任务中
     store.branches(id)                     存储校验每个分支和每一行               ........ 读取 A

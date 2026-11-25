@@ -275,7 +275,7 @@ async fn restore_cancels_only_unsettled_approvals_across_pages_without_running_t
     defaults::tool_host(&mut builder, tools.clone());
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .restore_session("approval-recovery".into())
+        .restore_session("approval-recovery".into(), Default::default())
         .await
         .unwrap();
     let events = chain_events(&session, "main", ..).await.unwrap();
@@ -536,7 +536,10 @@ async fn a_composition_without_facts_builds_and_asks() {
     let work = temporary_directory("no-grants");
     let agent = agent(Arc::new(RiskTools::default())).await;
     let session = agent
-        .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let permission = session.service::<Permission>("main").unwrap();
@@ -596,7 +599,7 @@ async fn file_write_facts_decide_each_path_by_preset() {
             ),
         ] {
             let session = agent
-                .create_session(config_in(&work, preset(policy)))
+                .create_session(config_in(&work, preset(policy)), Default::default())
                 .await
                 .unwrap();
             let permission = session.service::<Permission>("main").unwrap();
@@ -617,7 +620,10 @@ async fn file_write_facts_decide_each_path_by_preset() {
         // A relative target is resolved against the Session cwd with the
         // tools' resolver before the facts.
         let session = agent
-            .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -636,14 +642,17 @@ async fn file_write_facts_decide_each_path_by_preset() {
 
         // An explicit tool allow does not bypass a path fact.
         let session = agent
-            .create_session(config_in(
-                &work,
-                PermissionPolicy {
-                    preset: PermissionPreset::WorkspaceWrite,
-                    allowed_tools: vec!["write".into()],
-                    ..Default::default()
-                },
-            ))
+            .create_session(
+                config_in(
+                    &work,
+                    PermissionPolicy {
+                        preset: PermissionPreset::WorkspaceWrite,
+                        allowed_tools: vec!["write".into()],
+                        ..Default::default()
+                    },
+                ),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -655,7 +664,10 @@ async fn file_write_facts_decide_each_path_by_preset() {
         // An unreadable ownership or grants source denies instead of asking.
         files.fail(true);
         let session = agent
-            .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -717,7 +729,7 @@ async fn file_read_facts_decide_each_path_by_preset() {
             (PermissionPreset::FullAccess, ["allow"; 6]),
         ] {
             let session = agent
-                .create_session(config_in(&work, preset(policy)))
+                .create_session(config_in(&work, preset(policy)), Default::default())
                 .await
                 .unwrap();
             let permission = session.service::<Permission>("main").unwrap();
@@ -765,7 +777,10 @@ async fn file_read_facts_decide_each_path_by_preset() {
         // resolver before the facts. `grep` and `glob` without a path search
         // the cwd, which is the workspace.
         let session = agent
-            .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -803,7 +818,10 @@ async fn file_read_facts_decide_each_path_by_preset() {
         std::os::unix::fs::symlink(&root, &escape).unwrap();
         std::os::unix::fs::symlink(&work, into_workspace.join("work")).unwrap();
         let session = agent
-            .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -819,14 +837,17 @@ async fn file_read_facts_decide_each_path_by_preset() {
 
         // An explicit tool allow does not bypass a path fact.
         let session = agent
-            .create_session(config_in(
-                &work,
-                PermissionPolicy {
-                    preset: PermissionPreset::ReadOnly,
-                    allowed_tools: vec!["read".into()],
-                    ..Default::default()
-                },
-            ))
+            .create_session(
+                config_in(
+                    &work,
+                    PermissionPolicy {
+                        preset: PermissionPreset::ReadOnly,
+                        allowed_tools: vec!["read".into()],
+                        ..Default::default()
+                    },
+                ),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -837,7 +858,10 @@ async fn file_read_facts_decide_each_path_by_preset() {
         // An unreadable ownership or grants source denies instead of asking.
         files.fail(true);
         let session = agent
-            .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -848,7 +872,10 @@ async fn file_read_facts_decide_each_path_by_preset() {
         grants.set(None);
         files.fail(false);
         let session = agent
-            .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -875,7 +902,10 @@ async fn a_session_grant_matches_only_the_canonical_target_and_mode() {
         let tools = Arc::new(RiskTools::default());
         let agent = granted_agent(tools.clone(), grants.clone(), files).await;
         let session = agent
-            .create_session(config_in(&work, preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config_in(&work, preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -992,7 +1022,10 @@ async fn presets_decide_by_risk_and_denied_calls_do_not_run() {
             (PermissionPreset::FullAccess, ["allow"; 6]),
         ];
         for (policy, verdicts) in expected {
-            let session = agent.create_session(config(preset(policy))).await.unwrap();
+            let session = agent
+                .create_session(config(preset(policy)), Default::default())
+                .await
+                .unwrap();
             let permission = session.service::<Permission>("main").unwrap();
             for ((name, risk), expected) in TOOLS.iter().zip(verdicts) {
                 assert_eq!(
@@ -1004,7 +1037,7 @@ async fn presets_decide_by_risk_and_denied_calls_do_not_run() {
             session.close().await.unwrap();
         }
         let session = agent
-            .create_session(config(PermissionPolicy::default()))
+            .create_session(config(PermissionPolicy::default()), Default::default())
             .await
             .unwrap();
         assert!(call(&session, "write").await);
@@ -1068,7 +1101,10 @@ async fn tool_lists_override_presets_and_disallowed_wins() {
             .unwrap()
             .clone();
         let risk = TOOLS.iter().find(|(tool, _)| *tool == name).unwrap().1;
-        let session = agent.create_session(config(policy)).await.unwrap();
+        let session = agent
+            .create_session(config(policy), Default::default())
+            .await
+            .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
         assert_eq!(verdict(&permission, &name, risk).await, expected);
         session.close().await.unwrap();
@@ -1082,7 +1118,7 @@ async fn updates_are_versioned_per_branch_take_effect_when_dispatched_and_surviv
         let tools = Arc::new(RiskTools::default());
         let agent = agent(tools.clone()).await;
         let session = agent
-            .create_session(config(serde_json::from_value(serde_json::json!({"preset":"full-access","fileAccess":"read-only","toolApproval":"ask","allowedTools":[],"disallowedTools":[]})).unwrap()))
+            .create_session(config(serde_json::from_value(serde_json::json!({"preset":"full-access","fileAccess":"read-only","toolApproval":"ask","allowedTools":[],"disallowedTools":[]})).unwrap()), Default::default())
             .await
             .unwrap();
         let permission = session.service::<Permission>("main").unwrap();
@@ -1175,7 +1211,7 @@ async fn updates_are_versioned_per_branch_take_effect_when_dispatched_and_surviv
         let id = session.id().to_owned();
         session.close().await.unwrap();
         drop(session);
-        let restored = agent.restore_session(id).await.unwrap();
+        let restored = agent.restore_session(id, Default::default()).await.unwrap();
         assert_eq!(
             restored.get::<PermissionState>("main").unwrap().unwrap(),
             current
@@ -1194,7 +1230,10 @@ async fn full_access_releases_all_waiting_calls_without_user_responses() {
         let rules = TestRules::new(vec![]);
         let agent = ruled_agent(tools.clone(), rules.clone()).await;
         let session = agent
-            .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config(preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         let child = session
@@ -1313,7 +1352,10 @@ async fn a_policy_denial_settles_a_waiting_call_without_a_user_response() {
         let tools = Arc::new(RiskTools::default());
         let agent = agent(tools.clone()).await;
         let session = agent
-            .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config(preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         session
@@ -1437,7 +1479,10 @@ async fn a_response_that_finds_its_batch_stopped_ends_as_an_interrupt() {
         );
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config(preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         session
@@ -1492,7 +1537,10 @@ async fn allow_rules_answer_approval_only_for_simple_commands_within_the_preset(
         let rules = TestRules::new(vec![rule("cargo test", Prefix, Allow)]);
         let agent = ruled_agent(tools.clone(), rules).await;
         let session = agent
-            .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config(preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         assert_eq!(text(&exec(&session, "cargo test -p x").await), "exec ran");
@@ -1508,7 +1556,10 @@ async fn allow_rules_answer_approval_only_for_simple_commands_within_the_preset(
         session.close().await.unwrap();
 
         let session = agent
-            .create_session(config(preset(PermissionPreset::ReadOnly)))
+            .create_session(
+                config(preset(PermissionPreset::ReadOnly)),
+                Default::default(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1519,10 +1570,13 @@ async fn allow_rules_answer_approval_only_for_simple_commands_within_the_preset(
         session.close().await.unwrap();
         {
             let session = agent
-                .create_session(config(PermissionPolicy {
-                    preset: PermissionPreset::WorkspaceWrite,
-                    ..Default::default()
-                }))
+                .create_session(
+                    config(PermissionPolicy {
+                        preset: PermissionPreset::WorkspaceWrite,
+                        ..Default::default()
+                    }),
+                    Default::default(),
+                )
                 .await
                 .unwrap();
             assert_eq!(text(&exec(&session, "cargo test -p x").await), "exec ran");
@@ -1553,7 +1607,10 @@ async fn deny_rules_match_any_segment_under_every_preset_and_are_read_at_use_tim
         let rules = TestRules::new(vec![]);
         let agent = ruled_agent(tools.clone(), rules.clone()).await;
         let session = agent
-            .create_session(config(preset(PermissionPreset::FullAccess)))
+            .create_session(
+                config(preset(PermissionPreset::FullAccess)),
+                Default::default(),
+            )
             .await
             .unwrap();
         assert_eq!(text(&exec(&session, "git push origin").await), "exec ran");
@@ -1574,11 +1631,14 @@ async fn deny_rules_match_any_segment_under_every_preset_and_are_read_at_use_tim
         session.close().await.unwrap();
         {
             let session = agent
-                .create_session(config(PermissionPolicy {
-                    preset: PermissionPreset::FullAccess,
-                    allowed_tools: vec!["exec".into()],
-                    ..Default::default()
-                }))
+                .create_session(
+                    config(PermissionPolicy {
+                        preset: PermissionPreset::FullAccess,
+                        allowed_tools: vec!["exec".into()],
+                        ..Default::default()
+                    }),
+                    Default::default(),
+                )
                 .await
                 .unwrap();
             assert_eq!(
@@ -1602,7 +1662,10 @@ async fn a_deny_rule_written_while_approval_is_pending_cancels_the_allowed_call(
         let rules = TestRules::new(vec![]);
         let agent = ruled_agent(tools.clone(), rules.clone()).await;
         let session = agent
-            .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+            .create_session(
+                config(preset(PermissionPreset::WorkspaceWrite)),
+                Default::default(),
+            )
             .await
             .unwrap();
         submit_exec(&session, "git push").await;
@@ -1647,7 +1710,10 @@ async fn unreadable_rules_deny_command_calls_only() {
         rules.set(None);
         let agent = ruled_agent(tools.clone(), rules).await;
         let session = agent
-            .create_session(config(preset(PermissionPreset::FullAccess)))
+            .create_session(
+                config(preset(PermissionPreset::FullAccess)),
+                Default::default(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1690,7 +1756,10 @@ async fn a_policy_tightened_during_the_rules_read_decides_the_call() {
         let agent = ruled_agent(tools.clone(), rules.clone()).await;
 
         let session = agent
-            .create_session(config(preset(PermissionPreset::FullAccess)))
+            .create_session(
+                config(preset(PermissionPreset::FullAccess)),
+                Default::default(),
+            )
             .await
             .unwrap();
         rules.hold.store(true, Ordering::SeqCst);
@@ -1712,7 +1781,10 @@ async fn a_policy_tightened_during_the_rules_read_decides_the_call() {
         for manual in [true, false] {
             rules.hold.store(false, Ordering::SeqCst);
             let session = agent
-                .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+                .create_session(
+                    config(preset(PermissionPreset::WorkspaceWrite)),
+                    Default::default(),
+                )
                 .await
                 .unwrap();
             submit_exec(&session, "ls").await;
@@ -2049,7 +2121,10 @@ async fn advisors_are_asked_in_name_order_and_an_ask_refines_an_allow() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::FullAccess)))
+        .create_session(
+            config(preset(PermissionPreset::FullAccess)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2119,7 +2194,10 @@ async fn full_access_keeps_advisor_questions_without_repeating_advice() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2168,7 +2246,10 @@ async fn a_policy_change_during_advice_does_not_leave_a_stale_question() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2217,7 +2298,10 @@ async fn an_allow_advice_admits_a_call_the_preset_would_ask_about() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2258,7 +2342,10 @@ async fn a_deny_advice_wins_over_an_allow_and_an_ask() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::FullAccess)))
+        .create_session(
+            config(preset(PermissionPreset::FullAccess)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2289,7 +2376,10 @@ async fn a_second_registration_of_the_same_name_fails() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::FullAccess)))
+        .create_session(
+            config(preset(PermissionPreset::FullAccess)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let _ = session.service::<Permission>("main").unwrap();
@@ -2311,7 +2401,10 @@ async fn a_registration_is_withdrawn_when_its_part_unloads() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2378,7 +2471,10 @@ async fn advisors_are_not_asked_when_the_policy_denies() {
             "Tool `exec` is not allowed by the read-only preset (starting processes)",
         ),
     ] {
-        let session = agent.create_session(config(policy.clone())).await.unwrap();
+        let session = agent
+            .create_session(config(policy.clone()), Default::default())
+            .await
+            .unwrap();
         let approval = session.service::<Approval>("main").unwrap();
         let error = approval
             .admit(
@@ -2427,7 +2523,10 @@ async fn advisors_are_not_asked_when_a_command_rule_denies() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2464,7 +2563,10 @@ async fn advisors_are_not_asked_on_the_recheck_after_an_answer() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2509,7 +2611,10 @@ async fn an_advisor_error_counts_as_none() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2539,7 +2644,10 @@ async fn cancelling_the_batch_fails_the_admission_and_the_advisor_sees_it() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::FullAccess)))
+        .create_session(
+            config(preset(PermissionPreset::FullAccess)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2592,7 +2700,10 @@ async fn cancelling_the_batch_drops_an_advice_that_never_answers() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::FullAccess)))
+        .create_session(
+            config(preset(PermissionPreset::FullAccess)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();
@@ -2635,7 +2746,10 @@ async fn an_advisor_withdrawn_while_its_advice_is_pending_counts_as_none() {
     )
     .await;
     let session = agent
-        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .create_session(
+            config(preset(PermissionPreset::WorkspaceWrite)),
+            Default::default(),
+        )
         .await
         .unwrap();
     let approval = session.service::<Approval>("main").unwrap();

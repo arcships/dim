@@ -38,7 +38,7 @@ async fn snapshot_codecs_preserve_completed_compaction_even_when_saving_fails() 
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let original = "x".repeat(1_500);
@@ -310,7 +310,7 @@ async fn committed_summary_drives_current_and_following_model_requests() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let original = "x".repeat(1_500);
@@ -383,7 +383,7 @@ async fn committed_cursor_preserves_the_history_after_its_cutoff() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -472,7 +472,7 @@ async fn final_outcome_controls_normal_preparation_and_budget_recovery() {
             );
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
             let original = "x".repeat(500);
@@ -555,7 +555,7 @@ async fn a_damaged_compaction_fails_replay_without_silently_regenerating_history
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session

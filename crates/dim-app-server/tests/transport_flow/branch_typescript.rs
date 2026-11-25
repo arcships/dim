@@ -577,7 +577,7 @@ async fn node_branch_opening_completion_can_refuse_session_creation() {
     )
     .await;
     let error = agent
-        .create_session(Default::default())
+        .create_session(Default::default(), Default::default())
         .await
         .err()
         .expect("opening must fail");
@@ -612,7 +612,10 @@ async fn node_session_fault_is_observed_and_closes_the_native_session() {
         },
     )
     .await;
-    let error = match agent.create_session(Default::default()).await {
+    let error = match agent
+        .create_session(Default::default(), Default::default())
+        .await
+    {
         Ok(session) => session.close().await.unwrap_err(),
         Err(error) => error,
     };

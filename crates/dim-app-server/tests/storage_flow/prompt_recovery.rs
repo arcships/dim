@@ -20,7 +20,7 @@ async fn prompt_resume_reads_effective_elements_and_recovers_a_committed_adoptio
         let store = SqliteTimelineStore::new(db.clone());
         let agent = MinimalHost::start(&builder(&store)).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let id = session.id().to_owned();
@@ -113,7 +113,7 @@ async fn prompt_resume_reads_effective_elements_and_recovers_a_committed_adoptio
         store.record_query_statistics();
         let session = settled(
             "effective prompts restore without reading inactive elements",
-            agent.restore_session(id.clone()),
+            agent.restore_session(id.clone(), Default::default()),
         )
         .await
         .unwrap();
@@ -175,7 +175,7 @@ async fn prompt_resume_reads_effective_elements_and_recovers_a_committed_adoptio
         let agent = MinimalHost::start(&builder(&store)).await.unwrap();
         let session = settled(
             "the saved prefix consumes the unfinished adoption",
-            agent.restore_session(id.clone()),
+            agent.restore_session(id.clone(), Default::default()),
         )
         .await
         .unwrap();
@@ -201,7 +201,7 @@ async fn prompt_resume_reads_effective_elements_and_recovers_a_committed_adoptio
         let agent = MinimalHost::start(&builder(&store)).await.unwrap();
         let failure = settled(
             "unknown prompt schema fails without replay",
-            agent.restore_session(id),
+            agent.restore_session(id, Default::default()),
         )
         .await
         .err()

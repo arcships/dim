@@ -150,10 +150,13 @@ async fn model_adoption_preserves_enabled_tools_on_initialization_and_refresh() 
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig {
-                tools: Some(vec!["echo".into()]),
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    tools: Some(vec!["echo".into()]),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap();
         if !initial {
@@ -228,10 +231,13 @@ async fn input_guide_survives_configuration_refresh_and_revocation_without_dupli
     let host = Arc::new(Prompts(Mutex::new(BTreeMap::new())));
     let agent = MinimalHost::start(&builder(host.clone())).await.unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            system_prompt: "legacy rules".into(),
-            ..Default::default()
-        })
+        .create_session(
+            SessionConfig {
+                system_prompt: "legacy rules".into(),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     for (version, expected) in [
@@ -455,7 +461,7 @@ async fn configuration_publication_preserves_trusted_before_changes_atomically()
         );
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
 
@@ -548,7 +554,7 @@ async fn prepared_model_call_keeps_its_configuration_while_later_turn_uses_refre
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let target = PromptSourceTarget {
@@ -733,7 +739,7 @@ async fn a_line_records_the_system_it_sends_across_a_parent_block() {
     let host = Arc::new(Prompts(Mutex::new(BTreeMap::new())));
     let agent = MinimalHost::start(&builder(host)).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -865,7 +871,7 @@ async fn configuration_is_atomic_failure_safe_and_inherited() {
         ]))));
         let agent = MinimalHost::start(&builder(host.clone())).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let frozen_sources = vec![(
@@ -1091,7 +1097,7 @@ async fn overlapping_load_is_superseded_and_close_joins_cancellation() {
         )]))));
         let agent = MinimalHost::start(&builder(host.clone())).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let target = PromptSourceTarget {
@@ -1239,7 +1245,7 @@ async fn initial_configuration_loads_before_start_and_failure_rolls_back() {
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let events = chain_events(&session, "main", ..).await.unwrap();
@@ -1271,7 +1277,7 @@ async fn initial_configuration_loads_before_start_and_failure_rolls_back() {
     let result = MinimalHost::start(&builder_with_initial(failing, initial))
         .await
         .unwrap()
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await;
     let error = match result {
         Ok(_) => panic!("initial load failure unexpectedly created a session"),
@@ -1498,7 +1504,7 @@ async fn a_restore_keeps_opening_while_dispatch_or_opening_receipts_advance() {
         let started = std::time::Instant::now();
         let session = tokio::time::timeout(
             Duration::from_secs(20),
-            agent.restore_session("slow-restore".into()),
+            agent.restore_session("slow-restore".into(), Default::default()),
         )
         .await
         .expect("progressing restore finishes")
@@ -1552,7 +1558,7 @@ async fn opening_failure_is_not_hidden_by_an_earlier_pending_receipt() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(1),
-        agent.create_session(SessionConfig::default()),
+        agent.create_session(SessionConfig::default(), Default::default()),
     )
     .await
     .expect("opening failure must be prompt");
@@ -1645,9 +1651,13 @@ async fn startup_opening_dispatch_is_free_and_close_or_deadline_joins_the_host()
                 let creating = agent.clone();
                 let mut creation = tokio::spawn(async move {
                     if restore {
-                        creating.restore_session("startup".into()).await
+                        creating
+                            .restore_session("startup".into(), Default::default())
+                            .await
                     } else {
-                        creating.create_session(SessionConfig::default()).await
+                        creating
+                            .create_session(SessionConfig::default(), Default::default())
+                            .await
                     }
                 });
                 tokio::time::timeout(Duration::from_secs(1), started.notified())
@@ -1763,7 +1773,7 @@ async fn child_opening_deadline_or_close_joins_before_recording_failure() {
         });
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let started = Arc::new(Notify::new());
@@ -1954,7 +1964,7 @@ async fn restoring_a_session_keeps_its_adopted_system_and_model() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .restore_session("restored-prompt".into())
+        .restore_session("restored-prompt".into(), Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -2142,7 +2152,7 @@ async fn restoring_a_never_started_session_starts_it() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .restore_session("empty-prompt-restore".into())
+        .restore_session("empty-prompt-restore".into(), Default::default())
         .await
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -2176,7 +2186,7 @@ async fn an_undelivered_initial_context_prompt_is_adopted_again_in_a_child() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -2294,7 +2304,7 @@ async fn a_delivered_initial_context_prompt_is_inherited_and_unchanged_in_a_chil
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     // One turn consumes the initial delivery block.
@@ -2359,7 +2369,7 @@ async fn same_body_new_version_reconfigures_but_identical_update_is_unchanged() 
     )]))));
     let agent = MinimalHost::start(&builder(host.clone())).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let target = PromptSourceTarget {
@@ -2416,7 +2426,7 @@ async fn duplicate_targets_are_rejected_before_loading() {
     let host = Arc::new(Prompts(Mutex::new(BTreeMap::new())));
     let agent = MinimalHost::start(&builder(host)).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let target = PromptSourceTarget {
@@ -2458,7 +2468,7 @@ async fn large_request_can_supersede_a_consumed_load_without_a_history_byte_budg
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let first = tokio::spawn({
@@ -2515,7 +2525,7 @@ async fn loader_panic_is_reported_to_the_agent_supervisor() {
     )]))));
     let agent = MinimalHost::start(&builder(host)).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let error = session
@@ -2609,7 +2619,7 @@ async fn before_retargeting_requires_matching_capabilities_without_remerging_par
         );
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -2675,7 +2685,7 @@ async fn frozen_configuration_rejects_mismatched_identity_and_nonbranch_system_e
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let before = session.sequence("main").unwrap();

@@ -899,7 +899,12 @@ async fn migration_keeps_large_images_as_files_without_rejecting_session_history
         )
         .await
         .unwrap();
-        let session = server.agent().unwrap().restore_session(id).await.unwrap();
+        let session = server
+            .agent()
+            .unwrap()
+            .restore_session(id, Default::default())
+            .await
+            .unwrap();
         let history = chain_events(&session, "main", ..).await.unwrap();
         let replacement = history
             .iter()
@@ -1113,7 +1118,7 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
         "listing must not restore imported Sessions"
     );
     let session = agent
-        .restore_session(id.clone())
+        .restore_session(id.clone(), Default::default())
         .await
         .expect("Native restore must accept imported data");
     assert_eq!(

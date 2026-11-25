@@ -277,11 +277,14 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await?;
     let session = agent
-        .create_session(SessionConfig {
-            system_prompt: "s".repeat(800_000),
-            tools: Some(vec![]),
-            ..SessionConfig::default()
-        })
+        .create_session(
+            SessionConfig {
+                system_prompt: "s".repeat(800_000),
+                tools: Some(vec![]),
+                ..SessionConfig::default()
+            },
+            Default::default(),
+        )
         .await?;
     session.idle("main").await?;
     let tree = captured.lock().unwrap().clone().unwrap();
@@ -835,7 +838,9 @@ async fn reads() -> std::result::Result<(), Error> {
                 }),
             );
         let agent = MinimalHost::start(&builder).await?;
-        let session = agent.restore_session(name.into()).await?;
+        let session = agent
+            .restore_session(name.into(), Default::default())
+            .await?;
         session.idle("main").await?;
         let active = captured.lock().unwrap().clone().unwrap().get("main")?;
         let mut dispatch = Vec::new();

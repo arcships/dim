@@ -443,7 +443,10 @@ impl Harness {
         }
     }
     async fn session(&self) -> Session {
-        self.agent.create_session(self.config()).await.unwrap()
+        self.agent
+            .create_session(self.config(), Default::default())
+            .await
+            .unwrap()
     }
     /// Runs one user turn whose model issues `calls`, then replies `done`.
     async fn run(&self, session: &Session, calls: &[(&str, Value)]) {
@@ -1882,7 +1885,11 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
     .pop()
     .unwrap();
 
-    let restored = harness.agent.restore_session(id).await.unwrap();
+    let restored = harness
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     let events = until(&restored, "recovery", |events| {
         ended(events).len() == 3 && notifications(events).len() == 3
     })
@@ -2213,7 +2220,11 @@ async fn an_end_after_the_branch_close_interrupt_does_not_wake() {
         ],
     )
     .await;
-    let restored = harness.agent.restore_session(id).await.unwrap();
+    let restored = harness
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     restored.idle("main").await.unwrap();
     assert!(notifications(&local_events(&restored).await).is_empty());
     restored.close().await.unwrap();
@@ -2236,7 +2247,11 @@ async fn a_new_generation_can_start_its_first_background_task_after_an_old_close
         })],
     )
     .await;
-    let restored = harness.agent.restore_session(id).await.unwrap();
+    let restored = harness
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     let pid_file = harness.cwd.join("new-generation.pid");
     harness
         .run(&restored, &[("exec", sleeper(&pid_file))])
@@ -3067,7 +3082,11 @@ async fn background_exec_face_answers_as_the_typed_service() {
 
     let id = session.id().to_owned();
     session.close().await.unwrap();
-    let restored = harness.agent.restore_session(id).await.unwrap();
+    let restored = harness
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     restored.idle("main").await.unwrap();
     let background = restored.service::<BackgroundExec>("main").unwrap();
     let ctx = harness.seen.ctx("main");
@@ -3182,7 +3201,11 @@ async fn a_batch_that_edits_then_reads_sees_the_edit() {
         "edit".into(),
         "exec".into(),
     ]);
-    let session = harness.agent.create_session(config).await.unwrap();
+    let session = harness
+        .agent
+        .create_session(config, Default::default())
+        .await
+        .unwrap();
     let path = harness.cwd.join("batch-read.txt");
     std::fs::write(&path, "before\n").unwrap();
     let target = path.to_string_lossy().into_owned();
@@ -3224,7 +3247,11 @@ async fn a_batch_that_edits_then_runs_a_command_sees_the_edit() {
     let harness = Harness::new(platform(&[]).await, Hook::None).await;
     let mut config = harness.config();
     config.tools = Some(vec!["read".into(), "edit".into(), "exec".into()]);
-    let session = harness.agent.create_session(config).await.unwrap();
+    let session = harness
+        .agent
+        .create_session(config, Default::default())
+        .await
+        .unwrap();
     let path = harness.cwd.join("batch-exec.txt");
     std::fs::write(&path, "before\n").unwrap();
     let target = path.to_string_lossy().into_owned();
@@ -3298,7 +3325,11 @@ async fn a_failed_recovery_wake_faults_the_session_and_is_posted_once_on_retry()
                 .store
                 .fail_next_wake
                 .store(failure, Ordering::SeqCst);
-            match harness.agent.restore_session(id.clone()).await {
+            match harness
+                .agent
+                .restore_session(id.clone(), Default::default())
+                .await
+            {
                 Err(error) => assert!(
                     error.to_string().contains("injected exec wake failure"),
                     "{error}"
@@ -3339,7 +3370,11 @@ async fn a_failed_recovery_wake_faults_the_session_and_is_posted_once_on_retry()
                 "failed wake was not committed"
             );
             assert_eq!(ended(&persisted).len(), 1);
-            let recovered = harness.agent.restore_session(id.clone()).await.unwrap();
+            let recovered = harness
+                .agent
+                .restore_session(id.clone(), Default::default())
+                .await
+                .unwrap();
             recovered.idle("main").await.unwrap();
             let events = local_events(&recovered).await;
             assert_eq!(
@@ -3352,7 +3387,11 @@ async fn a_failed_recovery_wake_faults_the_session_and_is_posted_once_on_retry()
                 "recovery must not rerun or re-end the process"
             );
             unload_once_released(&recovered).await;
-            let repeated = harness.agent.restore_session(id).await.unwrap();
+            let repeated = harness
+                .agent
+                .restore_session(id, Default::default())
+                .await
+                .unwrap();
             repeated.idle("main").await.unwrap();
             assert_eq!(
                 notifications(&local_events(&repeated).await),

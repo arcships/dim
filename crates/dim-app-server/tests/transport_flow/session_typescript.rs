@@ -942,13 +942,16 @@ async fn node_session_typescript_creation_config_and_misplaced_rows() {
         let session = server
             .agent()
             .unwrap()
-            .create_session(dim_agent_runtime::SessionConfig {
-                cwd: std::env::temp_dir().to_str().unwrap().into(),
-                tools: Some(vec!["echo".into()]),
-                interactive,
-                collaboration_role: role,
-                ..Default::default()
-            })
+            .create_session(
+                dim_agent_runtime::SessionConfig {
+                    cwd: std::env::temp_dir().to_str().unwrap().into(),
+                    tools: Some(vec!["echo".into()]),
+                    interactive,
+                    collaboration_role: role,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap();
         let methods = tokio::time::timeout(Duration::from_secs(5), async {

@@ -84,7 +84,7 @@ async fn rejected_prompt_load_does_not_publish_or_poison_the_pending_load() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
 
@@ -208,7 +208,7 @@ async fn rewritten_control_identity_is_registered_without_leaking_activity() {
         );
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let result = tokio::time::timeout(
@@ -346,7 +346,7 @@ async fn scope_ended_in_committed_tail_supersedes_loading_result() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let result = session
@@ -462,7 +462,7 @@ async fn scope_retirement_rejects_inconsistent_before_batches_and_retries_after_
         ));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let id = session.id().to_owned();
@@ -528,7 +528,7 @@ async fn scope_retirement_rejects_inconsistent_before_batches_and_retries_after_
         let _ = agent.close().await;
         active.store(false, std::sync::atomic::Ordering::SeqCst);
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let restored = agent.restore_session(id).await.unwrap();
+        let restored = agent.restore_session(id, Default::default()).await.unwrap();
         restored.idle("main").await.unwrap();
         assert!(
             !restored

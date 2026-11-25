@@ -158,7 +158,10 @@ async fn v2_tree_history_resume_and_protocol_isolation_work_on_both_transports()
         let mut legacy = Client::new(&server, !ws).await;
 
         let unbound = agent
-            .create_session(dim_agent_runtime::SessionConfig::default())
+            .create_session(
+                dim_agent_runtime::SessionConfig::default(),
+                Default::default(),
+            )
             .await
             .unwrap();
         for client in [&mut tree, &mut legacy] {

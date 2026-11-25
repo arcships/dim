@@ -283,7 +283,7 @@ fn mermaid(graphs: &BTreeMap<&str, Value>) -> String {
 }
 async fn graph() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (agent, config, native) = configured_agent().await?;
-    let session = agent.create_session(config).await?;
+    let session = agent.create_session(config, Default::default()).await?;
     let session_diagnostics = session.diagnostics()?;
     let main_diagnostics = session.branch_diagnostics("main")?;
     let instance = |d: &RuntimeDiagnostics, name: &str| {
@@ -368,7 +368,11 @@ async fn measure() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let mut sessions = vec![];
         for _ in 0..count {
-            sessions.push(agent.create_session(config.clone()).await?);
+            sessions.push(
+                agent
+                    .create_session(config.clone(), Default::default())
+                    .await?,
+            );
         }
         let create_ms = start.elapsed().as_secs_f64() * 1000.;
         let bytes_active = allocation::live();
@@ -385,7 +389,9 @@ async fn measure() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     let mut concurrent = Vec::new();
     for count in [1usize, 16, 64].into_iter().filter(|_| !native) {
-        let session = agent.create_session(config.clone()).await?;
+        let session = agent
+            .create_session(config.clone(), Default::default())
+            .await?;
         let mut branches = vec!["main".to_owned()];
         for index in 1..count {
             branches.push(
@@ -465,7 +471,9 @@ async fn context_replay() -> std::result::Result<(), Box<dyn std::error::Error>>
     let agent = agent_with_store(store).await?;
     let live_agent = allocation::live();
     let rss_agent = rss_kb();
-    let session = agent.create_session(SessionConfig::default()).await?;
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await?;
     let live_session = allocation::live();
     let rss_session = rss_kb();
     let mut steps = Vec::new();
@@ -560,7 +568,9 @@ async fn context_breakdown() -> std::result::Result<(), Box<dyn std::error::Erro
     let db = dim_app_server::storage::SqliteStorage::open(database)?;
     let store = dim_app_server::storage::SqliteTimelineStore::new(db.clone());
     let agent = agent_with_store(store).await?;
-    let session = agent.restore_session(session_id.clone()).await?;
+    let session = agent
+        .restore_session(session_id.clone(), Default::default())
+        .await?;
     let through = session.sequence("main")?;
     let mut phases = Vec::new();
     let read_start = allocation::live();
@@ -673,7 +683,9 @@ async fn restore_replay() -> std::result::Result<(), Box<dyn std::error::Error>>
     let live_agent = allocation::live();
     let rss_agent = rss_kb();
     let start = Instant::now();
-    let session = agent.restore_session(session_id.clone()).await?;
+    let session = agent
+        .restore_session(session_id.clone(), Default::default())
+        .await?;
     let restore_ms = start.elapsed().as_secs_f64() * 1000.;
     let live_restored = allocation::live();
     let peak_restored = allocation::peak();

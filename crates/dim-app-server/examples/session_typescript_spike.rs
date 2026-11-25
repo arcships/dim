@@ -376,10 +376,14 @@ async fn run(root: &Ctx) -> Result<Json, Box<dyn std::error::Error>> {
     let anchor = anchors.recv().await.expect("Agent anchor");
     let agent = builder.build(loader.clone(), &anchor);
     let started = Instant::now();
-    let one = agent.create_session(SessionConfig::default()).await?;
+    let one = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await?;
     let session_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let first = loaded.recv().await.expect("first Session probe");
-    let two = agent.create_session(SessionConfig::default()).await?;
+    let two = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await?;
     let second = loaded.recv().await.expect("second Session probe");
     assert_eq!(first.session_id, one.id());
     assert_eq!(second.session_id, two.id());

@@ -199,7 +199,7 @@ async fn server_reload_preserves_project_root_identity_and_settings() {
         let _session = server
             .agent()
             .unwrap()
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let (settings, loader) = services.borrow().clone().unwrap();

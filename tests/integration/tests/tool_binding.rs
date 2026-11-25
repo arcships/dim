@@ -249,10 +249,13 @@ async fn env_named(
 impl Env {
     async fn session(&self) -> Session {
         self.agent
-            .create_session(SessionConfig {
-                tools: Some(vec!["gate".into()]),
-                ..SessionConfig::default()
-            })
+            .create_session(
+                SessionConfig {
+                    tools: Some(vec!["gate".into()]),
+                    ..SessionConfig::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap()
     }
@@ -550,7 +553,10 @@ async fn a_preparing_request_keeps_its_contributor_generation() {
         let agent = contributing(&builder).await;
         let root = agent.root().clone();
         enable(&agent).await;
-        let session = agent.create_session(config).await.unwrap();
+        let session = agent
+            .create_session(config, Default::default())
+            .await
+            .unwrap();
         session
             .submit("tool:optional {}".into(), InputMode::Queue, "main")
             .await
@@ -661,15 +667,18 @@ async fn custom_preparation_keeps_none_empty_and_filtered_declarations() {
         let agent = contributing(&builder).await;
         enable(&agent).await;
         let session = agent
-            .create_session(SessionConfig {
-                cwd: dirs.root.to_string_lossy().into_owned(),
-                tools: Some(vec!["optional".into(), "echo".into()]),
-                permission_policy: PermissionPolicy {
-                    allowed_tools: vec!["echo".into()],
-                    ..PermissionPolicy::default()
+            .create_session(
+                SessionConfig {
+                    cwd: dirs.root.to_string_lossy().into_owned(),
+                    tools: Some(vec!["optional".into(), "echo".into()]),
+                    permission_policy: PermissionPolicy {
+                        allowed_tools: vec!["echo".into()],
+                        ..PermissionPolicy::default()
+                    },
+                    ..SessionConfig::default()
                 },
-                ..SessionConfig::default()
-            })
+                Default::default(),
+            )
             .await
             .unwrap();
         let calls_echo = valid && selected.as_ref().is_some_and(|tools| !tools.is_empty());
@@ -726,14 +735,17 @@ async fn optional_contributors_do_not_gate_the_loop_and_follow_new_generations()
     let root = agent.root().clone();
     enable(&agent).await;
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["optional".into(), "absent".into(), "echo".into()]),
-            permission_policy: PermissionPolicy {
-                allowed_tools: vec!["echo".into(), "optional".into()],
-                ..PermissionPolicy::default()
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["optional".into(), "absent".into(), "echo".into()]),
+                permission_policy: PermissionPolicy {
+                    allowed_tools: vec!["echo".into(), "optional".into()],
+                    ..PermissionPolicy::default()
+                },
+                ..SessionConfig::default()
             },
-            ..SessionConfig::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     session
@@ -902,14 +914,17 @@ async fn contributors_are_current_for_the_first_request_without_initial_configur
     let agent = build().await;
     let root = agent.root().clone();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["optional".into(), "echo".into()]),
-            permission_policy: PermissionPolicy {
-                allowed_tools: vec!["echo".into(), "optional".into()],
-                ..PermissionPolicy::default()
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["optional".into(), "echo".into()]),
+                permission_policy: PermissionPolicy {
+                    allowed_tools: vec!["echo".into(), "optional".into()],
+                    ..PermissionPolicy::default()
+                },
+                ..SessionConfig::default()
             },
-            ..SessionConfig::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     let provider = root
@@ -939,7 +954,7 @@ async fn contributors_are_current_for_the_first_request_without_initial_configur
     agent.close().await.unwrap();
 
     let agent = build().await;
-    let restored = agent.restore_session(id).await.unwrap();
+    let restored = agent.restore_session(id, Default::default()).await.unwrap();
     restored
         .submit("tool:optional {}".into(), InputMode::Queue, "main")
         .await
@@ -1156,10 +1171,13 @@ async fn a_session_without_a_mount_list_declares_every_registered_tool() {
         let env = env(source, None).await;
         let session = env
             .agent
-            .create_session(SessionConfig {
-                tools,
-                ..SessionConfig::default()
-            })
+            .create_session(
+                SessionConfig {
+                    tools,
+                    ..SessionConfig::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap();
         adopted(&session, "main", &[("mcp:a", "v1")]).await;
@@ -1210,7 +1228,11 @@ async fn a_restored_branch_adopts_the_new_versions_before_its_first_request() {
     let source = TestSource::new();
     source.seed(vec![set("mcp:a", "v2", &["lookup"], &log, None)]);
     let env2 = env(source, Some(store)).await;
-    let restored = env2.agent.restore_session(id).await.unwrap();
+    let restored = env2
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     adopted(&restored, "main", &[("mcp:a", "v2")]).await;
     env2.turn(&restored, "main", &["lookup"]).await;
     assert_eq!(last_result(&restored, "main").await, "v2 ran lookup");
@@ -1346,10 +1368,13 @@ async fn tool_updates_wait_for_branch_activation_and_do_not_run_after_failed_ass
         let agent = env.agent.agent().clone();
         let creating = tokio::spawn(async move {
             agent
-                .create_session(SessionConfig {
-                    tools: Some(vec!["gate".into()]),
-                    ..SessionConfig::default()
-                })
+                .create_session(
+                    SessionConfig {
+                        tools: Some(vec!["gate".into()]),
+                        ..SessionConfig::default()
+                    },
+                    Default::default(),
+                )
                 .await
         });
         let (timeline, registry, source) =
@@ -1410,10 +1435,13 @@ async fn registered_sources_keep_their_names_apart_from_contributed_tools() {
     let invalid = env_named(TestSource::new(), None, "#contributed").await;
     let error = invalid
         .agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["gate".into()]),
-            ..SessionConfig::default()
-        })
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["gate".into()]),
+                ..SessionConfig::default()
+            },
+            Default::default(),
+        )
         .await
         .err()
         .expect("an invalid source name fails the Session")
@@ -1456,10 +1484,13 @@ async fn contributed_tools_follow_their_provider_until_the_session_closes() {
     let root = agent.root().clone();
     enable(&agent).await;
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["optional".into(), "echo".into()]),
-            ..SessionConfig::default()
-        })
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["optional".into(), "echo".into()]),
+                ..SessionConfig::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let provider = root
@@ -1625,7 +1656,10 @@ async fn a_persisted_contributed_version_names_one_generation_across_restores() 
         ..SessionConfig::default()
     };
     let agent = build().await;
-    let session = agent.create_session(config).await.unwrap();
+    let session = agent
+        .create_session(config, Default::default())
+        .await
+        .unwrap();
     session
         .submit("tool:optional {}".into(), InputMode::Queue, "main")
         .await
@@ -1639,7 +1673,7 @@ async fn a_persisted_contributed_version_names_one_generation_across_restores() 
     agent.close().await.unwrap();
 
     let agent = build().await;
-    let restored = agent.restore_session(id).await.unwrap();
+    let restored = agent.restore_session(id, Default::default()).await.unwrap();
     restored
         .submit("tool:optional {}".into(), InputMode::Queue, "main")
         .await

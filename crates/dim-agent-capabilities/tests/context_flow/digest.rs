@@ -150,18 +150,21 @@ async fn effects_session(
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec![
-                "declare".into(),
-                "declare_error".into(),
-                "plain".into(),
-            ]),
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                tools: Some(vec![
+                    "declare".into(),
+                    "declare_error".into(),
+                    "plain".into(),
+                ]),
+                permission_policy: PermissionPolicy {
+                    preset: PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     (agent, session)

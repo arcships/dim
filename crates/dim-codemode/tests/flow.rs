@@ -187,12 +187,15 @@ impl Fixture {
         permission_policy: PermissionPolicy,
     ) -> Session {
         self.agent
-            .create_session(SessionConfig {
-                tools: Some(tools),
-                interactive,
-                permission_policy,
-                ..SessionConfig::default()
-            })
+            .create_session(
+                SessionConfig {
+                    tools: Some(tools),
+                    interactive,
+                    permission_policy,
+                    ..SessionConfig::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap()
     }

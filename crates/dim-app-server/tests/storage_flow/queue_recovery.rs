@@ -17,7 +17,7 @@ async fn queue_resume_finishes_multiple_source_pages_without_republishing_an_old
     let store = SqliteTimelineStore::new(db.clone());
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -46,7 +46,7 @@ async fn queue_resume_finishes_multiple_source_pages_without_republishing_an_old
         let agent = MinimalHost::start(&builder(&store)).await.unwrap();
         let session = settled(
             "all new source pages restore",
-            agent.restore_session(id.clone()),
+            agent.restore_session(id.clone(), Default::default()),
         )
         .await
         .unwrap();
@@ -81,7 +81,7 @@ async fn current_inputs_restore_and_are_removed_when_a_turn_consumes_them() {
     let store = SqliteTimelineStore::new(db.clone());
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -119,7 +119,7 @@ async fn current_inputs_restore_and_are_removed_when_a_turn_consumes_them() {
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
     let session = settled(
         "the current inputs restore",
-        agent.restore_session(id.clone()),
+        agent.restore_session(id.clone(), Default::default()),
     )
     .await
     .unwrap();
@@ -169,7 +169,7 @@ async fn queue_resume_reuses_an_application_written_by_an_older_owner_after_a_sa
     let store = SqliteTimelineStore::new(db.clone());
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -209,7 +209,7 @@ async fn queue_resume_reuses_an_application_written_by_an_older_owner_after_a_sa
     let agent = MinimalHost::start(&builder(&store)).await.unwrap();
     let session = settled(
         "saved state and older output restore",
-        agent.restore_session(id),
+        agent.restore_session(id, Default::default()),
     )
     .await
     .unwrap();
@@ -232,7 +232,7 @@ async fn obsolete_queue_nodes_do_not_override_current_business_facts() {
         let store = SqliteTimelineStore::new(db.clone());
         let agent = MinimalHost::start(&builder(&store)).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let input = session
@@ -275,7 +275,7 @@ async fn obsolete_queue_nodes_do_not_override_current_business_facts() {
         let agent = MinimalHost::start(&builder(&store)).await.unwrap();
         let restored = settled(
             "business facts restore independently of obsolete nodes",
-            agent.restore_session(id.clone()),
+            agent.restore_session(id.clone(), Default::default()),
         )
         .await
         .unwrap();
@@ -309,7 +309,7 @@ async fn queue_decisions_commit_and_resume_once_after_a_failed_commit() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -338,7 +338,7 @@ async fn queue_decisions_commit_and_resume_once_after_a_failed_commit() {
     drop(connection);
     let restored = settled(
         "the queue restores its unprocessed source",
-        agent.restore_session(id.clone()),
+        agent.restore_session(id.clone(), Default::default()),
     )
     .await
     .unwrap();
@@ -380,7 +380,7 @@ async fn queue_decisions_commit_and_resume_once_after_a_failed_commit() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let restored = settled(
         "the queue restores its saved state",
-        agent.restore_session(id.clone()),
+        agent.restore_session(id.clone(), Default::default()),
     )
     .await
     .unwrap();
@@ -420,7 +420,7 @@ async fn obsolete_queue_result_versions_do_not_control_recovery() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -451,7 +451,7 @@ async fn obsolete_queue_result_versions_do_not_control_recovery() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let restored = settled(
         "obsolete result schemas are not state inputs",
-        agent.restore_session(id.clone()),
+        agent.restore_session(id.clone(), Default::default()),
     )
     .await
     .unwrap();

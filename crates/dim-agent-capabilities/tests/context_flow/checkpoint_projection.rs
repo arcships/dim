@@ -54,7 +54,7 @@ async fn keyed_blocks_replay_verbatim_after_repeated_compaction_until_retired() 
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let inputs = [

@@ -31,7 +31,8 @@ async fn agent_close_during_assembly_never_activates_the_session() {
         tools: Some(vec!["skill".into(), "gate".into()]),
         ..SessionConfig::default()
     };
-    let creating = tokio::spawn(async move { agent.create_session(config).await });
+    let creating =
+        tokio::spawn(async move { agent.create_session(config, Default::default()).await });
     tokio::time::timeout(std::time::Duration::from_secs(10), hold.entered.notified())
         .await
         .expect("assembly reached the hold");
