@@ -151,6 +151,23 @@ fn preparing(
     }
 }
 
+/// The rows the store keeps for one Session: its configuration and its branch
+/// directory. `None` once neither is stored.
+async fn stored_rows(store: &Shared, id: &str) -> Option<(serde_json::Value, serde_json::Value)> {
+    let config = store
+        .session_config(id)
+        .await
+        .expect("the stored configuration is readable")?;
+    let branches = store
+        .branches(id)
+        .await
+        .expect("the stored branch directory is readable");
+    Some((
+        serde_json::to_value(config).expect("the stored configuration serializes"),
+        serde_json::to_value(branches).expect("the stored branch directory serializes"),
+    ))
+}
+
 /// The error of a rejected creation; a `Session` is not `Debug`, so `unwrap_err`
 /// does not apply.
 fn rejected<T>(created: Result<T>) -> AgentError {
@@ -363,6 +380,7 @@ async fn a_rejected_duplicate_keeps_the_existing_sessions_state() {
         .lock()
         .unwrap()
         .insert("shared".into(), "disk full".into());
+    let rows = stored_rows(&store, "shared").await;
 
     let error = rejected(
         second
@@ -391,6 +409,11 @@ async fn a_rejected_duplicate_keeps_the_existing_sessions_state() {
         store.released.lock().unwrap().is_empty(),
         "the rejected duplicate releases no Session it never admitted: {:?}",
         store.released.lock().unwrap()
+    );
+    assert_eq!(
+        stored_rows(&store, "shared").await,
+        rows,
+        "the rejected duplicate leaves the existing Session's stored rows as they were"
     );
     assert!(
         first
