@@ -1066,7 +1066,8 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
     let session_id = id.as_str().unwrap();
     let fake_key = format!("sk-{}", "A".repeat(32));
     let encoded_home = r"%2FUs%65rs\u002F%49sma\u0069l";
-    let discussion = "Discuss Cookie and Set-Cookie handling; x-cookie: example";
+    let discussion =
+        "Discuss Cookie and Set-Cookie handling; the x-cookie header is not a credential field";
     let cookie_fixtures = [
         "fixture-cookie-value",
         "fixture-cookie-folded",
@@ -1355,8 +1356,22 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
     let asia = "ASIA1234567890ABCDEF";
     let userinfo = "https://alice:pw123@internal.example/api";
     let bearer = "Bearer abcdefghijklmnopqrstuvwxyz";
+    let aws = "aws-secret-fixture";
+    let aws_json = "json-secret-fixture";
+    let secret_key = "secret-key-fixture";
+    let private_key = "private-key-fixture";
+    let signing_key = "signing-key-fixture";
+    let groq = "gsk_fixture";
+    let proxy = "cHJveHk6cHc=";
+    let prose = "Secretary: available";
     let visible = "credential-fixture-visible-tail";
-    let message = format!("{marker}\n{stripe}\n{google}\n{asia}\n{userinfo}\n{bearer}\n{visible}");
+    let message = format!(
+        "{marker}\n{stripe}\n{google}\n{asia}\n{userinfo}\n{bearer}\n\
+         aws_secret_access_key = {aws}\n\"aws_secret_access_key\": \"{aws_json}\"\n\
+         secret_key = {secret_key}\nprivate_key = {private_key}\n\
+         signing_key = {signing_key}\nGROQ_API_KEY={groq}\n\
+         Proxy-Authorization: Basic {proxy}\n{prose}\n{visible}"
+    );
     owner
         .rpc(
             "session.submit",
@@ -1381,13 +1396,30 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
             .await
             .unwrap();
         let text = plan.to_string();
-        for secret in [stripe, google, asia, userinfo, bearer] {
+        for secret in [
+            stripe,
+            google,
+            asia,
+            userinfo,
+            bearer,
+            aws,
+            aws_json,
+            secret_key,
+            private_key,
+            signing_key,
+            groq,
+            proxy,
+        ] {
             assert!(
                 !text.contains(secret),
                 "plan leaked {secret} with redact={redact}"
             );
         }
         assert!(text.contains(marker), "marker missing with redact={redact}");
+        assert!(
+            text.contains(prose),
+            "ordinary prose missing with redact={redact}"
+        );
         assert!(
             text.contains(visible),
             "visible tail missing with redact={redact}"
@@ -1410,7 +1442,20 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
         archive(&generated);
         assert_eq!(plan["files"], generated["files"]);
         let text = generated.to_string();
-        for secret in [stripe, google, asia, userinfo, bearer] {
+        for secret in [
+            stripe,
+            google,
+            asia,
+            userinfo,
+            bearer,
+            aws,
+            aws_json,
+            secret_key,
+            private_key,
+            signing_key,
+            groq,
+            proxy,
+        ] {
             assert!(
                 !text.contains(secret),
                 "ZIP leaked {secret} with redact={redact}"
@@ -1421,6 +1466,12 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
                 .as_str()
                 .unwrap()
                 .contains(marker)
+        );
+        assert!(
+            generated["files"]["report.md"]
+                .as_str()
+                .unwrap()
+                .contains(prose)
         );
     }
     drop(owner);

@@ -15,9 +15,13 @@ const EXCERPT_LIMIT: usize = 2048;
 const TOTAL_LIMIT: usize = 8 * 1024;
 const WITHHELD: &str = "[excerpt withheld]";
 static CREDENTIAL_FIELD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?i)(?:^|[^a-z0-9_-]|\\[rn])(?:set-)?(?:cookie|authorization|x-api-key|api[_-]?key|[a-z0-9_-]*(?:password|passwd|credential|secret|token))(?:\\?["'`])?[ \t]*[:=]"#,
-    )
+    Regex::new(concat!(
+        r#"(?i)(?:^|[^a-z0-9_-]|\\[rn])"#,
+        r#"(?:[a-z0-9]+[_-])*"#,
+        r#"(?:cookie|authorization|api[_-]?key|private[_-]?key|signing[_-]?key"#,
+        r#"|password|passwd|credential|secret|token)"#,
+        r#"(?:[_-][a-z0-9]+)*(?:\\?["'`])?[ \t]*[:=]"#,
+    ))
     .expect("static credential field pattern")
 });
 static COOKIE_FIELD: LazyLock<Regex> = LazyLock::new(|| {
