@@ -1622,7 +1622,7 @@ impl SessionStore {
     /// Rejects an `id` that is not one path component (D3). Returns whether
     /// this database had rows of the id.
     pub async fn delete_session(&self, id: &str) -> Result<bool> {
-        crate::protocol::check_session_id(id)?;
+        dim_agent_runtime::check_session_id(id)?;
         let _ownership = self.ownership.lock().await;
         let stored = self.has_records(id).await?;
         if stored {
@@ -1668,8 +1668,8 @@ impl SessionStore {
         at: u64,
         config: &str,
     ) -> Result<()> {
-        crate::protocol::check_session_id(source)?;
-        crate::protocol::check_session_id(fork)?;
+        dim_agent_runtime::check_session_id(source)?;
+        dim_agent_runtime::check_session_id(fork)?;
         let _ownership = self.ownership.lock().await;
         if let Some(cwd) = config_cwd(config) {
             self.reject_deletion(&cwd).await?;
@@ -1695,7 +1695,7 @@ impl SessionStore {
         origin: SessionOrigin,
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
-        crate::protocol::check_session_id(session_id)?;
+        dim_agent_runtime::check_session_id(session_id)?;
         let session = session_id.to_owned();
         let config = config.clone();
         let agent = agent_id.to_owned();

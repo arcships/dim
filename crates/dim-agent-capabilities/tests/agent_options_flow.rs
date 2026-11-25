@@ -1,14 +1,19 @@
 use dim_agent_capabilities::defaults;
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
-    AgentBuilder, AgentConfig, CreateSessionOptions, MemoryTimelineStore, RestoreSessionOptions,
-    SessionConfig, TimelineStore, TimelineStoreBinding,
+    AgentBuilder, AgentConfig, AgentError, BoxFuture, CreateSessionOptions, MemoryTimelineStore,
+    PublishCallback, QueryPage, QueryResult, QuerySpec, RestoreSessionOptions, Result,
+    SessionConfig, StoredBranch, StoredEvent, TimelineKey, TimelineReadScope, TimelineStore,
+    TimelineStoreBinding, TimelineTrace,
 };
 use rutis::host::DynPlugin;
 use rutis::{Ctx, Plugin};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU32, Ordering},
+use std::{
+    ops::RangeInclusive,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
 };
 
 const GROUP: &str = "options-probe";
@@ -28,10 +33,15 @@ impl Plugin for Probe {
     }
 }
 
-fn builder(store: &Arc<MemoryTimelineStore>, seen: Arc<AtomicU32>) -> AgentBuilder {
+fn installed() -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
     defaults::install(&mut builder);
+    builder
+}
+
+fn builder(store: &Arc<MemoryTimelineStore>, seen: Arc<AtomicU32>) -> AgentBuilder {
+    let mut builder = installed();
     builder
         .timeline_store(TimelineStoreBinding::new(store.clone()))
         .session_extension_part::<u32>(GROUP, "options-probe", move |_, value: &u32| {
@@ -41,6 +51,105 @@ fn builder(store: &Arc<MemoryTimelineStore>, seen: Arc<AtomicU32>) -> AgentBuild
             }) as Box<dyn DynPlugin>)
         });
     builder
+}
+
+/// A store that records the Sessions a creation commits, so a creation that
+/// writes nothing is visible.
+#[derive(Default)]
+struct Shared {
+    memory: MemoryTimelineStore,
+    created: Mutex<Vec<String>>,
+}
+impl TimelineStore for Shared {
+    fn query<'a>(
+        &'a self,
+        scope: &'a TimelineReadScope,
+        query: &'a QuerySpec,
+        page: Option<&'a QueryPage>,
+    ) -> BoxFuture<'a, Result<QueryResult>> {
+        self.memory.query(scope, query, page)
+    }
+    fn create_session<'a>(
+        &'a self,
+        session_id: &'a str,
+        config: &'a SessionConfig,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.created.lock().unwrap().push(session_id.to_owned());
+        self.memory.create_session(session_id, config)
+    }
+    fn rollback_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.memory.rollback_session(session_id)
+    }
+    fn release_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.memory.release_session(session_id)
+    }
+    fn session_config<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<SessionConfig>>> {
+        self.memory.session_config(session_id)
+    }
+    fn branches<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<StoredBranch>>> {
+        self.memory.branches(session_id)
+    }
+    fn head<'a>(&'a self, key: &'a TimelineKey) -> BoxFuture<'a, Result<u64>> {
+        self.memory.head(key)
+    }
+    fn batch_end<'a>(&'a self, key: &'a TimelineKey, sequence: u64) -> BoxFuture<'a, Result<()>> {
+        self.memory.batch_end(key, sequence)
+    }
+    fn append(
+        &self,
+        key: TimelineKey,
+        events: Vec<StoredEvent>,
+        publish: PublishCallback,
+    ) -> Result<()> {
+        self.memory.append(key, events, publish)
+    }
+    fn read_segments<'a>(
+        &'a self,
+        session_id: &'a str,
+        segments: Vec<(String, RangeInclusive<u64>)>,
+    ) -> BoxFuture<'a, Result<Vec<Vec<StoredEvent>>>> {
+        self.memory.read_segments(session_id, segments)
+    }
+    fn trace<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<Option<TimelineTrace>>> {
+        self.memory.trace(key, sequence)
+    }
+}
+
+/// A host on this store, without the extension probe.
+async fn store_host(store: &Arc<Shared>) -> MinimalHost {
+    let mut builder = installed();
+    builder.timeline_store(TimelineStoreBinding::new(store.clone()));
+    MinimalHost::start(&builder).await.unwrap()
+}
+
+/// The prepare step of a host that commits the Session's rows in the store, so
+/// a creation that reaches it is visible there.
+fn preparing(
+    store: &Arc<Shared>,
+    entered: Arc<AtomicBool>,
+) -> impl FnOnce(String) -> BoxFuture<'static, Result<()>> + Send + 'static {
+    let store = store.clone();
+    move |id| {
+        entered.store(true, Ordering::SeqCst);
+        let store = store.clone();
+        Box::pin(async move { store.create_session(&id, &SessionConfig::default()).await })
+    }
+}
+
+/// The error of a rejected creation; a `Session` is not `Debug`, so `unwrap_err`
+/// does not apply.
+fn rejected<T>(created: Result<T>) -> AgentError {
+    match created {
+        Ok(_) => panic!("the creation was accepted"),
+        Err(error) => error,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -158,4 +267,72 @@ async fn create_and_restore_options_apply_their_fields() {
     );
     session.close().await.unwrap();
     agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_explicit_id_is_admitted_only_as_one_path_component() {
+    let store = Arc::new(Shared::default());
+    let host = store_host(&store).await;
+    let agent = host.agent().clone();
+    for id in ["", ".", "..", "../escape", "nested/id", "/absolute"] {
+        let entered = Arc::new(AtomicBool::new(false));
+        let error = rejected(
+            agent
+                .create_session(
+                    SessionConfig::default(),
+                    CreateSessionOptions::default()
+                        .id(id)
+                        .prepare(preparing(&store, entered.clone())),
+                )
+                .await,
+        );
+        assert!(
+            matches!(&error, AgentError::InvalidInput(message) if message == &format!("invalid Session id {id}")),
+            "{id:?} is not one path component: {error}"
+        );
+        assert!(
+            !entered.load(Ordering::SeqCst),
+            "{id:?}: a rejected id reaches no prepare step"
+        );
+        assert!(
+            agent.get_session(id).is_none(),
+            "{id:?}: a rejected id publishes no Session"
+        );
+    }
+    let error = rejected(
+        agent
+            .create_session(
+                SessionConfig::default(),
+                CreateSessionOptions::default().id("nested/plain"),
+            )
+            .await,
+    );
+    assert!(
+        matches!(&error, AgentError::InvalidInput(_)),
+        "a rejected id without a prepare step: {error}"
+    );
+    assert!(
+        store.created.lock().unwrap().is_empty(),
+        "a rejected id writes no rows: {:?}",
+        store.created.lock().unwrap()
+    );
+    assert!(
+        agent.sessions().is_empty(),
+        "a rejected id publishes no Session"
+    );
+
+    let session = agent
+        .create_session(
+            SessionConfig::default(),
+            CreateSessionOptions::default().id("explicit-session"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session.id(),
+        "explicit-session",
+        "a legal explicit id is preserved"
+    );
+    session.close().await.unwrap();
+    host.close().await.unwrap();
 }

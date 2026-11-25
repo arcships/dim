@@ -55,6 +55,11 @@ impl CreateSessionOptions {
     /// Creates the Session under `id` instead of a generated one. A creation
     /// that also [`prepare`](Self::prepare)s a Session hands the same id to
     /// that step.
+    ///
+    /// The id must be one normal path component, which is what Session
+    /// command-output storage addresses ([`check_session_id`]);
+    /// [`Agent::create_session`] rejects any other id before it prepares,
+    /// writes or publishes.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
@@ -97,6 +102,17 @@ impl RestoreSessionOptions {
         self
     }
 }
+/// Requires the single path component that Session command-output storage
+/// addresses: an absolute path, a current or parent directory, and a path of
+/// several components are rejected with [`AgentError::InvalidInput`].
+pub fn check_session_id(id: &str) -> Result<()> {
+    if !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
+        [std::path::Component::Normal(name)] if name == id)
+    {
+        return Err(AgentError::InvalidInput(format!("invalid Session id {id}")));
+    }
+    Ok(())
+}
 impl Agent {
     pub(crate) fn new(builder: AgentBuilder, assembly: Assembly, placement: Placement) -> Self {
         Self(Arc::new(AgentInner {
@@ -125,6 +141,7 @@ impl Agent {
         options: CreateSessionOptions,
     ) -> Result<Session> {
         let id = options.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        check_session_id(&id)?;
         let start = match options.prepare {
             Some(prepare) => SessionStart::Prepared(prepare),
             None => SessionStart::Create,

@@ -1657,7 +1657,7 @@ impl AgentIndex {
             .activity
             .take_hold()
             .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
-        crate::protocol::check_session_id(id)?;
+        dim_agent_runtime::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         let removed = self.remove_locked(id, &slot).await?;
@@ -1679,7 +1679,7 @@ impl AgentIndex {
         &self,
         id: &str,
     ) -> dim_agent_runtime::Result<DeleteOutcome> {
-        crate::protocol::check_session_id(id)?;
+        dim_agent_runtime::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         // One match yields both the outcome and what there is to announce, so
