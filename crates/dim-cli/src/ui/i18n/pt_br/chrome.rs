@@ -797,6 +797,67 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "Executando…",
         "Save ZIP" => "Salvar ZIP",
         "Saved ZIP" => "ZIP salvo",
+        "Diagnostics only; no conversation." => "Somente diagnóstico; sem conversa.",
+        "No conversation excerpts in this plan." => "Este plano não inclui trechos de conversa.",
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "Conversa incluída; Ocultar não remove todo o texto sensível."
+        }
+        "Conversation included without redaction." => "Conversa incluída sem Ocultar.",
+        "Conversation requested; check the updated preview." => {
+            "Conversa solicitada; confira a prévia atualizada."
+        }
+        "Report plan included conversation without permission." => {
+            "O plano do relatório incluiu conversa sem permissão."
+        }
+        "[ ] Include conversation" => "[ ] Incluir conversa",
+        "[x] Include conversation" => "[x] Incluir conversa",
+        "Check the preview for sensitive text before sharing." => {
+            "Confira a prévia em busca de texto sensível antes de compartilhar."
+        }
+        "Preview ZIP files" => "Pré-visualizar arquivos do ZIP",
+        "Preview pending" => "Prévia pendente",
+        "Preview unavailable" => "Prévia indisponível",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn rolar · Esc voltar",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn detalhes · ↑↓ mover · Enter selecionar · Esc fechar"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "Os arquivos gerados diferem da prévia do plano. O e-mail não está disponível."
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "O e-mail não está disponível sem prévias correspondentes do plano e do ZIP."
+        }
+        "(o) Investigation only" => "(o) Somente investigação",
+        "( ) Investigation only" => "( ) Somente investigação",
+        "(o) Team-internal regression of this ZIP only" => {
+            "(o) Somente regressão interna da equipe deste ZIP"
+        }
+        "( ) Team-internal regression of this ZIP only" => {
+            "( ) Somente regressão interna da equipe deste ZIP"
+        }
+        "Local attachment preview" => "Prévia do anexo local",
+        "Email is for investigating this report only, not evaluation." => {
+            "O e-mail serve apenas para investigar este relatório, não para avaliação."
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "Somente regressão interna da equipe deste ZIP. Sem provedores externos, treinamento ou publicação."
+        }
+        "Open email draft" => "Abrir rascunho de e-mail",
+        "Email details" => "Detalhes do e-mail",
+        "To: {email}" => "Para: {email}",
+        "Subject: {subject}" => "Assunto: {subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "Anexe o ZIP salvo manualmente. Se nenhum rascunho abrir, use estes detalhes. Nada foi enviado."
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "Não foi possível abrir o e-mail. Escreva a mensagem manualmente e anexe o ZIP salvo."
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "Escreva a mensagem manualmente e anexe o ZIP salvo. Nada foi enviado."
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "O ZIP salvo está ausente, ilegível ou foi alterado. Salve uma nova cópia."
+        }
         "Session model" => "Modelo da sessão",
         "Skills instructions" => "Instruções de skills",
         "Some options were unsupported." => "Algumas opções não são suportadas.",

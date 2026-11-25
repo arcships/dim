@@ -1,7 +1,21 @@
 use super::Worker;
 use crate::model::session::Update;
-use crate::report::{Action, Captured, Draft, Reply, Request, Target, session_admission_failed};
+use crate::report::{
+    Action, Captured, Draft, LocalGeneration, Reply, Request, Target, session_admission_failed,
+};
+use serde::Serialize;
 use serde_json::{Value, json};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanParams<'a> {
+    report_id: &'a str,
+    generation: LocalGeneration,
+    redact: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include_conversation: Option<bool>,
+    instructions: &'a str,
+}
 
 impl Worker {
     pub(super) fn report_available(&self) -> bool {
@@ -23,17 +37,25 @@ impl Worker {
             Action::Plan {
                 draft,
                 redact,
+                include_conversation,
                 instructions,
             } => {
-                let (method, params) = report_call(
-                    &draft,
-                    "plan",
-                    json!({
-                        "reportId": draft.report_id, "generation": {"kind":"local"},
-                        "redact": redact, "instructions": instructions,
-                    }),
-                );
-                self.client.typed(&method, params).await.map(Reply::Plan)
+                let params = PlanParams {
+                    report_id: &draft.report_id,
+                    generation: LocalGeneration::Local,
+                    redact,
+                    include_conversation: (include_conversation
+                        || (!redact && draft.session.is_some()))
+                    .then_some(include_conversation),
+                    instructions: &instructions,
+                };
+                match serde_json::to_value(params) {
+                    Ok(params) => {
+                        let (method, params) = report_call(&draft, "plan", params);
+                        self.client.typed(&method, params).await.map(Reply::Plan)
+                    }
+                    Err(error) => Err(error.into()),
+                }
             }
             Action::Generate(draft) => {
                 let (method, params) = report_call(
@@ -196,6 +218,34 @@ mod tests {
             )
             .await;
             assert_eq!(params, json!({"sessionId":"shown"}));
+            let plan = json!({"result":{
+                "planId":"p2", "generation":{"kind":"local"},
+                "evidence":{"timeline":{"recent":[]}}, "instructionsStatus":"none"
+            }});
+            for (method, redact, flag) in [
+                ("session.report.plan", true, None),
+                ("session.report.plan", false, Some(false)),
+                ("session.report.plan", true, Some(true)),
+                ("report.plan", false, None),
+            ] {
+                let result = if flag == Some(false) {
+                    json!({"error":{"code":-32602,"message":"unknown field includeConversation"}})
+                } else {
+                    plan.clone()
+                };
+                let params = exchange(method, result).await;
+                let mut expected = json!({
+                    "reportId":"r1", "generation":{"kind":"local"},
+                    "redact":redact, "instructions":""
+                });
+                if method == "session.report.plan" {
+                    expected["sessionId"] = json!("shown");
+                }
+                if let Some(flag) = flag {
+                    expected["includeConversation"] = json!(flag);
+                }
+                assert_eq!(params, expected);
+            }
             // A classified refusal, the shape `session.attach` answers with
             // for a branch that still needs the explicit prompt migration
             // (recovery.rs): a producer's message under its own code.
@@ -288,6 +338,36 @@ mod tests {
         assert!(
             matches!(receiver.try_recv().unwrap(), Update::ReportReply { panel: 2, reply: Reply::Prepared(Some(session), _) } if session == "shown")
         );
+        for (session, redact, include_conversation) in [
+            (Some("shown"), true, false),
+            (Some("shown"), false, false),
+            (Some("shown"), true, true),
+            (None, false, false),
+        ] {
+            worker
+                .report_request(Request {
+                    panel: 2,
+                    action: Action::Plan {
+                        draft: Draft {
+                            session: session.map(String::from),
+                            report_id: "r1".into(),
+                            plan_id: "p1".into(),
+                        },
+                        redact,
+                        include_conversation,
+                        instructions: String::new(),
+                    },
+                })
+                .await;
+            let Update::ReportReply { panel: 2, reply } = receiver.try_recv().unwrap() else {
+                panic!("expected report plan reply");
+            };
+            if session.is_some() && !redact && !include_conversation {
+                assert!(matches!(reply, Reply::Failed { .. }));
+            } else {
+                assert!(matches!(reply, Reply::Plan(plan) if plan.plan_id == "p2"));
+            }
+        }
         // The classified refusal does not route into the report flow: the
         // report's fallback is for an unclassified internal fault, and a
         // message the user can act on is not that. It reaches the caller with

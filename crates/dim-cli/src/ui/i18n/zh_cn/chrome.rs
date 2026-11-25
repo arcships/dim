@@ -371,11 +371,29 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Model · Generate locally" => "模型 · 本地生成",
         "Local generation makes zero model requests." => "本地生成不会调用模型。",
         "Default: current-session diagnostics only." => "默认只打包当前会话的诊断信息。",
+        "Email the ZIP to {email}" => "可将 ZIP 作为附件发送至 {email}",
         "Redact is off. The ZIP may contain sensitive text from recent messages." => {
             "脱敏已关闭。ZIP 可能包含近期对话中的敏感内容。"
         }
         "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
             "只有主动关闭脱敏，才会将近期用户和助手正文附加到 ZIP；可能含敏感信息。"
+        }
+        "Diagnostics only; no conversation." => "仅包含诊断信息，不包含对话。",
+        "No conversation excerpts in this plan." => "此报告计划没有对话片段。",
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "已包含对话片段；脱敏无法去除所有敏感内容。"
+        }
+        "Conversation included without redaction." => "已包含对话片段，未开启脱敏。",
+        "Conversation requested; check the updated preview." => {
+            "已选择包含对话，请检查更新后的预览。"
+        }
+        "Report plan included conversation without permission." => {
+            "报告计划未经允许包含了对话，已拒绝。"
+        }
+        "[ ] Include conversation" => "[ ] 包含对话",
+        "[x] Include conversation" => "[x] 包含对话",
+        "Check the preview for sensitive text before sharing." => {
+            "分享前请检查预览中是否仍有敏感内容。"
         }
         "Error diagnostics only; no session text is available." => {
             "仅打包错误诊断信息；没有可收集的会话正文。"
@@ -404,7 +422,46 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter apply · Esc back" => "Enter 应用 · Esc 返回",
         "Save ZIP" => "保存 ZIP",
         "Saved ZIP" => "ZIP 已保存至",
-        "Email the ZIP to {email}" => "可将 ZIP 作为附件发送至 {email}",
+        "Preview ZIP files" => "预览 ZIP 内的文件",
+        "Preview pending" => "正在准备预览",
+        "Preview unavailable" => "当前无法预览",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn 滚动 · Esc 返回",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn 详情 · ↑↓ 切换 · Enter 选择 · Esc 关闭"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "生成的文件与计划预览不一致，无法起草邮件。"
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "计划与 ZIP 的预览必须一致，才能起草邮件。"
+        }
+        "(o) Investigation only" => "(o) 仅排查问题",
+        "( ) Investigation only" => "( ) 仅排查问题",
+        "(o) Team-internal regression of this ZIP only" => "(o) 本附件仅限团队内部回归",
+        "( ) Team-internal regression of this ZIP only" => "( ) 本附件仅限团队内部回归",
+        "Local attachment preview" => "本机附件预览",
+        "Email is for investigating this report only, not evaluation." => {
+            "仅排查本报告所述问题，不授权评测。"
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "仅限团队内部使用此 ZIP 做回归评测；不允许交给外部模型供应商、用于训练或公开。"
+        }
+        "Open email draft" => "打开邮件草稿",
+        "Email details" => "邮件信息",
+        "To: {email}" => "收件人：{email}",
+        "Subject: {subject}" => "主题：{subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "请手动附上已保存的 ZIP。若未打开草稿，请按下方信息手动撰写。未发送任何内容。"
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "未能打开邮件应用。请按下方信息撰写邮件并手动附上已保存的 ZIP。"
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "请手动撰写邮件并附上已保存的 ZIP。未发送任何内容。"
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "已保存的 ZIP 不存在、无法读取或已被修改。请重新保存一份。"
+        }
         "Draft a GitHub issue" => "在 GitHub 起草 Issue",
         "Give feedback on Discord" => "去 Discord 反馈",
         "Could not save ZIP" => "无法保存 ZIP",

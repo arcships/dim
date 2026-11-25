@@ -134,6 +134,8 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Idle Session unload](design/appserver/idle-unload.md) (#126, #331)（[中文](zh/design/appserver/idle-unload.md)）
 - [Request delta storage](design/appserver/request-delta-storage.md) (#193)（[中文](zh/design/appserver/request-delta-storage.md)）
 - [Timeline export](design/appserver/timeline-export.md) (ADR 005 D3, #275)（[中文](zh/design/appserver/timeline-export.md)）
+- [Badcase 评测流水线](eval/usercases-pipeline.md)（中文，#1701）：用户提交、dogfood 与公开 issue 三个来源的证据包与授权、分诊去向、区分度证明、按根案例读结果、闭环与撤回
+- [证据包打包](eval/evidence-pack.md)（中文，#1701）：Timeline 进证据包之前在本机的分级披露、标识替换与输出校验
 - [Release packaging and self-hosted workflows](release/README.md)
 - [Container image release](release/docker-image.md) (Draft): the proposed ghcr.io image for the Linux executable, its volumes, clients, build from original release archives and security boundary
 - [Tool origin read](design/tool-origin-read.md) — point lookup for tool arguments outside a transcript window.

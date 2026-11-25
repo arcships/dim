@@ -29,6 +29,8 @@ const DRAFT_LIMIT: usize = 16;
 const INPUT_LIMIT: usize = 1024;
 
 pub(super) struct Session {
+    pub(super) identity: Arc<dim_agent_runtime::SessionIdentity>,
+    pub(super) home: std::path::PathBuf,
     pub(super) lifecycle: Arc<SessionLifecycle>,
     pub(super) tree: Arc<TreeCommands>,
 }
@@ -134,6 +136,8 @@ struct PlanRequest {
     report_id: Uuid,
     generation: Generation,
     redact: bool,
+    #[serde(default)]
+    include_conversation: bool,
     instructions: Option<String>,
 }
 
@@ -144,17 +148,23 @@ struct Plan {
     evidence: Reviewed,
     instructions_status: InstructionsStatus,
     generation: Generation,
+    #[serde(flatten)]
+    rendered: render::Rendered,
 }
 
 impl Plan {
-    fn local(snapshot: &Snapshot, redact: bool, instructions: &str) -> Self {
-        let (evidence, instructions_status) = render::review(snapshot, redact, instructions);
-        Self {
+    fn local(
+        evidence: Reviewed,
+        instructions_status: InstructionsStatus,
+    ) -> Result<Self, RpcError> {
+        let rendered = evidence.render()?;
+        Ok(Self {
             plan_id: Uuid::new_v4(),
             evidence,
             instructions_status,
             generation: Generation::Local,
-        }
+            rendered,
+        })
     }
 }
 
@@ -200,7 +210,7 @@ impl Reports {
 
         match method.rsplit('.').next() {
             Some("prepare") => self.prepare(caller, value).await,
-            Some("plan") => self.plan(caller.id(), value).await,
+            Some("plan") => self.plan(caller.id(), value),
             Some("generate") => self.generate(caller.id(), params(value)?),
             Some("cancel") => self.cancel(caller.id(), params(value)?),
             _ => unreachable!("registered report method"),
@@ -217,13 +227,13 @@ impl Reports {
             return Err(RpcError::invalid("Observed error exceeds 1 KiB"));
         }
         let Prepare { error } = params(value)?;
-        let tree = self.session.as_ref().map(|session| &*session.tree);
-        let (snapshot, default_model) = match (tree, error) {
-            (_, Some(error)) => error.capture(tree).await?,
-            (Some(tree), None) => Snapshot::capture_session(tree).await,
+        let (snapshot, default_model) = match (&self.session, error) {
+            (session, Some(error)) => error.capture(session.as_ref().map(|s| &*s.tree)).await?,
+            (Some(session), None) => Snapshot::capture_session(session).await,
             (None, None) => return Err(RpcError::invalid("Expected an observed error")),
         };
-        let plan = Plan::local(&snapshot, true, "");
+        let (evidence, status) = render::review(&snapshot, true, false, "");
+        let plan = Plan::local(evidence, status)?;
         let id = Uuid::new_v4();
         let mut answer = json!({"reportId": id, "plan": plan});
         if let Some(default_model) = default_model {
@@ -279,7 +289,7 @@ impl Reports {
         Ok(answer)
     }
 
-    async fn plan(&self, caller: &str, value: Value) -> Result<Value, RpcError> {
+    fn plan(&self, caller: &str, value: Value) -> Result<Value, RpcError> {
         if let Some(model) = value
             .pointer("/generation/model")
             .and_then(Value::as_object)
@@ -301,37 +311,18 @@ impl Reports {
                 "Model-assisted reports are unavailable",
             ));
         }
-        let (mut plan, through, branch, previous) = {
-            let mut drafts = self.drafts.lock().unwrap();
-            let draft = get(&mut drafts, caller, request.report_id)?;
-            if draft.running.is_some() {
-                return Err(busy());
-            }
-            (
-                Plan::local(&draft.snapshot, request.redact, instructions),
-                draft.snapshot.conversation_through,
-                draft.snapshot.branch.clone(),
-                draft.plan.as_ref().map(|plan| plan.plan_id),
-            )
-        };
-        if !request.redact
-            && plan.evidence.includes_timeline()
-            && let (Some(session), Some(through), Some(branch)) = (&self.session, through, branch)
-        {
-            plan.evidence.conversation =
-                crate::evidence::capture_conversation(&session.tree, &branch, through).await;
-        }
         let mut drafts = self.drafts.lock().unwrap();
         let draft = get(&mut drafts, caller, request.report_id)?;
         if draft.running.is_some() {
             return Err(busy());
         }
-        if draft.plan.as_ref().map(|plan| plan.plan_id) != previous {
-            return Err(RpcError::service(
-                "report_plan_stale",
-                "The report plan has changed or was consumed",
-            ));
-        }
+        let (evidence, status) = render::review(
+            &draft.snapshot,
+            request.redact,
+            request.include_conversation,
+            instructions,
+        );
+        let plan = Plan::local(evidence, status)?;
         let response = reply(&plan)?;
         draft.plan = Some(plan);
         Ok(response)
@@ -359,7 +350,7 @@ impl Reports {
             });
             plan
         };
-        let response = plan.evidence.generate();
+        let response = plan.rendered.generate();
         let mut drafts = self.drafts.lock().unwrap();
         let draft = get(&mut drafts, caller, request.report_id)?;
         let run = draft

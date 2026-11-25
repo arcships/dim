@@ -85,6 +85,13 @@ fn main() {
         mallopt(-3, 64 * 1024);
         mallopt(-8, 1);
     }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("evidence-redact")) {
+        if dim_report::redaction::serve(std::io::stdin().lock(), std::io::stdout().lock()).is_err()
+        {
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("ocr-helper") {
         let mut stdout = std::io::stdout();
         let mut stderr = std::io::stderr();

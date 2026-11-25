@@ -809,6 +809,69 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Running…" => "En curso…",
         "Save ZIP" => "Guardar ZIP",
         "Saved ZIP" => "ZIP guardado",
+        "Diagnostics only; no conversation." => "Solo diagnóstico; sin conversación.",
+        "No conversation excerpts in this plan." => {
+            "Este plan no incluye fragmentos de conversación."
+        }
+        "Conversation included; redaction does not remove all sensitive text." => {
+            "Conversación incluida; Ocultar no elimina todo el texto sensible."
+        }
+        "Conversation included without redaction." => "Conversación incluida sin Ocultar.",
+        "Conversation requested; check the updated preview." => {
+            "Conversación solicitada; revisa la vista previa actualizada."
+        }
+        "Report plan included conversation without permission." => {
+            "El plan del informe incluyó conversación sin permiso."
+        }
+        "[ ] Include conversation" => "[ ] Incluir conversación",
+        "[x] Include conversation" => "[x] Incluir conversación",
+        "Check the preview for sensitive text before sharing." => {
+            "Revisa la vista previa en busca de texto sensible antes de compartir."
+        }
+        "Preview ZIP files" => "Previsualizar archivos del ZIP",
+        "Preview pending" => "Vista previa pendiente",
+        "Preview unavailable" => "Vista previa no disponible",
+        "↑↓/PgUp/PgDn scroll · Esc back" => "↑↓/PgUp/PgDn desplazar · Esc volver",
+        "PgUp/PgDn details · ↑↓ move · Enter select · Esc close" => {
+            "PgUp/PgDn detalles · ↑↓ mover · Enter seleccionar · Esc cerrar"
+        }
+        "Generated files differ from the plan preview. Email is unavailable." => {
+            "Los archivos generados difieren de la vista previa del plan. El correo no está disponible."
+        }
+        "Email unavailable without matching plan and ZIP previews." => {
+            "El correo no está disponible sin vistas previas coincidentes del plan y del ZIP."
+        }
+        "(o) Investigation only" => "(o) Solo investigación",
+        "( ) Investigation only" => "( ) Solo investigación",
+        "(o) Team-internal regression of this ZIP only" => {
+            "(o) Solo regresión interna del equipo de este ZIP"
+        }
+        "( ) Team-internal regression of this ZIP only" => {
+            "( ) Solo regresión interna del equipo de este ZIP"
+        }
+        "Local attachment preview" => "Vista previa del archivo adjunto local",
+        "Email is for investigating this report only, not evaluation." => {
+            "El correo es solo para investigar este informe, no para evaluación."
+        }
+        "Team-internal regression of this ZIP only. No external providers, training, or publication." => {
+            "Solo regresión interna del equipo de este ZIP. Sin proveedores externos, entrenamiento ni publicación."
+        }
+        "Open email draft" => "Abrir borrador de correo",
+        "Email details" => "Datos del correo",
+        "To: {email}" => "Para: {email}",
+        "Subject: {subject}" => "Asunto: {subject}",
+        "Attach the saved ZIP manually. If no draft opens, use these details. Nothing was sent." => {
+            "Adjunta el ZIP guardado manualmente. Si no se abre un borrador, usa estos datos. No se envió nada."
+        }
+        "Could not launch email. Compose manually and attach the saved ZIP." => {
+            "No se pudo abrir el correo. Redacta el mensaje manualmente y adjunta el ZIP guardado."
+        }
+        "Compose manually and attach the saved ZIP. Nothing was sent." => {
+            "Redacta el mensaje manualmente y adjunta el ZIP guardado. No se envió nada."
+        }
+        "Saved ZIP missing, unreadable, or changed. Save a new copy." => {
+            "El ZIP guardado falta, no se puede leer o ha cambiado. Guarda una copia nueva."
+        }
         "Session model" => "Modelo de la sesión",
         "Skills instructions" => "Instrucciones de skills",
         "Some options were unsupported." => "Algunas opciones no son compatibles.",

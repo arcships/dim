@@ -30,6 +30,202 @@ use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 use tokio_util::sync::CancellationToken;
 
 const SECRET: &str = "private-fixture-content";
+const USER_PROMPT: &str = "What happened during this turn?";
+
+#[test]
+fn evidence_redact_pipe_matches_unicode_variants_at_source_offsets() {
+    let home = "/Users/İsmail";
+    let account = "İsmail";
+    let init = json!({
+        "facts": {"homes":[home], "session":"", "identifiers":[], "terms":["ısland", "ΟΣ"]},
+        "kept": [],
+    });
+    let input = "🧪 /Users/İsmail /users/ismail İsmail ISMAIL ısmail ISLAND ος οσ \\u0130smail \\u0131smail %c4%b0smail %c4%b1smail!";
+    let expected = "🧪 /Users/userus /Users/userus userus userus userus [term-1] [term-2] [term-2] userus userus userus userus!";
+    let requests = format!("{init}\n{}\n{}\n", json!(input), json!(expected));
+    let mut response = Vec::new();
+    dim_report::redaction::serve(Cursor::new(requests.as_bytes()), &mut response).unwrap();
+    let response: Vec<Value> = std::str::from_utf8(&response)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(response.len(), 3);
+    assert_eq!(response[1]["text"], expected);
+    let spans = response[1]["spans"].as_array().unwrap();
+    let expected_spans = [
+        ("/Users/İsmail", home, "/Users/userus"),
+        ("/users/ismail", home, "/Users/userus"),
+        ("İsmail", account, "userus"),
+        ("ISMAIL", account, "userus"),
+        ("ısmail", account, "userus"),
+        ("ISLAND", "ısland", "[term-1]"),
+        ("ος", "ΟΣ", "[term-2]"),
+        ("οσ", "ΟΣ", "[term-2]"),
+        ("\\u0130smail", account, "userus"),
+        ("\\u0131smail", account, "userus"),
+        ("%c4%b0smail", account, "userus"),
+        ("%c4%b1smail", account, "userus"),
+    ];
+    assert_eq!(spans.len(), expected_spans.len());
+    let mut byte_offset = 0;
+    for (span, (source, original, replacement)) in spans.iter().zip(expected_spans) {
+        let start = byte_offset + input[byte_offset..].find(source).unwrap();
+        byte_offset = start + source.len();
+        let cp_start = input[..start].chars().count();
+        let cp_end = cp_start + source.chars().count();
+        assert_eq!(*span, json!([cp_start, cp_end, original, replacement]));
+    }
+    assert_eq!(response[2]["spans"], json!([]));
+
+    let replacements = dim_report::redaction::Replacements::new(
+        &dim_report::redaction::Facts {
+            homes: vec![home.into()],
+            session: String::new(),
+            member_sessions: Vec::new(),
+            identifiers: Vec::new(),
+            terms: Vec::new(),
+        },
+        &[],
+    )
+    .unwrap();
+    for variant in ["\\u0130smail", "\\u0131smail", "%c4%b0smail", "%c4%b1smail"] {
+        assert!(
+            replacements.has_residue(variant),
+            "residue missed: {variant}"
+        );
+    }
+}
+
+#[test]
+fn evidence_redact_pipe_bounds_unicode_forms_and_preserves_encoded_spans() {
+    let long = "IΣKſ".repeat(64);
+    let mixed = "\\u0130%cf%82Ks".repeat(64);
+    let punctuation = "I/\\\"\\\nΣ";
+    let home = "/Users/İ<&>name";
+    let account = "İ<&>name";
+    let quoted = serde_json::to_string(punctuation).unwrap();
+    let json_body = &quoted[1..quoted.len() - 1];
+    let sources = [
+        mixed,
+        "ISLAND".into(),
+        "\\u0131sland".into(),
+        "%C4%B0SLAND".into(),
+        "\\uD801\\uDC28".into(),
+        "%f0%90%90%a8".into(),
+        punctuation.into(),
+        json_body.into(),
+        json_body.replace('Σ', "\\u03c2"),
+        "I\\/\\\"\\\nΣ".into(),
+        "%c4%b1%2f%5c%22%5c%0a%cf%82".into(),
+        "/Users/\\u0131&lt;&amp;&gt;name".into(),
+        "%c4%b0&lt;&amp;&gt;name".into(),
+        "\\u0049s%6c%41nd".into(),
+        "%2FUsers\\u002F%69%3c%26%3ename".into(),
+    ];
+    let labels = [
+        "[term-1]",
+        "[term-2]",
+        "[term-2]",
+        "[term-2]",
+        "[term-3]",
+        "[term-3]",
+        "[term-4]",
+        "[term-4]",
+        "[term-4]",
+        "[term-4]",
+        "[term-4]",
+        "/Users/useruser",
+        "useruser",
+        "[term-2]",
+        "/Users/useruser",
+    ];
+    let facts = dim_report::redaction::Facts {
+        homes: vec![home.into()],
+        session: String::new(),
+        member_sessions: Vec::new(),
+        identifiers: Vec::new(),
+        terms: vec![
+            long.clone(),
+            "island".into(),
+            "𐐀".into(),
+            punctuation.into(),
+            "IΣ".into(),
+        ],
+    };
+    let replacements = dim_report::redaction::Replacements::new(&facts, &[]).unwrap();
+    for source in &sources {
+        assert!(replacements.has_residue(source), "residue missed: {source}");
+    }
+    let blocked = [
+        "xisland",
+        "islandx",
+        "\\u0130island",
+        "island%c4%b1",
+        "%78island",
+        "island\\u0078",
+        "%2569sland",
+        "\\u005cu0069sland",
+        r"\\u0069sland",
+        "\\uD800",
+        "\\uDC00",
+        "%c0%af",
+        "%ed%a0%80",
+        "%f4%90%80%80",
+        "%c4%",
+    ]
+    .join(" | ");
+    assert_eq!(replacements.text(&blocked), blocked);
+    assert!(!replacements.has_residue(&blocked));
+    assert_eq!(
+        replacements.text(r"%28\u0049s%6c%41nd\u0029"),
+        r"%28[term-2]\u0029"
+    );
+    let input = format!("🧪 {} | {blocked}", sources.join(" | "));
+    let expected = format!("🧪 {} | {blocked}", labels.join(" | "));
+    let init = json!({
+        "facts": {"homes":[home], "session":"", "identifiers":[], "terms":facts.terms},
+        "kept": [],
+    });
+    let requests = format!("{init}\n{}\n{}\n", json!(input), json!(expected));
+    let mut response = Vec::new();
+    dim_report::redaction::serve(Cursor::new(requests.as_bytes()), &mut response).unwrap();
+    let response: Vec<Value> = std::str::from_utf8(&response)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(response[1]["text"], expected);
+    let originals = [
+        long.as_str(),
+        "island",
+        "island",
+        "island",
+        "𐐀",
+        "𐐀",
+        punctuation,
+        punctuation,
+        punctuation,
+        punctuation,
+        punctuation,
+        home,
+        account,
+        "island",
+        home,
+    ];
+    let spans = response[1]["spans"].as_array().unwrap();
+    assert_eq!(spans.len(), sources.len());
+    let mut at = "🧪 ".len();
+    for (((source, label), original), span) in sources.iter().zip(labels).zip(originals).zip(spans)
+    {
+        let start = input[..at].chars().count();
+        let end = start + source.chars().count();
+        assert_eq!(*span, json!([start, end, original, label]));
+        at += source.len() + " | ".len();
+    }
+    assert_eq!(response[2]["spans"], json!([]));
+    assert!(!replacements.has_residue(&expected));
+}
 
 #[derive(Default)]
 struct FailedModel(AtomicUsize);
@@ -96,8 +292,16 @@ fn report_home() -> tempfile::TempDir {
     home
 }
 
-fn report_builder() -> AgentBuilder {
+fn report_builder(home: &std::path::Path) -> AgentBuilder {
+    use dim_agent_capabilities::host_platform::{HostPlatform, ShellStatus};
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+        code: "fixture",
+        reason: "No shell in the report fixture".into(),
+    })
+    .unwrap();
+    platform.home = home.to_owned();
+    builder.process_value(Arc::new(platform));
     defaults::install_with_prompt(
         &mut builder,
         Arc::new(EmptyPromptHost),
@@ -119,7 +323,7 @@ fn report_builder() -> AgentBuilder {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_report_names_the_daemons_build_and_a_client_of_another_one() {
     let home = report_home();
-    let mut builder = report_builder();
+    let mut builder = report_builder(home.path());
     defaults::mock_hosts(&mut builder);
     let server = serve(
         builder,
@@ -206,7 +410,7 @@ async fn a_report_names_the_daemons_build_and_a_client_of_another_one() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn report_rpc_captures_a_session_without_an_error_at_a_fixed_cutoff() {
     let home = report_home();
-    let mut builder = report_builder();
+    let mut builder = report_builder(home.path());
     defaults::mock_hosts(&mut builder);
     let server = serve(
         builder,
@@ -249,7 +453,7 @@ async fn report_rpc_captures_a_session_without_an_error_at_a_fixed_cutoff() {
         owner
             .rpc(
                 "session.submit",
-                json!({"sessionId":id,"branchId":"main","text":SECRET}),
+                json!({"sessionId":id,"branchId":"main","text":USER_PROMPT}),
             )
             .await
             .unwrap();
@@ -333,7 +537,7 @@ async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
         r#"{"version":"0.0.1","protocolVersion":4,"sourceCommit":"test"}"#,
     )
     .unwrap();
-    let mut builder = report_builder();
+    let mut builder = report_builder(home.path());
     let model = Arc::new(FailedModel::default());
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
     let server = serve(
@@ -374,7 +578,7 @@ async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
     owner
         .rpc(
             "session.submit",
-            json!({"sessionId":id, "branchId":"main", "text":SECRET}),
+            json!({"sessionId":id, "branchId":"main", "text":USER_PROMPT}),
         )
         .await
         .unwrap();
@@ -415,6 +619,8 @@ async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
     );
     assert!(evidence["timeline"].get("correlation").is_none());
     assert!(!prepared.to_string().contains(SECRET));
+    assert!(!prepared.to_string().contains(USER_PROMPT));
+    assert!(evidence.get("conversation").is_none());
 
     let report_id = &prepared["reportId"];
     let original = json!({"sessionId":id,"reportId":report_id,"planId":prepared["plan"]["planId"]});
@@ -632,7 +838,7 @@ async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conversation_excludes_unconsumed_inputs_and_multiline_runtime_context() {
     let home = report_home();
-    let mut builder = report_builder();
+    let mut builder = report_builder(home.path());
     defaults::mock_hosts_with_model(
         &mut builder,
         HistoryRenderer::default(),
@@ -693,7 +899,7 @@ async fn conversation_excludes_unconsumed_inputs_and_multiline_runtime_context()
         .rpc("session.report.prepare", json!({"sessionId":id}))
         .await
         .unwrap();
-    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"includeConversation":true})).await.unwrap();
     let excerpts = plan["evidence"]["conversation"].as_array().unwrap();
     assert!(
         excerpts
@@ -734,9 +940,11 @@ async fn conversation_excludes_unconsumed_inputs_and_multiline_runtime_context()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
+async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_member() {
     let home = report_home();
-    let mut builder = report_builder();
+    let synthetic_home = std::path::Path::new("/Users/İsmail");
+    let host_home = synthetic_home.to_str().unwrap();
+    let mut builder = report_builder(synthetic_home);
     defaults::mock_hosts(&mut builder);
     let server = serve(
         builder,
@@ -767,15 +975,21 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
             .await
             .unwrap();
     };
-    let prompt = "Explain why the sky is blue in one sentence.";
+    let prompt = "Confidential fixture: the unreleased project is called Blue Sky.";
     submit(&mut owner, prompt).await;
     let prepared = owner
         .rpc("session.report.prepare", json!({"sessionId":id}))
         .await
         .unwrap();
-    assert!(!prepared.to_string().contains(prompt));
+    let diagnostics_only = |plan: &Value| {
+        assert!(plan["evidence"].get("conversation").is_none());
+        assert!(!plan.to_string().contains(prompt));
+    };
+    diagnostics_only(&prepared["plan"]);
     let default = owner.rpc("session.report.generate", json!({"sessionId":id,"reportId":prepared["reportId"],"planId":prepared["plan"]["planId"]})).await.unwrap();
-    archive(&default);
+    let diagnostics = archive(&default);
+    assert!(diagnostics["evidence"]["timeline"].is_object());
+    assert_eq!(prepared["plan"]["files"], default["files"]);
     assert!(!default.to_string().contains(prompt));
 
     let prepared = owner
@@ -783,7 +997,34 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
         .await
         .unwrap();
     submit(&mut owner, "LATER-BEFORE-PLAN").await;
-    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+    let plan = async |owner: &mut Client, options: Value| {
+        let mut request =
+            json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"}});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(options.as_object().unwrap().clone());
+        owner.rpc("session.report.plan", request).await.unwrap()
+    };
+    let included = plan(
+        &mut owner,
+        json!({"redact":true,"includeConversation":true}),
+    )
+    .await;
+    assert!(included.to_string().contains(prompt));
+    for options in [
+        json!({"redact":true}),
+        json!({"redact":false}),
+        json!({"redact":false,"instructions":"keep timeline, keep conversation"}),
+        json!({"redact":true,"includeConversation":false}),
+    ] {
+        diagnostics_only(&plan(&mut owner, options).await);
+    }
+    let plan = plan(
+        &mut owner,
+        json!({"redact":false,"includeConversation":true}),
+    )
+    .await;
     let excerpts = plan["evidence"]["conversation"].as_array().unwrap();
     assert!(
         excerpts
@@ -792,6 +1033,12 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
     );
     assert!(excerpts.iter().any(|entry| entry["role"] == "assistant" && entry["text"] == format!("Echo: {prompt}")));
     assert!(!plan.to_string().contains("LATER-BEFORE-PLAN"));
+    assert!(
+        plan["files"]["report.md"]
+            .as_str()
+            .unwrap()
+            .contains(prompt)
+    );
     submit(&mut owner, "LATER-BEFORE-GENERATE").await;
     let generated = owner
         .rpc(
@@ -801,6 +1048,7 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
         .await
         .unwrap();
     archive(&generated);
+    assert_eq!(plan["files"], generated["files"]);
     let report = generated["files"]["report.md"].as_str().unwrap();
     assert!(report.contains(prompt));
     assert!(report.contains(&format!("Echo: {prompt}")));
@@ -814,21 +1062,177 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
         assert!(!value.to_string().contains("Echo:"));
     }
 
-    submit(&mut owner, "Why did /report return 2/3?\nAuthorization: Bearer fixture-not-a-real-credential\napi_key=fixture-value").await;
+    let marker = "Why did /report return 2/3?";
+    let session_id = id.as_str().unwrap();
+    let fake_key = format!("sk-{}", "A".repeat(32));
+    let encoded_home = r"%2FUs%65rs\u002F%49sma\u0069l";
+    let discussion =
+        "Discuss Cookie and Set-Cookie handling; the x-cookie header is not a credential field";
+    let cookie_fixtures = [
+        "fixture-cookie-value",
+        "fixture-cookie-folded",
+        "fixture-set-cookie-value",
+        "fixture-cookie-json",
+        "fixture-cookie-escaped-header",
+        "fixture-cookie-next-line-json",
+    ];
+    let folded_fixtures = [
+        "fixture-authorization-folded",
+        "fixture-x-api-key-folded",
+        "fixture-json-authorization-folded",
+    ];
+    let message = format!(
+        "{marker} {session_id} at {host_home}/sample.txt; /USERS/ISMAIL/other.txt; owner İsmail, ISMAIL, ısmail; {encoded_home}/mixed.txt\n\
+         {fake_key}\nAuthorization: Bearer fixture-not-a-real-credential\nAuthorization: configured\n  inline_description: visible-inline-description\nservice_credential = fixture-value\naccess_token = fixture-spaced-value\n\"token\": \"fixture-json-value\"\n\
+         Authorization: Bearer\n  {}\nX-Api-Key:\n  {}\n{{\n  \"Authorization\":\n    \"{}\",\n  \"visible_sibling\": \"visible-sibling\"\n}}\npassword: configured\n  description: visible-nested-sibling\nThe authorization flow is documented below.\n\
+         cOoKiE: sid={};\r\n\tother={}\n\
+         curl -H 'Set-Cookie: sid={}; HttpOnly'\n\
+         {{\"Cookie\": \"sid={}\"}}\n\
+         HTTP/1.1 200 OK\\r\\nSet-Cookie: sid={}\n\
+         {{\"Cookie\":\n\"sid={}\"}}\n{discussion}",
+        folded_fixtures[0],
+        folded_fixtures[1],
+        folded_fixtures[2],
+        cookie_fixtures[0],
+        cookie_fixtures[1],
+        cookie_fixtures[2],
+        cookie_fixtures[3],
+        cookie_fixtures[4],
+        cookie_fixtures[5],
+    );
+    submit(&mut owner, &message).await;
     let prepared = owner
         .rpc("session.report.prepare", json!({"sessionId":id}))
         .await
         .unwrap();
-    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
-    let preview = plan.to_string();
-    assert!(preview.contains("Why did /report return 2/3?"));
-    for forbidden in ["fixture-not-a-real-credential", "fixture-value"] {
-        assert!(!preview.contains(forbidden));
+    let visible = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"includeConversation":true})).await.unwrap();
+    let checked = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":true,"includeConversation":true})).await.unwrap();
+    let selection = |plan: &Value| {
+        plan["evidence"]["conversation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["role"].as_str().unwrap().to_owned(),
+                    e["sequence"].as_u64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let no_credentials = |value: &Value| {
+        let value = value.to_string();
+        for forbidden in [
+            "fixture-not-a-real-credential",
+            "service_credential",
+            "fixture-value",
+            "fixture-spaced-value",
+            "fixture-json-value",
+            fake_key.as_str(),
+        ]
+        .into_iter()
+        .chain(cookie_fixtures)
+        .chain(folded_fixtures)
+        {
+            assert!(!value.contains(forbidden), "fixture leaked: {forbidden}");
+        }
+    };
+    for (plan, redact) in [(&visible, false), (&checked, true)] {
+        no_credentials(plan);
+        assert_eq!(selection(plan), selection(&visible));
+        let conversation = plan["evidence"]["conversation"].as_array().unwrap();
+        let report = plan["files"]["report.md"].as_str().unwrap();
+        for role in ["user", "assistant"] {
+            let text = conversation
+                .iter()
+                .find(|e| e["role"] == role && e["text"].as_str().unwrap().contains(marker))
+                .unwrap()["text"]
+                .as_str()
+                .unwrap();
+            let line = text.lines().find(|line| line.contains(marker)).unwrap();
+            assert!(report.contains(line));
+            assert!(line.contains("/sample.txt"));
+            assert!(text.lines().any(|line| line == discussion));
+            assert!(report.contains(discussion));
+            assert!(text.contains("visible_sibling"));
+            assert!(text.contains("visible-nested-sibling"));
+            assert!(text.contains("visible-inline-description"));
+            assert!(text.contains("The authorization flow is documented below."));
+            assert_eq!(line.contains(encoded_home), !redact);
+            assert_eq!(line.contains("/Users/userus/mixed.txt"), redact);
+            assert_eq!(line.contains(session_id), !redact);
+            assert_eq!(line.contains(host_home), !redact);
+            for original in ["İsmail", "ISMAIL", "ısmail"] {
+                assert_eq!(line.contains(original), !redact);
+            }
+            if redact {
+                assert!(line.contains("00000000-0000-4000-8000-000000000000"));
+                assert!(line.contains("/Users/userus/sample.txt; /Users/userus/other.txt"));
+                assert!(line.contains("owner userus, userus, userus"));
+            }
+        }
+        assert!(
+            !plan["files"]["diagnostics.json"]
+                .as_str()
+                .unwrap()
+                .contains(marker)
+        );
     }
-    let hidden = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":true})).await.unwrap();
-    assert!(hidden["evidence"].get("conversation").is_none());
-    let omitted = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"instructions":"omit timeline"})).await.unwrap();
-    assert!(omitted["evidence"].get("conversation").is_none());
+    let stale = owner
+        .rpc(
+            "session.report.generate",
+            json!({"sessionId":id,"reportId":prepared["reportId"],"planId":visible["planId"]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(app_error(&stale), Some("report_plan_stale"));
+    let generated = owner
+        .rpc(
+            "session.report.generate",
+            json!({"sessionId":id,"reportId":prepared["reportId"],"planId":checked["planId"]}),
+        )
+        .await
+        .unwrap();
+    archive(&generated);
+    no_credentials(&generated);
+    assert_eq!(checked["files"], generated["files"]);
+    for surface in [
+        &generated["files"]["diagnostics.json"],
+        &generated["body"],
+        &generated["sharing"],
+    ] {
+        assert!(!surface.to_string().contains(marker));
+        assert!(!surface.to_string().contains("Echo:"));
+    }
+    let prepared = owner
+        .rpc("session.report.prepare", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    let unchecked = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"includeConversation":true})).await.unwrap();
+    let raw_zip = owner
+        .rpc(
+            "session.report.generate",
+            json!({"sessionId":id,"reportId":prepared["reportId"],"planId":unchecked["planId"]}),
+        )
+        .await
+        .unwrap();
+    archive(&raw_zip);
+    no_credentials(&raw_zip);
+    assert_eq!(raw_zip["files"], visible["files"]);
+    assert_eq!(
+        raw_zip["files"]["diagnostics.json"],
+        generated["files"]["diagnostics.json"]
+    );
+    let prepared = owner
+        .rpc("session.report.prepare", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    for redact in [true, false] {
+        let omitted = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":redact,"includeConversation":true,"instructions":"omit timeline"})).await.unwrap();
+        assert!(omitted["evidence"].get("conversation").is_none());
+        assert!(omitted["evidence"].get("timeline").is_none());
+        assert!(!omitted["files"].to_string().contains(marker));
+    }
     for (label, eol) in [("LF", "\n"), ("CRLF", "\r\n"), ("CR", "\r")] {
         let message = format!("Example {label}{eol}{eol}# Literal heading");
         submit(&mut owner, &message).await;
@@ -836,7 +1240,7 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
             .rpc("session.report.prepare", json!({"sessionId":id}))
             .await
             .unwrap();
-        let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+        let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"includeConversation":true})).await.unwrap();
         let generated = owner
             .rpc(
                 "session.report.generate",
@@ -855,7 +1259,33 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
         }
         assert!(!report.contains('\r'));
     }
-    let long = "合成可见文本".repeat(3000);
+    for sensitive in [
+        format!("{}sk-{}", "x ".repeat(1006), "B".repeat(40)),
+        format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+            "BOUNDARYKEYDATA".repeat(160)
+        ),
+    ] {
+        submit(&mut owner, &format!("Boundary example\n{sensitive}")).await;
+        let prepared = owner
+            .rpc("session.report.prepare", json!({"sessionId":id}))
+            .await
+            .unwrap();
+        let unchecked = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"includeConversation":true})).await.unwrap();
+        let checked = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":true,"includeConversation":true})).await.unwrap();
+        for plan in [&checked, &unchecked] {
+            let conversation = plan["evidence"]["conversation"].as_array().unwrap();
+            assert!(
+                conversation
+                    .iter()
+                    .any(|e| e["text"].as_str().unwrap().contains("Boundary example"))
+            );
+            for forbidden in ["sk-B", "BOUNDARYKEYDATA", "END PRIVATE KEY"] {
+                assert!(!plan.to_string().contains(forbidden));
+            }
+        }
+    }
+    let long = "合成可见文本".repeat(300);
     for _ in 0..4 {
         submit(&mut owner, &long).await;
     }
@@ -863,8 +1293,9 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
         .rpc("session.report.prepare", json!({"sessionId":id}))
         .await
         .unwrap();
-    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"includeConversation":true})).await.unwrap();
     let excerpts = plan["evidence"]["conversation"].as_array().unwrap();
+    assert!(prepared["plan"]["evidence"].get("conversation").is_none());
     assert!(!excerpts.is_empty());
     assert!(excerpts.len() <= 6);
     let mut total = 0;
@@ -892,6 +1323,167 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
         .await
         .unwrap();
     archive(&generated);
+    drop(owner);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test]
+async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
+    let home = report_home();
+    let synthetic_home = std::path::Path::new("/Users/İsmail");
+    let mut builder = report_builder(synthetic_home);
+    defaults::mock_hosts(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            platform_home: Some(home.path().into()),
+            unix_path: Some(home.path().join("server.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut owner = connect(&server).await;
+    let created = owner
+        .rpc("session.create", json!({"cwd":home.path(),"tools":[]}))
+        .await
+        .unwrap();
+    let id = &created["sessionId"];
+    let marker = "recognized-credential-fixture";
+    let stripe = "sk_live_51abcdefghijklmnopqrstuv";
+    let google = "AIzaSyA1234567890abcdefghijklmnopqrstu";
+    let asia = "ASIA1234567890ABCDEF";
+    let userinfo = "https://alice:pw123@internal.example/api";
+    let bearer = "Bearer abcdefghijklmnopqrstuvwxyz";
+    let aws = "aws-secret-fixture";
+    let aws_json = "json-secret-fixture";
+    let secret_key = "secret-key-fixture";
+    let private_key = "private-key-fixture";
+    let signing_key = "signing-key-fixture";
+    let groq = "gsk_fixture";
+    let proxy = "cHJveHk6cHc=";
+    let access = "compact-access-fixture";
+    let client = "compact-client-fixture";
+    let refresh = "compact-refresh-fixture";
+    let prose = "Secretary: available";
+    let visible = "credential-fixture-visible-tail";
+    let message = format!(
+        "{marker}\n{stripe}\n{google}\n{asia}\n{userinfo}\n{bearer}\n\
+         aws_secret_access_key = {aws}\n\"aws_secret_access_key\": \"{aws_json}\"\n\
+         secret_key = {secret_key}\nprivate_key = {private_key}\n\
+         signing_key = {signing_key}\nGROQ_API_KEY={groq}\n\
+         Proxy-Authorization: Basic {proxy}\n\"accessToken\": \"{access}\"\n\
+         clientSecret: {client}\nrefreshToken = {refresh}\n{prose}\n{visible}"
+    );
+    owner
+        .rpc(
+            "session.submit",
+            json!({"sessionId":id,"branchId":"main","text":message}),
+        )
+        .await
+        .unwrap();
+    owner
+        .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+        .await
+        .unwrap();
+    for redact in [false, true] {
+        let prepared = owner
+            .rpc("session.report.prepare", json!({"sessionId":id}))
+            .await
+            .unwrap();
+        let plan = owner
+            .rpc(
+                "session.report.plan",
+                json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":redact,"includeConversation":true}),
+            )
+            .await
+            .unwrap();
+        let text = plan.to_string();
+        for secret in [
+            stripe,
+            google,
+            asia,
+            userinfo,
+            bearer,
+            aws,
+            aws_json,
+            secret_key,
+            private_key,
+            signing_key,
+            groq,
+            proxy,
+            access,
+            client,
+            refresh,
+        ] {
+            assert!(
+                !text.contains(secret),
+                "plan leaked {secret} with redact={redact}"
+            );
+        }
+        assert!(text.contains(marker), "marker missing with redact={redact}");
+        assert!(
+            text.contains(prose),
+            "ordinary prose missing with redact={redact}"
+        );
+        assert!(
+            text.contains(visible),
+            "visible tail missing with redact={redact}"
+        );
+        assert!(
+            text.contains("[credential omitted]"),
+            "mask missing with redact={redact}"
+        );
+        assert!(
+            text.contains("[excerpt withheld]"),
+            "withheld line missing with redact={redact}"
+        );
+        let generated = owner
+            .rpc(
+                "session.report.generate",
+                json!({"sessionId":id,"reportId":prepared["reportId"],"planId":plan["planId"]}),
+            )
+            .await
+            .unwrap();
+        archive(&generated);
+        assert_eq!(plan["files"], generated["files"]);
+        let text = generated.to_string();
+        for secret in [
+            stripe,
+            google,
+            asia,
+            userinfo,
+            bearer,
+            aws,
+            aws_json,
+            secret_key,
+            private_key,
+            signing_key,
+            groq,
+            proxy,
+            access,
+            client,
+            refresh,
+        ] {
+            assert!(
+                !text.contains(secret),
+                "ZIP leaked {secret} with redact={redact}"
+            );
+        }
+        assert!(
+            generated["files"]["report.md"]
+                .as_str()
+                .unwrap()
+                .contains(marker)
+        );
+        assert!(
+            generated["files"]["report.md"]
+                .as_str()
+                .unwrap()
+                .contains(prose)
+        );
+    }
     drop(owner);
     server.shutdown();
     server.join().await.unwrap();

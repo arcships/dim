@@ -77,6 +77,7 @@ pub(super) enum InstructionsStatus {
 pub(super) fn review(
     snapshot: &Snapshot,
     redact: bool,
+    include_conversation: bool,
     instructions: &str,
 ) -> (Reviewed, InstructionsStatus) {
     let (mut timeline, mut code, mut correlation) = (true, true, true);
@@ -128,6 +129,11 @@ pub(super) fn review(
         .client_version
         .clone()
         .filter(|client| *client != identity);
+    let conversation = if include_conversation && timeline.is_some() {
+        snapshot.conversation.excerpts(redact).to_vec()
+    } else {
+        Vec::new()
+    };
     (
         Reviewed {
             evidence: Evidence {
@@ -141,18 +147,23 @@ pub(super) fn review(
                 },
             },
             unavailable,
-            conversation: Vec::new(),
+            conversation,
         },
         status,
     )
 }
 
-impl Reviewed {
-    pub(super) fn includes_timeline(&self) -> bool {
-        self.evidence.timeline.is_some()
-    }
+#[derive(Serialize)]
+pub(super) struct Rendered {
+    #[serde(skip)]
+    title: &'static str,
+    #[serde(skip)]
+    body: String,
+    files: std::collections::BTreeMap<&'static str, String>,
+}
 
-    pub(super) fn generate(self) -> Result<Value, RpcError> {
+impl Reviewed {
+    pub(super) fn render(&self) -> Result<Rendered, RpcError> {
         let (title, version, mut body) = match &self.evidence.captured_error {
             Some(error) => (
                 error.summary,
@@ -221,7 +232,7 @@ impl Reviewed {
         }
         let mut report = format!("# {title}\n\n{body}");
         if !self.conversation.is_empty() {
-            report.push_str("\n## Conversation excerpts\n\nExplicitly included with redaction off. Bounded excerpts; not guaranteed to be sanitized.\n");
+            report.push_str("\n## Conversation excerpts\n\nReview these recent messages for private details before sharing.\n");
             for excerpt in &self.conversation {
                 writeln!(
                     report,
@@ -240,7 +251,20 @@ impl Reviewed {
             "unavailable": self.unavailable,
         }))
         .map_err(|_| failed())?;
-        let files = [("report.md", report), ("diagnostics.json", diagnostics)];
+        Ok(Rendered {
+            title,
+            body,
+            files: std::collections::BTreeMap::from([
+                ("report.md", report),
+                ("diagnostics.json", diagnostics),
+            ]),
+        })
+    }
+}
+
+impl Rendered {
+    pub(super) fn generate(self) -> Result<Value, RpcError> {
+        let Self { title, body, files } = self;
         let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
         for (name, content) in &files {
             zip.start_file(*name, SimpleFileOptions::default())
@@ -260,7 +284,7 @@ impl Reviewed {
         reply(json!({
             "title": title,
             "body": body,
-            "files": std::collections::BTreeMap::from(files),
+            "files": files,
             "archive": {"filename": "dim-report.zip", "base64": STANDARD.encode(archive)},
             "sharing": {
                 "githubIssueUrl": github.as_str(),

@@ -1,7 +1,9 @@
+use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_types::{BranchCreateFailedData, ModelId, ModelOutputOutcome};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::wire::{Event, EventContent};
 
@@ -75,6 +77,7 @@ pub enum Action {
     Plan {
         draft: Draft,
         redact: bool,
+        include_conversation: bool,
         instructions: String,
     },
     Generate(Draft),
@@ -117,16 +120,52 @@ pub struct Plan {
     pub plan_id: String,
     pub evidence: Evidence,
     pub instructions_status: String,
+    pub files: Option<ReportFiles>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReportFiles {
+    #[serde(rename = "report.md")]
+    pub report: String,
+    #[serde(rename = "diagnostics.json")]
+    pub diagnostics: String,
+}
+
+impl ReportFiles {
+    pub fn preview(&self) -> String {
+        let mut text = String::new();
+        for (name, content) in [
+            ("report.md", &self.report),
+            ("diagnostics.json", &self.diagnostics),
+        ] {
+            text.push_str(&format!("--- {name} ---\n"));
+            for ch in content.chars() {
+                if ch != '\n'
+                    && (ch.is_control()
+                        || matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+                {
+                    text.extend(ch.escape_debug());
+                } else {
+                    text.push(ch);
+                }
+            }
+            text.push_str("\n\n");
+        }
+        text
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum LocalGeneration {
+pub(crate) enum LocalGeneration {
     Local,
 }
 
 #[derive(Deserialize)]
 pub struct Evidence {
+    #[serde(default)]
+    pub conversation: Vec<serde::de::IgnoredAny>,
     pub timeline: Option<TimelineEvidence>,
     pub unavailable: Option<EvidenceUnavailable>,
 }
@@ -149,8 +188,72 @@ pub enum EvidenceUnavailable {
 #[derive(Deserialize)]
 pub struct GeneratedReport {
     pub title: String,
+    pub files: Option<ReportFiles>,
     pub archive: Archive,
     pub sharing: Sharing,
+}
+
+impl GeneratedReport {
+    pub fn zip_bytes(&self) -> crate::Result<Vec<u8>> {
+        const LIMIT: usize = 64 * 1024;
+        if self.archive.base64.len() > LIMIT.div_ceil(3) * 4 {
+            return Err(crate::ui::i18n::t("Invalid report ZIP").into());
+        }
+        let bytes = STANDARD.decode(&self.archive.base64)?;
+        if bytes.len() > LIMIT || !bytes.starts_with(b"PK\x03\x04") {
+            return Err(crate::ui::i18n::t("Invalid report ZIP").into());
+        }
+        Ok(bytes)
+    }
+}
+
+pub const EMAIL: &str = "feedback@arcships.ai";
+pub const EMAIL_SUBJECT: &str = "Dim report";
+
+#[derive(Clone, Copy, Default)]
+pub enum MailScope {
+    #[default]
+    ReportOnly,
+    InternalRegression,
+}
+
+impl MailScope {
+    fn purpose(self) -> &'static str {
+        match self {
+            Self::ReportOnly => "Issue investigation only; no evaluation authorization.",
+            Self::InternalRegression => {
+                "Issue investigation and team-internal regression evaluation of this ZIP only. No external model providers, training, or publication."
+            }
+        }
+    }
+
+    pub fn body(self, bytes: &[u8]) -> String {
+        format!(
+            "Purpose: {}\r\nSHA-256: {:x}",
+            self.purpose(),
+            Sha256::digest(bytes)
+        )
+    }
+}
+
+pub fn mailto(body: &str) -> String {
+    fn encode(text: &str) -> String {
+        use std::fmt::Write as _;
+        let mut encoded = String::new();
+        for byte in text.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                encoded.push(char::from(byte));
+            } else {
+                write!(encoded, "%{byte:02X}").expect("writing to a string");
+            }
+        }
+        encoded
+    }
+    format!(
+        "mailto:{EMAIL}?subject={}&body={}",
+        encode(EMAIL_SUBJECT),
+        encode(body)
+    )
 }
 
 #[derive(Deserialize)]
