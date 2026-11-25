@@ -329,7 +329,7 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
             "{id:?}: a rejected id publishes no Session"
         );
     }
-    for id in [".session-ids", ".SESSION-IDS"] {
+    for id in [".session-ids", ".SESSION-IDS", ".session-ids.", ".session-ids "] {
         let entered = Arc::new(AtomicBool::new(false));
         let error = rejected(
             agent

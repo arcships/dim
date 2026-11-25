@@ -72,7 +72,7 @@ a Session stored before this step, or written by another face of the store, hold
 its name is accepted and both address one directory. The booking proves the name in the output root's volume; the
 persistent shell's directory lies below the host home, which may be another volume. Two databases that share one output
 root refuse each other's booked names, because one name addresses one directory, and `.session-ids` is no Session id in
-any spelling a case-insensitive filesystem folds to it. SessionStore owns the rows and the files under the database directory. Its new steps
+any spelling this filesystem may fold to it, its case and on Windows its trailing dots and spaces. SessionStore owns the rows and the files under the database directory. Its new steps
 are Rust methods over the native store, not services: only Agents calls them.
 
 ## 3. Deletion

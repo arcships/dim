@@ -119,15 +119,18 @@ impl RestoreSessionOptions {
 /// addresses: an absolute path, a current or parent directory, and a path of
 /// several components are rejected with [`AgentError::InvalidInput`].
 ///
-/// [`SESSION_ID_BOOKINGS`] is reserved in every spelling a case-insensitive
-/// filesystem may fold to it: that entry below an output root holds the
-/// bookings, so a Session named by it would own every other Session's name.
+/// [`SESSION_ID_BOOKINGS`] is reserved in every spelling a filesystem may fold
+/// to it — its case, and on Windows its trailing dots and spaces: that entry
+/// below an output root holds the bookings, so a Session named by it would own
+/// every other Session's name.
 ///
 /// A [`Agent::create_session`] checks this and also books that component below
 /// the host's output root, so the id it accepts is one this filesystem can
 /// back with a directory, and no other Session holds the same directory.
 pub fn check_session_id(id: &str) -> Result<()> {
-    if id.eq_ignore_ascii_case(SESSION_ID_BOOKINGS)
+    if id
+        .trim_end_matches(|c| c == '.' || c == ' ')
+        .eq_ignore_ascii_case(SESSION_ID_BOOKINGS)
         || !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
         [std::path::Component::Normal(name)] if name == id)
     {
