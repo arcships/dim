@@ -64,7 +64,10 @@ or the Session facade.
 
 Rpc checks the params and the Session's protocol version and calls Agents. Agents owns the Session lifecycle: the
 admission gate `acquire` already holds while it restores a Session, `Session::close`, and prepared creation
-(`Agent::create_session` with `CreateSessionOptions::prepare`). SessionStore owns the rows and the files under the database directory. Its new steps
+(`Agent::create_session` with `CreateSessionOptions::prepare`). A creation books its new id's output name first —
+`<output root>/.session-ids/<id>`, one directory named by the id in the root its command output addresses — before its
+prepare step writes the rows: an id this filesystem cannot back with a directory, or one another Session already
+books, is refused before anything prepares, writes or publishes. SessionStore owns the rows and the files under the database directory. Its new steps
 are Rust methods over the native store, not services: only Agents calls them.
 
 ## 3. Deletion
@@ -127,7 +130,8 @@ are Rust methods over the native store, not services: only Agents calls them.
    write are removed with the rest. From the close on, S's slot is closed: S does not load again in this process,
    whether or not its rows go (step 6).
 3. **Command output.** SessionStore removes the Session's output directories before any row changes
-   (ADR 013 D4): its own `<database directory>/command-output/<S>/`, and the directory of every
+   (ADR 013 D4): its own `<database directory>/command-output/<S>/`, the booking a creation made for
+   the id (`<database directory>/command-output/.session-ids/<S>/`), and the directory of every
    path it has a row for, so inherited `command-output/<parent>/` and
    `.dim/exec/<parent>/<branch>/` directories a fork copied are covered. A directory is removed
    only if no row of another Session in this database names a path under it. SessionStore
@@ -174,6 +178,7 @@ are Rust methods over the native store, not services: only Agents calls them.
 | Output ownership | Native store, `session_output_owners` rows (v29, [ADR 013](../../adr/013-command-output-ownership.md) D1) | Step 4, same transaction |
 | Worktree usage associations | Native store, `session_worktrees` rows ([worktree access §4](../worktree-access.md#4-持久使用关联与清理边界)) | Step 4, same transaction; directory records and worktree files remain |
 | Exec output, offloaded `read` results and persistent shell logs | `<database directory>/command-output/<S>/` and every directory named by S's output rows | Step 3. A directory another Session in this database still names is kept |
+| A creation's booking of the id | `<database directory>/command-output/.session-ids/<S>/` | Step 3. It holds no output and has no row; a creation that fails removes its own before this step |
 | Loaded instance, leases, subscriptions, in-flight uses | Process memory | Step 2 |
 | Protocol version, admission slot, unavailable-Session entry | Agents, in memory | Step 6 |
 | Collaboration relations that name S, the member Sessions S leads and the Agents S owns | Durable: `agent_sessions.leader_session_id` and `agents.owner_session_id` ([Collaboration §6](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)); Collaboration's relations are rebuilt from them | Agents deletes a leader with its Team: each member's own delete, in which SessionStore removes that Session's rows, then the Agent records Agents owns, then S. Collaboration drops a relation when it observes a member's close ([collaboration.rs](../../../crates/dim-app-server/src/collaboration.rs) `session_ended`) or the delete of an unloaded member, and rebuilds the rest when it loads ([idle unload §7](idle-unload.md#7-races-and-interactions)) |
@@ -238,7 +243,8 @@ gone.
 | During the sweep | S5a's states | — | [Session files §6](session-files.md#6-deletion-crash-recovery-and-serialization) |
 
 **Why the directory goes before the commit.** The Session's own `command-output/<S>/` directory has no row of its
-own (only the files in it may). Once the rows are gone, an orphaned directory could only be found by listing
+own (only the files in it may), and neither has its booking under `.session-ids/`. Once the rows are gone, an orphaned
+directory could only be found by listing
 `command-output/`, and that directory is shared by every database in the database directory (two `--database` files
 in one directory), so a listing cannot tell a deleted Session's directory from another store's. Removing it first
 means no committed delete ever leaves one behind. A directory another Session in this database still names is kept
@@ -249,9 +255,10 @@ commit, made with `synchronous=FULL`, stays. `remove` now syncs the parent befor
 gap; HostPlatform syncs the parent of a removed `.dim/exec` directory the same way.
 
 **Only an id with rows here.** For the same reason a delete removes the directory only while its own database has
-rows of the id. Two daemons on `a.sqlite` and `b.sqlite` in one directory share `command-output/`; a
+rows of the id, and with them the id's booking. Two daemons on `a.sqlite` and `b.sqlite` in one directory share `command-output/`; a
 `session.delete {S_b}` sent to the first, for example by a CLI given the wrong `--database`, replies `{deleted: false}` and must not
-remove the output of S_b, which is alive in the second. The check costs no convergence: the directory goes before the
+remove the output of S_b, which is alive in the second, nor its booking, which keeps a second creation of the same
+name from taking the same directory. The check costs no convergence: the directory goes before the
 rows, so a database with no rows of S has no directory of S left to remove, and Agents' admission gate keeps two
 deletes of one id from interleaving. A retry after a commit therefore removes nothing, as it needs nothing removed.
 
@@ -555,7 +562,7 @@ delete against loading.
 | The delete's close during the fork's cut check | The check fails `session_closed` |
 | Put against delete or fork | Session files §6 |
 | Two deletes | The second waits for the gate, then finds no rows: `{deleted: false}` |
-| Delete of a Session still building: a `session.create`, a member's creation or a fork whose rows are committed and listed | The creation holds the new id's gate from before its rows commit until the Session is published and its protocol version recorded (D6). The delete waits, then closes the published Session and removes its rows. A creation that fails rolls its rows back, and the delete finds nothing |
+| Delete of a Session still building: a `session.create`, a member's creation or a fork whose rows are committed and listed | The creation books the new id's output name before its prepare step and holds the id's gate from before its rows commit until the Session is published and its protocol version recorded (D6). The delete waits, then closes the published Session and removes its rows and its booking. A creation that fails rolls its rows back and releases its booking, and the delete finds nothing |
 | Delete against attach, submit or a Session method | They wait for the gate, then fail `session_closed`; requests that already hold a use end with the close |
 | Delete against the Session's own appends | The close settles them; the row transaction follows every queued append on the Timeline writer |
 | Fork against appends to the source | Rows through `at` never change, and the fork copies no row after them: child directories come without events |

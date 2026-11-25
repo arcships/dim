@@ -53,6 +53,8 @@ const SEARCH_METHOD: &str = "session.files.search";
 #[derive(Debug, Clone)]
 pub struct WorkspaceToolsConfig {
     /// Absolute root of command output files, `<output_root>/<session_id>/`.
+    /// [`install`] also gives it to the Agent as the root below which a
+    /// Session id is booked before it prepares or writes.
     pub output_root: PathBuf,
     /// The root boundary of a session's file tools, when a host configures
     /// one. The product passes `None`: the tools keep their unbounded
@@ -69,6 +71,7 @@ pub use files::FileToolBoundary;
 /// coordinator, one lock domain for every Session it serves, across their
 /// generations and its own, and hands it to each Session's part.
 pub fn install(builder: &mut AgentBuilder, config: WorkspaceToolsConfig) {
+    builder.session_output_root(config.output_root.clone());
     let coordinator = Arc::<FileWriteCoordinator>::default();
     builder.plugin(move |names| {
         Ok(Box::new(WorkspaceToolsOwner::new(
