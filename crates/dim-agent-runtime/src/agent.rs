@@ -129,7 +129,7 @@ impl RestoreSessionOptions {
 /// back with a directory, and no other Session holds the same directory.
 pub fn check_session_id(id: &str) -> Result<()> {
     if id
-        .trim_end_matches(|c| c == '.' || c == ' ')
+        .trim_end_matches(['.', ' '])
         .eq_ignore_ascii_case(SESSION_ID_BOOKINGS)
         || !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
         [std::path::Component::Normal(name)] if name == id)
