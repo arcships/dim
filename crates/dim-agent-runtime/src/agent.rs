@@ -125,8 +125,9 @@ impl RestoreSessionOptions {
 /// every other Session's name.
 ///
 /// A [`Agent::create_session`] checks this and also books that component below
-/// the host's output root, so the id it accepts is one this filesystem can
-/// back with a directory, and no other Session holds the same directory.
+/// the host's output root, so the id it accepts is one this filesystem can back
+/// with a directory, and a name it folds to one another creation booked is
+/// refused.
 pub fn check_session_id(id: &str) -> Result<()> {
     if id
         .trim_end_matches(['.', ' '])
@@ -146,8 +147,8 @@ pub const SESSION_ID_BOOKINGS: &str = ".session-ids";
 /// one, at `<root>/.session-ids/<id>`. The entry sits in the root the Session's
 /// command output addresses and is the id itself, so booking proves this
 /// filesystem can back the id with a directory there, and that no other
-/// Session holds a name it cannot tell apart from this one. The caller owns
-/// the booking until it removes it ([`release_booking`]).
+/// creation has booked a name it cannot tell apart from this one. The caller
+/// owns the booking until it removes it ([`release_booking`]).
 async fn book_session_id(root: Option<&Path>, id: &str) -> Result<()> {
     let Some(root) = root else {
         return Ok(());

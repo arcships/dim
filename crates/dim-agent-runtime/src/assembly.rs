@@ -388,8 +388,8 @@ impl AgentBuilder {
     /// The root of each Session's command-output directory, `<root>/<session id>`:
     /// [`Agent::create_session`] books the id's name there before it prepares,
     /// writes or publishes, so an id this filesystem cannot back with a
-    /// directory, or one another Session already holds, is rejected before any
-    /// of those steps ([`check_session_id`]).
+    /// directory, or one it folds to a name another creation booked, is
+    /// rejected before any of those steps ([`check_session_id`]).
     pub fn session_output_root(&mut self, root: impl Into<std::path::PathBuf>) -> &mut Self {
         self.assembly.session_output_root = Some(root.into());
         self
