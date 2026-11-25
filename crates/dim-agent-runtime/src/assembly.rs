@@ -273,9 +273,6 @@ pub(crate) struct Assembly {
     pub config: AgentConfig,
     /// Maximum inactivity interval while opening a Session or branch.
     pub startup_timeout: Duration,
-    /// The root of each Session's command-output directory, when the host
-    /// configures one (`<root>/<session id>`).
-    session_output_root: Option<std::path::PathBuf>,
     pub store: Arc<TimelineStoreBinding>,
     pub ephemeral_store: Option<Arc<MemoryTimelineStore>>,
     /// Shutdowns of instances whose creation was abandoned before the
@@ -354,7 +351,6 @@ impl AgentBuilder {
             assembly: Assembly {
                 config,
                 startup_timeout: Duration::from_secs(10),
-                session_output_root: None,
                 store: TimelineStoreBinding::new(Arc::new(MemoryTimelineStore::default())),
                 ephemeral_store: None,
                 abandoned: tokio_util::task::TaskTracker::new(),
@@ -384,19 +380,6 @@ impl AgentBuilder {
     pub fn startup_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.assembly.startup_timeout = timeout;
         self
-    }
-    /// The root of each Session's command-output directory, `<root>/<session id>`:
-    /// [`Agent::create_session`] books the id's name there before it prepares,
-    /// writes or publishes, so an id this filesystem cannot back with a
-    /// directory, or one it folds to a name another creation booked, is
-    /// rejected before any of those steps ([`check_session_id`]).
-    pub fn session_output_root(&mut self, root: impl Into<std::path::PathBuf>) -> &mut Self {
-        self.assembly.session_output_root = Some(root.into());
-        self
-    }
-    /// The configured command-output root, if the host configured one.
-    pub(crate) fn output_root(&self) -> Option<&std::path::Path> {
-        self.assembly.session_output_root.as_deref()
     }
     /// The assembly's service names: hosts register theirs before adding
     /// parts that depend on them, and their loader uses this catalog.

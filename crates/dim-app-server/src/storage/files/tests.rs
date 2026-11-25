@@ -365,31 +365,6 @@ async fn an_interrupted_delete_converges_on_retry_and_the_next_sweep() {
     fixture.close().await;
 }
 
-/// ADR 013 D4: a delete removes the booking a creation made for the id, so
-/// the name it held is free for a later creation.
-#[tokio::test]
-async fn a_delete_returns_the_booked_name_to_a_later_creation() {
-    let fixture = Fixture::new().await;
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
-    let output = fixture.home.join("command-output");
-    let booking = output
-        .join(dim_agent_runtime::SESSION_ID_BOOKINGS)
-        .join("reused");
-    fixture.session("reused").await;
-    std::fs::create_dir_all(&booking).unwrap();
-    std::fs::create_dir_all(output.join("reused")).unwrap();
-    std::fs::write(output.join("reused/exec.log"), b"output").unwrap();
-
-    assert!(store.delete_session("reused").await.unwrap());
-    assert!(!booking.exists(), "the delete removes the booked name");
-    assert!(!output.join("reused").exists());
-
-    fixture.session("reused").await;
-    std::fs::create_dir(&booking).expect("a deleted Session's name is free again");
-    drop(store);
-    fixture.close().await;
-}
-
 /// A fork persists the configuration its caller read: a source update that
 /// lands after that read changes neither the live fork nor its record.
 #[tokio::test]

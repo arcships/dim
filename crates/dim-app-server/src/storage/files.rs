@@ -300,35 +300,32 @@ impl SessionFiles {
     }
 
     /// S5c's delete step: removes every output directory the Session needs
-    /// (ADR 013 D4): its own `<database directory>/command-output/<session>`,
-    /// the booking a creation made for its id
-    /// (`<database directory>/command-output/.session-ids/<session>`), and the
-    /// directory of every path it has a row for, except one another Session of
-    /// this database still names a path under. An absent directory counts as
-    /// removed. Each removal is durable before the caller commits the row
-    /// deletion. Fails without the node's FileStorage, without HostPlatform for
-    /// a shell directory, or with `Locked` or `DirectoryNotEmpty` while a writer
-    /// outside the closed Session holds an entry; the delete is then retried.
+    /// (ADR 013 D4): its own `<database directory>/command-output/<session>`
+    /// and the directory of every path it has a row for, except one another
+    /// Session of this database still names a path under. An absent directory
+    /// counts as removed. Each removal is durable before the caller commits
+    /// the row deletion. Fails without the node's FileStorage, without
+    /// HostPlatform for a shell directory, or with `Locked` or
+    /// `DirectoryNotEmpty` while a writer outside the closed Session holds
+    /// an entry; the delete is then retried.
     pub(super) async fn remove_output(&self, session_id: &str) -> dim_agent_runtime::Result<()> {
         let session = session_id.to_owned();
-        let output = self
+        let own = self
             .0
             .db
             .path
             .parent()
+            .map(|directory| {
+                directory
+                    .join(super::COMMAND_OUTPUT_DIRECTORY)
+                    .join(session_id)
+            })
             .ok_or_else(|| error("the native store path has no directory"))?;
-        let own = output
-            .join(super::COMMAND_OUTPUT_DIRECTORY)
-            .join(session_id);
-        let booking = output
-            .join(super::COMMAND_OUTPUT_DIRECTORY)
-            .join(dim_agent_runtime::SESSION_ID_BOOKINGS)
-            .join(session_id);
         let candidates = self
             .0
             .db
             .run_read(move |connection| {
-                let mut candidates = BTreeSet::from([own, booking]);
+                let mut candidates = BTreeSet::from([own]);
                 let mut query = connection
                     .prepare("SELECT DISTINCT path FROM session_output_owners WHERE session_id = ?1")
                     .map_err(error)?;

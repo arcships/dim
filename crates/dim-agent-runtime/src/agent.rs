@@ -11,7 +11,6 @@ use dim_agent_types::{AgentEvent, BranchSource, InputMessageData, InputMode};
 use rutis::host::{CtxHost, FiberView};
 use std::{
     collections::BTreeMap,
-    path::Path,
     sync::{Arc, Mutex, Weak},
 };
 use tokio::sync::watch;
@@ -43,14 +42,9 @@ enum SessionStart {
     Prepared(Preparation),
     Restore,
 }
-/// What a creation that fails undoes: its store rows and the output name it
-/// booked.
+/// What a creation that fails undoes in the store.
 enum Cleanup {
-    /// Nothing was written: no rows and no booked name.
     Nothing,
-    /// The id's output name is booked and no rows were written.
-    Booked,
-    /// The id's rows were written; its output name is booked.
     Rollback,
     Release,
 }
@@ -71,8 +65,7 @@ impl CreateSessionOptions {
     /// The id must be one normal path component, which is what Session
     /// command-output storage addresses ([`check_session_id`]);
     /// [`Agent::create_session`] rejects any other id before it prepares,
-    /// writes or publishes, as it rejects an id the host's output root cannot
-    /// back with a directory ([`AgentBuilder::session_output_root`]).
+    /// writes or publishes.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
@@ -118,81 +111,21 @@ impl RestoreSessionOptions {
 /// Requires the single path component that Session command-output storage
 /// addresses: an absolute path, a current or parent directory, and a path of
 /// several components are rejected with [`AgentError::InvalidInput`].
-///
-/// [`SESSION_ID_BOOKINGS`] is reserved: an id whose Unicode case folding, with
-/// its trailing dots and spaces trimmed, is that name is refused. That entry
-/// below an output root holds the bookings, so a Session named by it would own
-/// every other Session's name.
-///
-/// A [`Agent::create_session`] checks this and also books that component below
-/// the host's output root, so the id it accepts is one this filesystem can back
-/// with a directory, and a name it folds to one another creation booked is
-/// refused.
 pub fn check_session_id(id: &str) -> Result<()> {
-    if id
-        .trim_end_matches(['.', ' '])
-        .chars()
-        .flat_map(char::to_lowercase)
-        .flat_map(char::to_uppercase)
-        .eq(".SESSION-IDS".chars())
-        || !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
+    if !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
         [std::path::Component::Normal(name)] if name == id)
     {
         return Err(AgentError::InvalidInput(format!("invalid Session id {id}")));
     }
     Ok(())
 }
-/// The directory below a Session output root that books each id a creation
-/// accepts: `<output_root>/.session-ids/<id>`. No Session may be named by this
-/// entry ([`check_session_id`]).
-pub const SESSION_ID_BOOKINGS: &str = ".session-ids";
-/// Books `id`'s name below the Session output `root`, when the host configured
-/// one, at `<root>/.session-ids/<id>`. The entry sits in the root the Session's
-/// command output addresses and is the id itself, so booking proves this
-/// filesystem can back the id with a directory there, and that no other
-/// creation has booked a name it cannot tell apart from this one. The caller
-/// owns the booking until it removes it ([`release_booking`]).
-async fn book_session_id(root: Option<&Path>, id: &str) -> Result<()> {
-    let Some(root) = root else {
-        return Ok(());
-    };
-    let bookings = root.join(SESSION_ID_BOOKINGS);
-    if let Err(error) = tokio::fs::create_dir_all(&bookings).await {
-        return Err(AgentError::InvalidInput(format!(
-            "Session id {id} has no usable output directory: {error}"
-        )));
-    }
-    match tokio::fs::create_dir(bookings.join(id)).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(
-            AgentError::InvalidInput(format!("session {id} is already in use")),
-        ),
-        Err(error) => Err(AgentError::InvalidInput(format!(
-            "Session id {id} has no usable output directory: {error}"
-        ))),
-    }
-}
-/// Removes a booking ([`book_session_id`]); an absent one counts as removed,
-/// so a cleanup that follows a partial failure is safe.
-async fn release_booking(root: Option<&Path>, id: &str) -> Result<()> {
-    let Some(root) = root else {
-        return Ok(());
-    };
-    match tokio::fs::remove_dir(root.join(SESSION_ID_BOOKINGS).join(id)).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AgentError::Storage(format!(
-            "the output booking of session {id}: {error}"
-        ))),
-    }
-}
 impl Agent {
     pub(crate) fn new(builder: AgentBuilder, assembly: Assembly, placement: Placement) -> Self {
         Self(Arc::new(AgentInner {
             builder,
-            assembly,
             placement,
             handle: std::sync::OnceLock::new(),
+            assembly,
             entries: Mutex::new(BTreeMap::new()),
             closing: CancellationToken::new(),
             close: CloseOnce::default(),
@@ -272,18 +205,13 @@ impl Agent {
             let mut cleanup = Cleanup::Nothing;
             let mut result = async {
                 let placement = owner.0.placement.clone();
-                let output_root = owner.0.builder.output_root();
                 let initialization = match start {
                     SessionStart::Create => {
-                        book_session_id(output_root, &id).await?;
-                        cleanup = Cleanup::Booked;
                         assembly.store.create_session(&id, &config).await?;
                         cleanup = Cleanup::Rollback;
                         SessionInitialization::New
                     }
                     SessionStart::Prepared(prepare) => {
-                        book_session_id(output_root, &id).await?;
-                        cleanup = Cleanup::Booked;
                         prepare(id.clone()).await?;
                         cleanup = Cleanup::Rollback;
                         SessionInitialization::Prepared(assembly.store.branches(&id).await?)
@@ -330,17 +258,9 @@ impl Agent {
                 };
             }
             if let Err(failure) = result {
-                let output_root = owner.0.builder.output_root();
                 let cleanup = match cleanup {
                     Cleanup::Nothing => Ok(()),
-                    Cleanup::Booked => release_booking(output_root, &id).await,
-                    Cleanup::Rollback => owner
-                        .0
-                        .assembly
-                        .store
-                        .rollback_session(&id)
-                        .await
-                        .and(release_booking(output_root, &id).await),
+                    Cleanup::Rollback => owner.0.assembly.store.rollback_session(&id).await,
                     Cleanup::Release => owner.0.assembly.store.release_session(&id).await,
                 };
                 result = Err(match cleanup {

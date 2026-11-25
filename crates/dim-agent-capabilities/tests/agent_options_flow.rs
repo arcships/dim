@@ -1,8 +1,4 @@
-use dim_agent_capabilities::{
-    defaults,
-    host_platform::{HostPlatform, ShellStatus},
-    workspace_tools::{self, WorkspaceToolsConfig},
-};
+use dim_agent_capabilities::defaults;
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BoxFuture, CreateSessionOptions, MemoryTimelineStore,
@@ -10,12 +6,11 @@ use dim_agent_runtime::{
     SessionConfig, StoredBranch, StoredEvent, TimelineKey, TimelineReadScope, TimelineStore,
     TimelineStoreBinding, TimelineTrace,
 };
-use rutis::host::{DynPlugin, ErrorKind};
+use rutis::host::DynPlugin;
 use rutis::{Ctx, Plugin};
 use std::{
     collections::BTreeMap,
     ops::RangeInclusive,
-    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -329,34 +324,6 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
             "{id:?}: a rejected id publishes no Session"
         );
     }
-    for id in [
-        ".session-ids",
-        ".SESSION-IDS",
-        ".session-ids.",
-        ".session-ids ",
-        ".\u{017f}ession-ids",
-        ".se\u{00df}ion-ids",
-    ] {
-        let entered = Arc::new(AtomicBool::new(false));
-        let error = rejected(
-            agent
-                .create_session(
-                    SessionConfig::default(),
-                    CreateSessionOptions::default()
-                        .id(id)
-                        .prepare(preparing(&store, entered.clone())),
-                )
-                .await,
-        );
-        assert!(
-            matches!(&error, AgentError::InvalidInput(message) if message == &format!("invalid Session id {id}")),
-            "{id:?} names the id bookings rather than a Session: {error}"
-        );
-        assert!(
-            !entered.load(Ordering::SeqCst),
-            "{id:?}: a rejected id reaches no prepare step"
-        );
-    }
     let error = rejected(
         agent
             .create_session(
@@ -459,230 +426,4 @@ async fn a_rejected_duplicate_keeps_the_existing_sessions_state() {
     session.close().await.unwrap();
     first.close().await.unwrap();
     second.close().await.unwrap();
-}
-
-/// A host whose WorkspaceTools output root is `root`: the product's wiring of
-/// the id admission. No tool runs, so the platform needs no exec shell.
-async fn output_host(store: &Arc<Shared>, root: &Path) -> MinimalHost {
-    output_host_with(store, root, |_| {}).await
-}
-
-/// [`output_host`] with `install` run on the builder, for a fixture part.
-async fn output_host_with(
-    store: &Arc<Shared>,
-    root: &Path,
-    install: impl FnOnce(&mut AgentBuilder),
-) -> MinimalHost {
-    let mut builder = AgentBuilder::new(AgentConfig::default());
-    defaults::mock_model_hosts(&mut builder);
-    defaults::install(&mut builder);
-    install(&mut builder);
-    builder.timeline_store(TimelineStoreBinding::new(store.clone()));
-    workspace_tools::install(
-        &mut builder,
-        WorkspaceToolsConfig {
-            boundary: None,
-            output_root: root.to_owned(),
-        },
-    );
-    let platform = HostPlatform::current(ShellStatus::Unavailable {
-        code: "test",
-        reason: "the id admission runs no shell".into(),
-    })
-    .expect("the process platform");
-    MinimalHost::start_with(&builder, move |root, _| {
-        root.provide_as::<HostPlatform>(Arc::new(platform))?;
-        Ok(())
-    })
-    .await
-    .expect("the output host starts")
-}
-
-/// A Session that declares one tool the output host serves and runs none.
-fn output_session() -> SessionConfig {
-    SessionConfig {
-        tools: Some(vec!["read".into()]),
-        ..Default::default()
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_id_without_a_usable_output_directory_is_rejected_before_preparation() {
-    let root = std::env::temp_dir().join(format!("dim-output-{}", uuid::Uuid::new_v4()));
-    let store = Arc::new(Shared::default());
-    let host = output_host(&store, &root).await;
-    let agent = host.agent().clone();
-    // One component this filesystem cannot hold as a directory name.
-    let id = "s".repeat(300);
-    let entered = Arc::new(AtomicBool::new(false));
-    let error = rejected(
-        agent
-            .create_session(
-                output_session(),
-                CreateSessionOptions::default()
-                    .id(id.clone())
-                    .prepare(preparing(&store, entered.clone())),
-            )
-            .await,
-    );
-    assert!(
-        matches!(&error, AgentError::InvalidInput(message) if message.starts_with(&format!("Session id {id} has no usable output directory"))),
-        "a name this filesystem cannot hold is rejected: {error}"
-    );
-    assert!(
-        !entered.load(Ordering::SeqCst),
-        "a rejected id reaches no prepare step"
-    );
-    assert!(
-        store.created.lock().unwrap().is_empty(),
-        "a rejected id writes no rows: {:?}",
-        store.created.lock().unwrap()
-    );
-    assert!(
-        agent.get_session(&id).is_none(),
-        "a rejected id publishes no Session"
-    );
-    host.close().await.unwrap();
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ids_the_filesystem_cannot_tell_apart_do_not_share_an_output_directory() {
-    let root = std::env::temp_dir().join(format!("dim-output-{}", uuid::Uuid::new_v4()));
-    let store = Arc::new(Shared::default());
-    let host = output_host(&store, &root).await;
-    let agent = host.agent().clone();
-    let first = agent
-        .create_session(
-            output_session(),
-            CreateSessionOptions::default().id("Named-Session"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        first.id(),
-        "Named-Session",
-        "an accepted id keeps its value"
-    );
-    let entered = Arc::new(AtomicBool::new(false));
-    match agent
-        .create_session(
-            output_session(),
-            CreateSessionOptions::default()
-                .id("named-session")
-                .prepare(preparing(&store, entered.clone())),
-        )
-        .await
-    {
-        Ok(second) => {
-            assert_ne!(second.id(), first.id());
-            std::fs::create_dir_all(root.join(first.id())).unwrap();
-            assert!(
-                !root.join(second.id()).exists(),
-                "ids this filesystem can tell apart keep distinct output directories"
-            );
-            second.close().await.unwrap();
-        }
-        Err(error) => {
-            assert!(
-                matches!(&error, AgentError::InvalidInput(message) if message == "session named-session is already in use"),
-                "an id this filesystem cannot tell apart from an accepted one is refused: {error}"
-            );
-            assert!(
-                !entered.load(Ordering::SeqCst),
-                "a refused id reaches no prepare step"
-            );
-            assert!(
-                !store
-                    .created
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|id| id == "named-session"),
-                "a refused id writes no rows: {:?}",
-                store.created.lock().unwrap()
-            );
-            assert!(
-                agent.get_session("named-session").is_none(),
-                "a refused id publishes no Session"
-            );
-        }
-    }
-    first.close().await.unwrap();
-    host.close().await.unwrap();
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_creation_releases_its_booked_name() {
-    let root = std::env::temp_dir().join(format!("dim-output-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
-    let store = Arc::new(Shared::default());
-    let host = output_host_with(&store, &root, |builder| {
-        builder.session_extension_part::<u32>(GROUP, "options-probe", |_, _: &u32| {
-            Err(rutis::Error::from(ErrorKind::PluginFailed(
-                "extension fixture refused".into(),
-            )))
-        });
-    })
-    .await;
-    let agent = host.agent().clone();
-    let error = rejected(
-        agent
-            .create_session(
-                output_session(),
-                CreateSessionOptions::default().id("retried").prepare(|_| {
-                    Box::pin(async { Err(AgentError::InvalidInput("prepare refused".into())) })
-                }),
-            )
-            .await,
-    );
-    assert!(
-        matches!(&error, AgentError::InvalidInput(message) if message == "prepare refused"),
-        "a failed prepare is the creation's error: {error}"
-    );
-    assert!(
-        store.created.lock().unwrap().is_empty(),
-        "a failed prepare writes no rows: {:?}",
-        store.created.lock().unwrap()
-    );
-    let entered = Arc::new(AtomicBool::new(false));
-    let error = rejected(
-        agent
-            .create_session(
-                output_session(),
-                CreateSessionOptions::default()
-                    .id("retried")
-                    .prepare(preparing(&store, entered.clone()))
-                    .extension(GROUP, 7_u32),
-            )
-            .await,
-    );
-    assert!(
-        entered.load(Ordering::SeqCst),
-        "the creation committed its rows before the build failed"
-    );
-    assert!(
-        error.to_string().contains("extension fixture refused"),
-        "a build that fails after its rows keeps its own error: {error}"
-    );
-    assert!(
-        store.session_config("retried").await.unwrap().is_none(),
-        "a failed build rolls its rows back"
-    );
-    let session = agent
-        .create_session(
-            output_session(),
-            CreateSessionOptions::default().id("retried"),
-        )
-        .await
-        .expect("a failed creation releases its booked name");
-    assert_eq!(
-        session.id(),
-        "retried",
-        "the id is the one it was booked under"
-    );
-    session.close().await.unwrap();
-    host.close().await.unwrap();
-    std::fs::remove_dir_all(&root).unwrap();
 }
