@@ -119,11 +119,16 @@ impl RestoreSessionOptions {
 /// addresses: an absolute path, a current or parent directory, and a path of
 /// several components are rejected with [`AgentError::InvalidInput`].
 ///
+/// [`SESSION_ID_BOOKINGS`] is reserved in every spelling a case-insensitive
+/// filesystem may fold to it: that entry below an output root holds the
+/// bookings, so a Session named by it would own every other Session's name.
+///
 /// A [`Agent::create_session`] checks this and also books that component below
 /// the host's output root, so the id it accepts is one this filesystem can
 /// back with a directory, and no other Session holds the same directory.
 pub fn check_session_id(id: &str) -> Result<()> {
-    if !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
+    if id.eq_ignore_ascii_case(SESSION_ID_BOOKINGS)
+        || !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
         [std::path::Component::Normal(name)] if name == id)
     {
         return Err(AgentError::InvalidInput(format!("invalid Session id {id}")));
@@ -131,7 +136,8 @@ pub fn check_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 /// The directory below a Session output root that books each id a creation
-/// accepts: `<output_root>/.session-ids/<id>`.
+/// accepts: `<output_root>/.session-ids/<id>`. No Session may be named by this
+/// entry ([`check_session_id`]).
 pub const SESSION_ID_BOOKINGS: &str = ".session-ids";
 /// Books `id`'s name below the Session output `root`, when the host configured
 /// one, at `<root>/.session-ids/<id>`. The entry sits in the root the Session's

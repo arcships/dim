@@ -329,6 +329,27 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
             "{id:?}: a rejected id publishes no Session"
         );
     }
+    for id in [".session-ids", ".SESSION-IDS"] {
+        let entered = Arc::new(AtomicBool::new(false));
+        let error = rejected(
+            agent
+                .create_session(
+                    SessionConfig::default(),
+                    CreateSessionOptions::default()
+                        .id(id)
+                        .prepare(preparing(&store, entered.clone())),
+                )
+                .await,
+        );
+        assert!(
+            matches!(&error, AgentError::InvalidInput(message) if message == &format!("invalid Session id {id}")),
+            "{id:?} names the id bookings rather than a Session: {error}"
+        );
+        assert!(
+            !entered.load(Ordering::SeqCst),
+            "{id:?}: a rejected id reaches no prepare step"
+        );
+    }
     let error = rejected(
         agent
             .create_session(
