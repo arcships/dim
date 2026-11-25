@@ -71,10 +71,9 @@ creation booked, are refused before anything prepares, writes or publishes. What
 a Session stored before this step, or written by another face of the store, holds none, so an id this filesystem folds to
 its name is accepted and both address one directory. The booking proves the name in the output root's volume; the
 persistent shell's directory lies below the host home, which may be another volume. Two databases that share one output
-root refuse each other's booked names, because one name addresses one directory, and `.session-ids` is no Session id in
-any spelling this filesystem may fold to it: its case, and on Windows its trailing dots and spaces. SessionStore owns the
-rows and the files under the database directory. Its new steps are Rust methods over the native store, not services:
-only Agents calls them.
+root refuse each other's booked names, because one name addresses one directory, and `.session-ids` is not a Session id under
+Unicode case folding, nor with trailing dots and spaces. SessionStore owns the rows and the files under the database
+directory. Its new steps are Rust methods over the native store, not services: only Agents calls them.
 
 ## 3. Deletion
 
