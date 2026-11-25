@@ -34,8 +34,9 @@ unloads, and a namespace registered already fails
 A refused registration fails the part. A part of another language calls
 `sessionMethods.register(namespace, declarations, call)` through the bridge;
 the registration belongs to the calling row, and `call` is the row's function,
-called back through the bridge. The table provides that entry itself, at its
-dispatcher key, with the native service.
+called back through the bridge. Today `ForeignMethods` provides that entry;
+the target removes it, and the table serves the entry itself at its dispatcher
+key.
 
 A name belongs to the longest namespace that holds it. When a namespace is
 withdrawn, the table keeps the row that registered it, so a call into it answers
