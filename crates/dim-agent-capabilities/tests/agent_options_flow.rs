@@ -9,6 +9,7 @@ use dim_agent_runtime::{
 use rutis::host::DynPlugin;
 use rutis::{Ctx, Plugin};
 use std::{
+    collections::BTreeMap,
     ops::RangeInclusive,
     sync::{
         Arc, Mutex,
@@ -53,12 +54,15 @@ fn builder(store: &Arc<MemoryTimelineStore>, seen: Arc<AtomicU32>) -> AgentBuild
     builder
 }
 
-/// A store that records the Sessions a creation commits, so a creation that
-/// writes nothing is visible.
+/// A store two Agents can share. `release_session` drops the admission state
+/// the product store keys by Session id, so a creation that releases a Session
+/// it never admitted is visible as lost state.
 #[derive(Default)]
 struct Shared {
     memory: MemoryTimelineStore,
     created: Mutex<Vec<String>>,
+    released: Mutex<Vec<String>>,
+    failures: Mutex<BTreeMap<String, String>>,
 }
 impl TimelineStore for Shared {
     fn query<'a>(
@@ -81,7 +85,11 @@ impl TimelineStore for Shared {
         self.memory.rollback_session(session_id)
     }
     fn release_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>> {
-        self.memory.release_session(session_id)
+        Box::pin(async move {
+            self.released.lock().unwrap().push(session_id.to_owned());
+            self.failures.lock().unwrap().remove(session_id);
+            self.memory.release_session(session_id).await
+        })
     }
     fn session_config<'a>(
         &'a self,
@@ -335,4 +343,64 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
     );
     session.close().await.unwrap();
     host.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rejected_duplicate_keeps_the_existing_sessions_state() {
+    let store = Arc::new(Shared::default());
+    let first = store_host(&store).await;
+    let second = store_host(&store).await;
+    let session = first
+        .agent()
+        .create_session(
+            SessionConfig::default(),
+            CreateSessionOptions::default().id("shared"),
+        )
+        .await
+        .unwrap();
+    store
+        .failures
+        .lock()
+        .unwrap()
+        .insert("shared".into(), "disk full".into());
+
+    let error = rejected(
+        second
+            .agent()
+            .create_session(
+                SessionConfig::default(),
+                CreateSessionOptions::default().id("shared"),
+            )
+            .await,
+    );
+    assert!(
+        matches!(&error, AgentError::Storage(message) if message == "session shared already exists"),
+        "a duplicate id is a rejected creation: {error}"
+    );
+    assert_eq!(
+        store
+            .failures
+            .lock()
+            .unwrap()
+            .get("shared")
+            .map(String::as_str),
+        Some("disk full"),
+        "the rejected duplicate keeps the existing Session's recorded write failure"
+    );
+    assert!(
+        store.released.lock().unwrap().is_empty(),
+        "the rejected duplicate releases no Session it never admitted: {:?}",
+        store.released.lock().unwrap()
+    );
+    assert!(
+        first
+            .agent()
+            .get_session("shared")
+            .is_some_and(|session| session.id() == "shared"),
+        "the first Agent's Session stays loaded"
+    );
+
+    session.close().await.unwrap();
+    first.close().await.unwrap();
+    second.close().await.unwrap();
 }

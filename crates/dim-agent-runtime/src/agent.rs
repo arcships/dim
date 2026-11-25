@@ -42,6 +42,12 @@ enum SessionStart {
     Prepared(Preparation),
     Restore,
 }
+/// What a creation that fails undoes in the store.
+enum Cleanup {
+    Nothing,
+    Rollback,
+    Release,
+}
 /// How [`Agent::create_session`] creates its Session: the id to create under,
 /// the host-owned directory to prepare before publication, and the Session
 /// extension to load.
@@ -196,21 +202,22 @@ impl Agent {
         }
         let owner = self.clone();
         tokio::spawn(async move {
-            let mut created = false;
+            let mut cleanup = Cleanup::Nothing;
             let mut result = async {
                 let placement = owner.0.placement.clone();
                 let initialization = match start {
                     SessionStart::Create => {
                         assembly.store.create_session(&id, &config).await?;
-                        created = true;
+                        cleanup = Cleanup::Rollback;
                         SessionInitialization::New
                     }
                     SessionStart::Prepared(prepare) => {
                         prepare(id.clone()).await?;
-                        created = true;
+                        cleanup = Cleanup::Rollback;
                         SessionInitialization::Prepared(assembly.store.branches(&id).await?)
                     }
                     SessionStart::Restore => {
+                        cleanup = Cleanup::Release;
                         SessionInitialization::Restore(assembly.store.branches(&id).await?)
                     }
                 };
@@ -251,10 +258,10 @@ impl Agent {
                 };
             }
             if let Err(failure) = result {
-                let cleanup = if created {
-                    owner.0.assembly.store.rollback_session(&id).await
-                } else {
-                    owner.0.assembly.store.release_session(&id).await
+                let cleanup = match cleanup {
+                    Cleanup::Nothing => Ok(()),
+                    Cleanup::Rollback => owner.0.assembly.store.rollback_session(&id).await,
+                    Cleanup::Release => owner.0.assembly.store.release_session(&id).await,
                 };
                 result = Err(match cleanup {
                     Ok(()) => failure,
