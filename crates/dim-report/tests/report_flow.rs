@@ -1363,6 +1363,9 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
     let signing_key = "signing-key-fixture";
     let groq = "gsk_fixture";
     let proxy = "cHJveHk6cHc=";
+    let access = "compact-access-fixture";
+    let client = "compact-client-fixture";
+    let refresh = "compact-refresh-fixture";
     let prose = "Secretary: available";
     let visible = "credential-fixture-visible-tail";
     let message = format!(
@@ -1370,7 +1373,8 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
          aws_secret_access_key = {aws}\n\"aws_secret_access_key\": \"{aws_json}\"\n\
          secret_key = {secret_key}\nprivate_key = {private_key}\n\
          signing_key = {signing_key}\nGROQ_API_KEY={groq}\n\
-         Proxy-Authorization: Basic {proxy}\n{prose}\n{visible}"
+         Proxy-Authorization: Basic {proxy}\n\"accessToken\": \"{access}\"\n\
+         clientSecret: {client}\nrefreshToken = {refresh}\n{prose}\n{visible}"
     );
     owner
         .rpc(
@@ -1409,6 +1413,9 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
             signing_key,
             groq,
             proxy,
+            access,
+            client,
+            refresh,
         ] {
             assert!(
                 !text.contains(secret),
@@ -1455,6 +1462,9 @@ async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
             signing_key,
             groq,
             proxy,
+            access,
+            client,
+            refresh,
         ] {
             assert!(
                 !text.contains(secret),

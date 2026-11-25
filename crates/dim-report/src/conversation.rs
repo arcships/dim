@@ -19,7 +19,7 @@ static CREDENTIAL_FIELD: LazyLock<Regex> = LazyLock::new(|| {
         r#"(?i)(?:^|[^a-z0-9_-]|\\[rn])"#,
         r#"(?:[a-z0-9]+[_-])*"#,
         r#"(?:cookie|authorization|api[_-]?key|private[_-]?key|signing[_-]?key"#,
-        r#"|password|passwd|credential|secret|token)"#,
+        r#"|[a-z0-9_-]*(?:password|passwd|credential|secret|token))"#,
         r#"(?:[_-][a-z0-9]+)*(?:\\?["'`])?[ \t]*[:=]"#,
     ))
     .expect("static credential field pattern")
