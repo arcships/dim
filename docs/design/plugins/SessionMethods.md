@@ -94,14 +94,22 @@ settled.await;
 A process-side caller holding a Session, such as WebEntry's upload entry, calls the table without a site and writes its own answer:
 
 ```rust
-// An admission failure (`MethodError`) fails this caller's own operation.
-let CallReply { reply, settled, .. } = methods
-    .call(method.into(), params, None, cancelled, |_| {})
-    .await?;
+// An admission failure fails this caller's own operation.
+let admitted = match methods.call(method.into(), params, None, cancelled, |_| {}).await {
+    Ok(reply) => reply,
+    Err(MethodError::UnknownMethod { .. }) => return Err(RpcError::unknown_method()),
+    Err(MethodError::Reloading) => return Err(RpcError::reloading()),
+    Err(MethodError::Unavailable) => return Err(RpcError::app(-32000, "service_unavailable", "The service is unavailable")),
+    Err(MethodError::Closed) => return Err(RpcError::closed()),
+    Err(MethodError::Invalid { .. }) | Err(MethodError::Duplicate { .. }) | Err(MethodError::Reserved { .. }) | Err(MethodError::Interrupted) => unreachable!("a Session call answers none of these"),
+};
+let CallReply { reply, settled, .. } = admitted;
 // No connection wrote a reply here: `reply` is the handler's answer, or the
-// table's interruption, for this caller to use.
-let outcome = reply;
+// table's interruption, and this caller writes its own answer.
+let answer = reply;
+write_answer(&answer);
 settled.await;
+answer
 ```
 
 `session.methods` composes the value with the process table's held namespaces:
@@ -109,6 +117,8 @@ settled.await;
 ```rust
 // A.1's routing precedence: a declaration whose name equals or lies inside a
 // held management namespace is routed to management, never listed for the Session.
+// The process closing is not the Session's close: Rpc answers
+// `service_unavailable` rather than list names it cannot filter.
 let Ok(held) = management.held_namespaces() else {
     return Err(RpcError::service("service_unavailable", "The process is closing"));
 };
@@ -145,7 +155,7 @@ The process table (#2021) serves the same `MethodCall`, `MethodReply` and `Metho
 
 `register` is data plus the caller's function on the wire, `methods` is data, and `call` is the owner's in-process operation. In Rust each reply is a `Result`: `register` is `Result<(), MethodError>`, `call` is `Result<CallReply, MethodError>`, and `methods` is `Result<Vec<MethodDecl>, MethodError>`. `{}` is the empty reply, `{methods}` the declaration vector, and `{reply}` the `MethodReply` the caller writes. `CallReply` carries what the caller that writes the reply needs beyond it: `{reply, registration, settled}`. `registration` is the call's caller-index entry for a call from another language, which the caller finishes once the reply is written so a later notification is direct; `settled` resolves once the call has settled, which may follow an interrupted reply. Rpc writes `reply`, finishes `registration` and awaits `settled`, so its load's unload waits for the call. Rpc wraps a `MethodError` in its envelope; `MethodReply`'s own error is the handler's data and is not a table failure.
 
-`caller` is `{connectionId}`: the connection the call arrived on, absent when no client connection made the call. In Rust Rpc passes the admission's site (`CallSite`, below), which holds the connection and the call's close signal. The handler receives the caller as `MethodCall.origin.caller`, A.2's `Caller`. The table reads its own instance from its names (`Names::instance`) to pick this Session's copy. It writes no socket. It mints a call id for a call served by a registration of another language, and that id is what its `origin.caller.callId` and its notifications carry; a native call has none, because `Caller::notify` needs no id. Progress is the sink Rpc passes, which addresses the call by Rpc's own request id. It hands the handler a `Progress` over the call's sink; Rpc passes its connection's sink, and an in-process call passes one whose sends are dropped. The call callback is a direct parameter; it never runs inside the Timeline's commit lock; the handler's token fires on the provider's generation unload and on the admitting Rpc load's unload, which `cancelled` reports.
+`caller` is `{connectionId}`: the connection the call arrived on, absent when no client connection made the call. In Rust Rpc passes the admission's site (`CallSite`, below), which holds the connection and that connection's close signal. The handler receives the caller as `MethodCall.origin.caller`, A.2's `Caller`. The table reads its own instance from its names (`Names::instance`) to pick this Session's copy. It writes no socket. It mints a call id for a call served by a registration of another language, and that id is what its `origin.caller.callId` and its notifications carry; a native call has none, because `Caller::notify` needs no id. Progress is the sink Rpc passes, which addresses the call by Rpc's own request id. It hands the handler a `Progress` over the call's sink; Rpc passes its connection's sink, and an in-process call passes one whose sends are dropped. The call callback is a direct parameter; it never runs inside the Timeline's commit lock; the handler's token fires on the provider's generation unload and on the admitting Rpc load's unload, which `cancelled` reports.
 
 A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own error as `{code, message, ...owner fields}`. The table adds no meaning. The client sees the handler's failure in the Rpc envelope's error: `appError` is the handler's `code`, the message is the handler's `message`, and the handler's `data` fields sit beside `appError` — the table and Rpc preserve them without interpreting them ([Appendix C](../contracts/session-boundary.md#appendix-c-errors-and-recovery)). The JSON-RPC code is the handler's `wire` code when it carries one, and otherwise the service-error rule (`invalid_params` → -32602, `unknown_method` → -32601, otherwise -32000); a handler of another language's own reply data carries no wire code, so its errors take the rule; an error it rethrows from a nested call keeps the code Rpc gives it.
 
@@ -153,7 +163,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 
 | Kind | Operation | Client `appError` | What the caller does next |
 | --- | --- | --- | --- |
-| `invalid` | `register` | — | The namespace or a declaration is refused: outside the name grammar, in a reserved root, equal to, containing or inside a built-in, a declared notification equal to a built-in notification's name, or a declaration that is malformed or repeated — the table checks the declarations and the host's check answers its reserved names. Fix the name or the declaration and register again |
+| `invalid` | `register` | — | The namespace or a declaration is refused: outside the name grammar, malformed or repeated — the table checks these. For the Session table the host's check adds a reserved root, a name equal to, containing or inside a built-in, or a declared notification equal to a built-in notification's name; the process table's registration answers those as `reserved`. Fix the name or the declaration and register again |
 | `reserved` | `register` (process table) | — | The namespace or a name is the host's; the process table's registration answers this where the Session table maps the same input to `invalid`. Pick another name |
 | `duplicate` | `register` | — | The namespace is registered already; the row may register another namespace instead |
 | `invalid` | process table's `call` | `invalid_params` | The request cannot be read: the method name or params are malformed. Fix the request and call again. The Session table answers `unknown_method` for a name outside the grammar and leaves params to the handler |
@@ -176,7 +186,7 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 
 ## Exceptions with reasons
 
-- Three handles cross this owner: Rpc passes the admission's `CallSite` to `call`, the table hands the handler the `Caller` it builds from it, and the `CallReply` gives the caller a `CallRegistration` for the call's caller-index entry, which it finishes once the reply is written. No id alone can address a native row's connection, and a handler needs it to notify and to observe its close. [A.2](../contracts/session-boundary.md#a2-call-channel) fixes the behaviour, and the [binding appendix below](#binding-appendix) states the two types: Rpc builds the site for one call and drops it when the call settles; the table binds the site to the serving generation's declared notifications; the handler may keep the `Caller` after the reply, it answers `undeclared`, `gone` or `too_large` per A.2, and its `closed` resolves when the connection closes or the admitting Rpc load unloads. None of the three keeps a strong reference to the connection. A handler of another language receives `{connectionId, callId}` instead, because `callChannel` addresses the call by those ids.
+- Three handles cross this owner: Rpc passes the admission's `CallSite` to `call`, the table hands the handler the `Caller` it builds from it, and the `CallReply` gives the caller a `CallRegistration` for the call's caller-index entry, which it finishes once the reply is written. No id alone can address a native row's connection, and a handler needs it to notify and to observe its close. [A.2](../contracts/session-boundary.md#a2-call-channel) fixes the behaviour, and the [binding appendix below](#binding-appendix) states all three: Rpc builds the site for one call and drops it when the call settles; the table binds the site to the serving generation's declared notifications; the handler may keep the `Caller` after the reply, it answers `undeclared`, `gone` or `too_large` per A.2, and its `closed` resolves when the connection closes or the admitting Rpc load unloads. None of the three keeps a strong reference to the connection. A handler of another language receives `{connectionId, callId}` instead, because `callChannel` addresses the call by those ids.
 
 ## Verification
 
@@ -337,7 +347,7 @@ impl Caller {
     /// connection closed, `too_large` over the frame limit.
     pub fn notify(&self, method: &str, params: serde_json::Map<String, serde_json::Value>) -> Result<(), NotifyError> { /* ... */ }
     /// Resolves when the connection closes or the admitting Rpc load unloads.
-    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + 'static { async {} }
+    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + 'static { /* ... */ }
 }
 
 /// A connection as the `methods` module uses it: its id, a write to it and its
