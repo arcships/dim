@@ -38,9 +38,10 @@ dispatcher key, with the native service.
 
 A name belongs to the longest namespace that holds it. When a namespace is
 withdrawn, the table keeps the row that registered it, so a call into it answers
-`service_reloading` or `service_unavailable` from that row's status. That row
-being disabled or absent is `unknown_method`, as is a name no namespace of the
-Session ever held. Each registration owns the calls it admitted: its
+`service_reloading` or `service_unavailable` from that row's status. Today a
+withdrawn namespace whose row is absent from the loader answers
+`service_reloading`; the target contract answers `unknown_method` there, as it
+already does for a disabled row and for a name no namespace ever held. Each registration owns the calls it admitted: its
 part's unload interrupts `report` calls and waits for every admitted call.
 `session.methods` lists the methods of the namespaces registered now that no
 management namespace holds.
