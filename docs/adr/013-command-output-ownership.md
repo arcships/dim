@@ -76,9 +76,9 @@ name this filesystem cannot back with a directory, and a name it folds to one an
 booked, are both refused before anything is written. A booking protects a booked name only: a
 Session stored before this step holds none, and the proof is the output root's volume rather than
 the host home's `exec` tree. Two databases sharing an output root refuse each other's booked
-names, and `.session-ids` is not a Session id in any spelling a filesystem may fold to it. A booking holds no output and has no row; the deleting session's booking is a candidate
-under the same rows-here rule as its own output directory, and a failed creation's own cleanup
-removes it.
+names, and `.session-ids` is not a Session id in any spelling a filesystem may fold to it. A
+booking holds no output and has no row; the deleting session's booking is a candidate under the
+same rows-here rule as its own output directory, and a failed creation's own cleanup removes it.
 
 The session-files owner supplies the paths and the last-owner answer; HostPlatform removes the
 `.dim/exec` directory it owns and makes the removal durable (the parent is synced) before the row
