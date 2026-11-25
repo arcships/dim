@@ -264,7 +264,8 @@ sequenceDiagram
   授权；index.acquire（恢复未装载的 Session；
   |                    未知 id -> session_closed）
   |
-  该 Session 的 sessionMethods 中的所有者？ ---- 没有 -----> -32601 unknown_method
+  sessionMethods.call {method, params, caller?} -> 方法表查找所有者
+  |                                              没有 -----> -32601 unknown_method
   |                                              已撤回 ---> 注册它的行在本 Session 中的副本
   |                                                （§3.2）：
   |                                                启动中或重载中、Active 或没有副本
@@ -272,7 +273,7 @@ sequenceDiagram
   |                                                Failed、Unresolved、Disposed 或 Stopped
   |                                                  -> -32000 service_unavailable
   | 已注册
-  提供方调用 --> 回复（未声明的名称：-32601 unknown_method）
+  处理函数 --> CallReply（未声明的名称：-32601 unknown_method）
 ```
 
 目前注册的 Session 命名空间：`session.question`（Questions）、`session.goal`（Goal）、`session.rename`（SessionTitle）、`session.input`（InputQueue）、`session.context`（ContextCompaction）、`session.exec.output`（WorkspaceTools，[后台任务输出](../../../design/background-task-output.md)）、`session.agent`（[模型配置](../../../design/model-configuration.md)）、`attachment`（Attachments）、`shell`（ShellInput）、`session.wakeup`（Scheduler，[Scheduler §10](../plugins/Scheduler.md#10-session-作用域的一次性唤醒)）、`session.collaboration`（Collaboration，[Collaboration §6.7](../plugins/Collaboration.md#67-从客户端停止成员)）。`approval.respond` 是内建的 Session 方法，不是部件注册。分支方法——`session.branch_create`、`session.branch_end`、`session.branch_set_default`、`session.branches` 与 `session.branch.get`——同样都是内建方法，它们的契约见[timeline branches §9、§10 与 §14](../timeline-branches.md#14-客户端)：它们接受的每个 `branchId` 各指名一条线，省略的那个指名Session 的主线，而不是它的根。`session.branch_set_default` 在根不是主线时接受根作为目标，只拒绝已经是主线的目标；`session.branch_end` 对任何调用方都拒绝当前主线，所以要结束它，先移动主线。Hooks 不注册 Session 命名空间：它的 `hooks.*` 方法是管理方法（[Hooks A.7](../plugins/Hooks.md#a7-管理方法)）。各插件文档对其方法具有权威性。
