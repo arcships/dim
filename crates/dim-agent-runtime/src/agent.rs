@@ -34,9 +34,12 @@ enum Entry {
     Building(watch::Receiver<Option<Result<Session>>>),
     Ready(Session),
 }
+/// The host-owned step of a prepared creation: creation hands it the id the
+/// Session is created under, and the step commits that id's rows.
+type Preparation = Box<dyn FnOnce(String) -> BoxFuture<'static, Result<()>> + Send>;
 enum SessionStart {
     Create,
-    Prepared(BoxFuture<'static, Result<()>>),
+    Prepared(Preparation),
     Restore,
 }
 /// How [`Agent::create_session`] creates its Session: the id to create under,
@@ -45,25 +48,26 @@ enum SessionStart {
 #[derive(Default)]
 pub struct CreateSessionOptions {
     id: Option<String>,
-    prepare: Option<(String, BoxFuture<'static, Result<()>>)>,
+    prepare: Option<Preparation>,
     extension: Option<Extension>,
 }
 impl CreateSessionOptions {
     /// Creates the Session under `id` instead of a generated one. A creation
-    /// that [`prepare`](Self::prepare)s a Session takes its id from there.
+    /// that also [`prepare`](Self::prepare)s a Session hands the same id to
+    /// that step.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
     }
     /// Reserves runtime capacity before committing the host-owned directory:
-    /// `prepare` commits the rows of `id`, and creation loads them once it
-    /// completes. A prepared creation is created under `id`.
-    pub fn prepare(
-        mut self,
-        id: impl Into<String>,
-        prepare: BoxFuture<'static, Result<()>>,
-    ) -> Self {
-        self.prepare = Some((id.into(), prepare));
+    /// `prepare` receives the id the Session is created under, commits that
+    /// id's rows, and creation loads them once it completes. The id is the
+    /// [`id`](Self::id) given, or a generated one.
+    pub fn prepare<F>(mut self, prepare: F) -> Self
+    where
+        F: FnOnce(String) -> BoxFuture<'static, Result<()>> + Send + 'static,
+    {
+        self.prepare = Some(Box::new(prepare));
         self
     }
     /// Loads the Session extension `group` ([`AgentBuilder::session_extension`])
@@ -120,12 +124,10 @@ impl Agent {
         config: SessionConfig,
         options: CreateSessionOptions,
     ) -> Result<Session> {
-        let (id, start) = match options.prepare {
-            Some((id, prepare)) => (id, SessionStart::Prepared(prepare)),
-            None => (
-                options.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-                SessionStart::Create,
-            ),
+        let id = options.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let start = match options.prepare {
+            Some(prepare) => SessionStart::Prepared(prepare),
+            None => SessionStart::Create,
         };
         self.create(id, config, start, options.extension).await
     }
@@ -187,7 +189,7 @@ impl Agent {
                         SessionInitialization::New
                     }
                     SessionStart::Prepared(prepare) => {
-                        prepare.await?;
+                        prepare(id.clone()).await?;
                         created = true;
                         SessionInitialization::Prepared(assembly.store.branches(&id).await?)
                     }

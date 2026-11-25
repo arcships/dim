@@ -7,7 +7,7 @@ use dim_agent_runtime::{
 use rutis::host::DynPlugin;
 use rutis::{Ctx, Plugin};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicU32, Ordering},
 };
 
@@ -51,35 +51,68 @@ async fn create_and_restore_options_apply_their_fields() {
         .await
         .unwrap();
 
-    let prepared_id = "prepared-session";
-    let config = SessionConfig::default();
-    let prepare = {
-        let store = store.clone();
-        let id = prepared_id.to_owned();
-        let config = config.clone();
-        Box::pin(async move {
-            store.create_session(&id, &config).await?;
-            Ok(())
-        })
-    };
+    let prepared = Arc::new(Mutex::new(None::<String>));
     let session = agent
         .create_session(
-            config,
+            SessionConfig::default(),
             CreateSessionOptions::default()
-                .prepare(prepared_id, prepare)
+                .id("named-session")
+                .prepare({
+                    let store = store.clone();
+                    let prepared = prepared.clone();
+                    move |id| {
+                        *prepared.lock().unwrap() = Some(id.clone());
+                        let config = SessionConfig::default();
+                        Box::pin(async move {
+                            store.create_session(&id, &config).await?;
+                            Ok(())
+                        })
+                    }
+                })
                 .extension(GROUP, 7_u32),
         )
         .await
         .unwrap();
     assert_eq!(
         session.id(),
-        prepared_id,
-        "a prepared creation is named by the id its prepare step commits"
+        "named-session",
+        "a prepared creation is created under the id the options name"
+    );
+    assert_eq!(
+        *prepared.lock().unwrap(),
+        Some("named-session".to_owned()),
+        "the prepare step commits the rows of the id its Session is created under"
     );
     assert_eq!(
         seen.load(Ordering::SeqCst),
         7,
         "the Session loaded the extension's value"
+    );
+    session.close().await.unwrap();
+
+    let generated = Arc::new(Mutex::new(None::<String>));
+    let session = agent
+        .create_session(
+            SessionConfig::default(),
+            CreateSessionOptions::default().prepare({
+                let store = store.clone();
+                let generated = generated.clone();
+                move |id| {
+                    *generated.lock().unwrap() = Some(id.clone());
+                    let config = SessionConfig::default();
+                    Box::pin(async move {
+                        store.create_session(&id, &config).await?;
+                        Ok(())
+                    })
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        generated.lock().unwrap().as_deref(),
+        Some(session.id()),
+        "a prepared creation without an id is created under a generated one, which the prepare step receives"
     );
     session.close().await.unwrap();
 

@@ -1471,7 +1471,7 @@ impl AgentIndex {
         leader: Option<&str>,
         origin: SessionOrigin,
         worktree: Option<PreparedWorktree>,
-    ) -> Option<(String, BoxFuture<'static, dim_agent_runtime::Result<()>>)> {
+    ) -> Option<(String, CreateSessionOptions)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
         let agent_id = host.agent_id.clone();
@@ -1492,32 +1492,32 @@ impl AgentIndex {
             })
         }))
     }
-    /// A new Session id and the prepare step of its prepared creation: the
-    /// project of `cwd` is authorized, then `step` writes the Session's rows.
-    /// Creation, `launch` and a fork share it (S5c §9).
-    fn prepared(
-        &self,
-        cwd: String,
-        step: impl FnOnce(String) -> BoxFuture<'static, dim_agent_runtime::Result<()>>,
-    ) -> (String, BoxFuture<'static, dim_agent_runtime::Result<()>>) {
+    /// A new Session id and the options of its prepared creation: the project
+    /// of `cwd` is authorized, then `step` writes the Session's rows. Creation,
+    /// `launch` and a fork share it (S5c §9).
+    fn prepared<F>(&self, cwd: String, step: F) -> (String, CreateSessionOptions)
+    where
+        F: FnOnce(String) -> BoxFuture<'static, dim_agent_runtime::Result<()>> + Send + 'static,
+    {
         let id = uuid::Uuid::new_v4().to_string();
-        let step = step(id.clone());
         let settings = self.settings.clone();
         let stopping = self.stopping.clone();
-        (
-            id,
-            Box::pin(async move {
-                if let Some(settings) = settings {
-                    settings
-                        .authorize_project(cwd.into(), &stopping)
-                        .await
-                        .map_err(|error| {
-                            AgentError::fault("project authorization", error.to_string())
-                        })?;
-                }
-                step.await
-            }),
-        )
+        let options = CreateSessionOptions::default()
+            .id(id.clone())
+            .prepare(move |id: String| {
+                Box::pin(async move {
+                    if let Some(settings) = settings {
+                        settings
+                            .authorize_project(cwd.into(), &stopping)
+                            .await
+                            .map_err(|error| {
+                                AgentError::fault("project authorization", error.to_string())
+                            })?;
+                    }
+                    step(id).await
+                })
+            });
+        (id, options)
     }
 
     pub(crate) async fn create_with_worktree(
@@ -1593,11 +1593,8 @@ impl AgentIndex {
             .prepare_session(host, &config, version, leader, origin, worktree)
             .await
         {
-            Some((id, prepare)) => {
-                let creation = host.agent.create_session(
-                    config,
-                    CreateSessionOptions::default().prepare(id.clone(), prepare),
-                );
+            Some((id, options)) => {
+                let creation = host.agent.create_session(config, options);
                 self.admit(&id, &host.agent_id, version, creation).await
             }
             None => {
@@ -2035,13 +2032,10 @@ impl AgentIndex {
                 .map_err(|error| AgentError::Storage(format!("the fork configuration: {error}")))?;
         }
         let source = source.to_owned();
-        let (id, prepare) = self.prepared(config.cwd.clone(), move |fork| {
+        let (id, options) = self.prepared(config.cwd.clone(), move |fork| {
             Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
         });
-        let creation = usage.host.agent.create_session(
-            config,
-            CreateSessionOptions::default().prepare(id.clone(), prepare),
-        );
+        let creation = usage.host.agent.create_session(config, options);
         let fork = self
             .admit(&id, &usage.host.agent_id, version, creation)
             .await?;
