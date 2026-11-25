@@ -25,10 +25,11 @@ contract ([SessionMethods §4 rule 8](../../../design/plugins/SessionMethods.md#
 
 ## Events and lifetime
 
-No Timeline events or I/O. Each registration tracks the calls it accepted, so its unload can interrupt them and wait. A part depends on `sessionMethods` and
-calls `register(ctx, namespace, declarations, call)` from its own `apply`, with the part's own function as `call`;
-the registration is withdrawn when that part unloads, and a namespace registered
-already fails
+No Timeline events or I/O. Each registration tracks the calls it accepted, so
+its unload can interrupt them and wait. A part depends on `sessionMethods` and
+calls `register(ctx, namespace, declarations, call)` from its own `apply`, with
+the part's own function as `call`; the registration is withdrawn when that part
+unloads, and a namespace registered already fails
 ([rutis usage R6](../../../design/rutis-usage.md#r6-contributions-register-with-their-owner)).
 A refused registration fails the part. A part of another language calls
 `sessionMethods.register(namespace, declarations, call)` through the bridge;
@@ -41,8 +42,7 @@ withdrawn, the table keeps the row that registered it, so a call into it answers
 `service_reloading` or `service_unavailable` from that row's status. Today a
 withdrawn namespace whose row is absent from the loader answers
 `service_reloading`; the target contract answers `unknown_method` there, as it
-already does for a disabled row and for a name no namespace ever held. Each registration owns the calls it admitted: its
-part's unload interrupts `report` calls and waits for every admitted call.
+already does for a disabled row and for a name no namespace ever held.
 `session.methods` lists the methods of the namespaces registered now that no
 management namespace holds.
 
