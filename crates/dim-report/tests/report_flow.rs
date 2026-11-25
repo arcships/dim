@@ -1326,3 +1326,104 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[tokio::test]
+async fn recognized_credentials_are_withheld_from_both_conversation_modes() {
+    let home = report_home();
+    let synthetic_home = std::path::Path::new("/Users/İsmail");
+    let mut builder = report_builder(synthetic_home);
+    defaults::mock_hosts(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            platform_home: Some(home.path().into()),
+            unix_path: Some(home.path().join("server.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut owner = connect(&server).await;
+    let created = owner
+        .rpc("session.create", json!({"cwd":home.path(),"tools":[]}))
+        .await
+        .unwrap();
+    let id = &created["sessionId"];
+    let marker = "recognized-credential-fixture";
+    let stripe = "sk_live_51abcdefghijklmnopqrstuv";
+    let google = "AIzaSyA1234567890abcdefghijklmnopqrstu";
+    let asia = "ASIA1234567890ABCDEF";
+    let userinfo = "https://alice:pw123@internal.example/api";
+    let bearer = "Bearer abcdefghijklmnopqrstuvwxyz";
+    let visible = "credential-fixture-visible-tail";
+    let message = format!("{marker}\n{stripe}\n{google}\n{asia}\n{userinfo}\n{bearer}\n{visible}");
+    owner
+        .rpc(
+            "session.submit",
+            json!({"sessionId":id,"branchId":"main","text":message}),
+        )
+        .await
+        .unwrap();
+    owner
+        .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+        .await
+        .unwrap();
+    for redact in [false, true] {
+        let prepared = owner
+            .rpc("session.report.prepare", json!({"sessionId":id}))
+            .await
+            .unwrap();
+        let plan = owner
+            .rpc(
+                "session.report.plan",
+                json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":redact,"includeConversation":true}),
+            )
+            .await
+            .unwrap();
+        let text = plan.to_string();
+        for secret in [stripe, google, asia, userinfo, bearer] {
+            assert!(
+                !text.contains(secret),
+                "plan leaked {secret} with redact={redact}"
+            );
+        }
+        assert!(text.contains(marker), "marker missing with redact={redact}");
+        assert!(
+            text.contains(visible),
+            "visible tail missing with redact={redact}"
+        );
+        assert!(
+            text.contains("[credential omitted]"),
+            "mask missing with redact={redact}"
+        );
+        assert!(
+            text.contains("[excerpt withheld]"),
+            "withheld line missing with redact={redact}"
+        );
+        let generated = owner
+            .rpc(
+                "session.report.generate",
+                json!({"sessionId":id,"reportId":prepared["reportId"],"planId":plan["planId"]}),
+            )
+            .await
+            .unwrap();
+        archive(&generated);
+        assert_eq!(plan["files"], generated["files"]);
+        let text = generated.to_string();
+        for secret in [stripe, google, asia, userinfo, bearer] {
+            assert!(
+                !text.contains(secret),
+                "ZIP leaked {secret} with redact={redact}"
+            );
+        }
+        assert!(
+            generated["files"]["report.md"]
+                .as_str()
+                .unwrap()
+                .contains(marker)
+        );
+    }
+    drop(owner);
+    server.shutdown();
+    server.join().await.unwrap();
+}

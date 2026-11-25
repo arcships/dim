@@ -24,6 +24,13 @@ static COOKIE_FIELD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(?:^|[^a-z0-9_-]|\\[rn])(?:set-)?cookie(?:\\?["'`])?[ \t]*[:=]"#)
         .expect("static cookie field pattern")
 });
+static URL_USERINFO: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@").expect("static URL userinfo pattern")
+});
+static BEARER_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[^a-z0-9_-])bearer[ \t]+[a-z0-9._~+/-]{20,}={0,2}")
+        .expect("static bearer token pattern")
+});
 
 #[derive(Default)]
 pub(super) struct Conversation {
@@ -264,6 +271,8 @@ fn guarded(value: &str) -> String {
         let withheld = field.is_some()
             || continuation
             || quoted_continuation
+            || URL_USERINFO.is_match(line)
+            || BEARER_TOKEN.is_match(line)
             || lower.contains("-----begin")
             || lower.contains("akia")
             || lower.contains("eyj");

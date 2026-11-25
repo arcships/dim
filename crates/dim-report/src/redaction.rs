@@ -13,8 +13,10 @@ use serde_json::json;
 const SESSION: &str = "00000000-0000-4000-8000-000000000000";
 static SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}",
-        r"|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}",
+        r"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{20,}",
+        r"|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[A-Za-z0-9]{36,}",
+        r"|github_pat_[A-Za-z0-9_]{22,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}",
+        r"|xox[baprs]-[A-Za-z0-9-]{10,}",
         r"|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}",
         r"|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
     ))
