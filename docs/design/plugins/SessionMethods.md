@@ -166,22 +166,22 @@ A handler's reply is `MethodReply` data: `{kind: "value", value}` or its own err
 | `invalid` | `register` | — | The namespace or a declaration is refused: outside the name grammar, malformed or repeated — the table checks these. For the Session table the host's check adds a reserved root, a name equal to, containing or inside a built-in, or a declared notification equal to a built-in notification's name; the process table's registration answers those as `reserved`. Fix the name or the declaration and register again |
 | `reserved` | `register` (process table) | — | The namespace or a name is the host's; the process table's registration answers this where the Session table maps the same input to `invalid`. Pick another name |
 | `duplicate` | `register` | — | The namespace is registered already; the row may register another namespace instead |
-| `invalid` | process table's `call` | `invalid_params` | The request cannot be read: the method name or params are malformed. Fix the request and call again. The Session table answers `unknown_method` for a name outside the grammar and leaves params to the handler |
-| `unknown_method` | `call` | `unknown_method` | No namespace, registered or withdrawn, holds the name, or the owning namespace's provider does not declare it, or the row that registered its withdrawn namespace is disabled or absent; for the Session table a name outside the grammar is this kind too, where the process table answers `invalid`. Check the name and the namespace's declarations; an absent row is a configuration problem |
-| `reloading` | `call` | `service_reloading` | The registering row is starting or reloading, its copy in this Session is Active because a child plugin reloads, or the row has no copy in this Session because its part is between generations; retry after it is Active and registered the namespace again |
-| `unavailable` | `call` | `service_unavailable` | The registering row's copy in this Session failed or cannot run; a missing copy is `reloading` instead. Retrying fails the same way until that row is fixed or restarted |
+| `invalid` | process table's `call` | `invalid_params` | The request cannot be read: `params` is not an object. A name outside the grammar is `unknown_method` in both tables, and the Session table leaves `params` to the handler |
+| `unknown_method` | `call` | `unknown_method` | No namespace, registered or withdrawn, holds the name, the name is outside the grammar, the owning namespace's provider does not declare it, or the row that registered its withdrawn namespace is disabled or absent. Check the name and the namespace's declarations; an absent row is a configuration problem |
+| `reloading` | `call` | `service_reloading` | The registering row is starting or reloading; for the Session table, its copy in this Session is Active because a child plugin reloads, or the row has no copy in this Session because its part is between generations. The process table's own contract states its answer. Retry after the row is Active and registered the namespace again |
+| `unavailable` | `call` | `service_unavailable` | The registering row failed or cannot run; for the Session table, its copy in this Session failed, and a missing copy is `reloading` instead. The process table's own contract states its answer. Retrying fails the same way until that row is fixed or restarted |
 | `interrupted` | `call` | `operation_interrupted` | A `report` call's provider generation or admitting Rpc load unloaded while it ran; the call may have committed, so read the current state before retrying. A `drain` call answers with its own result instead |
 | `closed` | `register` | — | The table is closing. The registration fails with the part that made it; the replacement part registers in the next generation: the next Session for a Session table, the next process for the process table |
 | `closed` | `call`, `methods` | `session_closed` (Session table) | The table ended with its Session or process. A Session table: re-acquire the Session by id (Rpc restores an unloaded Session) and call again. A process table: the process ended, so a later process serves the next call. Do not retry against the closed one |
 
-`reserved`, `duplicate` and a registration's `closed` answer a registration only, so no client sees them. For `call` and `methods`, `closed` is one kind for both tables: the Session table's reaches a client as `session_closed`, and the process table has no client code of its own.
+`reserved`, `duplicate` and a registration's `closed` answer a registration only, so no client sees them. For `call` and `methods`, `closed` is one kind for both tables: the Session table's reaches a client as `session_closed`, and the process table's ends the process and the connection with it, so it needs no code of its own.
 
 ### Flows
 
 | Operation | Normal path | Caller cancels | Caller unloads | Owner closes or reloads | Settled by |
 | --- | --- | --- | --- | --- | --- |
-| `register` | Check the duplicate and, in the Session table, the host's refusal; record the declarations and the callback under the row | — | The registration is withdrawn and its row recorded | New registrations are refused; the table ends with its Session or process, and the next one builds a new table (the process table's own contract states its answers) | The registering row |
-| `call` | Find the owner, admit the call, run the handler, return its `CallReply` — the reply, the caller-index entry and the settlement; on unload interrupt `report` calls and wait for every accepted call. A withdrawn namespace answers from its row and that row's copy in this Session: a missing copy is `reloading` | A caller that stops waiting drops the future; the accepted call settles by its declaration, and a disconnect cancels nothing | The registration's accepted calls settle by their declarations | A withdrawn namespace answers from its row's status; the table ends with its Session and interrupts its calls by their declarations, waiting for them | The table for admission and settlement; the handler for its effects |
+| `register` | Check the table's host refusal and the duplicate — the Session table answers `invalid`, the process table `reserved` — then record the declarations and the callback under the row | — | The registration is withdrawn and its row recorded | New registrations are refused; the table ends with its Session or process, and the next one builds a new table (the process table's own contract states its answers) | The registering row |
+| `call` | Find the owner, admit the call, run the handler, return its `CallReply` — the reply, the caller-index entry and the settlement; on unload interrupt `report` calls and wait for every accepted call. A withdrawn Session namespace answers from its row and that row's copy in this Session: a missing copy is `reloading` | A caller that stops waiting drops the future; the accepted call settles by its declaration, and a disconnect cancels nothing | The registration's accepted calls settle by their declarations | A withdrawn namespace answers from its row's status; the table ends with its Session and interrupts its calls by their declarations, waiting for them | The table for admission and settlement; the handler for its effects |
 | `methods` | Read the registered namespaces' declarations, sorted by name; the read observes the state at the call | — | Nothing to release | A table that closes answers no further read; the next Session or process builds a new one; a read already answered is unaffected | SessionMethods |
 
 ## Exceptions with reasons
@@ -324,6 +324,11 @@ pub enum NotifyError {
     Gone,
     /// An encoded notification over the frame limit.
     TooLarge,
+}
+
+impl NotifyError {
+    /// The code a bridge error carries: `undeclared`, `gone` or `too_large`.
+    pub fn code(self) -> &'static str { /* ... */ }
 }
 
 /// The calling connection of one admitted call (A.2), bound to the serving
@@ -600,8 +605,8 @@ impl SessionMethods {
     pub fn methods(&self) -> Result<Vec<MethodDecl>, MethodError> { /* ... */ }
 
     /// One call, in process: the caller's site (`CallSite`, below), the
-    /// cancellation and the progress sink are parameters, and the reply is
-    /// data.
+    /// cancellation and the progress sink are parameters, and the reply is the
+    /// `CallReply` above.
     pub async fn call(
         &self,
         method: String,
