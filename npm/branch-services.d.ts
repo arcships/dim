@@ -1397,6 +1397,40 @@ export interface PartRegistry {
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
 }
 
+
+/** Why a routed call did not reach a reply. */
+export type RouteError =
+  | /** The Session is not there, has no owner, or is closed and cannot load again. Only a process caller receives it; Agents loads and holds a Session that is merely not loaded (ADR 027 D5), so this is final. */ { noSession: string }
+  | /** The Session instance is closing, and so is a call to one of its lines. A Session-scoped caller ends its work, and a process caller reads the same answer as `session_closing` and ends the work it was doing. */ { sessionClosing: string }
+  | /** Agents is reloading and cannot take calls yet. A process caller retries later. */ { sessionReloading: string }
+  | /** The Session exists but cannot be loaded now: its restore failed, or the Agent that owns it is unavailable. The caller reports the reason and does not retry. */ { sessionUnavailable: { session: string; reason: string } }
+  | /** The Session is live but the line is closing, closed, or not one of its lines. Final for that line: no hold and no retry. */ { noLine: { session: string; line: string } }
+  | /** The name is not a data face a route resolves there: the assembly marks it internal, it is a mechanism registration point, or it is a scope lifecycle service. A permanent answer: the request is wrong. */ { notDataFace: { service: string } }
+  | /** The service is a data face a route resolves, but this operation of it is not: its call needs a cancellation or a cleanup the routed call cannot carry, so only a direct call keeps its lifetime behaviour. */ { methodNotRoutable: { service: string; method: string } }
+  | /** The name is a data face, but not of the scope the route reaches. */ { wrongScope: { service: string; group: string } }
+  | /** The owner's own failure, with the name, the code it reported and the message it wrote; routing does not restate them. `reloading` is that code's "try again later", so a caller retries exactly what the owner says it may retry. */ { owner: { name: string; code?: string | null; message: string; data?: import('./plugin.js').BridgeJsonValue | null; reloading: boolean } }
+
+
+/**
+ * One Session's own lines and data faces, provided to the Session's parts and
+ * their runtimes as the Session name `sessionScope`.
+ *
+ * It holds its Session and no other: a part of a Session reaches its own
+ * Session's lines only. `describe` joins it with base-3.
+ */
+export interface SessionScope {
+  /**
+   * Calls one of this Session's own data faces.
+   * @throws {RouteErrorThrown}
+   */
+  call(call: SessionCall): Promise<import('./plugin.js').BridgeJsonValue | null>
+  /**
+   * Calls one of this Session's lines' data faces.
+   * @throws {RouteErrorThrown}
+   */
+  lineCall(call: LineCall): Promise<import('./plugin.js').BridgeJsonValue | null>
+}
+
 export type SessionInstanceDefinition = {
   group: string
   definitionId: string
@@ -1433,6 +1467,15 @@ export type PermissionState = {
 /** A Session service failure; generated exports throw this serde value. */
 export type SessionsError =
   | { code: "rejected"; message: string }
+  | /** A routed call could not select its target. These are the same codes a Session's own scope answers: `no_session`, `session_closing`, `session_reloading` (retryable), `session_unavailable`, `no_line`, `not_data_face`, `method_not_routable` and `wrong_scope`. */ { code: "no_session"; message: string }
+  | { code: "session_closing"; message: string }
+  | { code: "session_reloading"; message: string }
+  | /** The Session exists but cannot load; `reason` says why. */ { code: "session_unavailable"; message: string; reason: string }
+  | /** The line is not the Session's, or it is gone; `line` names it. */ { code: "no_line"; message: string; line: string }
+  | { code: "not_data_face"; message: string; service: string }
+  | { code: "method_not_routable"; message: string; service: string; method: string }
+  | { code: "wrong_scope"; message: string; service: string; group: string }
+  | /** The target owner's own failure, with the name and message it wrote and whether the owner says it may be retried. */ { code: "routed"; name: string; owner_code?: string | null; message: string; data?: import('./plugin.js').BridgeJsonValue | null; retryable: boolean }
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
   | { code: "branch_missing"; message: string }
@@ -1766,11 +1809,14 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
+/** What a method returning `Err(RouteError)` throws. */
+export type RouteErrorThrown = RustError<"RouteError", "noSession" | "sessionClosing" | "sessionReloading" | "sessionUnavailable" | "noLine" | "notDataFace" | "methodNotRoutable" | "wrongScope" | "owner", RouteError>
+
 /** What a method returning `Err(SessionInstanceError)` throws. */
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
 
 /** What a method returning `Err(SessionsError)` throws. */
-export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "no_session" | "session_closing" | "session_reloading" | "session_unavailable" | "no_line" | "not_data_face" | "method_not_routable" | "wrong_scope" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
@@ -1814,6 +1860,7 @@ export interface Services {
   dispatcher: Dispatcher
   timeline: Timeline
   partRegistry: PartRegistry
+  sessionScope: SessionScope
   sessionLoader: SessionLoader
   sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig
@@ -1823,4 +1870,76 @@ export interface Services {
   workflowFiles: WorkflowFiles
   listenAddresses: ListenAddresses
   uiResources: UiResources
+}
+
+/** The data faces a line reaches. */
+export type LineFaces = {
+  approval: Approval
+  backgroundExec: BackgroundExec
+  branchLine: BranchLine
+  dispatcher: Omit<Dispatcher, 'consume' | 'listen'>
+  inputQueue: InputQueue
+  permission: Omit<Permission, 'check'>
+  timeline: Timeline
+  timelineIdentity: TimelineIdentity
+  wait: Omit<Wait, 'wait'>
+}
+
+/** The data faces a Session reaches. */
+export type SessionFaces = {
+  agentConfig: AgentConfig
+  collaborationConfig: CollaborationConfig
+  initialPromptConfiguration: InitialPromptConfiguration
+  mcpSession: McpSession
+  sessionConfig: SessionConfig
+  sessionIdentity: SessionIdentity
+  sessionLanguage: SessionLanguage
+  sessionLoader: SessionLoader
+  skillsConfig: SkillsConfig
+  toolHost: Omit<ToolHost, 'execute'>
+  treeCommands: Omit<TreeCommands, 'create'>
+  uiResources: Omit<UiResources, 'publishFile' | 'withdraw'>
+}
+
+/** One call a route resolves: `service` and `method` name a data face and one of its methods, and `args` are that method's parameters. */
+type Call<Faces, Address> = {
+  [S in keyof Faces]: {
+    [M in keyof Faces[S]]: Address & {
+      service: S
+      method: M
+      args: Faces[S][M] extends (...args: infer A) => unknown ? A : never
+    }
+  }[keyof Faces[S]]
+}[keyof Faces]
+
+/** A call to one of the caller's own Session's lines. */
+export type LineCall = Call<LineFaces, { lineId: string; sessionId?: never }>
+
+/** A call to one of the caller's own Session's data faces. */
+export type SessionCall = Call<SessionFaces, { lineId?: never; sessionId?: never }>
+
+/** A call through Agents: a Session's face, or one of its lines' faces. A Session
+ * face takes no `lineId`. */
+export type SessionsCall =
+  | Call<LineFaces, { sessionId: string; lineId: string }>
+  | Call<SessionFaces, { sessionId: string; lineId?: never }>
+
+/** The reply of one call: the target method's own return type. */
+export type ReplyOf<C> = C extends { service: infer S; method: infer M }
+  ? S extends keyof (LineFaces & SessionFaces)
+    ? M extends keyof (LineFaces & SessionFaces)[S]
+      ? Awaited<
+          (LineFaces & SessionFaces)[S][M] extends (...args: never[]) => infer R ? R : never
+        >
+      : never
+    : never
+  : never
+
+/** What a routed call answers: a method that replies nothing reaches the caller as `null`, while a direct call to it returns `undefined`. */
+export type RoutedReply<C> = ReplyOf<C> extends void ? null : ReplyOf<C>
+
+/** A Session's own faces, typed per operation: `service` and `method` choose the reply. */
+export interface SessionScope {
+  call<C extends SessionCall>(call: C): Promise<RoutedReply<C>>
+  lineCall<C extends LineCall>(call: C): Promise<RoutedReply<C>>
 }

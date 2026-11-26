@@ -6113,6 +6113,7 @@ version = "0.1.0-alpha.29"
 dependencies = [
  "proc-macro2",
  "rutis-types",
+ "serde",
  "serde_json",
  "syn 2.0.119",
 ]

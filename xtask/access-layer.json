@@ -1,0 +1,870 @@
+{
+  "allow": [
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/approval.rs",
+      "item": "Approval::admit"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/approval.rs",
+      "item": "Approval::replay"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/approval.rs",
+      "item": "Approval::respond"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/auxiliary_model.rs",
+      "item": "AuxiliaryModel"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/execution_settings.rs",
+      "item": "ExecutionSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/file_storage/face.rs",
+      "item": "FsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/host.rs",
+      "item": "ModelSelectionHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/host.rs",
+      "item": "PromptHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/host.rs",
+      "item": "SelectableModelsHost"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host.rs",
+      "item": "ToolHost::0"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::arch"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::build_process_spec"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::child_path_process"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::command_shutdown"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::command_workers"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::commands"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::configured"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::env"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::execution"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::home"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::installed_toolchains"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::os"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::platform_roots"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::prepare_isolated_process"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::remove_exec_directory"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::retained_output_page"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::spawn_pty"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::spawn_tree"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::spawn_with_stdin_process"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::start_shell"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::timezone"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::toolchain"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::with_execution_settings"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::with_toolchain_source"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/confined.rs",
+      "item": "HostPlatform::spawn_confined_process"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/exec_shell_settings.rs",
+      "item": "HostPlatform::read_exec_shell_settings"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/exec_shell_settings.rs",
+      "item": "HostPlatform::update_exec_shell_settings"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/isolation.rs",
+      "item": "HostPlatform::prepare_isolated_process"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/input_queue.rs",
+      "item": "InputQueue::pending"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/input_queue.rs",
+      "item": "InputQueue::withdraw_checked"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/input_queue/face.rs",
+      "item": "SubmitChecks"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/methods.rs",
+      "item": "ForeignMethods"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/methods.rs",
+      "item": "ReservedMethods::check_type"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "CommandRules"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::admit_decision"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::decide"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::register_advice"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::update"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/prompt.rs",
+      "item": "InitialPromptConfiguration::fixed"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/prompt.rs",
+      "item": "InitialPromptConfiguration::read"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_guide.rs",
+      "item": "ForeignGuideEntries"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_registry.rs",
+      "item": "PromptRegistry"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_sources.rs",
+      "item": "BasePromptSettingsHost"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/prompt_sources.rs",
+      "item": "SessionLanguage::gate"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/prompt_sources.rs",
+      "item": "SessionLanguage::replace"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_suggestion.rs",
+      "item": "PromptSuggestionSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/session_files.rs",
+      "item": "SessionFiles"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/skills/face.rs",
+      "item": "SkillsCatalog"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/skills/mod.rs",
+      "item": "SkillsConfig::instructions"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/skills/mod.rs",
+      "item": "SkillsInstructionsSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/skills/session.rs",
+      "item": "SkillsBranch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/summary_strategy.rs",
+      "item": "SummaryPromptSettingsHost"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::activity_after"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::batch_end"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::branch"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::default_from"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::default_moves"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::end_with_final"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::get"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::head"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::inputs"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::next_move"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::page_end"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::turn_ends"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree/read.rs",
+      "item": "TreeCommands::adopted_configuration"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree/read.rs",
+      "item": "TreeCommands::display"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree/read.rs",
+      "item": "TreeCommands::end_committed"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/tool_registry.rs",
+      "item": "ForeignRegistry"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/tool_registry.rs",
+      "item": "ToolSourcesView"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/toolchain.rs",
+      "item": "ToolchainSourceHost"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/wait.rs",
+      "item": "Wait::subscription"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/background.rs",
+      "item": "BackgroundExec::start"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::command_task"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::retain_output_by_id"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::start_command"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::tail_by_id"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::batch_end"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::branch_diagnostics"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::configure"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::dispatch_watch"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::end_branch"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::ended_head"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::get"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::idle"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::input"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::input_commit"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::inputs"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::interrupt"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::lookup"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::on"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::publication"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::query"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::sequence"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::service"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::service_opt"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::set_default_branch"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::state"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::stop"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::submit"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::watch"
+    },
+    {
+      "kind": "branch-type",
+      "file": "crates/dim-agent-runtime/src/branch.rs",
+      "item": "Branch"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::admit_opening"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::admit_opening_with"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::finish_opening"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::opening_budget"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::phase"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::watch"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "SessionConfig::exclude_codemode_below"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "SessionLifecycle::faults"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "SessionLifecycle::phase"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "SessionLifecycle::report_native_fault"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "SessionLifecycle::take_hold"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::fail"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::failure"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::subscribe"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::subscribe_all"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::watch"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::append_batch_registered"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::append_registered"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::append_with_create_at"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::batch_end"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::batch_end_at"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::before"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::bound"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::checkpoint"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::failure"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::restore"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::resume_position"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::save_snapshot"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::segments"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::watch"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-runtime/src/parts.rs",
+      "item": "PartRegistry::register"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-runtime/src/timeline_store_face.rs",
+      "item": "TimelineStoreBinding"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-scheduler/src/loops.rs",
+      "item": "LoopsFace"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-scheduler/src/methods.rs",
+      "item": "ScheduleJobsFace"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-scheduler/src/wakeups.rs",
+      "item": "WakeupsFace"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-app-server/src/agents/sessions.rs",
+      "item": "SessionPermissions::0"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/agents/sessions.rs",
+      "item": "SessionsService"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-app-server/src/collaboration.rs",
+      "item": "CollaborationConfig::leader_description"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-app-server/src/collaboration.rs",
+      "item": "CollaborationConfig::member_description"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-app-server/src/collaboration.rs",
+      "item": "CollaborationDirectory::record"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/collaboration/approvals.rs",
+      "item": "CollaborationSession"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/connection.rs",
+      "item": "ForeignCallChannel"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-app-server/src/control.rs",
+      "item": "ProcessActivity::pause"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-app-server/src/control.rs",
+      "item": "ProcessActivity::take_hold"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/hooks_settings.rs",
+      "item": "HooksService"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/lib.rs",
+      "item": "LocalIdDispatch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/managed_provider.rs",
+      "item": "ManagedSearch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/mcp/face.rs",
+      "item": "McpService"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-app-server/src/mcp/session.rs",
+      "item": "McpSession::subscribe"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/plugin_files.rs",
+      "item": "PluginFiles"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/settings/declared.rs",
+      "item": "Settings"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/storage/face.rs",
+      "item": "Store"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/storage/metadata.rs",
+      "item": "SessionMetadata"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/storage/sqlite.rs",
+      "item": "SqliteDispatch"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-app-server/src/transport.rs",
+      "item": "ListenAddresses::pipe_name"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-app-server/src/transport.rs",
+      "item": "ListenAddresses::unix_path"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-app-server/src/transport.rs",
+      "item": "ListenAddresses::websocket_address"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-app-server/src/ui_extensions/resources.rs",
+      "item": "UiResources::read"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-event-hub/src/bridge.rs",
+      "item": "ForeignEventHub"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-event-hub/src/bridge.rs",
+      "item": "ForeignEventSubscriptions"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-modality/src/targets.rs",
+      "item": "ModalityTargets"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-oauth/src/session_title.rs",
+      "item": "DimOAuth"
+    }
+  ],
+  "removed": []
+}

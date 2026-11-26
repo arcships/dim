@@ -1,6 +1,7 @@
 //! Pure static repository checks with no dependency on compiling business
 //! runtime crates (ADR 026 D2, D4).
 
+pub mod access;
 pub mod boundaries;
 pub mod comment_links;
 pub mod i18n;
@@ -27,6 +28,7 @@ pub fn root() -> PathBuf {
 /// Runs every pure static repository check against `root`.
 pub fn check_all(root: &Path) -> Result<()> {
     boundaries::check(root)?;
+    access::check(root)?;
     types::check(root)?;
     npm::check(root)?;
     plugin_skills::check(root)?;

@@ -384,6 +384,14 @@ impl Agent {
             })
             .collect()
     }
+    /// The Session `id` with its router, for the mechanism caller that owns the
+    /// index (Agents) to route by id. Only the runtime builds the handle
+    /// (`RoutedSession::new` is crate-private), so a crate holding a bare
+    /// [`Session`] has no path to the router: no facade method and no free
+    /// function takes one to a scope.
+    pub fn routed_session(&self, id: &str) -> Option<crate::route::RoutedSession> {
+        self.get_session(id)?.routed()
+    }
     pub fn get_session(&self, id: &str) -> Option<Session> {
         match self.0.entries.lock().unwrap().get(id) {
             Some(Entry::Ready(s)) => Some(s.clone()),
@@ -744,12 +752,17 @@ impl Session {
     /// Reads a service of the Session group from the currently loaded
     /// Session subtree.
     pub fn session_service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
-        crate::names::in_group::<T>(&self.0.owner.assembly.catalog, SESSION_GROUP)?;
-        let loaded = self.0.owner.loaded()?;
-        loaded
-            .ctx
-            .get_at::<T>(&loaded.scope.key::<T>())
-            .ok_or_else(|| AgentError::Reloading(std::any::type_name::<T>().into()))
+        self.0.owner.session_face::<T>()
+    }
+    /// This Session with its router, when its owning instance provides one:
+    /// the runtime alone builds the handle, so a bare [`Session`] has no path
+    /// to it.
+    fn routed(&self) -> Option<crate::route::RoutedSession> {
+        let loaded = self.0.owner.loaded().ok()?;
+        let scope = loaded.ctx.get_at::<crate::route::SessionScope>(
+            &loaded.scope.key::<crate::route::SessionScope>(),
+        )?;
+        Some(crate::route::RoutedSession::new(self.clone(), scope))
     }
     /// The instance of the loaded Session subtree, so a host can find the
     /// loader rows this Session runs. Keys under it stay readable only from

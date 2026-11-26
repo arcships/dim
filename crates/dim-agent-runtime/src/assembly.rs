@@ -250,7 +250,7 @@ type ExtensionMake = Arc<
 >;
 /// Builds one plugin of an extension copy.
 type ExtensionPart = Box<dyn Fn() -> std::result::Result<Box<dyn DynPlugin>, Error> + Send + Sync>;
-type Provide = Arc<dyn Fn(&Ctx, &SessionScope) -> std::result::Result<(), Error> + Send + Sync>;
+type Provide = Arc<dyn Fn(&Ctx, &SessionScopeId) -> std::result::Result<(), Error> + Send + Sync>;
 /// A value registered with [`AgentBuilder::process_value`]: its name, and
 /// how a copy provides it at the key the name has there.
 #[derive(Clone)]
@@ -300,6 +300,9 @@ pub(crate) struct Assembly {
     /// The builder's catalog, as its Agents were built: the facades read a
     /// name in the group it registers.
     pub catalog: Arc<rutis_loader::ServiceCatalog>,
+    /// The names the builder marked internal, as its Agents were built: a
+    /// route resolves only a name that is not among them.
+    pub faces: Arc<Faces>,
 }
 /// The closed set of reasons a service face is internal (#1289).
 pub const FACE_REASONS: [&str; 8] = [
@@ -365,6 +368,7 @@ impl AgentBuilder {
                 required_rows: Arc::default(),
                 extensions: vec![],
                 catalog: Arc::default(),
+                faces: Arc::default(),
             },
         }
     }
@@ -817,12 +821,6 @@ impl AgentBuilder {
         builder.assembly.parts = Arc::default();
         builder
     }
-    /// Whether plugins were added ([`Self::plugin`]); a host without any
-    /// places no process rows.
-    #[cfg(feature = "testing")]
-    pub(crate) fn has_plugins(&self) -> bool {
-        !self.assembly.plugins.is_empty()
-    }
     /// The longest a host waits for its assembly without progress.
     #[cfg(feature = "testing")]
     pub(crate) fn opening_timeout(&self) -> Duration {
@@ -832,6 +830,7 @@ impl AgentBuilder {
         let mut assembly = self.assembly.clone();
         assembly.abandoned = tokio_util::task::TaskTracker::new();
         assembly.catalog = Arc::new(self.catalog.clone());
+        assembly.faces = Arc::new(self.faces.clone());
         if !self.custom_store {
             let store = Arc::new(MemoryTimelineStore::default());
             assembly.store = TimelineStoreBinding::new(store.clone());
@@ -1077,8 +1076,8 @@ pub(crate) fn row(module: &str) -> Value {
 fn group(id: &str, config: Vec<Value>) -> Value {
     json!({ "id": id, "group": true, "instanced": true, "config": config })
 }
-fn session_scope(build: &Build) -> std::result::Result<SessionScope, Error> {
-    Ok(SessionScope {
+fn session_scope(build: &Build) -> std::result::Result<SessionScopeId, Error> {
+    Ok(SessionScopeId {
         instance: build.instance(SESSION_GROUP)?,
     })
 }
@@ -1135,7 +1134,7 @@ pub(crate) struct SessionAssembly {
     pub unloading: CancellationToken,
     pub closing: CancellationToken,
     pub lifecycle: SessionLifecycle,
-    pub loaded: Mutex<Option<Arc<Loaded<SessionScope>>>>,
+    pub loaded: Mutex<Option<Arc<Loaded<SessionScopeId>>>>,
     /// The parts the Session's mounters mounted when it opened, until its
     /// creation ends.
     pub(crate) mounted: Arc<Mutex<crate::parts::Opened>>,
@@ -1144,18 +1143,47 @@ pub(crate) struct SessionAssembly {
     pub(crate) copies: crate::parts::Copies,
 }
 impl SessionAssembly {
-    pub(crate) fn loaded(&self) -> Result<Arc<Loaded<SessionScope>>> {
+    pub(crate) fn loaded(&self) -> Result<Arc<Loaded<SessionScopeId>>> {
         self.loaded
             .lock()
             .unwrap()
             .clone()
             .ok_or_else(|| AgentError::Closed(self.id.clone()))
     }
+
+    /// The Session-scope data face `T` of the loaded Session subtree.
+    pub(crate) fn session_face<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
+        crate::names::in_group::<T>(&self.assembly.catalog, SESSION_GROUP)?;
+        let loaded = self.loaded()?;
+        loaded
+            .ctx
+            .get_at::<T>(&loaded.scope.key::<T>())
+            .ok_or_else(|| AgentError::Reloading(std::any::type_name::<T>().into()))
+    }
+
+    /// The published line `id` of this Session, or `None` when it is not
+    /// published, has ended, or is already closing. The tree's own view decides
+    /// publication, so the process path and a Session part see the same state
+    /// (ADR 027 D2).
+    pub(crate) fn line(&self, id: &str) -> Option<Arc<TimelineContext>> {
+        let loaded = self.loaded().ok()?;
+        let tree = loaded
+            .ctx
+            .get_at::<dyn TimelineTreeControl>(&loaded.scope.key::<dyn TimelineTreeControl>())?;
+        let line = tree.published(id).ok()?.0;
+        (!line.is_closing()).then_some(line)
+    }
+
+    /// What a route reads of this Session's assembly to decide whether it may
+    /// resolve a name: the catalog's groups and the names it marked internal.
+    pub(crate) fn reach(&self) -> (&rutis_loader::ServiceCatalog, &Faces) {
+        (&self.assembly.catalog, &self.assembly.faces)
+    }
 }
 
 struct SessionScopePlugin {
     owner: Arc<SessionAssembly>,
-    scope: SessionScope,
+    scope: SessionScopeId,
     /// The names of this copy's instances, for the mounters it builds.
     build: Build,
     required: Arc<[String]>,
@@ -1209,6 +1237,10 @@ impl DynPlugin for SessionScopePlugin {
             for provide in &owner.assembly.values {
                 provide(ctx, &scope)?;
             }
+            ctx.provide_at(
+                scope.key::<crate::SessionScope>(),
+                Arc::new(crate::SessionScope::new(owner)),
+            )?;
             {
                 let mut loaded = owner.loaded.lock().unwrap();
                 if loaded.is_some() {
@@ -1506,8 +1538,8 @@ impl TimelineFactory {
                 let ctx = &branch.scope.ctx;
                 let scope = branch.scope.scope;
                 required::<dyn LoopState>(ctx, scope.key::<dyn LoopState>())?;
-                Ok(TimelineContext::start(
-                    id,
+                let context = TimelineContext::start(
+                    id.clone(),
                     ctx.clone(),
                     created.view.clone(),
                     created.children.clone(),
@@ -1526,7 +1558,9 @@ impl TimelineFactory {
                     branch.opening.clone(),
                     parent.lifecycle.faults.clone(),
                     parent.assembly.catalog.clone(),
-                ))
+                    parent.assembly.faces.clone(),
+                );
+                Ok(context)
             })
             .catch_unwind()
             .await

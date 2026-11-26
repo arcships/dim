@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
 rutis-types = "0.23.0"
+serde.workspace = true
 serde_json.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
 

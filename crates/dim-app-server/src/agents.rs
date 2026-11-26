@@ -9,8 +9,9 @@ use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
     AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, CreateSessionOptions, InUse,
     Modules, Names, NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
-    QueryRow, QuerySelect, QuerySpec, QueryValue, RestoreSessionOptions, Session, SessionConfig,
-    TimelineKey, TimelineQuery, TimelineQueryScope, TimelineReadScope, TimelineReadSegment,
+    QueryRow, QuerySelect, QuerySpec, QueryValue, RestoreSessionOptions, RouteError, Session,
+    SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope, TimelineReadScope,
+    TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
 use dim_agent_types::{ROOT_BRANCH_ID, TimelinePosition};
@@ -1634,6 +1635,78 @@ impl AgentIndex {
             }
         }
         created
+    }
+    /// Calls a data face of the live Session `id`, or of one of its lines
+    /// ([#2127](https://github.com/arcships/dim/issues/2127),
+    /// [ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D1, D5):
+    /// the Session is loaded for the call and held while it runs, its own scope
+    /// resolves a line, and the target's reply and error come back unchanged.
+    /// A target that cannot be selected answers `NoSession`,
+    /// `SessionClosing`, `SessionReloading`, `SessionUnavailable` or `NoLine`
+    /// before the target's operation runs.
+    pub(crate) async fn call(
+        &self,
+        request: crate::agents::sessions::CallRequest,
+    ) -> std::result::Result<Option<serde_json::Value>, RouteError> {
+        let id = request.session_id.clone();
+        // A replaced or stopping index is transient: the caller retries the
+        // Session it knows against the next generation (#2127).
+        if self.stopping.is_cancelled() {
+            return Err(RouteError::SessionReloading(id));
+        }
+        let used = self.acquire(&id).await.map_err(|error| match error {
+            AgentError::Reloading(_) => RouteError::SessionReloading(id.clone()),
+            // The index stopped between the check above and the acquire: the
+            // same transient answer, not a missing Session.
+            AgentError::Closed(closed) if self.stopping.is_cancelled() => {
+                RouteError::SessionReloading(closed)
+            }
+            AgentError::Closed(_) => RouteError::NoSession(id.clone()),
+            error => RouteError::SessionUnavailable {
+                session: id.clone(),
+                reason: error.to_string(),
+            },
+        })?;
+        let session = &used.session;
+        if session.is_closing() {
+            return Err(RouteError::SessionClosing(id));
+        }
+        // The router comes from the owning instance: the runtime hands out a
+        // handle it alone can build, so a bare `Session` has no path to it.
+        let Some(routed) = used.host.agent.routed_session(&id) else {
+            // The scope goes away when the Session closes, so a close in this
+            // window is that answer rather than an unavailable Session.
+            return Err(if session.is_closing() {
+                RouteError::SessionClosing(id)
+            } else {
+                RouteError::SessionUnavailable {
+                    session: id,
+                    reason: "the Session's scope is not provided".into(),
+                }
+            });
+        };
+        let scope = routed.scope().clone();
+        match request.line_id {
+            Some(line_id) => {
+                scope
+                    .line_call(dim_agent_runtime::LineCall::new(
+                        line_id,
+                        request.service,
+                        request.method,
+                        request.args,
+                    ))
+                    .await
+            }
+            None => {
+                scope
+                    .call(dim_agent_runtime::SessionCall::new(
+                        request.service,
+                        request.method,
+                        request.args,
+                    ))
+                    .await
+            }
+        }
     }
     /// `session.delete` ([S5c §3.2](../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)):
     /// holds S's admission gate, so nothing loads or builds S meanwhile,

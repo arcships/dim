@@ -28,5 +28,6 @@ mod model_stream_recovery_flow;
 mod permission_flow;
 mod recall_flow;
 mod review_flows;
+mod routing_flow;
 mod session_extension;
 mod workspace_files;

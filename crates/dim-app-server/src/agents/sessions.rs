@@ -24,6 +24,21 @@ use serde_json::json;
 use std::{future::Future, sync::Arc, sync::atomic::Ordering};
 use tokio_util::sync::CancellationToken;
 
+/// A call by id to a data face of a Session, or of one of its lines.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallRequest {
+    pub session_id: String,
+    /// The line whose faces this call reaches; absent: the Session's own.
+    #[serde(default)]
+    pub line_id: Option<String>,
+    pub service: String,
+    pub method: String,
+    /// The method's arguments, in order.
+    #[serde(default)]
+    pub args: Vec<serde_json::Value>,
+}
+
 /// A branch of a Session.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -281,6 +296,49 @@ pub struct StopRequest {
 pub enum SessionsError {
     #[error("{message}")]
     Rejected { message: String },
+    /// A routed call could not select its target. These are the same codes a
+    /// Session's own scope answers: `no_session`, `session_closing`,
+    /// `session_reloading` (retryable), `session_unavailable`, `no_line`,
+    /// `not_data_face`, `method_not_routable` and `wrong_scope`.
+    #[error("{message}")]
+    NoSession { message: String },
+    #[error("{message}")]
+    SessionClosing { message: String },
+    #[error("{message}")]
+    SessionReloading { message: String },
+    /// The Session exists but cannot load; `reason` says why.
+    #[error("{message}")]
+    SessionUnavailable { message: String, reason: String },
+    /// The line is not the Session's, or it is gone; `line` names it.
+    #[error("{message}")]
+    NoLine { message: String, line: String },
+    #[error("{message}")]
+    NotDataFace { message: String, service: String },
+    #[error("{message}")]
+    MethodNotRoutable {
+        message: String,
+        service: String,
+        method: String,
+    },
+    #[error("{message}")]
+    WrongScope {
+        message: String,
+        service: String,
+        group: String,
+    },
+    /// The target owner's own failure, with the name and message it wrote and
+    /// whether the owner says it may be retried.
+    #[error("{message}")]
+    Routed {
+        name: String,
+        /// The code the owner reported, when its error carries one.
+        owner_code: Option<String>,
+        message: String,
+        /// The owner's failure as data, when its error type carries a serde
+        /// value.
+        data: Option<Box<serde_json::Value>>,
+        retryable: bool,
+    },
     #[error("{message}")]
     AgentUnknown { message: String },
     #[error("{message}")]
@@ -315,7 +373,13 @@ impl SessionsError {
     pub fn retryable(&self) -> bool {
         matches!(
             self,
-            Self::Reloading { .. } | Self::PublicationUnknown { .. }
+            Self::Reloading { .. }
+                | Self::PublicationUnknown { .. }
+                | Self::SessionReloading { .. }
+                | Self::Routed {
+                    retryable: true,
+                    ..
+                }
         )
     }
 }
@@ -819,7 +883,7 @@ impl HostDispatch for SessionsService {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async", "defaultBranchId": "async",
+            "delete": "async", "defaultBranchId": "async", "call": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
@@ -832,12 +896,69 @@ impl HostDispatch for SessionsService {
         let args = args.json();
         let operation = async move {
             match (index, args) {
+                // A routed call to a Session whose index is being replaced is
+                // transient: the caller retries the Session it knows (#2127).
+                (None, _) if method == "call" => Err(index_reloading()),
                 (None, _) => Err(SessionsError::reloading("the Agents index")),
                 (_, Err(error)) => Err(SessionsError::rejected(error.to_string())),
                 (Some(index), Ok(args)) => call(&index, &method, args, row.as_ref()).await,
             }
         };
-        Ok(Value::future(async move { Ok(envelope(operation.await)) }))
+        Ok(Value::future(async move {
+            match operation.await {
+                Ok(reply) if reply.get("ok").is_some() => Ok(reply.into()),
+                other => Ok(envelope(other)),
+            }
+        }))
+    }
+}
+
+/// What a routed call answers while the Agents index is being replaced: the
+/// one transient answer, so a caller retries instead of treating the Session as
+/// gone.
+fn index_reloading() -> SessionsError {
+    SessionsError::SessionReloading {
+        message: "the Agents index is reloading".into(),
+    }
+}
+
+/// The routing answer as this face reports it: its own kind for a target that
+/// could not be selected, and the owner's failure as the owner wrote it.
+fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
+    use dim_agent_runtime::RouteError;
+    let message = error.to_string();
+    match error {
+        RouteError::NoSession(_) => SessionsError::NoSession { message },
+        RouteError::SessionClosing(_) => SessionsError::SessionClosing { message },
+        RouteError::SessionReloading(_) => SessionsError::SessionReloading { message },
+        RouteError::SessionUnavailable { reason, .. } => {
+            SessionsError::SessionUnavailable { message, reason }
+        }
+        RouteError::NoLine { line, .. } => SessionsError::NoLine { message, line },
+        RouteError::Owner {
+            name,
+            code,
+            data,
+            reloading,
+            ..
+        } => SessionsError::Routed {
+            name,
+            owner_code: code,
+            message,
+            data,
+            retryable: reloading,
+        },
+        RouteError::NotDataFace { service } => SessionsError::NotDataFace { message, service },
+        RouteError::MethodNotRoutable { service, method } => SessionsError::MethodNotRoutable {
+            message,
+            service,
+            method,
+        },
+        RouteError::WrongScope { service, group } => SessionsError::WrongScope {
+            message,
+            service,
+            group,
+        },
     }
 }
 
@@ -897,6 +1018,20 @@ async fn call(
             index.delete(&session_id).await?;
             reply(json!({}))
         }
+        "call" => index
+            .call(request(args)?)
+            .await
+            .map_err(routed)
+            .map(|value| {
+                let mut reply = serde_json::Map::new();
+                reply.insert("ok".into(), serde_json::Value::Bool(true));
+                // A method that answers nothing leaves `value` out: a caller reads
+                // absent as `undefined`, while `null` stays the owner's reply.
+                if let Some(value) = value {
+                    reply.insert("value".into(), value);
+                }
+                serde_json::Value::Object(reply)
+            }),
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"
         ))),

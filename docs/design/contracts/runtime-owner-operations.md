@@ -32,18 +32,27 @@
 
 ### Calls from a Session to a selected branch
 
-Within a branch, inject its owner face directly. For Session callers the existing
-`timelineTree` face gains `call({branchId,operation}, cancelled) → operation reply`.
-TimelineTree resolves the admitted live branch once using its existing branch lookup and
-dispatches on that branch instance. The operation is a tagged union of the calls below;
-Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
-Ended and unknown branches retain their original errors. Calls admitted before close stay
-with that generation. Tree history, directory and batch input continue to use the tree's
-own methods.
+Within a branch, inject its owner face directly. A Session caller names the line and the
+owner's face, and the owner of the line's index resolves it
+([#2127](https://github.com/arcships/dim/issues/2127),
+[ADR 027](../../adr/027-cross-scope-access-by-id.md)): `sessionScope.lineCall` reaches a
+line of the caller's own Session, `sessions.call` a Session and a line of it for the
+process, and both pass the owner's arguments, reply and error through. The two surfaces spell
+the same failure differently: the `sessions` envelope answers snake_case codes, and a Session
+part's scope throws `RouteError`, whose variants are camelCase and whose owner variant carries
+the owner's name, message, data and reloading flag. A routed method that replies nothing answers
+`null` through `sessionScope` (the bridge maps an absent value to JSON null), and the `sessions`
+envelope leaves `value` out so a process caller reads `undefined`; a direct call answers nothing
+(`undefined`) either way. Agents loads the
+Session for the call and holds it while it runs (ADR 027 D5). A target that cannot be
+selected answers `no_session`, `session_closing`, `session_reloading` (retry later),
+`session_unavailable` (report the reason) or `no_line` (final for that line), before the
+target's operation runs. Tree history, directory and batch input continue to use the
+tree's own methods.
 
 | Session caller | Target operation |
 | --- | --- |
-| Context RPC / PromptSuggestion | `contextUsage.read`. The `compactAndWait` variant runs the existing compact RPC handler: it calls `agentLoop.compact` and waits for the compaction fact matching that command sequence and returns the existing completed/skipped/failed reply. The committed sequence watch and bounded query run inside the selected branch for that wait. |
+| Context RPC / PromptSuggestion | `contextUsage.read`, a direct call inside the Session's own face. A compaction that waits stays in the existing compact RPC handler: it takes its `Branch`, calls `AgentLoop::compact` there and waits on the branch's own `publication()`/`query`, then returns the existing completed/skipped/failed reply. These handlers are reached by the Session's own code today; routing them is written here only once `agentLoop`, `contextUsage`, `prompt` and `timelineTree` are routable faces with a wait operation, which they are not (`route::face` refuses them as internal). |
 | Session language / Agent configuration / Report | `prompt.configure` or `prompt.adoptedConfiguration` with the existing source, model and outcome records. |
 | InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
 

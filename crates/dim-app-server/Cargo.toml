@@ -18,6 +18,10 @@ path = "tests/provider_memory_flow.rs"
 name = "app_server_flow"
 path = "tests/app_server_flow.rs"
 
+[[test]]
+name = "routed_call_flow"
+path = "tests/routed_call_flow.rs"
+
 [dependencies]
 dim-codemode.workspace = true
 dim-agent-runtime.workspace = true

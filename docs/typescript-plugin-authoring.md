@@ -29,12 +29,71 @@ requires finite numbers and integers representable by Rust's signed or unsigned
 The external client protocol's `JsonValue` remains JSON-only and does not admit
 `bigint`. These types describe their respective boundaries, not a conversion step.
 
+## Calling a Session or line by id
+
+A part of a line calls its own line's services directly. A part outside that line names
+the id instead, and the owner of the index looks it up at the call: `sessionScope.lineCall`
+for a line of its own Session, `sessions.call` for a Session or a line of it, from the
+process. Both carry `{service, method, args}` — the target's own operation — and answer
+`no_session`, `session_closing`, `session_reloading`, `session_unavailable` or `no_line` when
+the target cannot be selected; the target owner's own failure arrives unchanged
+([#2127](https://github.com/arcships/dim/issues/2127), ADR 027).
+
+```ts
+import type { Sessions } from 'dimcode/plugin';
+import type { SessionScope } from 'dimcode/branch-services.js';
+
+declare const sessionScope: SessionScope;
+declare const sessions: Sessions;
+declare const sessionId: string;
+declare const id: string;
+
+// a Session part
+await sessionScope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw', args: [{ input_id: id }] })
+// a process part
+await sessions.call({ sessionId, lineId: 'main', service: 'inputQueue', method: 'withdraw', args: [{ input_id: id }] })
+await sessions.call({ sessionId, service: 'sessionConfig', method: 'get', args: [] })
+```
+
+The request types are generated, so `service`, `method` and `args` are the target's own and
+a typo fails `tsc`. Nothing a call returns may be kept: the next call looks the target up
+again.
+
+The two entries name a failure with different spellings. `sessions.call` answers the
+`sessions` envelope with snake_case codes — `no_session`, `session_closing`,
+`session_reloading`, `session_unavailable`, `no_line`, `not_data_face`,
+`method_not_routable`, `wrong_scope`, and `routed` for the owner's own failure.
+`sessionScope.lineCall`/`call` throw a `RouteError` whose variants carry the same kinds in
+camelCase (`noSession`, `sessionClosing`, `sessionReloading`, `sessionUnavailable`,
+`noLine`, `notDataFace`, `methodNotRoutable`, `wrongScope`, `owner`), and `owner` keeps the
+owner's `name`, `message`, `data` and `reloading`. Only `session_reloading`/`sessionReloading`
+and an owner failure that says it reloads may be retried. A routed method that replies nothing
+answers `null` through `sessionScope`; `sessions.call` leaves `value` out, so a process caller
+reads `undefined`; a direct call answers `undefined`. Do not test such a reply for truthiness.
+
+Operations whose signature cannot cross languages — a callback, a cancellation, or the
+calling row — are not routed: call them on an injected service directly. `xtask -- check`
+derives them from the service signatures and fails when the runtime's refusal list and the
+signatures disagree, so this stays true as operations are added.
+
+`sessionScope.call` serves the caller that selected a Session by id; a Session part calls its
+own Session's services through injection as before. The Session's own scope is not one of the
+faces a routed call resolves.
+
+A line is admitted while it is published and not closing. A running line that ends a tool call
+commits that batch but stays selectable until its turn ends, so a call placed between the two
+still reaches its owner. The cutoff is entering closing: after a durable `branch/end` the line
+keeps answering while `close_and_record` waits for `deliver_final`, and once the instance starts
+closing a new call answers `no_line`, which is final for that line. A call admitted before the
+closing keeps its owner's own result and failure, including one that arrives after the end. Rust calls the same operations: it builds `args` from the target operation's request
+type and reads the reply as that operation's reply type.
+
 ## Available services
 
 | Need | Service and scope | Availability |
 | --- | --- | --- |
 | Persist a process plugin's own data | `pluginFiles`, process | Implemented when the host supplies an authorized product root and provisions parent directories; use its native transactions and lifecycle scope. |
-| Start or drive another Session | `sessions`, process | Implemented by Agents; all nine methods are typed. |
+| Start or drive another Session | `sessions`, process | Implemented by Agents; every method is typed. `call({sessionId, lineId?, service, method, args})` reaches a Session's or a line's data face by id ([Calling a Session or line by id](#calling-a-session-or-line-by-id)). |
 | Publish events to subscribed branches | `eventHub`, process | Implemented by EventHub: `declare` and `publish`, served to the calling row. Inject it: the row loads only while EventHub runs and declares at `apply`. |
 | Read current branch permissions or host defaults | `sessionPermissions`, process | Generated from Agents: `permission({sessionId, branchId})` and `permissionDefaults({})`. |
 | Read or set a Session's title | `sessionMetadata`, process | Implemented by SessionStore: `read` and the revision-checked `setTitle` ([title metadata](design/appserver/session-title-metadata.md)). SessionTitle is the title's one writer; other plugins only read. |

@@ -17,6 +17,7 @@ impl DynPlugin for Probe {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            host_key("sessions").erase(),
             host_key("scheduleJobs").erase(),
             host_key("wakeups").erase(),
             host_key("loops").erase(),
@@ -784,5 +785,92 @@ async fn loop_face_cancellation_stops_reads_and_keeps_committed_starts() {
         .json()
         .unwrap();
     assert!(reply["loopId"].is_string(), "{reply}");
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_cannot() {
+    let rig = Rig::start().await;
+    let session = rig
+        .server
+        .agent()
+        .expect("the product profile has an Agent")
+        .create_session(
+            dim_agent_runtime::SessionConfig {
+                cwd: rig._home.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    let face = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert_eq!(
+        face["ok"], true,
+        "a Session-scope face answers through Agents: {face}"
+    );
+    // The line's head may advance between the two reads (a fact publishes in
+    // between), so the routed answer must lie in the window the two direct
+    // reads bound, not equal one of them.
+    let before = session.sequence("main").unwrap();
+    let line = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "lineId": "main", "service": "timeline", "method": "sequence"}),
+        )
+        .await;
+    let after = session.sequence("main").unwrap();
+    let routed = line["value"].as_u64().unwrap_or_else(|| panic!("{line}"));
+    assert!(
+        (before..=after).contains(&routed),
+        "the routed head {routed} lies between {before} and {after}: {line}"
+    );
+    let unknown = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": "absent", "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert_eq!(unknown["error"]["code"], "no_session", "{unknown}");
+    let missing = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "lineId": "absent", "service": "timeline", "method": "sequence"}),
+        )
+        .await;
+    assert_eq!(missing["error"]["code"], "no_line", "{missing}");
+    // A Session that closed itself keeps stored rows Agents cannot load, which
+    // is `session_unavailable`; a deleted one is `no_session`.
+    session.close().await.unwrap();
+    let closed = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert_eq!(closed["error"]["code"], "session_unavailable", "{closed}");
+    let deleted = rig
+        .call("sessions", "delete", json!({"sessionId": id}))
+        .await;
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    let gone = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert_eq!(gone["error"]["code"], "no_session", "{gone}");
     rig.close().await;
 }

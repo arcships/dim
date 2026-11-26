@@ -310,6 +310,18 @@ async fn login(service: &OpenAICodexOAuthService, account: &str) {
         AttemptStatus::Completed
     );
 }
+/// Waits for a device attempt to leave `Pending`. The tests do not test the
+/// completion deadline; a whole-suite run can make the exchange slower than a
+/// short guard.
+async fn wait_for_login(grok: &GrokOAuthService, attempt_id: uuid::Uuid) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while grok.attempt_status(attempt_id).await.unwrap() == AttemptStatus::Pending {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the device login did not complete after the token response");
+}
 fn read(home: &Path) -> Value {
     serde_json::from_slice(&fs::read(home.join("auth.json")).unwrap()).unwrap()
 }
@@ -1018,13 +1030,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     })
     .await
     .expect("the device token response did not arrive");
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while grok.attempt_status(begin.attempt_id).await.unwrap() == AttemptStatus::Pending {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the device login did not complete after the token response");
+    wait_for_login(&grok, begin.attempt_id).await;
     assert_eq!(
         grok.attempt_status(begin.attempt_id).await.unwrap(),
         AttemptStatus::Completed
@@ -1405,13 +1411,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     })
     .await
     .expect("the device token response did not arrive");
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while grok.attempt_status(begin.attempt_id).await.unwrap() == AttemptStatus::Pending {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the device login did not complete after the token response");
+    wait_for_login(&grok, begin.attempt_id).await;
     assert!(grok.status(&cancel).await.unwrap().authenticated);
     let auxiliary = root.get::<AuxiliaryModel>().unwrap();
     let sent = f.model_requests.lock().unwrap().len();
@@ -1781,13 +1781,7 @@ async fn the_managed_grok_route_takes_only_the_native_xai_image_formats() {
     })
     .await
     .expect("the device token response did not arrive");
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while grok.attempt_status(begin.attempt_id).await.unwrap() == AttemptStatus::Pending {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the device login did not complete after the token response");
+    wait_for_login(&grok, begin.attempt_id).await;
     let target = ModelId {
         provider_id: "grok-build".into(),
         model_id: "grok-build-0.1".into(),

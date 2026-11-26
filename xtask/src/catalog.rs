@@ -83,6 +83,8 @@ pub(super) async fn collect() -> Result<Table> {
         let ctx = probe.0.lock().unwrap().take();
         let ctx = ctx.ok_or("the catalog probe did not load")?;
         let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx)?;
+        reach(&root_of(), agent.catalog(), agent.faces(), &table)?;
+        retired(&root_of(), agent.catalog())?;
         session.close().await?;
         Ok::<_, Box<dyn std::error::Error>>(table)
     }
@@ -91,6 +93,131 @@ pub(super) async fn collect() -> Result<Table> {
     server.join().await?;
     let _ = std::fs::remove_dir_all(&dir);
     table
+}
+
+/// Fails when a service name the access layer records as retired is registered
+/// again: the generated authoring types only cover names a route resolves, so a
+/// retired name coming back would otherwise go unnoticed
+/// (`xtask/access-layer.json`'s `removed` list).
+fn retired(root: &std::path::Path, catalog: &ServiceCatalog) -> Result<()> {
+    let layer = xtask_check::access::load(root)?;
+    // A catalog name is known at the process, as a shared name, or inside an
+    // instance group: `key_in` answers `OutsideInstance` for the last.
+    let known = |name: &str| {
+        catalog.key(name).is_some()
+            || catalog.is_shared(name)
+            || matches!(
+                catalog.key_in(name, &rutis_loader::resolve::Build::default()),
+                Err(rutis_loader::LoaderError::OutsideInstance { .. })
+            )
+    };
+    let back: Vec<&String> = layer.removed.iter().filter(|name| known(name)).collect();
+    if !back.is_empty() {
+        return Err(format!(
+            "{}: retired service names are registered again: {back:?}",
+            xtask_check::access::FILE
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The workspace root, from this crate's manifest directory.
+fn root_of() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+/// Checks the generated authoring types against what the runtime resolves: every
+/// name `npm/branch-services.d.ts` offers for a scope is a data face the route
+/// accepts there. A name the route refuses, or a face of the other scope, must
+/// not be offered, so this compares the two lists with the runtime's own rule
+/// ([`dim_agent_runtime::route::resolves`]).
+fn reach(
+    root: &std::path::Path,
+    catalog: &ServiceCatalog,
+    faces: &Faces,
+    table: &Table,
+) -> Result<()> {
+    let text = std::fs::read_to_string(root.join("npm/branch-services.d.ts"))?;
+    let mut offered: Vec<(&str, &str)> = Vec::new();
+    for (section, group) in [
+        ("export type SessionFaces = {", "session"),
+        ("export type LineFaces = {", "branch"),
+    ] {
+        let Some(start) = text.find(section) else {
+            return Err(format!("npm/branch-services.d.ts: no {section}").into());
+        };
+        for line in text[start + section.len()..].lines() {
+            let line = line.trim();
+            if line == "}" {
+                break;
+            }
+            let Some(name) = line.split(':').next().map(str::trim) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            offered.push((name, group));
+        }
+    }
+    let mut refused = Vec::new();
+    for (name, group) in &offered {
+        if !dim_agent_runtime::resolves(catalog, faces, name, group) {
+            refused.push(format!("{name} ({group})"));
+        }
+    }
+    if !refused.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts offers names the route refuses: {}",
+            refused.join(", ")
+        )
+        .into());
+    }
+    let unknown: Vec<&str> = offered
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !table.services.contains_key(*name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts offers names the assembly does not provide: {}",
+            unknown.join(", ")
+        )
+        .into());
+    }
+    // The other direction: a data face the route resolves and the file declares
+    // an interface for must be offered, or an author cannot write the call.
+    let mut missing = Vec::new();
+    for (name, service) in &table.services {
+        let group: &str = match service.group {
+            group @ ("session" | "branch") => group,
+            _ => continue,
+        };
+        if service.face != "data" || !dim_agent_runtime::resolves(catalog, faces, name, group) {
+            continue;
+        }
+        let declared = text.lines().any(|line| {
+            line.strip_prefix("export interface ")
+                .or_else(|| line.strip_prefix("export type "))
+                .and_then(|rest| rest.split([' ', '<', '{', '=']).next())
+                .is_some_and(|ty| dim_agent_runtime::names::name_of_type(ty) == *name)
+        });
+        if declared && !offered.iter().any(|(offered, _)| *offered == name) {
+            missing.push(format!("{name} ({group})"));
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts does not offer routable data faces: {}",
+            missing.join(", ")
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// The face of one catalog name (#1289).
@@ -489,5 +616,26 @@ mod face_tests {
         assert!(face("x", false, false, None).is_err());
         assert!(face("x", true, false, None).is_err());
         assert!(face("x", false, false, Some("hotpath")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod retired_tests {
+    use super::*;
+
+    #[test]
+    fn a_retired_instance_name_is_refused() {
+        let directory = std::env::temp_dir().join(format!("dim-retired-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("xtask")).unwrap();
+        // `sessionConfig` is registered inside the Session group only.
+        std::fs::write(
+            directory.join("xtask/access-layer.json"),
+            r#"{"allow": [], "removed": ["sessionConfig"]}"#,
+        )
+        .unwrap();
+        let catalog = dim_agent_runtime::names::catalog();
+        let error = retired(&directory, &catalog).expect_err("an instance name is covered");
+        assert!(error.to_string().contains("sessionConfig"), "{error}");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

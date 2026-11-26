@@ -332,10 +332,7 @@ async fn assemble(
         Factory::new(move || Box::new(AgentAnchor((*slot).clone())) as Box<dyn DynPlugin>)
     });
     prepare(root, &mut builtins)?;
-    let mut rows = match builder.has_plugins() {
-        true => builder.plugin_rows(&mut builtins).await?.rows,
-        false => vec![],
-    };
+    let mut rows = builder.plugin_rows(&mut builtins).await?.rows;
     let session_row = builder.install(&mut builtins, []).await?;
     rows.push(builder.agent_row([row("AgentAnchor"), session_row]));
     let plugin = rutis_loader::LoaderPlugin::new(

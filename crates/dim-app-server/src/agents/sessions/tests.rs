@@ -229,3 +229,12 @@ async fn exists_answers_loaded_unloaded_closed_and_deleted() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[test]
+fn a_routed_call_during_an_index_replacement_is_transient() {
+    use serde_json::json;
+    let error = super::index_reloading();
+    let value = json!(error);
+    assert_eq!(value["code"], "session_reloading", "{value}");
+    assert!(error.retryable(), "{value}");
+}

@@ -57,6 +57,8 @@ pub struct TimelineContext {
     stop_operation: Mutex<Option<StopOperation>>,
     /// Where the facade reads which group a name is in.
     catalog: Arc<rutis_loader::ServiceCatalog>,
+    /// The names the assembly marked internal.
+    faces: Arc<Faces>,
 }
 /// How often a wait looks for a reloading Loop's successor.
 const LOOP_RETURN_POLL: std::time::Duration = std::time::Duration::from_millis(10);
@@ -146,9 +148,11 @@ impl TimelineContext {
         opening: BranchOpening,
         faults: FaultReporter,
         catalog: Arc<rutis_loader::ServiceCatalog>,
+        faces: Arc<Faces>,
     ) -> Arc<Self> {
         let this = Arc::new(Self {
             catalog,
+            faces,
             id,
             ctx,
             view,
@@ -345,6 +349,23 @@ impl TimelineContext {
     /// This branch's scope view.
     pub(crate) fn scope_view(&self) -> &FiberView {
         &self.view
+    }
+    /// The branch instance's context, for reads of its data faces by id
+    /// ([`crate::route::SessionScope`]).
+    pub(crate) fn ctx(&self) -> &Ctx {
+        &self.ctx
+    }
+    /// The catalog this branch's group names come from.
+    pub(crate) fn catalog(&self) -> &rutis_loader::ServiceCatalog {
+        &self.catalog
+    }
+    /// The names the assembly marked internal.
+    pub(crate) fn faces(&self) -> &Faces {
+        &self.faces
+    }
+    /// The branch group instance this line runs in.
+    pub(crate) fn scope_instance(&self) -> rutis::host::InstanceId {
+        self.scope.instance
     }
     /// The loader row ids this branch's profile requires.
     pub(crate) fn required_rows(&self) -> &[String] {

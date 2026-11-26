@@ -157,10 +157,10 @@ impl SessionLoader {
 }
 /// Identity of one Session subtree, which the runtime builds keys from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SessionScope {
+pub(crate) struct SessionScopeId {
     pub instance: InstanceId,
 }
-impl SessionScope {
+impl SessionScopeId {
     pub fn key<T: ?Sized + 'static>(&self) -> Key<T> {
         Key::of().instance(self.instance)
     }
@@ -169,7 +169,7 @@ impl SessionScope {
 /// Identity of one branch subtree nested in its Session subtree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct BranchScope {
-    pub session: SessionScope,
+    pub session: SessionScopeId,
     pub instance: InstanceId,
 }
 impl BranchScope {
