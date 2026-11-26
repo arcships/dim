@@ -556,26 +556,6 @@
       "item": "Branch"
     },
     {
-      "kind": "rust-only-method",
-      "file": "crates/dim-agent-runtime/src/config.rs",
-      "item": "BranchLifecycle::admit_opening"
-    },
-    {
-      "kind": "rust-only-method",
-      "file": "crates/dim-agent-runtime/src/config.rs",
-      "item": "BranchLifecycle::admit_opening_with"
-    },
-    {
-      "kind": "rust-only-method",
-      "file": "crates/dim-agent-runtime/src/config.rs",
-      "item": "BranchLifecycle::finish_opening"
-    },
-    {
-      "kind": "service-skip",
-      "file": "crates/dim-agent-runtime/src/config.rs",
-      "item": "BranchLifecycle::opening_budget"
-    },
-    {
       "kind": "service-skip",
       "file": "crates/dim-agent-runtime/src/config.rs",
       "item": "BranchLifecycle::phase"
