@@ -155,7 +155,8 @@ A read failure is not a value. The design does not append `unknown` or a fabrica
 | --- | --- |
 | The setting module's read port | Read the effective values for the body |
 | The branch's input path | Append the snapshot |
-| `BranchLifecycle` | Register the opening receipt, which the opening hands the line's opening kind; wait for publication before appending afterwards; stop when the branch closes; its generation token is checked before an append |
+| `B:BranchOpening` | Register the opening receipt, which the opening hands the line's opening kind |
+| `BranchLifecycle` | Wait for publication before appending afterwards; stop when the branch closes |
 | `Dispatcher` | The opening receipt returns once the branch dispatched the snapshot |
 | `Timeline` | Append the snapshot |
 | Process bus (`SettingsChanged`) | Wake on a committed write |

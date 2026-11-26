@@ -197,7 +197,8 @@ The in-memory presence read is infallible; it returns an empty list for an unkno
 | --- | --- |
 | `SessionClientsHost` | Read the current connections |
 | The branch's input path | Append the snapshot |
-| `BranchLifecycle` | Register the opening receipt, which the opening hands the line's opening kind; wait for publication before appending afterwards; stop when the branch closes |
+| `B:BranchOpening` | Register the opening receipt, which the opening hands the line's opening kind |
+| `BranchLifecycle` | Wait for publication before appending afterwards; stop when the branch closes |
 | `Dispatcher` | The opening receipt returns once the branch dispatched the snapshot |
 | `Timeline` | Append the snapshot |
 | Process bus (`ClientsChanged`) | Wake on a connection change |
