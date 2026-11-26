@@ -69,7 +69,7 @@ safe integer fields.
 
 ## Compatibility checks
 
-Run the regular Rust contract tests from the Rust 1.100.0 workspace:
+Run the regular Rust contract tests from the Rust workspace:
 
 ```sh
 cargo test --locked -p dim-agent-types

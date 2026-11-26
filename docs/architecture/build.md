@@ -1,6 +1,6 @@
 # Build environment
 
-Run commands at the workspace root. `rust-toolchain.toml` pins Rust 1.100.0, rustfmt and Clippy. Do not copy target directories between worktrees.
+Run commands at the workspace root. `rust-toolchain.toml` pins Rust nightly-2026-11-26 (rustc 1.102.0-nightly), rustfmt and Clippy. Do not copy target directories between worktrees.
 
 ```sh
 rustup show
