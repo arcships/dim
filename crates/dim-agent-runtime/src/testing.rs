@@ -481,9 +481,8 @@ pub async fn timeline_events<R: std::ops::RangeBounds<u64> + Send>(
         Bound::Excluded(end) => Some(end.saturating_sub(1)),
         Bound::Unbounded => None,
     };
-    let through = end
-        .unwrap_or_else(|| timeline.committed())
-        .min(timeline.committed());
+    let visible = timeline.committed();
+    let through = end.unwrap_or(visible).min(visible);
     if start > 1 && start > through {
         return Ok(Vec::new());
     }
