@@ -11,7 +11,7 @@ part apply: tools.register(ctx, ToolContribution)
             (other languages: toolRegistry.register(declaration, execute))
 Session services Active
     -> ToolBinding reads ToolRegistry (first snapshot takes in what is registered)
-    -> existing Prompt adoption and BranchLifecycle finish
+    -> existing Prompt adoption and BranchOpening finish
     -> Session publication and first input
 a part registers, or unloads and its registration is withdrawn
     -> registry task rereads -> sources_state() changes
