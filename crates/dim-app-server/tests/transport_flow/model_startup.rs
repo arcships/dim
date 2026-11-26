@@ -623,6 +623,7 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
         ),
         ("/contextWindow", json!(0)),
         ("/contextWindow", json!(9_007_199_254_740_992u64)),
+        ("/autoCompactWindow", json!(64001)),
         ("/autoCompactWindow", json!(0)),
         ("/autoCompactWindow", json!("0%")),
         ("/autoCompactWindow", json!("101%")),
@@ -1289,13 +1290,11 @@ async fn an_output_limit_above_the_window_is_adopted_with_the_derived_allowance(
     std::fs::remove_dir_all(home).unwrap();
 }
 
-/// A compaction window in tokens is a soft cap: a value wider than the
-/// model clamps to the capacity instead of failing, and a narrower one rises
-/// to the floor of 32,000 or 10% of the capacity when it is smaller; a
-/// percentage resolves against the declared context window (ContextCompaction
-/// §5.1, #2235).
+/// A compaction window below the floor of 32,000 or 10% of the capacity,
+/// when that is smaller, rises to the floor; a percentage resolves against
+/// the declared context window (ContextCompaction §5.1, #2235).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_compaction_window_resolves_percentages_soft_caps_and_floors() {
+async fn the_compaction_window_resolves_percentages_and_floors() {
     let home = std::env::temp_dir().join(format!("dim-window-resolve-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&home).unwrap();
     let seen = Seen::default();
@@ -1315,7 +1314,6 @@ async fn the_compaction_window_resolves_percentages_soft_caps_and_floors() {
         (json!("100%"), 64_000),
         (json!(1000), 6_400),
         (json!(48000), 48_000),
-        (json!(100000), 64_000),
     ] {
         let mut input = startup(&base, "openai-compatible", "private-window");
         input["autoCompactWindow"] = window.clone();

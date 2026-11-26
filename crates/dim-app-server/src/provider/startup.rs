@@ -73,12 +73,12 @@ impl<'de> Deserialize<'de> for CompactPercent {
 
 /// The least compaction window a configuration may shape with
 /// (#2235): 32k tokens, capped at a tenth of the model's capacity.
-pub fn compact_window_floor(context_window: u64) -> u64 {
+fn compact_window_floor(context_window: u64) -> u64 {
     32_000.min(context_window / 10)
 }
 
 /// The tokens a compaction window of `percent` of the capacity is.
-pub fn compact_window_tokens(percent: CompactPercent, context_window: u64) -> u64 {
+fn compact_window_tokens(percent: CompactPercent, context_window: u64) -> u64 {
     (percent.0 * context_window as f64 / 100.0).floor() as u64
 }
 
@@ -428,8 +428,10 @@ impl ProviderService {
         match input.auto_compact_window {
             Some(AutoCompactWindow::Auto(_)) => startup.auto_compact_window = None,
             Some(AutoCompactWindow::Tokens(tokens)) => {
-                if tokens == 0 {
-                    return Err(failure("Auto-compaction window must be positive"));
+                if tokens == 0 || tokens > snapshot.capabilities.context_window {
+                    return Err(failure(
+                        "Auto-compaction window must be positive and no larger than the context capacity",
+                    ));
                 }
                 startup.auto_compact_window = Some(tokens);
             }
@@ -438,20 +440,25 @@ impl ProviderService {
             }
             None => {}
         }
-        // Token counts are a soft cap: a value wider than the model shapes at
-        // the model's own budget instead of failing (#2235), and the shaping
-        // floor keeps a narrow window off the resident parts.
+        if startup
+            .auto_compact_window
+            .is_some_and(|window| window > snapshot.capabilities.context_window)
+        {
+            return Err(failure(
+                "Auto-compaction window exceeds the adopted context capacity",
+            ));
+        }
+        // The shaping floor keeps a narrow window off the resident parts
+        // (#2235): a window below min(32k, 10% of the capacity) rises to it.
         if let Some(window) = startup.auto_compact_window {
             let floor = compact_window_floor(capacity);
-            let clamped = window.min(capacity).max(floor);
-            if clamped != window {
-                startup.auto_compact_window = Some(clamped);
+            if window < floor {
+                startup.auto_compact_window = Some(floor);
                 tracing::warn!(
                     capacity,
                     floor,
                     window,
-                    clamped,
-                    "Auto-compaction window clamped to the model's capacity and shaping floor"
+                    "Auto-compaction window raised to the shaping floor"
                 );
             }
         }
