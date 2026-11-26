@@ -1679,6 +1679,153 @@ async fn a_refused_opening_settles_in_flight_receipts_before_create_session_retu
     agent.close().await.unwrap();
 }
 
+/// The same in-flight receipt and refusing sibling as `OpeningRefusal`,
+/// registered only when the opening is a child line's start: every other line
+/// opens cleanly, so a Session can be created before the child is cut.
+struct ChildOpeningRefusal {
+    dispatcher: Key<Dispatcher>,
+    opening: Key<BranchOpening>,
+    started: Arc<Notify>,
+    stop: CancellationToken,
+    settled: Arc<AtomicUsize>,
+    cleanup_joined: Arc<AtomicUsize>,
+}
+impl DynPlugin for ChildOpeningRefusal {
+    fn name(&self) -> &str {
+        "ChildOpeningRefusal"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.dispatcher.erase(), self.opening.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let dispatcher = ctx.require_at(&self.dispatcher)?;
+            let opening = ctx.require_at(&self.opening)?;
+            let tasks = TaskTracker::new();
+            let tracker = tasks.clone();
+            let (stop, cleanup_joined) = (self.stop.clone(), self.cleanup_joined.clone());
+            ctx.effect(move || async move {
+                stop.cancel();
+                tasks.close();
+                tasks.wait().await;
+                cleanup_joined.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })?;
+            let (started, stop, settled) = (
+                self.started.clone(),
+                self.stop.clone(),
+                self.settled.clone(),
+            );
+            dispatcher.subscribe(
+                ctx,
+                "ChildOpeningRefusal",
+                &["branch/start"],
+                move |event| {
+                    let has_parent = matches!(
+                        &event.kind,
+                        EventKind::BranchStart(start) if start.parent.is_some()
+                    );
+                    let (opening, started, stop, settled) = (
+                        opening.clone(),
+                        started.clone(),
+                        stop.clone(),
+                        settled.clone(),
+                    );
+                    let tasks = tracker.clone();
+                    Box::pin(async move {
+                        if !has_parent {
+                            return Ok(());
+                        }
+                        let first_started = started.clone();
+                        opening.admit_with(Box::new(move |kind| {
+                            Box::pin(async move {
+                                if kind != OpeningKind::Child {
+                                    return Ok(());
+                                }
+                                tasks.spawn(async move {
+                                    stop.cancelled().await;
+                                    settled.fetch_add(1, Ordering::SeqCst);
+                                });
+                                first_started.notify_one();
+                                std::future::pending::<()>().await;
+                                Ok(())
+                            })
+                        }))?;
+                        opening.admit_with(Box::new(move |kind| {
+                            Box::pin(async move {
+                                if kind != OpeningKind::Child {
+                                    return Ok(());
+                                }
+                                started.notified().await;
+                                Err(AgentError::InvalidInput(
+                                    "opening completion refused".into(),
+                                ))
+                            })
+                        }))?;
+                        Ok(())
+                    })
+                },
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_refused_child_opening_settles_in_flight_receipts_before_branch_creation_returns() {
+    let started = Arc::new(Notify::new());
+    let stop = CancellationToken::new();
+    let settled = Arc::new(AtomicUsize::new(0));
+    let cleanup_joined = Arc::new(AtomicUsize::new(0));
+    let mut builder = builder(Arc::new(Prompts(Mutex::new(BTreeMap::new()))));
+    let (fixture_settled, fixture_joined) = (settled.clone(), cleanup_joined.clone());
+    builder.require_feature(Feature::new("ChildOpeningRefusal").branch(
+        "ChildOpeningRefusal",
+        move |names| {
+            Ok(Box::new(ChildOpeningRefusal {
+                dispatcher: names.key()?,
+                opening: Key::of().instance(names.instance(BRANCH_GROUP)?),
+                started: started.clone(),
+                stop: stop.clone(),
+                settled: fixture_settled.clone(),
+                cleanup_joined: fixture_joined.clone(),
+            }))
+        },
+    ));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let result = session
+        .branch(
+            "main".into(),
+            session.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "the child line never starts".into(),
+                source: BranchSource::Host {
+                    operation_id: "refused-child".into(),
+                },
+            },
+        )
+        .await;
+    assert!(
+        matches!(&result, Err(AgentError::InvalidInput(message)) if message == "opening completion refused"),
+        "branch creation should fail with the receipt's error"
+    );
+    assert_eq!(
+        settled.load(Ordering::SeqCst),
+        1,
+        "the in-flight receipt's work settles before branch creation returns"
+    );
+    assert_eq!(
+        cleanup_joined.load(Ordering::SeqCst),
+        1,
+        "the part's effect cleanup completes before branch creation returns"
+    );
+    agent.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn startup_opening_dispatch_is_free_and_close_or_deadline_joins_the_host() {
     for start in ["create", "restore", "resume"] {
