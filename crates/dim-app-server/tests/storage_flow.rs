@@ -2435,8 +2435,8 @@ async fn a_slow_restore_reports_progress_and_keeps_the_opening_alive() {
     use dim_agent_capabilities::timeline_tree::testing::slow_restore_steps;
     let database = Database::new();
     let (id, child) = stored_two_line_session(&database).await;
-    let bound = Duration::from_secs(1);
-    let _slow = slow_restore_steps(&id, Duration::from_millis(250));
+    let bound = Duration::from_secs(3);
+    let _slow = slow_restore_steps(&id, Duration::from_millis(500));
     let (agent, store, db) = restoring_host(&database, Some(bound)).await;
     let started = Instant::now();
     let session = settled(

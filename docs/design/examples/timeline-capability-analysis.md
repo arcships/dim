@@ -191,18 +191,18 @@
 ## 20. EnvironmentClientsBranch
 
 - **场景/状态**：当前客户端 presence 的字符串快照和本代 last；输入只是声称的客户端环境，不授予信任或权限。
-- **转换**：先注册 ClientsChanged listener，再在 activation 后读当前值；变化才 append 自己的 input/message，成功后更新 last；关闭/代取消结束任务。
+- **转换**：先注册 ClientsChanged listener，再在 `apply` 里登记 opening receipt：分支仍为 Loading 时读当前值、append 自己的 input/message，并等到分支派发完它（InputQueue 已写下 input/applied）才返回，于是快照和 input/applied 都落在 `finish_opening` 的封口里；开场已封口（例如 reload 到活跃分支）则不登记，退回 activation 后首轮读取。子线的 identity input 在 opening 封口之后才由 TimelineTree 写入，所以回执遇到子线不写：开场封口时由 TimelineTree 把结构性的开场种类（根启动、子线启动、恢复）交给回执，带 parent 的 start 就不写，第一条输入仍是 identity，快照由 activation 后的首轮追加在它之后；这个判断不读 timeline、不 await 存储，所以读取卡住也拖不住 opening。回执在 append 之前再查一次本代的取消 token，激活后的循环同样在 append 前查；取消恰好落在检查之后时，可能像重载一样留下两条同 source 的快照，两条都留在历史里，按 PromptGuide 对模型来说后一条同 source 的 `<dim-state>` 块取代前一条。之后变化才 append，成功后更新 last；关闭/代取消结束任务。
 - **恢复**：重新读 SessionClientsHost 当前状态，不恢复已断开的客户端；last 清空允许本代再次报告当前值。
-- **性质/论证**：先监听再初读避免丢初值期间的改变，notify 合并后重读当前值而不是逐个回放连接通知。失败 append 不更新 last，但这里没有定时 retry，直到下次唤醒才再试；不能承诺无新信号时必然重试成功。
-- **对应**：[environment_clients.rs](../../../crates/dim-agent-capabilities/src/environment_clients.rs)；environment_clients。它只写采用输入，按现有行为更接近输入发布部件，不为它增加恢复状态机。
+- **性质/论证**：先监听再初读避免丢初值期间的改变，notify 合并后重读当前值而不是逐个回放连接通知。`session.create` 与 restore 的开场写入在分支 active 之前完成且已派发，所以返回时快照已在已发布历史里；子线创建不登记开场回执，快照由 activation 后首轮写入。失败 append 不更新 last，此时开场退化成 activation 后首轮写入，但没有定时 retry，直到下次唤醒才再试，不能承诺无新信号时必然重试成功。
+- **对应**：[environment_clients.rs](../../../crates/dim-agent-capabilities/src/environment_clients.rs)；environment_clients。子线判别由 owner 交来的开场种类决定（`BranchLifecycle::admit_opening_with`），不读该分支的 timeline，也不订阅 `branch/start` 的观测，所以开场事件已派发之后才挂载的 generation 和读取被卡住时都得到同一结论。它只写采用输入，按现有行为更接近输入发布部件，不为它增加恢复状态机。
 
 ## 21. SettingsSnapshotBranch
 
 - **场景/状态**：执行设置读入口、本代 last、pending retry；设置本体归其 owner。
-- **转换**：watch 变化唤醒读取，格式化后采用 input/message；读失败或 append 失败保留 pending，一秒后重试；成功才替换 last。
+- **转换**：在 `apply` 里登记 opening receipt：分支仍为 Loading 时先看 TimelineTree 在开场封口时交来的开场种类，子线不写（identity input 在封口后才写入），由 activation 后首轮读取与写入；其余情况读当前值、append input/message 并等它派发完再返回，成功则把 last 和 pending=false 交给激活后的循环；读或写失败只告警并保留 pending，由激活后首轮重试。开场读取上限取部件重试间隔与本分支 opening 预算一半中较小者：超过就告警、保留 pending，交给激活后的首轮读取与写入，所以源不回应不会拖住 opening，预算被配短的 branch 也一样。开场种类不读 timeline、不 await 存储，所以局部读取卡住也拖不住 opening；开场已封口则不登记，同样回到激活后首轮写入。回执在 append 前查本代的取消 token，激活后的循环同样在 append 前查；取消恰好落在检查之后时，可能像重载一样留下两条同 source 的快照，两条都留在历史里，按 PromptGuide 对模型来说后一条同 source 的 `<dim-state>` 块取代前一条。之后 watch 变化唤醒读取，格式化后采用 input/message；读失败或 append 失败保留 pending，一个重试间隔后重试；成功才替换 last。
 - **恢复**：激活后重读当前设置，不从旧输入推回用户配置。停止依赖 branch closing / generation token。
-- **性质/论证**：last 只记成功采用值，pending 使临时失败不被当成“已经发布”；相同值不不断写相同输入。重试完成依赖服务和存储恢复，不是无条件活性保证。
-- **对应**：[execution_settings/prompt.rs](../../../crates/dim-agent-capabilities/src/execution_settings/prompt.rs)；environment_settings。与客户端环境发布相似，但不能把它的 retry 保证错误归给上一项。
+- **性质/论证**：`session.create` 与 restore 的开场快照在分支 active 之前提交并派发，返回时已在已发布历史里；子线由激活后首轮写入。last 只记成功采用值，pending 使临时失败不被当成“已经发布”；相同值不不断写相同输入。重试完成依赖服务和存储恢复，不是无条件活性保证。
+- **对应**：[execution_settings/prompt.rs](../../../crates/dim-agent-capabilities/src/execution_settings/prompt.rs)；environment_settings。子线判别同样由 owner 交来的开场种类决定（`BranchLifecycle::admit_opening_with`），不读本分支的 timeline。与客户端环境发布相似，但不能把它的 retry 保证错误归给上一项。
 
 ## 22. SessionBroadcast
 

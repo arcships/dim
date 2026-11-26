@@ -145,7 +145,7 @@ mod linux {
     }
 
     async fn run(platform: &HostPlatform, spec: ProcessSpec) -> Result<Output> {
-        let mut tree = platform.spawn(spec)?;
+        let mut tree = platform.spawn_tree(spec)?;
         let (mut stdout, mut stderr) = (tree.stdout(), tree.stderr());
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let (status, _, _) = tokio::time::timeout(LIMIT, async {
@@ -315,7 +315,7 @@ mod linux {
                 spec
             };
             let script = "(while :; do printf x >> heartbeat; sleep 0.05; done) > background.log 2>&1 & echo $! > child.pid; echo ready; while test ! -f release; do sleep 0.01; done";
-            let mut tree = platform.spawn(prepare(command(
+            let mut tree = platform.spawn_tree(prepare(command(
                 &workspace,
                 Path::new("/bin/sh"),
                 vec!["-c".into(), script.into()],
@@ -518,7 +518,8 @@ mod linux {
         );
         checks.push("host UNIX socket outside grants is inaccessible");
 
-        let mut tree = platform.spawn(isolated(shell("sleep 60 & echo ready; wait"), &readonly))?;
+        let mut tree =
+            platform.spawn_tree(isolated(shell("sleep 60 & echo ready; wait"), &readonly))?;
         let mut line = String::new();
         tokio::time::timeout(LIMIT, BufReader::new(tree.stdout()).read_line(&mut line)).await??;
         assert_eq!(line.trim(), "ready");

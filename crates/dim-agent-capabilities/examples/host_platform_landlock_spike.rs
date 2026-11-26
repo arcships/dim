@@ -158,7 +158,7 @@ mod linux {
         Ok(spec)
     }
     async fn run(platform: &HostPlatform, spec: ProcessSpec) -> Result<Output> {
-        let mut tree = platform.spawn(spec)?;
+        let mut tree = platform.spawn_tree(spec)?;
         let (mut stdout, mut stderr) = (tree.stdout(), tree.stderr());
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let (status, _, _) = tokio::time::timeout(LIMIT, async {
@@ -277,7 +277,7 @@ mod linux {
         assert!(!marker.exists());
         checks.push("invalid policy does not execute payload");
 
-        let mut tree = platform.spawn(isolated(
+        let mut tree = platform.spawn_tree(isolated(
             shell(
                 "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait \"$child\"",
                 vec![],

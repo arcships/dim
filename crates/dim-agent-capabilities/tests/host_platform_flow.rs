@@ -1,4 +1,5 @@
 //! HostPlatform acceptance on Unix (`docs/architecture/rust-agent/plugins/HostPlatform.md`).
+use base64::Engine;
 use dim_agent_capabilities::execution_settings::{ExecutionSettings, ExecutionSettingsHost};
 use dim_agent_capabilities::host_platform::*;
 use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost};
@@ -97,6 +98,10 @@ async fn shell_resolution_follows_the_preference_and_never_fails_the_service() {
     ));
 }
 
+fn path_string(path: impl AsRef<std::path::Path>) -> String {
+    path.as_ref().to_string_lossy().into_owned()
+}
+
 #[tokio::test]
 async fn spawn_isolates_the_environment_and_terminate_releases_the_tree() {
     let platform = HostPlatform::current(ShellStatus::Unavailable {
@@ -107,7 +112,7 @@ async fn spawn_isolates_the_environment_and_terminate_releases_the_tree() {
     let cwd = std::env::temp_dir();
 
     let mut tree = platform
-        .spawn(ProcessSpec {
+        .spawn_tree(ProcessSpec {
             executable: "/bin/sh".into(),
             args: vec!["-c".into(), "env; cat".into()],
             cwd: cwd.clone(),
@@ -122,7 +127,7 @@ async fn spawn_isolates_the_environment_and_terminate_releases_the_tree() {
 
     let spawn_tree = || {
         platform
-            .spawn(ProcessSpec {
+            .spawn_tree(ProcessSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), "sleep 100 & echo $!; wait".into()],
                 cwd: cwd.clone(),
@@ -154,7 +159,7 @@ async fn spawn_isolates_the_environment_and_terminate_releases_the_tree() {
 
     assert!(
         platform
-            .spawn(ProcessSpec {
+            .spawn_tree(ProcessSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), "true".into()],
                 cwd: cwd.join("dim-missing-cwd-for-spawn"),
@@ -295,7 +300,7 @@ async fn spawn_with_stdin_delivers_the_bytes_and_closes_the_pipe() {
     let cwd = std::env::temp_dir();
     let payload = br#"{"hook_event_name":"Stop"}"#.to_vec();
     let mut tree = platform
-        .spawn_with_stdin(
+        .spawn_with_stdin_process(
             ProcessSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), "cat; echo done".into()],
@@ -311,7 +316,7 @@ async fn spawn_with_stdin_delivers_the_bytes_and_closes_the_pipe() {
     assert_eq!(output, "{\"hook_event_name\":\"Stop\"}done\n");
 
     let mut tree = platform
-        .spawn_with_stdin(
+        .spawn_with_stdin_process(
             ProcessSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), "echo ok".into()],
@@ -412,7 +417,7 @@ async fn confined(
     timeout: Duration,
 ) -> Result<ConfinedOutput, ConfinedError> {
     platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), script.into()],
@@ -466,7 +471,7 @@ async fn a_confined_helper_reads_its_grants_and_writes_only_its_directory() {
     let has_home = std::env::var_os("HOME").is_some();
 
     let mut control = platform
-        .spawn(ProcessSpec {
+        .spawn_tree(ProcessSpec {
             executable: "/bin/sh".into(),
             args: vec!["-c".into(), script.clone().into()],
             cwd: write.clone(),
@@ -490,7 +495,7 @@ async fn a_confined_helper_reads_its_grants_and_writes_only_its_directory() {
     std::fs::remove_file(read.join("escape.txt")).unwrap();
 
     let output = platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), script.into()],
@@ -541,7 +546,7 @@ async fn a_confined_helper_reads_its_grants_and_writes_only_its_directory() {
         "if exec 3<>/dev/tcp/127.0.0.1/{port} 2>/dev/null; then echo tcp=yes; else echo tcp=no; fi\n"
     );
     let mut control = platform
-        .spawn(ProcessSpec {
+        .spawn_tree(ProcessSpec {
             executable: bash.clone(),
             args: vec!["-c".into(), probe.clone().into()],
             cwd: write.clone(),
@@ -560,7 +565,7 @@ async fn a_confined_helper_reads_its_grants_and_writes_only_its_directory() {
         "the unconfined control did not reach the listener: {control_output}"
     );
     let output = platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: bash,
                 args: vec!["-c".into(), probe.into()],
@@ -623,7 +628,7 @@ async fn a_confined_helper_stdout_cap_kills_the_tree() {
     );
     let platform = confined_platform(switch_off());
     let result = platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), script.into()],
@@ -669,7 +674,7 @@ async fn a_confined_helper_cancel_kills_the_tree() {
     let platform = confined_platform(switch_off());
     let cancel = CancellationToken::new();
     let (result, (pid, cancelled_at)) = tokio::join!(
-        platform.spawn_confined(
+        platform.spawn_confined_process(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), script.into()],
@@ -742,7 +747,7 @@ async fn a_confined_helper_refuses_relative_and_missing_paths() {
     ];
     for confinement in cases {
         let result = platform
-            .spawn_confined(
+            .spawn_confined_process(
                 ConfinedSpec {
                     executable: "/bin/sh".into(),
                     args: vec!["-c".into(), "true".into()],
@@ -772,7 +777,7 @@ async fn a_host_without_bubblewrap_runs_the_confined_helper_unconfined() {
     let mut platform = confined_platform(switch_off());
     platform.env = env(&[("PATH", bin.to_str().unwrap())]);
     let output = platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), "echo artifact > artifact.txt".into()],
@@ -825,7 +830,7 @@ async fn the_isolation_switch_does_not_change_a_confined_helper() {
         "if exec 3<>/dev/tcp/127.0.0.1/{port} 2>/dev/null; then echo tcp=yes; else echo tcp=no; fi\n"
     );
     let output = platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: bash,
                 args: vec!["-c".into(), script.into()],
@@ -994,7 +999,7 @@ async fn a_confined_helper_stderr_cap_kills_the_tree() {
     );
     let platform = confined_platform(switch_off());
     let result = platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), script.into()],
@@ -1050,7 +1055,7 @@ async fn a_confined_helper_gets_the_allowlist_plus_its_own_environment() {
         quote(&mktemp)
     );
     let output = platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), script.into()],
@@ -1156,7 +1161,7 @@ async fn an_exec_resolves_a_command_only_the_toolchain_source_provides() {
         .build_process_spec("command -v fixturetool", &base)
         .await
         .unwrap();
-    let mut tree = platform.spawn(spec).unwrap();
+    let mut tree = platform.spawn_tree(spec).unwrap();
     let mut output = String::new();
     tree.stdout().read_to_string(&mut output).await.unwrap();
     assert!(tree.wait().await.unwrap().success());
@@ -1172,7 +1177,7 @@ async fn an_exec_resolves_a_command_only_the_toolchain_source_provides() {
         .build_process_spec("command -v fixturetool", &base)
         .await
         .unwrap();
-    let mut tree = platform.spawn(spec).unwrap();
+    let mut tree = platform.spawn_tree(spec).unwrap();
     let mut output = String::new();
     tree.stdout().read_to_string(&mut output).await.unwrap();
     assert!(tree.wait().await.unwrap().success());
@@ -1182,4 +1187,1200 @@ async fn an_exec_resolves_a_command_only_the_toolchain_source_provides() {
         "a command on the base PATH is not replaced by the runtime's"
     );
     std::fs::remove_dir_all(base).unwrap();
+}
+
+fn never_cancelled() -> dim_agent_capabilities::host::CancelledFn {
+    let never = CancellationToken::new();
+    std::sync::Arc::new(move || {
+        let never = never.clone();
+        Box::pin(async move {
+            never.cancelled().await;
+            Ok(())
+        })
+    })
+}
+
+#[tokio::test]
+async fn the_host_platform_service_answers_info() {
+    let platform = HostPlatform::current(ShellStatus::Unavailable {
+        code: "TEST",
+        reason: "no shell".into(),
+    })
+    .unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    root.provide_as::<HostPlatform>(std::sync::Arc::new(platform.clone()))
+        .unwrap();
+    let face = root
+        .get_at::<dyn rutis_bridge::session::HostDispatch>(&rutis_bridge::session::host_key(
+            "hostPlatform",
+        ))
+        .expect("hostPlatform is served");
+    let reply =
+        rutis_bridge::session::settle(face.invoke("info", serde_json::json!([]).into()).unwrap())
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+    assert_eq!(
+        reply,
+        serde_json::to_value(platform.info().await.unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn public_output_has_no_event_fields() {
+    assert!(
+        serde_json::from_value::<OutputRequest>(serde_json::json!({
+            "taskId": "task",
+            "eventCursor": 0
+        }))
+        .is_err()
+    );
+    let reply = serde_json::to_value(OutputPageReply {
+        text: "done".into(),
+        bytes: 4,
+        total_bytes: 4,
+        next_cursor: None,
+        truncated: false,
+        retained_from: 0,
+        reset: None,
+    })
+    .unwrap();
+    assert!(reply.get("events").is_none());
+    assert!(reply.get("nextEventCursor").is_none());
+    assert!(reply.get("eventRetainedFrom").is_none());
+    assert!(reply.get("state").is_none());
+}
+
+#[test]
+fn task_failure_serializes_with_its_code() {
+    assert_eq!(
+        serde_json::to_value(TaskFailure::OutputWriteFailed {
+            message: "disk full".into()
+        })
+        .unwrap(),
+        serde_json::json!({"code": "output_write_failed", "message": "disk full"})
+    );
+    assert_eq!(
+        serde_json::to_value(TaskFailure::ShellExited).unwrap(),
+        serde_json::json!({"code": "shell_exited"})
+    );
+}
+
+#[tokio::test]
+async fn the_host_platform_service_starts_and_waits_for_a_command() {
+    let dir = std::env::temp_dir().join(unique("dim-host-service"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let face = root
+        .get_at::<dyn rutis_bridge::session::HostDispatch>(&rutis_bridge::session::host_key(
+            "hostPlatform",
+        ))
+        .unwrap();
+    let invoke = |method: &'static str, request: serde_json::Value| {
+        let face = face.clone();
+        async move {
+            rutis_bridge::session::settle(
+                face.invoke(method, serde_json::json!([request]).into())
+                    .unwrap(),
+            )
+            .await?
+            .json()
+        }
+    };
+    let path = dir.to_string_lossy().into_owned();
+    let spawn = invoke(
+        "spawn",
+        serde_json::json!({
+            "taskId": "service-task",
+            "command": "printf hi",
+            "cwd": path,
+            "workspace": path,
+            "roots": [],
+            "outputDir": path,
+            "timeoutMs": 10000
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(spawn["taskId"], "service-task");
+    let terminal = serde_json::to_value(
+        platform
+            .wait(
+                WaitRequest {
+                    task_id: "service-task".into(),
+                    timeout_ms: None,
+                },
+                never_cancelled(),
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(terminal["status"], "exited");
+    assert_eq!(terminal["text"], "hi");
+    assert!(terminal.get("failure").is_none());
+    assert_eq!(terminal["preview"], "hi");
+    assert_eq!(terminal["outputPath"], spawn["outputPath"]);
+    let page = invoke(
+        "output",
+        serde_json::json!({"taskId": "service-task", "limit": 16}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page["text"], "hi");
+    invoke("settle", serde_json::json!({"taskId": "service-task"}))
+        .await
+        .unwrap();
+    let missing = platform
+        .wait(
+            WaitRequest {
+                task_id: "service-task".into(),
+                timeout_ms: None,
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, HostPlatformError::TaskUnknown));
+
+    platform
+        .spawn(SpawnRequest {
+            task_id: "long-task".into(),
+            command: "seq 1 2500".into(),
+            cwd: path.clone(),
+            workspace: path.clone(),
+            roots: Vec::new(),
+            output_dir: path.clone(),
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .unwrap();
+    let long = platform
+        .wait(
+            WaitRequest {
+                task_id: "long-task".into(),
+                timeout_ms: None,
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(long.status, WaitStatus::Exited);
+    let text = long.text.expect("an inline task keeps its complete text");
+    assert_eq!(text.lines().count(), 2_500);
+    assert!(long.preview.lines().count() <= 2_000);
+    assert!(long.preview.lines().count() < text.lines().count());
+    let retained = platform
+        .retain_output(TaskRequest {
+            task_id: "long-task".into(),
+        })
+        .await
+        .unwrap();
+    let file = std::fs::read_to_string(&retained.output_path).unwrap();
+    assert_eq!(file, text);
+    let page = platform
+        .output(OutputRequest {
+            task_id: "long-task".into(),
+            cursor: None,
+            limit: Some(64 * 1024),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.text, text);
+    platform
+        .settle(TaskRequest {
+            task_id: "long-task".into(),
+        })
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_host_platform_service_serves_a_shell() {
+    let dir = std::env::temp_dir().join(unique("dim-host-shell"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let face = root
+        .get_at::<dyn rutis_bridge::session::HostDispatch>(&rutis_bridge::session::host_key(
+            "hostPlatform",
+        ))
+        .unwrap();
+    let invoke = |method: &'static str, request: serde_json::Value| {
+        let face = face.clone();
+        async move {
+            rutis_bridge::session::settle(
+                face.invoke(method, serde_json::json!([request]).into())
+                    .unwrap(),
+            )
+            .await?
+            .json()
+        }
+    };
+    let path = dir.to_string_lossy().into_owned();
+    invoke(
+        "shell",
+        serde_json::json!({
+            "taskId": "service-shell",
+            "cwd": path,
+            "workspace": path,
+            "roots": [],
+            "outputDir": path,
+            "cols": 80,
+            "rows": 24
+        }),
+    )
+    .await
+    .unwrap();
+    invoke(
+        "write",
+        serde_json::json!({"taskId": "service-shell", "data": "cHJpbnRmIGhpOyBleGl0IDcK"}),
+    )
+    .await
+    .unwrap();
+    let terminal = platform
+        .wait(
+            WaitRequest {
+                task_id: "service-shell".into(),
+                timeout_ms: Some(10000),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminal.status, WaitStatus::Exited);
+    assert_eq!(terminal.exit_code, Some(7));
+    assert!(terminal.preview.contains("hi"));
+    assert!(std::path::Path::new(&terminal.output_path).exists());
+    assert!(
+        std::fs::read_to_string(&terminal.output_path)
+            .unwrap()
+            .contains("hi")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&terminal.output_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    let page = invoke(
+        "output",
+        serde_json::json!({"taskId": "service-shell", "limit": 4096}),
+    )
+    .await
+    .unwrap();
+    assert!(page["text"].as_str().unwrap().contains("hi"));
+    assert!(matches!(
+        platform
+            .write(ShellWrite {
+                task_id: "service-shell".into(),
+                data: String::new(),
+                command: None,
+                job: None,
+            })
+            .await,
+        Err(HostPlatformError::TaskEnded)
+    ));
+    invoke("settle", serde_json::json!({"taskId": "service-shell"}))
+        .await
+        .unwrap();
+    platform
+        .settle(TaskRequest {
+            task_id: "service-shell".into(),
+        })
+        .await
+        .unwrap();
+    assert!(std::path::Path::new(&terminal.output_path).exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_host_platform_service_runs_a_command_with_stdin() {
+    let dir = std::env::temp_dir().join(unique("dim-host-stdin"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let never = CancellationToken::new();
+    let cancelled: dim_agent_capabilities::host::CancelledFn = std::sync::Arc::new(move || {
+        let never = never.clone();
+        Box::pin(async move {
+            never.cancelled().await;
+            Ok(())
+        })
+    });
+    let reply = platform
+        .spawn_with_stdin(
+            SpawnWithStdinRequest {
+                command: "cat".into(),
+                cwd: path_string(&dir),
+                env: Default::default(),
+                stdin: Some("aGk=".into()),
+                timeout_ms: 10000,
+                limits: OutputLimits {
+                    stdout: 64 * 1024,
+                    stderr: 64 * 1024,
+                },
+            },
+            cancelled,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.status, SpawnWithStdinStatus::Exited);
+    assert_eq!(reply.exit_code, Some(0));
+    assert_eq!(reply.stdout, "aGk=");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_host_platform_service_runs_a_confined_helper() {
+    let dir = std::env::temp_dir().join(unique("dim-host-confined"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let never = CancellationToken::new();
+    let cancelled: dim_agent_capabilities::host::CancelledFn = std::sync::Arc::new(move || {
+        let never = never.clone();
+        Box::pin(async move {
+            never.cancelled().await;
+            Ok(())
+        })
+    });
+    let reply = platform
+        .spawn_confined(
+            ConfinedRequest {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf hi; printf err >&2".into()],
+                read: vec![],
+                write: vec![path_string(&dir)],
+                env: Default::default(),
+                timeout_ms: 10000,
+                output_limit: OutputLimits {
+                    stdout: 64 * 1024,
+                    stderr: 64 * 1024,
+                },
+                services: dim_agent_capabilities::host_platform::SystemServices::None,
+            },
+            cancelled,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.status, Some(0));
+    assert_eq!(reply.stdout, "aGk=");
+    assert_eq!(reply.stderr, "ZXJy");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_host_platform_service_removes_output_and_composes_a_path() {
+    let dir = std::env::temp_dir().join(unique("dim-host-remove"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let output = dir.join(".dim/exec/session/branch");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("command.log"), b"output").unwrap();
+    platform
+        .remove_output_directory(RemoveOutputDirectoryRequest {
+            path: path_string(&output),
+        })
+        .await
+        .unwrap();
+    assert!(!output.exists());
+    let bin = dir.join("runtimes/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let with_toolchain = toolchain_platform(
+        &[("PATH", "/bin")],
+        vec![InstalledToolchain {
+            bin,
+            root: dir.join("runtimes"),
+        }],
+    );
+    let path = with_toolchain
+        .child_path(ChildPathRequest {
+            directories: vec!["/opt/dim".into()],
+            base: "/bin".into(),
+        })
+        .unwrap();
+    assert!(path.contains("/opt/dim"));
+    assert!(path.contains("/bin"));
+    let refused = platform
+        .remove_output_directory(RemoveOutputDirectoryRequest {
+            path: path_string(dir.join(".dim/exec")),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(refused, HostPlatformError::Invalid(_)));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_wait_timeout_leaves_the_command_running() {
+    let dir = std::env::temp_dir().join(unique("dim-host-wait-timeout"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let spawn: serde_json::Value = serde_json::to_value(
+        platform
+            .spawn(SpawnRequest {
+                task_id: "wait-timeout".into(),
+                command: "sleep 0.3".into(),
+                cwd: path_string(&dir),
+                workspace: path_string(&dir),
+                roots: Vec::new(),
+                output_dir: path_string(&dir),
+                timeout_ms: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(spawn["taskId"], "wait-timeout");
+    let first = platform
+        .wait(
+            WaitRequest {
+                task_id: "wait-timeout".into(),
+                timeout_ms: Some(10),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status, WaitStatus::Running);
+    let second = platform
+        .wait(
+            WaitRequest {
+                task_id: "wait-timeout".into(),
+                timeout_ms: None,
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status, WaitStatus::Exited);
+    platform
+        .settle(TaskRequest {
+            task_id: "wait-timeout".into(),
+        })
+        .await
+        .unwrap();
+    let _ = path;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn output_removal_refuses_traversal_and_links() {
+    let dir = std::env::temp_dir().join(unique("dim-host-remove-safety"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let exec_root = dir.join(".dim/exec");
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(exec_root.join("session/branch")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep"), b"keep").unwrap();
+    let traversal = exec_root.join("session/branch/../../outside");
+    let error = platform
+        .remove_output_directory(RemoveOutputDirectoryRequest {
+            path: path_string(traversal),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, HostPlatformError::Invalid(_)));
+    assert!(outside.join("keep").exists());
+    let root_error = platform
+        .remove_output_directory(RemoveOutputDirectoryRequest {
+            path: path_string(&exec_root),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(root_error, HostPlatformError::Invalid(_)));
+    #[cfg(unix)]
+    {
+        let link = exec_root.join("session/link");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let link_error = platform
+            .remove_output_directory(RemoveOutputDirectoryRequest {
+                path: path_string(link),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(link_error, HostPlatformError::Invalid(_)));
+        assert!(outside.join("keep").exists());
+        let real = exec_root.join("session/real");
+        std::fs::create_dir_all(real.join("child")).unwrap();
+        let alias = exec_root.join("session/alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let component = platform
+            .remove_output_directory(RemoveOutputDirectoryRequest {
+                path: path_string(alias.join("child")),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(component, HostPlatformError::Invalid(_)));
+        assert!(real.join("child").exists());
+    }
+    platform
+        .remove_output_directory(RemoveOutputDirectoryRequest {
+            path: path_string(exec_root.join("session/absent")),
+        })
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remove_output_directory_accepts_a_symlinked_home() {
+    let dir = std::env::temp_dir().join(unique("dim-host-remove-symlink"));
+    let home = dir.join("real-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let alias = dir.join("alias-home");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(alias.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    let output = alias.join(".dim/exec/session/branch");
+    std::fs::create_dir_all(&output).unwrap();
+    platform
+        .remove_output_directory(RemoveOutputDirectoryRequest {
+            path: path_string(&output),
+        })
+        .await
+        .unwrap();
+    assert!(!output.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_shell_burst_completes_without_a_private_subscriber() {
+    let dir = std::env::temp_dir().join(unique("dim-host-burst"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    platform
+        .shell(ShellRequest {
+            task_id: "burst-shell".into(),
+            cwd: path_string(&dir),
+            workspace: path_string(&dir),
+            roots: Vec::new(),
+            output_dir: path_string(&dir),
+            cols: 80,
+            rows: 24,
+        })
+        .await
+        .unwrap();
+    let token = format!("BURST-{}", uuid::Uuid::new_v4().simple());
+    std::fs::write(dir.join("burst-token"), &token).unwrap();
+    let burst = format!(
+        "printf '%s%s\\n' '__DIM_START_aaaabbbb_' 'ccccdddd__'; seq 1 400000; printf 'OUTPUT-'; cat '{}'; printf '\\n'; printf '%s%s%d\\n' '__DIM_END_eeeefaff_' '00001111__' 0",
+        dir.join("burst-token").display()
+    ) + "\n";
+    platform
+        .write(ShellWrite {
+            task_id: "burst-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(burst.as_bytes()),
+            command: Some(ShellCommandStart {
+                task_id: "burst-command".into(),
+                start_marker: "__DIM_START_aaaabbbb_ccccdddd__".into(),
+                end_marker: "__DIM_END_eeeefaff_00001111__".into(),
+            }),
+            job: None,
+        })
+        .await
+        .unwrap();
+    let mut seen = false;
+    let mut last = String::new();
+    for _ in 0..6000 {
+        let page = platform
+            .output(OutputRequest {
+                task_id: "burst-shell".into(),
+                cursor: None,
+                limit: Some(64 * 1024),
+            })
+            .await
+            .unwrap();
+        last = page.text;
+        if last.contains(&token) {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        seen,
+        "the shell output never reached the public page: {last:?}"
+    );
+    let terminal = platform
+        .wait(
+            WaitRequest {
+                task_id: "burst-command".into(),
+                timeout_ms: Some(30_000),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminal.status, WaitStatus::Exited);
+    platform
+        .settle(TaskRequest {
+            task_id: "burst-command".into(),
+        })
+        .await
+        .unwrap();
+    platform
+        .kill(TaskRequest {
+            task_id: "burst-shell".into(),
+        })
+        .await
+        .unwrap();
+    platform
+        .settle(TaskRequest {
+            task_id: "burst-shell".into(),
+        })
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_shell_command_capture_is_owned_by_the_host() {
+    let dir = std::env::temp_dir().join(unique("dim-host-command-capture"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    platform
+        .shell(ShellRequest {
+            task_id: "capture-shell".into(),
+            cwd: path_string(&dir),
+            workspace: path_string(&dir),
+            roots: Vec::new(),
+            output_dir: path_string(&dir),
+            cols: 80,
+            rows: 24,
+        })
+        .await
+        .unwrap();
+    platform
+        .write(ShellWrite {
+            task_id: "capture-shell".into(),
+            data: "cHJpbnRmICclcyVzXG4nICdfX0RJTV9TVEFSVF9hYWFhYmJiYl8nICdjY2NjZGRkZF9fJzsgcHJpbnRmICclcyVzJWRcbicgJ19fRElNX0VORF8xMTExMjIyMl8nICczMzMzNDQ0NF9fJyAwOyBwcmludGYgaGk7IHByaW50ZiAnJXMlcyVkXG4nICdfX0RJTV9FTkRfZWVlZWZmZmZfJyAnMDAwMDExMTFfXycgMAo=".into(),
+            command: Some(ShellCommandStart {
+                task_id: "owner-command".into(),
+                start_marker: "__DIM_START_aaaabbbb_ccccdddd__".into(),
+                end_marker: "__DIM_END_eeeeffff_00001111__".into(),
+            }),
+            job: None,
+        })
+        .await
+        .unwrap();
+    let finished = platform
+        .wait(
+            WaitRequest {
+                task_id: "owner-command".into(),
+                timeout_ms: Some(10_000),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(finished.status, WaitStatus::Exited);
+    let page = platform
+        .output(OutputRequest {
+            task_id: "owner-command".into(),
+            cursor: None,
+            limit: Some(4096),
+        })
+        .await
+        .unwrap();
+    assert!(page.text.contains("hi"), "{:?}", page.text);
+    assert!(!page.text.contains("11112222"), "{:?}", page.text);
+    let tail = platform
+        .tail(TaskRequest {
+            task_id: "owner-command".into(),
+        })
+        .await
+        .unwrap();
+    assert!(tail.text.contains("hi"), "{:?}", tail.text);
+    let retained = platform
+        .retain_output(TaskRequest {
+            task_id: "owner-command".into(),
+        })
+        .await
+        .unwrap();
+    assert!(retained.output_path.ends_with(".log"));
+    platform
+        .settle(TaskRequest {
+            task_id: "owner-command".into(),
+        })
+        .await
+        .unwrap();
+    let failing = "printf '%s%s' '__DIM_START_aaaabbbb_' 'ccccdddd__'; false; printf '%s%s%d\\n' '__DIM_END_eeeeffff_' '00001111__' 3\n";
+    platform
+        .write(ShellWrite {
+            task_id: "capture-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(failing.as_bytes()),
+            command: Some(ShellCommandStart {
+                task_id: "failing-command".into(),
+                start_marker: "__DIM_START_aaaabbbb_ccccdddd__".into(),
+                end_marker: "__DIM_END_eeeeffff_00001111__".into(),
+            }),
+            job: None,
+        })
+        .await
+        .unwrap();
+    let failed = platform
+        .wait(
+            WaitRequest {
+                task_id: "failing-command".into(),
+                timeout_ms: Some(10_000),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(failed.status, WaitStatus::Failed);
+    assert_eq!(failed.exit_code, Some(3));
+    assert_eq!(failed.failure, Some(TaskFailure::CommandFailed));
+    assert_eq!(failed.text, None);
+    platform
+        .settle(TaskRequest {
+            task_id: "failing-command".into(),
+        })
+        .await
+        .unwrap();
+    let capped = "printf '%s%s' '__DIM_START_22223333_' '44445555__'; head -c 65533 /dev/zero | tr '\\0' a; printf '\\n\\303\\251\\n'; printf '%s%s%d\\n' '__DIM_END_66667777_' '88889999__' 0\n";
+    platform
+        .write(ShellWrite {
+            task_id: "capture-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(capped.as_bytes()),
+            command: Some(ShellCommandStart {
+                task_id: "capped-command".into(),
+                start_marker: "__DIM_START_22223333_44445555__".into(),
+                end_marker: "__DIM_END_66667777_88889999__".into(),
+            }),
+            job: None,
+        })
+        .await
+        .unwrap();
+    let capped_end = platform
+        .wait(
+            WaitRequest {
+                task_id: "capped-command".into(),
+                timeout_ms: Some(10_000),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(capped_end.status, WaitStatus::Exited);
+    let inside = platform
+        .output(OutputRequest {
+            task_id: "capped-command".into(),
+            cursor: Some(65_535),
+            limit: Some(16),
+        })
+        .await
+        .unwrap();
+    assert!(inside.text.is_empty(), "{:?}", inside.text);
+    assert_eq!(inside.bytes, 0);
+    assert_eq!(inside.total_bytes, capped_end.output_bytes);
+    assert!(inside.next_cursor.is_none());
+    let whole = platform
+        .output(OutputRequest {
+            task_id: "capped-command".into(),
+            cursor: Some(65_534),
+            limit: Some(16),
+        })
+        .await
+        .unwrap();
+    assert_eq!(whole.text, "é");
+    assert_eq!(whole.total_bytes, capped_end.output_bytes);
+    assert_eq!(whole.bytes, 2);
+    platform
+        .settle(TaskRequest {
+            task_id: "capped-command".into(),
+        })
+        .await
+        .unwrap();
+    let long = "printf '%s%s\\n' '__DIM_START_aaaabbbb_' 'ccccdddd__'; sleep 30\n";
+    platform
+        .write(ShellWrite {
+            task_id: "capture-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(long.as_bytes()),
+            command: Some(ShellCommandStart {
+                task_id: "long-command".into(),
+                start_marker: "__DIM_START_aaaabbbb_ccccdddd__".into(),
+                end_marker: "__DIM_END_eeeefaff_00001111__".into(),
+            }),
+            job: None,
+        })
+        .await
+        .unwrap();
+    let second = platform
+        .write(ShellWrite {
+            task_id: "capture-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(b"echo second\n"),
+            command: Some(ShellCommandStart {
+                task_id: "second-command".into(),
+                start_marker: "__DIM_START_11112222_33334444__".into(),
+                end_marker: "__DIM_END_55556666_77778888__".into(),
+            }),
+            job: None,
+        })
+        .await;
+    assert!(matches!(second, Err(HostPlatformError::TaskRunning)));
+    let retained = platform
+        .retain_output(TaskRequest {
+            task_id: "capture-shell".into(),
+        })
+        .await
+        .unwrap();
+    platform
+        .kill(TaskRequest {
+            task_id: "capture-shell".into(),
+        })
+        .await
+        .unwrap();
+    platform
+        .settle(TaskRequest {
+            task_id: "capture-shell".into(),
+        })
+        .await
+        .unwrap();
+    assert!(std::path::Path::new(&retained.output_path).exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_job_write_terminalizes_and_reads_its_output() {
+    let dir = std::env::temp_dir().join(unique("dim-host-job"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    platform
+        .shell(ShellRequest {
+            task_id: "job-shell".into(),
+            cwd: path_string(&dir),
+            workspace: path_string(&dir),
+            roots: Vec::new(),
+            output_dir: path_string(&dir),
+            cols: 80,
+            rows: 24,
+        })
+        .await
+        .unwrap();
+    let missing_parent = dir.join("missing").join("job-2.log");
+    let invalid = platform
+        .write(ShellWrite {
+            task_id: "job-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(b"printf 'x'\n"),
+            command: None,
+            job: Some(ShellJobStart {
+                task_id: "job-2".into(),
+                end_marker: "__DIM_END_aaaabbbb_ccccdddd__".into(),
+                output_path: missing_parent.to_string_lossy().into_owned(),
+            }),
+        })
+        .await;
+    assert!(matches!(invalid, Err(HostPlatformError::Invalid(_))));
+    let output_path = dir.join("job-1.log");
+    let line = format!(
+        "printf '\\033'; printf '\\033['; printf '\\033[2~'; printf '\\033]0;t\\033\\\\'; printf 'job-output\\n' > '{}'; printf '%s%s%d\\n' '__DIM_END_aaaabbbb_' 'ccccdddd__' 0\n",
+        output_path.display()
+    );
+    platform
+        .write(ShellWrite {
+            task_id: "job-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(line.as_bytes()),
+            command: None,
+            job: Some(ShellJobStart {
+                task_id: "job-1".into(),
+                end_marker: "__DIM_END_aaaabbbb_ccccdddd__".into(),
+                output_path: output_path.to_string_lossy().into_owned(),
+            }),
+        })
+        .await
+        .unwrap();
+    let reply = platform
+        .wait(
+            WaitRequest {
+                task_id: "job-1".into(),
+                timeout_ms: Some(5_000),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.status, WaitStatus::Exited, "job reply: {reply:?}");
+    assert_eq!(reply.exit_code, Some(0));
+    let page = platform
+        .output(OutputRequest {
+            task_id: "job-1".into(),
+            cursor: None,
+            limit: Some(16 * 1024),
+        })
+        .await
+        .unwrap();
+    assert!(page.text.contains("job-output"), "{}", page.text);
+    platform
+        .settle(TaskRequest {
+            task_id: "job-1".into(),
+        })
+        .await
+        .unwrap();
+    let reused = platform
+        .write(ShellWrite {
+            task_id: "job-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(b"printf 'again'\n"),
+            command: None,
+            job: Some(ShellJobStart {
+                task_id: "job-1".into(),
+                end_marker: "__DIM_END_aaaabbbb_ccccdddd__".into(),
+                output_path: output_path.to_string_lossy().into_owned(),
+            }),
+        })
+        .await;
+    assert!(matches!(reused, Err(HostPlatformError::TaskExists)));
+    platform
+        .kill(TaskRequest {
+            task_id: "job-shell".into(),
+        })
+        .await
+        .unwrap();
+    platform
+        .settle(TaskRequest {
+            task_id: "job-shell".into(),
+        })
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
 }

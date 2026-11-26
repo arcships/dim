@@ -55,10 +55,7 @@ async fn execution_shell_settings_are_revisioned_and_used_by_the_host() {
     let dim_agent_capabilities::host_platform::ShellStatus::Available(shell) = resolution else {
         panic!("saved preference must be executable by HostPlatform");
     };
-    assert_eq!(
-        shell.executable_path.to_string_lossy(),
-        executable.as_str().unwrap()
-    );
+    assert_eq!(shell.executable_path.as_str(), executable.as_str().unwrap());
     for invalid in [
         json!({"expectedRevision":saved["result"]["revision"],"executablePath":"/missing/dim-test-shell"}),
         json!({"expectedRevision":saved["result"]["revision"],"executablePath":null}),

@@ -240,6 +240,9 @@ impl WorkspaceTools {
             return Ok(());
         };
         let path = PathBuf::from(path);
+        if !path.exists() {
+            return Ok(());
+        }
         if !path.starts_with(&self.output_dir) {
             return Err(HostError::failed(format!(
                 "Output path {} is outside the Session's output directory",

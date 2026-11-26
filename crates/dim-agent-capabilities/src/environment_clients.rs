@@ -3,9 +3,13 @@
 //! The App Server owns the connection and UI registries and provides the
 //! read-only `SessionClientsHost`. This capability appends a snapshot of the
 //! attached connections at branch open and on every `ClientsChanged` fact.
-use crate::{branch_input::append_own, context_block};
+use crate::{
+    branch_input::{append_own, append_own_dispatched},
+    context_block,
+};
 use dim_agent_runtime::{
-    BranchLifecycle, BranchPhase, Names, PartRegistry, PartScope, SessionIdentity, Timeline,
+    BranchLifecycle, BranchPhase, Dispatcher, Names, OpeningKind, PartRegistry, PartScope,
+    SessionIdentity, Timeline,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -194,20 +198,15 @@ fn snapshot(presences: &[ClientPresence]) -> String {
     )
 }
 
-fn append(timeline: &Timeline, body: &str) -> dim_agent_runtime::Result<()> {
-    append_own(
-        timeline,
-        InputMessageData {
-            blocks: vec![InputBlock::Raw {
-                text: body.to_owned(),
-                key: None,
-                retire: false,
-            }],
-            ..InputMessageData::default()
-        },
-        Vec::new(),
-    )
-    .map(|_| ())
+fn input(body: String) -> InputMessageData {
+    InputMessageData {
+        blocks: vec![InputBlock::Raw {
+            text: body,
+            key: None,
+            retire: false,
+        }],
+        ..InputMessageData::default()
+    }
 }
 
 struct ClientsBranchPlugin {
@@ -215,6 +214,7 @@ struct ClientsBranchPlugin {
     identity: Key<SessionIdentity>,
     timeline: Key<Timeline>,
     phase: Key<BranchLifecycle>,
+    dispatcher: Key<Dispatcher>,
 }
 impl ClientsBranchPlugin {
     fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -223,6 +223,7 @@ impl ClientsBranchPlugin {
             identity: names.key()?,
             timeline: names.key()?,
             phase: names.key()?,
+            dispatcher: names.key()?,
         })
     }
 }
@@ -236,6 +237,7 @@ impl DynPlugin for ClientsBranchPlugin {
             self.identity.erase(),
             self.timeline.erase(),
             self.phase.erase(),
+            self.dispatcher.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -244,6 +246,7 @@ impl DynPlugin for ClientsBranchPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let timeline = ctx.require_at(&self.timeline)?;
             let phase = ctx.require_at(&self.phase)?;
+            let dispatcher = ctx.require_at(&self.dispatcher)?;
             let wake = Arc::new(Notify::new());
             let listener_wake = wake.clone();
             let session = identity.session_id.clone();
@@ -256,12 +259,56 @@ impl DynPlugin for ClientsBranchPlugin {
 
             let lifecycle = ctx.cancellation_token();
             let tasks = TaskTracker::new();
+            let last = Arc::new(std::sync::Mutex::new(None));
+            if phase.phase() == BranchPhase::Loading {
+                let clients = clients.clone();
+                let timeline = timeline.clone();
+                let dispatcher = dispatcher.clone();
+                let session = session.clone();
+                let lifecycle = lifecycle.clone();
+                let last = last.clone();
+                let registered = phase.admit_opening_with(Box::new(move |opening| {
+                    Box::pin(async move {
+                        // A child line's identity input is written after the
+                        // opening seals, so this receipt leaves the snapshot to
+                        // the published line instead of appending ahead of it.
+                        if opening == OpeningKind::Child {
+                            return Ok(());
+                        }
+                        let current = snapshot(
+                            &clients
+                                .presences(SessionPresenceRequest {
+                                    session_id: session,
+                                })
+                                .presences,
+                        );
+                        // A retired part's receipt stays registered while the
+                        // opening still collects receipts, so it checks its own
+                        // generation right before the append.
+                        if lifecycle.is_cancelled() {
+                            return Ok(());
+                        }
+                        match append_own_dispatched(&timeline, &dispatcher, input(current.clone()))
+                            .await
+                        {
+                            Ok(_) => *last.lock().unwrap() = Some(current),
+                            Err(error) => {
+                                tracing::warn!(%error, "client presence was not appended");
+                            }
+                        }
+                        Ok(())
+                    })
+                }));
+                if let Err(error) = registered {
+                    tracing::warn!(%error, "the opening refused the client presence");
+                }
+            }
             tasks.spawn(async move {
                 tokio::select! {
                     _ = lifecycle.cancelled() => return,
                     active = phase.activated() => if !active { return },
                 }
-                let mut last = None;
+                let mut last = last.lock().unwrap().clone();
                 loop {
                     let current = snapshot(
                         &clients
@@ -274,8 +321,8 @@ impl DynPlugin for ClientsBranchPlugin {
                         if lifecycle.is_cancelled() || phase.phase() >= BranchPhase::Closing {
                             return;
                         }
-                        match append(&timeline, &current) {
-                            Ok(()) => last = Some(current),
+                        match append_own(&timeline, input(current.clone()), Vec::new()) {
+                            Ok(_) => last = Some(current),
                             Err(error) => {
                                 tracing::warn!(%error, "client presence was not appended");
                             }

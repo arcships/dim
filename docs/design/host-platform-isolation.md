@@ -255,7 +255,7 @@ preparation; the model's cwd and command cannot select or expand the grant. A si
 output directory and the rest of the home receive no implicit access, apart from git's
 configuration on macOS.
 
-Existing output paths keep their owners. WorkspaceTools' `ExecProcess` pumps child output into its
+Existing output paths keep their owners. The owner's command capture pumps child output into its
 host-owned output sink; an occupying ShellSession command appends its captured PTY text from
 `OccupyingTask::commit`; explicit POSIX background jobs open their log inside `posix_background` and
 the host reads it for previews. That log is written inside the grant above, so a sandboxed shell can

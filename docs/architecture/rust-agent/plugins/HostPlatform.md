@@ -12,9 +12,45 @@ and tree-supervision primitives to local tools.
 | `P:ToolchainSourceHost` | The downloaded runtimes installed under the plan in effect, each with the bin directory appended to a started child's `PATH` and the archive directory granted to a confined one. Required; an assembly that installs no runtimes provides `ToolchainSourceHost::fixed(vec![])`. |
 | `P:FileStorage` | Read the configured exec shell; enabled only when `exec_shell_file` is configured. |
 
+
+## Data face
+
+`hostPlatform` is a process-scope data face. Its public methods are `info`, `execShell`,
+`persistentShell`, `sandboxBackend`, `execRoot`, the command task operations `spawn`, `wait`,
+`kill`, `settle`, `output`, `retainOutput` and `tail`, the persistent shell operations `shell`,
+`write` and `resize`, and `spawnWithStdin`, `spawnConfined`, `removeOutputDirectory` and
+`childPath`. `spawn_tree`, `spawn_with_stdin_process`, `spawn_pty`, `build_process_spec` and
+`child_path_process` remain `#[service(skip)]`: they carry process handles and cannot cross.
+
+A task id is reserved by the owner before a command or background job starts. `spawn` and the job
+part of `shell.write` answer `task_exists` for an id already in the table or an existing output
+log, and `invalid` for a missing output parent or an output path outside the shell directory. `wait` reports the terminal record and never removes it; a
+timeout stops the wait and answers `running`. `settle` releases only an ended task or an exited
+shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a stop is pending answers `task_running`. Command and job logs stay under the output directory the caller gives the owner; the
+persistent shell defaults to `execRoot`. Logs are registered by the branch when the model is
+given their path.
+`removeOutputDirectory` accepts only a persistent-shell output directory below the canonical
+`execRoot` and refuses traversal and symlink components.
+
+`output` serves a text page. Public reads are terminal records plus `output`, `tail`, `wait` and
+`retainOutput`; there is no public event cursor or shell state. The owner line queue is private to
+`ShellSession`. A shell command capture is read by its command id and records the bounded output,
+tail and task log. `wait`, `kill`, `output` and `tail` address shell command and job ids as well
+as exec tasks. A shell command ends from its marker; shell exit sweeps its command and job
+children. A terminal shell answers `write`/`resize` with `task_ended`, and `settle` is
+idempotent. A shell `outputPath` is registered before the reply and survives settle until
+`removeOutputDirectory` or Session deletion; `retainOutput` is idempotent. `ShellJobStart.outputPath`
+is an absolute path inside the shell output directory and its file stem equals the task id; `childPath` takes UTF-8 data, while the
+native `child_path_process` accepts an `OsStr` base without replacement. The command/task and shell settlement rules are in
+[resource faces §3.2](../../../design/resource-faces.md#32-settlement-and-retained-task-records).
+
 ## Events and lifetime
 
-No Timeline events or plugin background tasks. `apply` captures the process
+No Timeline events. Every task kind — exec command, shell command, shell job and persistent
+shell — is one record in the owner's table: the record holds the state and the single terminal
+watch, and its per-kind payload holds the process, PTY, capture or pid. The owner keeps command
+supervisors, pipe pumps, the shell reader and the
+shell worker until kill, settle or owner shutdown; `apply` captures the process
 environment, reads the initial shell snapshot, retains the configured
 FileStorage source and requires the execution-settings port. `exec_shell()`
 rereads that source on every invocation.
@@ -120,9 +156,10 @@ switches: declarations are read once, while each process start reads them.
 
 For a persistent shell, background PIDs enter through the
 existing PTY marker. `PtyProcessTree::job_pid` uses portable-pty's foreground-group handle and
-Linux's namespace/session metadata to resolve the native host identity once. ShellSession stores
-the typed PID or the I/O failure and uses it directly on stop or shell exit. A bounded native
-stop waits for release before the cancelled terminal fact; the public signal helper is unchanged.
+Linux's namespace/session metadata to resolve the native host identity once. `ShellJob.pid`
+stores the typed PID in the owner record; `ShellSession` keeps only the task id and calls
+`host.kill` by id. A bounded native stop waits for release before the cancelled terminal fact;
+the public signal helper is unchanged.
 A running shell keeps the boundary it started with; changing the switches applies to the next
 process. macOS permits only the needed terminal ioctl commands.
 

@@ -555,6 +555,21 @@ fn fact(id: &str, sequence: u64, at: u64, kind: &str, name: &str, data: Value) -
     json!({"id":id,"sequence":sequence,"create_at":at,"type":kind,"name":name,"data":data})
 }
 
+/// A `branch/create` event for `branch`, cut from the line that carries it.
+fn child_created(branch: &str, sequence: u64, prompt: &str) -> Value {
+    fact(
+        branch,
+        sequence,
+        sequence * 1000,
+        "branch",
+        "create",
+        json!({
+            "branch":branch,"at":{"kind":"create"},
+            "source":{"kind":"host","operation_id":branch},"prompt":prompt,
+        }),
+    )
+}
+
 fn command(id: &str, sequence: u64, at: u64, label: &str) -> Value {
     fact(
         id,
@@ -3494,6 +3509,318 @@ fn tui_resume_restores_settled_delegations_outside_the_window_in_dispatch_order(
             alpha < delta && delta < beta && beta < gamma,
             "dispatch order: {list}"
         );
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
+/// The shown line's first window can fail on its own. Reopening `/tasks`
+/// retries that window on the same line, and the retry is a first window
+/// again: the page that lands draws the newest messages and leaves the rest
+/// behind the load-more row `/earlier` reads. A retry that fails too leaves
+/// the line failed; opening it again in `/lines` reads its window again.
+#[test]
+fn tui_reopening_tasks_rearms_a_failed_line_window() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.methods"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let methods = wire.read("session.methods");
+        wire.reply(&methods, json!({"methods":[
+            {"name":"session.input.pending","mutating":false},
+            {"name":"session.exec.pending","mutating":false},
+            {"name":"session.turn.get","mutating":false}
+        ]}));
+        let main = wire.read("session.history");
+        wire.reply(
+            &main,
+            json!({"events":[],"through":0,"nextAfter":0,"done":true}),
+        );
+        wire.no_context();
+        event(wire, "main", child_created("b-7c", 1, "reopen the parser"));
+        let page = |index: u64| {
+            [
+                fact(&format!("in-{index}"), index * 3, 1000 + index, "input", "message",
+                    json!({"mode":"append","user":{"content":[{"type":"text","text":format!("page-message-{index:03}")}]}})),
+                fact(&format!("applied-{index}"), index * 3 + 1, 1000 + index, "input", "applied",
+                    json!({"input_id":format!("in-{index}"),"mode":"append"})),
+                fact(&format!("consumed-{index}"), index * 3 + 2, 1000 + index, "input", "consumed",
+                    json!({"input_id":format!("in-{index}")})),
+            ]
+        };
+        let mut reads = 0;
+        loop {
+            let request = wire.read_any();
+            if request["method"] == "session.history" && request["params"]["branchId"] == "b-7c" {
+                reads += 1;
+                match reads {
+                    1 => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                        "code":-32000,"message":"line window unreadable"}})),
+                    2 => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                        "code":-32000,"message":"the retried window is unreadable"}})),
+                    _ => {
+                        let events: Vec<_> = (2..=102).flat_map(page).collect();
+                        wire.reply(
+                            &request,
+                            json!({"events":events,"through":308,"nextBefore":6,"nextAfter":308,"done":false}),
+                        );
+                    }
+                }
+                continue;
+            }
+            match request["method"].as_str().unwrap() {
+                "account.providers" => wire.reply(&request, json!([])),
+                other => assert!(
+                    wire.empty_state(&request),
+                    "unexpected request {other}: {request}"
+                ),
+            }
+        }
+    });
+    let mut command = home.command();
+    command.arg("--fullscreen");
+    let mut terminal = Terminal::resume_tui(command);
+    // The retried window and its load-more row have to fit on screen.
+    terminal.resize(120, 260);
+    terminal.until("test / model");
+    terminal.write(b"/lines\r");
+    terminal.until("reopen the parser");
+    terminal.write(b"\x1b[B\r");
+    terminal.until("Branch history failed; reopen to retry");
+    terminal.write(b"/tasks\r");
+    terminal.until("the retried window is unreadable");
+    terminal.write(b"\x1b[27u");
+    terminal.write(b"/lines\r");
+    terminal.until("reopen the parser");
+    terminal.write(b"\x1b[B\r");
+    terminal.until("page-message-102");
+    terminal.until_anywhere("1 earlier messages");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+/// A branch whose creation fails while its first transcript read is in
+/// flight is terminal for the transcript: the shown line returns to the line
+/// it was cut from, the read that was in flight cannot bring the line back,
+/// and `/lines` refuses to open it again.
+#[test]
+fn tui_a_branch_creation_failure_settles_the_line_before_its_first_read() {
+    let home = Home::new();
+    let (ready, readiness) = std::sync::mpsc::channel();
+    let (proceed, control) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.methods", "session.branch.get"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[
+                {"name":"session.input.pending","mutating":false},
+                {"name":"session.exec.pending","mutating":false},
+                {"name":"session.turn.get","mutating":false}
+            ]}),
+        );
+        let main = wire.read("session.history");
+        wire.reply(
+            &main,
+            json!({"events":[fact("main-message",1,1000,"step","text",json!({
+            "turn_id":"turn","request_id":"request","delta":"main transcript"
+        }))],"through":1,"nextAfter":1,"done":true}),
+        );
+        wire.no_context();
+        let mut providers = false;
+        while !providers {
+            let request = wire.read_any();
+            if request["method"] == "account.providers" {
+                providers = true;
+                wire.reply(&request, json!([]));
+            } else {
+                let other = request["method"].as_str().unwrap();
+                assert!(
+                    wire.empty_state(&request),
+                    "unexpected startup read {other}: {request}"
+                );
+            }
+        }
+        event(wire, "main", child_created("b-7c", 2, "reopen the parser"));
+        let cut = owner_request(wire, "session.turn.get", "b-7c");
+        wire.reply(
+            &cut,
+            json!({"branchId":"b-7c","through":4,"turn":null,"output":null}),
+        );
+        let inventory = owner_request(wire, "session.input.pending", "b-7c");
+        ready.send(()).unwrap();
+        let details = wire.read("session.branch.get");
+        assert_eq!(details["params"]["branchId"], "b-7c", "the child is shown");
+        wire.reply(
+            &details,
+            json!({"purpose":"reopen the parser","cutMessages":null,"end":null,
+                "branchId":"b-7c","parentBranchId":"main","branchPoint":null,
+                "state":"waiting","head":4}),
+        );
+        wire.reply(
+            &inventory,
+            json!({"branchId":"b-7c","through":4,"inputs":[],"next":null}),
+        );
+        let read = owner_request(wire, "session.history", "b-7c");
+        ready.send(()).unwrap();
+        control.recv_timeout(Duration::from_secs(10)).unwrap();
+        event(
+            wire,
+            "main",
+            fact(
+                "create-failed",
+                3,
+                4000,
+                "branch",
+                "create-failed",
+                json!({
+                    "status":"failed","branch":"b-7c","createEvent":2,"error":"creation refused",
+                }),
+            ),
+        );
+        wire.reply(
+            &read,
+            json!({"events":[fact("b-7c",5,5000,"step","text",json!({
+                "turn_id":"turn","request_id":"request","delta":"late child transcript"
+            }))],"through":5,"nextBefore":1,"nextAfter":5}),
+        );
+        wire.quiet(Duration::from_millis(200));
+        assert_eq!(
+            wire.trailing_request(),
+            None,
+            "the failed line was read after the refusal"
+        );
+    });
+    let mut terminal = Terminal::resume_tui(home.command());
+    terminal.until("test / model");
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    terminal.write(b"/lines\r");
+    terminal.until("reopen the parser");
+    terminal.write(b"\x1b[B\r");
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    proceed.send(()).unwrap();
+    terminal.until("Branch b-7c: creation refused");
+    terminal.until_visible("main transcript");
+    terminal.write(b"/lines\r");
+    terminal.until("creation failed");
+    terminal.write(b"\x1b[B\r");
+    terminal.until("Line creation failed: b-7c");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+/// A creation failure that is already known when the parent's first page is
+/// published leaves the child terminal in that page's snapshot: while the
+/// parent's inventory is still pending, `/lines` already shows the failed row,
+/// opening it is refused, and no read is issued for the child. Both orders are
+/// covered: the failure recorded inside the parent's page, and a failure
+/// buffered beyond the page's cutoff while that read is in flight.
+#[test]
+fn tui_creation_failure_reaches_the_directory_before_the_parent_inventory_settles() {
+    for in_page in [true, false] {
+        let home = Home::new();
+        let (ready, readiness) = std::sync::mpsc::channel();
+        let (proceed, control) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.methods"]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let methods = wire.read("session.methods");
+            wire.reply(
+                &methods,
+                json!({"methods":[
+                    {"name":"session.input.pending","mutating":false},
+                    {"name":"session.exec.pending","mutating":false},
+                    {"name":"session.turn.get","mutating":false}
+                ]}),
+            );
+            let main = wire.read("session.history");
+            wire.reply(
+                &main,
+                json!({"events":[fact("main-message",1,1000,"step","text",json!({
+                    "turn_id":"turn","request_id":"request","delta":"main transcript"
+                }))],"through":1,"nextAfter":1,"done":true}),
+            );
+            wire.no_context();
+            wire.2 = true;
+            let providers = wire.read_any();
+            assert_eq!(providers["method"], "account.providers");
+            wire.reply(&providers, json!([]));
+            event(wire, "main", child_created("b-7c", 2, "parent line"));
+            let cut = owner_request(wire, "session.turn.get", "b-7c");
+            wire.reply(
+                &cut,
+                json!({"branchId":"b-7c","through":4,"turn":null,"output":null}),
+            );
+            let discovery = owner_request(wire, "session.input.pending", "b-7c");
+            wire.reply(
+                &discovery,
+                json!({"branchId":"b-7c","through":4,"inputs":[],"next":null}),
+            );
+            let page = owner_request(wire, "session.history", "b-7c");
+            ready.send(()).unwrap();
+            if !in_page {
+                event(
+                    wire,
+                    "b-7c",
+                    fact("create-failed",400,4000,"branch","create-failed",json!({
+                        "status":"failed","branch":"b-7d","createEvent":5,"error":"creation refused",
+                    })),
+                );
+            }
+            let mut events = vec![
+                fact("parent-text",3,3000,"step","text",json!({
+                    "turn_id":"turn","request_id":"request","delta":"parent transcript"
+                })),
+                child_created("b-7d", 5, "child line"),
+            ];
+            if in_page {
+                events.push(fact("create-failed",6,6000,"branch","create-failed",json!({
+                    "status":"failed","branch":"b-7d","createEvent":5,"error":"creation refused",
+                })));
+            }
+            wire.reply(
+                &page,
+                json!({"events":events,"through":300,"nextBefore":1,"nextAfter":300}),
+            );
+            let inventory = loop {
+                let request = wire.frame();
+                assert_ne!(
+                    request["params"]["branchId"], "b-7d",
+                    "the failed child was read while the parent inventory was pending: {request}"
+                );
+                if request["method"] == "session.input.pending" {
+                    break request;
+                }
+                assert!(wire.empty_state(&request), "unexpected request {request}");
+            };
+            assert_eq!(
+                inventory["params"]["branchId"], "b-7c",
+                "the parent's inventory reads next"
+            );
+            control.recv_timeout(Duration::from_secs(10)).unwrap();
+            wire.reply(
+                &inventory,
+                json!({"branchId":"b-7c","through":300,"inputs":[],"next":null}),
+            );
+        });
+        let mut terminal = Terminal::resume_tui(home.command());
+        terminal.until("test / model");
+        terminal.write(b"/lines\r");
+        terminal.until("parent line");
+        terminal.write(b"\x1b[B\r");
+        readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+        terminal.write(b"/lines\r");
+        terminal.until("creation failed");
+        terminal.write(b"\x1b[B\r");
+        terminal.until("Line creation failed: b-7d");
+        proceed.send(()).unwrap();
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();

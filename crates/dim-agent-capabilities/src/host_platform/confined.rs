@@ -19,7 +19,8 @@ use tokio_util::sync::CancellationToken;
 /// set is closed: every rule a variant adds is recorded in
 /// `docs/architecture/rust-agent/plugins/HostPlatform.md` with the denial it
 /// answers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SystemServices {
     /// No system service: the helper reads the system baseline, its own
     /// executable and [`Confinement::read`], and writes [`Confinement::write`];
@@ -73,7 +74,8 @@ pub struct ConfinedOutput {
 }
 
 /// The output stream that reached its limit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConfinedStream {
     Stdout,
     Stderr,
@@ -176,7 +178,7 @@ impl HostPlatform {
     /// must not rely on the directory being quiescent on macOS or unconfined
     /// Linux: a process that left the group may still write to the `write`
     /// directories after `Ok`.
-    pub async fn spawn_confined(
+    pub async fn spawn_confined_process(
         &self,
         spec: ConfinedSpec,
         confinement: Confinement,
@@ -186,7 +188,7 @@ impl HostPlatform {
         if cancel.is_cancelled() {
             return Err(ConfinedError::Cancelled);
         }
-        let mut tree = self.spawn(process).map_err(ConfinedError::Spawn)?;
+        let mut tree = self.spawn_tree(process).map_err(ConfinedError::Spawn)?;
         let stdout = tree.stdout();
         let stderr = tree.stderr();
         let outcome = {

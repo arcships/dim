@@ -34,8 +34,8 @@
 | 17 CollaborationTimeline | 同 member 重复请求、跨 branch、message/cancel/close 不同作用 → [CollaborationIdentity](CollaborationIdentity.tla) 两个配置；只取消指定 branch 当前请求、旧结果不变 → `CancelNamesCurrentBranchRequest`、`SettledResultStable`；取消不把已完成结果改写成 cancelled → `CancellationCannotRewriteCompleted`；多个审批独立撤回 → `EachApprovalRetires`；交付失败不撤销已采用输入 → `DeliveryFailureDoesNotUndoAdoption`。成员 idle 是来自所属 Session 的输入，单个 turn/end 不直接替代它 |
 | 18 GoalBranch | edit、pending/tasks、普通输入重置、旧 evaluator 身份、两种 judge、fork/reload → 第一轮 `GoalProgress`；现行实现对应及 Draft 边界不变 |
 | 19 HooksBranch | event/outcome 点选择、follow-up 第二条链 reset → `HookFollowups`；catalog 顺序、异步不参与 gate、onFailure、首个 block 停止后续合并、SessionStart 提交前重查、approval_id 取消隔离 → [HookDecisions](HookDecisions.tla)；不同 hook 点的相同退出结果及输出字段优先级 → [HookReplyMeaning](HookReplyMeaning.tla) |
-| 20 EnvironmentClientsBranch | 初读前监听、读取期间变化合并、reload 清 last → 第一轮 `SnapshotRefresh-Clients`；append 失败仍需下次 wake，不声称 timer 重试 |
-| 21 SettingsSnapshotBranch | read/append 连续失败、读取中关闭、新代初始化、条件最终发布 → 第一轮 `SnapshotRefresh` |
+| 20 EnvironmentClientsBranch | 开场 receipt 首发、初读前监听、读取期间变化合并、reload 清 last → 第一轮 `SnapshotRefresh-Clients`；append 失败仍需下次 wake，不声称 timer 重试 |
+| 21 SettingsSnapshotBranch | 开场 receipt 首发并交接 last/pending、read/append 连续失败、读取中关闭、新代初始化、条件最终发布 → 第一轮 `SnapshotRefresh` |
 | 22 SessionBroadcast | 原事件/branch 身份、分支内序、drain 后 Closed → [BroadcastRecords](BroadcastRecords.tla)；`NoBranchEventAfterClosed` 只排除后续 branch Event，不排除 racing Notice/Fence；状态 dump 确认后二者可在 Closed 后出现 |
 
 ## 取值、代码入口和抽象

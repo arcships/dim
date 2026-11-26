@@ -14,7 +14,7 @@ The `/tasks` panel on `rust-tui` lists background commands and stops one through
 `session.exec.stop`. It cannot display a command's output while the command runs.
 The UI is not on `main`; its current implementation is tracked in #264.
 
-The output already exists. Before transferring a command, `ExecProcess` creates
+The output already exists. Before transferring a command, the owner's command capture creates
 its output file; the pipe pumps keep updating that file and its bounded preview.
 `exec/started` carries the task identity and output path, and `exec/ended` carries
 the final result. The command's owner is

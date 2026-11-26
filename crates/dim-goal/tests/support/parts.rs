@@ -17,6 +17,7 @@ use dim_agent_capabilities::{
     timeline_tree::{TimelineTreePlugin, TreeTimelinePlugin},
     tool_registry::{ToolRegistry, ToolRegistryPlugin},
 };
+use dim_agent_runtime::LoopPhase;
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BoxFuture, BranchOptions, Dispatcher, Feature,
@@ -59,6 +60,9 @@ pub struct Probe {
     fail_state: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     /// How many state records the hook changed.
     failed_states: Arc<AtomicUsize>,
+    /// One branch's Loop state, which a case can set before it ends the line:
+    /// a Tool end of a running line is parked until the line's turn ends.
+    loops: Mutex<HashMap<String, tokio::sync::watch::Sender<LoopSnapshot>>>,
 }
 
 impl Probe {
@@ -109,6 +113,22 @@ impl Probe {
     /// How many state records the hook changed.
     pub fn failed_states(&self) -> usize {
         self.failed_states.load(Ordering::SeqCst)
+    }
+    /// Reports `branch` as running or idle, as its Loop would: a Tool end of a
+    /// running line is parked until its turn ends.
+    pub fn set_running(&self, branch: &str, running: bool) {
+        let loops = self.loops.lock().unwrap();
+        let sender = loops
+            .get(branch)
+            .unwrap_or_else(|| panic!("branch {branch} has a Loop"));
+        sender.send_replace(LoopSnapshot {
+            phase: if running {
+                LoopPhase::Running
+            } else {
+                LoopPhase::Idle
+            },
+            turn_id: running.then(|| "turn".to_owned()),
+        });
     }
 }
 
@@ -268,6 +288,61 @@ impl DynPlugin for LoopStub {
             ctx.provide_at(
                 self.key.clone(),
                 Arc::new(IdleLoop(self.watch.clone())) as Arc<dyn LoopState>,
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The Loop state a case sets through [`Probe::set_running`], so it can end a
+/// running line: a Tool end of a running line is parked until its turn ends.
+struct ControllableLoop(tokio::sync::watch::Sender<LoopSnapshot>);
+impl LoopState for ControllableLoop {
+    fn state(&self) -> LoopSnapshot {
+        self.0.borrow().clone()
+    }
+    fn watch(&self) -> tokio::sync::watch::Receiver<LoopSnapshot> {
+        self.0.subscribe()
+    }
+}
+
+/// A [`LoopStub`] whose branch reports [`ControllableLoop`] and registers its
+/// sender with [`Probe::set_running`]; only [`Env::start_controllable`] mounts
+/// it, so a case that never sets a line's state keeps the idle stub.
+struct ControllableLoopStub {
+    key: Key<dyn LoopState>,
+    identity: Key<TimelineIdentity>,
+    watch: tokio::sync::watch::Sender<LoopSnapshot>,
+    probe: Arc<Probe>,
+}
+impl ControllableLoopStub {
+    fn new(names: &Names<'_>, probe: Arc<Probe>) -> rutis::Result<Self> {
+        Ok(Self {
+            key: names.key()?,
+            identity: names.key()?,
+            watch: tokio::sync::watch::channel(LoopSnapshot::default()).0,
+            probe,
+        })
+    }
+}
+impl DynPlugin for ControllableLoopStub {
+    fn name(&self) -> &str {
+        "GoalControllableLoop"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.identity.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let identity = ctx.require_at(&self.identity)?;
+            self.probe
+                .loops
+                .lock()
+                .unwrap()
+                .insert(identity.branch_id.clone(), self.watch.clone());
+            ctx.provide_at(
+                self.key.clone(),
+                Arc::new(ControllableLoop(self.watch.clone())) as Arc<dyn LoopState>,
             )?;
             Ok(Effect::Done)
         })
@@ -913,18 +988,25 @@ pub struct Env {
 
 impl Env {
     pub async fn start() -> Self {
-        Self::start_inner(None, None, None).await
+        Self::start_inner(None, None, None, false).await
+    }
+
+    /// [`Self::start`] whose Loop state a case sets through
+    /// [`Probe::set_running`]: a Tool end of a running line is parked until its
+    /// turn ends.
+    pub async fn start_controllable() -> Self {
+        Self::start_inner(None, None, None, true).await
     }
 
     /// [`Self::start`] on a store that records every read Goal issues and can
     /// refuse one branch's queries; nothing is refused unless a case arms it.
     pub async fn start_refusing() -> Self {
-        Self::start_inner(Some(Arc::new(RefusingStore::default())), None, None).await
+        Self::start_inner(Some(Arc::new(RefusingStore::default())), None, None, false).await
     }
 
     /// [`Self::start`] on a store that can hold Goal's creation check.
     pub async fn start_gated() -> Self {
-        Self::start_inner(None, Some(Arc::new(GatedStore::default())), None).await
+        Self::start_inner(None, Some(Arc::new(GatedStore::default())), None, false).await
     }
 
     pub fn refusing(&self) -> &RefusingStore {
@@ -941,13 +1023,14 @@ impl Env {
     }
 
     pub async fn start_store(store: Arc<dyn TimelineStore>) -> Self {
-        Self::start_inner(None, None, Some(store)).await
+        Self::start_inner(None, None, Some(store), false).await
     }
 
     async fn start_inner(
         refusing: Option<Arc<RefusingStore>>,
         gated: Option<Arc<GatedStore>>,
         store: Option<Arc<dyn TimelineStore>>,
+        controllable_loop: bool,
     ) -> Self {
         let home = home();
         let probe = Arc::new(Probe::default());
@@ -978,11 +1061,7 @@ impl Env {
                     }),
             )
             .require_part(dim_goal::SESSION_PART)
-            .require_part(dim_goal::BRANCH_PART)
-            .require_feature(
-                Feature::new("GoalLoop")
-                    .branch("GoalLoop", |names| Ok(Box::new(LoopStub::new(names)?))),
-            );
+            .require_part(dim_goal::BRANCH_PART);
         let session_probe = probe.clone();
         builder.require_feature(
             Feature::new("GoalProbeSession").session("GoalProbeSession", move |names| {
@@ -995,6 +1074,20 @@ impl Env {
                 Ok(Box::new(ProbeBranch::new(names, branch_probe.clone())?))
             }),
         );
+        if controllable_loop {
+            let loop_probe = probe.clone();
+            builder.require_feature(Feature::new("GoalLoop").branch("GoalLoop", move |names| {
+                Ok(Box::new(ControllableLoopStub::new(
+                    names,
+                    loop_probe.clone(),
+                )?))
+            }));
+        } else {
+            builder.require_feature(
+                Feature::new("GoalLoop")
+                    .branch("GoalLoop", |names| Ok(Box::new(LoopStub::new(names)?))),
+            );
+        }
         defaults::tool_host(
             &mut builder,
             Arc::new(dim_agent_capabilities::adapters::MockTools),

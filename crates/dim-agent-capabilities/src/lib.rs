@@ -124,6 +124,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<workspace_tools::file_reads::FileReads>(catalog, branch);
     catalog.register_shared_instance("branchLine", BRANCH_GROUP);
     register::<host_platform::HostPlatform>(catalog, None);
+    catalog.register_shared("hostPlatform");
     register::<file_storage::FileStorage>(catalog, None);
     register::<file_storage::FsHost>(catalog, None);
     catalog.register_shared("fsHost");

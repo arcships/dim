@@ -77,8 +77,8 @@
 | 18b GoalBranch | active 恢复为内存 paused；不补写 paused，不恢复本代执行集合 | 同模型 `NoRuntimeRecovery/NoSyntheticPauseWrite`；文本及完整业务记录当不透明值，由 load/query-cost 流程覆盖其存取 |
 | 19a HooksBranch | 已消费的 operator input 或 interrupt 才使旧输出失效；startup 不重复；blocking follow-up 最多三次 | [HooksValidity](HooksValidity.tla)：`Event/Finish/Startup/Reload` 对应 consume/validation；`ValidOutput/StartupAtMostOnce/BoundedFollowup/NoReplayOnReload` |
 | 19b HooksBranch | 普通点串行、点内 handlers 可并发；PermissionRequest 独立取消；结束审批后不写旧输出 | [HookScheduling](HookScheduling.tla)：`Start/Handler/Finish/ApprovalEnded`；检查合并完整性、独立性、取消及重载不重跑；advice 的 Deny 优先另见 AdmissionAdvice |
-| 20 EnvironmentClientsBranch | 激活后读取当前值；成功写入才更新 last；相同值不连续发布；不从旧历史恢复连接 | [CurrentInput](CurrentInput.tla)，`CurrentInput-Clients.cfg`：`Activate/Read/CommitInput/Fail` 对应发布任务；三个不变量与观察 closing 后的停止检查。无定时 retry，所以**不检查最终成功性质** |
-| 21 SettingsSnapshotBranch | 失败保留 pending，重试成功才更新 last；当前值稳定后最终发布或关闭 | 同模型 `Retry=TRUE`，在服务/写入恢复及公平调度前提下检查 `EventuallyCurrent`；一秒 timer 抽象成重试机会，不证明真实时钟准时性 |
+| 20 EnvironmentClientsBranch | 开场 receipt 先写一发（早于 Activate）；激活后读取当前值、成功写入才更新 last；相同值不连续发布；不从旧历史恢复连接 | [CurrentInput](CurrentInput.tla)，`CurrentInput-Clients.cfg`：`Activate/Read/CommitInput/Fail` 对应激活后的循环；开场那一发在模型窗口之前（`last` 初值即开场快照，`NoWriteBeforeActivation` 只约束循环写入）。无定时 retry，所以**不检查最终成功性质** |
+| 21 SettingsSnapshotBranch | 开场 receipt 先写一发（早于 Activate）并交接 last/pending；失败保留 pending，重试成功才更新 last；当前值稳定后最终发布或关闭 | 同模型 `Retry=TRUE`，`Activate` 之后是开场交接后的循环；在服务/写入恢复及公平调度前提下检查 `EventuallyCurrent`；一秒 timer 抽象成重试机会，不证明真实时钟准时性 |
 | 22 SessionBroadcast | 只投影已交付事件，保留 branch 身份和分支内顺序；Session end 在分支 drain 后 | [SessionBroadcast](SessionBroadcast.tla)：`Deliver/Close/EndSession` 对应 subscribe_all/SessionBroadcastEnd；`PublishedSourcesOnly/PerBranchOrder/CloseAfterBranchDrain/NoPostCloseNotice`。不提供客户端确认、重连重播或跨分支全序 |
 
 ## 恢复选择的共同实验

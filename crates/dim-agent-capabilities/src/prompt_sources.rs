@@ -277,7 +277,7 @@ fn environment(
                 Some(custom) => custom(shell),
                 None => built_in.to_owned(),
             };
-            entries.push(xml_tag("shell", &executable_path.to_string_lossy()));
+            entries.push(xml_tag("shell", executable_path));
             entries.push(xml_tag("shell_edition", edition));
             entries.push(xml_tag("shell_guidance", &guidance));
             entries.push(xml_tag(

@@ -67,7 +67,12 @@ impl TimelineContext {
     /// Dispatches the opening through `through`, seals registration and waits
     /// for capability receipts and their committed fence. First activations,
     /// dispatch advancement and receipt completion renew the inactivity limit.
-    pub async fn finish_opening(&self, through: u64, timeout: std::time::Duration) -> Result<()> {
+    pub async fn finish_opening(
+        &self,
+        through: u64,
+        timeout: std::time::Duration,
+        opening: crate::OpeningKind,
+    ) -> Result<()> {
         let mut progress = StartupProgress::new(&self.ctx, timeout)?;
         progress
             .wait(
@@ -86,7 +91,9 @@ impl TimelineContext {
                             .await
                             .map_err(|_| AgentError::Closed("branch dispatch".into()))?;
                     }
-                    let receipts = self.lifecycle.finish_opening(&self.ctx, self.view.id);
+                    let receipts = self
+                        .lifecycle
+                        .finish_opening(&self.ctx, self.view.id, opening);
                     tokio::pin!(receipts);
                     loop {
                         if let Some(error) = dispatch.borrow_and_update().failure.clone() {
@@ -316,6 +323,10 @@ impl TimelineContext {
     pub(crate) fn public<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Arc<T>> {
         crate::names::in_group::<T>(&self.catalog, crate::BRANCH_GROUP)?;
         self.port::<T>(std::any::type_name::<T>())
+    }
+    pub(crate) fn public_opt<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Option<Arc<T>>> {
+        crate::names::in_group::<T>(&self.catalog, crate::BRANCH_GROUP)?;
+        Ok(self.ctx.get_at::<T>(&self.scope.key::<T>()))
     }
     pub(crate) fn port<T: ?Sized + Send + Sync + 'static>(&self, name: &str) -> Result<Arc<T>> {
         self.ctx

@@ -733,6 +733,10 @@ impl Session {
     pub fn service<T: ?Sized + PublicService>(&self, branch: &str) -> Result<Arc<T>> {
         self.published(branch)?.service::<T>()
     }
+    /// Reads a capability service when the loaded profile provides it.
+    pub fn service_opt<T: ?Sized + PublicService>(&self, branch: &str) -> Result<Option<Arc<T>>> {
+        self.published(branch)?.service_opt::<T>()
+    }
     /// Observes publication progress without exposing Timeline mutation.
     pub fn publication(&self, branch: &str) -> Result<Publication> {
         Ok(self.published(branch)?.publication())

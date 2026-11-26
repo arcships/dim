@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub enum TaskError {
     Unknown,
     Closed,
+    Read,
 }
 
 /// Stops a background task by id.

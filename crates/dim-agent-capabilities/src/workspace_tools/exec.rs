@@ -10,8 +10,10 @@ use super::{
 use crate::{
     host::{HostError, ToolExecutionContext},
     host_platform::{
-        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, HostPlatform, ISOLATION_SUMMARY,
-        Isolation, Os, ProcessTree, ShellEdition, ShellKind, TemporaryDirectory,
+        HostPlatform, HostPlatformError, ISOLATION_SUMMARY, Isolation, Os, OutputRecord,
+        ProcessSpec, ProcessSpecError, ProcessTree, ShellEdition, ShellKind, ShellStatus,
+        SpawnReply, SpawnRequest, TaskFailure, TaskKind, TaskRecord, TaskRequest, TaskStatus,
+        Terminal, WaitReply, WaitRequest, WaitStatus, signal_name,
     },
     tool_registry::definition,
 };
@@ -22,12 +24,17 @@ use serde_json::{Value, json};
 use std::{
     io,
     path::{Component, Path, PathBuf},
-    process::ExitStatus,
     sync::Arc,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinHandle, time::Instant};
+use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+
+use crate::host_platform::output::head_bytes;
+pub use crate::host_platform::output::{
+    Decoder, EXIT_STDIO_GRACE, OUTPUT_FILE_BYTE_LIMIT, OutputSink, bounded_preview,
+    capture_preview, pump, sanitize, tail_bytes, truncate_preview,
+};
 
 /// Default foreground wait before a command moves to the background.
 const DEFAULT_WAIT_TIME: Duration = Duration::from_millis(30_000);
@@ -36,17 +43,9 @@ const MIN_EXEC_TIMEOUT_MS: u64 = 1_000;
 const MAX_EXEC_TIMEOUT_MS: u64 = 3_600_000;
 /// Foreground output stays inline until this UTF-16 length is exceeded.
 const INLINE_OUTPUT_CHAR_LIMIT: usize = 30_000;
-const OUTPUT_PREVIEW_MAX_LINES: usize = 2_000;
-const OUTPUT_PREVIEW_MAX_BYTES: usize = 50 * 1024;
-const PREVIEW_BUFFER_HEADROOM_BYTES: usize = OUTPUT_PREVIEW_MAX_BYTES * 2;
-/// Maximum bytes written to one exec output file. Read by the paged output
-/// read (`BackgroundExec::output_page`) as the file-level truncation signal.
-pub(super) const OUTPUT_FILE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
-/// Pipe reading continues this long after the root process exits.
-pub const EXIT_STDIO_GRACE: Duration = Duration::from_millis(100);
 const DESCRIPTION_CHARS: usize = 200;
 
-pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
+pub fn definition_for(platform: &crate::host_platform::HostPlatform) -> ToolDefinition {
     let mut env_line = format!(
         "Environment: {}/{}",
         platform.os.node_platform(),
@@ -139,26 +138,6 @@ pub(super) async fn stop(
     }
 }
 
-/// The process tree could not be confirmed gone; dropping it kills what is
-/// left, but the caller must not take the command as stopped. Like the
-/// background result, it keeps the output captured so far, including the
-/// reference to an output file already written.
-fn terminate_failed(error: &io::Error, settled: &Settled) -> ToolResult {
-    let mut structured = object(json!({
-        "code": "exec_terminate_failed",
-        "outputBytes": settled.output_bytes,
-        "outputTruncated": settled.truncated,
-    }));
-    if let Some(path) = &settled.output_path {
-        structured.insert("outputPath".into(), path.clone().into());
-    }
-    let note = format!("Command could not be terminated: {error}");
-    ToolResult {
-        structured_content: Some(structured),
-        ..ToolResult::error(settled_content(settled, Some(&note)))
-    }
-}
-
 fn failed(message: impl Into<String>, code: &str) -> ToolResult {
     ToolResult {
         structured_content: Some(object(json!({ "code": code }))),
@@ -168,11 +147,11 @@ fn failed(message: impl Into<String>, code: &str) -> ToolResult {
 
 /// Declares the command a started call ran (session boundary A.6): the exit
 /// status the result observed, or none.
-fn ran(mut result: ToolResult, command: &str, exit: Option<ExitStatus>) -> ToolResult {
+fn ran(mut result: ToolResult, command: &str, exit: Option<CommandExit>) -> ToolResult {
     result.effects = Some(vec![ToolEffect::CommandRun {
         command: command.to_owned(),
-        exit_code: exit.and_then(|status| status.code()),
-        signal: exit.and_then(signal_name),
+        exit_code: exit.as_ref().and_then(|status| status.code),
+        signal: exit.and_then(|status| status.signal),
     }]);
     result
 }
@@ -1630,15 +1609,15 @@ fn high_cost_target(raw: &str, cwd: &str, home: &str) -> bool {
 }
 
 /// TS `path.ts` resolution of the `cwd` argument.
-fn resolve_cwd(value: &str, cwd: &Path, platform: &HostPlatform) -> PathBuf {
+fn resolve_cwd(value: &str, cwd: &Path, home: &Path, os: Os) -> PathBuf {
     let expanded = if value == "~" {
-        platform.home.clone()
+        home.to_owned()
     } else if let Some(rest) = value
         .strip_prefix("~/")
         .or_else(|| value.strip_prefix("~\\"))
     {
-        platform.home.join(rest)
-    } else if platform.os == Os::Windows {
+        home.join(rest)
+    } else if os == Os::Windows {
         PathBuf::from(correct_windows_path(value))
     } else {
         PathBuf::from(value)
@@ -1680,147 +1659,6 @@ fn correct_windows_path(value: &str) -> String {
     value.to_owned()
 }
 
-/// Incremental canonical UTF-8 decoding of one stream (ADR 018): invalid and
-/// truncated bytes become `<0xNN>`, never U+FFFD.
-#[derive(Default)]
-pub struct Decoder {
-    pending: Vec<u8>,
-}
-impl Decoder {
-    pub fn write(&mut self, chunk: &[u8]) -> String {
-        let mut input = std::mem::take(&mut self.pending);
-        input.extend_from_slice(chunk);
-        self.decode(&input, false)
-    }
-    pub fn end(&mut self) -> String {
-        let input = std::mem::take(&mut self.pending);
-        self.decode(&input, true)
-    }
-    fn decode(&mut self, input: &[u8], last: bool) -> String {
-        let mut output = String::new();
-        let mut offset = 0;
-        while offset < input.len() {
-            let first = input[offset];
-            if first <= 0x7f {
-                output.push(first as char);
-                offset += 1;
-                continue;
-            }
-            let length = match first {
-                0xc2..=0xdf => 2,
-                0xe0..=0xef => 3,
-                0xf0..=0xf4 => 4,
-                _ => 0,
-            };
-            if length == 0 {
-                output.push_str(&escape_byte(first));
-                offset += 1;
-                continue;
-            }
-            if offset + length > input.len() {
-                if !last {
-                    self.pending = input[offset..].to_vec();
-                    break;
-                }
-                output.push_str(&escape_byte(first));
-                offset += 1;
-                continue;
-            }
-            match std::str::from_utf8(&input[offset..offset + length]) {
-                Ok(text) => {
-                    output.push_str(text);
-                    offset += length;
-                }
-                Err(_) => {
-                    output.push_str(&escape_byte(first));
-                    offset += 1;
-                }
-            }
-        }
-        output
-    }
-}
-
-fn escape_byte(byte: u8) -> String {
-    format!("<0x{byte:02X}>")
-}
-
-/// Removes control characters except `\t\n\r`, and U+FFF9–U+FFFB.
-pub fn sanitize(text: &str) -> String {
-    text.chars()
-        .filter(|&ch| {
-            !(matches!(ch, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}')
-                || matches!(ch, '\u{7f}'..='\u{9f}' | '\u{fff9}'..='\u{fffb}'))
-        })
-        .collect()
-}
-
-/// The tail of `text` within `max` UTF-8 bytes, on a character boundary.
-pub fn tail_bytes(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut start = text.len() - max;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    &text[start..]
-}
-
-/// The head of `text` within `max` UTF-8 bytes, on a character boundary.
-fn head_bytes(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
-
-/// TS `truncatePreview`: the last 2000 lines within 50 KiB.
-pub fn truncate_preview(text: &str) -> String {
-    let sanitized = sanitize(text);
-    if sanitized.is_empty() {
-        return sanitized;
-    }
-    let lines: Vec<&str> = sanitized.split('\n').collect();
-    let tail = &lines[lines.len().saturating_sub(OUTPUT_PREVIEW_MAX_LINES)..];
-    let joined = tail.join("\n");
-    if joined.len() <= OUTPUT_PREVIEW_MAX_BYTES {
-        return joined;
-    }
-    if tail.len() == 1 || (tail.len() == 2 && tail[1].is_empty()) {
-        let suffix = if tail.len() == 2 { "\n" } else { "" };
-        return format!(
-            "{}{suffix}",
-            tail_bytes(tail[0], OUTPUT_PREVIEW_MAX_BYTES - suffix.len())
-        );
-    }
-    let (mut low, mut high) = (0, tail.len() - 1);
-    while low < high {
-        let middle = (low + high) / 2;
-        if tail[middle..].join("\n").len() <= OUTPUT_PREVIEW_MAX_BYTES {
-            high = middle;
-        } else {
-            low = middle + 1;
-        }
-    }
-    let joined = tail[low..].join("\n");
-    tail_bytes(&joined, OUTPUT_PREVIEW_MAX_BYTES).to_owned()
-}
-
-/// exec's preview bounds — the sanitized tail within 2,000 lines and 50 KiB —
-/// and whether they left anything out: bytes outside the captured `preview`
-/// buffer, or a sanitized tail the rule cut. ShellInput's command record and a
-/// background task's final result both read this one rule.
-pub fn bounded_preview(preview: &str, decoded: usize) -> (String, bool) {
-    let text = truncate_preview(preview);
-    let truncated = decoded > preview.len() || text.len() < sanitize(preview).len();
-    (text, truncated)
-}
-
 /// Merged canonical output of one command, inline until it outgrows the
 /// budget, then in the output file (TS `ExecOutputCapture`).
 struct Capture {
@@ -1832,7 +1670,7 @@ struct Capture {
     file_bytes: u64,
     output_bytes: u64,
     truncated: bool,
-    failure: Option<String>,
+    failure: Option<TaskFailure>,
 }
 impl Capture {
     async fn process(&mut self, text: &str) -> io::Result<()> {
@@ -1865,6 +1703,7 @@ impl Capture {
         options.mode(0o600);
         let mut file = options.open(&self.path).await?;
         tokio::io::AsyncWriteExt::write_all(&mut file, initial.as_bytes()).await?;
+        file.sync_all().await?;
         self.file_bytes = initial.len() as u64;
         if initial.len() < self.inline.len() {
             self.truncated = true;
@@ -1901,39 +1740,175 @@ impl Capture {
     }
 }
 
-/// Appends `text` to the bounded output tail that [`truncate_preview`] reads:
-/// past twice the preview budget, only the last part from a line start stays.
-pub fn capture_preview(preview: &mut String, text: &str) {
-    preview.push_str(text);
-    if preview.len() > PREVIEW_BUFFER_HEADROOM_BYTES {
-        let keep = tail_bytes(preview, PREVIEW_BUFFER_HEADROOM_BYTES);
-        let keep = keep
-            .find('\n')
-            .filter(|index| index + 1 < keep.len())
-            .map_or(keep, |index| &keep[index + 1..]);
-        *preview = keep.to_owned();
-    }
-}
-
-/// Where [`pump`] delivers the decoded text of a pipe, in read order.
-pub trait OutputSink: Send + Sync {
-    fn push(&self, text: &str) -> impl Future<Output = ()> + Send;
-}
-
-pub(super) struct Output {
+pub(crate) struct Output {
     capture: Mutex<Capture>,
     /// Cancelled when the capture failed; the command is then terminated.
     failed: CancellationToken,
 }
 impl Output {
-    pub(super) async fn preview(&self) -> String {
-        truncate_preview(&self.capture.lock().await.preview)
-    }
-    /// Whether the capture stopped appending at `OUTPUT_FILE_BYTE_LIMIT`.
-    pub(super) async fn truncated(&self) -> bool {
-        self.capture.lock().await.truncated
+    async fn ensure_file(&self) -> Result<String, String> {
+        let mut capture = self.capture.lock().await;
+        if let Some(failure) = &capture.failure {
+            return Err(failure.to_string());
+        }
+        match capture.create_file().await {
+            Ok(()) => Ok(capture.path.to_string_lossy().into_owned()),
+            Err(error) => {
+                let error = error.to_string();
+                capture.failure = Some(TaskFailure::OutputWriteFailed {
+                    message: error.clone(),
+                });
+                Err(error)
+            }
+        }
     }
 }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputTail {
+    pub text: String,
+    pub total_bytes: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CaptureError {
+    #[error("Unknown execution task")]
+    Unknown,
+    #[error("{0}")]
+    Unavailable(String),
+}
+
+impl HostPlatform {
+    pub(crate) async fn start_command(
+        &self,
+        task_id: &str,
+        spec: ProcessSpec,
+        roots: &[PathBuf],
+        output_dir: &Path,
+        timeout: Option<u64>,
+    ) -> Result<(), ProcessSpecError> {
+        if tokio::fs::create_dir_all(output_dir).await.is_err() {
+            return Err(ProcessSpecError {
+                code: "invalid_request",
+                reason: "output directory is not usable".into(),
+            });
+        }
+        if std::fs::symlink_metadata(output_dir.join(format!("{task_id}.log"))).is_ok() {
+            return Err(ProcessSpecError {
+                code: "task_exists",
+                reason: "Execution task already exists".into(),
+            });
+        }
+        let (spec, temporary, isolation) = self.prepare_isolated_process(spec, roots, None).await?;
+        let path = output_dir.join(format!("{task_id}.log"));
+        let output = Arc::new(Output {
+            capture: Mutex::new(Capture {
+                path: path.clone(),
+                inline: String::new(),
+                inline_units: 0,
+                preview: String::new(),
+                file: None,
+                file_bytes: 0,
+                output_bytes: 0,
+                truncated: false,
+                failure: None,
+            }),
+            failed: CancellationToken::new(),
+        });
+        let task = Arc::new(CommandTask {
+            output: output.clone(),
+            path,
+            isolation,
+            kill: CancellationToken::new(),
+        });
+        let record = TaskRecord::new(task_id.to_owned(), TaskKind::Command(task.clone()));
+        {
+            let mut commands = self.commands.lock().unwrap();
+            if self.command_shutdown.is_cancelled() {
+                return Err(ProcessSpecError {
+                    code: "cancelled",
+                    reason: "Execution host closed".into(),
+                });
+            }
+            if commands.contains_key(task_id) {
+                return Err(ProcessSpecError {
+                    code: "task_exists",
+                    reason: "Execution task already exists".into(),
+                });
+            }
+            commands.insert(task_id.to_owned(), record.clone());
+        }
+        let mut tree = match self.spawn_tree(spec) {
+            Ok(tree) => tree,
+            Err(error) => {
+                let output = task.output_record().await;
+                record.finish(crate::host_platform::Terminal {
+                    status: crate::host_platform::TaskStatus::Failed,
+                    exit_code: None,
+                    signal: None,
+                    duration_ms: record.started.elapsed().as_millis() as u64,
+                    failure: Some(crate::host_platform::TaskFailure::CommandFailed),
+                    output,
+                    note: None,
+                });
+                self.commands.lock().unwrap().remove(task_id);
+                return Err(ProcessSpecError {
+                    code: "exec_invalid_request",
+                    reason: format!("Failed to spawn process: {error}"),
+                });
+            }
+        };
+        tree.hold(temporary);
+        let stop_pumps = CancellationToken::new();
+        let pumps = vec![
+            tokio::spawn(pump(tree.stdout(), output.clone(), stop_pumps.clone())),
+            tokio::spawn(pump(tree.stderr(), output.clone(), stop_pumps.clone())),
+        ];
+        let running = RunningCommand {
+            tree,
+            stop_pumps,
+            pumps,
+            output: output.clone(),
+        };
+        let worker = task.clone();
+        let supervised = record.clone();
+        let shutdown = self.command_shutdown.clone();
+        record.start();
+        self.command_workers.spawn(async move {
+            running
+                .supervise(supervised, &worker, timeout, shutdown)
+                .await;
+        });
+        Ok(())
+    }
+
+    pub(crate) fn command_task(&self, task_id: &str) -> Result<Arc<CommandTask>, CaptureError> {
+        match &self.task(task_id).ok_or(CaptureError::Unknown)?.kind {
+            TaskKind::Command(task) => Ok(task.clone()),
+            _ => Err(CaptureError::Unknown),
+        }
+    }
+
+    pub async fn retain_output_by_id(&self, task_id: &str) -> Result<String, CaptureError> {
+        self.command_task(task_id)?
+            .output
+            .ensure_file()
+            .await
+            .map_err(CaptureError::Unavailable)
+    }
+    pub async fn tail_by_id(&self, task_id: &str) -> Result<OutputTail, CaptureError> {
+        let task = self.command_task(task_id)?;
+        let output = &task.output;
+        let capture = output.capture.lock().await;
+        Ok(OutputTail {
+            text: truncate_preview(&capture.preview),
+            total_bytes: capture.output_bytes,
+            truncated: capture.truncated,
+        })
+    }
+}
+
 impl OutputSink for Output {
     async fn push(&self, text: &str) {
         if text.is_empty() {
@@ -1945,61 +1920,37 @@ impl OutputSink for Output {
             return;
         }
         if let Err(error) = capture.process(text).await {
-            capture.failure = Some(error.to_string());
+            capture.failure = Some(TaskFailure::OutputWriteFailed {
+                message: error.to_string(),
+            });
             self.failed.cancel();
         }
     }
 }
 
-/// Reads one pipe through its own [`Decoder`] until EOF, a read error, or
-/// [`EXIT_STDIO_GRACE`] of reading after `stop` (the root exited) fires.
-pub async fn pump(
-    mut pipe: impl tokio::io::AsyncRead + Unpin,
-    output: Arc<impl OutputSink>,
-    stop: CancellationToken,
-) {
-    let mut decoder = Decoder::default();
-    let mut buffer = vec![0; 16 * 1024];
-    let mut drain_budget = EXIT_STDIO_GRACE;
-    loop {
-        let draining = stop.is_cancelled();
-        let started = Instant::now();
-        let read = if draining {
-            if drain_budget.is_zero() {
-                break;
-            }
-            match tokio::time::timeout(drain_budget, pipe.read(&mut buffer)).await {
-                Ok(read) => read,
-                Err(_) => break,
-            }
-        } else {
-            tokio::select! {
-                read = pipe.read(&mut buffer) => read,
-                _ = stop.cancelled() => continue,
-            }
-        };
-        match read {
-            Ok(0) | Err(_) => break,
-            Ok(count) => {
-                let text = decoder.write(&buffer[..count]);
-                if draining {
-                    drain_budget = drain_budget.saturating_sub(started.elapsed());
-                }
-                output.push(&text).await;
-            }
-        }
+/// What ended the wait for a running command.
+#[derive(Clone, Debug)]
+pub(super) struct CommandExit {
+    pub(super) code: Option<i32>,
+    pub(super) signal: Option<String>,
+}
+impl CommandExit {
+    pub(super) fn success(&self) -> bool {
+        self.signal.is_none() && self.code == Some(0)
     }
-    output.push(&decoder.end()).await;
 }
 
-/// What ended the wait for a running command.
+#[derive(Clone)]
 pub(super) enum Observed {
-    Exited(ExitStatus),
+    Cancelled,
+    OwnerUnloaded,
+    Exited(CommandExit),
     TimedOut,
     OutputFailed,
 }
 
 /// Summary of a settled command's output.
+#[derive(Clone)]
 struct Settled {
     output_path: Option<String>,
     output_bytes: u64,
@@ -2008,7 +1959,7 @@ struct Settled {
     /// The preview bounds left output out of `preview`.
     preview_truncated: bool,
     inline: String,
-    failure: Option<String>,
+    failure: Option<TaskFailure>,
 }
 impl Settled {
     /// The output text that the result shows.
@@ -2020,58 +1971,81 @@ impl Settled {
     }
 }
 
-/// A started command: its process tree, the pipe readers and the output.
-/// One owner at a time; moved from the handler to the supervising task.
-pub struct ExecProcess {
-    tree: ProcessTree,
+pub(crate) struct CommandTask {
     pub(super) output: Arc<Output>,
+    pub(super) path: PathBuf,
+    pub(super) isolation: Option<Isolation>,
+    pub(crate) kill: CancellationToken,
+}
+
+struct RunningCommand {
+    tree: ProcessTree,
+    output: Arc<Output>,
     pumps: Vec<JoinHandle<()>>,
     stop_pumps: CancellationToken,
-    started: Instant,
-    deadline: Option<Instant>,
-    /// Set when HostPlatform sandboxed the command.
-    isolation: Option<Isolation>,
 }
-impl ExecProcess {
-    /// Waits for the root exit, the total deadline or an output failure;
-    /// cancel safe, terminates nothing. An exit already there wins.
-    pub(super) async fn next(&mut self) -> io::Result<Observed> {
-        let deadline = self.deadline;
-        tokio::select! {
+
+impl RunningCommand {
+    async fn supervise(
+        mut self,
+        record: Arc<TaskRecord>,
+        task: &CommandTask,
+        timeout: Option<u64>,
+        shutdown: CancellationToken,
+    ) {
+        let deadline = timeout.map(|ms| record.started + Duration::from_millis(ms));
+        let observed = tokio::select! {
             biased;
-            status = self.tree.wait() => status.map(Observed::Exited),
-            _ = async { tokio::time::sleep_until(deadline.expect("guarded")).await },
-                if deadline.is_some() => Ok(Observed::TimedOut),
+            status = self.tree.wait() => status
+                .map(|status| {
+                    let code = status.code();
+                    Observed::Exited(CommandExit { code, signal: signal_name(status) })
+                })
+                .map_err(|error| error.to_string()),
+            _ = async { tokio::time::sleep_until(deadline.expect("guarded").into()).await }, if deadline.is_some() => Ok(Observed::TimedOut),
             _ = self.output.failed.cancelled() => Ok(Observed::OutputFailed),
-        }
+            _ = task.kill.cancelled() => Ok(Observed::Cancelled),
+            _ = shutdown.cancelled() => Ok(Observed::OwnerUnloaded),
+        };
+        let termination_error = if matches!(observed, Ok(Observed::Exited(_))) {
+            None
+        } else {
+            self.tree
+                .terminate()
+                .await
+                .err()
+                .map(|error| error.to_string())
+        };
+        let output = self.close().await;
+        drop(self);
+        record.finish(command_terminal(
+            &record,
+            observed,
+            termination_error,
+            output,
+            task,
+        ));
     }
-    pub(super) async fn terminate(&mut self) -> io::Result<()> {
-        self.tree.terminate().await
-    }
-    async fn ensure_file(&self) -> Result<String, String> {
-        let mut capture = self.output.capture.lock().await;
-        if let Some(failure) = &capture.failure {
-            return Err(failure.clone());
-        }
-        match capture.create_file().await {
-            Ok(()) => Ok(capture.path.to_string_lossy().into_owned()),
-            Err(error) => {
-                let error = error.to_string();
-                capture.failure = Some(error.clone());
-                Err(error)
-            }
-        }
-    }
+
     /// Starts the bounded pipe drain and waits for output writes to finish.
     async fn close(&mut self) -> Settled {
-        self.stop_pumps.cancel();
-        futures_util::future::join_all(std::mem::take(&mut self.pumps)).await;
+        let mut pumps = std::mem::take(&mut self.pumps);
+        let mut drained = Box::pin(futures_util::future::join_all(pumps.iter_mut()));
+        tokio::select! {
+            _ = &mut drained => {}
+            _ = tokio::time::sleep(EXIT_STDIO_GRACE) => {
+                self.stop_pumps.cancel();
+                drained.await;
+            }
+        }
         let mut capture = self.output.capture.lock().await;
         if let Some(file) = capture.file.as_mut()
             && let Err(error) = tokio::io::AsyncWriteExt::flush(file).await
             && capture.failure.is_none()
         {
-            capture.failure = Some(error.to_string());
+            capture.failure = Some(TaskFailure::OutputWriteFailed {
+                message: error.to_string(),
+            });
         }
         let (preview, preview_truncated) = bounded_preview(
             &capture.preview,
@@ -2087,174 +2061,239 @@ impl ExecProcess {
             failure: capture.failure.clone(),
         }
     }
-    /// Terminates, reaps and closes a process nobody will own. Preserve the
-    /// failure and partial output if termination could not be confirmed.
-    pub(super) async fn abandon(mut self) -> Result<(), Box<ToolResult>> {
-        let terminated = self.terminate().await;
-        let settled = self.close().await;
-        terminated.map_err(|error| Box::new(terminate_failed(&error, &settled)))
+}
+
+fn command_terminal(
+    record: &TaskRecord,
+    observed: Result<Observed, String>,
+    termination_error: Option<String>,
+    output: Settled,
+    task: &CommandTask,
+) -> Terminal {
+    let (mut status, exit_code, signal, failed_exit) = match &observed {
+        Ok(Observed::Exited(exit)) => (
+            if exit.signal.is_some() {
+                TaskStatus::Signaled
+            } else {
+                TaskStatus::Exited
+            },
+            exit.code,
+            exit.signal.clone(),
+            !exit.success(),
+        ),
+        Ok(Observed::TimedOut) => (TaskStatus::TimedOut, None, None, false),
+        Ok(Observed::Cancelled) => (TaskStatus::Cancelled, None, None, false),
+        Ok(Observed::OwnerUnloaded) => (TaskStatus::Cancelled, None, None, false),
+        Ok(Observed::OutputFailed) | Err(_) => (TaskStatus::Failed, None, None, false),
+    };
+    if termination_error.is_some() || output.failure.is_some() {
+        status = TaskStatus::Failed;
     }
-    fn wall_time_ms(&self) -> u64 {
-        self.started.elapsed().as_millis() as u64
+    let note = failed_exit
+        .then(|| {
+            task.isolation
+                .as_ref()
+                .and_then(|isolation| isolation.failure_hint(output.shown()))
+        })
+        .flatten();
+    let failure = if matches!(observed, Ok(Observed::OwnerUnloaded)) {
+        Some(TaskFailure::OwnerUnloaded)
+    } else {
+        match &observed {
+            Err(message) if termination_error.is_none() && output.failure.is_none() => {
+                Some(TaskFailure::TerminateFailed {
+                    message: message.clone(),
+                })
+            }
+            _ => termination_error
+                .map(|message| TaskFailure::TerminateFailed { message })
+                .or_else(|| output.failure.clone()),
+        }
+    };
+    let output = OutputRecord {
+        path: task.path.to_string_lossy().into_owned(),
+        bytes: output.output_bytes,
+        truncated: output.truncated,
+        text: output.output_path.is_none().then(|| output.inline.clone()),
+        preview: output.preview.clone(),
+        preview_truncated: output.preview_truncated,
+    };
+    Terminal {
+        status,
+        exit_code,
+        signal,
+        duration_ms: record.started.elapsed().as_millis() as u64,
+        failure,
+        output,
+        note,
     }
-    /// Adds HostPlatform's note to a failed command's `note` when the command
-    /// was sandboxed and its output shows a typical denial.
-    fn failure_note(&self, note: String, settled: &Settled) -> String {
-        let isolation = self.isolation.as_ref();
-        match isolation.and_then(|isolation| isolation.failure_hint(settled.shown())) {
-            Some(hint) => format!("{note}\n\n{hint}"),
-            None => note,
+}
+
+impl CommandTask {
+    pub(crate) async fn output_record(&self) -> OutputRecord {
+        let capture = self.output.capture.lock().await;
+        let preview = truncate_preview(&capture.preview);
+        OutputRecord {
+            path: self.path.to_string_lossy().into_owned(),
+            bytes: capture.output_bytes,
+            truncated: capture.truncated,
+            text: capture.file.is_none().then(|| capture.inline.clone()),
+            preview: preview.clone(),
+            preview_truncated: preview.len() < capture.preview.len(),
         }
     }
 
-    /// Supervises a background command until it ends or `cancel` fires; the
-    /// tree is released before the result is returned.
-    pub(super) async fn finish_background(
-        mut self,
-        task_id: &str,
-        cancel: CancellationToken,
-    ) -> (ExecStatus, ToolResult) {
-        let observed = tokio::select! {
-            biased;
-            observed = self.next() => observed.map(Some),
-            _ = cancel.cancelled() => Ok(None),
-        };
-        let mut unterminated = None;
-        let exit = match &observed {
-            Ok(Some(Observed::Exited(status))) => Some(*status),
-            _ => {
-                if let Err(error) = self.terminate().await {
-                    tracing::warn!(%error, task_id, "background exec termination failed");
-                    unterminated = Some(error);
+    pub(crate) async fn page(
+        &self,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<super::background::OutputPage, super::background::OutputPageError> {
+        use super::background::{OutputPageError, PAGE_CHAR_TRAILING_BYTES, decode_page};
+        use tokio::io::AsyncSeekExt;
+        let capture = self.output.capture.lock().await;
+        let truncated = capture.truncated;
+        let total_bytes = capture.output_bytes;
+        let budget = limit + PAGE_CHAR_TRAILING_BYTES;
+        if capture.file.is_none() {
+            let bytes = capture.inline.as_bytes();
+            let start = usize::try_from(cursor)
+                .unwrap_or(usize::MAX)
+                .min(bytes.len());
+            let end = start.saturating_add(budget).min(bytes.len());
+            let mut page = decode_page(&bytes[start..end], cursor, limit, truncated)?;
+            page.total_bytes = total_bytes;
+            return Ok(page);
+        }
+        drop(capture);
+        let mut file = tokio::fs::File::open(&self.path)
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        file.seek(io::SeekFrom::Start(cursor))
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        let mut bytes = Vec::new();
+        file.take(budget as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        let mut page = decode_page(&bytes, cursor, limit, truncated)?;
+        page.total_bytes = total_bytes;
+        Ok(page)
+    }
+}
+
+fn settled_from_reply(reply: &WaitReply) -> (Settled, Option<CommandExit>) {
+    let settled = Settled {
+        output_path: reply
+            .text
+            .is_none()
+            .then(|| reply.output_path.clone())
+            .filter(|path| std::path::Path::new(path).exists()),
+        output_bytes: reply.output_bytes,
+        truncated: reply.output_truncated,
+        preview: reply.preview.clone(),
+        preview_truncated: reply.preview_truncated,
+        inline: reply.text.clone().unwrap_or_default(),
+        failure: reply.failure.clone(),
+    };
+    let exit =
+        matches!(reply.status, WaitStatus::Exited | WaitStatus::Signaled).then(|| CommandExit {
+            code: reply.exit_code,
+            signal: reply.signal.clone(),
+        });
+    (settled, exit)
+}
+
+pub(super) fn background_result(task_id: &str, reply: &WaitReply) -> (ExecStatus, ToolResult) {
+    let (settled, exit) = settled_from_reply(reply);
+    let (status, summary, name) = match reply.status {
+        WaitStatus::Cancelled => (
+            ExecStatus::Cancelled,
+            "Command cancelled by user.".to_owned(),
+            "cancelled",
+        ),
+        WaitStatus::TimedOut => (
+            ExecStatus::Failed,
+            "Command timed out.".to_owned(),
+            "timed_out",
+        ),
+        _ if settled.failure.is_some() => {
+            let failure = settled.failure.as_ref().expect("guarded");
+            let summary = match failure {
+                TaskFailure::OutputWriteFailed { message } => {
+                    format!("exec output offload failed: {message}")
                 }
-                None
-            }
-        };
-        let settled = self.close().await;
-        let (status, summary, name) = match (&observed, exit) {
-            _ if let Some(error) = &unterminated => (
-                ExecStatus::Failed,
-                format!("Command could not be terminated: {error}"),
-                "failed",
-            ),
-            _ if settled.failure.is_some() => (
-                ExecStatus::Failed,
-                format!(
-                    "exec output offload failed: {}",
-                    settled.failure.as_deref().unwrap_or_default()
-                ),
-                "failed",
-            ),
-            (Err(error), _) => (
-                ExecStatus::Failed,
-                format!("exec process wait failed: {error}"),
-                "failed",
-            ),
-            (Ok(None), _) => (
-                ExecStatus::Cancelled,
-                "Command cancelled by user.".into(),
-                "cancelled",
-            ),
-            (Ok(Some(Observed::TimedOut)), _) => {
-                (ExecStatus::Failed, "Command timed out.".into(), "timed_out")
-            }
-            (_, Some(status)) if status.success() => (
+                _ => failure.to_string(),
+            };
+            (ExecStatus::Failed, summary, "failed")
+        }
+        WaitStatus::Exited | WaitStatus::Signaled => match &exit {
+            Some(exit) if exit.success() => (
                 ExecStatus::Completed,
-                "Command completed.".into(),
+                "Command completed.".to_owned(),
                 "completed",
             ),
-            (_, Some(status)) => (ExecStatus::Failed, exit_failure_summary(status), "failed"),
-            (_, None) => (
+            Some(exit) => (ExecStatus::Failed, exit_failure_summary(exit), "failed"),
+            None => (
                 ExecStatus::Failed,
-                "Command failed without an exit code.".into(),
+                "Command failed without an exit code.".to_owned(),
                 "failed",
             ),
-        };
-        let note = match exit {
-            Some(status) if !status.success() && settled.failure.is_none() => {
-                self.failure_note(summary.clone(), &settled)
-            }
-            _ => summary.clone(),
-        };
-        let mut structured = object(json!({
-            "type": "finished",
-            "status": name,
-            "taskId": task_id,
-            "outputBytes": settled.output_bytes,
-            "outputTruncated": settled.truncated,
-            "preview": settled.preview.clone(),
-            "previewTruncated": settled.preview_truncated,
-            "timedOut": name == "timed_out",
-            "summary": summary,
-        }));
-        if let Some(path) = &settled.output_path {
-            structured.insert("outputPath".into(), path.clone().into());
-        }
-        insert_exit(&mut structured, exit);
-        let content = match &settled.output_path {
-            Some(path) => file_backed_content(
-                path,
-                settled.output_bytes,
-                settled.truncated,
-                &settled.preview,
-                Some(&note),
+        },
+        WaitStatus::Failed | WaitStatus::Running => (
+            ExecStatus::Failed,
+            reply.failure.as_ref().map_or_else(
+                || "Command failed without an exit code.".to_owned(),
+                ToString::to_string,
             ),
-            None => note,
-        };
-        let result = ToolResult {
-            structured_content: Some(structured),
-            is_error: (status != ExecStatus::Completed).then_some(true),
-            ..ToolResult::text(content)
-        };
-        (status, result)
+            "failed",
+        ),
+    };
+    let note = match (&settled.failure, &exit) {
+        (None, Some(exit)) if !exit.success() => reply
+            .failure_note
+            .clone()
+            .unwrap_or_else(|| summary.clone()),
+        _ => summary.clone(),
+    };
+    let mut structured = object(json!({
+        "type": "finished",
+        "status": name,
+        "taskId": task_id,
+        "outputBytes": settled.output_bytes,
+        "outputTruncated": settled.truncated,
+        "preview": settled.preview.clone(),
+        "previewTruncated": settled.preview_truncated,
+        "timedOut": name == "timed_out",
+        "summary": summary,
+    }));
+    if let Some(path) = &settled.output_path {
+        structured.insert("outputPath".into(), path.clone().into());
     }
+    insert_exit(&mut structured, exit.as_ref());
+    let result = ToolResult {
+        structured_content: Some(structured),
+        is_error: (status != ExecStatus::Completed).then_some(true),
+        ..ToolResult::text(settled_content(&settled, Some(&note)))
+    };
+    (status, result)
 }
 
-fn insert_exit(structured: &mut JsonObject, exit: Option<ExitStatus>) {
+fn insert_exit(structured: &mut JsonObject, exit: Option<&CommandExit>) {
     let Some(status) = exit else { return };
-    if let Some(code) = status.code() {
+    if let Some(code) = status.code {
         structured.insert("exitCode".into(), code.into());
     }
-    if let Some(signal) = signal_name(status) {
-        structured.insert("signal".into(), signal.into());
+    if let Some(signal) = &status.signal {
+        structured.insert("signal".into(), signal.clone().into());
     }
 }
 
-/// The name of the signal that ended a process, as `exec` reports it.
-#[cfg(unix)]
-pub fn signal_name(status: ExitStatus) -> Option<String> {
-    use std::os::unix::process::ExitStatusExt;
-    let signal = status.signal()?;
-    let name = match signal {
-        libc::SIGHUP => "SIGHUP",
-        libc::SIGINT => "SIGINT",
-        libc::SIGQUIT => "SIGQUIT",
-        libc::SIGILL => "SIGILL",
-        libc::SIGTRAP => "SIGTRAP",
-        libc::SIGABRT => "SIGABRT",
-        libc::SIGBUS => "SIGBUS",
-        libc::SIGFPE => "SIGFPE",
-        libc::SIGKILL => "SIGKILL",
-        libc::SIGUSR1 => "SIGUSR1",
-        libc::SIGSEGV => "SIGSEGV",
-        libc::SIGUSR2 => "SIGUSR2",
-        libc::SIGPIPE => "SIGPIPE",
-        libc::SIGALRM => "SIGALRM",
-        libc::SIGTERM => "SIGTERM",
-        _ => return Some(format!("SIG{signal}")),
-    };
-    Some(name.into())
-}
-#[cfg(windows)]
-pub fn signal_name(_: ExitStatus) -> Option<String> {
-    None
-}
-
-fn exit_failure_summary(status: ExitStatus) -> String {
-    if let Some(code) = status.code() {
+fn exit_failure_summary(status: &CommandExit) -> String {
+    if let Some(code) = status.code {
         return format!("Command exited with code {code}.");
     }
-    match signal_name(status) {
+    match &status.signal {
         Some(signal) => format!("Command terminated by signal {signal}."),
         None => "Command failed without an exit code.".into(),
     }
@@ -2288,6 +2327,19 @@ fn append_note(content: &str, note: Option<&str>) -> String {
         None => content.into(),
         Some(note) if content.is_empty() => note.into(),
         Some(note) => format!("{content}\n\n{note}"),
+    }
+}
+
+fn settled_content(settled: &Settled, note: Option<&str>) -> String {
+    match &settled.output_path {
+        Some(path) => file_backed_content(
+            path,
+            settled.output_bytes,
+            settled.truncated,
+            &settled.preview,
+            note,
+        ),
+        None => append_note(&settled.inline, note),
     }
 }
 
@@ -2366,26 +2418,19 @@ pub(super) async fn execute(
     };
     let platform = &tools.platform;
     let cwd = match &input.cwd {
-        Some(value) => resolve_cwd(value, &tools.cwd, platform),
+        Some(value) => resolve_cwd(value, &tools.cwd, &tools.platform.home, tools.platform.os),
         None => tools.cwd.clone(),
     };
-    let (spec, shell) = match platform.build_process_spec(&input.command, &cwd).await {
-        Ok(built) => built,
-        Err(error)
-            if matches!(
-                error.code,
-                EXEC_SHELL_CONFIG_INVALID | EXEC_SHELL_UNAVAILABLE
-            ) =>
-        {
+    let shell = match platform.exec_shell().await {
+        ShellStatus::Available(shell) => shell,
+        ShellStatus::Unavailable { code, reason } => {
             return Ok(failed(
                 format!(
-                    "exec shell is unavailable ({}): {} Fix exec-shell.json and retry.",
-                    error.code, error.reason
+                    "exec shell is unavailable ({code}): {reason} Fix exec-shell.json and retry."
                 ),
                 "exec_shell_unavailable",
             ));
         }
-        Err(error) => return Ok(failed(error.reason, error.code)),
     };
     if let Some(marker) = background_marker(&input.command, shell.edition) {
         let (line, column) = marker.position(&input.command);
@@ -2398,16 +2443,18 @@ pub(super) async fn execute(
         ));
     }
     let cwd_text = cwd.to_string_lossy().into_owned();
-    if let Some(refused) =
-        check_heavy_search(&input.command, &cwd_text, &platform.home.to_string_lossy())
-    {
+    if let Some(refused) = check_heavy_search(
+        &input.command,
+        &cwd_text,
+        &tools.platform.home.to_string_lossy(),
+    ) {
         return Ok(refused);
     }
-    let task_id = format!("exec-{}", uuid::Uuid::new_v4());
+    let host_task_id = format!("exec-{}", uuid::Uuid::new_v4());
     let background = input.run_in_background && !tools.member;
     let effective_timeout = (!(input.disable_timeout && background)).then_some(input.timeout_ms);
     let request = Call {
-        task_id: task_id.clone(),
+        task_id: host_task_id.clone(),
         command: &input.command,
         title: input.title.as_deref(),
         cwd: cwd_text,
@@ -2417,32 +2464,26 @@ pub(super) async fn execute(
         Some(facts) => facts.0.workspace_roots(&cwd, cancel.clone()).await?,
         None => vec![tools.cwd.clone()],
     };
-    let (spec, temporary, isolation) =
-        match platform.prepare_isolated_process(spec, &roots, None).await {
-            Ok(prepared) => prepared,
-            Err(error) => return Ok(failed(error.reason, error.code)),
-        };
-    let tree = match platform.spawn(spec) {
-        Ok(tree) => tree,
-        Err(error) => {
-            return Ok(failed(
-                format!("Failed to spawn process: {error}"),
-                "exec_invalid_request",
-            ));
-        }
+    let spawn = match platform
+        .spawn(SpawnRequest {
+            task_id: host_task_id,
+            command: input.command.clone(),
+            cwd: request.cwd.clone(),
+            workspace: tools.cwd.to_string_lossy().into_owned(),
+            roots: roots
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned())
+                .collect(),
+            output_dir: tools.output_dir.to_string_lossy().into_owned(),
+            timeout_ms: effective_timeout,
+        })
+        .await
+    {
+        Ok(spawn) => spawn,
+        Err(error) => return Ok(spawn_failed(error)),
     };
     let (result, exit) = run_process(
-        tools,
-        branch,
-        call,
-        context,
-        &request,
-        tree,
-        temporary,
-        isolation,
-        background,
-        effective_timeout,
-        cancel,
+        tools, branch, call, context, &request, spawn, background, cancel,
     )
     .await?;
     Ok(ran(result, request.command, exit))
@@ -2462,168 +2503,142 @@ async fn run_process(
     call: &ToolCall,
     context: &ToolExecutionContext,
     request: &Call<'_>,
-    mut tree: ProcessTree,
-    temporary: Option<TemporaryDirectory>,
-    isolation: Option<Isolation>,
+    spawn: SpawnReply,
     background: bool,
-    timeout: Option<u64>,
     cancel: CancellationToken,
-) -> Result<(ToolResult, Option<ExitStatus>), HostError> {
-    tree.hold(temporary);
-    let output = Arc::new(Output {
-        capture: Mutex::new(Capture {
-            path: tools.output_dir.join(format!("{}.log", request.task_id)),
-            inline: String::new(),
-            inline_units: 0,
-            preview: String::new(),
-            file: None,
-            file_bytes: 0,
-            output_bytes: 0,
-            truncated: false,
-            failure: None,
-        }),
-        failed: CancellationToken::new(),
-    });
-    let stop_pumps = CancellationToken::new();
-    let started = Instant::now();
-    let pumps = vec![
-        tokio::spawn(pump(tree.stdout(), output.clone(), stop_pumps.clone())),
-        tokio::spawn(pump(tree.stderr(), output.clone(), stop_pumps.clone())),
-    ];
-    let mut process = ExecProcess {
-        tree,
-        output,
-        pumps,
-        stop_pumps,
-        started,
-        deadline: timeout.map(|timeout| started + Duration::from_millis(timeout)),
-        isolation,
-    };
-    if cancel.is_cancelled() {
-        if let Err(result) = process.abandon().await {
-            return Ok((*result, None));
-        }
-        return Ok((cancelled_result(), None));
-    }
+) -> Result<(ToolResult, Option<CommandExit>), HostError> {
+    let platform = &tools.platform;
+    let host_task_id = spawn.task_id;
+    let output_path = spawn.output_path;
     if background {
-        return hand_off(branch, call, context, request, process, true, &cancel).await;
+        return hand_off(
+            platform,
+            branch,
+            call,
+            context,
+            request,
+            &host_task_id,
+            &output_path,
+            None,
+            true,
+            &cancel,
+        )
+        .await;
     }
-
-    let handoff = async {
-        if tools.member {
-            std::future::pending::<()>().await
-        } else {
-            tokio::time::sleep(DEFAULT_WAIT_TIME).await
+    let timeout = (!tools.member).then_some(DEFAULT_WAIT_TIME.as_millis() as u64);
+    let waited = platform
+        .wait(
+            WaitRequest {
+                task_id: host_task_id.clone(),
+                timeout_ms: timeout,
+            },
+            cancelled_fn(&cancel),
+        )
+        .await;
+    let reply = match waited {
+        Ok(reply) if reply.status == WaitStatus::Running => {
+            return hand_off(
+                platform,
+                branch,
+                call,
+                context,
+                request,
+                &host_task_id,
+                &output_path,
+                Some(reply),
+                false,
+                &cancel,
+            )
+            .await;
         }
-    };
-    let observed = tokio::select! {
-        biased;
-        observed = process.next() => Some(observed),
-        _ = cancel.cancelled() => {
-            if let Err(error) = process.terminate().await {
-                let settled = process.close().await;
-                return Ok((terminate_failed(&error, &settled), None));
-            }
-            let settled = process.close().await;
-            if let Some(failure) = &settled.failure {
-                return Ok((offload_failed(failure), None));
-            }
-            return Ok((
-                ToolResult::error(settled_content(&settled, Some("Command cancelled."))),
-                None,
-            ));
-        }
-        _ = handoff => None,
-    };
-    let wall = process.wall_time_ms();
-    let observed = match observed {
-        Some(observed) => Some(observed),
-        None => futures_util::FutureExt::now_or_never(process.next()),
-    };
-    let Some(observed) = observed else {
-        return hand_off(branch, call, context, request, process, false, &cancel).await;
-    };
-    let exit = match observed {
-        Ok(Observed::Exited(status)) => status,
-        Ok(Observed::OutputFailed) => {
-            if let Err(error) = process.terminate().await {
-                let settled = process.close().await;
-                return Ok((terminate_failed(&error, &settled), None));
-            }
-            let settled = process.close().await;
-            return Ok((
-                offload_failed(settled.failure.as_deref().unwrap_or_default()),
-                None,
-            ));
-        }
-        Ok(Observed::TimedOut) => {
-            if let Err(error) = process.terminate().await {
-                let settled = process.close().await;
-                return Ok((terminate_failed(&error, &settled), None));
-            }
-            let settled = process.close().await;
-            if let Some(failure) = &settled.failure {
-                return Ok((offload_failed(failure), None));
-            }
-            let mut fields = json!({
-                "type": "finished",
-                "status": "timed_out",
-                "outputBytes": settled.output_bytes,
-                "outputTruncated": settled.truncated,
-                "wallTimeMs": wall,
-                "timeoutMs": request.timeout_ms,
-                "timedOut": true,
-            });
-            if let Some(path) = &settled.output_path {
-                fields["outputPath"] = path.clone().into();
-            }
-            return Ok((
-                ToolResult {
-                    structured_content: Some(request.structured(fields)),
-                    ..ToolResult::error(settled_content(&settled, Some("Command timed out.")))
-                },
-                None,
-            ));
+        Ok(reply) => reply,
+        Err(HostPlatformError::Cancelled) => {
+            return cancel_foreground(platform, &host_task_id).await;
         }
         Err(error) => {
-            if let Err(error) = process.terminate().await {
-                let settled = process.close().await;
-                return Ok((terminate_failed(&error, &settled), None));
-            }
-            process.close().await;
+            stop_and_settle(platform, &host_task_id).await;
             return Ok((
-                failed(
-                    format!("Failed to wait for process: {error}"),
-                    "exec_wait_failed",
-                ),
+                failed(format!("exec wait failed: {error}"), "exec_wait_failed"),
                 None,
             ));
         }
     };
-    let settled = process.close().await;
-    if let Some(failure) = &settled.failure {
-        return Ok((offload_failed(failure), None));
+    finish_foreground(platform, request, &host_task_id, reply).await
+}
+
+async fn finish_foreground(
+    platform: &HostPlatform,
+    request: &Call<'_>,
+    host_task_id: &str,
+    reply: WaitReply,
+) -> Result<(ToolResult, Option<CommandExit>), HostError> {
+    let (settled, exit) = settled_from_reply(&reply);
+    let _ = platform
+        .settle(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await;
+    let completed = reply.status == WaitStatus::Exited
+        && exit.as_ref().is_some_and(CommandExit::success)
+        && settled.failure.is_none();
+    if let Some(TaskFailure::OutputWriteFailed { message }) = &settled.failure {
+        let note = format!("exec output offload failed: {message}");
+        let mut result = failed(note.clone(), "exec_output_offload_failed");
+        result.content = ToolContent::Text(settled_content(&settled, Some(&note)));
+        return Ok((result, None));
     }
-    let completed = exit.success();
+    if reply.status == WaitStatus::Cancelled {
+        return Ok((
+            ToolResult::error(settled_content(&settled, Some("Command cancelled."))),
+            None,
+        ));
+    }
+    if reply.status == WaitStatus::TimedOut {
+        let mut fields = json!({
+            "type": "finished",
+            "status": "timed_out",
+            "outputBytes": settled.output_bytes,
+            "outputTruncated": settled.truncated,
+            "wallTimeMs": reply.duration_ms,
+            "timeoutMs": request.timeout_ms,
+            "timedOut": true,
+        });
+        if let Some(path) = &settled.output_path {
+            fields["outputPath"] = path.clone().into();
+        }
+        return Ok((
+            ToolResult {
+                structured_content: Some(request.structured(fields)),
+                ..ToolResult::error(settled_content(&settled, Some("Command timed out.")))
+            },
+            None,
+        ));
+    }
     let note = (!completed).then(|| {
-        let note = match exit.code() {
-            Some(code) => format!("Command exited with code {code}."),
-            None => exit_failure_summary(exit),
+        let base = match &exit {
+            Some(exit) => exit_failure_summary(exit),
+            None => settled.failure.as_ref().map_or_else(
+                || "Command failed without an exit code.".to_owned(),
+                ToString::to_string,
+            ),
         };
-        process.failure_note(note, &settled)
+        match &reply.failure_note {
+            Some(hint) => format!("{base}\n\n{hint}"),
+            None => base,
+        }
     });
     let mut fields = object(json!({
         "type": "finished",
         "status": if completed { "completed" } else { "failed" },
         "outputBytes": settled.output_bytes,
         "outputTruncated": settled.truncated,
-        "wallTimeMs": wall,
+        "wallTimeMs": reply.duration_ms,
         "timeoutMs": request.timeout_ms,
     }));
     if let Some(path) = &settled.output_path {
         fields.insert("outputPath".into(), path.clone().into());
     }
-    insert_exit(&mut fields, Some(exit));
+    insert_exit(&mut fields, exit.as_ref());
     Ok((
         ToolResult {
             content: ToolContent::Text(settled_content(&settled, note.as_deref())),
@@ -2631,81 +2646,108 @@ async fn run_process(
             structured_content: Some(request.structured(Value::Object(fields))),
             ..ToolResult::default()
         },
-        Some(exit),
+        exit,
     ))
 }
 
-fn settled_content(settled: &Settled, note: Option<&str>) -> String {
-    match &settled.output_path {
-        Some(path) => file_backed_content(
-            path,
-            settled.output_bytes,
-            settled.truncated,
-            &settled.preview,
-            note,
+async fn cancel_foreground(
+    platform: &HostPlatform,
+    host_task_id: &str,
+) -> Result<(ToolResult, Option<CommandExit>), HostError> {
+    let killed = platform
+        .kill(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await;
+    let reply = platform
+        .wait(
+            WaitRequest {
+                task_id: host_task_id.to_owned(),
+                timeout_ms: None,
+            },
+            never_cancelled(),
+        )
+        .await
+        .ok();
+    let result = match (killed, reply) {
+        (Err(error), _) => failed(
+            format!("Command could not be terminated: {error}"),
+            "exec_terminate_failed",
         ),
-        None => append_note(&settled.inline, note),
-    }
+        (_, Some(reply)) => {
+            let (settled, _) = settled_from_reply(&reply);
+            ToolResult::error(settled_content(&settled, Some("Command cancelled.")))
+        }
+        (_, None) => cancelled_result(),
+    };
+    let _ = platform
+        .settle(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await;
+    Ok((result, None))
 }
 
 /// Moves a running command to this branch's BackgroundExec; `immediate`
 /// for `runInBackground`, otherwise after the foreground wait. Its answer
 /// observed no exit: the call saw that the command started and nothing more.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per input a handoff carries"
+)]
 async fn hand_off(
+    platform: &HostPlatform,
     branch: &Branch,
     call: &ToolCall,
     context: &ToolExecutionContext,
     request: &Call<'_>,
-    process: ExecProcess,
+    host_task_id: &str,
+    output_path: &str,
+    reply: Option<WaitReply>,
     immediate: bool,
     cancel: &CancellationToken,
-) -> Result<(ToolResult, Option<ExitStatus>), HostError> {
-    let output_path = match process.ensure_file().await {
-        Ok(path) => path,
+) -> Result<(ToolResult, Option<CommandExit>), HostError> {
+    let retained = match platform
+        .retain_output(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await
+    {
+        Ok(path) => path.output_path,
         Err(error) => {
-            if let Err(result) = process.abandon().await {
-                return Ok((*result, None));
-            }
-            return Ok((offload_failed(&error), None));
+            stop_and_settle(platform, host_task_id).await;
+            return Ok((offload_failed(&error.to_string()), None));
         }
     };
     if cancel.is_cancelled() {
-        if let Err(result) = process.abandon().await {
-            return Ok((*result, None));
-        }
+        stop_and_settle(platform, host_task_id).await;
         return Ok((cancelled_result(), None));
     }
     let background = match branch.service::<BackgroundExec>() {
         Ok(background) => background,
         Err(error) => {
-            if let Err(result) = process.abandon().await {
-                return Ok((*result, None));
-            }
+            stop_and_settle(platform, host_task_id).await;
             return Ok((start_failed(&error.to_string()), None));
         }
     };
-    let preview = process.output.preview().await;
-    let wall = if immediate { 0 } else { process.wall_time_ms() };
     let started = background
-        .start(
-            StartRequest {
-                turn_id: context.turn_id.clone(),
-                request_id: context.request_id.clone(),
-                call_id: call.id.clone(),
-                task_id: request.task_id.clone(),
-                description: request
-                    .command
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .chars()
-                    .take(DESCRIPTION_CHARS)
-                    .collect(),
-                title: request.title.map(String::from),
-                output_path: output_path.clone(),
-            },
-            process,
-        )
+        .start(StartRequest {
+            turn_id: context.turn_id.clone(),
+            request_id: context.request_id.clone(),
+            call_id: call.id.clone(),
+            task_id: request.task_id.clone(),
+            host_task_id: host_task_id.to_owned(),
+            description: request
+                .command
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(DESCRIPTION_CHARS)
+                .collect(),
+            title: request.title.map(String::from),
+            output_path: retained.clone(),
+        })
         .await;
     let task_id = match started {
         Ok(task_id) => task_id,
@@ -2715,14 +2757,24 @@ async fn hand_off(
         Err(StartError::Timeline(error)) => {
             return Ok((start_failed(&error.to_string()), None));
         }
-        Err(StartError::Termination(result)) => {
-            return Ok((*result, None));
-        }
     };
+    let preview = match platform
+        .tail(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await
+    {
+        Ok(tail) => tail.text,
+        Err(_) => reply
+            .as_ref()
+            .map(|reply| reply.preview.clone())
+            .unwrap_or_default(),
+    };
+    let wall = reply.as_ref().map(|reply| reply.duration_ms).unwrap_or(0);
     let mut structured = request.structured(json!({
         "type": "running",
         "status": "running",
-        "outputPath": output_path,
+        "outputPath": retained,
         "wallTimeMs": wall,
         "timeoutMs": request.timeout_ms,
         "notification": "completion-will-be-sent",
@@ -2741,12 +2793,71 @@ async fn hand_off(
     Ok((
         ToolResult {
             structured_content: Some(structured),
-            ..ToolResult::text(running_content(&reason, &task_id, &output_path, &preview))
+            ..ToolResult::text(running_content(&reason, &task_id, output_path, &preview))
         },
         None,
     ))
 }
 
+fn cancelled_fn(token: &CancellationToken) -> crate::host::CancelledFn {
+    let token = token.clone();
+    std::sync::Arc::new(move || {
+        let token = token.clone();
+        Box::pin(async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    })
+}
+
+fn never_cancelled() -> crate::host::CancelledFn {
+    let token = CancellationToken::new();
+    std::sync::Arc::new(move || {
+        let token = token.clone();
+        Box::pin(async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    })
+}
+
+async fn stop_and_settle(platform: &HostPlatform, host_task_id: &str) {
+    let _ = platform
+        .kill(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await;
+    let _ = platform
+        .wait(
+            WaitRequest {
+                task_id: host_task_id.to_owned(),
+                timeout_ms: None,
+            },
+            never_cancelled(),
+        )
+        .await;
+    let _ = platform
+        .settle(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await;
+}
+
+fn spawn_failed(error: HostPlatformError) -> ToolResult {
+    let (code, message) = match error {
+        HostPlatformError::ExecShellConfigInvalid(reason)
+        | HostPlatformError::ExecShellUnavailable(reason) => ("exec_shell_unavailable", reason),
+        HostPlatformError::IsolationConfigInvalid(reason) => ("isolation_config_invalid", reason),
+        HostPlatformError::IsolationUnavailable(reason) => ("isolation_unavailable", reason),
+        HostPlatformError::Invalid(reason) => ("exec_invalid_request", reason),
+        HostPlatformError::TaskExists => {
+            ("task_exists", "Execution task already exists".to_owned())
+        }
+        HostPlatformError::Cancelled => ("cancelled", "Tool execution cancelled.".to_owned()),
+        other => ("exec_invalid_request", other.to_string()),
+    };
+    failed(message, code)
+}
 fn start_failed(reason: &str) -> ToolResult {
     failed(
         format!(
@@ -2754,39 +2865,6 @@ fn start_failed(reason: &str) -> ToolResult {
         ),
         "background_start_failed",
     )
-}
-
-#[cfg(test)]
-#[test]
-fn termination_failure_keeps_captured_output() {
-    for output_path in [None, Some("/outputs/exec-partial.log".into())] {
-        let settled = Settled {
-            output_path,
-            output_bytes: 37,
-            truncated: false,
-            preview: "partial stdout before termination".into(),
-            preview_truncated: false,
-            inline: "partial stdout before termination".into(),
-            failure: None,
-        };
-        let result = terminate_failed(&io::Error::other("tree still alive"), &settled);
-        let ToolContent::Text(content) = &result.content else {
-            panic!("exec returns text");
-        };
-        assert!(content.contains("Command could not be terminated: tree still alive"));
-        assert!(content.contains("partial stdout before termination"));
-        assert_eq!(result.is_error, Some(true));
-        let fields = result.structured_content.unwrap();
-        assert_eq!(fields["code"], "exec_terminate_failed");
-        assert_eq!(fields["outputBytes"], 37);
-        assert_eq!(fields["outputTruncated"], false);
-        if let Some(path) = &settled.output_path {
-            assert!(content.contains(path));
-            assert_eq!(fields["outputPath"], path.as_str());
-        } else {
-            assert!(!fields.contains_key("outputPath"));
-        }
-    }
 }
 
 /// An `&` that every POSIX edition reads as a background marker.

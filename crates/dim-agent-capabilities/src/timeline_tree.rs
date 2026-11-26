@@ -7,11 +7,11 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
-    BranchRefusal, Dispatcher, Names, OpeningReporter, QueryComparison, QueryFilter, QueryOperand,
-    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result, SessionIdentity,
-    StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineFactory, TimelineIdentity,
-    TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply, TimelineQueryScope,
-    TimelineStore, TimelineTreeControl,
+    BranchRefusal, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison, QueryFilter,
+    QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result,
+    SessionIdentity, StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineFactory,
+    TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
+    TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
 use futures_util::{FutureExt, future::join_all};
@@ -1286,6 +1286,11 @@ impl TimelineTree {
                     .get_mut(&id)
                     .expect("building branch")
                     .context = Some(context.clone());
+                let kind = match &opening {
+                    Opening::Start { start, .. } if start.parent.is_some() => OpeningKind::Child,
+                    Opening::Start { .. } => OpeningKind::Root,
+                    Opening::Resume => OpeningKind::Resume,
+                };
                 let (opening, mut first) = match opening {
                     Opening::Start { start, first } => (EventKind::BranchStart(start), first),
                     Opening::Resume => (EventKind::BranchResume(BranchResumeData {}), None),
@@ -1325,6 +1330,7 @@ impl TimelineTree {
                     result = context.finish_opening(
                         opened.sequence,
                         owner.factory.startup_timeout(),
+                        kind,
                     ) => result?,
                     _ = owner.cancel.cancelled() =>
                         return Err(AgentError::Cancelled("branch creation".into())),

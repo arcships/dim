@@ -102,7 +102,9 @@ Its absence retains the original workspace boundary and does not gate loading.
 
 No direct Dispatcher subscription. Tool results return to ToolExecutor;
 background exec transfers ownership to BackgroundExec, which commits ends and
-wakes. Per-call lookups obtain FileReads/BackgroundExec on the caller's branch.
+wakes. BackgroundExec keeps the branch task id, the owner task id and the
+registered path; it holds no live process or capture. Its live reads, stop and
+settle call the HostPlatform task operations. Per-call lookups obtain FileReads/BackgroundExec on the caller's branch.
 Generation cancellation rejects new calls and stops accepted calls; cleanup
 waits for tracked calls, including handoff. File mutations stage complete bytes
 and retain coordinator admission through I/O/publication. Foreground commands
@@ -135,8 +137,10 @@ the foreground or after the background handoff, appends HostPlatform's failure
 note to the result text when the shown output matches; stops, timeouts and
 offload failures get none. Codes and structured content are unchanged.
 
-`exec_stop {taskId}` stops a detached command owned by the calling branch through
-BackgroundExec. It waits for cleanup and returns the committed terminal
+`exec_stop {taskId}` stops a detached command owned by the calling branch. The
+App Server resolves the branch's `dyn ExecStop` when the profile provides it (ShellSession in the
+minimal profile) and otherwise uses BackgroundExec; both map `unknown`/`closed`/`read` to the same
+RPC errors. It waits for cleanup and returns the committed terminal
 `{task_id, status, result}` in the model-readable content. An already-ended task
 keeps its result. Only `cancelled` confirms cancellation; `failed` remains an error,
 including when the process tree could not be released. An unknown task fails
@@ -686,6 +690,7 @@ releases no lock across a read: the page opens the registered file itself.
 | `B:Dispatcher` | Replay commands, then consume command ends and interrupts in dispatch order. |
 | `B:Timeline` | Commit ends/notices, recovered ones included. |
 | `B:TimelineIdentity` | The branch whose entry this part registers. |
+| `P:HostPlatform` | Read retained task output and stop a running task. |
 | `S:GuideEntries` | Register the exec notification's entry for this branch, until this part unloads. |
 | `S:SessionLifecycle` | `hold()`: each running task holds the Session, so an idle unload waits for it. |
 

@@ -1,6 +1,6 @@
-# Resource and store data faces
+# Resource and store services
 
-Status: Draft. Issues: [#1295](https://github.com/arcships/dim/issues/1295) (`execHost`),
+Status: Draft. Issues: [#1295](https://github.com/arcships/dim/issues/1295) (`hostPlatform` service methods),
 [#1296](https://github.com/arcships/dim/issues/1296) (leaf identity and lifecycle),
 [#1297](https://github.com/arcships/dim/issues/1297) (`fsHost`),
 [#1298](https://github.com/arcships/dim/issues/1298) (`store`); parent
@@ -9,13 +9,17 @@ Background: [remote plugins §3–§4](research/remote-plugins.md).
 
 This is a design, not an implementation record. Every operation below is a target shape.
 
+A "data face" below means a service's public operation set: the service itself, served by name,
+not a separate object. Business code writes no `HostDispatch`; `#[rutis::service]` generates it,
+and a service is served in the scope where it is provided.
+
 ## 1. Scope
 
-Resource and state operations use these public data faces:
+Resource and state operations use these public services:
 
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
-| `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
+| `hostPlatform` | `info`, `execShell`, `persistentShell`, `sandboxBackend`, `execRoot`, `spawn`, `wait`, `kill`, `settle`, `output`, `retainOutput`, `tail`, `shell`, `write`, `resize`, `spawnWithStdin`, `spawnConfined`, `removeOutputDirectory`, `childPath` | the process owner | #1295 |
 | `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
@@ -24,7 +28,7 @@ Resource and state operations use these public data faces:
 ```text
  control node                                        resource leaf (mounted per #1296)
    WorkspaceTools          ── fsHost ─── data ──────►  file operations on node files
-   exec, ShellSession      ── execHost ─ data ──────►  processes, PTY, output files
+   exec, ShellSession      ── existing services ───►  processes, PTY, output files
    settings, auth, Hooks   ── fsHost ─── data ──────►  the same face, answered locally
    Permission and Approval                            never asked, never decides
    Session repository      ── store ───────────────►  the state owner, locally
@@ -32,9 +36,9 @@ Resource and state operations use these public data faces:
    Worktree associations   ── store ──────────────►  the same state owner, locally
 ```
 
-**A face is a shape; the mount is a deployment.** `execHost` and `fsHost` are provided by the
-daemon that holds the process, the file or the session's own configuration — the control node's
-own plugins, or a resource leaf mounted per
+**A service is the shape; the mount is a deployment.** `hostPlatform` and `fsHost` are provided by
+the daemon that holds the process, the file or the session's own configuration — the control
+node's own plugins, or a resource leaf mounted per
 [#1296](https://github.com/arcships/dim/issues/1296). `store` and `timelineStore` are provided where the Session state is, always in the daemon that owns
 that Session
 ([#1298](https://github.com/arcships/dim/issues/1298)); it is the same face whether the rows live in
@@ -43,7 +47,8 @@ classification on the name.
 
 The public contract and migration rules are in [service faces](service-faces.md) §2.
 For these resource faces, §6 maps `hostPlatform`, `fileStorage`, `sqliteStorage` and `timelineStore`
-to their public operations and Rust bindings.
+to their public operations and Rust bindings. A service's public methods are its contract; there
+is no separate face object and no `execHost` name.
 
 What stays on the control side, in every case: Session and branch scope, admission
 (`Approval`, and `Permission` with the [ADR 014](../adr/014-file-access-facts.md) table), the
@@ -51,11 +56,11 @@ What stays on the control side, in every case: Session and branch scope, admissi
 the worktree Session view, and the recorded tool result. No face asks the user anything, decides
 whether a call may run, or consults who is calling.
 
-## 2. Rules for these faces
+## 2. Rules for these services
 
-1. **One face per service.** The operations are the public contract; a Rust typed client is a
-   binding over the same operations and owns no second business logic. There is no owner trait
-   beside the face.
+1. **One service, one contract.** The operations are the service's public methods; a Rust typed
+   client is a binding over the same methods and owns no second business logic. There is no owner
+   trait beside the service.
 2. **One call per operation.** `read`, `write`, `edit`, `glob`, `grep` and `mentions` are one call
    each; a traversal is one call, not one call per file.
 3. **Paths are node paths.** A request carries a node-absolute resolved path; a reply returns
@@ -63,8 +68,8 @@ whether a call may run, or consults who is calling.
    exception: **`fsHost.resolve` is the resolution entry point**, so it accepts the path as the
    model gave it — relative to the `cwd` the caller passes, starting with `~`, containing `..`,
    following symlinks — because only the node can resolve it. `cwd`, `workspace` and the
-   confirmed roots it is given are node-absolute. Every other operation, `execHost.start` and
-   `shell` included, takes a path a `resolve` reply or the caller's own record already returned.
+   confirmed roots it is given are node-absolute. Every other operation, the task and shell
+   operations included, takes a path a `resolve` reply or the caller's own record already returned.
    Returned paths are stable for history: the same file always resolves to the same path.
 4. **Ids are values.** A task, read or lease id is a string the provider issues or the caller
    assigns; ids carry no authority.
@@ -74,270 +79,102 @@ whether a call may run, or consults who is calling.
    (`content`, `structuredContent`, `isError`, `effects`) and keeps the codes it uses today. A
    call that could not be served is `{code, message}`; the control side returns that code and
    message as the tool result unchanged, so the two vocabularies stay one.
-7. **Cancellation is a call.** The caller drops the call or sends the bridge's cancel. Cancelling
-   a read of an outcome changes nothing; cancelling a process is `kill`.
+7. **Cancellation is a call.** The caller drops the call or sends the bridge's cancel; a service
+   method that needs it takes the existing `cancelled: CancelledFn` parameter (`toolHost.execute`
+   is the shape), not a separate `cancel` operation. Cancelling a read of an outcome changes
+   nothing; cancelling a process is `kill`.
 8. **No per-service authorization.** Authorization is `Approval` and `Permission` over agent
-   actions, and connection trust is #1296's. A face carries no credential, preset or grant.
+   actions, and connection trust is #1296's. A service carries no credential, preset or grant.
 9. **Names are camelCase.** Request, reply and error members are camelCase, as the rest of the
    migration's wire types are.
 
-## 3. `execHost`
+## 3. Process and task services
 
-### 3.1 Methods
+There is no separate `execHost` face. A public service is its own contract: `#[rutis::service]`
+serves its public `&self` methods in the scope where it is provided, and `xtask types` generates
+the TypeScript declarations. A leaf mounts a part copy in the host's instance, so a process,
+Session or branch service crosses a leaf without a second face
+([research/remote-plugins §4.2](research/remote-plugins.md#42-叶子插件级远程化的单位)).
 
-| Method | Mode | Request | Reply |
+The process operations are split by their owners:
+
+| Service | Scope | Public operations | Owner document |
 | --- | --- | --- | --- |
-| `start` | async | `{taskId, command, cwd, workspace, roots}` | `{outputPath}` |
-| `wait` | async | `{taskId, timeoutMs?}` | terminal record (§3.2) |
-| `kill` | async | `{taskId}` | `{}` |
-| `settle` | async | `{taskId}` | `{}` |
-| `output` | async | `{taskId, cursor?, limit?} \| {outputPath, cursor?, limit?}` | page (§3.4) |
-| `tail` | async | `{taskId}` | `{text, totalBytes, truncated}` (§3.5) |
-| `removeOutputDirectory` | async | `{path}` | `{}` (§3.8) |
-| `shell` | async | `{taskId, cwd, workspace, roots, cols, rows}` | `{outputPath}` |
-| `write` | async | `{taskId, data}` | `{}` |
-| `resize` | async | `{taskId, cols, rows}` | `{}` |
-| `info` | async | `{}` | host facts (§3.7) |
-| `confined` | async | `{program, args, read, write, env?, timeoutMs, outputLimit, services}` | `{status, stdout, stderr, confined, stdoutTruncated, stderrTruncated}` |
-| `configured` | async | `{command, cwd, env?, stdin?, timeoutMs, limits}` | `{status, exitCode?, signal?, durationMs, stdout, stderr, stdoutTruncated, stderrTruncated}` |
+| `hostPlatform` | process | `info`, `execShell`, `persistentShell`, `sandboxBackend`, `execRoot`, `spawn`, `wait`, `kill`, `settle`, `output`, `retainOutput`, `tail`, `shell`, `write`, `resize`, `spawnWithStdin`, `spawnConfined`, `removeOutputDirectory`, `childPath` | [HostPlatform](../architecture/rust-agent/plugins/HostPlatform.md) |
+| `toolHost` | session | `execute` | [tool contributions §2.1](../architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面) |
+| `backgroundExec` | branch | `output`, `outputPage`, `wait`, `stop` | [WorkspaceTools data face](../architecture/rust-agent/plugins/WorkspaceTools.md#data-face) |
+| `sessionMethods.shell` / `ShellSession` | session, branch | the shell operations | [ShellInput](../architecture/rust-agent/plugins/ShellInput.md) |
 
-### 3.2 `start` and `wait`
+`hostPlatform`'s handle methods (`spawn_tree`, `spawn_with_stdin_process`, `spawn_pty`,
+`build_process_spec`, `child_path_process`) stay `#[service(skip)]`; they carry process handles and
+cannot cross. The service serves the command task operations on `hostPlatform`: `spawn` returns a task id and
+the process/output state stays with the owner; `wait`, `kill`, `settle`, `output`, `retainOutput`
+and `tail` work by that id. `WorkspaceTools` and `backgroundExec` use the task id; the branch keeps
+the task record and the facts. `shell`/`write`/`resize` are served by the same owner; the owner
+records the command capture and `ShellSession` keeps only queue, timeout and occupancy policy. `spawnWithStdin` and `spawnConfined` are the existing methods
+Hooks and OCR call, now with data requests and replies. `removeOutputDirectory` and `childPath`
+are the existing cleanup and PATH helpers, now data methods; SessionStore and MCP call them. The
+served `childPath` composes from UTF-8 data; a non-UTF-8 daemon PATH is accepted by the native
+`child_path_process` as `OsStr` and is not expressible through the face, so no replacement
+characters are written. The
+in-process cores stay as the shared implementation, not a second public operation.
 
-`start` accepts only `{taskId, command, cwd, workspace, roots}`. `cwd` is a resolved working
-directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
-[worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
-known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
-`roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute.
-A cwd that does not exist is `cwd_not_found`; the provider never resolves a relative path itself.
+The command process, output file, PTY and command capture are owned by `HostPlatform`; the branch
+keeps the task record and writes the facts. `shell` writes its bounded capture to `outputPath`, so the path is
+real for both task and file reads. `ShellSession` creates the command id and marker pair, sends them
+with `write`, and keeps only the queue, timeout and occupancy policy; foreground output, the exit
+code and the task log are read back by command id through `output`, `wait` and `settle`. The owner
+keeps its line queue private: public reads are terminal records plus `output`, `tail`, `wait` and
+`retainOutput`; no public event cursor or shell state exists. Background shell jobs are registered in the owner under
+the branch task id; the control side never sees a host pid. `wait` takes the existing cancellation callback; a timeout stops the wait and answers `running`,
+and neither a timeout nor a cancelled call kills the task. A command's own `spawn.timeoutMs` still
+terminates it at that deadline; stopping a task is an explicit `kill`. `spawnConfined` success means the helper stayed within its limits; an output limit is an
+error, so its reply carries no truncation flags. Cancellation is the existing
+`cancelled: CancelledFn` parameter (`toolHost.execute` is the shape); it is not a separate
+`cancel` operation and carries no `callId`.
 
-The provider prepares the boundary with `workspace` plus exactly `roots` and adds no other
-writable root of its own, apart from the output and temporary directories its contract already
-grants. `roots` holds the additional roots recognition confirmed; the workspace is always part of
-the writable range and cannot be narrowed or replaced by leaving it out. The provider has no way
-to confirm a root: a directory outside the range does not become writable because a command names
-it, because `cwd` sits in it, or because the model asked. The range is the caller's confirmed
-range, in the same trust position as the workspace list preparation already takes; the switches
-still decide enforcement, and the model cannot set either (§3.9). It builds the shell, argv and
-environment from its current shell preference, spawns, and creates the task's output file.
-`taskId` is assigned by the caller (the control side allocates `exec-<uuid>` as it does today); a
-second `start` with an id the provider still holds is `task_exists` and starts nothing, so a
-retried call after a lost reply cannot run the command twice.
+### 3.1 `hostPlatform.info`
 
-`start` has no switch input. A request that still carries `sandbox`, `network` or any other
-boundary switch is `invalid`: the switch is not the caller's to send
-([ADR 003 D1](../adr/003-approval-scope.md), [process isolation](host-platform-isolation.md)).
-`roots` is not a switch: it is the workspace range the Session already confirmed, and it grants
-nothing the file facts do not already grant.
-
-`wait` returns the terminal record once the process tree has ended:
+`info()` answers the process facts consumers read today:
 
 ```text
-{status: "exited" | "signaled" | "timed_out" | "cancelled" | "failed",
- exitCode?: number, signal?: string, durationMs: number,
- outputPath: string, outputBytes: number, outputTruncated: bool,
- preview: string, previewTruncated: bool,
- failureNote?: string}
-```
-
-- `preview` is the bounded sanitized tail the exec rules already define (the last 2,000 lines
-  within 50 KiB); `outputPath` is the append-only file on the node; `outputTruncated` is the
-  64 MiB cap.
-- `failureNote` is the isolation owner's note, present only when a sandboxed command failed and
-  its shown output matches a typical denial. Producing it is the provider's; appending it to the
-  result text is the control side's.
-- `timeoutMs` bounds the call's wait, not the process's obligation: reaching it kills the tree and
-  answers `status: "timed_out"`. The control side computes the effective timeout from its own
-  policy and passes it; a `wait` cancelled by the caller ends only the call, and the caller sends
-  `kill` if it wants the process gone.
-- `wait` is repeatable and stays readable until the task is settled (§3.8). Without `timeoutMs` the
-  call waits for the end; the control side passes one whenever its policy has one.
-
-### 3.3 `kill`
-
-`kill {taskId}` terminates the task's process tree with the existing tree-kill and answers `{}`.
-An ended but unsettled task is a no-op that still answers `{}`; an id the provider does not hold is
-`task_unknown` and kills nothing. `exec_stop` stays a control-side tool: it calls `kill`, then
-`wait`, then `settle`, and words its own `{task_id, status, result}`. `kill` answering
-`task_unknown` means the task was already settled, so `exec_stop` answers from the branch's own
-task record — `exec_task_unknown` only when the branch has no record either.
-
-### 3.4 `output`
-
-`output` reads captured output by byte cursor. A request supplies exactly one of `taskId` and
-`outputPath`. Both forms answer
-`{text, bytes, nextCursor?, truncated, retainedFrom, reset?}`. `limit` rejects `0` (`invalid`),
-defaults to 1 MiB and clamps to 4 MiB. `text` is sanitized exactly like the preview; `bytes` is
-the captured bytes this page consumed; `nextCursor` is present when the page was full and equals
-`cursor + bytes`; `bytes == 0` means caught up, so the caller retries the same cursor. A page
-never splits a character. For a command, the capture is the append-only output file: the file
-never changes behind a cursor, `retainedFrom` is `0`, and `truncated` is the 64 MiB cap. These are
-the rules of [background command output](background-task-output.md); this face adds no second page
-rule, only the fields below, which a bounded capture needs.
-
-- `{taskId, cursor?, limit?}` selects a task held by the provider. This serves the PTY capture
-  and command output while the task record is held.
-- `{outputPath, cursor?, limit?}` pages a command's file independently of the task record.
-  For `session.exec.output.page`, the control side resolves the task in the requested Session
-  and branch and takes the path from that branch's `exec/started`. This route serves ended and
-  rebuilt tasks, including after settlement or provider restart. The provider opens only files
-  within its command-output root and checks containment when opening. The control side uses
-  the terminal fact's `outputTruncated` when present. On the path-only read, the provider uses
-  the file-size-at-cap rule for recovered tasks. The public RPC continues to take a task id.
-
-**The retained start is data, not an error.** `retainedFrom` is the earliest cursor the provider
-can still serve. A bounded capture grows at its end and drops at its start, so `retainedFrom` only
-ever increases.
-
-- An omitted `cursor` means `retainedFrom`, not byte zero. Asking for `{taskId}` is the reset
-  request: it answers from the oldest byte the provider still holds.
-- A `cursor` below `retainedFrom` is not a failure: the reply is
-  `{text: "", bytes: 0, retainedFrom, reset: true}` and carries **no** `nextCursor`. The
-  continuation is `retainedFrom`: `reset` overrides the `bytes == 0` rule above, which otherwise
-  means "retry the same cursor". A client that checks `reset` first never loops.
-- The bytes between an old cursor and `retainedFrom` are gone on purpose; the reply never
-  reconstructs them. A command's append-only output file has no such gap; only a bounded shell
-  capture drops text.
-- The capture may advance again between two calls. `retainedFrom` in each reply is the truth for
-  that reply; a caller whose next cursor is below the new `retainedFrom` takes the reset page and
-  continues from there. It must not cache `retainedFrom`, and a cursor the provider handed out is
-  never revised in place, only overtaken by the start.
-- A lost reply is retried at the same cursor. Pages are reads of an append-only file or of an
-  absolute capture offset, so a repeated read returns the same bytes or the reset page; nothing is
-  consumed by reading, and no read changes the task.
-
-### 3.5 `tail`
-
-`tail {taskId}` answers the live tail a task shows while it runs:
-`{text, totalBytes, truncated}`. `text` is the last 2,000 lines within 50 KiB of the capture,
-sanitized like the preview; `totalBytes` is how many bytes the capture holds so far, so a client
-can tell growth from a stall; `truncated` is the same flag the terminal record carries. It is a
-read of the live capture, not a page: the control side's `session.exec.output` uses it, and a
-client that needs the whole output pages `output` from `retainedFrom`. Once the live capture is
-released, a held task answers `output_unavailable`. The control side maps that and `task_unknown`
-to the existing `exec_task_unknown` response for this RPC. The terminal preview comes from
-`exec/ended` under the [background output contract](background-task-output.md#2-client-method).
-
-### 3.6 Persistent shell
-
-`shell {taskId, cwd, workspace, roots, cols, rows}` creates one persistent PTY shell as a task;
-`write {taskId, data}` sends `data` (base64 bytes) to it, `resize` sets the geometry, `output`
-reads its captured text, and `kill` ends it. `cwd` and `roots` are resolved and confirmed exactly
-as for `start` (§3.2); a running shell keeps the roots it started with. `read` is not a separate
-operation: one page operation with one cursor rule serves both a command's output file and the
-shell's capture, and a second name for the same operation would be a duplicate. The shell's
-capture is bounded (64 KiB today), so its `retainedFrom` advances as it drops the oldest text and
-the reset page of §3.4 is how a caller catches up.
-
-The command protocol that runs on top of the shell — marker pairs, occupancy, the queue and the
-foreground timeout — is not part of this face. It stays with the shell's consumer, which uses
-`write`/`resize`/`output` and pages, never streams (§9). A marker that never arrives is not proof
-that a command still runs: on a lost link the provider ends the task (§3.8), so the consumer
-settles the command as ended with the task's loss, never as still running.
-
-### 3.7 `info`, `confined` and `configured`
-
-`info {}` answers the provider's host facts as data, because other owners read them today:
-
-```text
-{os: "darwin" | "linux" | "win32",
- home: string, timezone?: string, execRoot: string, platformRoots: [string],
+{os: "darwin" | "linux" | "win32", arch: string, home: string, timezone?: string,
+ execRoot: string, platformRoots: [string],
  backend: {state: "available"} | {state: "unavailable", reason: string},
  execShell: {state: "available", executable: string, edition: string,
-             source: string, outputEncoding: "utf8" | "unknown"}
+             source: string, outputEncoding: string}
           | {state: "unavailable", code: string, reason: string}}
 ```
 
-`backend` is the decision preparation would use; `execShell` is the current resolved shell
-preference, which the environment prompt source reads on every load. The exec-shell preference is
-otherwise a Settings document whose public contract is `host.exec_shell.get`/`update`; `start`
-reads it, and this face does not write it.
+`execShell` is the existing `ShellStatus` shape; `backend` is `SandboxBackend`; `execRoot` is
+the platform's execution root. `execShell`, `sandboxBackend` and `execRoot` remain available as
+individual methods for a caller that needs one fact; `info` is the one call for a caller that
+needs several.
 
-`confined` starts a host-owned helper under its own boundary — a program a plugin runs for its own
-purpose, never an agent-decided command — and answers its exit status, both streams within the
-limits, whether the host could confine it, and whether either stream was cut. Its refusals are the
-ones it has today: `InvalidPath`, `TimedOut`, `OutputLimit`, `Cancelled`, `Spawn`, `Cleanup`. It
-reads no setting and grants no network.
+### 3.2 Settlement and retained task records
 
-`configured` runs a **configuration command**: a command that exists because of configuration, not
-because an agent decided it (a Hooks handler,
-[Hooks A.6.3](plugins/Hooks.md#a63-process-start-with-an-initial-stdin)). It starts the command
-through the same shell spec as `start`, writes `stdin` (base64 bytes, if any) to the child's stdin
-and closes it, adds `env` entries to the spec environment, and answers the exit status and both
-streams within `limits: {stdout, stderr}`. It reads **no** isolation switch and prepares **no**
-sandbox: a configuration command runs outside the agent boundary, exactly as it does today
-([ADR 003 D2](../adr/003-approval-scope.md)). It takes no task id, no output file and no
-background handoff; a cancelled call or `timeoutMs` kills the tree before the call answers. It is
-not an agent-reachable operation: no tool maps to it.
+A task id is reserved by the owner before the command or job starts. `spawn` and the `job` part of
+`shell.write` reject an id already in the live table with `task_exists`; a completed command keeps
+its output log, so reusing its id is refused until the log is removed. `spawn` also refuses an
+unusable output directory before the process starts.
 
-### 3.8 Ownership, disconnect, settlement and cancellation
+`wait` reports the terminal record but never removes it; a timeout answers `running` and only
+stops waiting. The caller decides when the record is no longer needed and calls `settle`. `settle`
+accepts only a terminal task or a shell that exited; a running command, shell or background job
+answers `task_running`; settling an already released id is `Ok`. `kill` is the explicit stop; a second kill while a stop is pending answers `task_running`; when
+it ends a background job the owner marks that job ended so it can be settled. `wait`, `kill`,
+`output` and `tail` address shell command and job ids as well as exec commands, and `output` for a
+job performs a bounded seek/read of its log. A terminal shell answers `write`/`resize` with
+`task_ended`. A caller that never settles keeps the record and its log until the owner unloads.
 
-- The provider owns the process, the PTY, the temporary directory and the output file. The branch
-  owns the task record and the facts: `exec/started` after `start` returns the id and output path,
-  `exec/ended` when the terminal record is in, and the wake notice. A background handoff moves the
-  control-side task record only; the process never moves.
-- **A start that cannot be recorded kills its process.** If appending `exec/started` fails, or the
-  call is cancelled after `start` returned, the control side calls `kill` and waits for the tree to
-  end before returning the tool error: no process outlives an unrecorded start. A start whose
-  reply never arrived is not retried — the branch has no record of it, and the id stays held until
-  the connection ends, so a retry cannot run the command twice.
-- **Settlement.** The provider holds a task record from `start` until `settle`. `start` and
-  `shell` refuse every id still held, live or terminal (`task_exists`). After recording the
-  terminal fact, the control side can call `settle` to release the task record and its runtime
-  resources. Calls by task id then answer `task_unknown` until the id is reused. A new task
-  creates a fresh output file. Settlement, including on disconnect, preserves output files.
-  The control side can still page the registered command output by path (§3.4).
-- **Output directory removal.** SessionStore applies the last-owner rule and orders durable
-  directory removal before the row commit under the
-  [Session deletion contract](appserver/session-deletion-and-fork.md#32-sequence). It calls
-  `execHost.removeOutputDirectory {path}` for persistent-shell output. The provider validates
-  that the directory is strictly below its `execRoot`, removes it and makes removal durable
-  before replying, as required by [ADR 013 D4](../adr/013-command-output-ownership.md#d4-fork-delete-and-growth).
-  An absent directory counts as removed. SessionStore uses `fsHost.remove` for command-output
-  directories in the FileStorage root.
-- When the link drops, the node's own host ends the processes it started
-  ([overview §6.3](overview.md#63-multiple-nodes)), and settlement is the connection's end. A
-  reconnect provides the services again and reloads nothing: the Session keeps running.
-- A control-side task that was waiting on a dropped link settles once, as failed with
-  `node_unavailable`, and is never restarted; the command may have run.
-- Cancelling an `exec` call kills the task before the call returns; a cancelled `wait` only ends
-  the call. A provider that closes, or that unloads the face, kills its tasks before it stops
-  serving; a node whose App Server dies leaves only the backend's parent-death handling.
-- #1296 fixes the leaf's lifecycle and states the disconnect rule for owned processes. This
-  document depends on that rule; it does not define reconnect or mount semantics.
-
-### 3.9 Settings and the boundary
-
-The provider reads its own `sandbox` and `network` switches through its `ExecutionSettings` part
-at every `start` and `shell`, uses its own exec-shell preference and captured `PATH`, and prepares
-the process with its own platform roots and temporary directory. A running task keeps the boundary
-it started with. A missing or unreadable switch source is `isolation_config_invalid`; sandbox on
-without a backend is `isolation_unavailable`; both refuse the payload before it runs, exactly as
-[process isolation](host-platform-isolation.md#failure) states, and nothing falls back to a weaker
-boundary. `configured` and `confined` read no switch: the first runs outside the boundary by
-design, the second under its own.
-
-The consumer sends no switch, reads none, and cannot widen a boundary through `cwd`, `workspace`,
-`roots` or `command`: `roots` is the range the Session confirmed through the file facts, and the
-provider adds nothing to it. Its tool declaration line stays what it is; it describes the
-switches, not their value. On a remote node the switches are the node user's; a local management
-client reads and writes them through the node's own management methods, not through this face.
-
-### 3.10 Errors
-
-| Code | When |
-| --- | --- |
-| `node_unavailable` | The provider is not connected. Only this call fails |
-| `invalid` | Malformed request or an output path outside the operation's root |
-| `task_exists` | `start` or `shell` with an id the provider still holds |
-| `task_unknown` | An id the provider does not hold: never issued, or settled |
-| `cwd_not_found` | The resolved `cwd` does not exist |
-| `exec_shell_unavailable` | The shell preference cannot be resolved (with its own reason) |
-| `isolation_unavailable` | The sandbox is on and the host has no backend |
-| `isolation_config_invalid` | The switches cannot be read |
-| `spawn_failed` | The process could not start |
-| `output_unavailable` | The selected output file is missing or unreadable, or `tail` has no live capture for a held task |
-| `remove_failed` | Removing a persistent-shell output directory or making the removal durable failed |
-| `cancelled` | The call was cancelled before it changed anything |
+Command and job output logs live below the output directory the caller gives the owner; the
+persistent shell defaults to `execRoot`. The branch registers the logs it gives the model (foreground,
+occupying, background and shell); Session deletion removes the registered candidates. A shell log
+is registered before the `shell` reply exposes it and is kept until `removeOutputDirectory` or
+Session deletion; settling the shell does not delete it. The init log is internal and is removed
+when its command is released. `retainOutput` is idempotent. `removeOutputDirectory` accepts only a
+UTF-8 path that is a persistent-shell output directory strictly below the canonical `execRoot`;
+`.`/`..` and every symlink component are refused, an absent target is `Ok`.
 
 ## 4. `fsHost`
 
@@ -586,7 +423,7 @@ grant, and tool approval still follows the preset
 `sessionFiles.put` uses `createDirectory` and `replace` with `permissions: "privateReadOnly"` to
 store the file on the resource node. It returns a node path and owns the rows under the
 [Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
-and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
+and is read through the branch's `backgroundExec.output` / `backgroundExec.outputPage`.
 
 ### 4.7 Errors
 
@@ -843,37 +680,37 @@ original path argument and ownership exclusion.
 
 | Old name | Face | What the name is now |
 | --- | --- | --- |
-| `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
+| `hostPlatform` | `hostPlatform` | The process service and its Rust binding; its public data methods serve `info`, the command task operations, the persistent shell, the configured/confined helpers, removal and child path (the list is in §3). `ProcessTree`, `PtyProcessTree`, temporary directories, shell preparation and the `_process` cores are internals (`#[service(skip)]`) |
 | `fileStorage` | `fsHost` | The provider and its binding: roots, leases, generations and one validated path component per open are its internals |
 | `sqliteStorage` | `sqliteStorage.storageReport({})` | SQLite file, WAL and reclaimable bytes ([native storage](appserver/native-storage-format.md)). Session repository operations belong to `store`. |
 | `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
 
 For the owners below, Rust callers use a thin binding over the operations — a direct
 in-process call rather than JSON — and none of them publishes a second API: there is no owner
-trait beside the face, no object type another module constructs, and no method set that the face
-does not have. A consumer that needs something the face does not offer needs a new operation on
-the face, not a new accessor beside it.
+trait beside the service, no object type another module constructs, and no method set that the
+service does not have. A consumer that needs something the service does not offer needs a new
+operation on the service, not a new accessor beside it.
 
 The owners that read node files or start node processes, and the operations they use:
 
 | Owner | Operations |
 | --- | --- |
 | WorkspaceTools file tools | `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions` |
-| SessionStore Session files and command output | `createDirectory`, `replace`, `list`, `remove`, `execHost.removeOutputDirectory` |
+| SessionStore Session files and command output | `createDirectory`, `replace`, `list`, `remove`; shell output removal stays the Rust `remove_output_directory` call |
 | Settings sources and their CAS writes | `readBytes`, `stat`, `lock`, `readBytes {leaseId}`, `replace {leaseId}`, `unlock` |
 | MCP auth store, managed OAuth and OAuth token stores | `readBytes`, `lock`, `readBytes {leaseId}`, `backup`, `replace {leaseId}`, `unlock` |
 | Hooks project file (`.dimcode/hooks.json`) | `stat`, `readBytes` |
-| PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
+| PromptSources (environment, project and user rule files) | `hostPlatform.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
 | UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
 | Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
-| Hooks configuration commands | `execHost.configured` |
+| Hooks configuration commands | Hooks' own process start (Rust); `hostPlatform.configured` only if a foreign caller needs it |
 | Worktree association | `store.associateWorktree` |
 
 ## 7. Rule check
 
 | Rule | Application |
 | --- | --- |
-| §1, ADR 002 D1 | Each face belongs to the part that owns the resource or the state; consumers stay in their own scope. No new Capability on the control side |
+| §1, ADR 002 D1 | Each service belongs to the part that owns the resource or the state; consumers stay in their own scope. No new Capability on the control side |
 | §4 rule 1 | Command events are not added. A background command's fact is still `exec/started`/`exec/ended` on its branch, written by its owner |
 | §4 rule 2 | A handoff keeps its fact on the branch and its process with the provider; nothing is handed to a second owner |
 | §4 rule 3 | No before callback and no commit-time I/O. `timelineStore.append` is the one operation allowed inside the caller's commit lock because it queues without I/O and does not wait; completion arrives through `commits`, after the commit and outside every lock. Every other face operation is outside the lock |
@@ -884,11 +721,11 @@ The owners that read node files or start node processes, and the operations they
 | §4 rule 8 | The faces add no Timeline, Dispatcher or event-format change. One runtime requirement is unmet: [#861](https://github.com/arcships/dim/issues/861), per-call resolution of a Session's process-scope service by its resource node. It is the dim runtime's, solved with rutis's current capability; no requirement is raised to rutis ([overview §6.3](overview.md#63-multiple-nodes), [principles §4 rule 8](../architecture/rust-agent/principles.md)) |
 | §4 rule 9 | No new Timeline fact: `exec/started` and `exec/ended` already exist, and the faces write none |
 | ADR 002 D2 | No wiring plugin: each face is its provider's own service |
-| ADR 002 D3 | Dependencies follow scope: `execHost` and `fsHost` are process names a leaf can provide; `store` is provided where the Session state is |
+| ADR 002 D3 | Dependencies follow scope: `hostPlatform` and `fsHost` are process names a leaf can provide; the task and shell services stay in their Session/branch scope |
 | ADR 002 D4 | Business configuration is read at use time: the switches at each `start`, the shell preference at each spawn and each environment prompt, the engine at open |
 | ADR 002 D5 | §3–§5 are the language-neutral contract; the Rust bindings implement them |
 | ADR 003 D1, D2, D5 | No boundary switch in a call; a preset, approval or replay confers none; `configured` runs because of configuration, outside the agent boundary, as hooks already do |
-| ADR 009 | Permission decides; `execHost`'s provider enforces |
+| ADR 009 | Permission decides; `hostPlatform`'s provider enforces |
 | ADR 010, ADR 011 | The switches stay the host user's settings, read and enforced by the provider |
 | ADR 012, ADR 013 | Grants and Session-file ownership stay control-side records; paths are the node's |
 | ADR 014 | The four facts keep their sources: resolution, workspace, system and the worktree probe are the node's, the row facts the control node's. `resolve` never publishes an expansion; the Session part publishes only after the store acknowledged the association and the candidate passed the recheck (§4.2.2) |
@@ -918,8 +755,8 @@ No other requirement is raised:
 
 ## 9. Open decisions
 
-1. **Naming and instance per leaf.** Process-scope names are global, so `execHost` and `fsHost`
-   need one instance per leaf: `execHost.<leaf>` or a host-side route.
+1. **Naming and instance per leaf.** Process-scope names are global, so `hostPlatform` and
+   `fsHost` need one instance per leaf: `hostPlatform.<leaf>` or a host-side route.
    [#1296](https://github.com/arcships/dim/issues/1296) decides; this document assumes only that a
    Session's calls reach one provider.
 2. **Disconnect policy.** The node ends the processes it started, per overview §6.3. #1296 states
@@ -928,10 +765,10 @@ No other requirement is raised:
 3. **`owned` on the control side.** The fact is a row lookup, so it is answered by `sessionFiles`
    with the node's resolved path rather than on the node. If review wants it computed with the
    other three, the rows would have to move, which is #1298's kind of decision.
-4. **Where the persistent-shell protocol runs.** `write`/`resize`/`output` are enough for a
-   control-side marker and occupancy protocol that pages its output; running the protocol on the
-   node would make it `start`/`wait` instead. #1295 decides when it wires PTY, after foreground
-   and background.
+4. **Where the persistent-shell protocol runs.** The owner records the command capture and
+   markers; the control side keeps the queue, timeout and occupancy policy and reads the command
+   by id. The owner line queue is private to `ShellSession`, not a public contract. #1295 wires the
+   PTY and the foreground/occupancy path.
 5. **Result text ownership.** File operations return their tool result from the provider because
    the text is the file operation's own (line numbers, previews, image blocks). A command returns
    records, and the control side composes the tool result, because the task identity, the
@@ -941,19 +778,19 @@ No other requirement is raised:
    to the same state owner (#1298); the naming split changes neither placement nor ordering.
 7. **Root identity form.** The Session passes the opaque `rootIdentity` back to the provider.
    The provider owns its platform form and comparison.
-8. **Retained task records.** Settlement is explicit (§3.8). If a long-lived local provider wants a
+8. **Retained task records.** Settlement is explicit (§3.2). If a long-lived local provider wants a
    bound instead, it must give the control side time to record the terminal fact and refuse a
-   repeated `start` until expiry. Registered file retention follows Session ownership (§3.8).
+   repeated `start` until expiry. Registered file retention follows Session ownership (§3.2).
 
 ## 10. Ablation
 
-The faces are operations over data with ids, not adapters: `start`/`wait`/`kill`/`output`/`tail`
-reuse the existing process tree, capture, page rule and fault vocabulary; `shell`/`write`/`resize`
-are the PTY primitives the shell already has; `info`, `confined` and `configured` are the reads
-and starts the platform already performs, including the configuration command Hooks runs.
-`removeOutputDirectory` carries the existing HostPlatform cleanup across the face. Paging by a
-registered output path reuses `output` after the provider releases its task record.
-`fsHost` adds no primitive file API and no per-file traversal: its storage family is the reads and
+The removed `execHost` face added no operation of its own. Each operation lives on the service
+that already owns it: `hostPlatform.info` (and its `execShell`/`sandboxBackend`/`execRoot`
+methods) reads the platform facts the process owner already has; `toolHost.execute` and
+`backgroundExec.output`/`outputPage`/`wait`/`stop` are the existing tool and task operations;
+`sessionMethods.shell` keeps the PTY primitives the shell already has. No process or PTY state
+moves between services, and no handle crosses. `fsHost` adds no primitive file API and no
+per-file traversal: its storage family is the reads and
 leases the node's storage already offers, needed because a path's facts and its bytes cannot be
 read on a machine that does not hold the file; `resolve` is where resolution and the worktree
 probe belong. `store` publishes the repository operations the state owner already has;

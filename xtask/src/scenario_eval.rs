@@ -9787,7 +9787,6 @@ mod tests {
         HostFuture, ModelConnection, ModelDriver, ModelStopReason, ResolveModelConnection,
         ResolvedModelConnection,
     };
-    use dim_agent_capabilities::host_platform::{HostPlatform, resolve_shell};
     use std::sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -16284,10 +16283,6 @@ mod tests {
         http: tokio::task::JoinHandle<()>,
         models: PathBuf,
         scenarios: PathBuf,
-        /// The process facts a flow's runs see: the ones this process has,
-        /// with `home` pointed at the fixture's own empty directory, so a run
-        /// never reads the developer's `~/AGENTS.md`, Skills list or `<home>`.
-        platform: HostPlatform,
     }
     impl Fixture {
         /// `scenario` is the scenario file's content and `workspace` the
@@ -16385,25 +16380,12 @@ mod tests {
                 serde_json::to_string_pretty(&scenario).unwrap(),
             )
             .unwrap();
-            let platform_home = directory.join("platform-home");
-            std::fs::create_dir_all(&platform_home).unwrap();
-            let env: Vec<_> = std::env::vars_os().collect();
-            let shell = resolve_shell(Ok(None), &env).await;
-            let mut platform = HostPlatform::current(shell)
-                .unwrap()
-                .with_execution_settings(
-                    dim_agent_capabilities::execution_settings::ExecutionSettingsHost::fixed(
-                        Default::default(),
-                    ),
-                );
-            platform.home = platform_home;
             Self {
                 directory,
                 provider,
                 http,
                 models,
                 scenarios,
-                platform,
             }
         }
         /// [`evaluate`] over this fixture's runs, whose process facts point at
@@ -16419,19 +16401,14 @@ mod tests {
             rejudge(
                 options,
                 options.rejudge.as_deref().expect("a rejudge source"),
-                |builder| {
-                    builder.process_value(Arc::new(self.platform.clone()));
-                },
+                |_| {},
             )
             .await
         }
         /// [`pooled`] over this fixture's provider, with the same process
         /// facts as [`evaluate`](Self::evaluate).
         async fn pooled(&self, options: &Options) -> Result<String> {
-            pooled(options, |builder| {
-                builder.process_value(Arc::new(self.platform.clone()));
-            })
-            .await
+            pooled(options, |_| {}).await
         }
         /// The options of one run per arm over this fixture, with `out`.
         fn options(&self, out: PathBuf) -> Options {

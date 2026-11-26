@@ -157,7 +157,7 @@ impl Config {
                     .map(|(_, value)| value.clone())
             })
             .unwrap_or_default();
-        platform.child_path(&[], &base)
+        platform.child_path_process(&[], &base)
     }
 
     pub fn spawn(

@@ -116,12 +116,18 @@ pub enum Stage {
     /// After a state record released the settlement it held, before it answers
     /// its caller.
     Released,
+    /// After the failure of a write whose caller is gone reached the branch's
+    /// write status.
+    Published,
     /// After the change writer took the write guard and settled the decisions,
     /// before it composes the record it commits with its trigger.
     Change,
     /// After a change waited for the publication of the cutoff it loads the
     /// branch's current work from, before it queries that work.
     Query,
+    /// After a change composed its record from the fold and before it commits
+    /// that record and its trigger.
+    Batch,
     /// After a state record read the fold and before its append commits.
     Append,
 }

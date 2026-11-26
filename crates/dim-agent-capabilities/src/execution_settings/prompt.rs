@@ -6,12 +6,14 @@
 //! register a Prompt source.
 use super::{ExecutionSettings, ExecutionSettingsHost, SOURCE};
 use crate::{
-    branch_input::append_own,
+    branch_input::{append_own, append_own_dispatched},
     host::ToolExecutionContext,
     settings::{SettingsChanged, settings_changes},
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
 };
-use dim_agent_runtime::{BranchLifecycle, BranchPhase, Names, PartRegistry, PartScope, Timeline};
+use dim_agent_runtime::{
+    BranchLifecycle, BranchPhase, Dispatcher, Names, OpeningKind, PartRegistry, PartScope, Timeline,
+};
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -24,6 +26,12 @@ use tokio_util::task::TaskTracker;
 
 /// The snapshot source name.
 pub const SNAPSHOT_SOURCE: &str = "dim/settings/execution";
+/// One retry interval of the snapshot: the published branch's loop waits this
+/// long before asking a source again. The opening read is bounded by this and
+/// by half the branch's own opening budget, so a source that misses it leaves
+/// `pending` set and the loop appends the snapshot after activation instead of
+/// holding the opening.
+const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 /// The tool name.
 const TOOL: &str = "settings";
 /// The Session plugin name.
@@ -60,20 +68,15 @@ fn snapshot(settings: ExecutionSettings) -> String {
     )
 }
 
-fn append(timeline: &Timeline, text: &str) -> dim_agent_runtime::Result<()> {
-    append_own(
-        timeline,
-        InputMessageData {
-            blocks: vec![InputBlock::Raw {
-                text: text.to_owned(),
-                key: None,
-                retire: false,
-            }],
-            ..InputMessageData::default()
-        },
-        Vec::new(),
-    )
-    .map(|_| ())
+fn input(text: String) -> InputMessageData {
+    InputMessageData {
+        blocks: vec![InputBlock::Raw {
+            text,
+            key: None,
+            retire: false,
+        }],
+        ..InputMessageData::default()
+    }
 }
 
 fn settings_view(settings: ExecutionSettings) -> Value {
@@ -218,6 +221,7 @@ struct SettingsSnapshotBranch {
     host: Key<ExecutionSettingsHost>,
     timeline: Key<Timeline>,
     phase: Key<BranchLifecycle>,
+    dispatcher: Key<Dispatcher>,
 }
 impl SettingsSnapshotBranch {
     fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -225,6 +229,7 @@ impl SettingsSnapshotBranch {
             host: names.key()?,
             timeline: names.key()?,
             phase: names.key()?,
+            dispatcher: names.key()?,
         })
     }
 }
@@ -233,13 +238,19 @@ impl DynPlugin for SettingsSnapshotBranch {
         BRANCH_PART
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.host.erase(), self.timeline.erase(), self.phase.erase()]
+        vec![
+            self.host.erase(),
+            self.timeline.erase(),
+            self.phase.erase(),
+            self.dispatcher.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let host = ctx.require_at(&self.host)?;
             let timeline = ctx.require_at(&self.timeline)?;
             let phase = ctx.require_at(&self.phase)?;
+            let dispatcher = ctx.require_at(&self.dispatcher)?;
             let wake = Arc::new(Notify::new());
             let listener_wake = wake.clone();
             ctx.listen::<SettingsChanged>()
@@ -251,13 +262,79 @@ impl DynPlugin for SettingsSnapshotBranch {
 
             let lifecycle = ctx.cancellation_token();
             let tasks = TaskTracker::new();
+            let shared = Arc::new(std::sync::Mutex::new((None, true)));
+            let opening_budget = phase.opening_budget();
+            if phase.phase() == BranchPhase::Loading {
+                let host = host.clone();
+                let timeline = timeline.clone();
+                let dispatcher = dispatcher.clone();
+                let lifecycle = lifecycle.clone();
+                let shared = shared.clone();
+                let registered = phase.admit_opening_with(Box::new(move |opening| {
+                    Box::pin(async move {
+                        // A child line's identity input is written after the
+                        // opening seals, so this receipt leaves the snapshot to
+                        // the published line instead of appending ahead of it.
+                        if opening == OpeningKind::Child {
+                            return Ok(());
+                        }
+                        // A retired part's receipt stays registered while the
+                        // opening still collects receipts, so it checks its own
+                        // generation before reading and again before the
+                        // append.
+                        if lifecycle.is_cancelled() {
+                            return Ok(());
+                        }
+                        // An opening fails after its inactivity budget passes
+                        // without progress; half of it leaves the receipt room
+                        // to append and dispatch what it read.
+                        let bound = RETRY.min(opening_budget / 2);
+                        let read = tokio::time::timeout(bound, host.read(lifecycle.clone())).await;
+                        match read {
+                            Ok(Ok(settings)) => {
+                                let current = snapshot(settings);
+                                if lifecycle.is_cancelled() {
+                                    return Ok(());
+                                }
+                                match append_own_dispatched(
+                                    &timeline,
+                                    &dispatcher,
+                                    input(current.clone()),
+                                )
+                                .await
+                                {
+                                    Ok(_) => *shared.lock().unwrap() = (Some(current), false),
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            %error,
+                                            "execution settings were not appended"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(Err(error)) => {
+                                tracing::warn!(%error, "execution settings were not read");
+                            }
+                            Err(_) => {
+                                tracing::warn!("execution settings were not read in time");
+                            }
+                        }
+                        Ok(())
+                    })
+                }));
+                if let Err(error) = registered {
+                    tracing::warn!(%error, "the opening refused the execution settings");
+                }
+            }
             tasks.spawn(async move {
                 tokio::select! {
                     _ = lifecycle.cancelled() => return,
                     active = phase.activated() => if !active { return },
                 }
-                let mut last = None;
-                let mut pending = true;
+                let (mut last, mut pending) = {
+                    let shared = shared.lock().unwrap();
+                    (shared.0.clone(), shared.1)
+                };
                 loop {
                     if pending {
                         let read = tokio::select! {
@@ -274,8 +351,9 @@ impl DynPlugin for SettingsSnapshotBranch {
                                 {
                                     return;
                                 } else {
-                                    match append(&timeline, &current) {
-                                        Ok(()) => {
+                                    match append_own(&timeline, input(current.clone()), Vec::new())
+                                    {
+                                        Ok(_) => {
                                             last = Some(current);
                                             pending = false;
                                         }
@@ -299,7 +377,7 @@ impl DynPlugin for SettingsSnapshotBranch {
                         _ = lifecycle.cancelled() => return,
                         _ = phase.closing() => return,
                         _ = wake.notified() => pending = true,
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if pending => {}
+                        _ = tokio::time::sleep(RETRY), if pending => {}
                     }
                 }
             });

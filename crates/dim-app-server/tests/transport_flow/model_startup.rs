@@ -1413,3 +1413,471 @@ async fn a_temporary_route_on_the_builtin_xai_takes_only_the_native_xai_image_fo
     fixture.abort();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// Asserts that both environment snapshots and the `input/applied` events the
+/// queue writes for them are published in `(after, through]`, once each, and
+/// returns the facts of that segment.
+async fn opening_snapshots(
+    session: &dim_agent_runtime::Session,
+    after: u64,
+    through: u64,
+) -> Vec<Arc<dim_agent_types::AgentEvent>> {
+    use dim_agent_capabilities::environment_clients::CLIENTS;
+    use dim_agent_capabilities::execution_settings::prompt::SNAPSHOT_SOURCE;
+
+    let events = branch_events(session, "main", after + 1..=through)
+        .await
+        .unwrap();
+    let seen: Vec<_> = events.iter().map(|event| event.kind.key()).collect();
+    for (source, label) in [
+        (CLIENTS, "the client presence snapshot"),
+        (SNAPSHOT_SOURCE, "the execution settings snapshot"),
+    ] {
+        let marker = format!("<dim-state source=\"{source}\">");
+        let snapshots: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind, EventKind::InputMessage(data)
+                    if data.user.is_none()
+                        && data.blocks.iter().any(|block| matches!(block,
+                            dim_agent_types::InputBlock::Raw { text, .. }
+                                if text.starts_with(&marker))))
+            })
+            .collect();
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "{label} is published once after {after} through {through}: {seen:?}"
+        );
+        let snapshot = snapshots[0];
+        assert!(
+            events.iter().any(|event| matches!(&event.kind,
+                EventKind::InputApplied(data) if data.input_id == snapshot.id)),
+            "the input queue applied {label} after {after} through {through}: {seen:?}"
+        );
+    }
+    events
+}
+
+/// The presence snapshots written on `main`.
+async fn presence_snapshots(session: &dim_agent_runtime::Session) -> usize {
+    use dim_agent_capabilities::environment_clients::CLIENTS;
+
+    let marker = format!("<dim-state source=\"{CLIENTS}\">");
+    branch_events(session, "main", ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(&event.kind, EventKind::InputMessage(data)
+                if data.user.is_none()
+                    && data.blocks.iter().any(|block| matches!(block,
+                        dim_agent_types::InputBlock::Raw { text, .. }
+                            if text.starts_with(&marker))))
+        })
+        .count()
+}
+
+/// A child line's own history carries TimelineTree's identity input, and both
+/// environment snapshots follow it: they append once the line is published,
+/// after the input that opens it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_line_opens_with_its_identity_input_before_its_environment_snapshots() {
+    use dim_agent_capabilities::environment_clients::CLIENTS;
+    use dim_agent_capabilities::execution_settings::prompt::SNAPSHOT_SOURCE;
+
+    let home = std::env::temp_dir().join(format!("dim-opening-line-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let provider = uuid::Uuid::new_v4().to_string();
+    assert_ok(&client.rpc("provider.create", json!({
+        "providerId":provider,"displayName":"Line fixture","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+        "models":[{"modelId":"line-model","displayName":"line","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(64000,2048)}]
+    })).await);
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":provider,"modelId":"line-model"}}),
+        )
+        .await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = server.agent().unwrap().get_session(&sid).unwrap();
+    let at = session.sequence("main").unwrap();
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId":sid,"parentBranchId":"main","at":at,"prompt":"line work"}),
+        )
+        .await;
+    assert_ok(&opened);
+    let child = opened["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let events = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let events = branch_events(&session, &child, ..).await.unwrap();
+            let applied = |source: &str| {
+                let marker = format!("<dim-state source=\"{source}\">");
+                events.iter().any(|event| {
+                    matches!(&event.kind, EventKind::InputMessage(data)
+                        if data.blocks.iter().any(|block| matches!(block,
+                            dim_agent_types::InputBlock::Raw { text, .. } if text.starts_with(&marker)))
+                        && events.iter().any(|applied| matches!(&applied.kind,
+                            EventKind::InputApplied(applied) if applied.input_id == event.id)))
+                })
+            };
+            if applied(CLIENTS) && applied(SNAPSHOT_SOURCE) {
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both environment snapshots follow the line's identity input");
+    let seen: Vec<_> = events.iter().map(|event| event.kind.key()).collect();
+    let inputs: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::InputMessage(_)))
+        .collect();
+    let identity_marker =
+        format!(r#"<dim-branch-line branch="{child}" parent="main" source="user">"#);
+    let identity = inputs
+        .iter()
+        .find(|event| {
+            matches!(&event.kind, EventKind::InputMessage(data)
+                if data.blocks.first().is_some_and(|block| matches!(block,
+                    dim_agent_types::InputBlock::Raw { text, .. } if text.starts_with(&identity_marker))))
+        })
+        .unwrap_or_else(|| panic!("the line's identity input: {seen:?}"));
+    let identity_sequence = identity.sequence;
+    for (source, label) in [
+        (CLIENTS, "the client presence snapshot"),
+        (SNAPSHOT_SOURCE, "the execution settings snapshot"),
+    ] {
+        let marker = format!("<dim-state source=\"{source}\">");
+        let snapshot = inputs
+            .iter()
+            .find(|event| {
+                matches!(&event.kind, EventKind::InputMessage(data)
+                    if data.blocks.iter().any(|block| matches!(block,
+                        dim_agent_types::InputBlock::Raw { text, .. } if text.starts_with(&marker))))
+            })
+            .unwrap_or_else(|| panic!("{label} opens with the line: {seen:?}"));
+        assert!(
+            snapshot.sequence > identity_sequence,
+            "{label} follows the identity input: {seen:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(&event.kind,
+                EventKind::InputApplied(data) if data.input_id == snapshot.id)),
+            "the queue applies {label}: {seen:?}"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The environment snapshots are facts of the branch opening: `session.create`
+/// and a restore return only after both snapshots and the `input/applied`
+/// events the queue writes for them are committed and dispatched, so a
+/// temporary route is admitted without a `session.idle` in between (#2165).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_opened_branch_returns_its_environment_snapshots_and_admits_a_temporary_route() {
+    let home = std::env::temp_dir().join(format!("dim-opening-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let view = client
+        .rpc("provider.management", json!({"providerId":"xai"}))
+        .await;
+    assert_ok(&view);
+    let version = view["result"]["providers"][0]["version"].as_u64().unwrap();
+    assert_ok(
+        &client
+            .rpc(
+                "provider.update",
+                json!({"providerId":"xai","expectedVersion":version,
+                    "patch":{"credential":{"action":"set","value":"opening-route-key"},"enabled":true}}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "provider.routes.set",
+                json!({"providerId":"xai",
+                    "connection":{"apiFormat":"openai-compatible","baseUrl":"http://127.0.0.1:1/opening/v1"}}),
+            )
+            .await,
+    );
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":"xai","modelId":"grok-4.7"}}),
+        )
+        .await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let through = created["result"]["sequence"].as_u64().unwrap();
+    let session = server.agent().unwrap().get_session(&sid).unwrap();
+    opening_snapshots(&session, 0, through).await;
+
+    let selected = client
+        .rpc(
+            "session.model.update",
+            json!({"sessionId":sid,"branchId":"main",
+                "providerId":"xai","modelId":"grok-4.7"}),
+        )
+        .await;
+    assert_ok(&selected);
+    assert_ne!(
+        selected["result"]["model"]["providerId"],
+        json!("xai"),
+        "the temporary route is the execution identity: {selected}"
+    );
+    let before_restart = session.sequence("main").unwrap();
+
+    server.shutdown();
+    server.join().await.unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let recovered = client
+        .rpc(
+            "session.model.update",
+            json!({"sessionId":sid,"branchId":"main",
+                "providerId":"xai","modelId":"grok-4.7","requireExpiredRoute":true}),
+        )
+        .await;
+    assert_ok(&recovered);
+    let session = server.agent().unwrap().get_session(&sid).unwrap();
+    let through = session.sequence("main").unwrap();
+    let events = opening_snapshots(&session, before_restart, through).await;
+    let seen: Vec<_> = events.iter().map(|event| event.kind.key()).collect();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::InputMessage(_)))
+            .count(),
+        2,
+        "the restore's opening appends only the two environment snapshots: {seen:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::InputApplied(_)))
+            .count(),
+        2,
+        "the queue applies both environment snapshots during the restore: {seen:?}"
+    );
+    let resume = events
+        .iter()
+        .position(|event| matches!(&event.kind, EventKind::BranchResume(_)));
+    assert!(
+        resume.is_some(),
+        "the restore publishes branch/resume: {seen:?}"
+    );
+    let opening = &events[resume.unwrap() + 1..];
+    assert_eq!(
+        opening
+            .iter()
+            .take(4)
+            .filter(|event| matches!(&event.kind, EventKind::InputMessage(_)))
+            .count(),
+        2,
+        "both environment snapshots follow branch/resume: {seen:?}"
+    );
+    assert_eq!(
+        opening
+            .iter()
+            .take(4)
+            .filter(|event| matches!(&event.kind, EventKind::InputApplied(_)))
+            .count(),
+        2,
+        "both snapshots are applied right after branch/resume: {seen:?}"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A restore returns with the opening snapshots dispatched, so a first attach
+/// adopts the connection's temporary route without a `session.idle` in between
+/// (#2165, `Connection::attach`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_attached_restored_branch_adopts_its_temporary_route_without_an_idle() {
+    let home = std::env::temp_dir().join(format!("dim-attach-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let view = client
+        .rpc("provider.management", json!({"providerId":"xai"}))
+        .await;
+    assert_ok(&view);
+    let version = view["result"]["providers"][0]["version"].as_u64().unwrap();
+    assert_ok(
+        &client
+            .rpc(
+                "provider.update",
+                json!({"providerId":"xai","expectedVersion":version,
+                    "patch":{"credential":{"action":"set","value":"attach-route-key"},"enabled":true}}),
+            )
+            .await,
+    );
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":"xai","modelId":"grok-4.7"}}),
+        )
+        .await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+
+    server.shutdown();
+    server.join().await.unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(
+        &client
+            .rpc(
+                "provider.routes.set",
+                json!({"providerId":"xai",
+                    "connection":{"apiFormat":"openai-compatible","baseUrl":"http://127.0.0.1:1/attach/v1"}}),
+            )
+            .await,
+    );
+    let attached = client.rpc("session.attach", json!({"sessionId":sid})).await;
+    assert_ok(&attached);
+    assert_eq!(
+        attached["result"]["catalogProviderId"],
+        json!("xai"),
+        "the attach adopts the temporary route: {attached}"
+    );
+    assert_ne!(
+        attached["result"]["model"]["providerId"],
+        json!("xai"),
+        "the temporary route is the execution identity: {attached}"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A fork also opens its line with both environment snapshots and their
+/// `input/applied` events, so `session.fork` returns with them published.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forked_line_opens_with_its_environment_snapshots() {
+    let home = std::env::temp_dir().join(format!("dim-fork-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let provider = uuid::Uuid::new_v4().to_string();
+    assert_ok(&client.rpc("provider.create", json!({
+        "providerId":provider,"displayName":"Fork fixture","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+        "models":[{"modelId":"fork-model","displayName":"fork","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(64000,2048)}]
+    })).await);
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":provider,"modelId":"fork-model"}}),
+        )
+        .await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let forked = client
+        .rpc("session.fork", json!({"sessionId":sid,"at":0}))
+        .await;
+    assert_ok(&forked);
+    let fid = forked["result"]["sessionId"].as_str().unwrap().to_owned();
+    let through = forked["result"]["sequence"].as_u64().unwrap();
+    let session = server.agent().unwrap().get_session(&fid).unwrap();
+    opening_snapshots(&session, 0, through).await;
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A branch whose opening sealed before the part mounted, here a `Connection`
+/// reload onto a live branch, writes its presence snapshot once from the first
+/// pass after activation and not again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reloaded_connection_writes_the_presence_snapshot_once() {
+    let home = std::env::temp_dir().join(format!("dim-reload-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let provider = uuid::Uuid::new_v4().to_string();
+    assert_ok(&client.rpc("provider.create", json!({
+        "providerId":provider,"displayName":"Reload fixture","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+        "models":[{"modelId":"reload-model","displayName":"reload","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(64000,2048)}]
+    })).await);
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":provider,"modelId":"reload-model"}}),
+        )
+        .await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = server.agent().unwrap().get_session(&sid).unwrap();
+    let opened = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let count = presence_snapshots(&session).await;
+            if count > 0 {
+                return count;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(opened.is_ok(), "the opening writes the presence snapshot");
+    let before = opened.unwrap();
+
+    server.restart("Connection").await.unwrap();
+    let written = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if presence_snapshots(&session).await > before {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        written.is_ok(),
+        "the reloaded part writes the presence snapshot in its first pass"
+    );
+    let settled = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let publication = session.publication("main").unwrap();
+            let dispatched = session.dispatch_watch("main").unwrap().borrow().clone();
+            if !publication.has_pending() && dispatched.sequence >= publication.sequence() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(settled.is_ok(), "the reloaded part's writes settle");
+    assert_eq!(
+        presence_snapshots(&session).await,
+        before + 1,
+        "the reloaded part writes the presence snapshot exactly once"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

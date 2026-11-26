@@ -461,7 +461,7 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     assert_ok(&empty);
     assert_eq!(
         empty["result"],
-        json!({"text":"","bytes":0,"truncated":false})
+        json!({"text":"","bytes":0,"totalBytes":0,"truncated":false})
     );
     std::fs::write(shell.work.join("go1"), b"go").unwrap();
     let first = tokio::time::timeout(Duration::from_secs(5), async {
@@ -476,14 +476,15 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     })
     .await
     .unwrap();
-    assert_eq!(
-        first["result"],
-        json!({"text":"alpha\n","bytes":6,"truncated":false})
-    );
+    assert_eq!(first["result"]["text"], "alpha\n");
+    assert_eq!(first["result"]["bytes"], 6);
+    assert!(first["result"]["totalBytes"].as_u64().unwrap() >= 6);
+    assert_eq!(first["result"]["truncated"], false);
     // A cursor already handed out rereads the same bytes.
     let reread = exec_output_page(&mut shell, &params, 0, 64).await;
     assert_ok(&reread);
-    assert_eq!(reread["result"], first["result"]);
+    assert_eq!(reread["result"]["text"], first["result"]["text"]);
+    assert_eq!(reread["result"]["bytes"], first["result"]["bytes"]);
     // A page can meet the file ending inside a character, which a read sees
     // when it catches a write in progress; completed writes end on a
     // boundary, so write the first byte of a two-byte character directly to
@@ -503,10 +504,10 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     drop(file);
     let partial = exec_output_page(&mut shell, &params, 0, 64).await;
     assert_ok(&partial);
-    assert_eq!(
-        partial["result"],
-        json!({"text":"alpha\n","bytes":6,"truncated":false})
-    );
+    assert_eq!(partial["result"]["text"], "alpha\n");
+    assert_eq!(partial["result"]["bytes"], 6);
+    assert!(partial["result"]["totalBytes"].as_u64().unwrap() >= 6);
+    assert_eq!(partial["result"]["truncated"], false);
     let next = partial["result"]["bytes"].as_u64().unwrap();
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -518,7 +519,7 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     assert_ok(&completed);
     assert_eq!(
         completed["result"],
-        json!({"text":"é","bytes":2,"truncated":false})
+        json!({"text":"é","bytes":2,"totalBytes":6,"truncated":false})
     );
     std::fs::write(shell.work.join("go2"), b"go").unwrap();
     // A short page carries no next cursor; the walk advances by `cursor +
@@ -540,7 +541,7 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     assert_ok(&beta);
     assert_eq!(
         beta["result"],
-        json!({"text":"beta\n","bytes":6,"truncated":false})
+        json!({"text":"beta\n","bytes":6,"totalBytes":12,"truncated":false})
     );
     std::fs::write(shell.work.join("go3"), b"go").unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -602,7 +603,7 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     assert_ok(&finished);
     assert_eq!(
         finished["result"],
-        json!({"text":"alpha\nbeta\ngamma\n","bytes":18,"truncated":false})
+        json!({"text":"alpha\nbeta\ngamma\n","bytes":18,"totalBytes":18,"truncated":false})
     );
     // Concatenated pages equal the file, minus the control character the
     // preview rule strips.
@@ -648,7 +649,7 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     assert_ok(&restored);
     assert_eq!(
         restored["result"],
-        json!({"text":"alpha\nbeta\ngamma\n","bytes":18,"truncated":false})
+        json!({"text":"alpha\nbeta\ngamma\n","bytes":18,"totalBytes":18,"truncated":false})
     );
     let stopped = shell.client.rpc("session.exec.stop", params.clone()).await;
     assert_ok(&stopped);
@@ -721,13 +722,13 @@ async fn background_exec_output_page_clamps_scopes_and_errors() {
     assert_ok(&first);
     assert_eq!(
         first["result"],
-        json!({"text":"012345678","bytes":9,"nextCursor":9,"truncated":false})
+        json!({"text":"012345678","bytes":9,"totalBytes":13,"nextCursor":9,"truncated":false})
     );
     let second = exec_output_page(&mut shell, &params, 9, 10).await;
     assert_ok(&second);
     assert_eq!(
         second["result"],
-        json!({"text":"éX\n","bytes":4,"truncated":false})
+        json!({"text":"éX\n","bytes":4,"totalBytes":13,"truncated":false})
     );
     assert!(!first["result"]["text"].as_str().unwrap().contains('é'));
     assert!(second["result"]["text"].as_str().unwrap().starts_with('é'));
@@ -736,7 +737,7 @@ async fn background_exec_output_page_clamps_scopes_and_errors() {
     assert_ok(&whole);
     assert_eq!(
         whole["result"],
-        json!({"text":"012345678éX\n","bytes":13,"truncated":false})
+        json!({"text":"012345678éX\n","bytes":13,"totalBytes":13,"truncated":false})
     );
     // A budget that cuts the very first character serves it whole: the page
     // still consumes it and the cursor moves, even at `limit: 1`.
@@ -744,7 +745,7 @@ async fn background_exec_output_page_clamps_scopes_and_errors() {
     assert_ok(&cut);
     assert_eq!(
         cut["result"],
-        json!({"text":"é","bytes":2,"nextCursor":11,"truncated":false})
+        json!({"text":"é","bytes":2,"totalBytes":13,"nextCursor":11,"truncated":false})
     );
     // Walking the whole file at `limit: 1` by `cursor + bytes` terminates and
     // reassembles it.
@@ -768,7 +769,7 @@ async fn background_exec_output_page_clamps_scopes_and_errors() {
     assert_ok(&inside);
     assert_eq!(
         inside["result"],
-        json!({"text":"","bytes":0,"truncated":false})
+        json!({"text":"","bytes":0,"totalBytes":13,"truncated":false})
     );
     for invalid in [
         json!({"sessionId":shell.sid,"branchId":"main","taskId":task,"limit":0}),
@@ -897,7 +898,7 @@ async fn background_exec_output_page_clamps_scopes_and_errors() {
     assert_ok(&face_page);
     assert_eq!(
         face_page["result"],
-        json!({"text":"😀","bytes":4,"nextCursor":4,"truncated":false})
+        json!({"text":"😀","bytes":4,"totalBytes":5,"nextCursor":4,"truncated":false})
     );
     // A removed registered file is the page method's own error.
     std::fs::remove_file(

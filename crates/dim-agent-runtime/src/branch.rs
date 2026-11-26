@@ -57,6 +57,11 @@ impl Branch {
     pub fn is_closing(&self) -> bool {
         self.0.is_closing()
     }
+    /// Whether this line's own `branch/end` has committed: from then on it
+    /// takes no new input.
+    pub fn ended(&self) -> bool {
+        self.0.ended()
+    }
     /// Reloading while Loop is being replaced.
     pub fn state(&self) -> Result<BranchStatus> {
         self.0.state()
@@ -146,6 +151,9 @@ impl Branch {
     /// Reads the current capability service, including after a reload.
     pub fn service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
         self.0.public::<T>()
+    }
+    pub fn service_opt<T: ?Sized + PublicService>(&self) -> Result<Option<Arc<T>>> {
+        self.0.public_opt::<T>()
     }
     /// The branch scope and the capabilities it installed.
     pub fn diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics {

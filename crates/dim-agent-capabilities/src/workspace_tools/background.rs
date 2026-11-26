@@ -5,9 +5,13 @@
 //! dispatch of every `exec/ended` that is not `cancelled`. Each running task
 //! holds its Session (`SessionLifecycle::take_hold`) until its `exec/ended` is
 //! appended, so an idle unload never ends it (idle unload §5, R2).
-use super::exec::{ExecProcess, OUTPUT_FILE_BYTE_LIMIT, Output, recovered_result, sanitize};
+use super::exec::{background_result, recovered_result, sanitize};
 use crate::{
     context_block,
+    host_platform::{
+        HostPlatform, HostPlatformError, OutputRequest, TaskFailure, TaskRequest, WaitReply,
+        WaitRequest, WaitStatus,
+    },
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
 };
 use dim_agent_runtime::{
@@ -20,13 +24,9 @@ use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{
     collections::HashMap,
-    io::SeekFrom,
     sync::{Arc, Mutex},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
-    sync::watch,
-};
+use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub struct StartRequest {
@@ -35,6 +35,8 @@ pub struct StartRequest {
     pub call_id: String,
     /// Proposed id; a `before` hook may rewrite it, the final one is returned.
     pub task_id: String,
+    /// The owner's task id; `task_id` is the branch-visible id a hook may rewrite.
+    pub host_task_id: String,
     pub description: String,
     pub title: Option<String>,
     pub output_path: String,
@@ -46,8 +48,6 @@ pub enum StartError {
     Closing,
     /// `exec/started` was not written.
     Timeline(AgentError),
-    /// Rejected handover could not confirm process-tree termination.
-    Termination(Box<ToolResult>),
 }
 
 #[derive(Debug, Clone, thiserror::Error, serde::Serialize)]
@@ -120,6 +120,8 @@ pub struct OutputPage {
     /// `cursor + bytes`. `text` can be shorter because sanitization drops
     /// control characters.
     pub bytes: u64,
+    /// The total bytes in the source capture or file.
+    pub total_bytes: u64,
     /// Present when the read found at least `limit` bytes, so the client may
     /// continue immediately; always `cursor + bytes`. Absent on a shorter or
     /// empty page, which does not mean the file ended: the client advances by
@@ -130,17 +132,78 @@ pub struct OutputPage {
     pub truncated: bool,
 }
 
+pub(crate) fn decode_page(
+    buffer: &[u8],
+    cursor: u64,
+    limit: usize,
+    truncated: bool,
+) -> Result<OutputPage, OutputPageError> {
+    // The file holds the pipe decoder's output, so its bytes are valid
+    // UTF-8; every completed write ends on a character boundary, though a
+    // reader can catch a write while it is in progress and see the file
+    // end inside a character. The page ends at the last character
+    // boundary at or before `limit`, so a character the limit splits is
+    // served whole: at the start of the next page when the cut falls
+    // after other characters, and whole in this page when the budget cuts
+    // the very first character. A page therefore consumes at least one
+    // character while the file holds one, and can carry up to `limit`
+    // plus three bytes. Complete characters before a trailing partial one
+    // are served normally; only a cursor opening inside a character, or a
+    // file ending inside the first character at the cursor, leaves the
+    // page with nothing whole to serve, and it stays empty for that call.
+    let read = buffer.len();
+    let budget = read.min(limit);
+    let mut end = std::str::from_utf8(&buffer[..budget]).map_or_else(|e| e.valid_up_to(), str::len);
+    if end == 0 && read > 0 {
+        let whole = match buffer[0] {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => 0,
+        };
+        // Only a character the read completed is served whole; one the
+        // read cut short stays for the next call, which sees the write
+        // finish.
+        if whole <= read {
+            end = whole;
+        }
+    }
+    // The writer appends only valid UTF-8, and the loop above ends the slice on a boundary.
+    let text =
+        sanitize(std::str::from_utf8(&buffer[..end]).map_err(|_| OutputPageError::Unavailable)?);
+    // A read that reached the page budget found at least `limit` bytes,
+    // so `nextCursor` lets the client continue immediately; a shorter
+    // read ended at the file's current length, which a running task may
+    // extend later, so the client advances by `bytes` and asks again.
+    // The read length decides it: the file's size races with the
+    // appender. An empty page (caught up, ended, or a client cursor
+    // inside a character) carries no `nextCursor`.
+    let next_cursor = (read >= limit && end > 0).then_some(cursor + end as u64);
+    Ok(OutputPage {
+        text,
+        bytes: end as u64,
+        total_bytes: 0,
+        next_cursor,
+        truncated,
+    })
+}
+
 /// How far a page may exceed its budget to hold a whole character: a UTF-8
 /// character is at most four bytes, so at most three lie past the limit.
-const PAGE_CHAR_TRAILING_BYTES: usize = 3;
+pub(crate) const PAGE_CHAR_TRAILING_BYTES: usize = 3;
 
 struct Task {
     description: String,
     cancel: CancellationToken,
-    output: Option<Arc<Output>>,
+    /// The owner's task id while this process owns the task; absent for a
+    /// task rebuilt from the Timeline after an unload.
+    host_task_id: Option<String>,
     /// The task's registered output file (`exec/started.output_path`): what
     /// the paged read answers from, in every state of the task.
     output_path: String,
+    /// The terminal preview, stored once the owner ends so a read during the
+    /// `exec/ended` commit serves the final bytes.
+    final_preview: Option<String>,
     /// The dispatched `exec/ended`, once its wake decision is done.
     ended: watch::Sender<Option<ExecEndedData>>,
 }
@@ -148,17 +211,116 @@ impl Task {
     fn new(
         description: String,
         cancel: CancellationToken,
-        output: Option<Arc<Output>>,
+        host_task_id: Option<String>,
         output_path: String,
     ) -> Self {
         Self {
             description,
             cancel,
-            output,
+            host_task_id,
             output_path,
+            final_preview: None,
             ended: watch::Sender::new(None),
         }
     }
+}
+
+fn missing_reply(output_path: &str) -> WaitReply {
+    WaitReply {
+        status: WaitStatus::Failed,
+        text: None,
+        exit_code: None,
+        signal: None,
+        duration_ms: 0,
+        output_path: output_path.to_owned(),
+        output_bytes: 0,
+        output_truncated: false,
+        preview: String::new(),
+        preview_truncated: false,
+        failure: Some(TaskFailure::OwnerUnloaded),
+        failure_note: None,
+    }
+}
+
+async fn wait_owner(
+    platform: &HostPlatform,
+    host_task_id: &str,
+    cancel: &CancellationToken,
+) -> Option<WaitReply> {
+    let waited = platform
+        .wait(
+            WaitRequest {
+                task_id: host_task_id.to_owned(),
+                timeout_ms: None,
+            },
+            cancelled_fn(cancel),
+        )
+        .await;
+    match waited {
+        Ok(reply) => Some(reply),
+        Err(HostPlatformError::Cancelled) => {
+            let _ = platform
+                .kill(TaskRequest {
+                    task_id: host_task_id.to_owned(),
+                })
+                .await;
+            platform
+                .wait(
+                    WaitRequest {
+                        task_id: host_task_id.to_owned(),
+                        timeout_ms: None,
+                    },
+                    never_cancelled(),
+                )
+                .await
+                .ok()
+        }
+        Err(_) => None,
+    }
+}
+
+async fn stop_owner(platform: &HostPlatform, host_task_id: &str) {
+    let _ = platform
+        .kill(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await;
+    let _ = platform
+        .wait(
+            WaitRequest {
+                task_id: host_task_id.to_owned(),
+                timeout_ms: None,
+            },
+            never_cancelled(),
+        )
+        .await;
+    let _ = platform
+        .settle(TaskRequest {
+            task_id: host_task_id.to_owned(),
+        })
+        .await;
+}
+
+fn cancelled_fn(token: &CancellationToken) -> crate::host::CancelledFn {
+    let token = token.clone();
+    std::sync::Arc::new(move || {
+        let token = token.clone();
+        Box::pin(async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    })
+}
+
+fn never_cancelled() -> crate::host::CancelledFn {
+    let token = CancellationToken::new();
+    std::sync::Arc::new(move || {
+        let token = token.clone();
+        Box::pin(async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    })
 }
 
 #[derive(Default)]
@@ -170,6 +332,7 @@ struct State {
 }
 
 pub struct BackgroundExec {
+    platform: Arc<crate::host_platform::HostPlatform>,
     timeline: Arc<Timeline>,
     from: Option<TimelinePosition>,
     /// Gives each task its Session hold.
@@ -189,11 +352,7 @@ impl BackgroundExec {
     /// Starting needs the live process, so it is the exec tool's own
     /// operation; the `backgroundExec` face serves the task id afterwards.
     #[service(skip)]
-    pub async fn start(
-        self: &Arc<Self>,
-        request: StartRequest,
-        process: ExecProcess,
-    ) -> Result<String, StartError> {
+    pub async fn start(self: &Arc<Self>, request: StartRequest) -> Result<String, StartError> {
         #[cfg(feature = "testing")]
         testing::pause(&request.output_path).await;
         let _handover = self.tasks.token();
@@ -203,11 +362,12 @@ impl BackgroundExec {
             self.session.take_hold()
         };
         let Some(hold) = hold else {
-            process.abandon().await.map_err(StartError::Termination)?;
+            stop_owner(&self.platform, &request.host_task_id).await;
             return Err(StartError::Closing);
         };
         let cancel = self.lifecycle.child_token();
         let description = request.description.clone();
+        let host_task_id = request.host_task_id.clone();
         let mut registered = None;
         let committed = self.timeline.append_registered(
             EventKind::ExecStarted(ExecStartedData {
@@ -233,7 +393,7 @@ impl BackgroundExec {
                     Task::new(
                         description.clone(),
                         cancel.clone(),
-                        Some(process.output.clone()),
+                        Some(host_task_id.clone()),
                         data.output_path.clone(),
                     ),
                 );
@@ -247,7 +407,7 @@ impl BackgroundExec {
                 if let Some(task_id) = registered {
                     self.state.lock().unwrap().tasks.remove(&task_id);
                 }
-                process.abandon().await.map_err(StartError::Termination)?;
+                stop_owner(&self.platform, &host_task_id).await;
                 return Err(if self.state.lock().unwrap().closing {
                     StartError::Closing
                 } else {
@@ -259,12 +419,24 @@ impl BackgroundExec {
             unreachable!("exec/started kind is preserved")
         };
         let task_id = data.task_id.clone();
+        let output_path = data.output_path.clone();
         let owner = self.clone();
+        let platform = self.platform.clone();
         let supervised = task_id.clone();
         let parent = dim_agent_runtime::core::current_parent_call_id();
         self.tasks.spawn(async move {
             let run = async {
-                let (status, result) = process.finish_background(&supervised, cancel).await;
+                let reply = wait_owner(&platform, &host_task_id, &cancel).await;
+                if let Some(reply) = &reply {
+                    let mut state = owner.state.lock().unwrap();
+                    if let Some(task) = state.tasks.get_mut(&supervised) {
+                        task.final_preview = Some(reply.preview.clone());
+                    }
+                }
+                let (status, result) = match reply {
+                    Some(reply) => background_result(&supervised, &reply),
+                    None => background_result(&supervised, &missing_reply(&output_path)),
+                };
                 let mut ended = owner.timeline.append(
                     EventKind::ExecEnded(ExecEndedData {
                         task_id: supervised.clone(),
@@ -273,6 +445,11 @@ impl BackgroundExec {
                     })
                     .into(),
                 );
+                let _ = platform
+                    .settle(TaskRequest {
+                        task_id: host_task_id,
+                    })
+                    .await;
                 drop(hold);
                 if let Ok(event) = &ended {
                     let mut publication = owner.timeline.watch();
@@ -291,7 +468,7 @@ impl BackgroundExec {
                     tracing::warn!(%error, task_id = supervised, "exec/ended was not written");
                     state.tasks.remove(&supervised);
                 } else if let Some(task) = state.tasks.get_mut(&supervised) {
-                    task.output = None;
+                    task.host_task_id = None;
                 }
             };
             if let Some(parent) = parent {
@@ -306,18 +483,54 @@ impl BackgroundExec {
     /// Reads the live capture without reconstructing a resource from history:
     /// what `backgroundExec.output` answers.
     pub async fn output(&self, task_id: String) -> Result<String, TaskError> {
-        let output = {
+        let (host_task_id, _) = {
             let state = self.state.lock().unwrap();
             if state.closed {
                 return Err(TaskError::Closed);
             }
-            state
-                .tasks
-                .get(&task_id)
-                .and_then(|task| task.output.clone())
-                .ok_or(TaskError::Unknown)?
+            let task = state.tasks.get(&task_id).ok_or(TaskError::Unknown)?;
+            if let Some(preview) = &task.final_preview
+                && task.host_task_id.is_some()
+            {
+                return Ok(preview.clone());
+            }
+            (task.host_task_id.clone(), task.output_path.clone())
         };
-        Ok(output.preview().await)
+        let Some(host_task_id) = host_task_id else {
+            return Err(TaskError::Unknown);
+        };
+        match self
+            .platform
+            .tail(TaskRequest {
+                task_id: host_task_id.clone(),
+            })
+            .await
+        {
+            Ok(tail) => Ok(tail.text),
+            Err(HostPlatformError::TaskUnknown | HostPlatformError::OutputUnavailable(_)) => {
+                let done = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .tasks
+                    .get(&task_id)
+                    .and_then(|task| task.ended.borrow().clone());
+                Ok(done
+                    .and_then(|done| {
+                        done.result
+                            .structured_content
+                            .as_ref()?
+                            .get("preview")?
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default())
+            }
+            Err(error) => Err(TaskError::Read(AgentError::fault(
+                "BackgroundExec",
+                error.to_string(),
+            ))),
+        }
     }
 
     /// Reads one page of the task's registered output file, by byte offset:
@@ -336,12 +549,10 @@ impl BackgroundExec {
         self.page(&task_id, cursor, limit).await
     }
 
-    /// The paged read behind [`Self::output_page`].
-    ///
-    /// The file is the read's only source, so a running task, an ended task
-    /// and a task rebuilt after an unload answer alike; the live capture and
-    /// the result preview are not consulted. The file is append-only, so a
-    /// cursor the method handed out always names a byte that never changes.
+    /// The paged read behind [`Self::output_page`]. A live owner serves it
+    /// from the task record; a recovered task reads the registered file. The
+    /// file is append-only, so a cursor the method handed out always names a
+    /// byte that never changes.
     async fn page(
         &self,
         task_id: &str,
@@ -353,15 +564,12 @@ impl BackgroundExec {
             if state.closed {
                 return Err(OutputPageError::Closed);
             }
-            state.tasks.get(task_id).map(|task| {
-                (
-                    task.output_path.clone(),
-                    task.ended.borrow().clone(),
-                    task.output.clone(),
-                )
-            })
+            state
+                .tasks
+                .get(task_id)
+                .map(|task| (task.host_task_id.clone(), task.output_path.clone()))
         };
-        let (output_path, ended, live) = match current {
+        let (host_task_id, output_path) = match current {
             Some(current) => current,
             None => {
                 let start = self
@@ -369,95 +577,44 @@ impl BackgroundExec {
                     .await
                     .map_err(OutputPageError::Read)?
                     .ok_or(OutputPageError::Unknown)?;
-                let ended = self
-                    .terminal(task_id, self.timeline.committed())
-                    .await
-                    .map_err(OutputPageError::Read)?;
                 if self.state.lock().unwrap().closed {
                     return Err(OutputPageError::Closed);
                 }
-                (start.output_path, ended, None)
+                (None, start.output_path)
             }
         };
-        let mut file = tokio::fs::File::open(&output_path)
-            .await
-            .map_err(|_| OutputPageError::Unavailable)?;
-        file.seek(SeekFrom::Start(cursor))
-            .await
-            .map_err(|_| OutputPageError::Unavailable)?;
-        let mut buffer = vec![0u8; limit + PAGE_CHAR_TRAILING_BYTES];
-        let mut read = 0;
-        while read < buffer.len() {
-            match file.read(&mut buffer[read..]).await {
-                Ok(0) => break,
-                Ok(bytes) => read += bytes,
-                Err(_) => return Err(OutputPageError::Unavailable),
+        if let Some(host_task_id) = host_task_id {
+            match self
+                .platform
+                .output(OutputRequest {
+                    task_id: host_task_id,
+                    cursor: Some(cursor),
+                    limit: Some(limit as u64),
+                })
+                .await
+            {
+                Ok(page) => {
+                    return Ok(OutputPage {
+                        text: page.text,
+                        bytes: page.bytes,
+                        total_bytes: page.total_bytes.max(page.bytes),
+                        next_cursor: page.next_cursor,
+                        truncated: page.truncated,
+                    });
+                }
+                Err(HostPlatformError::TaskUnknown | HostPlatformError::OutputUnavailable(_)) => {}
+                Err(HostPlatformError::Closed) => return Err(OutputPageError::Closed),
+                Err(error) => {
+                    return Err(OutputPageError::Read(AgentError::fault(
+                        "BackgroundExec",
+                        error.to_string(),
+                    )));
+                }
             }
         }
-        // The file holds the pipe decoder's output, so its bytes are valid
-        // UTF-8; every completed write ends on a character boundary, though a
-        // reader can catch a write while it is in progress and see the file
-        // end inside a character. The page ends at the last character
-        // boundary at or before `limit`, so a character the limit splits is
-        // served whole: at the start of the next page when the cut falls
-        // after other characters, and whole in this page when the budget cuts
-        // the very first character. A page therefore consumes at least one
-        // character while the file holds one, and can carry up to `limit`
-        // plus three bytes. Complete characters before a trailing partial one
-        // are served normally; only a cursor opening inside a character, or a
-        // file ending inside the first character at the cursor, leaves the
-        // page with nothing whole to serve, and it stays empty for that call.
-        let mut end = read.min(limit);
-        while end > 0 && std::str::from_utf8(&buffer[..end]).is_err() {
-            end -= 1;
-        }
-        if end == 0 && read > 0 {
-            let whole = match buffer[0] {
-                0xc2..=0xdf => 2,
-                0xe0..=0xef => 3,
-                0xf0..=0xf4 => 4,
-                _ => 0,
-            };
-            // Only a character the read completed is served whole; one the
-            // read cut short stays for the next call, which sees the write
-            // finish.
-            if whole <= read {
-                end = whole;
-            }
-        }
-        // The writer appends only valid UTF-8, and the loop above ends the slice on a boundary.
-        let text =
-            sanitize(std::str::from_utf8(&buffer[..end]).expect("the page ends on a boundary"));
-        // A read that reached the page budget found at least `limit` bytes,
-        // so `nextCursor` lets the client continue immediately; a shorter
-        // read ended at the file's current length, which a running task may
-        // extend later, so the client advances by `bytes` and asks again.
-        // The read length decides it: the file's size races with the
-        // appender. An empty page (caught up, ended, or a client cursor
-        // inside a character) carries no `nextCursor`.
-        let next_cursor = (read >= limit && end > 0).then_some(cursor + end as u64);
-        let truncated = match ended
-            .as_ref()
-            .and_then(|data| output_truncated(&data.result))
-        {
-            Some(truncated) => truncated,
-            None => match &live {
-                Some(output) => output.truncated().await,
-                // Only the recovery terminal (`recovered_result`) carries no
-                // flag; its truncation is the file's size alone.
-                None => file
-                    .metadata()
-                    .await
-                    .map(|metadata| metadata.len() >= OUTPUT_FILE_BYTE_LIMIT)
-                    .unwrap_or(false),
-            },
-        };
-        Ok(OutputPage {
-            text,
-            bytes: end as u64,
-            next_cursor,
-            truncated,
-        })
+        self.platform
+            .retained_output_page(std::path::Path::new(&output_path), cursor, limit)
+            .await
     }
 
     /// Waits until the task ends, or `timeout_ms` elapses: what
@@ -963,20 +1120,12 @@ pub(crate) fn wakes(data: &ExecEndedData) -> bool {
     data.status != ExecStatus::Cancelled
 }
 
-/// The `outputTruncated` flag an `exec/ended` result carries.
-fn output_truncated(result: &ToolResult) -> Option<bool> {
-    result
-        .structured_content
-        .as_ref()
-        .and_then(|fields| fields.get("outputTruncated"))
-        .and_then(serde_json::Value::as_bool)
-}
-
 /// `<dim-notification>`: work the model started has finished, failed or
 /// been cancelled.
 const EXEC_ENTRY: &str = r#"<dim-notification source="exec" task="exec-7f2">: something you started has finished, failed or been cancelled, such as a background command. It is information, not a new request. The output preview belongs to that command. Use the read tool with its output path to read the full result. If the work it belongs to is no longer wanted, note the result and do not restart that work."#;
 
 pub struct BackgroundExecPlugin {
+    platform: Key<crate::host_platform::HostPlatform>,
     exec: Key<BackgroundExec>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
@@ -987,6 +1136,7 @@ pub struct BackgroundExecPlugin {
 impl BackgroundExecPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            platform: names.key()?,
             exec: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
@@ -1002,6 +1152,7 @@ impl DynPlugin for BackgroundExecPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.platform.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.session.erase(),
@@ -1061,6 +1212,7 @@ impl DynPlugin for BackgroundExecPlugin {
                 position
             });
             let service = Arc::new(BackgroundExec {
+                platform: ctx.require_at(&self.platform)?,
                 timeline,
                 from,
                 session,

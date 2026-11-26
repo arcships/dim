@@ -624,7 +624,7 @@ impl Worktrees {
         env.push(("LC_ALL".into(), "C".into()));
         let mut tree = self
             .platform
-            .spawn(ProcessSpec {
+            .spawn_tree(ProcessSpec {
                 executable: "git".into(),
                 args: vec![
                     "-C".into(),

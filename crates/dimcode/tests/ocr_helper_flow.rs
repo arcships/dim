@@ -54,7 +54,7 @@ async fn run(
     ];
     args.extend(extra_args.iter().copied().map(OsString::from));
     platform
-        .spawn_confined(
+        .spawn_confined_process(
             ConfinedSpec {
                 executable: PathBuf::from(env!("CARGO_BIN_EXE_dimcode")),
                 args,

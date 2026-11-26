@@ -14,11 +14,15 @@ use crate::{
         handlers,
     },
     host::{HostError, HostFuture},
-    host_platform::{HostPlatform, Os},
+    host_platform::{
+        HostPlatform, HostPlatformError, Os, OutputLimits, SpawnWithStdinReply,
+        SpawnWithStdinRequest, SpawnWithStdinStatus,
+    },
     input_queue::{CheckSubmission, SubmitCheckReply, SubmitCheckRequest, SubmitChecks},
     permission::{AdmissionDecision, AdviseTool, Permission, ToolAdviceReply, ToolAdviceRequest},
     tool_registry::ToolRegistry,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
@@ -35,7 +39,6 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    ffi::OsString,
     future::Future,
     num::NonZeroU64,
     path::Path,
@@ -43,10 +46,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    sync::mpsc,
-};
+use tokio::sync::mpsc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 /// A hook's stdout is bounded; more than this is a failure (A.3).
@@ -385,90 +385,71 @@ impl HooksRuntime {
     ) -> HookResult {
         let command = handler.command(self.platform.os == Os::Windows);
         let started = Instant::now();
-        let mut spec = match self
+        if gate.is_some_and(|gate| gate.is_cancelled()) {
+            return unloaded_run(handler).result;
+        }
+        let env = match self.environment(handler) {
+            Ok(env) => env,
+            Err(reason) => {
+                let result = failed(reason, &[]);
+                self.report(handler, &result, started.elapsed());
+                return result;
+            }
+        };
+        let request = SpawnWithStdinRequest {
+            command: command.into(),
+            cwd: self.config.cwd.clone(),
+            env,
+            stdin: Some(STANDARD.encode(stdin)),
+            timeout_ms: handler.timeout.as_millis() as u64,
+            limits: OutputLimits {
+                stdout: STDOUT_LIMIT,
+                stderr: STDERR_LIMIT,
+            },
+        };
+        let reply = match self
             .platform
-            .build_process_spec(command, Path::new(&self.config.cwd))
+            .spawn_with_stdin(request, cancelled_by(cancel, gate))
             .await
         {
-            Ok((spec, _)) => spec,
+            Ok(reply) => reply,
+            Err(HostPlatformError::Cancelled) if gate.is_some_and(|gate| gate.is_cancelled()) => {
+                return unloaded_run(handler).result;
+            }
+            Err(HostPlatformError::Cancelled) => return failed("cancelled", &[]),
             Err(error) => {
-                let result = failed(format!("{}: {}", error.code, error.reason), &[]);
+                let result = failed(error.to_string(), &[]);
                 self.report(handler, &result, started.elapsed());
                 return result;
             }
         };
-        spec.env = hook_env(spec.env, &self.environment(handler));
-        if gate.is_some_and(|gate| gate.is_cancelled()) {
-            return HookResult::Failed {
-                reason: UNLOADED.into(),
-                stderr: String::new(),
-            };
-        }
-        let mut tree = match self.platform.spawn_with_stdin(spec, stdin) {
-            Ok(tree) => tree,
-            Err(error) => {
-                let result = failed(format!("spawn failed: {error}"), &[]);
-                self.report(handler, &result, started.elapsed());
-                return result;
-            }
-        };
-        let mut stdout = tree.stdout();
-        let mut stderr = tree.stderr();
-        enum End {
-            Done(
-                (Vec<u8>, bool),
-                (Vec<u8>, bool),
-                std::io::Result<std::process::ExitStatus>,
-            ),
-            Cancelled,
-            TimedOut,
-        }
-        let end = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => End::Cancelled,
-            _ = tokio::time::sleep(handler.timeout) => End::TimedOut,
-            (out, err, status) = async {
-                tokio::join!(
-                    read_capped(&mut stdout, STDOUT_LIMIT),
-                    read_capped(&mut stderr, STDERR_LIMIT),
-                    tree.wait(),
-                )
-            } => End::Done(out, err, status),
-        };
-        let result = match end {
-            End::Cancelled => {
-                let _ = tree.terminate().await;
-                failed("cancelled", &[])
-            }
-            End::TimedOut => {
-                let _ = tree.terminate().await;
-                failed(
-                    format!("timed out after {}s", handler.timeout.as_secs()),
-                    &[],
-                )
-            }
-            End::Done((bytes, overflow), (stderr, _), status) => {
-                let status = match status {
-                    Ok(status) => status,
-                    // A run whose end cannot be read still reports (§7).
-                    Err(error) => {
-                        let result = failed(format!("wait failed: {error}"), &stderr);
-                        self.report(handler, &result, started.elapsed());
-                        return result;
-                    }
-                };
-                if overflow {
+        let stdout = STANDARD.decode(&reply.stdout).unwrap_or_default();
+        let stderr = STANDARD.decode(&reply.stderr).unwrap_or_default();
+        let result = match reply.status {
+            SpawnWithStdinStatus::Exited => {
+                if reply.stdout_truncated {
                     failed("stdout exceeded 64 KiB", &stderr)
-                } else if status.code() == Some(2) {
+                } else if reply.exit_code == Some(2) {
                     exit_two(handler.event, &stderr)
-                } else if status.success() {
+                } else if reply.exit_code == Some(0) {
                     HookResult::Success {
-                        stdout: String::from_utf8_lossy_owned(bytes),
+                        stdout: String::from_utf8_lossy_owned(stdout),
                     }
                 } else {
-                    failed(format!("exited with {status}"), &stderr)
+                    failed(format!("exited with {}", exit_text(&reply)), &stderr)
                 }
             }
+            SpawnWithStdinStatus::Signaled => {
+                failed(format!("exited with {}", exit_text(&reply)), &stderr)
+            }
+            SpawnWithStdinStatus::Cancelled if gate.is_some_and(|gate| gate.is_cancelled()) => {
+                unloaded_run(handler).result
+            }
+            SpawnWithStdinStatus::Cancelled => failed("cancelled", &[]),
+            SpawnWithStdinStatus::TimedOut => failed(
+                format!("timed out after {}s", handler.timeout.as_secs()),
+                &[],
+            ),
         };
         self.report(handler, &result, started.elapsed());
         // The run's result is taken here, in the same poll that hands it to
@@ -498,59 +479,72 @@ impl HooksRuntime {
         );
     }
 
-    fn environment(&self, handler: &HookHandler) -> Vec<(&'static str, OsString)> {
-        let mut vars = vec![
-            ("DIM_PROJECT_DIR", OsString::from(self.config.cwd.clone())),
-            ("DIM_HOOK_EVENT", OsString::from(handler.event.name())),
-            (
-                "DIM_SESSION_ID",
-                OsString::from(self.identity.session_id.clone()),
+    fn environment(
+        &self,
+        handler: &HookHandler,
+    ) -> Result<std::collections::BTreeMap<String, Option<String>>, String> {
+        let mut env: std::collections::BTreeMap<_, _> = MANAGED_ENV
+            .into_iter()
+            .map(|key| (key.to_owned(), None))
+            .collect();
+        let home = match self.sources.0.home() {
+            Some(home) => Some(
+                home.to_str()
+                    .ok_or_else(|| "DIMCODE_HOME is not UTF-8".to_owned())?
+                    .to_owned(),
             ),
-        ];
-        if let Some(home) = self.sources.0.home() {
-            vars.push(("DIMCODE_HOME", home.into_os_string()));
+            None => None,
+        };
+        let plugin_root = match handler.plugin_root.as_ref() {
+            Some(root) => Some(
+                root.to_str()
+                    .ok_or_else(|| "DIM_PLUGIN_ROOT is not UTF-8".to_owned())?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        for (key, value) in [
+            ("DIM_PROJECT_DIR", Some(self.config.cwd.clone())),
+            ("DIM_HOOK_EVENT", Some(handler.event.name().to_owned())),
+            ("DIM_SESSION_ID", Some(self.identity.session_id.clone())),
+            ("DIMCODE_HOME", home),
+            ("DIM_PLUGIN_ROOT", plugin_root),
+        ] {
+            env.insert(key.to_owned(), value);
         }
-        if let Some(root) = &handler.plugin_root {
-            vars.push(("DIM_PLUGIN_ROOT", root.clone().into_os_string()));
-        }
-        vars
+        Ok(env)
     }
 }
 
-fn hook_env(
-    env: Vec<(OsString, OsString)>,
-    vars: &[(&'static str, OsString)],
-) -> Vec<(OsString, OsString)> {
-    let mut env: Vec<(OsString, OsString)> = env
-        .into_iter()
-        .filter(|(key, _)| !MANAGED_ENV.iter().any(|name| key == name))
-        .collect();
-    env.extend(
-        vars.iter()
-            .map(|(key, value)| (OsString::from(*key), value.clone())),
-    );
-    env
+/// Cancels the call when the point's cancel or the unload gate fires.
+fn cancelled_by(
+    cancel: &CancellationToken,
+    gate: Option<&CancellationToken>,
+) -> crate::host::CancelledFn {
+    let cancel = cancel.clone();
+    let gate = gate.cloned();
+    std::sync::Arc::new(move || {
+        let cancel = cancel.clone();
+        let gate = gate.clone();
+        Box::pin(async move {
+            match gate {
+                Some(gate) => tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {}
+                    _ = gate.cancelled() => {}
+                },
+                None => cancel.cancelled().await,
+            }
+            Ok(())
+        })
+    })
 }
 
-/// Reads at most `limit` bytes and drains the rest, so the writer never
-/// blocks; the bool says more was written.
-async fn read_capped<R: AsyncRead + Unpin>(reader: &mut R, limit: usize) -> (Vec<u8>, bool) {
-    let mut kept = Vec::new();
-    let mut buffer = [0u8; 8192];
-    let mut overflow = false;
-    loop {
-        match reader.read(&mut buffer).await {
-            Ok(0) | Err(_) => return (kept, overflow),
-            Ok(read) => {
-                let room = limit.saturating_sub(kept.len());
-                if read <= room {
-                    kept.extend_from_slice(&buffer[..read]);
-                } else {
-                    kept.extend_from_slice(&buffer[..room]);
-                    overflow = true;
-                }
-            }
-        }
+fn exit_text(reply: &SpawnWithStdinReply) -> String {
+    match (reply.exit_code, &reply.signal) {
+        (Some(code), _) => format!("exit status: {code}"),
+        (_, Some(signal)) => format!("signal: {signal}"),
+        _ => "unknown".to_owned(),
     }
 }
 

@@ -676,6 +676,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         config.daemon_profile = protocol::DaemonProfile::Product;
     }
     builder.require_part("AgentsSession");
+    builder.require_part(dim_agent_capabilities::environment_clients::BRANCH_PART);
     #[cfg(not(unix))]
     if config.unix_path.is_some() {
         return Err(ServerError::Configuration(
@@ -1108,6 +1109,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     if let Some(home_root) = execution_root {
         let platform_home = config.platform_home.clone();
         mcp::install(&mut builder);
+        builder.require_part(dim_agent_capabilities::execution_settings::prompt::BRANCH_PART);
         if native_home.is_some() {
             dim_agent_attachments::install(&mut builder);
         }
@@ -1685,7 +1687,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
-        ("hostPlatform", "object"),
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
         // Session creation calls it directly; no leaf needs the service.

@@ -1440,11 +1440,12 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
         cwd: workspace.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let protected = server
+    let exec_root = server
         .service::<dim_agent_capabilities::host_platform::HostPlatform>()
         .unwrap()
         .exec_root()
-        .join("store-face-protected");
+        .unwrap();
+    let protected = PathBuf::from(exec_root).join("store-face-protected");
     std::fs::create_dir_all(&protected).unwrap();
     let marker = protected.join("keep");
     std::fs::write(&marker, "untouched").unwrap();
@@ -1619,10 +1620,12 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
     }})).await;
     assert_ok(&created);
     assert!(store.has_records("wire-source").await.unwrap());
-    let output = server
+    let exec_root = server
         .service::<dim_agent_capabilities::host_platform::HostPlatform>()
         .unwrap()
         .exec_root()
+        .unwrap();
+    let output = PathBuf::from(exec_root)
         .join("fixture-owned-output")
         .join("stdout");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();

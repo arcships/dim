@@ -142,6 +142,375 @@ export interface ToolHost {
   execute(call: { id: string; name: string; input: { [key: string]: unknown } }, caller: ToolExecutionContext, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').ToolResult>
 }
 
+/** Byte limits for a configured command's two streams. */
+export type OutputLimits = {
+  stdout: number | bigint
+  stderr: number | bigint
+}
+
+/**
+ * The system services a host-owned helper may reach beyond its files. The
+ * set is closed: every rule a variant adds is recorded in
+ * `docs/architecture/rust-agent/plugins/HostPlatform.md` with the denial it
+ * answers.
+ */
+export type SystemServices =
+  | /** No system service: the helper reads the system baseline, its own executable and [`Confinement::read`], and writes [`Confinement::write`]; everything else is denied. */ "none"
+  | /** On-device text recognition: Apple Vision, the Apple Neural Engine and the GPU, and the sandbox extension that hands the framework's cache to the neural-engine compiler service. */ "onDeviceRecognition"
+
+/** A request to run one confined helper on this node. */
+export type ConfinedRequest = {
+  program: string
+  args: string[]
+  read: string[]
+  write: string[]
+  env?: Record<string, string>
+  timeoutMs: number | bigint
+  outputLimit: OutputLimits
+  services: SystemServices
+}
+
+/**
+ * A confined helper's bounded result. Success means it stayed within its
+ * limits; an output limit is an error, not a truncated reply.
+ */
+export type ConfinedReply = {
+  status?: number | null
+  stdout: string
+  stderr: string
+  confined: boolean
+}
+
+/** The output stream that reached its limit. */
+export type ConfinedStream = "stdout" | "stderr"
+
+export type HostPlatformError =
+  | { invalid: string }
+  | { invalid_path: { path: string; reason: string } }
+  | "timed_out"
+  | { output_limit: { stream: ConfinedStream } }
+  | "task_unknown"
+  | "task_exists"
+  | "task_running"
+  | "task_ended"
+  | { output_unavailable: string }
+  | "cancelled"
+  | "closed"
+  | { io: string }
+  | { isolation_config_invalid: string }
+  | { isolation_unavailable: string }
+  | { exec_shell_config_invalid: string }
+  | { exec_shell_unavailable: string }
+  | { exec_shell_cwd_unsupported: string }
+  | { cwd_not_found: string }
+  | { exec_shell_path_mapping_failed: string }
+  | { failed: string }
+
+/**
+ * A request to compose the PATH a child process gets. `base` is UTF-8; a
+ * result that cannot be represented answers `None`.
+ */
+export type ChildPathRequest = {
+  directories: string[]
+  base: string
+}
+
+/** A request to remove a persistent-shell output directory. */
+export type RemoveOutputDirectoryRequest = {
+  path: string
+}
+
+/**
+ * A request to run one configured command with stdin. `env` is UTF-8; a
+ * non-UTF-8 environment belongs to the in-process binding.
+ */
+export type SpawnWithStdinRequest = {
+  command: string
+  cwd: string
+  env: Record<string, string | null>
+  stdin?: string | null
+  timeoutMs: number | bigint
+  limits: OutputLimits
+}
+
+export type SpawnWithStdinStatus = "exited" | "signaled" | "cancelled" | "timed_out"
+
+export type SpawnWithStdinReply = {
+  status: SpawnWithStdinStatus
+  exitCode?: number | null
+  signal?: string | null
+  durationMs: number | bigint
+  stdout: string
+  stderr: string
+  stdoutTruncated: boolean
+  stderrTruncated: boolean
+}
+
+export type ShellEdition = "bash" | "zsh" | "sh" | "dash" | "ksh" | "git-bash" | "pwsh" | "windows-powershell" | "cmd"
+
+export type ShellSource =
+  | /** The executable path configured in `exec-shell.json`. */ "explicit"
+  | /** A supported login shell (macOS / Linux). */ "login"
+  | /** The POSIX fallback chain after an unsupported or missing login shell. */ "fallback"
+  | /** The Windows automatic order `pwsh -> Windows PowerShell -> cmd`. */ "automatic"
+
+export type OutputEncoding = "utf8" | "unknown"
+
+export type ExecShellRuntime = {
+  executable: string
+  edition: ShellEdition
+  source: ShellSource
+  outputEncoding: OutputEncoding
+}
+
+export type ShellStatus =
+  | { state: "available" } & ExecShellRuntime
+  | { state: "unavailable"; code: string; reason: string }
+
+/**
+ * Whether a new process can be sandboxed on this host, or why it cannot. The
+ * Process isolation control shows this; preparation reads the same backend.
+ */
+export type SandboxBackend = { state: "available" } | { state: "unavailable"; reason: string }
+
+export type Os = "darwin" | "linux" | "win32"
+
+/** The process facts the `hostPlatform.info` operation answers. */
+export type HostInfo = {
+  os: Os
+  arch: string
+  home: string
+  timezone?: string | null
+  execRoot: string
+  platformRoots: string[]
+  backend: SandboxBackend
+  execShell: ShellStatus
+}
+
+/** A request to start a command on this execution node. */
+export type SpawnRequest = {
+  taskId: string
+  command: string
+  cwd: string
+  workspace: string
+  roots: string[]
+  outputDir: string
+  timeoutMs?: number | bigint | null
+}
+
+export type SpawnReply = {
+  taskId: string
+  outputPath: string
+}
+
+export type WaitRequest = {
+  taskId: string
+  timeoutMs?: number | bigint | null
+}
+
+/** How a wait reply ended, or that it is still running. */
+export type WaitStatus = "running" | "exited" | "signaled" | "timed_out" | "cancelled" | "failed"
+
+/** Why a task reached a failed or cancelled terminal record. */
+export type TaskFailure =
+  | { code: "output_write_failed"; message: string }
+  | { code: "terminate_failed"; message: string }
+  | { code: "job_unavailable"; message: string }
+  | { code: "shell_exited" }
+  | { code: "shell_reset" }
+  | { code: "command_failed" }
+  | { code: "unknown_exit" }
+  | { code: "owner_unloaded" }
+
+/** A wait reply; terminal when the task ended, `running` when the wait deadline elapsed. */
+export type WaitReply = {
+  status: WaitStatus
+  text?: string | null
+  exitCode?: number | null
+  signal?: string | null
+  durationMs: number | bigint
+  outputPath: string
+  outputBytes: number | bigint
+  outputTruncated: boolean
+  preview: string
+  previewTruncated: boolean
+  failure?: TaskFailure | null
+  failureNote?: string | null
+}
+
+export type TaskRequest = {
+  taskId: string
+}
+
+/** A request to start a persistent PTY shell on this execution node. */
+export type ShellRequest = {
+  taskId: string
+  cwd: string
+  workspace: string
+  roots: string[]
+  outputDir: string
+  cols: number
+  rows: number
+}
+
+export type ShellCommandStart = {
+  taskId: string
+  startMarker: string
+  endMarker: string
+}
+
+export type ShellJobStart = {
+  taskId: string
+  endMarker: string
+  /** Absolute path of the job's log; it must be inside the shell output directory. */
+  outputPath: string
+}
+
+export type ShellWrite = {
+  taskId: string
+  data: string
+  command?: ShellCommandStart | null
+  job?: ShellJobStart | null
+}
+
+export type ShellResize = {
+  taskId: string
+  cols: number
+  rows: number
+}
+
+export type OutputRequest = {
+  taskId: string
+  cursor?: number | bigint | null
+  limit?: number | bigint | null
+}
+
+/** A page of a task's captured output. */
+export type OutputPageReply = {
+  text: string
+  bytes: number | bigint
+  totalBytes: number | bigint
+  nextCursor?: number | bigint | null
+  truncated: boolean
+  retainedFrom: number | bigint
+  reset?: boolean | null
+}
+
+export type OutputPathReply = {
+  outputPath: string
+}
+
+export type OutputTail = {
+  text: string
+  totalBytes: number | bigint
+  truncated: boolean
+}
+
+/** Process facts and the source of the exec shell preference. */
+export interface HostPlatform {
+  /**
+   * [`Self::spawn`] with `stdin` written to the child's standard input,
+   * which then closes. A child that exits before reading it does not fail
+   * the start.
+   * Runs one confined helper and returns its bounded result.
+   * @throws {HostPlatformErrorThrown}
+   */
+  spawnConfined(request: ConfinedRequest, cancelled: () => void | Promise<void>): Promise<ConfinedReply>
+  /**
+   * Composes the PATH a child process gets, as data. The served base is
+   * UTF-8; a non-UTF-8 daemon PATH uses [`Self::child_path_process`] in
+   * process and is not expressible through this face.
+   */
+  childPath(request: ChildPathRequest): Promise<string | null>
+  /**
+   * Removes a persistent-shell output directory below `execRoot`.
+   * @throws {HostPlatformErrorThrown}
+   */
+  removeOutputDirectory(request: RemoveOutputDirectoryRequest): Promise<void>
+  /**
+   * Runs one configured command with stdin and returns its bounded result.
+   * @throws {HostPlatformErrorThrown}
+   */
+  spawnWithStdin(request: SpawnWithStdinRequest, cancelled: () => void | Promise<void>): Promise<SpawnWithStdinReply>
+  /**
+   * Reads the configured exec shell for this invocation without reloading
+   * the plugin. Explicitly constructed platforms keep their supplied shell.
+   */
+  execShell(): Promise<ShellStatus>
+  /** The sandbox backend a new process would use. */
+  sandboxBackend(): Promise<SandboxBackend>
+  /**
+   * The directory the persistent shell owns: `<home>/.dim/exec`.
+   * @throws {HostPlatformErrorThrown}
+   */
+  execRoot(): Promise<string>
+  /**
+   * The process facts a consumer needs, in one call. Resolves the exec
+   * shell; in-process callers that need only captured facts read the fields.
+   * @throws {HostPlatformErrorThrown}
+   */
+  info(): Promise<HostInfo>
+  /**
+   * Starts a command on this node and returns the task id and output path.
+   * Requires the plugin-built owner.
+   * @throws {HostPlatformErrorThrown}
+   */
+  spawn(request: SpawnRequest): Promise<SpawnReply>
+  /**
+   * Waits for a task's terminal record. `timeoutMs` stops the wait and
+   * answers `running`; it never kills the task. `cancelled` ends only the
+   * wait. Use `kill` to stop the task.
+   * @throws {HostPlatformErrorThrown}
+   */
+  wait(request: WaitRequest, cancelled: () => void | Promise<void>): Promise<WaitReply>
+  /**
+   * Kills a task's process tree.
+   * @throws {HostPlatformErrorThrown}
+   */
+  kill(request: TaskRequest): Promise<void>
+  /**
+   * Releases an ended task's record.
+   * @throws {HostPlatformErrorThrown}
+   */
+  settle(request: TaskRequest): Promise<void>
+  /**
+   * Starts a persistent PTY shell on this node and returns the task id.
+   * Requires the plugin-built owner.
+   * @throws {HostPlatformErrorThrown}
+   */
+  shell(request: ShellRequest): Promise<SpawnReply>
+  /**
+   * Writes bytes to a shell task.
+   * @throws {HostPlatformErrorThrown}
+   */
+  write(request: ShellWrite): Promise<void>
+  /**
+   * Resizes a shell task's PTY.
+   * @throws {HostPlatformErrorThrown}
+   */
+  resize(request: ShellResize): Promise<void>
+  /**
+   * Reads a page of a task's captured output.
+   * @throws {HostPlatformErrorThrown}
+   */
+  output(request: OutputRequest): Promise<OutputPageReply>
+  /**
+   * Writes the captured output to the task's log file and returns its path.
+   * @throws {HostPlatformErrorThrown}
+   */
+  retainOutput(request: TaskRequest): Promise<OutputPathReply>
+  /**
+   * Reads the bounded live tail of a task.
+   * @throws {HostPlatformErrorThrown}
+   */
+  tail(request: TaskRequest): Promise<OutputTail>
+  /**
+   * Resolves the persistent shell: bash, zsh, pwsh, or Windows PowerShell.
+   * Other shells fall back per the platform rules.
+   */
+  persistentShell(): Promise<ShellStatus>
+}
+
 export type ImageSourceType = "base64" | "url" | "file"
 
 export type ImageSource = {
@@ -737,6 +1106,8 @@ export type OutputPage = {
    * control characters.
    */
   bytes: number | bigint
+  /** The total bytes in the source capture or file. */
+  totalBytes: number | bigint
   /**
    * Present when the read found at least `limit` bytes, so the client may
    * continue immediately; always `cursor + bytes`. Absent on a shorter or
@@ -1380,6 +1751,9 @@ export type ErrorThrown = RustError<"Error", string, undefined>
 /** What a method returning `Err(HostError)` throws. */
 export type HostErrorThrown = RustError<"HostError", "Failed" | "Cancelled", undefined>
 
+/** What a method returning `Err(HostPlatformError)` throws. */
+export type HostPlatformErrorThrown = RustError<"HostPlatformError", "invalid" | "invalid_path" | "timed_out" | "output_limit" | "task_unknown" | "task_exists" | "task_running" | "task_ended" | "output_unavailable" | "cancelled" | "closed" | "io" | "isolation_config_invalid" | "isolation_unavailable" | "exec_shell_config_invalid" | "exec_shell_unavailable" | "exec_shell_cwd_unsupported" | "cwd_not_found" | "exec_shell_path_mapping_failed" | "failed", HostPlatformError>
+
 /** What a method returning `Err(ListenAddressesError)` throws. */
 export type ListenAddressesErrorThrown = RustError<"ListenAddressesError", "invalid_path", ListenAddressesError>
 
@@ -1426,6 +1800,7 @@ export interface Services {
   worktreeAssociations: WorktreeAssociations
   credentialVariablesHost: CredentialVariablesHost
   toolHost: ToolHost
+  hostPlatform: HostPlatform
   inputQueue: InputQueue
   reservedMethods: ReservedMethods
   permission: Permission

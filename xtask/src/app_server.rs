@@ -221,6 +221,7 @@ pub async fn serve_home(
         startup_timeout: Duration::from_secs(60),
         ..Default::default()
     };
+    config.platform_home = Some(home.clone());
     config.session_defaults.cwd = cwd.to_string_lossy().into_owned();
     dim_app_server::cli::product_session_defaults(&mut config.session_defaults);
     if let Some(defaults) = &run.defaults {

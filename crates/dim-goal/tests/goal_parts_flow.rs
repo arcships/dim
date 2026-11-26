@@ -1124,6 +1124,13 @@ async fn a_failed_state_record_takes_up_no_interrupt_it_deferred() {
         "a failed record takes up the interrupt it deferred, yet it answered {:?}",
         taken.ok()
     );
+    let mut published = dim_goal::testing::hold_stage(
+        env.session_id(),
+        "main",
+        dim_goal::testing::Stage::Published,
+        conclusion,
+        Some(conclusion),
+    );
     released.release();
     let pauses: Vec<String> = env
         .writes("main")
@@ -1139,7 +1146,17 @@ async fn a_failed_state_record_takes_up_no_interrupt_it_deferred() {
 
     // The settlement cancelled the writer's caller, so the branch publishes the
     // failure as it does for any write whose caller is gone: a live read
-    // reports it instead of a state the branch could not state.
+    // reports it instead of a state the branch could not state. Releasing the
+    // writer does not wait for the publication, so the read waits on the held
+    // step it follows (#2199).
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), published.arrived())
+            .await
+            .expect("the failure publication arrives"),
+        conclusion,
+        "the failure publication answers the conclusion at {conclusion}"
+    );
+    published.release();
     let error = env
         .goal("get", json!({}))
         .await
