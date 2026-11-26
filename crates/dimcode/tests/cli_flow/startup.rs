@@ -1282,6 +1282,8 @@ fn invalid_startup_inputs_fail_before_daemon_creation_without_echoing_values() {
         ),
         (vec![], vec!["--autocompact", "abc%"], "at most 100"),
         (vec![], vec!["--autocompact", "200%"], "at most 100"),
+        (vec![], vec!["--autocompact", "nan%"], "at most 100"),
+        (vec![], vec!["--autocompact", "inf%"], "at most 100"),
         (vec![("DIM_MODEL", "")], vec![], "must not be empty"),
         (vec![], vec!["--provider", "fixture"], "requires --model"),
         (

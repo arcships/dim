@@ -266,7 +266,7 @@ Model startup:
     For openai-codex, a context window above the model's ceiling fails startup.
   --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto, a positive count
     optionally suffixed k/m (1000/1000000), or a percentage such as 40%.
-    This window is a soft cap on shaping, not the model capacity.
+    This window shapes compaction; it is not the model capacity.
   Effort, autocompact and capacity startup controls require the product Provider
     and cannot be used with --model-config; set API-key generation settings
     in that configuration file instead.
@@ -2017,7 +2017,7 @@ impl Options {
                 let percent: f64 = digits.parse().map_err(|_| {
                     "--autocompact / DIM_AUTO_COMPACT_WINDOW percentage must be a positive number of at most 100"
                 })?;
-                if percent <= 0.0 || percent > 100.0 {
+                if !percent.is_finite() || percent <= 0.0 || percent > 100.0 {
                     return Err("--autocompact / DIM_AUTO_COMPACT_WINDOW percentage must be a positive number of at most 100".into());
                 }
                 serde_json::json!(value)
