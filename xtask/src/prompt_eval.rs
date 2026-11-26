@@ -2207,7 +2207,7 @@ its null after Holm's correction (the smallest p is {smallest:.4}, above its thr
         ));
     } else {
         let rate = |counts: &Counts| {
-            (counts.total > 0).then(|| counts.outcome as f64 / counts.total as f64)
+            (counts.total > 0).then_some(counts.outcome as f64 / counts.total as f64)
         };
         let separated: Vec<String> = rejected
             .iter()

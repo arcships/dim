@@ -4447,7 +4447,7 @@ async fn vision_and_text_models_route_images_without_changing_history() {
         let omitted = "[Image omitted: the current model does not accept images.]";
         let parts = sent_parts(&request);
         assert_eq!(parts[..9], ["look", TOOL_IMAGE_REFERENCE, TOOL_IMAGE_REFERENCE, omitted, omitted, omitted, omitted, omitted, omitted]);
-        assert!(parts.contains(&"next".to_string()));
+        assert!(parts.iter().any(|part| part == "next"));
         let history = chain_events(&session, "main", ..).await.unwrap();
         assert!(history.iter().any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta.contains("next"))));
         assert!(history.iter().any(|event| matches!(&event.kind,
