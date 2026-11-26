@@ -153,7 +153,7 @@ impl Stream for FeedStream {
 /// One poll of the next chunk, so a test can hold a wait open while it advances
 /// the clock and feeds a part, then poll again where the idle deadline decides.
 fn poll_once(stream: &mut ModelStream) -> Poll<Option<Result<ModelChunk, HostError>>> {
-    let mut next = Box::pin(stream.next());
+    let mut next = std::pin::pin!(stream.next());
     let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
     next.as_mut().poll(&mut context)
 }
@@ -1639,7 +1639,7 @@ async fn a_stream_silent_for_the_idle_allowance_fails_as_a_network_failure() {
         poll_once(&mut stream),
         Poll::Ready(Some(Ok(ModelChunk::MessageStart { .. })))
     ));
-    let mut waiting = Box::pin(stream.next());
+    let mut waiting = std::pin::pin!(stream.next());
     let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
     assert!(waiting.as_mut().poll(&mut context).is_pending());
     tokio::time::advance(IDLE_ALLOWANCE).await;
@@ -1667,7 +1667,7 @@ async fn a_part_inside_the_idle_allowance_keeps_the_stream_open() {
     let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
     let inside = IDLE_ALLOWANCE - Duration::from_millis(1);
     for delta in ["first", "second"] {
-        let mut waiting = Box::pin(stream.next());
+        let mut waiting = std::pin::pin!(stream.next());
         assert!(waiting.as_mut().poll(&mut context).is_pending());
         tokio::time::advance(inside).await;
         feed.push(text_part(delta));
@@ -1688,7 +1688,7 @@ async fn an_idle_deadline_outranks_a_part_that_is_ready_at_the_same_time() {
         poll_once(&mut stream),
         Poll::Ready(Some(Ok(ModelChunk::MessageStart { .. })))
     ));
-    let mut waiting = Box::pin(stream.next());
+    let mut waiting = std::pin::pin!(stream.next());
     let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
     assert!(waiting.as_mut().poll(&mut context).is_pending());
     feed.push(text_part("ready"));
