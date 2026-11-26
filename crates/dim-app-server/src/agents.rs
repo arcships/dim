@@ -1502,21 +1502,19 @@ impl AgentIndex {
         let id = uuid::Uuid::new_v4().to_string();
         let settings = self.settings.clone();
         let stopping = self.stopping.clone();
-        let options = CreateSessionOptions::default()
-            .id(id.clone())
-            .prepare(move |id: String| {
-                Box::pin(async move {
-                    if let Some(settings) = settings {
-                        settings
-                            .authorize_project(cwd.into(), &stopping)
-                            .await
-                            .map_err(|error| {
-                                AgentError::fault("project authorization", error.to_string())
-                            })?;
-                    }
-                    step(id).await
-                })
-            });
+        let options = CreateSessionOptions::default().prepare(id.clone(), move |id: String| {
+            Box::pin(async move {
+                if let Some(settings) = settings {
+                    settings
+                        .authorize_project(cwd.into(), &stopping)
+                        .await
+                        .map_err(|error| {
+                            AgentError::fault("project authorization", error.to_string())
+                        })?;
+                }
+                step(id).await
+            })
+        });
         (id, options)
     }
 

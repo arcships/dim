@@ -190,8 +190,7 @@ async fn create_and_restore_options_apply_their_fields() {
         .create_session(
             SessionConfig::default(),
             CreateSessionOptions::default()
-                .id("named-session")
-                .prepare({
+                .prepare("named-session", {
                     let store = store.clone();
                     let prepared = prepared.clone();
                     move |id| {
@@ -210,7 +209,7 @@ async fn create_and_restore_options_apply_their_fields() {
     assert_eq!(
         session.id(),
         "named-session",
-        "a prepared creation is created under the id the options name"
+        "a prepared creation is created under the id its options name"
     );
     assert_eq!(
         *prepared.lock().unwrap(),
@@ -224,45 +223,37 @@ async fn create_and_restore_options_apply_their_fields() {
     );
     session.close().await.unwrap();
 
-    let generated = Arc::new(Mutex::new(None::<String>));
-    let session = agent
-        .create_session(
-            SessionConfig::default(),
-            CreateSessionOptions::default().prepare({
-                let store = store.clone();
-                let generated = generated.clone();
-                move |id| {
-                    *generated.lock().unwrap() = Some(id.clone());
-                    let config = SessionConfig::default();
-                    Box::pin(async move {
-                        store.create_session(&id, &config).await?;
-                        Ok(())
-                    })
-                }
-            }),
-        )
+    let first = agent
+        .create_session(SessionConfig::default(), CreateSessionOptions::default())
         .await
         .unwrap();
-    assert_eq!(
-        generated.lock().unwrap().as_deref(),
-        Some(session.id()),
-        "a prepared creation without an id is created under a generated one, which the prepare step receives"
-    );
-    session.close().await.unwrap();
-
-    let session = agent
-        .create_session(
-            SessionConfig::default(),
-            CreateSessionOptions::default().id("explicit-session"),
-        )
+    let second = agent
+        .create_session(SessionConfig::default(), CreateSessionOptions::default())
         .await
         .unwrap();
-    assert_eq!(
-        session.id(),
-        "explicit-session",
-        "the options name a plain creation"
+    for session in [&first, &second] {
+        let id = uuid::Uuid::parse_str(session.id())
+            .unwrap_or_else(|error| panic!("a plain creation is created under a UUID: {error}"));
+        assert_eq!(
+            id.get_version_num(),
+            4,
+            "a plain creation is created under a UUIDv4: {}",
+            session.id()
+        );
+        assert_eq!(
+            id.get_variant(),
+            uuid::Variant::RFC4122,
+            "a plain creation's id is an RFC 4122 UUID: {}",
+            session.id()
+        );
+    }
+    assert_ne!(
+        first.id(),
+        second.id(),
+        "two plain creations are created under different ids"
     );
-    session.close().await.unwrap();
+    first.close().await.unwrap();
+    second.close().await.unwrap();
 
     store
         .create_session("stored", &SessionConfig::default())
@@ -305,9 +296,7 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
             agent
                 .create_session(
                     SessionConfig::default(),
-                    CreateSessionOptions::default()
-                        .id(id)
-                        .prepare(preparing(&store, entered.clone())),
+                    CreateSessionOptions::default().prepare(id, preparing(&store, entered.clone())),
                 )
                 .await,
         );
@@ -324,18 +313,6 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
             "{id:?}: a rejected id publishes no Session"
         );
     }
-    let error = rejected(
-        agent
-            .create_session(
-                SessionConfig::default(),
-                CreateSessionOptions::default().id("nested/plain"),
-            )
-            .await,
-    );
-    assert!(
-        matches!(&error, AgentError::InvalidInput(_)),
-        "a rejected id without a prepare step: {error}"
-    );
     assert!(
         store.created.lock().unwrap().is_empty(),
         "a rejected id writes no rows: {:?}",
@@ -349,7 +326,10 @@ async fn an_explicit_id_is_admitted_only_as_one_path_component() {
     let session = agent
         .create_session(
             SessionConfig::default(),
-            CreateSessionOptions::default().id("explicit-session"),
+            CreateSessionOptions::default().prepare(
+                "explicit-session",
+                preparing(&store, Arc::new(AtomicBool::new(false))),
+            ),
         )
         .await
         .unwrap();
@@ -371,7 +351,10 @@ async fn a_rejected_duplicate_keeps_the_existing_sessions_state() {
         .agent()
         .create_session(
             SessionConfig::default(),
-            CreateSessionOptions::default().id("shared"),
+            CreateSessionOptions::default().prepare(
+                "shared",
+                preparing(&store, Arc::new(AtomicBool::new(false))),
+            ),
         )
         .await
         .unwrap();
@@ -387,7 +370,10 @@ async fn a_rejected_duplicate_keeps_the_existing_sessions_state() {
             .agent()
             .create_session(
                 SessionConfig::default(),
-                CreateSessionOptions::default().id("shared"),
+                CreateSessionOptions::default().prepare(
+                    "shared",
+                    preparing(&store, Arc::new(AtomicBool::new(false))),
+                ),
             )
             .await,
     );

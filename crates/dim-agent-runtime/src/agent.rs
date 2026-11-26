@@ -48,37 +48,28 @@ enum Cleanup {
     Rollback,
     Release,
 }
-/// How [`Agent::create_session`] creates its Session: the id to create under,
-/// the host-owned directory to prepare before publication, and the Session
-/// extension to load.
+/// How [`Agent::create_session`] creates its Session: the host-owned prepared
+/// creation, which names the id it creates under, and the Session extension to
+/// load.
 #[derive(Default)]
 pub struct CreateSessionOptions {
-    id: Option<String>,
-    prepare: Option<Preparation>,
+    prepare: Option<(String, Preparation)>,
     extension: Option<Extension>,
 }
 impl CreateSessionOptions {
-    /// Creates the Session under `id` instead of a generated one. A creation
-    /// that also [`prepare`](Self::prepare)s a Session hands the same id to
-    /// that step.
+    /// Creates the Session under `id` instead of the generated one: `prepare`
+    /// receives `id`, commits that id's rows, and creation loads them once it
+    /// completes. Without it, the Session is created under a generated UUIDv4.
     ///
     /// The id must be one normal path component, which is what Session
     /// command-output storage addresses ([`check_session_id`]);
     /// [`Agent::create_session`] rejects any other id before it prepares,
     /// writes or publishes.
-    pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
-    }
-    /// Reserves runtime capacity before committing the host-owned directory:
-    /// `prepare` receives the id the Session is created under, commits that
-    /// id's rows, and creation loads them once it completes. The id is the
-    /// [`id`](Self::id) given, or a generated one.
-    pub fn prepare<F>(mut self, prepare: F) -> Self
+    pub fn prepare<F>(mut self, id: impl Into<String>, prepare: F) -> Self
     where
         F: FnOnce(String) -> BoxFuture<'static, Result<()>> + Send + 'static,
     {
-        self.prepare = Some(Box::new(prepare));
+        self.prepare = Some((id.into(), Box::new(prepare)));
         self
     }
     /// Loads the Session extension `group` ([`AgentBuilder::session_extension`])
@@ -141,18 +132,23 @@ impl Agent {
     pub fn faces(&self) -> &crate::Faces {
         self.0.builder.faces()
     }
+    /// Creates a Session. A prepared creation is created under the id its
+    /// [`CreateSessionOptions::prepare`] names; a plain creation is created
+    /// under a generated UUIDv4.
     pub async fn create_session(
         &self,
         config: SessionConfig,
         options: CreateSessionOptions,
     ) -> Result<Session> {
-        let id = options.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        check_session_id(&id)?;
-        let start = match options.prepare {
-            Some(prepare) => SessionStart::Prepared(prepare),
-            None => SessionStart::Create,
+        let CreateSessionOptions { prepare, extension } = options;
+        let (id, start) = match prepare {
+            Some((id, prepare)) => {
+                check_session_id(&id)?;
+                (id, SessionStart::Prepared(prepare))
+            }
+            None => (Uuid::new_v4().to_string(), SessionStart::Create),
         };
-        self.create(id, config, start, options.extension).await
+        self.create(id, config, start, extension).await
     }
     /// Restores the original Session identity and its stored configuration,
     /// applying the projection gate [`RestoreSessionOptions`] names.
