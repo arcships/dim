@@ -7,7 +7,7 @@ EnvironmentClients tells the model which client connections are attached to its 
 ## 1. Decisions
 
 - One snapshot at branch open, and one snapshot per observed connection change.
-- The branch-open snapshot is a `BranchLifecycle::register_opening` receipt, not work the published branch still owes: the opening waits for the snapshot and for the `input/applied` the input queue writes for it.
+- The branch-open snapshot is a `BranchOpening` receipt, not work the published branch still owes: the opening waits for the snapshot and for the `input/applied` the input queue writes for it.
 - The snapshot is an `input/message` event with an Append-mode Raw block and no key.
 - No `PromptRegistry`, `LoadPrompt`, `ConfigureControl`, version or replay.
 - The projection is Session-level. It does not say which branch a client views.

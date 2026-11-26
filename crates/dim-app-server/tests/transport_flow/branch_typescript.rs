@@ -557,42 +557,6 @@ async fn node_branch_typescript_writes_and_follows_extension_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
-async fn node_branch_opening_completion_can_refuse_session_creation() {
-    let receipt = std::env::temp_dir().join(format!("dim-opening-{}", uuid::Uuid::new_v4()));
-    let mut parts = branch_part();
-    parts.rows = vec![json!({
-        "id": "opening-receipt",
-        "name": parts.anchor.parent().unwrap().join("fixtures/branch-opening.ts"),
-        "provides": {}, "config":{"receipt":receipt},
-    })];
-    let (server, agent) = launch_with(
-        Arc::new(MockTools),
-        ServerConfig {
-            session_typescript: Some(parts),
-            ..Default::default()
-        },
-        |builder| {
-            builder.require_part("OpeningReceiptFixture");
-        },
-    )
-    .await;
-    let error = agent
-        .create_session(Default::default())
-        .await
-        .err()
-        .expect("opening must fail");
-    assert!(
-        error.to_string().contains("opening completion refused"),
-        "{error}"
-    );
-    assert_eq!(std::fs::read_to_string(&receipt).unwrap(), "settled");
-    std::fs::remove_file(receipt).unwrap();
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_session_fault_is_observed_and_closes_the_native_session() {
     let receipt = std::env::temp_dir().join(format!("dim-fault-{}", uuid::Uuid::new_v4()));
     let mut parts = branch_part();

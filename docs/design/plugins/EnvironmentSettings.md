@@ -11,7 +11,7 @@ This document owns the settings snapshot contract. The settings tool is [AgentSe
 - Context injection is an `input/message` event with an Append-mode Raw block and no key. It is not a read and not a Prompt source.
 - No `PromptRegistry` registration, no `LoadPrompt`, no version, no keyed state, no compaction replay, no `ConfigureControl`.
 - One snapshot at branch open, and one snapshot per observed change.
-- The branch-open snapshot is a `BranchLifecycle::register_opening` receipt: the opening waits for the value and for the `input/applied` the input queue writes for it.
+- The branch-open snapshot is a `BranchOpening` receipt: the opening waits for the value and for the `input/applied` the input queue writes for it.
 - A snapshot is a normal history input. Compaction may remove it; it is not replayed. This is accepted for a one-time hint.
 - The snapshot does not expose source, session, revision, timestamps or visibility metadata. It states the effective value.
 - Settings values and validation stay with each setting module. This capability only projects them.

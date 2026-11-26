@@ -41,6 +41,7 @@ pub struct TimelineContext {
     timeline: Timeline,
     dispatcher: Dispatcher,
     lifecycle: BranchLifecycle,
+    opening: BranchOpening,
     /// Signals a possible change of [`BranchStatus`]; the status itself is
     /// read from its owners on query.
     changed: watch::Sender<()>,
@@ -91,9 +92,7 @@ impl TimelineContext {
                             .await
                             .map_err(|_| AgentError::Closed("branch dispatch".into()))?;
                     }
-                    let receipts = self
-                        .lifecycle
-                        .finish_opening(&self.ctx, self.view.id, opening);
+                    let receipts = self.opening.finish(&self.ctx, self.view.id, opening);
                     tokio::pin!(receipts);
                     loop {
                         if let Some(error) = dispatch.borrow_and_update().failure.clone() {
@@ -144,6 +143,7 @@ impl TimelineContext {
         timeline: Timeline,
         dispatcher: Dispatcher,
         lifecycle: BranchLifecycle,
+        opening: BranchOpening,
         faults: FaultReporter,
         catalog: Arc<rutis_loader::ServiceCatalog>,
     ) -> Arc<Self> {
@@ -160,6 +160,7 @@ impl TimelineContext {
             timeline,
             dispatcher,
             lifecycle,
+            opening,
             changed: watch::channel(()).0,
             failure: Mutex::new(None),
             ended: AtomicU64::new(0),

@@ -20,6 +20,7 @@ declaration splits into protocol and policy is ToolRegistry's
 | `B:Prompt` | Adopt tool configuration and await initial prompt completion. |
 | `B:Timeline` | Reconcile committed configuration/request pins. |
 | `B:BranchLifecycle` | Gate background refresh on activation/closing. |
+| `B:BranchOpening` | Register the opening receipt reconcile completes. |
 | `B:Dispatcher` | Handle branch opening. |
 
 ### Events and lifetime

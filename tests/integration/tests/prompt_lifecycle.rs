@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Notify;
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Clone)]
 enum Reply {
@@ -1329,11 +1329,11 @@ impl DynPlugin for OpeningObserved {
     }
 }
 
-struct OpeningFailure(Key<Dispatcher>, Key<BranchLifecycle>);
+struct OpeningFailure(Key<Dispatcher>, Key<BranchOpening>);
 
 struct SlowOpening {
     dispatcher: Key<Dispatcher>,
-    opening: Key<BranchLifecycle>,
+    opening: Key<BranchOpening>,
     timeline: Key<Timeline>,
     receipts: bool,
     completed: Arc<AtomicUsize>,
@@ -1377,7 +1377,7 @@ impl DynPlugin for SlowOpening {
                         if receipts {
                             for step in 1..=7 {
                                 let (timeline, completed) = (timeline.clone(), completed.clone());
-                                opening.admit_opening(Box::pin(async move {
+                                opening.admit(Box::pin(async move {
                                     tokio::time::sleep(Duration::from_millis(200 * step)).await;
                                     assert!(
                                         timeline_events(
@@ -1394,7 +1394,7 @@ impl DynPlugin for SlowOpening {
                                 }))?;
                             }
                         } else {
-                            opening.admit_opening(Box::pin(async move {
+                            opening.admit(Box::pin(async move {
                                 assert!(
                                     timeline_events(&timeline, TimelineQueryScope::Branch, ..=1001)
                                         .await?
@@ -1487,7 +1487,7 @@ async fn a_restore_keeps_opening_while_dispatch_or_opening_receipts_advance() {
             Feature::new("SlowOpening").branch("SlowOpening", move |names| {
                 Ok(Box::new(SlowOpening {
                     dispatcher: names.key()?,
-                    opening: names.key()?,
+                    opening: Key::of().instance(names.instance(BRANCH_GROUP)?),
                     timeline: names.key()?,
                     receipts,
                     completed: seen.clone(),
@@ -1512,7 +1512,10 @@ async fn a_restore_keeps_opening_while_dispatch_or_opening_receipts_advance() {
 
 impl OpeningFailure {
     fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Ok(Self(names.key()?, names.key()?))
+        Ok(Self(
+            names.key()?,
+            Key::of().instance(names.instance(BRANCH_GROUP)?),
+        ))
     }
 }
 impl DynPlugin for OpeningFailure {
@@ -1529,8 +1532,8 @@ impl DynPlugin for OpeningFailure {
             dispatcher.subscribe(ctx, "OpeningFailure", &["branch/start"], move |_| {
                 let opening = opening.clone();
                 Box::pin(async move {
-                    opening.admit_opening(Box::pin(std::future::pending()))?;
-                    opening.admit_opening(Box::pin(async {
+                    opening.admit(Box::pin(std::future::pending()))?;
+                    opening.admit(Box::pin(async {
                         Err(AgentError::InvalidInput("opening rejected".into()))
                     }))?;
                     Ok(())
@@ -1558,6 +1561,120 @@ async fn opening_failure_is_not_hidden_by_an_earlier_pending_receipt() {
     .expect("opening failure must be prompt");
     assert!(
         matches!(result, Err(AgentError::InvalidInput(message)) if message == "opening rejected")
+    );
+    agent.close().await.unwrap();
+}
+
+/// One still-in-flight opening receipt whose work its effect cleanup settles,
+/// and a sibling receipt that refuses the opening once the first is running.
+struct OpeningRefusal {
+    dispatcher: Key<Dispatcher>,
+    opening: Key<BranchOpening>,
+    started: Arc<Notify>,
+    stop: CancellationToken,
+    settled: Arc<AtomicUsize>,
+    cleanup_joined: Arc<AtomicUsize>,
+}
+impl DynPlugin for OpeningRefusal {
+    fn name(&self) -> &str {
+        "OpeningRefusal"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.dispatcher.erase(), self.opening.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let dispatcher = ctx.require_at(&self.dispatcher)?;
+            let opening = ctx.require_at(&self.opening)?;
+            let tasks = TaskTracker::new();
+            let tracker = tasks.clone();
+            let (stop, cleanup_joined) = (self.stop.clone(), self.cleanup_joined.clone());
+            ctx.effect(move || async move {
+                stop.cancel();
+                tasks.close();
+                tasks.wait().await;
+                cleanup_joined.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })?;
+            let (started, stop, settled) = (
+                self.started.clone(),
+                self.stop.clone(),
+                self.settled.clone(),
+            );
+            dispatcher.subscribe(ctx, "OpeningRefusal", &["branch/start"], move |_| {
+                let (opening, started, stop, settled) = (
+                    opening.clone(),
+                    started.clone(),
+                    stop.clone(),
+                    settled.clone(),
+                );
+                let tasks = tracker.clone();
+                Box::pin(async move {
+                    let first_started = started.clone();
+                    opening.admit(Box::pin(async move {
+                        tasks.spawn(async move {
+                            stop.cancelled().await;
+                            settled.fetch_add(1, Ordering::SeqCst);
+                        });
+                        first_started.notify_one();
+                        std::future::pending::<()>().await;
+                        Ok(())
+                    }))?;
+                    opening.admit(Box::pin(async move {
+                        started.notified().await;
+                        Err(AgentError::InvalidInput(
+                            "opening completion refused".into(),
+                        ))
+                    }))?;
+                    Ok(())
+                })
+            })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_refused_opening_settles_in_flight_receipts_before_create_session_returns() {
+    let started = Arc::new(Notify::new());
+    let stop = CancellationToken::new();
+    let settled = Arc::new(AtomicUsize::new(0));
+    let cleanup_joined = Arc::new(AtomicUsize::new(0));
+    let mut builder = builder(Arc::new(Prompts(Mutex::new(BTreeMap::new()))));
+    let (fixture_settled, fixture_joined) = (settled.clone(), cleanup_joined.clone());
+    builder.require_feature(Feature::new("OpeningRefusal").branch(
+        "OpeningRefusal",
+        move |names| {
+            Ok(Box::new(OpeningRefusal {
+                dispatcher: names.key()?,
+                opening: Key::of().instance(names.instance(BRANCH_GROUP)?),
+                started: started.clone(),
+                stop: stop.clone(),
+                settled: fixture_settled.clone(),
+                cleanup_joined: fixture_joined.clone(),
+            }))
+        },
+    ));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        agent.create_session(SessionConfig::default()),
+    )
+    .await
+    .expect("the refused opening settles promptly");
+    assert!(
+        matches!(&result, Err(AgentError::InvalidInput(message)) if message == "opening completion refused"),
+        "create_session should fail with the receipt's error"
+    );
+    assert_eq!(
+        settled.load(Ordering::SeqCst),
+        1,
+        "the in-flight receipt's work settles before create_session returns"
+    );
+    assert_eq!(
+        cleanup_joined.load(Ordering::SeqCst),
+        1,
+        "the part's effect cleanup completes before create_session returns"
     );
     agent.close().await.unwrap();
 }
