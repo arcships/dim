@@ -155,6 +155,48 @@ impl ModelDriver for Recorder {
         })
     }
 }
+/// A `Recorder` whose non-summarizer replies report the request's serialized
+/// size as prompt tokens, the way a real provider's usage grows with the
+/// history; the fixed baseline the plain `Recorder` reports keeps every other
+/// conversation's usage flat no matter how large the requests become, which
+/// hides context growth from the threshold trigger entirely.
+struct HonestRecorder {
+    inner: Recorder,
+}
+impl ModelDriver for HonestRecorder {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let summarizer = matches!(request.system.as_deref(),
+            Some(SystemPrompt::Text(text)) if text.starts_with(self.inner.prefix.as_ref()));
+        let prompt_tokens = honest_prompt_tokens(&request);
+        Box::pin(async move {
+            let stream = self.inner.invoke(request, connection, cancel).await?;
+            if summarizer {
+                return Ok(stream);
+            }
+            use futures_util::StreamExt;
+            let chunks: Vec<_> = stream.collect().await;
+            let chunks = chunks
+                .into_iter()
+                .map(|chunk| {
+                    chunk.map(|chunk| match chunk {
+                        ModelChunk::Usage(mut usage) => {
+                            usage.prompt_tokens = prompt_tokens;
+                            usage.total_tokens = prompt_tokens + usage.completion_tokens;
+                            ModelChunk::Usage(usage)
+                        }
+                        chunk => chunk,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(Box::pin(futures_util::stream::iter(chunks)) as ModelStream)
+        })
+    }
+}
 /// MockTools plus a `declare` tool returning the effects its input names.
 struct Declares;
 impl ToolDriver for Declares {
@@ -222,6 +264,21 @@ impl ResolveModelConnection for Compatible {
 
 fn cjk(count: usize) -> String {
     "压缩上下文".chars().cycle().take(count).collect()
+}
+
+/// The size a window-facts counter estimates for `request`'s serialized
+/// bytes, without the counter's per-request fixed cost: providers report what
+/// their own counting measures, which grows with the serialized history.
+fn honest_prompt_tokens(request: &ModelRequest) -> f64 {
+    let fixed = serde_json::to_vec(&request.system).unwrap().len() as u64
+        + serde_json::to_vec(&request.tools).unwrap().len() as u64;
+    let bytes = fixed
+        + request
+            .messages
+            .iter()
+            .map(|message| serde_json::to_vec(message).unwrap().len() as u64)
+            .sum::<u64>();
+    bytes as f64 / 4.
 }
 
 #[test]
@@ -1915,6 +1972,202 @@ async fn a_stored_allowance_from_before_the_rule_is_repaired_at_the_request() {
         adopted.config.unwrap().max_tokens,
         stored.max_tokens,
         "the stored configuration keeps the value it adopted"
+    );
+    agent.close().await.unwrap();
+}
+
+/// A selection identical to the one `configure_loaded` adopted, with a startup
+/// compaction window the way a CLI `--autocompact` launch carries it.
+fn startup_selection(
+    adopted: ModelSelection,
+    auto_compact_window: u64,
+) -> ModelSelection {
+    let mut selected = adopted;
+    selected.metadata = Some(RequestMetadata {
+        startup: Some(ModelStartup {
+            connection: None,
+            auto_compact_window: Some(auto_compact_window),
+        }),
+        ..Default::default()
+    });
+    selected
+}
+
+/// The session's adopted selection, before any input.
+fn adopted_selection(session: &dim_agent_runtime::Session) -> ModelSelection {
+    use dim_agent_capabilities::prompt_state::PromptSnapshot;
+    let adopted = session
+        .get::<PromptSnapshot>("main")
+        .unwrap()
+        .unwrap()
+        .configuration
+        .unwrap();
+    ModelSelection {
+        provider_id: adopted.provider_id,
+        model_id: adopted.model_id,
+        capability_snapshot: adopted.capability_snapshot,
+        config: adopted.config,
+        metadata: adopted.metadata,
+    }
+}
+
+/// Every compaction outcome on the branch, oldest first.
+async fn compaction_outcomes(
+    session: &dim_agent_runtime::Session,
+) -> Vec<ContextCompactionData> {
+    chain_events(session, "main", ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data) => Some(data.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// On a window scaled to one tenth of the model sizes the startup compaction
+/// window serves, the history compaction keeps must scale with it
+/// (ContextCompaction §5.3): a startup window at a fifth of the window still
+/// compacts the accumulated history instead of skipping it and locking the
+/// regrowth gate, so the history never drifts far past the startup window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_startup_window_at_a_fifth_of_the_window_compacts_instead_of_drifting() {
+    const STARTUP_WINDOW: u64 = 20_000;
+    let recorder = Arc::new(HonestRecorder {
+        inner: Recorder::default(),
+    });
+    let (agent, session) = product_session_on(
+        100_000,
+        Arc::new(MockTools),
+        recorder.clone(),
+        3_200,
+        ProductSummaryStrategyConfig::default(),
+        SessionConfig::default(),
+        None,
+        Arc::new(Local),
+        None,
+        None,
+    )
+    .await;
+    session
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(startup_selection(adopted_selection(&session), STARTUP_WINDOW)),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    for _ in 0..40 {
+        session
+            .submit(cjk(1_500), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let outcomes = compaction_outcomes(&session).await;
+    assert!(
+        !outcomes.is_empty(),
+        "the inputs above the startup threshold attempt compaction"
+    );
+    assert!(
+        !outcomes.iter().any(|data| matches!(
+            &data.outcome,
+            ContextCompactionResult::Skipped { .. }
+        )),
+        "no attempt skips: the accumulated history is far larger than the summary it would keep, {outcomes:#?}"
+    );
+    let completed = outcomes
+        .iter()
+        .filter(|data| matches!(&data.outcome, ContextCompactionResult::Completed { .. }))
+        .count();
+    assert!(completed >= 2, "compaction repeats as the history grows, {outcomes:#?}");
+    let largest_attempt = outcomes
+        .iter()
+        .filter_map(|data| match &data.outcome {
+            ContextCompactionResult::Completed { diagnostics, .. }
+            | ContextCompactionResult::Skipped { diagnostics, .. } => {
+                Some(diagnostics.estimated_input_tokens)
+            }
+            _ => None,
+        })
+        .fold(0.0, f64::max);
+    assert!(
+        largest_attempt <= 30_000.,
+        "every attempt happens close to the {STARTUP_WINDOW}-token startup window, not above half of it times two, {outcomes:#?}"
+    );
+    agent.close().await.unwrap();
+}
+
+/// With the startup window at forty percent of the window, the retained tail
+/// scales down with it and the next compaction follows the grown history, so
+/// neither the first result nor the second attempt overshoots the startup
+/// window (ContextCompaction §5.3, §5.6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_startup_window_scales_the_retained_tail_and_the_next_attempt() {
+    const STARTUP_WINDOW: u64 = 40_000;
+    let recorder = Arc::new(HonestRecorder {
+        inner: Recorder::default(),
+    });
+    let (agent, session) = product_session_on(
+        100_000,
+        Arc::new(MockTools),
+        recorder.clone(),
+        3_200,
+        ProductSummaryStrategyConfig::default(),
+        SessionConfig::default(),
+        None,
+        Arc::new(Local),
+        None,
+        None,
+    )
+    .await;
+    session
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(startup_selection(adopted_selection(&session), STARTUP_WINDOW)),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    for _ in 0..24 {
+        session
+            .submit(cjk(4_000), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let outcomes = compaction_outcomes(&session).await;
+    let completed: Vec<&dim_agent_types::CompactionDiagnosticsRecord> = outcomes
+        .iter()
+        .filter_map(|data| match &data.outcome {
+            ContextCompactionResult::Completed { diagnostics, .. } => Some(&**diagnostics),
+            _ => None,
+        })
+        .collect();
+    assert!(completed.len() >= 2, "compaction repeats as the history grows, {outcomes:#?}");
+    let first_size = completed[0]
+        .estimated_output_tokens
+        .expect("a completed compaction reports its projected size");
+    assert!(
+        first_size <= 20_000.,
+        "the first compaction keeps a tail scaled to the {STARTUP_WINDOW}-token startup window, not a quarter of the window, {outcomes:#?}"
+    );
+    let largest_attempt = outcomes
+        .iter()
+        .filter_map(|data| match &data.outcome {
+            ContextCompactionResult::Completed { diagnostics, .. }
+            | ContextCompactionResult::Skipped { diagnostics, .. } => {
+                Some(diagnostics.estimated_input_tokens)
+            }
+            _ => None,
+        })
+        .fold(0.0, f64::max);
+    assert!(
+        largest_attempt <= 45_000.,
+        "the next attempt follows the grown history near the startup window instead of drifting past half of it, {outcomes:#?}"
     );
     agent.close().await.unwrap();
 }
