@@ -1751,7 +1751,7 @@ async fn committed_shell_completion_recovers_after_notice_failure_and_host_loss(
         let session = server
             .agent()
             .unwrap()
-            .restore_session(id.clone())
+            .restore_session(id.clone(), Default::default())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(30), session.idle("main"))

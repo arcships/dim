@@ -506,11 +506,14 @@ impl Fixture {
         self.server
             .agent()
             .unwrap()
-            .create_session(SessionConfig {
-                cwd: self.home.to_string_lossy().into_owned(),
-                tools: Some(vec!["read".into(), "image_understand".into()]),
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    cwd: self.home.to_string_lossy().into_owned(),
+                    tools: Some(vec!["read".into(), "image_understand".into()]),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap()
     }
@@ -824,7 +827,7 @@ async fn image_questions_follow_current_defaults_and_reuse_only_completed_own_an
         .server
         .agent()
         .unwrap()
-        .restore_session(session.id().into())
+        .restore_session(session.id().into(), Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -1546,7 +1549,7 @@ async fn a_compacted_image_resolves_from_history_after_the_index_is_rebuilt() {
         .server
         .agent()
         .unwrap()
-        .restore_session(session.id().into())
+        .restore_session(session.id().into(), Default::default())
         .await
         .unwrap();
     assert_eq!(

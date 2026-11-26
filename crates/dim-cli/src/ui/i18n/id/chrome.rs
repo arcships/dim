@@ -427,7 +427,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Thinking details" => "Detail pemikiran",
         "expanded" => "terbuka",
         "collapsed" => "terlipat",
-        "Mouse (fullscreen)" => "Mouse (layar penuh)",
+        "Mouse" => "Mouse",
         "Permissions" => "Izin",
         "Tool approvals" => "Persetujuan tool",
         "Execution" => "Eksekusi",

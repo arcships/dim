@@ -389,7 +389,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Thinking details" => "思考詳情",
         "expanded" => "展開",
         "collapsed" => "收合",
-        "Mouse (fullscreen)" => "滑鼠（全螢幕）",
+        "Mouse" => "滑鼠",
         "Permissions" => "權限",
         "Tool approvals" => "工具核准",
         "Execution" => "執行",

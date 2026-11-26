@@ -395,7 +395,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Thinking details" => "생각 상세",
         "expanded" => "펼침",
         "collapsed" => "접힘",
-        "Mouse (fullscreen)" => "마우스 (전체 화면)",
+        "Mouse" => "마우스",
         "Permissions" => "권한",
         "Tool approvals" => "도구 승인",
         "Execution" => "실행",

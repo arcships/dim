@@ -215,11 +215,7 @@ impl SettingsPanel {
                 }
                 .to_owned(),
             ),
-            row(
-                Setting::Mouse,
-                "Mouse (fullscreen)",
-                on_off(values.mouse).to_owned(),
-            ),
+            row(Setting::Mouse, "Mouse", on_off(values.mouse).to_owned()),
             row(
                 Setting::Notify,
                 "Notify when agent needs you",

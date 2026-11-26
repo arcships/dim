@@ -285,7 +285,7 @@ async fn handover(tail: bool) -> (u64, u64) {
         ));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), started_rx.recv())
@@ -742,7 +742,7 @@ async fn consume_branch() -> (MinimalHost, Session, Ctx, Arc<Timeline>, Arc<Disp
         },
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = bounded(agent.create_session(SessionConfig::default()))
+    let session = bounded(agent.create_session(SessionConfig::default(), Default::default()))
         .await
         .unwrap();
     bounded(session.idle("main")).await.unwrap();

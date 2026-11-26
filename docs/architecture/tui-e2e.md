@@ -105,6 +105,7 @@ daemon. `--keep` leaves the home and raw streams in place for inspection.
 | terminal-modes | `resize_rewraps_history_without_losing_rows` | Resizing to 60x18 and 140x40 keeps the message and answer, rewraps rows, and draws to the new width: the capture is taken only after the product's own `CSI 3J` reflow and completed frame, tmux reports the target pane size, and the new frame is stable at that width |
 | terminal-modes | `resize_during_a_stream_rewraps_and_finishes` | A resize while the fixture streams repaints the live output at the new width, keeps the streamed text, and the run still finishes |
 | terminal-modes | `resize_during_thinking_rewraps_multiline_history` | Expanded reasoning streams in a turn sent as three lines; five resizes (100x24, 60x24, 120x40, 45x18, 100x36) keep every user line and every reasoning line, the transcript settles as a thought, and the answer still arrives |
+| composer | `scrollback_click_places_draft_cursor` | Check mouse ownership, wrapped wide-character placement, and that a delayed click across input reads does not edit a different row after the draft scrolls |
 | composer | `fullscreen_composer_click_places_the_cursor` | Click-to-insert in ASCII and scrolled, wrapped wide text. Releasing in another cell, dragging back to the pressed cell, or typing before release preserves the insertion point |
 | composer | `fullscreen_composer_click_with_a_clipped_task_strip` | In a short pane with three background tasks, clicking the top visible row of a wrapped draft inserts there. The textarea scrolls inside a padded composer box |
 | composer | `composer_edits_multiline_and_stores_a_large_paste` | `Ctrl+J` newline editing, backspace, a five-line bracketed paste stored as an attachment, and the exact prompt text the model receives |
@@ -429,12 +430,16 @@ component and protocol tests do not already cover.
 CI keeps:
 
 - Ordinary workspace tests: the `dim-cli` component render and keyboard tests,
-  `dim-app-server` protocol and transport flows, the 422 non-TUI `cli_flow*`
-  cases (`--no-tui`, `exec`, piped prompts, ACP, `staged_update::recovery::`,
-  and the scripted daemon flows), and the 287 TUI cases #1810 still tracks
-  (including the 6 `staged_update::tui_update::` cases, which use the debug-only
-  `DIM_TEST_RELEASE_BUILD=1` override instead of a separate release-stamped
-  build step).
+  `dim-app-server` protocol and transport flows, the 389 non-TUI `cli_flow*`
+  cases (`--no-tui`, `exec`, piped prompts, ACP, and the scripted daemon flows),
+  and the 281 TUI cases #1810 still tracks.
+- The dedicated `dev-tests` step: the 7 `staged_update::recovery::`, 6
+  `staged_update::tui_update::`, 6 `daemon_replace::build_identity::` and 20
+  `daemon_startup_progress::` cases. It runs when their owning test files or
+  the production paths they protect change. The `tui_update` cases use the
+  debug-only `DIM_TEST_RELEASE_BUILD=1` override instead of a separate
+  release-stamped build step. When the dedicated step is selected, the two
+  runs together keep the original 422 non-TUI and 287 TUI `cli_flow*` cases.
 - The explicit `cli_flow` step that names the 12 `--ignored` production and
   line-mode flows one by one: the production App Server, the account and
   permission presets, the real-owner MCP/hooks/workflow writes, and the

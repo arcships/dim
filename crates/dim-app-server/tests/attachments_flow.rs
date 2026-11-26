@@ -424,7 +424,7 @@ impl Contract {
     async fn session(&self) -> (String, Arc<MethodProvider>) {
         let session = self
             .agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let methods = session

@@ -537,7 +537,8 @@ impl AgentBuilder {
     }
     /// A Rust part of the Session extension `group`: a nested instanced
     /// group created only for Sessions that ask for it, with a value of type
-    /// `V` (see [`Agent::create_session_with_extension`]). `make` builds a
+    /// `V` (see [`Agent::create_session`] and
+    /// [`CreateSessionOptions::extension`]). `make` builds a
     /// copy from the names its dependencies resolve to there and the
     /// extension's value. The extension loads alongside the Session's parts
     /// after its scope is ready, and every part must be Active before main

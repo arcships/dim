@@ -26,7 +26,7 @@ async fn typed_input_retains_admitted_io_and_accepts_each_submission_once() {
     let session = server
         .agent()
         .unwrap()
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let index = server.root.get::<AgentIndex>().unwrap();
@@ -162,6 +162,9 @@ async fn exists_answers_loaded_unloaded_closed_and_deleted() {
         builder,
         crate::ServerConfig {
             database_path: Some(directory.join("dimcode.sqlite")),
+            // This test does not exercise the startup deadline; a whole-suite
+            // run can make assembly slower than the product default.
+            startup_timeout: Duration::from_secs(30),
             ..Default::default()
         },
     )
@@ -182,7 +185,7 @@ async fn exists_answers_loaded_unloaded_closed_and_deleted() {
 
     // Loaded, then unloaded with its rows kept: still exists.
     let unloaded = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let unloaded_id = unloaded.id().to_owned();
@@ -215,7 +218,7 @@ async fn exists_answers_loaded_unloaded_closed_and_deleted() {
 
     // Closed keeps its rows, so it exists; deleting it removes them.
     let closed = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let closed_id = closed.id().to_owned();

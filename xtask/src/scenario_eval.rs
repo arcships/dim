@@ -22187,12 +22187,15 @@ mod run_tools_tests {
             .agent()
             .expect("the served profile has a default Agent");
         let session = agent
-            .create_session(SessionConfig {
-                cwd: cwd.to_string_lossy().into_owned(),
-                tools: None,
-                model,
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    cwd: cwd.to_string_lossy().into_owned(),
+                    tools: None,
+                    model,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap();
         let registry = probe

@@ -654,6 +654,28 @@ async fn agent_profile_supplies_session_defaults() {
         )
         .await;
     assert_ok(&pending);
+    let bare = client
+        .rpc(
+            "agent.create",
+            json!({"profile":{"name":"bare","description":""}}),
+        )
+        .await;
+    assert_ok(&bare);
+    turn(
+        &mut client,
+        json!({"cwd":cwd,"agentId":bare["result"]["agentId"]}),
+    )
+    .await;
+    let (system, declared, _) = model.last();
+    assert!(
+        declared.len() > tools.len() && tools.iter().all(|tool| declared.contains(tool)),
+        "a profile without tools declares the full set, not the default mount list: {declared:?}"
+    );
+    let system = system.as_str().expect("the request's system text");
+    assert!(
+        system.starts_with("# How to read your input"),
+        "a profile without systemPrompt adds no role prompt: {system:?}"
+    );
     let duplicated = client
         .rpc(
             "agent.create",
@@ -665,7 +687,7 @@ async fn agent_profile_supplies_session_defaults() {
         "agent_build_failed"
     );
     let listed = client.rpc("agent.list", json!({})).await;
-    assert_eq!(listed["result"].as_array().unwrap().len(), 4);
+    assert_eq!(listed["result"].as_array().unwrap().len(), 5);
 
     server.shutdown();
     server.join().await.unwrap();

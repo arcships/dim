@@ -450,12 +450,15 @@ impl Env {
     }
     pub async fn session(&self, cwd: &Path, system_prompt: &str) -> Result<Session> {
         self.agent
-            .create_session(SessionConfig {
-                cwd: cwd.to_string_lossy().into_owned(),
-                system_prompt: system_prompt.into(),
-                tools: Some(vec!["skill".into(), "gate".into()]),
-                ..SessionConfig::default()
-            })
+            .create_session(
+                SessionConfig {
+                    cwd: cwd.to_string_lossy().into_owned(),
+                    system_prompt: system_prompt.into(),
+                    tools: Some(vec!["skill".into(), "gate".into()]),
+                    ..SessionConfig::default()
+                },
+                Default::default(),
+            )
             .await
     }
 }

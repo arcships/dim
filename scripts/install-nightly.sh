@@ -23,14 +23,20 @@ install_nightly() (
     elif [ -e "$entry" ]; then fail "Refusing to replace $entry"; fi
 
     repo=arcships/dim
-    curl -fsSL "https://api.github.com/repos/$repo/releases/tags/Nightly" -o "$lock/release.json"
-    version=$(jq -er 'select(.tag_name == "Nightly" and .prerelease and (.draft | not)) | .name | capture("^Nightly v(?<v>[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]+)$").v' "$lock/release.json")
-    dest=$root/$version
-    if [ ! -d "$dest" ]; then
-        base=https://github.com/$repo/releases/download/Nightly
+    base=https://github.com/$repo/releases/download/Nightly
+    for attempt in 1 2; do
+        curl -fsSL "https://api.github.com/repos/$repo/releases/tags/Nightly" -o "$lock/release.json"
+        version=$(jq -er 'select(.tag_name == "Nightly" and .prerelease and (.draft | not)) | .name | capture("^Nightly v(?<v>[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]+)$").v' "$lock/release.json")
+        dest=$root/$version
+        [ ! -d "$dest" ] || break
         archive=dimcode-$os-$arch-$version.tar.gz
-        curl -fsSL "$base/SHA256SUMS-$version" -o "$lock/sums"
-        curl -fsSL "$base/$archive" -o "$lock/$archive"
+        if status=$(curl -fsSL "$base/SHA256SUMS-$version" -o "$lock/sums" -w '%{http_code}') &&
+           status=$(curl -fsSL "$base/$archive" -o "$lock/$archive" -w '%{http_code}'); then
+            break
+        fi
+        [ "$status" = 404 ] && [ "$attempt" = 1 ] || fail "Could not download Nightly assets for $version (HTTP $status)"
+    done
+    if [ ! -d "$dest" ]; then
         expected=$(awk -v file="$archive" '$2 == file { print $1 }' "$lock/sums")
         if [ "$os" = darwin ]; then actual=$(shasum -a 256 "$lock/$archive"); else actual=$(sha256sum "$lock/$archive"); fi
         [ "$expected" = "${actual%% *}" ] || fail "Checksum mismatch for $archive"

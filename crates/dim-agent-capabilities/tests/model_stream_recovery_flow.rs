@@ -265,7 +265,7 @@ async fn a_stream_cut_before_any_committed_event_retries_in_place() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -369,7 +369,7 @@ async fn a_stream_cut_after_a_committed_event_ends_the_turn_without_retrying() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -424,7 +424,7 @@ async fn a_usage_fact_before_a_cut_stops_the_retry() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -515,7 +515,7 @@ async fn an_idle_timeout_before_any_committed_event_retries_in_place() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -583,7 +583,7 @@ async fn an_idle_timeout_after_a_committed_event_ends_the_turn_without_retrying(
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -632,7 +632,7 @@ async fn thinking_progress_is_shown_once_per_interval() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -733,7 +733,7 @@ async fn a_text_delta_shows_buffered_thinking_at_once() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -797,7 +797,7 @@ async fn a_tool_start_shows_buffered_thinking_at_once() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -858,7 +858,7 @@ async fn buffered_thinking_is_shown_within_one_interval_without_another_delta() 
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -924,7 +924,7 @@ async fn a_thinking_block_end_shows_the_buffer_at_once() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -996,7 +996,7 @@ async fn a_pending_thinking_buffer_is_not_shown_after_a_retry() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1175,7 +1175,7 @@ async fn a_steer_during_the_retry_backoff_replaces_the_attempt() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1262,7 +1262,7 @@ async fn a_steer_during_a_terminal_failure(kind: ModelFailureKind, retry_after: 
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1495,7 +1495,7 @@ async fn a_credential_refresh_clears_the_attempt_only_once_it_succeeds() {
         });
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1623,7 +1623,7 @@ async fn thinking_progress_volume_is_throttled() {
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1691,7 +1691,7 @@ async fn a_retry_that_emits_no_output_names_its_boundary_on_the_terminal() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1768,7 +1768,7 @@ async fn a_retry_that_shows_its_own_thought_names_that_block_on_the_terminal() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1853,7 +1853,7 @@ async fn a_failure_without_a_retry_omits_the_retry_boundary() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session

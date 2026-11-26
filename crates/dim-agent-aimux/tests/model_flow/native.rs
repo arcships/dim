@@ -2051,7 +2051,10 @@ async fn a_stream_event_failure_with_an_unknown_code_is_not_retried() {
 async fn a_stream_event_status_code_mid_thinking_is_retried_in_place() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("stream-code-thinking".into(), InputMode::Queue, "main")
         .await
@@ -2091,7 +2094,10 @@ async fn a_stream_event_auth_code_is_rejected_once() {
     for code in ["401", "403"] {
         let chat = NativeServer::start("openai-chat").await;
         let agent = model_agent(chat.models(), None).await;
-        let session = agent.create_session(chat.session_config()).await.unwrap();
+        let session = agent
+            .create_session(chat.session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit(format!("stream-code-{code}"), InputMode::Queue, "main")
             .await
@@ -2127,7 +2133,10 @@ async fn a_stream_event_auth_code_is_rejected_once() {
 async fn a_stream_event_numeric_type_is_not_a_status_and_is_not_retried() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("stream-type-502".into(), InputMode::Queue, "main")
         .await
@@ -2167,7 +2176,10 @@ async fn a_stream_event_numeric_type_is_not_a_status_and_is_not_retried() {
 async fn a_stream_event_status_string_mid_thinking_is_retried_in_place() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit(
             "stream-code-string-thinking".into(),
@@ -2211,7 +2223,10 @@ async fn a_stream_event_status_string_mid_thinking_is_retried_in_place() {
 async fn a_stream_event_status_code_after_visible_output_is_not_retried() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("stream-code-visible-502".into(), InputMode::Queue, "main")
         .await
@@ -2254,7 +2269,7 @@ async fn a_4xx_with_a_server_class_label_is_rejected_once() {
     let responses = NativeServer::start("openai-responses").await;
     let agent = model_agent(responses.models(), None).await;
     let session = agent
-        .create_session(responses.session_config())
+        .create_session(responses.session_config(), Default::default())
         .await
         .unwrap();
     session
@@ -2299,7 +2314,10 @@ async fn a_4xx_with_a_server_class_label_is_rejected_once() {
 async fn an_empty_reply_is_retried_once_and_the_answer_finishes_the_turn() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("empty-reply".into(), InputMode::Queue, "main")
         .await
@@ -2338,7 +2356,10 @@ async fn an_empty_reply_is_retried_once_and_the_answer_finishes_the_turn() {
 async fn an_empty_reply_twice_fails_the_turn_without_a_third_attempt() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("empty-reply-twice".into(), InputMode::Queue, "main")
         .await
@@ -2380,7 +2401,10 @@ async fn an_empty_reply_twice_fails_the_turn_without_a_third_attempt() {
 async fn a_thinking_only_reply_fails_after_one_attempt() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("empty-reply-thinking".into(), InputMode::Queue, "main")
         .await
@@ -2468,7 +2492,10 @@ fn failed_model_outputs(events: &[Arc<AgentEvent>]) -> Vec<(String, ModelFailure
 async fn a_content_filter_finish_reason_ends_the_turn_without_a_continuation() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("finish-filter".into(), InputMode::Queue, "main")
         .await
@@ -2513,7 +2540,10 @@ async fn a_content_filter_finish_reason_ends_the_turn_without_a_continuation() {
 async fn an_unrecognized_finish_reason_continues_the_turn_once() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("finish-unrecognized".into(), InputMode::Queue, "main")
         .await
@@ -2554,7 +2584,10 @@ async fn an_unrecognized_finish_reason_continues_the_turn_once() {
 async fn an_unrecognized_finish_reason_without_announced_calls_does_not_continue() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("finish-unrecognized-quiet".into(), InputMode::Queue, "main")
         .await
@@ -2594,7 +2627,10 @@ async fn an_unrecognized_finish_reason_without_announced_calls_does_not_continue
 async fn a_generation_error_finish_reason_continues_the_turn_once() {
     let server = NativeServer::start("gemini").await;
     let agent = model_agent(server.models(), None).await;
-    let session = agent.create_session(server.session_config()).await.unwrap();
+    let session = agent
+        .create_session(server.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("finish-error".into(), InputMode::Queue, "main")
         .await
@@ -2636,7 +2672,10 @@ async fn a_generation_error_finish_reason_continues_the_turn_once() {
 async fn cut_tool_arguments_content_filter_keeps_its_kind() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit(
             "cut-tool-arguments-content-filter".into(),
@@ -2708,7 +2747,10 @@ async fn cut_tool_arguments_content_filter_keeps_its_kind() {
 async fn cut_tool_arguments_without_a_filter_stay_malformed() {
     let chat = NativeServer::start("openai-chat").await;
     let agent = model_agent(chat.models(), None).await;
-    let session = agent.create_session(chat.session_config()).await.unwrap();
+    let session = agent
+        .create_session(chat.session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit(
             "cut-tool-arguments-without-filter".into(),
@@ -3230,7 +3272,10 @@ async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
         for kind in ["openai-chat","openai-responses","anthropic","gemini"] {
             let server = NativeServer::start(kind).await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session.input(InputMessageData {
                 user: Some(UserInput { content: vec![
                     ContentBlock::Text { text: "tool".into() },
@@ -3448,7 +3493,10 @@ async fn anthropic_requests_mark_the_system_and_the_conversation_tail_for_cache(
     tokio::time::timeout(Duration::from_secs(30), async {
         let server = NativeServer::start("anthropic").await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(server.session_config()).await.unwrap();
+        let session = agent
+            .create_session(server.session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("tool".into(), InputMode::Queue, "main")
             .await
@@ -3533,7 +3581,10 @@ async fn explicit_system_breakpoints_stay_within_the_four_breakpoint_limit() {
                 },
             ));
             let agent = model_agent(models, Some(builder)).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session
                 .submit("tool".into(), InputMode::Queue, "main")
                 .await
@@ -3657,7 +3708,10 @@ async fn native_unsigned_thinking_completes_and_is_not_replayed() {
         for kind in ["anthropic", "openai-responses"] {
             let server = NativeServer::start(kind).await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session
                 .submit("missing-continuation".into(), InputMode::Queue, "main")
                 .await
@@ -3905,7 +3959,10 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             let mut custom=builder(models.clone(),Arc::new(MockTools));
             custom.require_feature(Feature::new("test.rewrite-native").branch("test.rewrite-native", move|names|Ok(Box::new(RewriteNative{complete,timeline:names.key()?}))));
             let agent=model_agent(models.clone(),Some(custom)).await;
-            let session=agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session.submit("tool".into(),InputMode::Queue,"main").await.unwrap();session.idle("main").await.unwrap();
             let events=chain_events(&session, "main", ..).await.unwrap();
             assert!(events.iter().any(|e|matches!(&e.kind,EventKind::ModelOutputEnd(data) if matches!(data.outcome,ModelOutputOutcome::Failed{..}))));
@@ -3915,7 +3972,10 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
         }
         let custom=builder(models.clone(),Arc::new(ErrorEcho));
         let agent = model_agent(models, Some(custom)).await;
-        let session = agent.create_session(server.session_config()).await.unwrap();
+        let session = agent
+            .create_session(server.session_config(), Default::default())
+            .await
+            .unwrap();
         session.submit("tool".into(),InputMode::Queue,"main").await.unwrap();session.idle("main").await.unwrap();
         let requests=server.endpoint.requests.lock().unwrap().clone();
         let last=&requests.last().unwrap().2;
@@ -3925,7 +3985,10 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
         for kind in ["anthropic", "openai-responses"] {
             let server = NativeServer::start(kind).await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session.submit("missing-continuation".into(),InputMode::Queue,"main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -3971,7 +4034,10 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
         ] {
             let server = NativeServer::start(kind).await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session.submit(prompt.into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -4005,7 +4071,10 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
         for prompt in ["native-refusal", "native-refusal-done", "native-refusal-empty"] {
             let server = NativeServer::start("openai-responses").await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session.submit(prompt.into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -4044,7 +4113,10 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
         for prompt in ["native-text-tool", "native-thought-tool"] {
             let server = NativeServer::start("gemini").await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session.submit(prompt.into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -4066,7 +4138,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
         }
         let server = NativeServer::start("gemini").await;
         let agent = model_agent(server.models(),None).await;
-        agent.create_session(server.session_config()).await.unwrap();
+        agent.create_session(server.session_config(), Default::default()).await.unwrap();
         let host = agent.root().get::<ModelHost>().unwrap();
         for (config, expected_budget) in [
             (json!({"reasoning":{"enabled":true,"budgetTokens":0}}),None),
@@ -4137,7 +4209,7 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         );
         let agent = model_agent(models, None).await;
         let session = agent
-            .create_session(claude.session_config())
+            .create_session(claude.session_config(), Default::default())
             .await
             .unwrap();
         session
@@ -4456,7 +4528,10 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
             let models = server.models();
             let agent =
                 model_agent(models.clone(), Some(builder(models, Arc::new(ImageEcho)))).await;
-            let session = agent.create_session(server.session_config()).await.unwrap();
+            let session = agent
+                .create_session(server.session_config(), Default::default())
+                .await
+                .unwrap();
             session.submit("call the tool".into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -4587,7 +4662,7 @@ async fn a_model_without_image_input_gets_references_and_unreferenceable_image_p
             reasoning: None,
             service_tier: None,
         });
-        let session = agent.create_session(config).await.unwrap();
+        let session = agent.create_session(config, Default::default()).await.unwrap();
         session.submit("call the tool".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
@@ -5418,7 +5493,10 @@ async fn gemini_signature_after_unsigned_text_signs_that_text_and_replays() {
         .unwrap(),
     );
     let agent = model_agent(models, None).await;
-    let session = agent.create_session(session_config()).await.unwrap();
+    let session = agent
+        .create_session(session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("first".into(), InputMode::Queue, "main")
         .await
@@ -6381,7 +6459,10 @@ async fn gemini_a_signed_part_closes_its_text_block_and_replays_the_split() {
         .unwrap(),
     );
     let agent = model_agent(models, None).await;
-    let session = agent.create_session(session_config()).await.unwrap();
+    let session = agent
+        .create_session(session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("first".into(), InputMode::Queue, "main")
         .await
@@ -6507,7 +6588,10 @@ async fn gemini_two_signed_blocks_keep_their_own_text_and_signature() {
         .unwrap(),
     );
     let agent = model_agent(models, None).await;
-    let session = agent.create_session(session_config()).await.unwrap();
+    let session = agent
+        .create_session(session_config(), Default::default())
+        .await
+        .unwrap();
     session
         .submit("first".into(), InputMode::Queue, "main")
         .await

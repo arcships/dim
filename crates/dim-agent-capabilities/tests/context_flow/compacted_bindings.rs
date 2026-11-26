@@ -226,15 +226,18 @@ impl Files {
     }
     async fn session(&self) -> Session {
         self.agent
-            .create_session(SessionConfig {
-                cwd: self.dir.to_string_lossy().into_owned(),
-                tools: Some(vec!["read".into(), "write".into(), "edit".into()]),
-                permission_policy: PermissionPolicy {
-                    preset: PermissionPreset::FullAccess,
-                    ..Default::default()
+            .create_session(
+                SessionConfig {
+                    cwd: self.dir.to_string_lossy().into_owned(),
+                    tools: Some(vec!["read".into(), "write".into(), "edit".into()]),
+                    permission_policy: PermissionPolicy {
+                        preset: PermissionPreset::FullAccess,
+                        ..Default::default()
+                    },
+                    ..SessionConfig::default()
                 },
-                ..SessionConfig::default()
-            })
+                Default::default(),
+            )
             .await
             .unwrap()
     }

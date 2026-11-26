@@ -439,6 +439,12 @@ async fn launch_inner(
     install_collaboration: impl FnOnce(&mut AgentBuilder),
     extra: impl FnOnce(&mut AgentBuilder),
 ) -> dim_app_server::Result<RunningServer> {
+    if config.startup_timeout == ServerConfig::default().startup_timeout {
+        // These flows do not test the startup deadline; the deadline has its
+        // own cases with explicit short bounds. A whole-suite run can make
+        // assembly slower than the product's 10 s default.
+        config.startup_timeout = Duration::from_secs(30);
+    }
     config.unix_path = Some(std::path::PathBuf::from("/tmp").join(format!(
         "dim-server-test-{}/server.sock",
         uuid::Uuid::new_v4()

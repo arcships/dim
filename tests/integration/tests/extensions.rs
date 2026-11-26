@@ -42,11 +42,11 @@ async fn external_cross_crate_capabilities_are_isolated_and_installed_in_every_b
         .require_feature(provider());
     let agent = MinimalHost::start(&b).await.unwrap();
     let one = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let two = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     one.submit("hello".into(), InputMode::Queue, "main")
@@ -148,11 +148,11 @@ async fn before_runs_only_on_its_own_branch() {
     );
     let agent = MinimalHost::start(&b).await.unwrap();
     let one = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let two = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let branch = one
@@ -200,7 +200,7 @@ async fn missing_dependency_and_undeclared_read_fail_before_session_publication(
         .require_feature(consumer(true));
     let agent = MinimalHost::start(&missing).await.unwrap();
     let error = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .err()
         .unwrap();
@@ -215,7 +215,7 @@ async fn missing_dependency_and_undeclared_read_fail_before_session_publication(
         .require_feature(consumer(false));
     let agent = MinimalHost::start(&undeclared).await.unwrap();
     let error = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .err()
         .unwrap();
@@ -260,7 +260,7 @@ async fn unawaited_children_are_reported() {
         ));
         let agent = MinimalHost::start(&b).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let findings = agent.check_assembly().unwrap();
@@ -410,7 +410,7 @@ async fn a_required_row_waits_for_the_child_it_mounts() {
     );
     let agent = MinimalHost::start(&b).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let findings = agent.check_assembly().unwrap();
@@ -460,7 +460,7 @@ async fn a_child_that_never_loads_fails_creation_and_is_named() {
     );
     let agent = MinimalHost::start(&b).await.unwrap();
     let error = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .err()
         .expect("creation fails");
@@ -647,7 +647,7 @@ async fn a_reapplied_row_waits_for_a_child_whose_dependency_returns_late() {
     let agent = MinimalHost::start(&b).await.unwrap();
     let root = agent.root().clone();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let owner = fiber(&agent, &root, "test.mounting-owner");
@@ -692,7 +692,7 @@ async fn a_row_cancelled_while_its_child_waits_ends_the_wait() {
     let agent = MinimalHost::start(&b).await.unwrap();
     let root = agent.root().clone();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let owner = fiber(&agent, &root, "test.mounting-owner");
@@ -763,7 +763,7 @@ async fn findings_name_their_branch() {
     );
     let agent = MinimalHost::start(&b).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let fork = session
@@ -820,7 +820,7 @@ async fn optional_reads_are_allowed_and_undeclared_required_reads_are_reported()
             );
             let agent = MinimalHost::start(&b).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
             let findings = agent.check_assembly().unwrap();
@@ -874,7 +874,7 @@ async fn reads_of_a_withdrawn_generation_are_reported() {
     ));
     let agent = MinimalHost::start(&b).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     armed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1046,7 +1046,7 @@ async fn abandoned_first_creation_is_owned_until_agent_close_finishes() {
     let agent = MinimalHost::start(&builder()).await.unwrap();
     let root = agent.root().clone();
     let host = root.diagnostics().plugins.len();
-    let mut creating = Box::pin(agent.create_session(SessionConfig::default()));
+    let mut creating = Box::pin(agent.create_session(SessionConfig::default(), Default::default()));
     assert!(futures_util::poll!(creating.as_mut()).is_pending());
     drop(creating);
     let (first, second) = tokio::join!(agent.agent().close(), agent.agent().close());
@@ -1064,7 +1064,7 @@ async fn abandoned_first_creation_is_owned_until_agent_close_finishes() {
 async fn close_continues_after_waiter_is_dropped_and_concurrent_closers_join() {
     let agent = MinimalHost::start(&builder()).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let first = session.close();
@@ -1085,14 +1085,14 @@ fn owning_agent_can_close_or_drop_outside_the_runtime_enter_guard() {
         .unwrap();
     let agent = runtime.block_on(MinimalHost::start(&builder())).unwrap();
     let session = runtime
-        .block_on(agent.create_session(SessionConfig::default()))
+        .block_on(agent.create_session(SessionConfig::default(), Default::default()))
         .unwrap();
     let close = agent.close();
     runtime.block_on(close).unwrap();
     runtime.block_on(session.close()).unwrap();
     let agent = runtime.block_on(MinimalHost::start(&builder())).unwrap();
     let session = runtime
-        .block_on(agent.create_session(SessionConfig::default()))
+        .block_on(agent.create_session(SessionConfig::default(), Default::default()))
         .unwrap();
     drop(agent);
     runtime.block_on(session.close()).unwrap();
@@ -1150,7 +1150,7 @@ async fn initialization_preserves_each_distinct_cleanup_failure_once() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let error = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .err()
         .expect("initialization failed");
@@ -1209,12 +1209,12 @@ async fn scoped_services_stay_inside_their_session_and_unkeyed_ones_are_reported
     ));
     let agent = MinimalHost::start(&scoped).await.unwrap();
     let first = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     assert!(seen.load(std::sync::atomic::Ordering::SeqCst));
     let second = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     assert!(!seen.load(std::sync::atomic::Ordering::SeqCst));
@@ -1234,7 +1234,7 @@ async fn scoped_services_stay_inside_their_session_and_unkeyed_ones_are_reported
     );
     let agent = MinimalHost::start(&unkeyed).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let findings = agent.check_assembly().unwrap();
@@ -1258,7 +1258,7 @@ async fn closed_session_and_branch_subtrees_leave_no_plugins_or_bindings() {
     let mut baseline = None;
     for round in 0..20 {
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let branch = session
@@ -1371,7 +1371,10 @@ async fn plugin_names_cannot_replace_other_capabilities_or_loader_groups() {
     });
     let agent = MinimalHost::start(&b).await.unwrap();
     agent
-        .create_session_with_extension(SessionConfig::default(), "trace", installed.clone())
+        .create_session(
+            SessionConfig::default(),
+            CreateSessionOptions::default().extension("trace", installed.clone()),
+        )
         .await
         .unwrap();
     assert_eq!(installed.load(Ordering::SeqCst), (1 << 10) - 1);
@@ -1405,12 +1408,12 @@ async fn factory_and_extension_failures_reject_the_session_instead_of_omitting_c
         let agent = MinimalHost::start(&b).await.unwrap();
         for _ in 0..panic_at {
             agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
         }
         let error = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .err()
             .expect("a required factory failure rejects creation");
@@ -1429,11 +1432,17 @@ async fn factory_and_extension_failures_reject_the_session_instead_of_omitting_c
     });
     let agent = MinimalHost::start(&b).await.unwrap();
     let missing_value = agent
-        .create_session_with_extension(SessionConfig::default(), "extension", "wrong value type")
+        .create_session(
+            SessionConfig::default(),
+            CreateSessionOptions::default().extension("extension", "wrong value type"),
+        )
         .await;
     assert!(missing_value.is_err());
     let wrong_name = agent
-        .create_session_with_extension(SessionConfig::default(), "extension", 1_u32)
+        .create_session(
+            SessionConfig::default(),
+            CreateSessionOptions::default().extension("extension", 1_u32),
+        )
         .await;
     assert!(wrong_name.is_err());
     assert!(agent.sessions().is_empty());
@@ -1442,7 +1451,10 @@ async fn factory_and_extension_failures_reject_the_session_instead_of_omitting_c
     let agent = MinimalHost::start(&builder()).await.unwrap();
     assert!(
         agent
-            .create_session_with_extension(SessionConfig::default(), "missing", ())
+            .create_session(
+                SessionConfig::default(),
+                CreateSessionOptions::default().extension("missing", ()),
+            )
             .await
             .is_err()
     );
@@ -1461,7 +1473,10 @@ async fn factory_and_extension_failures_reject_the_session_instead_of_omitting_c
     let agent = MinimalHost::start(&b).await.unwrap();
     assert!(
         agent
-            .create_session_with_extension(SessionConfig::default(), "pending", ())
+            .create_session(
+                SessionConfig::default(),
+                CreateSessionOptions::default().extension("pending", ()),
+            )
             .await
             .is_err()
     );
@@ -1661,8 +1676,12 @@ async fn nested_instances_preserve_optional_rows_and_cleanup_across_create_resto
             let (agent, saved) = (agent.clone(), saved.clone());
             tokio::spawn(async move {
                 match saved {
-                    None => agent.create_session(SessionConfig::default()).await,
-                    Some(id) => agent.restore_session(id).await,
+                    None => {
+                        agent
+                            .create_session(SessionConfig::default(), Default::default())
+                            .await
+                    }
+                    Some(id) => agent.restore_session(id, Default::default()).await,
                 }
             })
         };

@@ -1115,11 +1115,14 @@ impl Env {
         .expect("the part host assembles");
         let session = host
             .agent()
-            .create_session(dim_agent_runtime::SessionConfig {
-                cwd: home.to_string_lossy().into_owned(),
-                tools: Some(vec!["goal_update".into(), "wait".into()]),
-                ..Default::default()
-            })
+            .create_session(
+                dim_agent_runtime::SessionConfig {
+                    cwd: home.to_string_lossy().into_owned(),
+                    tools: Some(vec!["goal_update".into(), "wait".into()]),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .expect("the Session builds");
         let env = Self {
@@ -1256,7 +1259,7 @@ impl Env {
         session.close().await.expect("the Session closes");
         let session = host
             .agent()
-            .restore_session(id)
+            .restore_session(id, Default::default())
             .await
             .expect("the Session restores");
         let env = Self {
@@ -1279,7 +1282,7 @@ impl Env {
     pub async fn restore_failure(&self, id: &str) -> dim_agent_runtime::AgentError {
         self.host
             .agent()
-            .restore_session(id.to_owned())
+            .restore_session(id.to_owned(), Default::default())
             .await
             .err()
             .expect("invalid durable recovery state must fail the Session restore")
@@ -1319,7 +1322,7 @@ impl Env {
         session.close().await.expect("the Session closes");
         let session = host
             .agent()
-            .restore_session(id.to_owned())
+            .restore_session(id.to_owned(), Default::default())
             .await
             .expect("the seeded Session restores");
         let env = Self {

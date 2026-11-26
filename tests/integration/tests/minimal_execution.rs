@@ -286,7 +286,10 @@ impl Harness {
         config
     }
     async fn session(&self) -> Session {
-        self.agent.create_session(self.config()).await.unwrap()
+        self.agent
+            .create_session(self.config(), Default::default())
+            .await
+            .unwrap()
     }
     async fn run(&self, session: &Session, calls: &[(&str, Value)]) {
         self.model.push(calls);
@@ -1350,7 +1353,7 @@ async fn restoring_shell_exec_prefixes_settles_orphans_and_reposts_only_missing_
     }
     let restored = harness
         .agent
-        .restore_session(session.id().to_owned())
+        .restore_session(session.id().to_owned(), Default::default())
         .await
         .unwrap();
     let events = until(
@@ -1428,7 +1431,7 @@ async fn restoring_shell_exec_prefixes_settles_orphans_and_reposts_only_missing_
     assert!(restored.unload_if_idle().await.unwrap());
     let again = harness
         .agent
-        .restore_session(session.id().to_owned())
+        .restore_session(session.id().to_owned(), Default::default())
         .await
         .unwrap();
     again.idle("main").await.unwrap();

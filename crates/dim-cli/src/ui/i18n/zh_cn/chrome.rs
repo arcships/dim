@@ -452,7 +452,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Thinking details" => "思考详情",
         "expanded" => "展开",
         "collapsed" => "折叠",
-        "Mouse (fullscreen)" => "鼠标（全屏）",
+        "Mouse" => "鼠标",
         "Permissions" => "权限",
         "Tool approvals" => "工具审批",
         "Execution" => "执行",

@@ -62,7 +62,10 @@ async fn start(store: Arc<dyn TimelineStore>) -> Fixture {
     defaults::mock_hosts(&mut builder);
     defaults::install(&mut builder);
     let host = MinimalHost::start(&builder).await.unwrap();
-    let session = host.create_session(SessionConfig::default()).await.unwrap();
+    let session = host
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
     Fixture { host, session }
 }
 
@@ -130,7 +133,10 @@ async fn quiet() -> Fixture {
     );
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(memory()));
     let host = MinimalHost::start(&builder).await.unwrap();
-    let session = host.create_session(SessionConfig::default()).await.unwrap();
+    let session = host
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
     Fixture { host, session }
 }
 

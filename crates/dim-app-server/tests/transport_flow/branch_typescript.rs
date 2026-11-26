@@ -576,7 +576,10 @@ async fn node_session_fault_is_observed_and_closes_the_native_session() {
         },
     )
     .await;
-    let error = match agent.create_session(Default::default()).await {
+    let error = match agent
+        .create_session(Default::default(), Default::default())
+        .await
+    {
         Ok(session) => session.close().await.unwrap_err(),
         Err(error) => error,
     };

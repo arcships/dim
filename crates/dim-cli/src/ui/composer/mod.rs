@@ -1236,6 +1236,11 @@ impl Composer {
         }
     }
 
+    /// Wrapped row at the top of the rendered textarea.
+    pub fn rendered_scroll(&self) -> u16 {
+        self.state.scroll
+    }
+
     /// Place the cursor at `cell` and clear the selection. Both `cell` and the
     /// rendered textarea `area` use screen columns and rows counted from the
     /// top of the unclipped dock. Clicks outside `area` are ignored.

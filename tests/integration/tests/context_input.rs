@@ -23,7 +23,7 @@ fn context_input(content: &str) -> InputMessageData {
 async fn context_only_input_waits_for_the_next_user_turn() {
     let agent = MinimalHost::start(&builder()).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -70,7 +70,7 @@ async fn context_only_input_waits_for_the_next_user_turn() {
 async fn context_only_input_after_a_stop_starts_no_turn() {
     let agent = MinimalHost::start(&builder()).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session.stop("main", "pause".into()).await.unwrap();

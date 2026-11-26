@@ -4,7 +4,7 @@
 
 ```rust,no_run
 use dim_agent_capabilities::defaults;
-use dim_agent_runtime::{AgentBuilder, AgentConfig, SessionConfig};
+use dim_agent_runtime::{AgentBuilder, AgentConfig, CreateSessionOptions, SessionConfig};
 use dim_agent_types::InputMode;
 
 # async fn example() -> dim_agent_runtime::Result<()> {
@@ -12,7 +12,7 @@ let mut builder = AgentBuilder::new(AgentConfig::default());
 defaults::mock_hosts(&mut builder);
 defaults::install(&mut builder);
 let agent = builder.build();
-let session = agent.create_session(SessionConfig::default()).await?;
+let session = agent.create_session(SessionConfig::default(), CreateSessionOptions::default()).await?;
 session.submit("hello".into(), InputMode::Queue, "main").await?;
 session.idle("main").await?;
 agent.close().await?;

@@ -210,6 +210,7 @@ pub struct Terminal {
     coalesce_min_run: Option<usize>,
     queue: std::collections::VecDeque<InputEvent>,
     keyboard: KeyboardProtocol,
+    mouse_requested: bool,
     background_report: Option<String>,
     clipboard: bool,
     /// The terminal answered the program status query (`OSC 7501`): it keeps
@@ -246,6 +247,7 @@ impl Terminal {
             ),
             queue: Default::default(),
             keyboard: KeyboardProtocol::Legacy,
+            mouse_requested: false,
             background_report: None,
             clipboard: false,
             program_status: false,
@@ -287,9 +289,9 @@ impl Terminal {
         } else {
             bytes.extend_from_slice(Mode::Mouse.restore_sequence());
             bytes.extend_from_slice(Mode::AltScreen.restore_sequence());
-            modes::clear(Mode::Mouse);
             modes::clear(Mode::AltScreen);
         }
+        self.mouse_requested = on;
         if self.keyboard == KeyboardProtocol::Kitty {
             bytes.extend_from_slice(Mode::KittyKeyboard.enable_sequence());
         }
@@ -314,22 +316,17 @@ impl Terminal {
         self.writer.send(bar.to_vec())
     }
 
-    /// Mouse reporting is on.
-    pub fn mouse(&self) -> bool {
-        modes::is_live(Mode::Mouse)
-    }
-
-    /// Turns mouse reporting on or off on the alternate screen; off hands
+    /// Turns mouse reporting on or off; off hands
     /// selection and the wheel back to the terminal.
     pub fn set_mouse(&mut self, on: bool) -> io::Result<()> {
-        if on == self.mouse() || !modes::is_live(Mode::AltScreen) {
+        if on == self.mouse_requested {
             return Ok(());
         }
+        self.mouse_requested = on;
         if on {
             modes::mark(Mode::Mouse);
             self.writer.send(Mode::Mouse.enable_sequence().to_vec())
         } else {
-            modes::clear(Mode::Mouse);
             self.writer.send(Mode::Mouse.restore_sequence().to_vec())
         }
     }
@@ -417,6 +414,12 @@ impl Terminal {
     /// than queue behind it.
     pub fn writing(&self) -> bool {
         self.writer.pending.load(Ordering::SeqCst) > 0
+    }
+
+    /// Drops mouse reports already read against a superseded scrollback frame.
+    pub fn discard_queued_mouse(&mut self) {
+        self.queue
+            .retain(|event| !matches!(event, InputEvent::Mouse(_)));
     }
 
     /// True once a background write failed (terminal gone).
@@ -597,6 +600,7 @@ impl Terminal {
         sys::restore_terminal_once_until(deadline);
         sys::remove_signal_guard();
         modes::clear_all();
+        self.mouse_requested = false;
     }
 
     fn drain_until_da1(&mut self, deadline: Instant) {

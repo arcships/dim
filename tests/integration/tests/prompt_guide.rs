@@ -251,10 +251,13 @@ async fn both_paths_carry_one_composition() {
     workspace(&mut builder, &dirs);
     let agent = platform_host(&builder, &dirs).await;
     let session = agent
-        .create_session(SessionConfig {
-            system_prompt: "configured rules".into(),
-            ..work_config(&dirs)
-        })
+        .create_session(
+            SessionConfig {
+                system_prompt: "configured rules".into(),
+                ..work_config(&dirs)
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     session
@@ -305,10 +308,13 @@ async fn both_paths_carry_one_composition() {
     defaults::install_with_prompt(&mut builder, Arc::new(EmptyPromptHost), None);
     let agent = platform_host(&builder, &dirs).await;
     let session = agent
-        .create_session(SessionConfig {
-            system_prompt: "host rules".into(),
-            ..work_config(&dirs)
-        })
+        .create_session(
+            SessionConfig {
+                system_prompt: "host rules".into(),
+                ..work_config(&dirs)
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     run(&session, "hello").await;
@@ -394,10 +400,13 @@ async fn an_adopted_request_and_the_summarizers_request_carry_one_system() {
     workspace(&mut builder, &dirs);
     let agent = platform_host(&builder, &dirs).await;
     let session = agent
-        .create_session(SessionConfig {
-            system_prompt: "configured rules".into(),
-            ..work_config(&dirs)
-        })
+        .create_session(
+            SessionConfig {
+                system_prompt: "configured rules".into(),
+                ..work_config(&dirs)
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     session
@@ -507,7 +516,7 @@ async fn an_entry_takes_effect_when_its_writer_loads_and_ends_when_it_unloads() 
     ));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -657,7 +666,10 @@ async fn a_branch_scoped_entry_publishes_only_on_its_branch() {
         },
     ));
     let agent = platform_host(&builder, &dirs).await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .configure(
@@ -800,10 +812,13 @@ async fn an_entry_registered_while_its_branch_opens_is_adopted() {
     store.hold_next_configuration_on("main");
     // The pinned creation lives past the host's close: it borrows a clone.
     let opener = agent.agent().clone();
-    let creation = opener.create_session(SessionConfig {
-        system_prompt: "configured rules".into(),
-        ..work_config(&dirs)
-    });
+    let creation = opener.create_session(
+        SessionConfig {
+            system_prompt: "configured rules".into(),
+            ..work_config(&dirs)
+        },
+        Default::default(),
+    );
     tokio::pin!(creation);
     let session = tokio::select! {
         _ = &mut creation => panic!("the Session opened before its publication was held"),
@@ -873,7 +888,10 @@ async fn a_fork_composes_its_own_entries_at_its_open() {
         tables.clone(),
     )
     .await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .configure(
@@ -981,7 +999,10 @@ async fn a_fork_carries_its_own_entry_in_its_first_request() {
         tables.clone(),
     )
     .await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .configure(
@@ -1054,7 +1075,7 @@ async fn a_restored_branch_converges_on_the_entries_its_writers_register() {
     let views = Arc::new(Mutex::new(Vec::new()));
     let agent = restore_guide_agent(store.clone(), flag.clone(), views.clone()).await;
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -1079,7 +1100,10 @@ async fn a_restored_branch_converges_on_the_entries_its_writers_register() {
     // entry at its open.
     flag.store(true, Ordering::SeqCst);
     let agent = restore_guide_agent(store.clone(), flag.clone(), views.clone()).await;
-    let session = agent.restore_session(id.clone()).await.unwrap();
+    let session = agent
+        .restore_session(id.clone(), Default::default())
+        .await
+        .unwrap();
     wait_for_configurations(&session, "main", 1).await;
     let adopted = last_configured(&session, "main").await;
     let system = system_text(adopted.system.as_ref().expect("the adopted System"));
@@ -1091,7 +1115,7 @@ async fn a_restored_branch_converges_on_the_entries_its_writers_register() {
     // The writer leaves it: the next restore drops the entry the same way.
     flag.store(false, Ordering::SeqCst);
     let agent = restore_guide_agent(store.clone(), flag.clone(), views.clone()).await;
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     wait_for_configurations(&session, "main", 2).await;
     let adopted = last_configured(&session, "main").await;
     let system = system_text(adopted.system.as_ref().expect("the adopted System"));
@@ -1113,7 +1137,7 @@ async fn a_restored_branch_carries_its_entries_in_its_first_request() {
     let views = Arc::new(Mutex::new(Vec::new()));
     let agent = restore_guide_agent(store.clone(), flag.clone(), views.clone()).await;
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -1139,7 +1163,7 @@ async fn a_restored_branch_carries_its_entries_in_its_first_request() {
     // between it and the open.
     flag.store(true, Ordering::SeqCst);
     let agent = restore_guide_agent(store.clone(), flag, views).await;
-    let session = agent.restore_session(id).await.unwrap();
+    let session = agent.restore_session(id, Default::default()).await.unwrap();
     session
         .submit("second".into(), InputMode::Queue, "main")
         .await
@@ -1175,7 +1199,10 @@ async fn a_closing_branch_does_not_adopt_its_withdrawn_guide() {
         tables.clone(),
     )
     .await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .configure(
@@ -1295,7 +1322,10 @@ async fn an_entry_withdrawing_as_the_session_unloads_is_not_recorded() {
         tables.clone(),
     )
     .await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .configure(
@@ -1355,7 +1385,7 @@ async fn an_entry_withdrawing_as_the_session_unloads_is_not_recorded() {
         tables.clone(),
     )
     .await;
-    let restored = agent.restore_session(id).await.unwrap();
+    let restored = agent.restore_session(id, Default::default()).await.unwrap();
     wait_for_configurations(&restored, "main", recorded).await;
     let adopted = last_configured(&restored, "main").await;
     let system = system_text(adopted.system.as_ref().expect("the adopted System"));
@@ -1383,7 +1413,10 @@ async fn a_reloaded_writer_readopts_its_returned_entry() {
         tables.clone(),
     )
     .await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .configure(
@@ -1491,7 +1524,7 @@ async fn a_composition_that_moved_and_returned_while_its_branch_opens_is_adopted
     store.hold_next_configuration_on("main");
     // The pinned creation lives past the host's close: it borrows a clone.
     let opener = agent.agent().clone();
-    let creation = opener.create_session(SessionConfig::default());
+    let creation = opener.create_session(SessionConfig::default(), Default::default());
     tokio::pin!(creation);
     let session = tokio::select! {
         _ = &mut creation => panic!("the Session opened before its publication was held"),
@@ -1586,7 +1619,7 @@ async fn an_entry_that_returns_during_the_open_adoption_is_adopted() {
     store.hold_next_configuration_on("main");
     // The pinned creation lives past the host's close: it borrows a clone.
     let opener = agent.agent().clone();
-    let creation = opener.create_session(SessionConfig::default());
+    let creation = opener.create_session(SessionConfig::default(), Default::default());
     tokio::pin!(creation);
     let session = tokio::select! {
         _ = &mut creation => panic!("the Session opened before its publication was held"),
@@ -1629,7 +1662,7 @@ async fn the_frame_states_the_compaction_handle() {
     defaults::install_with_prompt(&mut builder, Arc::new(EmptyPromptHost), None);
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     run(&session, "hello").await;
@@ -1953,7 +1986,10 @@ async fn each_branch_keeps_its_own_entries() {
     workspace(&mut builder, &dirs);
     defaults::install_with_prompt(&mut builder, Arc::new(EmptyPromptHost), None);
     let agent = platform_host(&builder, &dirs).await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     run(&session, "on main").await;
     let main = last_system(&session, "main").await;
     assert_eq!(
@@ -2140,7 +2176,10 @@ async fn a_tools_only_adoption_carries_the_entry_its_writer_registers() {
         },
     ));
     let agent = platform_host(&builder, &dirs).await;
-    let session = agent.create_session(work_config(&dirs)).await.unwrap();
+    let session = agent
+        .create_session(work_config(&dirs), Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         session
             .configure(

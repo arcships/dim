@@ -82,21 +82,24 @@ async fn product(dirs: &Dirs) -> Product {
 async fn session(product: &Product, cwd: &Path) -> Session {
     product
         .agent
-        .create_session(SessionConfig {
-            cwd: cwd.to_string_lossy().into_owned(),
-            tools: Some(
-                [
-                    "read", "write", "edit", "glob", "grep", "exec", "wait", "skill",
-                ]
-                .map(String::from)
-                .to_vec(),
-            ),
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::WorkspaceWrite,
-                ..Default::default()
+        .create_session(
+            SessionConfig {
+                cwd: cwd.to_string_lossy().into_owned(),
+                tools: Some(
+                    [
+                        "read", "write", "edit", "glob", "grep", "exec", "wait", "skill",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                ),
+                permission_policy: PermissionPolicy {
+                    preset: PermissionPreset::WorkspaceWrite,
+                    ..Default::default()
+                },
+                ..SessionConfig::default()
             },
-            ..SessionConfig::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap()
 }

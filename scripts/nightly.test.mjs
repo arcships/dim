@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-test('rolling nightly installs only complete releases and retains the three highest versions', { skip: process.platform === 'win32' }, t => {
+test('rolling nightly installs only complete releases and retains only the latest version', { skip: process.platform === 'win32' }, t => {
   const root = mkdtempSync(path.join(tmpdir(), 'dim-nightly-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const file = (...parts) => path.join(root, ...parts);
-  const env = { ...process.env, HOME: root, XDG_DATA_HOME: file('data'), PATH: `${root}:${process.env.PATH}` };
+  const env = { ...process.env, HOME: root, XDG_DATA_HOME: file('data'), RELEASE_FIXTURE: root, PATH: `${root}:${process.env.PATH}` };
   const assets = file('assets');
   mkdirSync(assets);
   mkdirSync(file('payload/bin'), { recursive: true });
@@ -27,8 +27,23 @@ esac\n`, { mode: 0o755 });
   writeFileSync(file('curl'), `#!/bin/sh
 set -eu
 case "$2" in
-  https://api.github.com/repos/arcships/dim/releases/tags/Nightly) cp "$HOME/release" "$4";;
-  https://github.com/arcships/dim/releases/download/Nightly/*) cp "$HOME/assets/\${2##*/}" "$4";;
+  https://api.github.com/repos/arcships/dim/releases/tags/Nightly)
+    if [ -f "$RELEASE_FIXTURE/stale-release" ]; then
+      mv "$RELEASE_FIXTURE/stale-release" "$4"
+    else
+      cp "$RELEASE_FIXTURE/release" "$4"
+    fi;;
+  https://github.com/arcships/dim/releases/download/Nightly/*)
+    asset=\${2##*/}
+    if [ "$asset" = SHA256SUMS-1.2.3-nightly.9 ] && [ -f "$RELEASE_FIXTURE/stale-sums" ]; then
+      mv "$RELEASE_FIXTURE/stale-sums" "$4"
+    elif [ -f "$RELEASE_FIXTURE/assets/$asset" ]; then
+      cp "$RELEASE_FIXTURE/assets/$asset" "$4"
+    else
+      printf 404
+      exit 22
+    fi
+    if [ "\${5:-}" = -w ]; then printf 200; fi;;
   *) exit 2;;
 esac\n`, { mode: 0o755 });
   const platforms = ['linux-arm64', 'linux-x64', 'darwin-arm64', 'darwin-x64'];
@@ -40,7 +55,9 @@ esac\n`, { mode: 0o755 });
     const run = spawnSync(process.execPath, [path.join(import.meta.dirname, 'publish-nightly.mjs'), dir, `v${v}`, 'a'.repeat(40)], { env, encoding: 'utf8' });
     assert.equal(run.status === 0, ok, run.stderr);
   }
-  const install = () => spawnSync('sh', [path.join(import.meta.dirname, 'install-nightly.sh')], { env, encoding: 'utf8' });
+  const install = (home = root) => spawnSync('sh', [path.join(import.meta.dirname, 'install-nightly.sh')], {
+    env: { ...env, HOME: home, XDG_DATA_HOME: path.join(home, 'data') }, encoding: 'utf8', timeout: 5000,
+  });
   const installed = (command = 'dim-nightly') => execFileSync(file('.local/bin', command), ['--version'], { env, encoding: 'utf8' }).trim();
   const shortcut = file('.local/bin/dimn');
   const release = () => JSON.parse(readFileSync(file('release'))).name;
@@ -56,17 +73,32 @@ esac\n`, { mode: 0o755 });
   writeFileSync(file('interrupt'), '');
   publish(12, false);
   assert.equal(release(), 'Nightly v1.2.3-nightly.8');
+  assert.equal(install(file('fresh-after-interruption')).status, 0);
   rmSync(file('interrupt'));
   publish(9);
+  const oldRelease = readFileSync(file('release'));
+  const oldSums = readFileSync(file('assets/SHA256SUMS-1.2.3-nightly.9'));
   publish(11);
   publish(10);
   assert.equal(release(), 'Nightly v1.2.3-nightly.11');
-  const expected = [9, 10, 11].flatMap(n => [...platforms.map(p => `dimcode-${p}-1.2.3-nightly.${n}.tar.gz`), `SHA256SUMS-1.2.3-nightly.${n}`]);
+  const expected = [...platforms.map(p => `dimcode-${p}-1.2.3-nightly.11.tar.gz`), 'SHA256SUMS-1.2.3-nightly.11'];
   assert.deepEqual(readdirSync(assets).sort(), [...expected, 'unrelated.txt'].sort());
   const tar = file('assets', `dimcode-${process.platform}-${process.arch}-1.2.3-nightly.11.tar.gz`);
   const bytes = readFileSync(tar);
   writeFileSync(tar, 'corrupted');
   assert.match(install().stderr, /Checksum mismatch/);
+  assert.equal(installed(), 'dimcode 1.2.3-nightly.8');
+  writeFileSync(tar, bytes);
+  for (const missing of ['checksum', 'archive']) {
+    writeFileSync(file('stale-release'), oldRelease);
+    if (missing === 'archive') writeFileSync(file('stale-sums'), oldSums);
+    const home = file(`promotion-before-${missing}`);
+    const run = install(home);
+    assert.equal(run.status, 0, `Expected recovery when promotion removes the ${missing}: ${run.stderr}`);
+    assert.equal(execFileSync(path.join(home, '.local/bin/dim-nightly'), ['--version'], { encoding: 'utf8' }).trim(), 'dimcode 1.2.3-nightly.11');
+  }
+  rmSync(tar);
+  assert.match(install().stderr, /Could not download Nightly assets.*404/);
   assert.equal(installed(), 'dimcode 1.2.3-nightly.8');
   writeFileSync(tar, bytes);
   for (let i = 0; i < 2; i++) {

@@ -384,7 +384,7 @@ async fn a_steer_before_any_model_output_ends_the_request_and_continues_the_turn
         let model = Arc::new(SilentFirstCall::default());
         let agent = MinimalHost::start(&builder(model.clone())).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -481,7 +481,7 @@ async fn provider_budget_recovery_uses_one_fixed_source_and_retries_only_once() 
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         // The turn's input is larger than the summary wrapper plus the
@@ -557,7 +557,7 @@ async fn foreign_compaction_cursor_fails_recovery_without_another_model_call() {
             Context { foreign_cursor: true, ..Context::default() },
         )).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -635,7 +635,7 @@ async fn compressor_cursor_cannot_split_an_assistant_tool_use_from_its_result() 
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -739,7 +739,7 @@ async fn compaction_restores_counts_and_uses_the_committed_context_baseline() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session.input(context_input(), "main").await.unwrap();
@@ -814,7 +814,7 @@ async fn compaction_restores_counts_and_uses_the_committed_context_baseline() {
     );
     let forged_agent = MinimalHost::start(&forged_builder).await.unwrap();
     let forged_session = forged_agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     forged_session.input(context_input(), "main").await.unwrap();
@@ -956,7 +956,7 @@ async fn before_modified_request_is_budget_checked_before_native_model_invocatio
         }));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1044,7 +1044,7 @@ async fn a_final_request_transform_does_not_calibrate_the_canonical_context() {
     }));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1099,7 +1099,7 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
         }).into()).unwrap();
         dim_agent_runtime::core::close_timeline(&timeline).await.unwrap();
         let agent = MinimalHost::start(&profile).await.unwrap();
-        let session = agent.restore_session("usage-baseline".into()).await.unwrap();
+        let session = agent.restore_session("usage-baseline".into(), Default::default()).await.unwrap();
         session
             .submit("first".into(), InputMode::Queue, "main")
             .await
@@ -1231,7 +1231,7 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
         );
         changed.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
         let agent = MinimalHost::start(&changed).await.unwrap();
-        let session = agent.restore_session(id).await.unwrap();
+        let session = agent.restore_session(id, Default::default()).await.unwrap();
         let usage = session
             .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
             .unwrap()
@@ -1365,7 +1365,10 @@ async fn restore_preserves_each_parent_tools_own_confirmed_child_effects() {
     );
     profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&profile).await.unwrap();
-    let session = agent.restore_session("effects".into()).await.unwrap();
+    let session = agent
+        .restore_session("effects".into(), Default::default())
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(3), session.idle("main"))
         .await
         .unwrap()
@@ -1614,7 +1617,10 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
         );
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let session = agent.restore_session("restore".into()).await.unwrap();
+        let session = agent
+            .restore_session("restore".into(), Default::default())
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(3), session.idle("main"))
             .await
             .unwrap_or_else(|_| panic!("recovery stuck at {boundary}"))
@@ -1781,7 +1787,7 @@ async fn restoring_idle_unpaused_queue_input_applies_it_without_a_new_submission
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .restore_session("queued-restore".into())
+        .restore_session("queued-restore".into(), Default::default())
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), session.idle("main"))
@@ -1878,7 +1884,7 @@ async fn restoring_pending_inputs_runs_each_queued_input_in_its_own_turn() {
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .restore_session("applied-restore".into())
+        .restore_session("applied-restore".into(), Default::default())
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), session.idle("main"))
@@ -1999,7 +2005,7 @@ async fn a_restored_queue_writes_one_owed_deletion_for_a_handover_input() {
     };
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .restore_session("handover-restore".into())
+        .restore_session("handover-restore".into(), Default::default())
         .await
         .unwrap();
     let events = chain_events(&session, "main", ..).await.unwrap();
@@ -2010,7 +2016,7 @@ async fn a_restored_queue_writes_one_owed_deletion_for_a_handover_input() {
 
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .restore_session("handover-restore".into())
+        .restore_session("handover-restore".into(), Default::default())
         .await
         .unwrap();
     let events = chain_events(&session, "main", ..).await.unwrap();
@@ -2103,7 +2109,7 @@ async fn a_compaction_completed_after_a_stop_is_committed_not_discarded() {
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     for text in ["x".repeat(500), "y".repeat(500)] {
@@ -2188,14 +2194,17 @@ async fn a_single_long_turn_compacts_inside_itself_instead_of_skipping() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["echo".into()]),
-            permission_policy: dim_agent_runtime::PermissionPolicy {
-                preset: dim_agent_runtime::PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["echo".into()]),
+                permission_policy: dim_agent_runtime::PermissionPolicy {
+                    preset: dim_agent_runtime::PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     let command = format!("tool:echo {{\"text\":\"{}\"}}", "y".repeat(600));
@@ -2248,7 +2257,7 @@ async fn a_changed_prefix_message_fails_the_preparation() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -2295,7 +2304,7 @@ async fn a_short_request_fails_the_preparation() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -2331,7 +2340,7 @@ async fn a_message_appended_after_the_prefix_reaches_the_model() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -2381,7 +2390,7 @@ async fn a_completed_compaction_keeps_its_replacement_in_the_prefix_check() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -2436,7 +2445,7 @@ async fn a_completed_compaction_keeps_its_replacement_in_the_prefix_check() {
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session

@@ -363,7 +363,16 @@ Each runner's OS/libc baseline must be recorded and verified before declaring th
 
 Public Node provider and MCP interoperability fixtures use development dependencies declared in `runtime/package.json`. Install them with `npm ci --prefix runtime --ignore-scripts`; distribution staging uses `--omit=dev` and does not ship those SDKs.
 
-Evaluation-tool tests are opt-in: `cargo test --locked -p xtask --features eval-tests`. CI enables them for `xtask/` changes, main pushes, scheduled sweeps and manual runs. The real 30-second background handoff is also opt-in locally: `cargo test --locked -p dim-agent-integration-tests --test integration_flow local_execution::a_long_foreground_command_moves_to_the_background_after_30_seconds -- --ignored --exact`; CI runs it for execution-related paths, main pushes, scheduled sweeps and manual runs. Ordinary workspace tests retain execution cancellation, cleanup and recovery flows.
+Evaluation-tool tests are opt-in: `cargo test --locked -p xtask --features eval-tests`. CI enables them for `xtask/` changes, main pushes, scheduled sweeps and manual runs. Debug-build CLI acceptances are also opt-in. Run all 39 with:
+
+```sh
+cargo test --locked -p dimcode --features dev-tests --test cli_daemon_flow daemon_startup_progress
+cargo test --locked -p dimcode --features dev-tests --test cli_daemon_flow daemon_replace::build_identity
+cargo test --locked -p dimcode --features dev-tests --test cli_flow staged_update::recovery
+cargo test --locked -p dimcode --features dev-tests --test cli_flow staged_update::tui_update
+```
+
+Ordinary workspace tests compile without `dev-tests`; CI selects the dedicated step for changes to those owning test files and to the production paths that implement the behaviors they assert: `dim-cli/src/client.rs`, `dim-cli/src/lib.rs`, `dim-cli/src/update.rs`, `dim-cli/src/update/staged.rs`, `dim-cli/src/plugins.rs`, `dim-cli/src/session_host.rs`, `dim-cli/src/ui/`, `dim-agent-capabilities/src/build.rs`, `dim-app-server/src/cli.rs`, `dim-app-server/src/transport.rs`, `dim-app-server/src/storage/sqlite.rs` and `dimcode/src/main.rs`. The owning test files, `dimcode/tests/support/cli_harness.rs`, `dimcode/tests/support/daemon.rs` and `dimcode/Cargo.toml` also select it. The real 30-second background handoff is also opt-in locally: `cargo test --locked -p dim-agent-integration-tests --test integration_flow local_execution::a_long_foreground_command_moves_to_the_background_after_30_seconds -- --ignored --exact`; CI runs it for execution-related paths, main pushes, scheduled sweeps and manual runs. Ordinary workspace tests retain execution cancellation, cleanup and recovery flows.
 
 `npm run build --prefix web` type-checks and bundles the frontend. Run its component and projection flows separately with `npm test --prefix web`.
 

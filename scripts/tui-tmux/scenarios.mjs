@@ -556,6 +556,60 @@ const scenarios = [
     },
   },
   {
+    name: 'scrollback_click_places_draft_cursor',
+    area: 'composer',
+    title: 'Scrollback captures clicks only while editing and inserts at the clicked cell',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const terminal = await tui.launch(['--scrollback'], {waitForComposer: true, cols: 60});
+      const mouseEnabled = () => tui.tmuxRun(['display-message', '-p', '-t', terminal.session, '#{mouse_any_flag}']).trim() === '1';
+      assert(!mouseEnabled(), 'empty scrollback draft preserves native selection');
+      const prefix = 'a'.repeat(60);
+      terminal.send(`${prefix}界bc`);
+      terminal.key('C-j');
+      terminal.send('last line');
+      await terminal.waitFor('last line');
+      assert(mouseEnabled(), 'editing enables terminal mouse reporting');
+      const lines = terminal.capture({join: false}).split('\n');
+      const row = lines.findIndex((line) => line.includes('界bc'));
+      assert(row > 0 && lines[row - 1].includes('aaaa'), 'target is on a wrapped row');
+      const report = `\x1b[<0;${lines[row].indexOf('界') + 3};${row + 1}`;
+      terminal.bytes(Buffer.from(`${report}M${report}m`));
+      terminal.send('X');
+      terminal.key('Enter');
+      await terminal.waitFor(ANSWER);
+      assert.equal(lastTurnText(tui.model), `${prefix}界Xbc\nlast line`);
+      assert(!mouseEnabled(), 'submitting releases the mouse');
+      const draft = Array.from({length: 18}, (_, i) => `draft-row-${i}`);
+      terminal.bytes(Buffer.from(draft.map((line) => `\x1b[200~${line}\x1b[201~`).join('\n')));
+      await terminal.waitFor('draft-row-17');
+      const visible = terminal.capture({join: false}).split('\n');
+      const first = visible.findIndex((line) => line.includes('draft-row-'));
+      assert(first >= 0 && !visible[first].includes('draft-row-0'), 'the editor is scrolled');
+      const oldCell = `\x1b[<0;${visible[first].indexOf('draft-row-') + 1};${first + 1}`;
+      terminal.bytes(Buffer.from(`\x1b[200~\nnew-row\x1b[201~${oldCell}M${oldCell}mX`));
+      await terminal.waitFor('new-rowX');
+      const before = terminal.capture({join: false}).split('\n')[first];
+      terminal.paste('\nlast-row');
+      await terminal.waitFor('last-row');
+      const after = terminal.capture({join: false}).split('\n')[first];
+      assert.notEqual(before, after, 'the old screen cell now shows another draft row');
+      terminal.bytes(Buffer.from(`${oldCell}M${oldCell}mY`));
+      const edited = await terminal.waitFor(/last-rowY|Ydraft-row-/);
+      assert(edited.includes('last-rowY'), edited);
+      terminal.bytes(Buffer.from(`${oldCell}M${oldCell}mZ`));
+      const target = after.match(/draft-row-(\d+)/);
+      assert(target, after);
+      await terminal.waitFor(`Z${target[0]}`);
+      draft[Number(target[1])] = `Z${target[0]}`;
+      terminal.key('Enter');
+      await waitForRequest(tui.model, (request) => userText(request) === `${draft.join('\n')}\nnew-rowX\nlast-rowY`);
+      await exitWith(terminal);
+      const raw = terminal.raw();
+      assert(raw.slice(raw.lastIndexOf('\x1b[?2026l\x1b[0m')).includes('\x1b[?1006l\x1b[?1003l\x1b[?1002l'), 'exit resets mouse reporting even after mouse-off was queued');
+    },
+  },
+  {
     name: 'fullscreen_composer_click_with_a_clipped_task_strip',
     area: 'composer',
     title: 'Clicking a wrapped draft uses the visible textarea when task rows squeeze the composer',

@@ -619,10 +619,13 @@ fn a_stop_hook_exports_its_session_from_dimcode_home() {
         let session = server
             .agent()
             .unwrap()
-            .create_session(SessionConfig {
-                cwd: project.to_string_lossy().into_owned(),
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    cwd: project.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap();
         session

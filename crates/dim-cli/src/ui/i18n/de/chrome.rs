@@ -441,7 +441,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Thinking details" => "Denkdetails",
         "expanded" => "ausgeklappt",
         "collapsed" => "eingeklappt",
-        "Mouse (fullscreen)" => "Maus (Vollbild)",
+        "Mouse" => "Maus",
         "Permissions" => "Berechtigungen",
         "Tool approvals" => "Tool-Freigaben",
         "Execution" => "Ausführung",

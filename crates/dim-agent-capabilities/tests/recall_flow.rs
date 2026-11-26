@@ -93,10 +93,13 @@ fn said(message: &Message) -> String {
 
 async fn open(agent: &Agent) -> Session {
     agent
-        .create_session(SessionConfig {
-            tools: None,
-            ..SessionConfig::default()
-        })
+        .create_session(
+            SessionConfig {
+                tools: None,
+                ..SessionConfig::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap()
 }
@@ -936,7 +939,7 @@ async fn the_read_only_preset_runs_recall_without_an_approval_request() {
                 },
                 tools: None,
                 ..SessionConfig::default()
-            })
+            }, Default::default())
             .await
             .unwrap();
         session

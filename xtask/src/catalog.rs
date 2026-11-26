@@ -66,11 +66,14 @@ pub(super) async fn collect() -> Result<Table> {
             .agent()
             .ok_or("the product profile has no default Agent")?;
         let session = agent
-            .create_session(SessionConfig {
-                cwd: dir.to_string_lossy().into_owned(),
-                tools: None,
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    cwd: dir.to_string_lossy().into_owned(),
+                    tools: None,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await?;
         let layers = [
             ("process", app_server::process_layer(server.diagnostics())),
@@ -416,11 +419,14 @@ mod face_tests {
             .unwrap();
             let agent = server.agent().unwrap();
             let session = agent
-                .create_session(SessionConfig {
-                    cwd: dir.to_string_lossy().into_owned(),
-                    tools: None,
-                    ..Default::default()
-                })
+                .create_session(
+                    SessionConfig {
+                        cwd: dir.to_string_lossy().into_owned(),
+                        tools: None,
+                        ..Default::default()
+                    },
+                    Default::default(),
+                )
                 .await
                 .unwrap();
             let layers = [

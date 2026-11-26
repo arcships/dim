@@ -239,7 +239,7 @@ async fn a_registered_part_reaches_open_and_later_sessions_and_leaves_with_its_p
     let (agent, registry) = placed(builder()).await;
     let root = agent.root().clone();
     let before = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let log = Log::default();
@@ -254,7 +254,7 @@ async fn a_registered_part_reaches_open_and_later_sessions_and_leaves_with_its_p
     let first = format!("mounted {}", before.id());
     eventually(|| log.lock().unwrap().contains(&first)).await;
     let after = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let second = format!("mounted {}", after.id());
@@ -271,7 +271,7 @@ async fn a_registered_part_reaches_open_and_later_sessions_and_leaves_with_its_p
         assert!(!mounted(session, "test.recorder"));
     }
     let later = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -305,14 +305,17 @@ async fn a_generator_may_mount_nothing_for_an_instance() {
     )
     .await;
     let off = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let on = agent
-        .create_session(SessionConfig {
-            system_prompt: "recorded".into(),
-            ..SessionConfig::default()
-        })
+        .create_session(
+            SessionConfig {
+                system_prompt: "recorded".into(),
+                ..SessionConfig::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let mounted_on = format!("mounted {}", on.id());
@@ -336,7 +339,11 @@ async fn a_required_part_gates_publication_and_its_failure_fails_the_session() {
     let root = agent.root().clone();
     let creating = {
         let agent = agent.agent().clone();
-        tokio::spawn(async move { agent.create_session(SessionConfig::default()).await })
+        tokio::spawn(async move {
+            agent
+                .create_session(SessionConfig::default(), Default::default())
+                .await
+        })
     };
     let registry = registries.recv().await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -378,7 +385,7 @@ async fn a_required_part_gates_publication_and_its_failure_fails_the_session() {
     )
     .await;
     let error = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .err()
         .expect("a failed required part fails its Session");
@@ -414,7 +421,11 @@ async fn an_optional_part_settles_before_publication_and_its_failure_stays_local
     .await;
     let creating = {
         let agent = agent.agent().clone();
-        tokio::spawn(async move { agent.create_session(SessionConfig::default()).await })
+        tokio::spawn(async move {
+            agent
+                .create_session(SessionConfig::default(), Default::default())
+                .await
+        })
     };
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(
@@ -467,7 +478,7 @@ async fn a_branch_part_mounts_in_each_branch() {
     )
     .await;
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let main = format!("branch {}/main", session.id());
@@ -497,8 +508,14 @@ async fn agents_of_one_builder_mount_only_their_own_plugins_parts() {
     let registry = registries.recv().await.unwrap();
     let two = MinimalHost::start(&builder).await.unwrap();
     let other = registries.recv().await.unwrap();
-    let first = one.create_session(SessionConfig::default()).await.unwrap();
-    let second = two.create_session(SessionConfig::default()).await.unwrap();
+    let first = one
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    let second = two
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
     assert!(!Arc::ptr_eq(&registry, &other), "each host has its own");
     assert!(!Arc::ptr_eq(&registry, &builder.parts()));
     let log = Log::default();

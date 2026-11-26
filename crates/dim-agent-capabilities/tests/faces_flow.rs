@@ -107,13 +107,16 @@ async fn fixture(tools: Arc<dyn ToolDriver>) -> Fixture {
     }));
     let host = MinimalHost::start(&builder).await.unwrap();
     let session = host
-        .create_session(SessionConfig {
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::WorkspaceWrite,
+        .create_session(
+            SessionConfig {
+                permission_policy: PermissionPolicy {
+                    preset: PermissionPreset::WorkspaceWrite,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap();
     let session_instance = group_instance(&session.diagnostics().unwrap(), "SessionScope");

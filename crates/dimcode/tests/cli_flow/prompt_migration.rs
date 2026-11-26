@@ -40,7 +40,7 @@ async fn legacy_session(database: &Path) -> String {
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let id = session.id().to_owned();
@@ -102,7 +102,7 @@ async fn resume(database: &Path, id: &str) -> dim_agent_runtime::Result<PromptSn
         .unwrap();
     let restored = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        agent.restore_session(id.to_owned()),
+        agent.restore_session(id.to_owned(), Default::default()),
     )
     .await
     .expect("the branch settles");

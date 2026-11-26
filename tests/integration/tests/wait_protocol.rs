@@ -325,7 +325,10 @@ async fn wait_timeline_traces_match_the_notification_contract() {
     ]);
     let mut cover = Cover::default();
     for trace in &traces {
-        let session = host.create_session(SessionConfig::default()).await.unwrap();
+        let session = host
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         let (timeline, ctx) = seen.lock().unwrap().clone().unwrap();
         let mut history = Vec::new();
         let mut taken = Vec::new();
@@ -417,7 +420,10 @@ async fn wait_timeline_traces_match_the_notification_contract() {
         session.close().await.unwrap();
     }
     for initially_open in [false, true] {
-        let session = host.create_session(SessionConfig::default()).await.unwrap();
+        let session = host
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         let (timeline, ctx) = seen.lock().unwrap().clone().unwrap();
         if initially_open {
             timeline

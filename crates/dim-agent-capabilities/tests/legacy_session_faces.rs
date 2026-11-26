@@ -196,8 +196,12 @@ async fn the_agent_config_face_resolves_inside_each_session_instance() {
         },
     ));
     let host = MinimalHost::start(&builder).await.unwrap();
-    host.create_session(SessionConfig::default()).await.unwrap();
-    host.create_session(SessionConfig::default()).await.unwrap();
+    host.create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    host.create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
     assert_eq!(reads.load(Ordering::SeqCst), 2);
     host.close().await.unwrap();
 }

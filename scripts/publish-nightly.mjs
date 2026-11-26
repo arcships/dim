@@ -48,8 +48,7 @@ for (const name of names) {
   sets.get(v).push(name);
 }
 const latest = !promoted || compare(current, promoted) < 0 ? current : promoted;
-const keep = [...sets.keys()].filter(v => compare(v, latest) >= 0 && sets.get(v).length === 5).sort(compare).slice(0, 3);
-assert(keep.includes(latest));
+assert.equal(sets.get(latest)?.length, 5, `Incomplete Nightly asset set for ${latest}`);
 for (const [v, files] of sets) {
-  if (!keep.includes(v)) for (const file of files) gh('release', 'delete-asset', 'Nightly', file, '--yes');
+  if (v !== latest) for (const file of files) gh('release', 'delete-asset', 'Nightly', file, '--yes');
 }

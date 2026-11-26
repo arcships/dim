@@ -34,10 +34,81 @@ enum Entry {
     Building(watch::Receiver<Option<Result<Session>>>),
     Ready(Session),
 }
+/// The host-owned step of a prepared creation: creation hands it the id the
+/// Session is created under, and the step commits that id's rows.
+type Preparation = Box<dyn FnOnce(String) -> BoxFuture<'static, Result<()>> + Send>;
 enum SessionStart {
     Create,
-    Prepared(BoxFuture<'static, Result<()>>),
+    Prepared(Preparation),
     Restore,
+}
+/// What a creation that fails undoes in the store.
+enum Cleanup {
+    Nothing,
+    Rollback,
+    Release,
+}
+/// How [`Agent::create_session`] creates its Session: the host-owned prepared
+/// creation, which names the id it creates under, and the Session extension to
+/// load.
+#[derive(Default)]
+pub struct CreateSessionOptions {
+    prepare: Option<(String, Preparation)>,
+    extension: Option<Extension>,
+}
+impl CreateSessionOptions {
+    /// Creates the Session under `id` instead of the generated one: `prepare`
+    /// receives `id`, commits that id's rows, and creation loads them once it
+    /// completes. Without it, the Session is created under a generated UUIDv4.
+    ///
+    /// The id must be one normal path component, which is what Session
+    /// command-output storage addresses ([`check_session_id`]);
+    /// [`Agent::create_session`] rejects any other id before it prepares,
+    /// writes or publishes.
+    pub fn prepare<F>(mut self, id: impl Into<String>, prepare: F) -> Self
+    where
+        F: FnOnce(String) -> BoxFuture<'static, Result<()>> + Send + 'static,
+    {
+        self.prepare = Some((id.into(), Box::new(prepare)));
+        self
+    }
+    /// Loads the Session extension `group` ([`AgentBuilder::session_extension`])
+    /// for this Session only, with `value`, before main initialization.
+    /// Admission and rollback remain owned by this Agent.
+    pub fn extension<V: Send + Sync + 'static>(
+        mut self,
+        group: impl Into<String>,
+        value: V,
+    ) -> Self {
+        self.extension = Some(extension(group, value));
+        self
+    }
+}
+/// How [`Agent::restore_session`] restores its Session: the owner
+/// connection's projection gate, when it has one.
+#[derive(Default)]
+pub struct RestoreSessionOptions {
+    protocol_version: Option<u32>,
+}
+impl RestoreSessionOptions {
+    /// Applies the owner connection's projection gate at `protocol_version`
+    /// ([`SessionConfig::exclude_codemode_below`]). Without it, the stored
+    /// configuration is restored as written.
+    pub fn protocol_version(mut self, protocol_version: u32) -> Self {
+        self.protocol_version = Some(protocol_version);
+        self
+    }
+}
+/// Requires the single path component that Session command-output storage
+/// addresses: an absolute path, a current or parent directory, and a path of
+/// several components are rejected with [`AgentError::InvalidInput`].
+pub fn check_session_id(id: &str) -> Result<()> {
+    if !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
+        [std::path::Component::Normal(name)] if name == id)
+    {
+        return Err(AgentError::InvalidInput(format!("invalid Session id {id}")));
+    }
+    Ok(())
 }
 impl Agent {
     pub(crate) fn new(builder: AgentBuilder, assembly: Assembly, placement: Placement) -> Self {
@@ -61,68 +132,30 @@ impl Agent {
     pub fn faces(&self) -> &crate::Faces {
         self.0.builder.faces()
     }
-    pub async fn create_session(&self, config: SessionConfig) -> Result<Session> {
-        self.create(
-            Uuid::new_v4().to_string(),
-            config,
-            SessionStart::Create,
-            None,
-        )
-        .await
-    }
-    /// Loads the Session extension `group` ([`AgentBuilder::session_extension`])
-    /// for this Session only, with `value`, before main initialization.
-    /// Admission and rollback remain owned by this Agent.
-    pub async fn create_session_with_extension<V: Send + Sync + 'static>(
+    /// Creates a Session. A prepared creation is created under the id its
+    /// [`CreateSessionOptions::prepare`] names; a plain creation is created
+    /// under a generated UUIDv4.
+    pub async fn create_session(
         &self,
         config: SessionConfig,
-        group: impl Into<String>,
-        value: V,
+        options: CreateSessionOptions,
     ) -> Result<Session> {
-        self.create(
-            Uuid::new_v4().to_string(),
-            config,
-            SessionStart::Create,
-            Some(extension(group, value)),
-        )
-        .await
+        let CreateSessionOptions { prepare, extension } = options;
+        let (id, start) = match prepare {
+            Some((id, prepare)) => {
+                check_session_id(&id)?;
+                (id, SessionStart::Prepared(prepare))
+            }
+            None => (Uuid::new_v4().to_string(), SessionStart::Create),
+        };
+        self.create(id, config, start, extension).await
     }
-    /// Reserves runtime capacity before committing the host-owned directory.
-    pub async fn create_prepared_session(
+    /// Restores the original Session identity and its stored configuration,
+    /// applying the projection gate [`RestoreSessionOptions`] names.
+    pub async fn restore_session(
         &self,
         id: String,
-        config: SessionConfig,
-        prepare: BoxFuture<'static, Result<()>>,
-    ) -> Result<Session> {
-        self.create(id, config, SessionStart::Prepared(prepare), None)
-            .await
-    }
-    /// Loads a Session extension after admission and directory preparation.
-    pub async fn create_prepared_session_with_extension<V: Send + Sync + 'static>(
-        &self,
-        id: String,
-        config: SessionConfig,
-        prepare: BoxFuture<'static, Result<()>>,
-        group: impl Into<String>,
-        value: V,
-    ) -> Result<Session> {
-        self.create(
-            id,
-            config,
-            SessionStart::Prepared(prepare),
-            Some(extension(group, value)),
-        )
-        .await
-    }
-    /// Restores the original Session identity and its stored configuration.
-    pub async fn restore_session(&self, id: String) -> Result<Session> {
-        self.restore_session_for_version(id, u32::MAX).await
-    }
-    /// Restores a Session and applies the owner connection's projection gate.
-    pub async fn restore_session_for_version(
-        &self,
-        id: String,
-        protocol_version: u32,
+        options: RestoreSessionOptions,
     ) -> Result<Session> {
         let mut config = self
             .0
@@ -131,7 +164,9 @@ impl Agent {
             .session_config(&id)
             .await?
             .ok_or_else(|| AgentError::Storage(format!("unknown session {id}")))?;
-        config.exclude_codemode_below(protocol_version);
+        if let Some(protocol_version) = options.protocol_version {
+            config.exclude_codemode_below(protocol_version);
+        }
         let session = self.create(id, config, SessionStart::Restore, None).await?;
         crate::memory::trim_if_large();
         Ok(session)
@@ -163,21 +198,22 @@ impl Agent {
         }
         let owner = self.clone();
         tokio::spawn(async move {
-            let mut created = false;
+            let mut cleanup = Cleanup::Nothing;
             let mut result = async {
                 let placement = owner.0.placement.clone();
                 let initialization = match start {
                     SessionStart::Create => {
                         assembly.store.create_session(&id, &config).await?;
-                        created = true;
+                        cleanup = Cleanup::Rollback;
                         SessionInitialization::New
                     }
                     SessionStart::Prepared(prepare) => {
-                        prepare.await?;
-                        created = true;
+                        prepare(id.clone()).await?;
+                        cleanup = Cleanup::Rollback;
                         SessionInitialization::Prepared(assembly.store.branches(&id).await?)
                     }
                     SessionStart::Restore => {
+                        cleanup = Cleanup::Release;
                         SessionInitialization::Restore(assembly.store.branches(&id).await?)
                     }
                 };
@@ -218,10 +254,10 @@ impl Agent {
                 };
             }
             if let Err(failure) = result {
-                let cleanup = if created {
-                    owner.0.assembly.store.rollback_session(&id).await
-                } else {
-                    owner.0.assembly.store.release_session(&id).await
+                let cleanup = match cleanup {
+                    Cleanup::Nothing => Ok(()),
+                    Cleanup::Rollback => owner.0.assembly.store.rollback_session(&id).await,
+                    Cleanup::Release => owner.0.assembly.store.release_session(&id).await,
                 };
                 result = Err(match cleanup {
                     Ok(()) => failure,

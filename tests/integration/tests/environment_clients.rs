@@ -588,10 +588,13 @@ async fn a_line_opens_with_both_snapshots_while_a_later_batch_is_unpublished() {
     )
     .await;
     let opener = host.agent().clone();
-    let creation = opener.create_session(SessionConfig {
-        cwd: cwd.to_string_lossy().into_owned(),
-        ..SessionConfig::default()
-    });
+    let creation = opener.create_session(
+        SessionConfig {
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..SessionConfig::default()
+        },
+        Default::default(),
+    );
     tokio::pin!(creation);
     let mut held = None;
     let session = tokio::select! {
@@ -806,10 +809,13 @@ async fn a_held_opening_fact_read_does_not_hold_a_line_open() {
     let session = host
         .agent()
         .clone()
-        .create_session(SessionConfig {
-            cwd: cwd.to_string_lossy().into_owned(),
-            ..SessionConfig::default()
-        })
+        .create_session(
+            SessionConfig {
+                cwd: cwd.to_string_lossy().into_owned(),
+                ..SessionConfig::default()
+            },
+            Default::default(),
+        )
         .await
         .expect("the Session opens inside its shorter opening budget");
     for (source, label) in [

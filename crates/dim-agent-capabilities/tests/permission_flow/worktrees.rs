@@ -157,13 +157,16 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
     )
     .await;
     let session = agent
-        .create_session(config_in(
-            &probes.repo,
-            PermissionPolicy {
-                disallowed_tools: vec!["write".into()],
-                ..writable()
-            },
-        ))
+        .create_session(
+            config_in(
+                &probes.repo,
+                PermissionPolicy {
+                    disallowed_tools: vec!["write".into()],
+                    ..writable()
+                },
+            ),
+            Default::default(),
+        )
         .await
         .unwrap();
     let permission = session.service::<Permission>("main").unwrap();
@@ -254,7 +257,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
     ));
     assert_eq!(probes.count(), 6);
     let other = agent
-        .create_session(config_in(&probes.repo, writable()))
+        .create_session(config_in(&probes.repo, writable()), Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -290,7 +293,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
     )
     .await;
     let session = agent
-        .create_session(config_in(&probes.repo, writable()))
+        .create_session(config_in(&probes.repo, writable()), Default::default())
         .await
         .unwrap();
     let permission = session.service::<Permission>("main").unwrap();
@@ -336,7 +339,7 @@ async fn git_unavailability_timeout_reload_and_session_close_do_not_publish_perm
     )
     .await;
     let session = agent
-        .create_session(config_in(&probes.repo, writable()))
+        .create_session(config_in(&probes.repo, writable()), Default::default())
         .await
         .unwrap();
     let permission = session.service::<Permission>("main").unwrap();
@@ -385,7 +388,7 @@ async fn git_unavailability_timeout_reload_and_session_close_do_not_publish_perm
     ));
     assert_eq!(associations.0.load(Ordering::SeqCst), 0);
     let restored = agent
-        .restore_session(session.id().to_owned())
+        .restore_session(session.id().to_owned(), Default::default())
         .await
         .unwrap();
     let permission = restored.service::<Permission>("main").unwrap();
@@ -455,7 +458,7 @@ async fn a_source_that_becomes_a_git_worktree_is_rechecked_after_a_negative_prob
     )
     .await;
     let session = agent
-        .create_session(config_in(&probes.repo, writable()))
+        .create_session(config_in(&probes.repo, writable()), Default::default())
         .await
         .unwrap();
     let permission = session.service::<Permission>("main").unwrap();

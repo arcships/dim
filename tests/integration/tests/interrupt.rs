@@ -21,7 +21,7 @@ async fn interrupt_commits_before_later_input_without_waiting_for_dispatch() {
     dim_agent_capabilities::defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let interrupt = session.interrupt("main", "reload".into()).unwrap();
@@ -176,7 +176,7 @@ async fn external_capability_receives_interrupt_and_owns_cleanup_outside_the_sto
         );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -283,7 +283,7 @@ async fn a_large_interrupt_and_later_input_need_no_byte_budget() {
     );
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session.stop("main", "pause".into()).await.unwrap();

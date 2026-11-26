@@ -1323,7 +1323,10 @@ async fn output_block_start_id_roundtrips_through_the_merged_row() {
     dim_agent_capabilities::defaults::install(&mut builder);
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session("session".into()).await.unwrap();
+    let session = agent
+        .restore_session("session".into(), Default::default())
+        .await
+        .unwrap();
     let restored = chain_events(&session, "main", ..=2).await.unwrap();
     let text: Vec<_> = restored
         .iter()
@@ -1940,7 +1943,10 @@ async fn extension_events_keep_their_own_rows_and_restore_unchanged() {
     dim_agent_capabilities::defaults::install(&mut builder);
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session("session".into()).await.unwrap();
+    let session = agent
+        .restore_session("session".into(), Default::default())
+        .await
+        .unwrap();
     let restored = chain_events(&session, "main", ..=3).await.unwrap();
     let written: Vec<_> = written.iter().map(|entry| entry.event.clone()).collect();
     assert_eq!(
@@ -2076,7 +2082,10 @@ async fn conditional_steer_recovers_checked_candidates_once_and_preserves_old_in
         dim_agent_capabilities::defaults::install(&mut builder);
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let session = agent.restore_session("session".into()).await.unwrap();
+        let session = agent
+            .restore_session("session".into(), Default::default())
+            .await
+            .unwrap();
         tokio::time::timeout(PUBLISHED, session.idle("main"))
             .await
             .unwrap()
@@ -2290,7 +2299,10 @@ async fn branch_end_events_restore_unchanged_and_the_line_stays_ended() {
     dim_agent_capabilities::defaults::install(&mut builder);
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session("session".into()).await.unwrap();
+    let session = agent
+        .restore_session("session".into(), Default::default())
+        .await
+        .unwrap();
     let restored = chain_events(&session, "main", ..=5).await.unwrap();
     assert!(
         restored
@@ -2331,7 +2343,7 @@ async fn stored_two_line_session(database: &Database) -> (String, String) {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = settled(
         "the Session opens",
-        agent.create_session(SessionConfig::default()),
+        agent.create_session(SessionConfig::default(), Default::default()),
     )
     .await
     .unwrap();
@@ -2395,7 +2407,12 @@ async fn a_silent_restore_times_out_naming_the_restore_phase() {
     let (id, _) = stored_two_line_session(&database).await;
     let _slow = slow_restore_steps(&id, Duration::from_millis(1500));
     let (agent, store, db) = restoring_host(&database, Some(Duration::from_secs(1))).await;
-    let error = match settled("the silent restore times out", agent.restore_session(id)).await {
+    let error = match settled(
+        "the silent restore times out",
+        agent.restore_session(id, Default::default()),
+    )
+    .await
+    {
         Ok(_) => panic!("a restore silent past the bound must fail the opening"),
         Err(error) => error,
     };
@@ -2422,9 +2439,12 @@ async fn a_slow_restore_reports_progress_and_keeps_the_opening_alive() {
     let _slow = slow_restore_steps(&id, Duration::from_millis(500));
     let (agent, store, db) = restoring_host(&database, Some(bound)).await;
     let started = Instant::now();
-    let session = settled("the slow restore completes", agent.restore_session(id))
-        .await
-        .expect("reported progress renews the opening's inactivity bound");
+    let session = settled(
+        "the slow restore completes",
+        agent.restore_session(id, Default::default()),
+    )
+    .await
+    .expect("reported progress renews the opening's inactivity bound");
     let elapsed = started.elapsed();
     assert!(
         elapsed > bound,
@@ -2452,9 +2472,12 @@ async fn a_restore_resolves_its_reporting_identity_once() {
     let (id, _) = stored_two_line_session(&database).await;
     let resolutions = count_identity_resolutions(&id);
     let (agent, store, db) = restoring_host(&database, None).await;
-    settled("the restore completes", agent.restore_session(id))
-        .await
-        .expect("a restore within its opening bound completes");
+    settled(
+        "the restore completes",
+        agent.restore_session(id, Default::default()),
+    )
+    .await
+    .expect("a restore within its opening bound completes");
     assert_eq!(
         resolutions.count(),
         1,
@@ -2477,16 +2500,19 @@ async fn each_tree_generation_resolves_its_own_reporting_identity() {
     let (agent, store, db) = restoring_host(&database, None).await;
     let session = settled(
         "the first restore completes",
-        agent.restore_session(id.clone()),
+        agent.restore_session(id.clone(), Default::default()),
     )
     .await
     .expect("a restore within its opening bound completes");
     settled("the first Session closes", session.close())
         .await
         .unwrap();
-    let second = settled("the second restore completes", agent.restore_session(id))
-        .await
-        .expect("a restore within its opening bound completes");
+    let second = settled(
+        "the second restore completes",
+        agent.restore_session(id, Default::default()),
+    )
+    .await
+    .expect("a restore within its opening bound completes");
     let ids = resolutions.ids();
     assert_eq!(
         ids.len(),
@@ -2579,7 +2605,7 @@ async fn a_row_reload_resolves_the_new_tree_reporting_identity() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = settled(
         "the first restore completes",
-        agent.restore_session(id.clone()),
+        agent.restore_session(id.clone(), Default::default()),
     )
     .await
     .expect("a restore within its opening bound completes");
@@ -3666,11 +3692,11 @@ async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_o
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let mut agent = MinimalHost::start(&builder).await.unwrap();
         let bad = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let mut good = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let bad_id = bad.id().to_owned();
@@ -3729,7 +3755,7 @@ async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_o
         let head = store.head(&key(&bad_id, "main")).await.unwrap();
         let failed_restore = settled(
             "a failed settlement rejects restore",
-            agent.restore_session(bad_id.clone()),
+            agent.restore_session(bad_id.clone(), Default::default()),
         )
         .await
         .err()
@@ -3758,11 +3784,17 @@ async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_o
             dim_agent_capabilities::defaults::install(&mut builder);
             builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
             agent = MinimalHost::start(&builder).await.unwrap();
-            good = agent.restore_session(good_id).await.unwrap();
+            good = agent
+                .restore_session(good_id, Default::default())
+                .await
+                .unwrap();
         }
-        let session = settled("the orphan restores", agent.restore_session(bad_id))
-            .await
-            .unwrap();
+        let session = settled(
+            "the orphan restores",
+            agent.restore_session(bad_id, Default::default()),
+        )
+        .await
+        .unwrap();
         assert!(
             bad.submit("old generation".into(), InputMode::Queue, "main")
                 .await
@@ -5236,7 +5268,10 @@ async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas()
     dim_agent_capabilities::defaults::install(&mut builder);
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session("schema".into()).await.unwrap();
+    let session = agent
+        .restore_session("schema".into(), Default::default())
+        .await
+        .unwrap();
     let restored = chain_events(&session, "main", ..=2).await.unwrap();
     assert_eq!(restored[0], configured.event);
     assert_eq!(restored[1], called.event);
@@ -5344,7 +5379,10 @@ async fn a_type_array_tool_schema_round_trips_on_the_current_store_without_an_up
     dim_agent_capabilities::defaults::install(&mut builder);
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
-    let session = agent.restore_session("schema".into()).await.unwrap();
+    let session = agent
+        .restore_session("schema".into(), Default::default())
+        .await
+        .unwrap();
     let restored = chain_events(&session, "main", ..=2).await.unwrap();
     assert_eq!(restored[0], configured.event);
     assert_eq!(restored[1], called.event);
@@ -6442,7 +6480,10 @@ async fn recovery_ignores_disposable_snapshots_but_preserves_and_validates_facts
         dim_agent_capabilities::defaults::install(&mut builder);
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
-        agent.restore_session("session".into()).await.unwrap();
+        agent
+            .restore_session("session".into(), Default::default())
+            .await
+            .unwrap();
         agent.close().await.unwrap();
         dim_agent_runtime::core::close_timeline(&timeline)
             .await
@@ -6858,8 +6899,11 @@ async fn a_cold_read_failure_preserves_the_record_and_other_session_progress() {
         dim_agent_capabilities::defaults::install(&mut builder);
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
-        let bad = agent.create_session(SessionConfig::default()).await.unwrap();
-        let good = agent.create_session(SessionConfig::default()).await.unwrap();
+        let bad = agent.create_session(SessionConfig::default(), Default::default()).await.unwrap();
+        let good = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         bad.submit("stored request".into(), InputMode::Queue, "main").await.unwrap();
         bad.idle("main").await.unwrap();
         let connection = Connection::open(&database.0).unwrap();

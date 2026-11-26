@@ -32,6 +32,7 @@ jobs:
       node: ${{ steps.groups.outputs.node }}
       eval: ${{ steps.groups.outputs.eval }}
       execution: ${{ steps.groups.outputs.execution }}
+      debug: ${{ steps.groups.outputs.debug }}
       web: ${{ steps.groups.outputs.web }}
       scripts: ${{ steps.groups.outputs.scripts }}
       macos_scripts: ${{ steps.groups.outputs.macos_scripts }}
@@ -357,6 +358,19 @@ jobs:
           echo "Workspace tests: DIM_TEST_JOBS=$test_jobs --test-threads=$test_threads"
           DIM_TEST_JOBS="$test_jobs" node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace "--test-threads=$test_threads"
           cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
+      - name: Verify debug-only CLI tests
+        if: needs.changes.outputs.debug == 'true'
+        shell: bash
+        env:
+          DIM_TEST_TIMEOUT_MS: "600000"
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p dimcode --all-targets --features dev-tests -- -D warnings
+          cargo build --locked -p dimcode --features dev-tests --test cli_daemon_flow --test cli_flow --message-format=json > target/debug-test-artifacts.jsonl
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_daemon_flow daemon_startup_progress --test-threads=2
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_daemon_flow daemon_replace::build_identity --test-threads=2
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_flow staged_update::recovery --test-threads=2
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_flow staged_update::tui_update --test-threads=2
       - name: Verify wall-clock background handoff
         if: needs.changes.outputs.execution == 'true'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl integration_flow local_execution::a_long_foreground_command_moves_to_the_background_after_30_seconds --ignored --exact

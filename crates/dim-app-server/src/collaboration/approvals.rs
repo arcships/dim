@@ -248,6 +248,7 @@ impl CollaborationSession {
                 if let Ok(sender) = leader_service.sender() {
                     let input = leader_service.message_input(
                         &sender,
+                        leader_service.message_relation(&owner.session_id),
                         format!("Tool approval {request_id} is denied because {reason}."),
                         InputMode::Steer,
                     );

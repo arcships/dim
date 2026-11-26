@@ -901,7 +901,11 @@ fn an_interrupted_check_ends_every_process_it_started() {
     );
 }
 
-#[cfg(all(debug_assertions, any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(
+    debug_assertions,
+    feature = "dev-tests",
+    any(target_os = "macos", target_os = "linux")
+))]
 fn target_platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("darwin-arm64"),
@@ -915,7 +919,11 @@ fn target_platform() -> Option<&'static str> {
 /// Startup recovery when the store format is newer than this daemon. Uses the
 /// debug-only `DIM_TEST_RELEASE_BUILD=1` override so these flows run against
 /// the already-compiled debug binary without recompiling the workspace.
-#[cfg(all(debug_assertions, any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(
+    debug_assertions,
+    feature = "dev-tests",
+    any(target_os = "macos", target_os = "linux")
+))]
 mod recovery {
     use super::*;
 
@@ -1274,7 +1282,11 @@ mod recovery {
 /// `Update now` in the terminal UI. Uses the debug-only
 /// `DIM_TEST_RELEASE_BUILD=1` override so these flows run against the
 /// already-compiled debug binary without recompiling the workspace.
-#[cfg(all(debug_assertions, any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(
+    debug_assertions,
+    feature = "dev-tests",
+    any(target_os = "macos", target_os = "linux")
+))]
 mod tui_update {
     use super::*;
 

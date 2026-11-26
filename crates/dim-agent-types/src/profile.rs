@@ -14,6 +14,7 @@ pub struct ModelId {
 pub struct AgentProfile {
     pub name: String,
     pub description: String,
+    #[serde(default)]
     pub system_prompt: String,
     /// The mount list of the Agent's Sessions; without one they declare
     /// every tool the process provides.

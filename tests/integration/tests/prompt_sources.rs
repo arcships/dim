@@ -286,7 +286,11 @@ async fn a_restored_session_receives_the_changed_environment_once() {
             },
         )
         .await;
-        let session = env.agent.restore_session(id.clone()).await.unwrap();
+        let session = env
+            .agent
+            .restore_session(id.clone(), Default::default())
+            .await
+            .unwrap();
         run(&session, "after restart").await;
         let sent = delivered(&session, ENVIRONMENT).await;
         assert_eq!(sent.len(), environments);
@@ -406,7 +410,11 @@ async fn a_loaded_branch_appends_a_date_reminder_when_the_day_changes() {
         ..Options::default()
     };
     let env = local_support::env(&dirs, options).await;
-    let session = env.agent.restore_session(id).await.unwrap();
+    let session = env
+        .agent
+        .restore_session(id, Default::default())
+        .await
+        .unwrap();
     run(&session, "after restart").await;
     assert_eq!(dates(&session).await, ["2026-09-30", "2026-10-01"]);
     env.agent.close().await.unwrap();

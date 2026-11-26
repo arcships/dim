@@ -7,10 +7,10 @@ use crate::{
 };
 use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
-    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, InUse, Modules, Names,
-    NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QueryRow, QuerySelect,
-    QuerySpec, QueryValue, Session, SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope,
-    TimelineReadScope, TimelineReadSegment,
+    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, CreateSessionOptions, InUse,
+    Modules, Names, NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
+    QueryRow, QuerySelect, QuerySpec, QueryValue, RestoreSessionOptions, Session, SessionConfig,
+    TimelineKey, TimelineQuery, TimelineQueryScope, TimelineReadScope, TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
 use dim_agent_types::{ROOT_BRANCH_ID, TimelinePosition};
@@ -1015,7 +1015,10 @@ impl AgentIndex {
                 tokio::spawn(async move {
                     let session = host
                         .agent
-                        .restore_session_for_version(id.clone(), version)
+                        .restore_session(
+                            id.clone(),
+                            RestoreSessionOptions::default().protocol_version(version),
+                        )
                         .await?;
                     if slot.closing.load(Ordering::Acquire) {
                         // The close stopped this Session's restoration while
@@ -1468,7 +1471,7 @@ impl AgentIndex {
         leader: Option<&str>,
         origin: SessionOrigin,
         worktree: Option<PreparedWorktree>,
-    ) -> Option<(String, BoxFuture<'static, dim_agent_runtime::Result<()>>)> {
+    ) -> Option<(String, CreateSessionOptions)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
         let agent_id = host.agent_id.clone();
@@ -1489,20 +1492,17 @@ impl AgentIndex {
             })
         }))
     }
-    /// A new Session id and the prepare step of its prepared creation: the
-    /// project of `cwd` is authorized, then `step` writes the Session's rows.
-    /// Creation, `launch` and a fork share it (S5c §9).
-    fn prepared(
-        &self,
-        cwd: String,
-        step: impl FnOnce(String) -> BoxFuture<'static, dim_agent_runtime::Result<()>>,
-    ) -> (String, BoxFuture<'static, dim_agent_runtime::Result<()>>) {
+    /// A new Session id and the options of its prepared creation: the project
+    /// of `cwd` is authorized, then `step` writes the Session's rows. Creation,
+    /// `launch` and a fork share it (S5c §9).
+    fn prepared<F>(&self, cwd: String, step: F) -> (String, CreateSessionOptions)
+    where
+        F: FnOnce(String) -> BoxFuture<'static, dim_agent_runtime::Result<()>> + Send + 'static,
+    {
         let id = uuid::Uuid::new_v4().to_string();
-        let step = step(id.clone());
         let settings = self.settings.clone();
         let stopping = self.stopping.clone();
-        (
-            id,
+        let options = CreateSessionOptions::default().prepare(id.clone(), move |id: String| {
             Box::pin(async move {
                 if let Some(settings) = settings {
                     settings
@@ -1512,9 +1512,10 @@ impl AgentIndex {
                             AgentError::fault("project authorization", error.to_string())
                         })?;
                 }
-                step.await
-            }),
-        )
+                step(id).await
+            })
+        });
+        (id, options)
     }
 
     pub(crate) async fn create_with_worktree(
@@ -1590,14 +1591,15 @@ impl AgentIndex {
             .prepare_session(host, &config, version, leader, origin, worktree)
             .await
         {
-            Some((id, prepare)) => {
-                let creation = host
-                    .agent
-                    .create_prepared_session(id.clone(), config, prepare);
+            Some((id, options)) => {
+                let creation = host.agent.create_session(config, options);
                 self.admit(&id, &host.agent_id, version, creation).await
             }
             None => {
-                let session = host.agent.create_session(config).await?;
+                let session = host
+                    .agent
+                    .create_session(config, Default::default())
+                    .await?;
                 self.insert_version(session.id(), &host.agent_id, version);
                 Ok(session)
             }
@@ -1653,7 +1655,7 @@ impl AgentIndex {
             .activity
             .take_hold()
             .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
-        crate::protocol::check_session_id(id)?;
+        dim_agent_runtime::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         let removed = self.remove_locked(id, &slot).await?;
@@ -1675,7 +1677,7 @@ impl AgentIndex {
         &self,
         id: &str,
     ) -> dim_agent_runtime::Result<DeleteOutcome> {
-        crate::protocol::check_session_id(id)?;
+        dim_agent_runtime::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         // One match yields both the outcome and what there is to announce, so
@@ -2028,13 +2030,10 @@ impl AgentIndex {
                 .map_err(|error| AgentError::Storage(format!("the fork configuration: {error}")))?;
         }
         let source = source.to_owned();
-        let (id, prepare) = self.prepared(config.cwd.clone(), move |fork| {
+        let (id, options) = self.prepared(config.cwd.clone(), move |fork| {
             Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
         });
-        let creation = usage
-            .host
-            .agent
-            .create_prepared_session(id.clone(), config, prepare);
+        let creation = usage.host.agent.create_session(config, options);
         let fork = self
             .admit(&id, &usage.host.agent_id, version, creation)
             .await?;

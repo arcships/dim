@@ -433,7 +433,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Thinking details" => "Détails de réflexion",
         "expanded" => "dépliés",
         "collapsed" => "repliés",
-        "Mouse (fullscreen)" => "Souris (plein écran)",
+        "Mouse" => "Souris",
         "Permissions" => "Autorisations",
         "Tool approvals" => "Approbations d'outils",
         "Execution" => "Exécution",

@@ -39,6 +39,9 @@ path = "tests/ui_leaf.rs"
 [features]
 # Compile the Web workspace into the executable (dim-app-server's feature).
 embedded-web = ["dim-app-server/embedded-web"]
+# Debug-build acceptances that a release binary cannot run. CI enables this
+# only for the paths that own them; ordinary workspace tests leave them out.
+dev-tests = []
 
 [dependencies]
 dim-cli = { path = "../dim-cli" }

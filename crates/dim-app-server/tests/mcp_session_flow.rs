@@ -679,19 +679,22 @@ impl Env {
     }
     async fn session(&self, project: bool, preset: PermissionPreset) -> Session {
         self.agent
-            .create_session(SessionConfig {
-                cwd: self
-                    .home
-                    .join(if project { "project" } else { "other" })
-                    .to_string_lossy()
-                    .into(),
-                tools: Some(vec![]),
-                permission_policy: PermissionPolicy {
-                    preset,
+            .create_session(
+                SessionConfig {
+                    cwd: self
+                        .home
+                        .join(if project { "project" } else { "other" })
+                        .to_string_lossy()
+                        .into(),
+                    tools: Some(vec![]),
+                    permission_policy: PermissionPolicy {
+                        preset,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            })
+                Default::default(),
+            )
             .await
             .unwrap()
     }
@@ -2235,11 +2238,14 @@ async fn an_unpublished_session_never_starts_discovery() {
     .await;
     let created = env
         .agent
-        .create_session(SessionConfig {
-            cwd: env.home.join("other").to_string_lossy().into(),
-            tools: Some(vec![]),
-            ..Default::default()
-        })
+        .create_session(
+            SessionConfig {
+                cwd: env.home.join("other").to_string_lossy().into(),
+                tools: Some(vec![]),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await;
     let error = created.err().expect("assembly fails").to_string();
     assert!(
@@ -2622,7 +2628,7 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
                     ..Default::default()
                 },
                 ..Default::default()
-            })
+            }, Default::default())
             .await
             .unwrap();
         let store = agent

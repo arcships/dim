@@ -43,7 +43,7 @@
  资源节点（P1/P2 即控制节点）              FileStorage: remove(command-output/<S>)
 ```
 
-Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负责 Session 的生命周期：`acquire` 恢复 Session 时已经持有的准入门、`Session::close` 和预备创建（`create_prepared_session`）。SessionStore 负责数据库目录下的行和文件。它新增的步骤是作用于原生存储的 Rust 方法，不是服务：只有 Agents 调用。
+Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负责 Session 的生命周期：`acquire` 恢复 Session 时已经持有的准入门、`Session::close` 和预备创建（`Agent::create_session` 带 `CreateSessionOptions::prepare`）。SessionStore 负责数据库目录下的行和文件。它新增的步骤是作用于原生存储的 Rust 方法，不是服务：只有 Agents 调用。
 
 ## 3. 删除
 

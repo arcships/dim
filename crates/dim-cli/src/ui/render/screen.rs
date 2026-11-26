@@ -11,7 +11,7 @@
 use std::borrow::Cow;
 use std::io::{self, Write};
 
-use ratatui::layout::{Rect, Size};
+use ratatui::layout::{Position, Rect, Size};
 use xai_ratatui_inline::{TerminalLike, emit_to_scrollback};
 
 /// History rows kept visible when space permits.
@@ -43,7 +43,7 @@ pub struct Frame {
     pub thought_rows: Vec<(usize, std::ops::Range<usize>, String, bool)>,
     /// Model label row and columns in `live`, for the fullscreen model picker.
     pub model_label: Option<(usize, std::ops::Range<usize>)>,
-    /// Editable text cells relative to the start of the fullscreen dock.
+    /// Editable text cells relative to the start of the dock.
     pub composer: Option<Rect>,
     /// Cursor position inside the live region (row, column), `None` hides it.
     pub cursor: Option<(u16, u16)>,
@@ -100,6 +100,7 @@ pub struct Screen {
     cursor_visible: bool,
     /// Where the terminal's cursor is after our last write, when known.
     cursor_at: Option<(u16, u16)>,
+    composer: Option<(Rect, usize)>,
     synchronized: bool,
 }
 
@@ -118,12 +119,24 @@ impl Screen {
             painted: Vec::new(),
             cursor_visible: true,
             cursor_at: None,
+            composer: None,
             synchronized,
         }
     }
 
     pub fn size(&self) -> (u16, u16) {
         self.size
+    }
+
+    /// Maps a screen cell to the rendered composer box and cell, keeping screen columns
+    /// and using dock-relative rows. Cells outside the visible editor return `None`.
+    pub fn composer_hit(&self, x: u16, y: u16) -> Option<(Rect, Position)> {
+        let (area, dock_rows) = self.composer?;
+        let row = y.checked_sub(self.top)?;
+        let from_bottom = self.viewport_height.checked_sub(row)?;
+        let dock_row = dock_rows.checked_sub(usize::from(from_bottom))?;
+        let cell = Position::new(x, u16::try_from(dock_row).ok()?);
+        area.contains(cell).then_some((area, cell))
     }
 
     /// Where the shell left the cursor: the region starts there instead of
@@ -176,6 +189,9 @@ impl Screen {
     /// (empty when nothing changed).
     pub fn render(&mut self, frame: &Frame, size: (u16, u16)) -> Vec<u8> {
         let mut out = Vec::new();
+        self.composer = frame
+            .composer
+            .map(|area| (area, frame.live.len() - frame.dock));
         let resized = size != self.size;
         let (mut layout, mut wanted) = self.layout(frame, size);
         let tail = visible_tail(&layout, wanted);
@@ -885,6 +901,25 @@ mod tests {
             Screen::new(SIZE, sync),
             Emu::new(SIZE.0 as usize, SIZE.1 as usize),
         )
+    }
+
+    #[test]
+    fn composer_click_tracks_the_visible_box_in_clipped_and_padded_frames() {
+        let (mut screen, mut emu) = setup(true);
+        screen.set_origin(0);
+        for tail in [10, 1] {
+            let mut rows = vec!["tail"; tail];
+            rows.extend(["border", "first", "second", "status"]);
+            let mut f = docked(&rows, tail, None);
+            let area = Rect::new(3, 1, 8, 2);
+            f.composer = Some(area);
+            drive(&mut screen, &mut emu, &f);
+            let drawn = emu.rows_text();
+            let y = drawn.iter().position(|row| row == "second").unwrap() as u16;
+            assert_eq!(screen.composer_hit(5, y), Some((area, Position::new(5, 2))));
+            assert_eq!(screen.composer_hit(5, y - 2), None);
+            assert_eq!(screen.composer_hit(2, y), None);
+        }
     }
 
     #[test]

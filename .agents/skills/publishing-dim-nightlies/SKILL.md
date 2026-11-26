@@ -11,8 +11,8 @@ Fetch `origin/main` and read remote tags with `git ls-remote --tags --refs origi
 
 For an authorized publication, choose one entry point:
 
-- By default, or to pin an exact source commit, push only the new tag at the selected main SHA.
-- For a requested manual run, first check that `origin/main` has `workflow_dispatch` in `.github/workflows/nightly.yml`. In **Publish curl nightly → Run workflow**, select `main` and enter the unused tag. The run creates the tag at the dispatch commit; do not push it yourself. Verify the resulting tag's source before reporting the release.
+- To publish the current `main` head by tag, push only the new tag. For a historical source, dispatch from `main` instead, so the historical workflow does not publish.
+- For a manual run, select `main` in **Publish curl nightly → Run workflow** and enter the unused tag. For a pinned source, check that the workflow on `origin/main` accepts `source`, then enter the full commit SHA. The run creates the tag; do not push it yourself. Verify the resulting tag's source before reporting the release.
 
 If the tag is taken, inspect its source and run; never move or reuse it. On failure, report the failed job and run URL without rerunning it or triggering a replacement build. Select the next number on the next release request.
 

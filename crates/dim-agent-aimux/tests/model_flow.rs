@@ -448,7 +448,7 @@ async fn native_http_text_usage_tools_and_continuation_follow_agent_events() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent.create_session(session_config(), Default::default()).await.unwrap();
         session.submit("text".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
@@ -512,7 +512,7 @@ async fn native_http_text_usage_tools_and_continuation_follow_agent_events() {
             "sessionId": "stale-session", "turnId": "stale-turn", "requestId": "stale-request",
             "runId": "caller-run", "traceId": "caller-trace", "experiment": "selected"
         })).unwrap());
-        let selected = agent.create_session(explicit).await.unwrap();
+        let selected = agent.create_session(explicit, Default::default()).await.unwrap();
         selected.submit("text".into(), InputMode::Queue, "main").await.unwrap();
         selected.idle("main").await.unwrap();
         let events = chain_events(&selected, "main", ..).await.unwrap();
@@ -545,7 +545,10 @@ async fn chat_usage_without_details_records_cache_read_as_unknown() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-nodetails".into(), InputMode::Queue, "main")
             .await
@@ -577,7 +580,10 @@ async fn chat_reasoning_tokens_reach_the_recorded_usage() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-reasoning".into(), InputMode::Queue, "main")
             .await
@@ -623,7 +629,10 @@ async fn protocol_session(
     };
     let models = Arc::new(AimuxModels::from_config(configuration_of(&base, kind)).unwrap());
     let agent = model_agent(models, None).await;
-    let session = agent.create_session(session_config()).await.unwrap();
+    let session = agent
+        .create_session(session_config(), Default::default())
+        .await
+        .unwrap();
     (agent, session)
 }
 
@@ -645,7 +654,10 @@ async fn chat_without_details_records_no_reasoning_count() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-nodetails".into(), InputMode::Queue, "main")
             .await
@@ -667,7 +679,10 @@ async fn chat_with_a_zero_reasoning_count_records_zero() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-zero".into(), InputMode::Queue, "main")
             .await
@@ -735,7 +750,7 @@ async fn interrupt_releases_native_request_and_keeps_other_branches_usable() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent.create_session(session_config(), Default::default()).await.unwrap();
         session.submit("wait".into(), InputMode::Queue, "main").await.unwrap();
         // Streaming text is progress until its block ends (agent-029).
         while !session.get::<dim_agent_runtime::ModelProgress>("main").unwrap().is_some_and(|progress| !progress.text.is_empty()) {
@@ -758,7 +773,7 @@ async fn failed_native_outputs_do_not_execute_tools_or_invent_usage() {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
         for prompt in ["unauthorized", "truncated", "length"] {
-            let session = agent.create_session(session_config()).await.unwrap();
+            let session = agent.create_session(session_config(), Default::default()).await.unwrap();
             session.submit(prompt.into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -777,7 +792,12 @@ async fn model_configuration_rejects_unknown_models_before_session_start() {
     let agent = model_agent(server.models(), None).await;
     let mut config = session_config();
     config.model.model_id = "not-registered".into();
-    assert!(agent.create_session(config).await.is_err());
+    assert!(
+        agent
+            .create_session(config, Default::default())
+            .await
+            .is_err()
+    );
     assert!(agent.sessions().is_empty());
     assert!(server.endpoint.requests.lock().unwrap().is_empty());
     agent.close().await.unwrap();
@@ -1030,7 +1050,7 @@ async fn before_committed_request_controls_model_settings_and_tool_admission() {
             let mut builder = builder(models.clone(), Arc::new(MockTools));
             builder.require_feature(Feature::new("test.final-model-request").branch("test.final-model-request", move |names| Ok(Box::new(OverrideRequest { remove_tools, timeline: names.key()? }))));
             let agent = model_agent(models.clone(), Some(builder)).await;
-            let session = agent.create_session(session_config()).await.unwrap();
+            let session = agent.create_session(session_config(), Default::default()).await.unwrap();
             session.submit("tool".into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -1234,7 +1254,10 @@ async fn recorded_requests_write_their_wire_exchange() {
         let recording = Recording::start().await;
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("text".into(), InputMode::Queue, "main")
             .await
@@ -1604,7 +1627,10 @@ async fn a_same_origin_307_or_308_redirect_completes_the_turn_at_its_target() {
         ] {
             let server = RedirectServer::start(status, "/v1b/chat/completions").await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(session_config()).await.unwrap();
+            let session = agent
+                .create_session(session_config(), Default::default())
+                .await
+                .unwrap();
             session
                 .submit("text".into(), InputMode::Queue, "main")
                 .await

@@ -1224,11 +1224,14 @@ async fn catalog_changes_during_assembly_wait_for_session_publication() {
     let cwd = layout.cwd.to_string_lossy().into_owned();
     let creating = tokio::spawn(async move {
         agent
-            .create_session(SessionConfig {
-                cwd,
-                tools: Some(vec!["skill".into(), "gate".into()]),
-                ..SessionConfig::default()
-            })
+            .create_session(
+                SessionConfig {
+                    cwd,
+                    tools: Some(vec!["skill".into(), "gate".into()]),
+                    ..SessionConfig::default()
+                },
+                Default::default(),
+            )
             .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(10), hold.entered.notified())

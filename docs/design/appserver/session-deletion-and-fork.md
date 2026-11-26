@@ -64,7 +64,7 @@ or the Session facade.
 
 Rpc checks the params and the Session's protocol version and calls Agents. Agents owns the Session lifecycle: the
 admission gate `acquire` already holds while it restores a Session, `Session::close`, and prepared creation
-(`create_prepared_session`). SessionStore owns the rows and the files under the database directory. Its new steps
+(`Agent::create_session` with `CreateSessionOptions::prepare`). SessionStore owns the rows and the files under the database directory. Its new steps
 are Rust methods over the native store, not services: only Agents calls them.
 
 ## 3. Deletion

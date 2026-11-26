@@ -438,7 +438,7 @@ fn the_daemon_notice_never_reaches_json_stdout() {
 /// with one notice and no shutdown, whether or not it is idle, and a matching
 /// stamp says nothing. `DIM_TEST_BUILD_ID` is a debug-build stand-in for the
 /// stamp a distributable build embeds, so this is a debug-build check.
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, feature = "dev-tests"))]
 mod build_identity {
     use super::*;
 

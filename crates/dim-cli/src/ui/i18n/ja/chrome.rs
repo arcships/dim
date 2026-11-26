@@ -411,7 +411,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Thinking details" => "思考詳細",
         "expanded" => "展開",
         "collapsed" => "折りたたみ",
-        "Mouse (fullscreen)" => "マウス（全画面）",
+        "Mouse" => "マウス",
         "Permissions" => "権限",
         "Tool approvals" => "ツール承認",
         "Execution" => "実行",

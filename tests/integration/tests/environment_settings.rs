@@ -250,7 +250,7 @@ async fn a_held_settings_read_never_holds_a_branch_open() {
     let second = env(&dirs, options()).await;
     let session = second
         .agent
-        .restore_session(id)
+        .restore_session(id, Default::default())
         .await
         .expect("the session restores while the settings read is held");
     assert_eq!(

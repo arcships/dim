@@ -79,7 +79,7 @@ impl Mode {
     }
 }
 
-/// The modes currently on, shared with signal handlers.
+/// Modes that may still need restoring, including those with a queued reset.
 static LIVE: AtomicU16 = AtomicU16::new(0);
 
 pub fn mark(mode: Mode) {

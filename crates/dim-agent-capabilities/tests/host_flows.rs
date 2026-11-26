@@ -264,7 +264,7 @@ async fn run_cuts(cut: Cut, cuts: usize) -> (Vec<std::sync::Arc<AgentEvent>>, Mi
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -320,7 +320,7 @@ async fn a_steer_applied_before_a_failed_step_takes_over_instead_of_continuing()
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     let waiting = arrived.notified();
@@ -398,7 +398,7 @@ async fn the_continuation_reads_the_closure_result_of_the_announced_call() {
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -627,7 +627,7 @@ async fn run_announcing_failure(
     builder.plugin(move |_| Ok(Box::new(AnnouncingHosts(hosts.clone()))));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -837,7 +837,7 @@ async fn a_continuation_spends_the_rest_of_the_failed_request_chain() {
     builder.plugin(move |_| Ok(Box::new(QuietThenAnnouncedHosts(hosts.clone()))));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -905,7 +905,7 @@ async fn a_compaction_step_before_the_continuation_keeps_its_chain() {
     builder.plugin(move |_| Ok(Box::new(QuietThenAnnouncedHosts(hosts.clone()))));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1045,7 +1045,10 @@ async fn a_max_tokens_turn_keeps_the_session_usable_with_a_larger_output_limit()
         ..Default::default()
     });
     let mut model = config.model.clone();
-    let session = agent.create_session(config).await.unwrap();
+    let session = agent
+        .create_session(config, Default::default())
+        .await
+        .unwrap();
     session
         .submit("first".into(), InputMode::Queue, "main")
         .await
@@ -1126,7 +1129,7 @@ async fn a_failure_without_facts_keeps_its_message_and_bounds_the_reason() {
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1222,7 +1225,7 @@ async fn steer_and_append_enter_the_current_turn_at_tool_result_while_queue_wait
         ))
         .await
         .unwrap();
-        let session = agent.create_session(SessionConfig { tools: Some(vec!["boundary".into()]), permission_policy: dim_agent_runtime::PermissionPolicy { preset: dim_agent_runtime::PermissionPreset::FullAccess, ..Default::default() }, ..Default::default() }).await.unwrap();
+        let session = agent.create_session(SessionConfig { tools: Some(vec!["boundary".into()]), permission_policy: dim_agent_runtime::PermissionPolicy { preset: dim_agent_runtime::PermissionPreset::FullAccess, ..Default::default() }, ..Default::default() }, Default::default()).await.unwrap();
         session.submit("tool:boundary {}".into(), InputMode::Queue, "main").await.unwrap();
         entered.notified().await;
         let queued = session.submit("next turn".into(), InputMode::Queue, "main").await.unwrap();
@@ -1290,7 +1293,7 @@ async fn model_receives_the_committed_before_result_and_fixed_history() {
         );
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1369,7 +1372,7 @@ async fn stop_waits_for_native_cleanup_and_keeps_a_real_success() {
         let agent = MinimalHost::start(&builder(Arc::new(EchoModel), Arc::new(tools)))
             .await
             .unwrap();
-        let session = agent.create_session(SessionConfig { tools: Some(vec!["delayed".into()]), permission_policy: dim_agent_runtime::PermissionPolicy { preset: dim_agent_runtime::PermissionPreset::FullAccess, ..Default::default() }, ..SessionConfig::default() }).await.unwrap();
+        let session = agent.create_session(SessionConfig { tools: Some(vec!["delayed".into()]), permission_policy: dim_agent_runtime::PermissionPolicy { preset: dim_agent_runtime::PermissionPreset::FullAccess, ..Default::default() }, ..SessionConfig::default() }, Default::default()).await.unwrap();
         session.submit("tool:delayed {}".into(), InputMode::Queue, "main").await.unwrap();
         started.notified().await;
         session.stop("main", "stop".into()).await.unwrap();
@@ -1440,7 +1443,7 @@ async fn invalid_model_stream_is_cancelled_and_drained_before_settlement() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1958,7 +1961,7 @@ async fn recovery_agent_with(
     }
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     (agent, session, probe)
@@ -2218,7 +2221,7 @@ async fn process_model_recovery_respects_output_cleanup_and_cancellation() {
             builder.plugin(move |_| Ok(Box::new(RecoveryHosts(hosts.clone()))));
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
             session
@@ -2322,7 +2325,7 @@ async fn transient_retries_are_bounded_and_stop_after_irreversible_output() {
             builder.plugin(move |_| Ok(Box::new(RecoveryHosts(hosts.clone()))));
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
             session
@@ -2445,7 +2448,7 @@ async fn waiting_to_retry_obeys_stop_steer_and_provider_reload() {
             builder.plugin(move |_| Ok(Box::new(RecoveryHosts(hosts.clone()))));
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .create_session(SessionConfig::default(), Default::default())
                 .await
                 .unwrap();
             session
@@ -2599,7 +2602,7 @@ async fn stop_during_native_drain_keeps_an_already_completed_model_result() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -2912,7 +2915,10 @@ async fn an_idle_append_starts_no_turn_and_joins_the_next_one() {
         ))
         .await
         .unwrap();
-        let session = agent.create_session(SessionConfig::default()).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         let appended = session.submit("idle context".into(), InputMode::Append, "main").await.unwrap();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
@@ -2997,7 +3003,10 @@ async fn a_steer_during_output_continues_the_turn_instead_of_ending_it() {
             Arc::new(HeldOutput { requests: requests.clone(), release: release.clone() }),
             Arc::new(MockTools),
         )).await.unwrap();
-        let session = agent.create_session(SessionConfig::default()).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         session.submit("first".into(), InputMode::Queue, "main").await.unwrap();
         let mut dispatch = session.dispatch_watch("main").unwrap();
         loop {
@@ -3080,7 +3089,7 @@ async fn model_output_is_committed_per_block_and_shown_as_progress_until_then() 
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -3260,7 +3269,7 @@ async fn a_thinking_block_keeps_its_start_in_progress_and_history() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -3420,7 +3429,7 @@ async fn end_markers_do_not_split_adjacent_blocks() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -3542,7 +3551,7 @@ async fn buffered_text_is_committed_once_a_second_old() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -3616,14 +3625,17 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig {
-                tools: Some(vec!["boundary".into()]),
-                permission_policy: dim_agent_runtime::PermissionPolicy {
-                    preset: dim_agent_runtime::PermissionPreset::FullAccess,
+            .create_session(
+                SessionConfig {
+                    tools: Some(vec!["boundary".into()]),
+                    permission_policy: dim_agent_runtime::PermissionPolicy {
+                        preset: dim_agent_runtime::PermissionPreset::FullAccess,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            })
+                Default::default(),
+            )
             .await
             .unwrap();
         session
@@ -3828,14 +3840,17 @@ async fn deleted(session: &dim_agent_runtime::Session, id: &str) -> Vec<Arc<Agen
 
 async fn boundary_session(agent: &MinimalHost) -> dim_agent_runtime::Session {
     agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["boundary".into()]),
-            permission_policy: dim_agent_runtime::PermissionPolicy {
-                preset: dim_agent_runtime::PermissionPreset::FullAccess,
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["boundary".into()]),
+                permission_policy: dim_agent_runtime::PermissionPolicy {
+                    preset: dim_agent_runtime::PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        })
+            Default::default(),
+        )
         .await
         .unwrap()
 }
@@ -4179,7 +4194,7 @@ async fn a_handover_input_written_while_idle_starts_no_turn() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         let handover = session
@@ -4400,7 +4415,10 @@ async fn vision_and_text_models_route_images_without_changing_history() {
         ))
         .await
         .unwrap();
-        let session = agent.create_session(SessionConfig::default()).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
         session
             .configure(ConfigureUpdate { model: Some(model_with_vision("seeing", true)), ..Default::default() }, "main")
             .await
@@ -4561,11 +4579,14 @@ async fn stored_attachment_and_tool_images_route_by_vision_capability() {
     builder.process_value(Arc::new(SessionFiles(files.clone())));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            model: model_with_vision("vision", true),
-            tools: Some(vec!["shot".into()]),
-            ..Default::default()
-        })
+        .create_session(
+            SessionConfig {
+                model: model_with_vision("vision", true),
+                tools: Some(vec!["shot".into()]),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let bytes = base64::engine::general_purpose::STANDARD
@@ -4784,10 +4805,13 @@ async fn a_gemini_request_does_not_charge_a_gif_against_the_encoded_image_budget
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            model: model_with_vision("gemini", true),
-            ..Default::default()
-        })
+        .create_session(
+            SessionConfig {
+                model: model_with_vision("gemini", true),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let bytes = base64::engine::general_purpose::STANDARD
@@ -4921,10 +4945,13 @@ async fn a_native_xai_request_turns_an_unsupported_image_into_its_reference() {
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig {
-                model: model_with_vision("native-xai", true),
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    model: model_with_vision("native-xai", true),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap();
         let bytes = base64::engine::general_purpose::STANDARD
@@ -5062,10 +5089,13 @@ async fn a_compatible_xai_request_turns_an_unsupported_image_into_its_reference(
     .await
     .unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            model: model_with_vision("compatible-xai", true),
-            ..Default::default()
-        })
+        .create_session(
+            SessionConfig {
+                model: model_with_vision("compatible-xai", true),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let bytes = base64::engine::general_purpose::STANDARD
@@ -5155,10 +5185,13 @@ async fn a_vision_model_receives_stored_attachment_and_tool_images_as_pixels() {
     builder.process_value(Arc::new(SessionFiles(files.clone())));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
-        .create_session(SessionConfig {
-            tools: Some(vec!["shot".into()]),
-            ..Default::default()
-        })
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["shot".into()]),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let bytes = base64::engine::general_purpose::STANDARD
@@ -5489,11 +5522,14 @@ async fn replacing_a_tool_image_preserves_other_messages_and_the_stored_result()
         .await
         .unwrap();
         let session = agent
-            .create_session(SessionConfig {
-                model: model_with_vision("conversational", vision),
-                tools: Some(vec!["shot".into()]),
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    model: model_with_vision("conversational", vision),
+                    tools: Some(vec!["shot".into()]),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await
             .unwrap();
         session
@@ -5682,7 +5718,10 @@ async fn tool_result_estimates(with_image: bool) -> Vec<f64> {
         reasoning: None,
         service_tier: None,
     });
-    let session = agent.create_session(config).await.unwrap();
+    let session = agent
+        .create_session(config, Default::default())
+        .await
+        .unwrap();
     session
         .submit("tool:shot {}".into(), InputMode::Queue, "main")
         .await

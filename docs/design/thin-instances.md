@@ -152,8 +152,9 @@ tree shows where their content sits.
   id, known as soon as `ctx.plugin` returns, so nothing has to find the instance: `locate` goes.
   When `StartupProgress` gives up, or on cancellation, creation shuts the scope's view down. The task
   that disposed of a creation still running, `rows`, `scope_entries` and `scope_rows` go too.
-- **Requested extensions.** `Agent::create_session_with_extension(config, name, value)` keeps its
-  contract: the plugins registered for `name` (`AgentBuilder::session_extension_part`) are built from
+- **Requested extensions.** An extension requested through
+  `Agent::create_session(config, CreateSessionOptions::default().extension(group, value))` keeps its
+  contract: the plugins registered for `group` (`AgentBuilder::session_extension_part`) are built from
   `value` with the Session's `Names` and must be Active before the Session publishes. The Session
   scope builds and mounts them as its children and hands them to creation as required (step 2). A
   value of the wrong type fails creation; a plugin that stays Pending holds it until

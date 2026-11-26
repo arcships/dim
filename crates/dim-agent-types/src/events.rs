@@ -1180,8 +1180,8 @@ pub struct CollaborationPeerData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CollaborationMessageMode {
-    #[default]
     Append,
+    #[default]
     Steer,
 }
 
