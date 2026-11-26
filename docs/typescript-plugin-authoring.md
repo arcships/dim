@@ -860,7 +860,7 @@ parts.
 | --- | --- |
 | `dispatcher` | `consume(name, keys, rebuild, handler)` registers an ordered consumer on the calling part's context. It subscribes first and holds the matching facts, calls `rebuild` once — the part reads the facts it folds through `timeline.query` including its publishing facts and returns the cutoff that read took — then delivers the held facts above the cutoff and each later matching fact, in sequence order, and none twice. `listen(name, keys, handler)` registers a live consumer only, for a part that does not rebuild. A handler's throw/rejection follows the native branch failure path. `committed()` returns the committed cutoff; read facts and properties through `timeline.query`. `notify/sequence/changed` expose native dispatch progress and wakeups, not an ordered event subscription. |
 | `treeCommands` | Session directory `list/info`, validated `input` by branch id and `create`. These are the Rust data methods, not the process `sessions` request envelopes. |
-| `branchLifecycle` | Background work waits for `activated()` and releases its resources when `closing()` resolves. Never wait for activation inside a Dispatcher callback. |
+| `branchLifecycle` | Background work waits for `activated()` and releases its resources when `closing()` resolves. Never wait for activation inside a Dispatcher callback. `activated()` resolves after the branch is published, so it cannot delay or refuse the opening; pre-publication opening receipts are Rust-only. |
 | `timelineIdentity` | `get()` returns the original Session and branch ids. |
 
 This part reconstructs its own input count, then follows live input. The native subscription
