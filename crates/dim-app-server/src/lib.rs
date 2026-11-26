@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 mod agent_records;
 mod agents;
 mod approval;
