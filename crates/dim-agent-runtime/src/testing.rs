@@ -482,12 +482,90 @@ pub async fn chain_events_paged<R: std::ops::RangeBounds<u64> + Send>(
 /// [`branch_events`] through the Timeline service: every fact of the queried
 /// branch or of its chain within `range`, including the branch's own facts
 /// written but not yet published.
+///
+/// Unlike [`branch_events`] this read never touches the Session facade: the
+/// bounds are computed here and the pages come from a query function whose
+/// future is type-erased before it returns. A generic helper reading through
+/// `Log::Session` drags the Session's whole query chain into the auto-trait
+/// proof of the caller's coroutine witness, and the new trait solver's depth
+/// accounting (rust-lang/rust#159228) overflows the default recursion limit
+/// in the test crates instantiating it.
 pub async fn timeline_events<R: std::ops::RangeBounds<u64> + Send>(
     timeline: &Timeline,
     scope: TimelineQueryScope,
     range: R,
 ) -> Result<Vec<Arc<dim_agent_types::AgentEvent>>> {
-    read(Log::Timeline(timeline), scope, range, EVENTS_PAGE).await
+    use std::ops::Bound;
+    let start = match range.start_bound() {
+        Bound::Included(start) => *start,
+        Bound::Excluded(start) => start.saturating_add(1),
+        Bound::Unbounded => 1,
+    }
+    .max(1);
+    let end = match range.end_bound() {
+        Bound::Included(end) => Some(*end),
+        Bound::Excluded(end) => Some(end.saturating_sub(1)),
+        Bound::Unbounded => None,
+    };
+    let through = end
+        .unwrap_or_else(|| timeline.committed())
+        .min(timeline.committed());
+    if start > 1 && start > through {
+        return Ok(Vec::new());
+    }
+    timeline_pages(timeline, scope, start, through, EVENTS_PAGE).await
+}
+
+/// Pages `timeline` for its facts in `start..=through`, its future type-erased
+/// so the caller's coroutine witness holds only the shallow box. The query is
+/// the one `read` builds for a Timeline log: the same bounds, the same fields,
+/// including unpublished facts, and the same page size.
+fn timeline_pages<'a>(
+    timeline: &'a Timeline,
+    scope: TimelineQueryScope,
+    start: u64,
+    through: u64,
+    page: u64,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Vec<Arc<dim_agent_types::AgentEvent>>>> + Send + 'a,
+    >,
+> {
+    Box::pin(async move {
+        let mut query = TimelineQuery {
+            scope,
+            from: (start > 1).then(|| dim_agent_types::TimelinePosition {
+                branch_id: timeline.branch_id(),
+                sequence: start,
+            }),
+            through: Some(through),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: None,
+                select: QuerySelect::Events,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: std::num::NonZeroU64::new(page).expect("a page keeps at least one fact"),
+                after: None,
+            }),
+        };
+        let mut events = Vec::new();
+        loop {
+            let reply = timeline.query(query.clone()).await?;
+            let QueryOutput::Events { events: rows } = reply.result else {
+                unreachable!("event selection returns events")
+            };
+            events.extend(rows.into_iter().map(|row| row.event));
+            query.page.as_mut().unwrap().after = reply.next;
+            if query.page.as_ref().unwrap().after.is_none() {
+                break;
+            }
+        }
+        Ok(events)
+    })
 }
 
 async fn read<R: std::ops::RangeBounds<u64> + Send>(

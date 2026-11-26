@@ -1,4 +1,4 @@
-use crate::{OcrLookup, Reason, catalog_category, engine::Shared, evaluate};
+use crate::{Evaluation, OcrLookup, Reason, catalog_category, engine::Shared, evaluate};
 use dim_agent_capabilities::methods::RpcError;
 use dim_agent_types::ModelId;
 use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value, arg};
@@ -23,6 +23,13 @@ pub enum TargetReply {
     Resolved { target: ModelId },
     Unavailable { reasons: Vec<Reason> },
 }
+
+type ErasedEvaluation<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(String, Evaluation), RpcError>> + Send + 'a>,
+>;
+
+type ErasedResolution =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<TargetReply, TargetError>> + Send>>;
 
 /// A malformed target query, failed owner read, cancellation or ended generation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,19 +92,30 @@ impl ModalityTargets {
             .ok_or_else(|| crate::unknown_operation("Unknown modality operation"))?;
         let cancel = cancel.child_token();
         let _dropped = cancel.clone().drop_guard();
+        // The evaluation future is type-erased before the select: the new
+        // trait solver's depth accounting (rust-lang/rust#159228) measures
+        // one unbroken proof down the nested coroutine witnesses, and the
+        // concrete chain through `resolve` into the cancellable-future
+        // coercion overflows the default recursion limit on Windows. The
+        // erased box cuts the proof into segments short enough to fit.
+        let evaluation: ErasedEvaluation<'_> = Box::pin(evaluate(
+            &self.shared.settings,
+            &self.shared.selectable,
+            &self.shared.selection,
+            &self.shared.ctx,
+            self.shared.ocr_helper.as_deref(),
+            &cancel,
+            if category.name == "ocr" {
+                OcrLookup::Read
+            } else {
+                OcrLookup::Skip
+            },
+        ));
         let (_, evaluation) = tokio::select! {
             biased;
             _ = self.shared.stop.cancelled() => return Err(RpcError::reloading().into()),
             _ = cancel.cancelled() => return Err(RpcError::interrupted().into()),
-            result = evaluate(
-                &self.shared.settings,
-                &self.shared.selectable,
-                &self.shared.selection,
-                &self.shared.ctx,
-                self.shared.ocr_helper.as_deref(),
-                &cancel,
-                if category.name == "ocr" { OcrLookup::Read } else { OcrLookup::Skip },
-            ) => result?,
+            result = evaluation => result?,
         };
         let snapshot = evaluation.operation(category.name, row);
         if let Some(model) = request.model {
@@ -171,8 +189,15 @@ impl HostDispatch for ModalityTargets {
         )
         .map_err(|error| invalid(error.to_string()))?;
         let targets = self.clone();
+        // Type-erased for the same reason as the evaluation in `resolve`:
+        // `cancellable_future` wraps and boxes this future, and one unbroken
+        // proof from that coercion through `resolve` overflows the default
+        // recursion limit. The box owns the resolution, so the future the
+        // bridge boxes stays shallow.
+        let resolution: ErasedResolution =
+            Box::pin(async move { targets.resolve(request, CancellationToken::new()).await });
         Ok(Value::cancellable_future(async move {
-            match targets.resolve(request, CancellationToken::new()).await {
+            match resolution.await {
                 Ok(reply) => arg(&reply),
                 Err(error) => Err(rutis_bridge::exports::failure(
                     "modalityTargets",

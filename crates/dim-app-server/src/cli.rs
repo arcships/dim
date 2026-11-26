@@ -236,7 +236,20 @@ pub fn run_with(
     managed_provider: Option<crate::managed_provider::ManagedProviderRow>,
     install: fn(&mut AgentBuilder),
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let argv: Vec<String> = args.into_iter().collect();
+    run_argv(args.into_iter().collect(), managed_provider, install)
+}
+
+/// [`run_with`] with the arguments already collected. The server assembly's
+/// coroutine tree is monomorphized here, in this crate, instead of inside
+/// whatever executable instantiates the generic [`run_with`]: the new trait
+/// solver's depth accounting (rust-lang/rust#159228) overflows an
+/// executable's default recursion limit on the auto-trait proof of that
+/// tree, while this crate already raises its own limit for the same proof.
+fn run_argv(
+    argv: Vec<String>,
+    managed_provider: Option<crate::managed_provider::ManagedProviderRow>,
+    install: fn(&mut AgentBuilder),
+) -> Result<(), Box<dyn std::error::Error>> {
     if argv.first().map(String::as_str) == Some("--connect-pipe") {
         let mut args = argv.iter().skip(1);
         let name = args.next().ok_or("--connect-pipe requires a name")?;
