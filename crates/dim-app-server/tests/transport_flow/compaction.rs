@@ -109,16 +109,29 @@ async fn connect(server: &Server) -> Client {
     client
 }
 
+/// A read the serving row may answer `operation_interrupted` for when it
+/// unloads mid-call: the caller re-reads state instead of treating the reply
+/// as a failure (runtime_manager::a_reload_answers_the_open_call_operation_interrupted).
+async fn read(client: &mut Client, method: &str, params: Value) -> Value {
+    for _ in 0..5 {
+        let reply = client.rpc(method, params.clone()).await;
+        if reply["error"]["data"]["appError"] != json!("operation_interrupted") {
+            return reply;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("{method} stayed interrupted after five attempts");
+}
 async fn history(client: &mut Client, sid: &Value) -> Vec<Value> {
     let mut events = Vec::new();
     let mut after = 0;
     loop {
-        let page = client
-            .rpc(
-                "session.history",
-                json!({"sessionId":sid,"branchId":"main","after":after,"limit":1000}),
-            )
-            .await;
+        let page = read(
+            client,
+            "session.history",
+            json!({"sessionId":sid,"branchId":"main","after":after,"limit":1000}),
+        )
+        .await;
         assert_ok(&page);
         events.extend(page["result"]["events"].as_array().unwrap().iter().cloned());
         after = page["result"]["nextAfter"].as_u64().unwrap();
