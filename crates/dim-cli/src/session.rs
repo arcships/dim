@@ -268,6 +268,11 @@ pub async fn chat(
                 crate::sanitize::safe(&worktree.root)
             ))?;
         }
+        if let Some(elevation) = &created.auto_compact_window_elevation
+            && !display.json
+        {
+            display.record(&elevation.notice())?;
+        }
         created.session_id
     };
     let listed = conversation(client, &session_id).await?;
@@ -338,8 +343,12 @@ pub async fn chat(
         Some(Err(error)) => display.record(&format!("permission: unavailable ({error})"))?,
         None => {}
     }
-    if options.resume.is_some() {
-        crate::session_host::adopt_startup(client, options, &session_id, &conversation).await?;
+    if options.resume.is_some()
+        && let Some(elevation) =
+            crate::session_host::adopt_startup(client, options, &session_id, &conversation).await?
+        && !display.json
+    {
+        display.record(&elevation.notice())?;
     }
     let mut questions = Questions::default();
     let result = async {

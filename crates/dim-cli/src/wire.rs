@@ -14,6 +14,44 @@ pub struct Created {
     /// one (#1451); a daemon without `session.create.worktree` sends none.
     #[serde(default)]
     pub worktree: Option<CreatedWorktree>,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when the creation's startup applied one (#2235).
+    #[serde(default)]
+    pub auto_compact_window_elevation: Option<AutoCompactWindowElevation>,
+}
+
+/// The shaping floor's raise of a startup's auto-compaction window, as the
+/// startup replies carry it (#2235): the requested value — `auto`, a
+/// percentage or the resolved token count — and the tokens in force.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCompactWindowElevation {
+    pub requested: WindowRequest,
+    pub effective_tokens: u64,
+}
+
+/// The requested value of a startup auto-compaction window, as it entered
+/// the startup parameter.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WindowRequest {
+    /// `auto`, or a percentage such as `"40%"`.
+    Text(String),
+    Tokens(u64),
+}
+
+impl AutoCompactWindowElevation {
+    /// The notice line clients show once per startup (#2235).
+    pub fn notice(&self) -> String {
+        let requested = match &self.requested {
+            WindowRequest::Text(text) => text.clone(),
+            WindowRequest::Tokens(tokens) => tokens.to_string(),
+        };
+        format!(
+            "auto-compaction window {requested} raised to {} tokens (the shaping floor)",
+            self.effective_tokens
+        )
+    }
 }
 
 /// The managed worktree a creation made: the task id and its directory

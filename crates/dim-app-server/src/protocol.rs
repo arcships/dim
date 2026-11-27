@@ -432,6 +432,10 @@ pub struct ConfigurationResult {
 pub struct ModelUpdateResult {
     pub model: ModelId,
     pub outcome: &'static str,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when this update applied one (#2235).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_window_elevation: Option<crate::provider::AutoCompactWindowElevation>,
 }
 /// One line's adopted configuration as `session.model.get` answers it: the
 /// same values its `context/configured` event carries, at the requested
@@ -1220,6 +1224,10 @@ pub struct ModelPreviewResult {
     pub model: ModelId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<dim_agent_types::ModelPreferences>,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when the previewed startup would apply one (#2235).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_window_elevation: Option<crate::provider::AutoCompactWindowElevation>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1235,6 +1243,10 @@ pub struct CreateResult {
     /// The managed worktree this creation made, when the request asked for one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::worktrees::CreatedWorktreeReply>,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when this creation's startup applied one (#2235).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_window_elevation: Option<crate::provider::AutoCompactWindowElevation>,
 }
 /// The fork's id and its `main` head once it is published.
 #[derive(Debug, Serialize)]

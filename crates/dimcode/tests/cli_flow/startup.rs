@@ -13,6 +13,31 @@ const STARTUP_ENV: &[&str] = &[
     "DIM_AUTO_COMPACT_WINDOW",
 ];
 
+/// The text of the terminal's final screen, the way `until_visible` parses
+/// frames: the user reads one screen, and a notice painted once per frame is
+/// one notice however often the frame repeats.
+fn screen_contents(terminal: &Terminal, transcript: &str) -> String {
+    use std::os::fd::AsRawFd;
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    let fd = terminal.master.as_ref().unwrap().as_raw_fd();
+    assert_eq!(unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) }, 0);
+    let rows = if size.ws_row == 0 { 24 } else { size.ws_row };
+    let cols = if size.ws_col == 0 { 80 } else { size.ws_col };
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    parser.process(transcript.as_bytes());
+    parser.screen().contents()
+}
+
+/// One submitted turn that completes without tool calls.
+fn quiet_turn(wire: &mut Wire) {
+    let submit = wire.read("session.submit");
+    wire.reply(&submit, json!({"event":{}}));
+    let idle = wire.read("session.idle");
+    wire.end(json!({"turn_id":"turn","status":"completed","reason":"done"}));
+    wire.reply(&idle, json!({"sequence":25}));
+    wire.detach();
+}
+
 fn command(home: &Home) -> Command {
     let mut command = home.command();
     for name in STARTUP_ENV {
@@ -1057,6 +1082,181 @@ fn home_first_message_inherits_the_adopted_model_without_replaying_startup() {
         }
         assert!(!terminal.transcript.contains("home-secret"));
     }
+}
+
+/// The shaping floor's raise of the startup window is a one-time notice
+/// (#2235): the Home preview and the first creation raise the same window,
+/// and the client reports it once in both TUI modes.
+#[test]
+fn the_shaping_floor_notice_appears_once_in_both_tui_modes() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.model.preview"]);
+            let preview = wire.read("session.model.preview");
+            wire.reply(&preview, json!({"model":{"providerId":"temporary-preview","modelId":"first-model"},
+                "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}));
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            let create = wire.read("session.create");
+            wire.reply(&create, json!({"sessionId":"session","sequence":8,
+                "model":{"providerId":"test","modelId":"model"},
+                "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}));
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+            let submit = wire.read("session.submit");
+            wire.reply(&submit, json!({"event":{}}));
+            wire.event(9, "text", json!({"turn_id":"first","request_id":"first-model","delta":"first input accepted"}));
+            wire.no_context();
+            assert_eq!(wire.trailing_request(), None);
+        });
+        let mut command = command(&home);
+        command
+            .envs([
+                ("DIM_BASE_URL", "https://gateway.example/prefix"),
+                ("DIM_API_FORMAT", "openai-compatible"),
+                ("DIM_API_KEY", "first-secret"),
+                ("DIM_MODEL", "first-model"),
+                ("DIM_AUTO_COMPACT_WINDOW", "40%"),
+            ]);
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("temporary-preview / first-model");
+        terminal.write(b"first text\r");
+        terminal.until_visible("first input accepted");
+        // The exit screen replaces the notice: the user's screen is read
+        // while the Session is still open.
+        let screen = screen_contents(&terminal, &terminal.transcript.clone());
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+        let notice = "auto-compaction window 40% raised to 32000 tokens (the shaping floor)";
+        assert!(
+            screen.contains(notice),
+            "the notice is on the user's screen\n{screen}"
+        );
+        assert_eq!(
+            screen.matches("the shaping floor").count(),
+            1,
+            "preview and creation raise the same window: one notice per frame\n{screen}"
+        );
+    }
+}
+
+/// A creation's raise of the startup window is diagnostics: it reaches the
+/// line mode's stderr, and `--json` keeps it out of the machine stream
+/// (#2235).
+#[test]
+fn the_shaping_floor_notice_reaches_stderr_and_json_skips_it() {
+    for json_output in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[]);
+            let create = wire.read("session.create");
+            assert_eq!(
+                create["params"]["startup"]["autoCompactWindow"],
+                json!("40%")
+            );
+            wire.reply(&create, json!({"sessionId":"session","sequence":8,
+                "model":{"providerId":"test","modelId":"model"},
+                "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}));
+            wire.attached();
+            quiet_turn(wire);
+        });
+        let mut command = command(&home);
+        command
+            .envs([
+                ("DIM_BASE_URL", "https://gateway.example/prefix"),
+                ("DIM_API_FORMAT", "openai-compatible"),
+                ("DIM_API_KEY", "first-secret"),
+                ("DIM_MODEL", "first-model"),
+                ("DIM_AUTO_COMPACT_WINDOW", "40%"),
+            ])
+            .args(["exec", "-p", "Hello"]);
+        if json_output {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        daemon.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let notice = "auto-compaction window 40% raised to 32000 tokens (the shaping floor)";
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if json_output {
+            assert!(!stderr.contains("shaping floor"), "{stderr}");
+            assert!(!stdout.contains("shaping floor"), "{stdout}");
+        } else {
+            assert!(stderr.contains(notice), "{stderr}");
+        }
+    }
+}
+
+/// A resumed Session's startup adoption carries the raise on
+/// `session.model.update`'s reply, and the line mode reports it (#2235).
+#[test]
+fn a_resumed_startup_raise_is_reported_in_line_mode() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let update = wire.read("session.model.update");
+        assert_eq!(
+            update["params"],
+            json!({"sessionId":"session","branchId":"main",
+            "modelPreferences":{"reasoningEffort":"low"},
+            "startup":{"connection":{"baseUrl":"https://gateway.example/prefix",
+                "apiFormat":"anthropic","apiKey":"resume-secret"},"autoCompactWindow":"40%"}})
+        );
+        wire.reply(&update, json!({"outcome":"adopted",
+            "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_pending_questions(8);
+        let idle = wire.read("session.idle");
+        wire.reply(&idle, json!({"sequence":8}));
+        let submit = wire.read("session.submit");
+        wire.reply(&submit, json!({"event":{}}));
+        let idle = wire.read("session.idle");
+        wire.end(json!({"turn_id":"turn","status":"completed","reason":"done"}));
+        wire.reply(&idle, json!({"sequence":25}));
+        wire.detach();
+    });
+    let output = command(&home)
+        .envs([
+            ("DIM_BASE_URL", "https://gateway.example/prefix"),
+            ("DIM_API_FORMAT", "anthropic"),
+            ("DIM_API_KEY", "resume-secret"),
+            ("DIM_EFFORT_LEVEL", "low"),
+            ("DIM_AUTO_COMPACT_WINDOW", "40%"),
+        ])
+        .args(["exec", "resume", "session", "-p", "Hello"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("auto-compaction window 40% raised to 32000 tokens (the shaping floor)"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

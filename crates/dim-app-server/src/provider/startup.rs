@@ -42,7 +42,28 @@ pub enum AutoCompactWindow {
     Tokens(u64),
 }
 
-#[derive(Clone, Debug, Deserialize)]
+/// The shaping floor's effect on a startup's auto-compaction window, on the
+/// replies of the operations that adopted it (#2235): the startup parameter
+/// as it was requested — `auto`, a percentage or the resolved token count —
+/// and the tokens in force after the floor.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCompactWindowElevation {
+    pub requested: AutoCompactWindow,
+    pub effective_tokens: u64,
+}
+
+impl Serialize for AutoCompactWindow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Auto(auto) => auto.serialize(serializer),
+            Self::Percent(percent) => percent.serialize(serializer),
+            Self::Tokens(tokens) => tokens.serialize(serializer),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AutoWindow {
     Auto,
@@ -52,6 +73,18 @@ pub enum AutoWindow {
 /// capacity, such as `"40%"` (#2235). Zero and values above 100 are invalid.
 #[derive(Clone, Copy, Debug)]
 pub struct CompactPercent(f64);
+
+impl Serialize for CompactPercent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let percent = self.0;
+        let text = if percent == percent.trunc() {
+            format!("{}%", percent as u64)
+        } else {
+            format!("{}%", percent)
+        };
+        serializer.serialize_str(&text)
+    }
+}
 
 impl<'de> Deserialize<'de> for CompactPercent {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -108,6 +141,10 @@ pub struct StartupSelection {
     pub model: ModelSelection,
     pub(super) owner: Arc<ProviderService>,
     pub(super) pending: Option<String>,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when it applied; absent when the window was at or above the floor or
+    /// the startup carried none (#2235).
+    pub auto_compact_window_elevation: Option<AutoCompactWindowElevation>,
 }
 
 impl Drop for StartupSelection {
@@ -224,6 +261,7 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<StartupSelection, HostError> {
         self.check(cancel)?;
+        let requested_window = input.auto_compact_window.clone();
         for value in [input.context_window, input.max_output_tokens]
             .into_iter()
             .flatten()
@@ -449,7 +487,9 @@ impl ProviderService {
             ));
         }
         // The shaping floor keeps a narrow window off the resident parts
-        // (#2235): a window below min(32k, 10% of the capacity) rises to it.
+        // (#2235): a window below min(32k, 10% of the capacity) rises to it,
+        // and the reply carries the raise (#2235).
+        let mut elevation = None;
         if let Some(window) = startup.auto_compact_window {
             let floor = compact_window_floor(capacity);
             if window < floor {
@@ -460,6 +500,11 @@ impl ProviderService {
                     window,
                     "Auto-compaction window raised to the shaping floor"
                 );
+                elevation = Some(AutoCompactWindowElevation {
+                    requested: requested_window
+                        .unwrap_or(AutoCompactWindow::Tokens(window)),
+                    effective_tokens: floor,
+                });
             }
         }
         let pending = if let Some((mut source, connection)) = admitted {
@@ -500,6 +545,7 @@ impl ProviderService {
             model,
             owner: self.clone(),
             pending,
+            auto_compact_window_elevation: elevation,
         })
     }
 
