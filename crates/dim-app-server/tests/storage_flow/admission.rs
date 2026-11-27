@@ -2,13 +2,17 @@
 //! `createOwnedSession` or a fork's target is lowercase ASCII — one to
 //! sixty-four characters of `[a-z0-9_-]`, and never a Windows reserved device
 //! name — and is rejected with InvalidInput before anything is written. The
-//! store refuses a write whose id differs from a stored one only by case:
-//! the case variant is InvalidInput, while a byte-identical duplicate keeps
-//! its Storage error. A fork refused before its copy starts writes nothing
-//! and drops nothing, so a target byte-identical to a stored Session cannot
-//! delete that Session's rows. Ids already stored keep their bytes:
-//! restoration reads them as written, and deletion plus use as a fork source
-//! are unchanged.
+//! store refuses a write whose id differs from a stored one only by case,
+//! and a write whose id would share an output directory with a stored one
+//! under a supported filesystem's identity rules — Unicode folding pairs,
+//! default-ignorable code points, the Windows separators, trailing dots and
+//! spaces and Unicode mappings, and the 8.3 short names. Both refusals are
+//! InvalidInput, while a byte-identical duplicate keeps its Storage error. A
+//! fork refused before its copy starts writes nothing and drops nothing, so
+//! it cannot delete the rows of the Session it conflicted with. Ids already
+//! stored keep their bytes: restoration reads them as written, deletion plus
+//! use as a fork source are unchanged, and deleting the stored row unblocks
+//! the id it conflicted with.
 
 use super::*;
 
@@ -473,8 +477,7 @@ async fn case_collision_check_uses_the_derived_index() {
     let connection = Connection::open(&database.0).unwrap();
     let plan: Vec<String> = connection
         .prepare(
-            "EXPLAIN QUERY PLAN SELECT session_id FROM agent_sessions \
-             WHERE session_id = ?1 COLLATE NOCASE AND session_id <> ?1",
+            "EXPLAIN QUERY PLAN SELECT session_id FROM agent_sessions WHERE session_id = ?1 COLLATE NOCASE",
         )
         .unwrap()
         .query_map(["candidate"], |row| row.get::<_, String>(3))
@@ -490,6 +493,175 @@ async fn case_collision_check_uses_the_derived_index() {
     drop(connection);
     db.close().await.unwrap();
 }
+
+/// Legacy ids stored before the admission rule can share an output directory
+/// with a newly admitted lowercase id under a supported filesystem's identity
+/// rules even though they differ byte-for-byte and under ASCII case folding:
+/// Unicode folding pairs (Kelvin sign, long s, ß/ẞ, ligatures), Unicode
+/// default-ignorable code points (casefold volumes), and the Windows shapes —
+/// backslash and alternate-stream separators, trailing dots and spaces,
+/// Unicode mappings — plus the 8.3 short names, both plain and hashed. The
+/// write entries must refuse such a candidate with InvalidInput before
+/// anything is published, while the stored row keeps its bytes.
+async fn assert_directory_shape_rejected(stored: &str, candidate: &str, why: &str) {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    seed_stored_session(&connection, stored);
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let created = sessions
+        .create_owned_session(
+            candidate,
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(created, Err(AgentError::InvalidInput(_))),
+        "{why}: creating {candidate:?} while {stored:?} is stored must be InvalidInput, got {created:?}"
+    );
+    let forked = sessions.fork_session("source", candidate, 1, &config).await;
+    assert!(
+        matches!(forked, Err(AgentError::InvalidInput(_))),
+        "{why}: forking into {candidate:?} while {stored:?} is stored must be InvalidInput, got {forked:?}"
+    );
+    assert_eq!(
+        stored_rows(&connection, candidate),
+        0,
+        "{why}: the refused candidate {candidate:?} writes nothing"
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// One regression per output-directory-sharing shape (stored, candidate).
+macro_rules! directory_shape {
+    ($name:ident, $stored:expr, $candidate:expr, $why:expr) => {
+        #[tokio::test]
+        async fn $name() {
+            assert_directory_shape_rejected($stored, $candidate, $why).await;
+        }
+    };
+}
+
+directory_shape!(
+    kelvin_sign_folds_to_ascii_k,
+    "ab\u{212A}",
+    "abk",
+    "APFS/HFS+/Linux-casefold fold the Kelvin sign U+212A to k"
+);
+directory_shape!(
+    long_s_folds_to_ascii_s,
+    "ab\u{17F}",
+    "abs",
+    "the long s U+017F folds to s under both volume rules"
+);
+directory_shape!(
+    sharp_s_uppercases_to_ss,
+    "ab\u{DF}",
+    "abss",
+    "ß uppercases to SS, so a casefold volume equates it with ss"
+);
+directory_shape!(
+    uppercase_sharp_s_uppercases_to_ss,
+    "ab\u{1E9E}",
+    "abss",
+    "ẞ uppercases to SS, so a casefold volume equates it with ss"
+);
+directory_shape!(
+    ff_ligature_uppercases_to_ff,
+    "ab\u{FB00}",
+    "abff",
+    "the ﬀ ligature uppercases to FF, so a casefold volume equates it with ff"
+);
+directory_shape!(
+    default_ignorable_is_stripped_before_folding,
+    "abc\u{AD}",
+    "abc",
+    "the soft hyphen U+00AD is a default-ignorable a casefold volume strips"
+);
+directory_shape!(
+    windows_backslash_prefix_shares_the_first_segment,
+    "abc\\def",
+    "abc",
+    "under Windows rules abc\\def names a path inside abc"
+);
+directory_shape!(
+    windows_index_allocation_stream_shares_the_base,
+    "abc::$INDEX_ALLOCATION",
+    "abc",
+    "under Windows rules abc::$INDEX_ALLOCATION is a stream of abc"
+);
+directory_shape!(
+    windows_alternate_stream_shares_the_base,
+    "abc:x",
+    "abc",
+    "under Windows rules abc:x is an alternate stream of abc"
+);
+directory_shape!(
+    windows_trailing_dot_is_trimmed,
+    "abc.",
+    "abc",
+    "under Windows rules a trailing dot is trimmed, so abc. is abc"
+);
+directory_shape!(
+    windows_trailing_space_is_trimmed,
+    "abc ",
+    "abc",
+    "under Windows rules a trailing space is trimmed, so abc␣ is abc"
+);
+directory_shape!(
+    windows_dotted_capital_i_maps_to_i,
+    "ab\u{130}",
+    "abi",
+    "under Windows rules the dotted capital İ maps onto i"
+);
+directory_shape!(
+    windows_dotless_i_maps_to_i,
+    "ab\u{131}",
+    "abi",
+    "under Windows rules the dotless ı maps onto i"
+);
+directory_shape!(
+    windows_8_3_short_name_aliasing,
+    "ab12cd~7",
+    "ab12cdxyz",
+    "an 8.3 volume may serve the long name ab12cdxyz as ab12cd~7"
+);
+directory_shape!(
+    windows_8_3_hashed_short_name_aliasing,
+    "ab12cd~7",
+    "abwxyztuv",
+    "an 8.3 volume may serve the long name abwxyztuv as the hashed ab12cd~7"
+);
 
 /// A trigger that stands in for another connection committing a Session of
 /// `winner` the moment the copy writes its first `into` row for `fork` — the
@@ -732,4 +904,249 @@ async fn the_final_recheck_rejects_a_case_variant_with_invalid_input() {
     store.close().await.unwrap();
     db.close().await.unwrap();
     root.shutdown().await.unwrap();
+}
+
+/// The conflict lookup is per stored row, not a frozen key set: once the
+/// legacy row is deleted, the id it blocked is admitted again, on both the
+/// creation and the fork entry.
+#[tokio::test]
+async fn deleting_the_legacy_row_unblocks_the_shape_it_conflicted_with() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    seed_stored_session(&connection, "Legacy-1");
+    seed_stored_session(&connection, "ab\u{212A}");
+
+    let blocked = sessions
+        .create_owned_session(
+            "legacy-1",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(blocked, Err(AgentError::InvalidInput(_))),
+        "the case variant is refused while the legacy row is stored, got {blocked:?}"
+    );
+    let shaped = sessions
+        .create_owned_session(
+            "abk",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(shaped, Err(AgentError::InvalidInput(_))),
+        "the folding variant is refused while the legacy row is stored, got {shaped:?}"
+    );
+
+    assert!(sessions.delete_session("Legacy-1").await.unwrap());
+    connection
+        .execute(
+            "DELETE FROM agent_sessions WHERE session_id='ab\u{212A}'",
+            [],
+        )
+        .unwrap();
+
+    sessions
+        .create_owned_session(
+            "legacy-1",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    sessions
+        .fork_session("source", "abk", 1, &config)
+        .await
+        .unwrap();
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// #2204: the directory-shape lookup the write entries run must resolve
+/// through the covering partial derived index — verbatim as the index defines
+/// it — instead of scanning `agent_sessions`.
+#[tokio::test]
+async fn directory_shape_check_uses_the_derived_index() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let plan: Vec<String> = connection
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT session_id FROM agent_sessions WHERE session_id GLOB '*[^0-9A-Za-z_-]*'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| { step.contains("agent_sessions_session_id_non_ascii_word") }),
+        "the directory-shape check must use the covering index, plan: {plan:?}"
+    );
+
+    drop(connection);
+    db.close().await.unwrap();
+}
+
+/// A write ledger for one fork target: every row the copy inserts or deletes
+/// under the fork's id in the tables the copy touches is recorded, including
+/// the cleanup's deletions. A fork refused before its first write must leave
+/// the ledger empty — zero writes, zero cleanup.
+fn ledger_fork_writes(connection: &Connection, fork: &str) {
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE copy_ledger (entry TEXT);
+             CREATE TRIGGER ledger_branches_insert AFTER INSERT ON timeline_branches
+             WHEN NEW.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('timeline_branches'); END;
+             CREATE TRIGGER ledger_events_insert AFTER INSERT ON timeline_events
+             WHEN NEW.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('timeline_events'); END;
+             CREATE TRIGGER ledger_content_insert AFTER INSERT ON timeline_content
+             WHEN NEW.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('timeline_content'); END;
+             CREATE TRIGGER ledger_sessions_insert AFTER INSERT ON agent_sessions
+             WHEN NEW.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('agent_sessions'); END;
+             CREATE TRIGGER ledger_branches_delete AFTER DELETE ON timeline_branches
+             WHEN OLD.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('delete-timeline_branches'); END;
+             CREATE TRIGGER ledger_events_delete AFTER DELETE ON timeline_events
+             WHEN OLD.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('delete-timeline_events'); END;
+             CREATE TRIGGER ledger_content_delete AFTER DELETE ON timeline_content
+             WHEN OLD.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('delete-timeline_content'); END;
+             CREATE TRIGGER ledger_sessions_delete AFTER DELETE ON agent_sessions
+             WHEN OLD.session_id = '{fork}'
+             BEGIN INSERT INTO copy_ledger VALUES ('delete-agent_sessions'); END;"
+        ))
+        .unwrap();
+}
+
+fn ledger_entries(connection: &Connection) -> Vec<String> {
+    connection
+        .prepare("SELECT entry FROM copy_ledger")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+/// A fork refused by a conflict that precedes the copy writes nothing and
+/// runs no cleanup: the ledger proves not one row of the fork's id was ever
+/// inserted or deleted, and the stored Session it conflicted with is
+/// untouched. Shared by the case-collision and the directory-shape refusal.
+async fn assert_refused_fork_never_writes(seed: &str, fork: &str, error: &str) {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("source", "main"),
+        vec![text(1, "first"), text(2, "second"), text(3, "third")],
+    )
+    .await
+    .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    seed_stored_session(&connection, seed);
+    ledger_fork_writes(&connection, fork);
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result = sessions.fork_session("source", fork, 3, &config).await;
+    match error {
+        "storage" => assert!(
+            matches!(result, Err(AgentError::Storage(_))),
+            "the refused fork must keep its Storage error, got {result:?}"
+        ),
+        _ => assert!(
+            matches!(result, Err(AgentError::InvalidInput(_))),
+            "the refused fork must be InvalidInput, got {result:?}"
+        ),
+    }
+    assert!(
+        ledger_entries(&connection).is_empty(),
+        "a fork refused before its first write may not write or delete a single row, ledger: {:?}",
+        ledger_entries(&connection)
+    );
+    assert_eq!(
+        stored_rows(&connection, seed),
+        1,
+        "the stored Session {seed:?} the fork conflicted with is untouched"
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// #2204 (decision Q2 c (1)): a stored Session differing from the fork target
+/// only by case refuses the fork inside the first chunk transaction, before
+/// its first write — zero inserts, zero cleanup.
+#[tokio::test]
+async fn a_fork_conflicting_by_case_is_refused_with_zero_writes_and_zero_cleanup() {
+    assert_refused_fork_never_writes("Fork-Case", "fork-case", "invalid").await;
+}
+
+/// #2204: the same zero-write guarantee covers the directory-shape check in
+/// the first chunk transaction — the conflict the NOCASE lookup cannot see.
+#[tokio::test]
+async fn a_fork_conflicting_by_directory_shape_is_refused_with_zero_writes_and_zero_cleanup() {
+    assert_refused_fork_never_writes("fork-shape\u{212A}", "fork-shapek", "invalid").await;
 }

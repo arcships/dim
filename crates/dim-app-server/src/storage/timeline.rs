@@ -2381,6 +2381,143 @@ fn case_conflicts(connection: &Connection, candidate: &str) -> Result<Vec<String
     }
     Ok(rows)
 }
+
+/// The stored ids outside the alphabet every newly admitted id has, read
+/// through the covering partial index `agent_sessions_session_id_non_ascii_word`
+/// (#2204): they are the only ids that can share an output directory with a
+/// newly admitted one beyond ASCII case folding. A store without legacy rows
+/// is empty here, so the lookup is constant-time.
+fn non_ascii_word_conflicts(connection: &Connection) -> Result<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT session_id FROM agent_sessions WHERE session_id GLOB '*[^0-9A-Za-z_-]*'",
+        )
+        .map_err(error)?;
+    for row in statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(error)?
+    {
+        rows.push(row.map_err(error)?);
+    }
+    Ok(rows)
+}
+
+/// The identity of `stored` on a volume that folds case — APFS, HFS+ or a
+/// Linux casefold directory — as one canonical key: lowercase, uppercase,
+/// then ASCII-lowercase. Lowercase alone misses the pairs whose lowercase is
+/// the same non-ASCII letter while their uppercase differs; uppercasing in
+/// between maps every folding pair onto one key — ASCII case, the Kelvin
+/// sign, the long s, ß/ẞ onto ss, the ligatures onto their expansion. The
+/// second key strips the Unicode default-ignorable code points first, which a
+/// casefold volume drops before comparing. The admitted lowercase ASCII
+/// candidate is its own key, so comparison is bytewise.
+fn casefold_keys(stored: &str) -> [String; 2] {
+    let fold = |text: &str| text.to_lowercase().to_uppercase().to_ascii_lowercase();
+    let folded = fold(stored);
+    let stripped = fold(
+        &stored
+            .chars()
+            .filter(|c| !is_default_ignorable(*c))
+            .collect::<String>(),
+    );
+    [folded, stripped]
+}
+
+/// The Unicode default-ignorable code points a casefold volume strips from a
+/// directory name before comparing it. Ranges per PropList.txt (Unicode
+/// 15.1): the soft hyphen, combining grapheme joiner, Arabic and Mongolian
+/// format characters, the zero-width and directional formatting characters,
+/// the Hangul fillers, variation selectors, tag characters and the musical
+/// format controls.
+fn is_default_ignorable(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x034F | 0x061C | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180E
+        | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x3164
+        | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFF8
+        | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0000..=0xE0FFF)
+}
+
+/// `stored` lowercased under the Windows volume rules: ASCII letters fold,
+/// and the dotted capital İ, the dotless ı, the long s and the Kelvin sign
+/// map onto their ASCII pair. Windows neither expands ß nor strips ignorable
+/// characters; those forms are covered by the casefold rule.
+fn windows_lower(stored: &str) -> String {
+    stored
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' => c.to_ascii_lowercase(),
+            '\u{130}' | '\u{131}' => 'i',
+            '\u{17F}' => 's',
+            '\u{212A}' => 'k',
+            other => other,
+        })
+        .collect()
+}
+
+/// The name `stored` addresses on a Windows volume after its syntactic rules:
+/// the segment before the first backslash, then before the first colon — what
+/// a path inside the directory or one of its streams shares — with trailing
+/// dots and spaces trimmed, under the Windows case mapping.
+fn windows_name(stored: &str) -> String {
+    let backslash = stored.split('\\').next().unwrap_or(stored);
+    let colon = backslash.split(':').next().unwrap_or(backslash);
+    windows_lower(colon.trim_end_matches(['.', ' ']))
+}
+
+/// Whether `stem` (the Windows form of a stored id, tilde and tail included)
+/// can be the 8.3 short name a Windows volume serves `candidate` as: the
+/// classic form truncates the long name at the stem, and the hashed form
+/// keeps the long name's leading characters, replaces the middle with four
+/// hexadecimal checksum digits and appends the tail — so a candidate starting
+/// with what precedes those digits collides with it too. Only tails of one
+/// digit from 1 upward are generated.
+fn windows_8_3_collides(stem: &str, candidate: &str) -> bool {
+    let Some((stem, tail)) = stem.rsplit_once('~') else {
+        return false;
+    };
+    if tail.len() != 1 || !matches!(tail.as_bytes()[0], b'1'..=b'9') {
+        return false;
+    }
+    if candidate.starts_with(stem) {
+        return true;
+    }
+    let letters: Vec<char> = stem.chars().collect();
+    letters.len() >= 5
+        && letters[letters.len() - 4..]
+            .iter()
+            .all(|c| c.is_ascii_hexdigit())
+        && candidate.starts_with(&letters[..letters.len() - 4].iter().collect::<String>())
+}
+
+/// Whether a stored Session id can share its output directory with a newly
+/// admitted id under the identity rules of a supported filesystem — a volume
+/// folding case, or a Windows volume with its separators, trailing characters
+/// and 8.3 short names. Both rule sets apply wherever the store runs, so a
+/// store moving between platforms keeps its isolation (#2204): refusing too
+/// much is safe, missing a collision is not.
+fn shares_output_directory(stored: &str, candidate: &str) -> bool {
+    if casefold_keys(stored).iter().any(|key| key == candidate) {
+        return true;
+    }
+    let windows = windows_name(stored);
+    if windows == candidate {
+        return true;
+    }
+    candidate.len() > 8 && windows.len() <= 8 && windows_8_3_collides(&windows, candidate)
+}
+
+/// A stored id that shares an output directory with `candidate` beyond ASCII
+/// case folding, judged row by row under the filesystem identity rules
+/// (#2204).
+fn directory_conflict(connection: &Connection, candidate: &str) -> Result<Option<String>> {
+    for stored in non_ascii_word_conflicts(connection)? {
+        if shares_output_directory(&stored, candidate) {
+            return Ok(Some(stored));
+        }
+    }
+    Ok(None)
+}
 fn create_session(
     connection: &Connection,
     session: &str,
@@ -2394,6 +2531,11 @@ fn create_session(
     {
         return Err(AgentError::InvalidInput(format!(
             "Session id {session} differs from a stored one only by case"
+        )));
+    }
+    if let Some(stored) = directory_conflict(connection, session)? {
+        return Err(AgentError::InvalidInput(format!(
+            "Session id {session} would share an output directory with stored Session {stored}"
         )));
     }
     let config = serde_json::to_string(config).map_err(error)?;
@@ -3180,21 +3322,28 @@ fn copy_fork(
     copied
 }
 
-/// Rejects `candidate` when a stored Session id equals it under the
-/// case-insensitive collation: byte-identical keeps the duplicate's Storage
-/// error, a case-only variant is InvalidInput (#2204).
+/// Rejects `candidate` when a stored Session id collides with it: equals it
+/// under the case-insensitive collation or shares its output directory under
+/// a supported filesystem's identity rules. Byte-identical keeps the
+/// duplicate's Storage error; a case-only variant and a directory-shape
+/// collision are InvalidInput (#2204).
 fn reject_conflicting_id(connection: &Connection, candidate: &str) -> Result<()> {
     let conflicts = case_conflicts(connection, candidate)?;
-    if conflicts.is_empty() {
-        return Ok(());
+    if !conflicts.is_empty() {
+        return Err(if conflicts.iter().any(|stored| stored != candidate) {
+            AgentError::InvalidInput(format!(
+                "Session id {candidate} differs from a stored one only by case"
+            ))
+        } else {
+            error(format!("Session id {candidate} already exists"))
+        });
     }
-    Err(if conflicts.iter().any(|stored| stored != candidate) {
-        AgentError::InvalidInput(format!(
-            "Session id {candidate} differs from a stored one only by case"
-        ))
-    } else {
-        error(format!("Session id {candidate} already exists"))
-    })
+    if let Some(stored) = directory_conflict(connection, candidate)? {
+        return Err(AgentError::InvalidInput(format!(
+            "Session id {candidate} would share an output directory with stored Session {stored}"
+        )));
+    }
+    Ok(())
 }
 
 fn copy_fork_rows(

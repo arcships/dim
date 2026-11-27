@@ -689,7 +689,8 @@ fn schema(connection: &Connection) -> Vec<String> {
         .prepare(
             "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' \
              AND name NOT IN ('timeline_history_anchors', 'timeline_events_by_kind', \
-                              'timeline_policy_turns', 'agent_sessions_session_id_nocase')
+                              'timeline_policy_turns', 'agent_sessions_session_id_nocase', \
+                              'agent_sessions_session_id_non_ascii_word')
              AND name NOT IN (SELECT name FROM pragma_table_list WHERE type='shadow' AND name LIKE 'timeline_text_fts_%')",
         )
         .unwrap()
@@ -8488,7 +8489,8 @@ async fn a_v41_store_upgrades_in_place_once_keeping_internal_launches() {
         indexed,
         [
             "agent_sessions_by_leader",
-            "agent_sessions_session_id_nocase"
+            "agent_sessions_session_id_nocase",
+            "agent_sessions_session_id_non_ascii_word"
         ]
     );
     for (session, expected) in [("s1", "client"), ("member", "internal")] {
