@@ -1,0 +1,49 @@
+name: issue-gate
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  issue-gate:
+    name: issue-gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Require a linked accepted issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          links=$(printf '%s\n' "${BODY:-}" | grep -oiE '(fixes|closes|resolves|refs):?[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | sort -u || true)
+          if [ -z "$links" ]; then
+            echo "::error::Link an accepted issue with Fixes #N, Closes #N, Resolves #N or Refs #N."
+            exit 1
+          fi
+
+          accepted=""
+          for n in $links; do
+            labels=$(gh api "repos/$REPO/issues/$n" --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+            if [ -z "$labels" ]; then
+              echo "Linked issue #$n could not be read; check the number and repository."
+              continue
+            fi
+            if printf '%s' "$labels" | grep -qE '(^|,)(P0|P1|P2)(,|$)'; then
+              echo "Linked issue #$n is accepted: $labels"
+              accepted="$n"
+            else
+              echo "Linked issue #$n is not accepted: $labels"
+            fi
+          done
+
+          if [ -z "$accepted" ]; then
+            echo "::error::At least one linked issue must carry P0, P1 or P2. P3 and unlabelled issues are not accepted."
+            exit 1
+          fi
