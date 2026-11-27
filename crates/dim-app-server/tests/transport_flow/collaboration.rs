@@ -1984,6 +1984,21 @@ async fn leader_delegates_and_team_members_communicate() {
              participants[].agentId for a team member. A name such as \"default\" is not an id."
         )
     );
+    for (field, declared) in dim_agent_capabilities::narrative::query_properties() {
+        assert_eq!(
+            schema["properties"][&field], declared,
+            "read declares Recall's query: {field}"
+        );
+    }
+    let member_guidance = &member_tools
+        .iter()
+        .find(|t| t.name == "agent")
+        .unwrap()
+        .description;
+    assert!(
+        member_guidance.contains("open any line by its id"),
+        "{member_guidance}"
+    );
     let leader_tools = events(&lead_session)
         .await
         .iter()
@@ -1999,7 +2014,8 @@ async fn leader_delegates_and_team_members_communicate() {
         .description;
     assert!(
         guidance.contains("agentId is copied exactly from list's agents[].agentId")
-            && guidance.contains("is not an agentId"),
+            && guidance.contains("is not an agentId")
+            && guidance.contains("open any line by its id"),
         "{guidance}"
     );
     let schema = serde_json::to_value(
@@ -3607,6 +3623,10 @@ async fn member_work(mut config: ServerConfig) {
         "the latest turns come first and name their calls: {turns}"
     );
     assert!(
+        turns.contains(": Agent default, your team leader, assigned you this work: — called hold"),
+        "a turn a message opened is titled by its first line: {turns}"
+    );
+    assert!(
         turns
             .lines()
             .filter(|line| line.contains(" turn: "))
@@ -3614,7 +3634,18 @@ async fn member_work(mut config: ServerConfig) {
             >= 2,
         "{turns}"
     );
-    for own in ["you ", "your ", "in your context"] {
+    // The second person's own words (Recall §3.8); a quoted input keeps
+    // whatever it says.
+    for own in [
+        "you called",
+        "you started calling",
+        " you: ",
+        " you (",
+        "your reply",
+        "in your context",
+        "while you were working",
+        "message to you",
+    ] {
         assert!(!turns.contains(own), "a read addresses no one: {turns}");
     }
     let turn = id_of(&turns, "called hold");
@@ -3623,10 +3654,16 @@ async fn member_work(mut config: ServerConfig) {
         opened.contains("\nEnd of turn. Open one: open="),
         "{opened}"
     );
+    assert!(
+        opened.contains(": No client connection is attached.\n") && !opened.contains("</"),
+        "a block's line keeps its body, not its closing tag: {opened}"
+    );
     let call = id_of(&opened, "called hold");
     let full = read(&mut client, json!({"open": call})).await;
+    // A result a later minute than its call carries its time (Recall §3.4).
     assert!(
-        full.contains(&format!("{call} called hold\n{{}}\n\nok: released")),
+        full.contains(&format!("{call} called hold\n{{}}\n\nok"))
+            && full.contains(": released\nEnd."),
         "{full}"
     );
     assert!(full.ends_with("End."), "{full}");

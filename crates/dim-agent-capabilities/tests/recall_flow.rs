@@ -1899,6 +1899,65 @@ fn opening_a_call_shows_the_effects_it_declared() {
     );
 }
 
+#[test]
+// §3.4, §3.6: a block's body is what lies between its own opening and
+// closing tags; a tag inside the body stays, an empty body leaves the
+// blocks alone, and a block with no tag is told by its text.
+fn a_blocks_line_keeps_its_body_and_drops_only_its_own_closing_tag() {
+    let mut recorded = Recorded::new();
+    recorded.at(10, 0);
+    let mut turns = Vec::new();
+    for (number, text) in [
+        "<note><note>Ready</note></note>",
+        "<note>Close it with </note></note>",
+        "<note><b></b></note>",
+        "<note></note>",
+        "plain first line\nsecond line",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let turn = format!("t{number}");
+        let input = recorded.push(EventKind::InputMessage(InputMessageData {
+            blocks: vec![context_block::raw(text.to_owned(), None)],
+            mode: Some(InputMode::Queue),
+            ..InputMessageData::default()
+        }));
+        let started = recorded.push(turn_start(&turn));
+        recorded.push(consumed(&input));
+        recorded.push(turn_ends(&turn, completed_turn()));
+        turns.push((started, input, text));
+    }
+    let (index, error) = recorded.answer("t9", json!({}));
+    assert!(!error, "{index}");
+    for ((started, input, text), told) in turns.iter().zip([
+        "note: <note>Ready</note>",
+        "note: Close it with </note>",
+        "note: <b></b>",
+        "note",
+        "block: plain first line",
+    ]) {
+        assert_eq!(
+            line_of(&index, started),
+            format!("10:00 {started} turn: {told} — completed"),
+            "{text}"
+        );
+        let (page, error) = recorded.answer("t9", json!({ "open": started }));
+        assert!(!error, "{page}");
+        assert_eq!(
+            line_of(&page, input),
+            format!("10:00 {input} {told}"),
+            "{text}"
+        );
+        let (full, error) = recorded.answer("t9", json!({ "open": input }));
+        assert!(!error, "{full}");
+        assert!(
+            full.contains(text),
+            "opening it shows the block as written: {full}"
+        );
+    }
+}
+
 /// A turn with one consumed input and one reply.
 fn simple_turn(recorded: &mut Recorded, turn: &str, text: &str, reply: &str) {
     let input = recorded.push(input_message(text));
@@ -2400,17 +2459,27 @@ fn a_turn_a_continuation_opened_is_indexed_by_that_block_not_by_the_append_ahead
     assert!(!error, "{page}");
     let line = line_of(&page, &turn);
     assert!(
-        line.contains("turn: dim-goal kind=continuation count=1 limit=20 after=12 branch=main"),
-        "{line}"
+        line.contains(
+            "turn: dim-goal kind=continuation count=1 limit=20 after=12 branch=main: \
+             Continue working toward the active goal for branch main."
+        ),
+        "a turn its blocks open is titled as its line reads (§3.6): {line}"
     );
     assert!(!line.contains("dim-state"), "{line}");
 
-    // The state block is still a line of the turn.
+    // The state block is still a line of the turn; its body and closing tag
+    // share one line, and the line keeps only the body (§3.4).
     let (page, error) = recorded.answer("t1", json!({ "open": turn }));
     assert!(!error, "{page}");
     assert!(
-        line_of(&page, &state).contains("dim-state source=dim/skills/list (current)"),
+        line_of(&page, &state).ends_with("dim-state source=dim/skills/list (current): - a: user a"),
         "{page}"
+    );
+    let (full, error) = recorded.answer("t1", json!({ "open": state }));
+    assert!(!error, "{full}");
+    assert!(
+        full.contains("- a: user a</dim-state>"),
+        "opening the block shows its text as written: {full}"
     );
     assert!(
         line_of(&page, &continuation)

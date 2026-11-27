@@ -3075,9 +3075,8 @@ const LEADER_DESCRIPTION_HEAD: &str = "Work with other agents as a team you lead
   on it now, waking it when idle. Mode \"append\" adds context the receiver sees in its
   next step without interrupting it, and waits while it is idle. A message starts no task
   and returns no result; give new work with request.
-- read: a briefing of a team member's activity, latest turns first; open a turn or
-  anything in it by its id, or search with about. list: show your team and the agents
-  you can use. inspect: show one agent's full profile (instructions, tools, model).";
+- read: a team member's activity, latest turns first; open any line by its id, or
+  search with about. list: show your team and the agents you can use. inspect: show one agent's full profile (instructions, tools, model).";
 /// The `models` bullet, between [`LEADER_DESCRIPTION_HEAD`] and
 /// [`LEADER_DESCRIPTION_TAIL`]: only a deployment that provides the selectable
 /// read offers the action.
@@ -3091,8 +3090,8 @@ const MEMBER_DESCRIPTION: &str = "You are a member of a team. You cannot delegat
 - message: send information to your leader or another member. Default mode \"steer\"
   has the receiver act on it now, waking it when idle. Mode \"append\" adds context the
   receiver sees in its next step without interrupting it, and waits while it is idle.
-- read: a briefing of a team member's activity, latest turns first; open a turn or
-  anything in it by its id, or search with about. list: show your team.
+- read: a team member's activity, latest turns first; open any line by its id, or
+  search with about. list: show your team.
 When you finish a task, your last reply is the result the leader receives; do not send it
 as a message.";
 
@@ -3107,14 +3106,11 @@ fn agent_definition(
         "sessionId": {"type": "string"},
         "content": {"type": "string"},
         "mode": {"type": "string", "enum": ["append", "steer"]},
-        "about": {"type": "string", "minLength": 1, "maxLength": narrative::ABOUT,
-            "description": "Words to look for; all must appear, in any order, ignoring case."},
-        "tool": {"type": "string", "minLength": 1, "description": "Only calls to this tool."},
-        "before": {"type": "string", "description": "An id; show what came before it."},
-        "open": {"type": "string", "description": "An id; show that turn, or that thing in full."},
-        "offset": {"type": "integer", "minimum": 0,
-            "description": "With open: continue from here, a line of a turn or a character of one thing."},
     });
+    properties
+        .as_object_mut()
+        .expect("an object literal")
+        .extend(narrative::query_properties());
     let (actions, description) = match role {
         CollaborationRole::Leader => {
             properties["resultId"] = json!({"type": "string"});

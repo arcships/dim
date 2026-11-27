@@ -236,7 +236,7 @@ context is the origin of, or joined to, a thing (§14).
 
 | Thing | Line |
 | --- | --- |
-| Input | with user content: `user: <text>` (images as `[image]`), followed by `+ <blocks>` when it also carries blocks; with blocks only: `<blocks>: <first line of the first block's body>`. `<blocks>` names each block in order by its opening tag and attributes as written, or `block` for a block whose text opens with no tag, with `(current)` for a live block and `(ended)` for one that retires its `key` |
+| Input | with user content: `user: <text>` (images as `[image]`), followed by `+ <blocks>` when it also carries blocks; with blocks only: `<blocks>: <first line of the first block's body>`, or `<blocks>` alone when that body is empty. A block's body is the text between its opening tag and its own closing tag, so a tag inside the body stays; a block whose text opens with no tag has that text as its body. `<blocks>` names each block in order by its opening tag and attributes as written, or `block` for a block whose text opens with no tag, with `(current)` for a live block and `(ended)` for one that retires its `key` |
 | Your reply | `you: <text>`, thinking left out; an output that did not complete is `your reply was cut off (<reason>): <partial text>`, with the committed text and the outcome of its `step/model-output-end`; an output the head ends inside is `you (still writing): <text so far>` |
 | Tool call | `you called <tool> <input brief> → <ending>`; a call whose arguments never arrived is `you started calling <tool> (arguments not received) → <ending>` |
 | Interrupt | `the user interrupted the turn` |
@@ -334,8 +334,8 @@ tools it called with counts, and its outcome from `turn/end` (`completed`, `fail
 The inputs that open a turn are the ones it consumed before its first model request; an input read
 later, such as a steer while it works, does not open it. The line gives the first user text among
 the opening inputs; when none of them carries user text (a Goal continuation, a message from
-another line), the first of them that carries a line write (§3.4), or else the driving input's
-`<blocks>`: the first opening input that is not Append, since an Append input joins the request
+another line), the first of them that carries a line write (§3.4), or else the driving input as its line
+reads, `<blocks>: <first line of the first block's body>`: the first opening input that is not Append, since an Append input joins the request
 but does not open the turn. A turn with no opening input has none of these: its line reads
 `turn: no opening input`.
 
@@ -383,6 +383,10 @@ nothing; it only drops the address to the reader:
 
 Without a turn of its own, every turn without a `turn/end` on the read line is `in progress`.
 
+Every reader declares the query of §5.2 with the same schema properties, which the component
+owns (`narrative::query_properties`), so a reader's parameters cannot drift from what the
+projection accepts.
+
 A handle belongs to the line it was shown on (§4). A reader whose line can change between calls,
 as a member's current line can, may hold a handle the new line does not have; that handle is
 refused as any unknown id is (§6), and the refusal tells the reader to read again without `open`
@@ -417,7 +421,7 @@ Registered with the Session's `toolRegistry` under the name `recall`
 | `name` | `recall` |
 | `risk` | `session` |
 | `source` | `extension` |
-| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open a turn or anything in it by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
+| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open any line by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
 
 The declaration is the only prompt. The summary, the replacement and the system prompt do not
 mention the tool (§7).
@@ -432,8 +436,8 @@ mention the tool (§7).
                "description": "Words to look for; all must appear, in any order, ignoring case."},
     "tool":   {"type": "string", "minLength": 1,
                "description": "Only calls to this tool."},
-    "before": {"type": "string", "description": "An id; show what came before it."},
-    "open":   {"type": "string", "description": "An id; show that turn, or that thing in full."},
+    "before": {"type": "string", "description": "A line's id; show what came before it."},
+    "open":   {"type": "string", "description": "A line's id; show it in full."},
     "offset": {"type": "integer", "minimum": 0,
                "description": "With open: continue from here, a line of a turn or a character of one thing."}
   },

@@ -86,7 +86,7 @@ Recall 就像客户端里的会话视图，只是讲给模型而不是展示给�
 
 | 事 | 行 |
 | --- | --- |
-| 输入 | 有用户内容时：`user: <文本>`（图片为 `[image]`），同时带块时后接 `+ <blocks>`；只有块时：`<blocks>: <第一个块正文的第一行>`。`<blocks>` 按顺序列出每个块的开头标签和属性（照写），文本不以标签开头的块写作 `block`；生效中的块加 `(current)`，让其 `key` 失效的块加 `(ended)` |
+| 输入 | 有用户内容时：`user: <文本>`（图片为 `[image]`），同时带块时后接 `+ <blocks>`；只有块时：`<blocks>: <第一个块正文的第一行>`，正文为空时只有 `<blocks>`。块的正文是它的开头标签与它自己的结束标签之间的文本，所以正文里的标签保留；文本不以标签开头的块，正文就是它的文本。`<blocks>` 按顺序列出每个块的开头标签和属性（照写），文本不以标签开头的块写作 `block`；生效中的块加 `(current)`，让其 `key` 失效的块加 `(ended)` |
 | 你的回复 | `you: <文本>`，省略 thinking；未完成的输出为 `your reply was cut off (<原因>): <部分文本>`，带已提交的文本和其 `step/model-output-end` 的结果；head 停在其中的输出为 `you (still writing): <目前的文本>` |
 | 工具调用 | `you called <tool> <参数简述> → <结局>`；参数从未到达的调用为 `you started calling <tool> (arguments not received) → <结局>` |
 | 中断 | `the user interrupted the turn` |
@@ -142,7 +142,7 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 
 ### 3.6 轮次
 
-一轮是同一个 `turn_id` 从 `turn/start` 到 `turn/end` 的跨度；它消费的输入属于它。任何轮次之外的事（两轮之间的压缩、开通本行、Session fork）是轮次之间独立的行。索引中一轮的那一行给出它的第一段用户文本、调用过的工具及次数，以及 `turn/end` 中的结局（`completed`、`failed`、`cancelled`）。开启一轮的输入是它在第一次模型请求之前消费的那些；之后才读到的输入，例如它工作时到达的 steer，不开启这一轮。这一行给出开启它的输入中最先的一段用户文本；这些输入都没有用户文本时（Goal 续行、其他行发来的消息），给出其中第一个携带行写的输入（§3.4），否则给出驱动这一轮的输入的 `<blocks>`，即第一个不是 Append 的开启输入：Append 输入只加入请求，不开启这一轮。没有开启输入的轮次没有这些：它的索引行读作 `turn: no opening input`。
+一轮是同一个 `turn_id` 从 `turn/start` 到 `turn/end` 的跨度；它消费的输入属于它。任何轮次之外的事（两轮之间的压缩、开通本行、Session fork）是轮次之间独立的行。索引中一轮的那一行给出它的第一段用户文本、调用过的工具及次数，以及 `turn/end` 中的结局（`completed`、`failed`、`cancelled`）。开启一轮的输入是它在第一次模型请求之前消费的那些；之后才读到的输入，例如它工作时到达的 steer，不开启这一轮。这一行给出开启它的输入中最先的一段用户文本；这些输入都没有用户文本时（Goal 续行、其他行发来的消息），给出其中第一个携带行写的输入（§3.4），否则按驱动这一轮的输入那一行的样子给出 `<blocks>: <第一个块正文的第一行>`，驱动的输入即第一个不是 Append 的开启输入：Append 输入只加入请求，不开启这一轮。没有开启输入的轮次没有这些：它的索引行读作 `turn: no opening input`。
 
 固定历史中没有 `turn/end` 的一轮：若是发起调用的这一轮，结局为 `in progress`；若是子分支继承前缀截断的父分支那一轮，结局为 `continued on the parent line`。发起调用的这次 `recall` 本身也在这一轮中，结局为 `no result yet`。
 
@@ -176,6 +176,8 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 
 没有自己的那一轮时，所读的线上每个没有 `turn/end` 的轮次都是 `in progress`。
 
+每个读者都用同样的 schema 属性声明 §5.2 的查询，这些属性由组件持有（`narrative::query_properties`），所以读者的参数不会与投影实际接受的不一致。
+
 把手属于显示它的那条线（§4）。所读的线在两次调用之间可能变化的读者，比如成员的当前线会变，可能拿着新线上没有的把手；这个把手与任何未知 id 一样被拒绝（§6），拒绝消息告诉读者不带 `open` 或 `before` 再读一次，从它现在所读的线的最近几轮开始。
 
 ## 4. 把手：时间与事件 id
@@ -198,7 +200,7 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 | `name` | `recall` |
 | `risk` | `session` |
 | `source` | `extension` |
-| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open a turn or anything in it by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
+| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open any line by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
 
 工具声明是唯一的提示词。摘要、replacement 和系统提示词都不提这个工具（§7）。
 
@@ -212,8 +214,8 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
                "description": "Words to look for; all must appear, in any order, ignoring case."},
     "tool":   {"type": "string", "minLength": 1,
                "description": "Only calls to this tool."},
-    "before": {"type": "string", "description": "An id; show what came before it."},
-    "open":   {"type": "string", "description": "An id; show that turn, or that thing in full."},
+    "before": {"type": "string", "description": "A line's id; show what came before it."},
+    "open":   {"type": "string", "description": "A line's id; show it in full."},
     "offset": {"type": "integer", "minimum": 0,
                "description": "With open: continue from here, a line of a turn or a character of one thing."}
   },

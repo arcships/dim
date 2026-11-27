@@ -23,6 +23,19 @@ impl Provider {
             .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
             .collect()
     }
+
+    /// The `recall` declaration the model last saw.
+    fn recall(&self) -> Value {
+        let requests = self.requests.lock().unwrap();
+        let body = requests.last().expect("the model was called");
+        body["tools"]
+            .as_array()
+            .expect("a declared tool table")
+            .iter()
+            .find(|tool| tool["function"]["name"] == "recall")
+            .map(|tool| tool["function"].clone())
+            .expect("recall is declared")
+    }
 }
 
 async fn completion(State(provider): State<Arc<Provider>>, Json(body): Json<Value>) -> String {
@@ -142,6 +155,21 @@ async fn both_profiles_declare_recall() {
         let tools = provider.tools();
         assert!(tools.iter().any(|tool| tool == "recall"), "{tools:?}");
         assert!(tools.iter().any(|tool| tool == "wait"), "{tools:?}");
+        let recall = provider.recall();
+        assert!(
+            recall["description"]
+                .as_str()
+                .unwrap()
+                .contains("open any line by its id"),
+            "{recall}"
+        );
+        for (field, declared) in dim_agent_capabilities::narrative::query_properties() {
+            assert_eq!(
+                recall["parameters"]["properties"][&field]["description"],
+                declared["description"],
+                "recall declares the shared query: {field}"
+            );
+        }
         assert_ok(&client.rpc("daemon.shutdown", json!({"force":false})).await);
         assert!(product.child.wait().await.unwrap().success());
 

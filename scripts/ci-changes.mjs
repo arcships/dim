@@ -46,6 +46,10 @@ const rules=[
   [/^scripts\/run-rust-test\.mjs$/,groups],
   [/^scripts\/test-macos-native(?:\.test)?\.mjs$/,['rust','scripts']],
   [/^scripts\/stage-web\.mjs$/,['scripts','web']],
+  [/^scripts\/ci-test-concurrency\.mjs$/,['rust','scripts']],
+  [/^scripts\/ci-web-check\.ps1$/,['scripts','web']],
+  [/^scripts\/ci-windows-target\.ps1$/,['scripts','windows']],
+  [/^scripts\/ci-windows-native-tools\.ps1$/,['scripts','windows','windows_native']],
   [/^scripts\/(code-layout\/|code-layout-darwin\.test\.mjs$)/,['scripts','macos_scripts']],
   [/^scripts\/(stage-release|pack-release|native-binary|store-formats|release\.test)\.mjs$/,['scripts','macos_scripts']],
   [/^scripts\//,['scripts']],
@@ -76,6 +80,14 @@ const rules=[
   [/^xtask\//,['rust','node','eval']],
   [/^(crates|tests|vendor|runtime|npm)\//,['rust','node']],
 ];
+
+// The platforms full verification runs on for an event: pull requests verify
+// Linux, a `main` push verifies macOS, and a sweep or manual run covers both.
+export function platforms(event) {
+  if (event === 'pull_request') return ['linux'];
+  if (event === 'push') return ['macos'];
+  return ['linux', 'macos'];
+}
 
 export function classify(files) {
   const needed=new Set();
@@ -120,5 +132,5 @@ if (import.meta.main) {
   }
   const lines=Object.entries(result).map(([group,value])=>`${group}=${value}`);
   console.log(lines.join('\n'));
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,lines.join('\n')+'\n');
+  if(process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,`${lines.join('\n')}\nplatforms=${JSON.stringify(platforms(process.env.GITHUB_EVENT_NAME))}\n`);
 }
