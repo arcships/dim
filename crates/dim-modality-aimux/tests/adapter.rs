@@ -2002,9 +2002,8 @@ async fn a_compatible_family_image_forwards_the_output_format_to_the_wire() {
     let dir = work_dir("family-image-format");
     let png = [PNG_HEADER, b"format-bytes"].concat();
     let reply = png.clone();
-    let (adapter, requests) = scripted(move |_| {
-        ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
-    });
+    let (adapter, requests) =
+        scripted(move |_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]})));
     let output = run(
         &adapter,
         job(

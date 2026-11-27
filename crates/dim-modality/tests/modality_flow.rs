@@ -4450,7 +4450,6 @@ async fn recovery_resumes_a_video_task_it_never_re_reads_the_route_for() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retention_deletes_terminal_tasks_past_thirty_days() {
     let now = "2026-11-06T00:00:00Z".parse::<Timestamp>().unwrap();

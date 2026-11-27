@@ -2201,9 +2201,7 @@ impl ProviderService {
                 // A selectable model routes: a missing route already
                 // excludes the entry from a non-conversational use, so the
                 // endpoint of a selectable one is always present.
-                let protocol = model
-                    .endpoint
-                    .expect("a modality-selectable model routes");
+                let protocol = model.endpoint.expect("a modality-selectable model routes");
                 models.push(ModalityModelSnapshot {
                     target: ModelId {
                         provider_id: provider_id.clone(),
