@@ -64,11 +64,25 @@ pub struct TargetRule {
     pub input_share: f64,
 }
 impl TargetRule {
-    fn tokens(self, model: &dyn ContextModel) -> f64 {
+    fn tokens(self, model: &dyn ContextModel, budget: f64) -> f64 {
         let output = model.output_tokens();
-        let budget = model.compaction_budget();
         let target = (self.output_share * output).min(self.input_share * budget);
         (target / 100.).floor() * 100.
+    }
+}
+
+/// The shaping budget the step shapes with: the physical input budget for a
+/// manual cut or an output budget recovery, the compaction budget for the
+/// automatic trigger (ContextCompaction §5.3, #2236).
+pub(crate) fn shaping_budget(
+    trigger: CompactionTrigger,
+    provider_budget: Option<&ProviderOutputBudgetFacts>,
+    model: &dyn ContextModel,
+) -> f64 {
+    if trigger == CompactionTrigger::Manual || provider_budget.is_some() {
+        (model.context_window() - model.output_tokens()).max(0.)
+    } else {
+        model.compaction_budget()
     }
 }
 
@@ -266,7 +280,14 @@ impl SummaryStrategy {
         cancel: &CancellationToken,
     ) -> Result<StrategyOutcome, HostError> {
         let requested = self.reasoning;
-        let target = self.target.map(|rule| rule.tokens(input.model.as_ref()));
+        let budget = shaping_budget(
+            input.trigger,
+            input.provider_budget.as_ref(),
+            input.model.as_ref(),
+        );
+        let target = self
+            .target
+            .map(|rule| rule.tokens(input.model.as_ref(), budget));
         let system = self.system(target);
         stats.reasoning = requested;
         stats.target = target;
@@ -384,13 +405,13 @@ impl CompactionStrategy for SummaryStrategy {
     /// The target `S` plus the wrapper (ContextCompaction §4.2). `target` is
     /// the factory configuration; until the §13.4 evaluation chooses it, the
     /// provisional `S = min(0.5 × O, 0.10 × B)` plans the replacement (§13.3).
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, model: &dyn ContextModel, budget: f64) -> f64 {
         let target = self.target.unwrap_or(TargetRule {
             output_share: 0.5,
             input_share: 0.10,
         });
         let wrapper = summary_message("");
-        target.tokens(model) + model.count_tokens(&ModelRequest::new("", "", vec![wrapper]))
+        target.tokens(model, budget) + model.count_tokens(&ModelRequest::new("", "", vec![wrapper]))
     }
     fn compact(
         &self,

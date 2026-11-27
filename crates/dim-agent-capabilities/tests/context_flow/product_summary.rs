@@ -445,6 +445,33 @@ async fn product_session_with(
     clippy::too_many_arguments,
     reason = "one parameter per window and host the summary session is built from"
 )]
+/// A prompt host that serves `dim/session` from the session configuration's
+/// system prompt, the way PromptSources reads it (PromptSources §2): a large
+/// session prompt raises the request frame, where the window-narrowed
+/// replacement reservation moves the fitted cut (#2236).
+struct SessionPromptHost(String);
+impl LoadPrompt for SessionPromptHost {
+    fn load(
+        &self,
+        target: PromptSourceTarget,
+        _: CancellationToken,
+    ) -> HostFuture<'_, Option<PromptEntry>> {
+        let body = self.0.clone();
+        Box::pin(async move {
+            if target.source != dim_agent_capabilities::prompt_sources::SESSION {
+                return Err(HostError::failed(format!(
+                    "unknown prompt source: {}",
+                    target.source
+                )));
+            }
+            Ok(dim_agent_capabilities::prompt_sources::session_entry(
+                body,
+                target.scope,
+            ))
+        })
+    }
+}
+
 async fn product_session_on(
     window: u64,
     tools: Arc<dyn ToolDriver>,
@@ -500,9 +527,14 @@ async fn product_session_on(
     let snapshot: ModelCapabilitySnapshot = serde_json::from_value(snapshot).unwrap();
     defaults::install_with_prompt(
         &mut builder,
-        Arc::new(EmptyPromptHost),
+        Arc::new(SessionPromptHost(config_session.system_prompt.clone())),
         Some(ConfigureUpdate {
-            sources: Vec::new(),
+            sources: vec![PromptSourceTarget {
+                source: dim_agent_capabilities::prompt_sources::SESSION.into(),
+                scope: PromptScope::Branch {
+                    timeline: "main".into(),
+                },
+            }],
             model: Some(ModelSelection {
                 provider_id: "local".into(),
                 model_id: "small".into(),
@@ -2189,13 +2221,13 @@ async fn a_startup_window_scales_the_retained_tail_and_the_next_attempt() {
 }
 
 /// After a compaction attempt the regrowth gate does not fire again on the
-/// narrow scale alone: the 16,000-token floor keeps a low configured window
-/// from starting a compaction every few turns (ContextCompaction §5.6,
-/// #2235). Across 20 turns after the first completion the regrowth needed to
-/// pass the quarter share (~3800 tokens at the 20k window) is met many times
-/// over, so extra compactions can only pass the absolute floor.
+/// narrow scale alone: the quarter share of the compaction budget keeps a low
+/// configured window from starting a compaction every few turns
+/// (ContextCompaction §5.6, #2235). Across 20 turns after the first completion
+/// the regrowth needed to pass the quarter share (~3,800 tokens at the 20k
+/// window) is met only when enough history has actually accumulated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_regrowth_floor_debounces_compactions_at_a_narrow_window() {
+async fn the_regrowth_share_debounces_compactions_at_a_narrow_window() {
     const STARTUP_WINDOW: u64 = 20_000;
     let recorder = Arc::new(HonestRecorder {
         inner: Recorder::default(),
@@ -2239,16 +2271,17 @@ async fn the_regrowth_floor_debounces_compactions_at_a_narrow_window() {
         .count();
     assert!(
         (1..=3).contains(&completed),
-        "the floor debounces compactions: not once per turn, not locked up, {completed} completions in 20 turns, {outcomes:#?}"
+        "the share debounces compactions: not once per turn, not locked up, {completed} completions in 20 turns, {outcomes:#?}"
     );
     agent.close().await.unwrap();
 }
 
-/// Under a narrowed compaction window the length sentence's target scales
-/// with the compaction budget, not the physical input budget (ContextCompaction
-/// §13.3, #2235): the window leaves a physical input budget of 3,600 and a
-/// compaction budget of 1,600, so the target is min(0.5 × 400, 0.10 × 1,600)
-/// rounded down to 100, where the physical budget would give 200.
+/// The length sentence's target follows the step's own shaping budget
+/// (ContextCompaction §13.3, #2235): the session's window leaves a physical
+/// input budget of 3,600 and a compaction budget of 1,600, so an automatic
+/// threshold compaction writes min(0.5 × 400, 0.10 × 1,600) rounded down to
+/// 100 into the sentence, while a manual `/compact` at the same moment writes
+/// the physical-budget 200.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_summary_target_scales_with_the_compaction_budget() {
     let prompt: Arc<str> = Arc::from(
@@ -2273,57 +2306,443 @@ async fn the_summary_target_scales_with_the_compaction_budget() {
         },
     )
     .await;
-    let adopted = session
-        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
-        .unwrap()
-        .unwrap()
-        .configuration
-        .unwrap();
-    let mut selected = ModelSelection {
-        provider_id: adopted.provider_id,
-        model_id: adopted.model_id,
-        capability_snapshot: adopted.capability_snapshot,
-        config: adopted.config,
-        metadata: adopted.metadata,
-    };
-    selected.metadata = Some(RequestMetadata {
-        session_id: Some("old-session".into()),
-        run_id: Some("old-run".into()),
-        trace_id: Some("old-trace".into()),
-        turn_id: Some("old-turn".into()),
-        startup: Some(ModelStartup {
-            connection: None,
-            auto_compact_window: Some(2_000),
-        }),
-        agent_id: None,
-        extensions: Default::default(),
-    });
-    session
-        .service::<dim_agent_capabilities::prompt::Prompt>("main")
-        .unwrap()
-        .configure_loaded(Some(selected), Vec::new())
-        .await
-        .unwrap();
-    for text in [cjk(6_000), cjk(1_800), cjk(1_800), cjk(1_800)] {
+    // The history is seeded before the window is adopted, so the seeds never
+    // compact on their own.
+    for text in [cjk(300), cjk(300)] {
         session
             .submit(text, InputMode::Queue, "main")
             .await
             .unwrap();
         session.idle("main").await.unwrap();
     }
-    let (_command, _events) = compact_now(&session).await;
+    session
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(startup_selection(adopted_selection(&session), 2_000)),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    // The third turn's estimate passes the narrowed threshold (0.8 × 1,600)
+    // while staying under the physical budget (3,600): an automatic threshold
+    // compaction, the only trigger measured at the compaction budget.
+    session
+        .submit(cjk(300), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let automatic = recorder.requests.lock().unwrap().len();
+    assert!(automatic > 0, "the automatic compaction runs the summarizer");
+    assert!(
+        compaction_outcomes(&session).await.iter().any(|outcome| matches!(
+            &outcome.outcome,
+            ContextCompactionResult::Completed { diagnostics, .. }
+                if diagnostics.trigger == CompactionTrigger::Threshold
+        )),
+        "the automatic compaction is a threshold compaction, the only trigger the compaction budget shapes"
+    );
+    let (_command, events) = compact_now(&session).await;
+    assert!(
+        events.iter().any(|event| matches!(&event.kind,
+            EventKind::ContextCompaction(ContextCompactionData {
+                outcome: ContextCompactionResult::Completed { .. },
+                ..
+            }))),
+        "the manual compaction completed, {events:#?}"
+    );
     let requests = recorder.requests.lock().unwrap().clone();
-    assert!(!requests.is_empty(), "the summarizer runs");
-    let expected = format!("{prompt} {}", sentence.replace("{target}", "100"));
-    for request in &requests {
+    let automatic_expected = format!("{prompt} {}", sentence.replace("{target}", "100"));
+    let manual_expected = format!("{prompt} {}", sentence.replace("{target}", "200"));
+    for (index, request) in requests.iter().enumerate() {
         let Some(SystemPrompt::Text(system)) = request.system.as_deref() else {
             panic!("a summarizer request has no system prompt")
+        };
+        let expected = if index < automatic {
+            &automatic_expected
+        } else {
+            &manual_expected
         };
         assert_eq!(
             system,
             expected.as_str(),
-            "the target in the length sentence scales with the compaction budget"
+            "the target in the length sentence follows the step's shaping budget"
         );
     }
     agent.close().await.unwrap();
+}
+
+/// At the smallest startup window, repeated compactions stay near the
+/// configured window instead of drifting toward the physical scale
+/// (ContextCompaction §5.6, #2235): on 1M/32k with `--autocompact 32k` the
+/// compaction budget is 16,000 and the regrowth gate is its quarter share, so
+/// a completed attempt never starts above 16,000 tokens of input and never
+/// replans.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_compaction_at_the_minimum_window_stays_on_time() {
+    const STARTUP_WINDOW: u64 = 32_000;
+    let recorder = Arc::new(HonestRecorder {
+        inner: Recorder::default(),
+    });
+    let (agent, session) = product_session_on(
+        1_000_000,
+        Arc::new(MockTools),
+        recorder.clone(),
+        32_768,
+        ProductSummaryStrategyConfig::default(),
+        SessionConfig::default(),
+        None,
+        Arc::new(Local),
+        None,
+        None,
+    )
+    .await;
+    session
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(startup_selection(
+                adopted_selection(&session),
+                STARTUP_WINDOW,
+            )),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    for _ in 0..40 {
+        session
+            .submit(cjk(4_000), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let outcomes = compaction_outcomes(&session).await;
+    assert!(
+        !outcomes
+            .iter()
+            .any(|data| matches!(&data.outcome, ContextCompactionResult::Skipped { .. })),
+        "no attempt skips: the accumulated history is far larger than the summary it would keep, {outcomes:#?}"
+    );
+    let completed: Vec<&dim_agent_types::CompactionDiagnosticsRecord> = outcomes
+        .iter()
+        .filter_map(|data| match &data.outcome {
+            ContextCompactionResult::Completed { diagnostics, .. } => Some(&**diagnostics),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        completed.len() >= 2,
+        "compaction repeats as the history grows, {outcomes:#?}"
+    );
+    for diagnostics in &completed {
+        assert!(
+            diagnostics.estimated_input_tokens <= 16_000.,
+            "every completed attempt starts within the compaction budget instead of drifting past it, {outcomes:#?}"
+        );
+        assert_eq!(
+            diagnostics.model_call_count, 1,
+            "one summarizer request per compaction: no replan, {outcomes:#?}"
+        );
+    }
+    agent.close().await.unwrap();
+}
+
+/// Twenty-five measured turns of alternating user texts, sized so the
+/// tail's fit at the physical scale flips when the summary reservation
+/// shrinks with a narrow automatic window. The system prompt raises the
+/// frame so the `0.5 × B − resident` cap binds below the quarter share.
+struct WindowInvariance {
+    system: String,
+    seeds: Vec<String>,
+}
+
+fn window_invariance_setup() -> WindowInvariance {
+    let mut seeds: Vec<String> = (0..8)
+        .map(|index| format!("seed {index} {}", cjk(600)))
+        .collect();
+    seeds.push(format!("seed 8 {}", cjk(6_500)));
+    WindowInvariance {
+        system: cjk(29_000),
+        seeds,
+    }
+}
+
+/// Builds the 100k/32k product session of the window-invariance comparison:
+/// physical input budget 68,000; the automatic window, when adopted, is
+/// 20,000 and leaves a compaction budget of 10,000. The system prompt is
+/// large enough that the request frame dominates the retention arithmetic:
+/// inside it the window-narrowed replacement reservation moves the fitted
+/// cut (#2236).
+async fn invariance_session(
+    setup: &WindowInvariance,
+    driver: Arc<dyn ModelDriver>,
+    window: Option<u64>,
+) -> (MinimalHost, dim_agent_runtime::Session) {
+    let (agent, session) = product_session_on(
+        100_000,
+        Arc::new(MockTools),
+        driver,
+        32_000,
+        ProductSummaryStrategyConfig::default(),
+        SessionConfig {
+            system_prompt: setup.system.clone(),
+            ..Default::default()
+        },
+        None,
+        Arc::new(Local),
+        None,
+        None,
+    )
+    .await;
+    // The seeds go in before the window is adopted: both sessions seed at
+    // the physical scale, so their histories stay identical (#2236).
+    for seed in &setup.seeds {
+        session
+            .submit(seed.clone(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    if let Some(window) = window {
+        session
+            .service::<dim_agent_capabilities::prompt::Prompt>("main")
+            .unwrap()
+            .configure_loaded(
+                Some(startup_selection(adopted_selection(&session), window)),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+    }
+    (agent, session)
+}
+
+/// The completed compaction record of `trigger`, or a panic naming what the
+/// branch wrote instead.
+async fn completed_compaction(
+    session: &dim_agent_runtime::Session,
+    trigger: CompactionTrigger,
+) -> dim_agent_types::CompactionDiagnosticsRecord {
+    let events = chain_events(session, "main", ..).await.unwrap();
+    let compactions: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    for data in &compactions {
+        if let ContextCompactionResult::Completed { diagnostics, .. } = &data.outcome
+            && diagnostics.trigger == trigger
+        {
+            return diagnostics.as_ref().clone();
+        }
+    }
+    panic!("no {trigger:?} compaction completed among {compactions:#?}")
+}
+
+/// The retained entries both projections keep from the same seeded inputs,
+/// compared in place of the event ids `retain_from` records: ids are random
+/// per session, so equality is asserted on the kept position — the shared
+/// tail of the identical inputs.
+async fn retained_input(
+    session: &dim_agent_runtime::Session,
+    diagnostics: &dim_agent_types::CompactionDiagnosticsRecord,
+) -> Option<String> {
+    let Some(retain_from) = diagnostics.retain_from.as_deref() else {
+        return None;
+    };
+    let events = chain_events(session, "main", ..).await.unwrap();
+    // The retained cut lands either on a seeded input or on the turn start of
+    // the first retained turn; both normalize to the turn's seeded raw text,
+    // which the seeds make unique.
+    let position = events.iter().position(|event| event.id == retain_from)?;
+    let raw = |data: &dim_agent_types::InputMessageData| {
+        data.blocks
+            .iter()
+            .filter_map(|block| match block {
+                InputBlock::Raw { text, .. } => Some(text.clone()),
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    for event in &events[position..] {
+        if let EventKind::InputMessage(data) = &event.kind {
+            return Some(raw(data));
+        }
+        if matches!(&event.kind, EventKind::TurnStart(_))
+            && event.id != retain_from
+        {
+            return None;
+        }
+    }
+    None
+}
+
+/// Asserts the manual or recovery cut is the same in both sessions: the same
+/// retained input (or none), the same replaced count and the same projected
+/// size.
+fn assert_same_cut(
+    plain: &dim_agent_types::CompactionDiagnosticsRecord,
+    windowed: &dim_agent_types::CompactionDiagnosticsRecord,
+    plain_input: Option<String>,
+    windowed_input: Option<String>,
+    kind: &str,
+) {
+    assert_eq!(
+        windowed_input, plain_input,
+        "the automatic window changed the {kind} cut"
+    );
+    assert_eq!(
+        windowed.entries_replaced, plain.entries_replaced,
+        "the automatic window changed the {kind} cut: {plain:#?} {windowed:#?}"
+    );
+    assert_eq!(
+        windowed.estimated_output_tokens, plain.estimated_output_tokens,
+        "the automatic window changed the {kind} projection: {plain:#?} {windowed:#?}"
+    );
+}
+
+/// A manual compaction cuts at the physical input budget whatever window the
+/// automatic trigger shapes with (ContextCompaction §5.3, #2236): with the
+/// same history and physical limits, adopting only the automatic window
+/// leaves the cut unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_manual_cut_does_not_follow_the_automatic_window() {
+    let setup = window_invariance_setup();
+    let mut records = Vec::new();
+    let mut inputs = Vec::new();
+    for window in [None, Some(20_000)] {
+        // The seeds outgrow the narrow window's threshold, so its automatic
+        // compactions fire during seeding; their summaries fail and commit
+        // failure facts, keeping both histories identical. After the seeds
+        // the manual compaction's own summary passes.
+        let driver = Arc::new(BudgetAfter {
+            inner: HonestRecorder {
+                inner: Recorder::default(),
+            },
+            calls: AtomicUsize::new(0),
+            shield_count: setup.seeds.len() - 1,
+            fail_after: None,
+        });
+        let (agent, session) = invariance_session(&setup, driver, window).await;
+        let (_command, _events) = compact_now(&session).await;
+        let diagnostics = completed_compaction(&session, CompactionTrigger::Manual).await;
+        inputs.push(retained_input(&session, &diagnostics).await);
+        records.push(diagnostics);
+        agent.close().await.unwrap();
+    }
+    let [plain, windowed] = &records[..] else {
+        unreachable!()
+    };
+    let [plain_input, windowed_input] = &mut inputs[..] else {
+        unreachable!()
+    };
+    assert_same_cut(
+        plain,
+        windowed,
+        plain_input.take(),
+        windowed_input.take(),
+        "manual",
+    );
+}
+
+/// Echoes conversation calls; fails summarizer calls while the conversation
+/// is within its seeds, and reports an exhausted provider output budget on
+/// the conversation call `fail_after` names. The summarizer failures make the
+/// automatic compactions a narrow window starts during seeding commit failure
+/// facts, leaving the history unchanged for the comparison (#2236); once the
+/// injected budget failure is spent, the recovery summary must pass.
+struct BudgetAfter {
+    inner: HonestRecorder,
+    calls: AtomicUsize,
+    shield_count: usize,
+    fail_after: Option<usize>,
+}
+impl BudgetAfter {
+    /// The budget-exhaustion failure the conversation's `fail_after`-th call
+    /// reports: the retry prepares under budget recovery.
+    fn exhausted() -> HostError {
+        HostError::Failed {
+            kind: HostErrorKind::Other,
+            message: "Provider output budget exhausted".into(),
+            model: None,
+            presentation: None,
+            budget: Some(ProviderOutputBudgetFacts {
+                input_tokens: 58_000.,
+                context_window: 100_000.,
+                requested_max_tokens: 32_000.,
+                allowed_max_tokens: 42_000.,
+                ratio: 1.,
+            }),
+        }
+    }
+}
+impl ModelDriver for BudgetAfter {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let summarizer = matches!(request.system.as_deref(),
+            Some(SystemPrompt::Text(text)) if text.starts_with(self.inner.inner.prefix.as_ref()));
+        if summarizer {
+            if self.calls.load(Ordering::SeqCst) <= self.shield_count {
+                return Box::pin(async { Err(HostError::failed("seed summarizer off")) });
+            }
+            return self.inner.invoke(request, connection, cancel);
+        }
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if Some(call) == self.fail_after {
+            return Box::pin(async { Err(Self::exhausted()) });
+        }
+        self.inner.invoke(request, connection, cancel)
+    }
+}
+
+/// A budget recovery cuts at the physical input budget whatever window the
+/// automatic trigger shapes with (ContextCompaction §5.3, #2236): with the
+/// same history and physical limits, adopting only the automatic window
+/// leaves the cut unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_recovery_cut_does_not_follow_the_automatic_window() {
+    let setup = window_invariance_setup();
+    let seeds = setup.seeds.len();
+    let mut records = Vec::new();
+    let mut inputs = Vec::new();
+    for window in [None, Some(20_000)] {
+        let driver = Arc::new(BudgetAfter {
+            inner: HonestRecorder {
+                inner: Recorder::default(),
+            },
+            calls: AtomicUsize::new(0),
+            shield_count: seeds,
+            fail_after: Some(seeds),
+        });
+        let (agent, session) = invariance_session(&setup, driver, window).await;
+        session
+            .submit("close the report".to_string(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let diagnostics =
+            completed_compaction(&session, CompactionTrigger::ProviderOutputBudgetExhausted).await;
+        inputs.push(retained_input(&session, &diagnostics).await);
+        records.push(diagnostics);
+        agent.close().await.unwrap();
+    }
+    let [plain, windowed] = &records[..] else {
+        unreachable!()
+    };
+    let [plain_input, windowed_input] = &mut inputs[..] else {
+        unreachable!()
+    };
+    assert_same_cut(
+        plain,
+        windowed,
+        plain_input.take(),
+        windowed_input.take(),
+        "recovery",
+    );
 }

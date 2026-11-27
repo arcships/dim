@@ -93,9 +93,6 @@ const BOUND_SHARE: f64 = 0.5;
 /// §5.10); provisional (#428).
 const DIGEST_SHARE: f64 = 0.05;
 
-/// Floor of the regrowth gate, against a compaction every turn on a narrow
-/// shaping budget (#2235); provisional (#428).
-const REGROWTH_FLOOR_TOKENS: f64 = 16_000.;
 
 /// Facts one page of the compaction-reuse read keeps.
 const REUSE_PAGE: u64 = 64;
@@ -1366,7 +1363,7 @@ impl ContextPolicy {
             model.compaction_budget()
         };
         let rule = Retention::new(view, model.as_ref(), turn, manual, &order);
-        let replacement_size = self.strategy.replacement_size(model.as_ref());
+        let replacement_size = self.strategy.replacement_size(model.as_ref(), budget);
         let mut cuts = legal_cuts(&order, &view.history);
         let limit = rule.limit(&view.history, &cuts, replacement_size, budget);
         if let Some(limit) = limit {
@@ -1685,7 +1682,7 @@ impl ContextPolicy {
                 .map(|entry| (*entry.message).clone())
                 .collect(),
         ) - empty;
-        dropped - pinned + previous - replayed > self.strategy.replacement_size(model)
+        dropped - pinned + previous - replayed > self.strategy.replacement_size(model, budget)
     }
 
     /// Appends the result of a compaction step, then re-reads the committed
@@ -2376,12 +2373,10 @@ fn input_budget(model: &dyn ContextModel) -> f64 {
 }
 
 /// The new history a threshold compaction must accumulate: `RETAINED_SHARE`
-/// of the shaping budget, never below the smaller of the physical budget's
-/// share and `REGROWTH_FLOOR_TOKENS`, so a narrow window cannot start a
-/// compaction every turn (#2235).
+/// of the shaping budget, so a narrow window compacts again only after that
+/// much new history, never every turn (#2235).
 fn regrowth_gate(model: &dyn ContextModel) -> f64 {
-    (RETAINED_SHARE * model.compaction_budget())
-        .max((RETAINED_SHARE * input_budget(model)).min(REGROWTH_FLOOR_TOKENS))
+    RETAINED_SHARE * model.compaction_budget()
 }
 
 /// The tokens `history[index..]` counts for every index.

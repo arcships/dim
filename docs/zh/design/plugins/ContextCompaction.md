@@ -131,11 +131,11 @@ Session 值不持有状态。解析出的连接只存在于一次策略调用内
 | 端口 | Session 值 | 方法 | F1 实现 |
 | --- | --- | --- | --- |
 | `ContextModel`（收窄） | `ContextModelHost(Option<Arc<dyn ResolveContextModel>>)`（现有） | `context_window`、`output_tokens`、`threshold_tokens`、`count_tokens`；`compact` 移出 | `ProductContextModel`（§5.1） |
-| `CompactionStrategy`（新） | `CompactionStrategyHost(Option<Arc<dyn CompactionStrategy>>)` | `name`、`replacement_size(model)`、`compact(input, cancel) -> Completed {retain_from, replacement, strategy, diagnostics} \| Skipped {reason, diagnostics} \| Failed {error, diagnostics} \| Err(HostError)` | `ProductSummaryStrategy`（§5.2） |
+| `CompactionStrategy`（新） | `CompactionStrategyHost(Option<Arc<dyn CompactionStrategy>>)` | `name`、`replacement_size(model, budget)`、`compact(input, cancel) -> Completed {retain_from, replacement, strategy, diagnostics} \| Skipped {reason, diagnostics} \| Failed {error, diagnostics} \| Err(HostError)` | `ProductSummaryStrategy`（§5.2） |
 
 两个值在每种配置中都显式绑定，与现在的 `ContextModelHost` 一样。两者都是 `Some` 时策略存在。只有一个是 `Some` 属于装配缺陷，ContextPreparation 装载时报告。
 
-`replacement_size(model)` 是 `compact` 返回的消息的计划 token 数：摘要的目标 `S`（§13.3）加上一条空的 `summary_message` 包装，按 `count_tokens` 计数。`S` 来自策略的工厂配置——与它的提示词声明的是同一条规则——所以计划不会与摘要器脱节。保留规则在策略运行之前预留这块空间（§5.3）。它是计划大小，不是硬上限：`maxTokens` 仍为 `output_tokens`，超出 `S` 的回复照常完成，并在诊断里报告它实际的大小。`Completed` 的 `replacement` 是策略自己的消息；记录里的 `replacement` 由 ContextPolicy 用它、清单和钉住的输入组合而成（§4.3、§5.9、§5.10）。
+`replacement_size(model, budget)` 是 `compact` 返回的消息的计划 token 数：摘要的目标 `S`（§13.3）加上一条空的 `summary_message` 包装，按 `count_tokens` 计数。`budget` 是 §5.3 中本步骤的塑形预算 `B`——自动触发取压缩预算，手动步骤与预算恢复取物理输入预算——`S` 是它的 `min(α × O, β × budget)`：计划与为它预留空间的保留规则测量同一份预算，手动与恢复步骤不会错估它们替换的内容。`S` 来自策略的工厂配置——与它的提示词声明的是同一条规则——所以计划不会与摘要器脱节。保留规则在策略运行之前预留这块空间（§5.3）。它是计划大小，不是硬上限：`maxTokens` 仍为 `output_tokens`，超出 `S` 的回复照常完成，并在诊断里报告它实际的大小。`Completed` 的 `replacement` 是策略自己的消息；记录里的 `replacement` 由 ContextPolicy 用它、清单和钉住的输入组合而成（§4.3、§5.9、§5.10）。
 
 `compact` 把策略内部的失败报告为 `Failed {error, diagnostics}`，而不是 `Err`：结果携带与完成时相同的诊断，所以 `failed` 事实与其它事实一样报告尝试次数、用量和耗时（§4.3）。`Err` 只留给取消，以及任何模型工作之前的失败。
 
@@ -288,7 +288,7 @@ pub trait ContextModel { fn context_window(&self) -> f64; fn output_tokens(&self
 pub struct HistoryEntry { /* 现有 */ pub source: String }   // 放置它的事件的 id
 pub trait CompactionStrategy: Send + Sync + 'static {
     fn name(&self) -> &str;                            // 写入开始事实，例如 "summary"
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64;   // 计划中的替换 token 数
+    fn replacement_size(&self, model: &dyn ContextModel, budget: f64) -> f64;   // 按该预算计划的替换 token 数
     fn compact(&self, input: CompactionInput, cancel: CancellationToken)
         -> HostFuture<'_, StrategyOutcome>; }          // Completed | Skipped | Failed
 pub struct StrategyDiagnostics { pub model_call_count: u64, pub usage: Option<Usage>,
@@ -343,14 +343,14 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | `context_window` | `snapshot.capabilities.contextWindow`，即目录值，含其现有覆盖 |
 | `output_tokens` | 采用后的输出额度：`request.config.maxTokens`，由 Provider 按声明的一对上限推导为 `max(1, min(声明的 maxOutputTokens, 131,072, contextWindow / 2))`。存储值缺失或高于该函数时，在请求边界读取时修复；声明值 `maxOutputTokens` 本身不被改写。该额度约束的是整个回复而不只是答案：会思考的请求从其中为答案保留 `answer_tokens`，因此压缩按请求总共可花费的上限来计划 |
 | `threshold_tokens` | `B_c − reserve`，其中 `B_c` 是下文的压缩预算，`reserve = min(max(0.10 × B_c, 16,000), 0.20 × B_c)`。余量用来吸收下一个请求的估算误差；它是暂定的经验值，不能覆盖每一个没有提供方基线的请求（[研究 §3.3、§6.4](../research/compaction-trigger.md#33-建议)） |
-| `compaction_budget` | 采用启动压缩窗口 `W` 时为 `min(B, max(0, W − O))`，否则为物理输入预算 `B = context_window − output_tokens`。`O` 是有效窗口内的输出预留，上限为窗口的一半：`O = min(output_tokens, W / 2)`。压缩预算为自动压缩塑形：本文所有按 `B` 缩放的部分——§5.3、§5.6、§5.9、§5.10 的保留、上限、再增长、钉住输入和清单份额，以及 §13.3 的摘要目标 `S`——都按它缩放，而校验、溢出恢复、摘要分块和手动切点继续按物理预算 `B` 缩放（#2235） |
+| `compaction_budget` | 采用启动压缩窗口 `W` 时为 `min(B, max(0, W − O))`，否则为物理输入预算 `B = context_window − output_tokens`。`O` 是有效窗口内的输出预留，上限为窗口的一半：`O = min(output_tokens, W / 2)`。压缩预算为自动压缩塑形：本文所有按 `B` 缩放的部分——§5.3、§5.6、§5.9、§5.10 的保留、上限、再增长、钉住输入和清单份额——都按它缩放，而校验、溢出恢复、摘要分块和手动切点继续按物理预算 `B` 缩放（#2235） |
 | `count_tokens` | 序列化后的系统提示、消息和工具声明的 UTF-8 字节数除以 4；每个图片部件按固定 1,600 token 计。暂定（#128）。用于：在提供方的 `prompt_tokens` 之上算增量、第一个请求、`validate`、以及检查压缩是否减少了输入 |
 
 `--models` 配置从模型文件解析同样的窗口事实：`AimuxModels` 按请求的 provider 与 model id 读取对应的模型条目，在加载条目时按文件的声明推导输出额度；请求的能力快照保持未设置，所以能力未知时图片照常发出。
 
 **容量与启动触发窗口。** 窗口事实是模型目录里的值及其覆盖：`B`、`0.5 × B`、`0.25 × B` 和 `S` 都随声明的容量缩放。输出额度是 Provider 采用的值，而不是声明的最大值：回复上限（131,072 token）与窗口的一半共同约束它，所以即使来源声明的输出等于或高于窗口，`B` 也至少是窗口的一半。
 
-采用的 [startup](../model-startup.md) `auto_compact_window = W` 把预算拆成两份（#2235）：物理输入预算 `B` 仍是校验、溢出恢复、摘要分块和手动压缩测量的对象，而为自动压缩塑形的一切都按压缩预算 `B_c = min(B, max(0, W − O))` 缩放——有效阈值、保留尾部份额、压缩后上限（含重新规划的触发）、再增长门槛、钉住输入与清单份额，以及摘要替换目标。更小的塑形窗口从不降低实际容量：合法地超出 `W` 的轮次压缩而不是报错，压缩随后按时把上下文收回到塑形预算之内。超出模型容量的 token 值照常在校验时报错；低于下限 `min(32,000, 容量的 10%)` 的值静默抬升到该下限。百分比按采用容量换算。没有 W（包括 startup `auto`）时 `B_c` 就是 `B`，一切不变。压缩没有自己的容量上限；不同的实际容量由 Provider 或现有的 `contextWindow` 覆盖声明。
+采用的 [startup](../model-startup.md) `auto_compact_window = W` 把预算拆成两份（#2235）：物理输入预算 `B` 仍是校验、溢出恢复、摘要分块和手动压缩测量的对象，而为自动压缩塑形的一切都按压缩预算 `B_c = min(B, max(0, W − O))` 缩放——有效阈值、保留尾部份额、压缩后上限（含重新规划的触发）、再增长门槛、钉住输入与清单份额，以及自动步骤里的摘要替换目标——每个步骤都按它自己的塑形预算来量（§13.3）。更小的塑形窗口从不降低实际容量：合法地超出 `W` 的轮次压缩而不是报错，压缩随后按时把上下文收回到塑形预算之内。超出模型容量的 token 值照常在校验时报错；低于下限 `min(32,000, 容量的 10%)` 的值抬升到该下限；采用它的操作的回复携带这次抬升，客户端把它作为一次性提示展示（#2235）。百分比按采用容量换算。没有 W（包括 startup `auto`）时 `B_c` 就是 `B`，一切不变。压缩没有自己的容量上限；不同的实际容量由 Provider 或现有的 `contextWindow` 覆盖声明。
 
 ### 5.2 ProductSummaryStrategy
 
@@ -368,7 +368,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 - **记录文本。** 按角色标注的文本：工具调用写名称和输入，工具结果写文本，图片写 `[image]`。
 - **分块。** 一次调用的输入预算为 `context_window − output_tokens`，用 `count_tokens` 对整个摘要请求（系统提示、携带的摘要、外层格式和本块）计数，与其他所有请求的计数方式相同，不另设按字符计的规则。更长的记录分块折叠：每次调用拿到当前摘要和能放下的条目。单条放不下的，按字节在 UTF-8 字符边界上从中间截断，截断标记计入预算，并计入 `compactedToolPayloadCount`。
 - **被截断的回复。** 停在 `max_tokens` 的回复（思考可能用掉大部分额度）不算摘要。该块在最接近中间的条目分隔处（或字符边界）一分为二，逐半折叠；小于 2 KiB 仍被截断时压缩失败，达到重试上限时也失败（见下文工作量有界），所以任何记录都不会保留被截断的文本（#169）。每一半都携带前一半的摘要，所以调用前会再次按预算检查它的整个请求；不再放得下的一半继续一分为二，文本全部保留；携带的摘要与包装在没有任何转录内容时也放不下，则压缩失败，不发送该请求。
-- **替换大小。** 策略按 `replacement_size(model)` 规划它的替换内容：目标 `S`（§13.3，`S = min(α × O, β × B_c)`，来自策略的工厂配置）加上一条空的 `summary_message` 的 token 数。在 §13.4 的评估做出选择之前，`α = 0.5`、`β = 0.10`（暂定，与 `RETAINED_SHARE` 同级）；提示词里的目标句仍是 §13 的决定，本设计不添加。它是计划大小：`maxTokens` 仍为 `O`，超出 `S` 的回复照常保留，事实报告它实际的大小（§4.3）。
+- **替换大小。** 策略按 `replacement_size(model, budget)` 规划它的替换内容：目标 `S`（§13.3，`S = min(α × O, β × budget)`，取本步骤的塑形预算，来自策略的工厂配置）加上一条空的 `summary_message` 的 token 数。在 §13.4 的评估做出选择之前，`α = 0.5`、`β = 0.10`（暂定，与 `RETAINED_SHARE` 同级）；提示词里的目标句仍是 §13 的决定，本设计不添加。它是计划大小：`maxTokens` 仍为 `O`，超出 `S` 的回复照常保留，事实报告它实际的大小（§4.3）。
 - **工作量有界。** 一次压缩至多发出 `chunkCount + SUMMARY_RETRY_LIMIT` 个摘要请求，`chunkCount` 是诊断里各次折叠的块数（截断回复拆出的对半也计入），`SUMMARY_RETRY_LIMIT` 是本模块的暂定常量 `8`。额外的 `8` 覆盖共享失败策略的重试：每个请求都计入 `modelCallCount`，在发出时计数，无论该尝试是否产生了流——策略的 host 外包一层在委托前计数的驱动，因此任何流之前的可重试失败也花掉额度。因携带的摘要放不下而重新拆分的片段不发送任何请求，所以拆截断回复只会增加 `chunkCount`，不会耗尽额度；这种拆分由 `MIN_CHUNK_BYTES` 兜底。已发出的请求达到 `chunkCount + SUMMARY_RETRY_LIMIT` 时，包装层在下一个请求到达提供方之前就拒绝它，返回非暂时性错误，失败策略因此不再重试；结果为 `failed`，不生效。`modelCallCount` 是已发出的请求数（§4.3）。
 - **重新规划时的工作量有界。** §5.3 第 4 步可能为同一次压缩再次调用策略。拿到上一遍诊断（`CompactionInput.prior`）的那一遍沿用同一份额度，而不是重新开一份：它的计数从该遍的 `chunkCount`、`compactedToolPayloadCount`、`droppedMessageCount` 和 `cutOffCount` 起算，额度为 `chunkCount + SUMMARY_RETRY_LIMIT` 减去上一遍已发出的请求数，因此一次压缩无论跑几遍，至多发出 `chunkCount + SUMMARY_RETRY_LIMIT` 个摘要请求。它的 `chunkCount` 等计数于是描述整次压缩，而它的 `modelCallCount` 只计自己的请求；ContextPolicy 把两遍的计数和用量加进那一份已提交的结果（§5.3）。
 - **摘要实质性。** 非空在每条回复上强制：回复去掉空白后没有文本时 `summarize` 让压缩失败（`failed`，回复 `compaction_failed`，不是跳过：跳过意味着没有东西可压缩）。折叠后的摘要始终是最后一条回复，所以压缩提交的摘要从不为空。要求的部分属于 [#429 的产品策略](../../../design/compaction-quality.md#77-model-facing-prompts-429)，由 §13.4 的评估决定：本设计不改提示词，各部分在声明它们的提示词落地时一并加入检查。
@@ -379,12 +379,12 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 
 `compact_step` 就是把 `ContextPolicy::prepare` 中现有的压缩部分抽出来：
 
-1. **不可压缩部分与保留界限。** 本次步骤的塑形预算：自动触发取模型的压缩预算，手动步骤与预算恢复取物理输入预算（#2235）；下文的 `B` 就是这个塑形预算，所以没有启动窗口时每个式子都不变。不可压缩部分超过塑形预算一半的压缩回退到最晚的、仍保留内容的切点，并带上空间不足标记，再增长门槛的绝对下限把住下一次尝试（§5.6）；预算不抬升出本次步骤自己的塑形预算。一次压缩在某个切点上无法压缩的部分是：
+1. **不可压缩部分与保留界限。** 本次步骤的塑形预算：自动触发取模型的压缩预算，手动步骤与预算恢复取物理输入预算（#2235）；下文的 `B` 就是这个塑形预算，所以没有启动窗口时每个式子都不变。不可压缩部分超过塑形预算一半的压缩回退到最晚的、仍保留内容的切点，并带上空间不足标记，再增长门槛把住下一次尝试（§5.6）；预算不抬升出本次步骤自己的塑形预算。一次压缩在某个切点上无法压缩的部分是：
    - 请求框架：system prompt、工具声明，以及准备阶段在历史之后追加的消息；
    - 切点处的带 key 基线；
    - 切点之前、进行中轮次已消费的钉住输入（§5.9），按该切点自己的大小计；
    - 清单在它自己的上限内占用的空间，即 `0.05 × B`（§5.10）；
-   - 策略的替换内容，按 `replacement_size(model)` 计（§4.2）；重新规划时改用第一遍实际产出的替换内容来量（第 4 步）。
+   - 策略的替换内容，按 `replacement_size(model, B)` 计（§4.2），其中 `B` 是本步骤的塑形预算；重新规划时改用第一遍实际产出的替换内容来量（第 4 步）。
 
    `resident(cut)` 是这些部分用 `count_tokens` 求和的结果，该切点的尾部预算为 `min(RETAINED_SHARE × B, 0.5 × B − resident(cut))`，其中 `RETAINED_SHARE = 0.25`（暂定，#128）。尾部是从切点起的条目。带 key 的基线属于不可压缩部分，因为每次切割后都会重放它；它不再像 #128 那样计入尾部预算，所以只有当 `0.5 × B − resident` 是约束项时，带 key 的块才会缩短尾部。
 
@@ -514,7 +514,7 @@ consume pending inputs --> prepare next request
 - `ContextPolicy::prepare` 改为调用 `compact_step`。ContextPreparation 注入 `CompactionStrategyHost`；两个宿主都是 `Some` 时它才有策略。
 - **触发点。** 估算未超过输入预算时，阈值压缩只在以下两条同时成立时于 `prepare` 中运行：
   - 估算达到 `threshold_tokens`（现有）；
-  - 自分支最近一次压缩尝试以来，至少累积了 `0.25 × B_c` 的新历史，且不少于 `min(0.25 × B, 16,000)` token：这个绝对下限让狭窄的自定义窗口不会每一轮都发起压缩（#2235）。新历史是由该尝试的 `context/compaction-start` 的 `through` 之后的事件放置的条目，用 `count_tokens` 逐个计数后求和。该尝试是任何触发原因、任何结局的最近一条开始事实；分支上没有开始事实时，全部历史都算新历史。
+  - 自分支最近一次压缩尝试以来，至少累积了 `0.25 × B_c` 的新历史：这个份额让狭窄的自定义窗口不会每一轮都发起压缩（#2235）。新历史是由该尝试的 `context/compaction-start` 的 `through` 之后的事件放置的条目，用 `count_tokens` 逐个计数后求和。该尝试是任何触发原因、任何结局的最近一条开始事实；分支上没有开始事实时，全部历史都算新历史。
 
     “`through` 之后”按上下文自己的分支感知顺序判定，绝不比较原始的序号：`through` 是写下这条开始的那个分支的序号，经 `ContextHistory.positions` 映射到该分支在它或之前的最后一个已提交事件，条目自己的事件在上下文顺序上晚于它就算新历史。子分支继承了父分支的事件，却从 1 重新编自己的序号，所以子分支较小的序号在继承来的尝试之后仍然算新：父分支刚压缩完就 fork 出的分支，从自己的历史再增长；同一分支的历史行为与此前的直接序号比较完全相同。
 
@@ -707,7 +707,7 @@ consume pending inputs --> prepare next request
 | 窗口上限 | 窗口事实是模型目录值及其覆盖；`B`、`0.5 × B`、`0.25 × B` 和 `S` 随容量缩放。`output_tokens` 是 Provider 采用后的输出额度：由声明的一对上限推导，以回复上限和窗口的一半为界，所以 `B` 至少是窗口的一半；存储的配置在读取时按同一规则修复（§5.1）。采用的启动压缩窗口按其压缩预算重塑自动压缩，同时预留该额度（§5.1） |
 | `0.5 × B` 上限 | 尾部预算为 `min(0.25 × B, 0.5 × B − resident)`，替换内容按 `replacement_size` 规划（§13.3 的 `S`，暂定 α = 0.5、β = 0.10）；没有尾部放得下时，界限是替换全部的切点；仍在上限之上的已完成结果在提交任何事实之前，按替换内容的实际大小重新规划一次，只写下这一次的结局；标记按写下的结果的总数测量，所以在上限之上的结果总带着它（§5.3）。`0.5` 份额是暂定的（#428） |
 | 空间不足 | 恰好出现在已完成压缩总数超过 `0.5 × B` 时的一个描述性 `insufficientSpace` 对象，按从大到小列出覆盖差额的不可压缩部分，从不是保留的尾部；没有决定读它（§4.3、§5.3） |
-| 再增长 | 自动阈值压缩需要最近一次压缩尝试的 `through` 之后有 `0.25 × B_c` 的条目，且不少于 `min(0.25 × B, 16,000)` token，按上下文的分支感知顺序判定：`through` 映射到写下它的分支在它或之前的最后一个已提交事件，所以 fork 出的子分支从自己的历史再增长；预算恢复例外，每个请求运行一次（§5.6、§5.3） |
+| 再增长 | 自动阈值压缩需要最近一次压缩尝试的 `through` 之后有 `0.25 × B_c` 的条目，按上下文的分支感知顺序判定：`through` 映射到写下它的分支在它或之前的最后一个已提交事件，所以 fork 出的子分支从自己的历史再增长；预算恢复例外，每个请求运行一次（§5.6、§5.3） |
 | 恢复后的失败 | 恢复压缩之后仍超过 `B` 的请求带着错误失败，错误指出让请求超出的东西——不可压缩部分，或最后的事件放置的条目——不再压缩（§5.3、§6） |
 | 第 2 类 (a) 钉住 | 在 ContextPolicy 而不是策略：切点之前进行中轮次的输入，排除带 key 的块，至多 `0.1 × B`——本次步骤的塑形预算：自动触发取 `B_c`，手动步骤与预算恢复取物理输入预算——（暂定，#428），保留头尾和 `input/message` id；同一轮次里更晚的压缩原样携带上一份结果的钉住部分，与它切点或之后消费的输入在同一份额度下合并，两者都从已提交事实读取，缺快照也不变（§5.9） |
 | 第 3a 类清单 | 工具契约的效果声明（[工具契约 A.6](../contracts/session-boundary.md#a6-工具效果)）只取自被替换范围的 `step/tool-result` 事件，不取自任何其他事实，折叠成替换内容里的一条数据消息，在策略的消息之后、钉住的输入之前；每个路径或命令一条，带最新结果，命令缩短为前 200 个字符并标出截断；条目以数据形式保存在记录上（`digest_entries`），从它滚动，绝不从渲染解析；至多 `0.05 × B`，与钉住输入同为本次步骤的塑形预算（暂定，#428），超出时删除最近一次声明最早的条目，它们的事件由 Recall 读回；输入引导随消息一起获得 `<dim-digest>` 条目（§5.10） |
@@ -720,7 +720,7 @@ consume pending inputs --> prepare next request
 
 测试用产品配置的 App Server 连接一个上下文窗口很小的 mock HTTP 提供方，也用同样的 App Server 连接一个模型条目声明了小窗口的 `--models` 文件（`crates/dim-app-server/tests`），另加 `crates/dim-agent-capabilities/tests` 中的 Loop 与策略流程测试。
 
-1. **自动。** 超过阈值、且自上一次压缩以来已有 `0.25 × B_c` 的新历史——不少于 `min(0.25 × B, 16,000)` token——后，下一次准备依次写 `context/budget`、`context/compaction-start {trigger: threshold}`。所选切点挤出的 token 多于替换内容的计划大小时，它还发出一个摘要请求，并提交 `completed` 的 `context/compaction`：带该请求的 id 和 `start`，没有 `command`，`strategy: "summary"`，`replacement` 只有一条消息，`retain_from` 为保留尾部放得进 `min(0.25 × B, 0.5 × B − resident)` 的最早合法切点（§5.3）。模型请求以这条消息开头，原样保留该尾部。产品窗口事实给出余量的上限、下限和比例（32k/8k → 19,200；128k/8k → 104,000；1M/128k → 784,800）。一个大轮次之后的许多小轮次会保留两轮以上；当 `0.5 × B` 是约束项（框架或基线占去上限的大部分）时，切点后会重放的带 key 块比同样内容不带 key 时保留的轮次少。所选切点挤出的 token 不超过该计划大小时，不发出摘要请求：同一次准备写 `skipped` 的 `context/compaction`，原因 `nothing_to_compact`，`modelCallCount` 为 0（`an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_replacement`，位于 `transport_flow/compaction.rs`）。
+1. **自动。** 超过阈值、且自上一次压缩以来已有 `0.25 × B_c` 的新历史后，下一次准备依次写 `context/budget`、`context/compaction-start {trigger: threshold}`。所选切点挤出的 token 多于替换内容的计划大小时，它还发出一个摘要请求，并提交 `completed` 的 `context/compaction`：带该请求的 id 和 `start`，没有 `command`，`strategy: "summary"`，`replacement` 只有一条消息，`retain_from` 为保留尾部放得进 `min(0.25 × B, 0.5 × B − resident)` 的最早合法切点（§5.3）。模型请求以这条消息开头，原样保留该尾部。产品窗口事实给出余量的上限、下限和比例（32k/8k → 19,200；128k/8k → 104,000；1M/128k → 784,800）。一个大轮次之后的许多小轮次会保留两轮以上；当 `0.5 × B` 是约束项（框架或基线占去上限的大部分）时，切点后会重放的带 key 块比同样内容不带 key 时保留的轮次少。所选切点挤出的 token 不超过该计划大小时，不发出摘要请求：同一次准备写 `skipped` 的 `context/compaction`，原因 `nothing_to_compact`，`modelCallCount` 为 0（`an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_replacement`，位于 `transport_flow/compaction.rs`）。
 2. **预算恢复。** 准备阶段的估算超过 `B` 时直接以 `trigger: provider_output_budget_exhausted` 压缩，不受阈值与再增长门槛限制。本地恢复成功时不产生模型失败结果，只在压缩完成后调用模型。有提供方基线时，本地计数放得进窗口、但基线估算超过 `B` 的请求会恢复；基线估算放得下的不会。
 3. **手动，没有 turn。** `session.context.compact` 只写 `context/compact`、`context/compaction-start {command}` 和 `context/compaction {command, start}`；没有 `turn/*`、`step/*` 或 `model/call`。回复为 `completed`。两轮的 Session 上切点为最新一轮的开头；该轮的输入本身超出尾部预算时，切点在这一轮内部。
 4. **手动，turn 内。** 序列为 `step/tool-result` → `context/compaction-start {turn_id, command}` → `context/compaction {turn_id, command, start}` → 下一个请求的 `step/model-start`，该请求基于压缩后的上下文准备。
@@ -828,12 +828,12 @@ consume pending inputs --> prepare next request
 
 **指令。** 有目标时，系统提示末尾加一句：“Keep the summary under about S tokens; write less when the transcript needs less.” 每次折叠都用同一句，所以分块折叠时携带的摘要保持有界。这句话是策略的工厂配置（`length_sentence`）：一个带一个 `{target}` 占位符的模板，占位符填入 token 数；评估中的候选整句替换它（§13.4、§13.5）。
 
-**S 的推导。** 令 `O = model.output_tokens()`（摘要请求作为 `maxTokens` 得到的额度），`B_c` 为模型的压缩预算（§5.1）：
+**S 的推导。** 令 `O = model.output_tokens()`（摘要请求作为 `maxTokens` 得到的额度），`budget` 为本步骤的塑形预算——自动触发取模型的压缩预算 `B_c`（§5.1），手动压缩和预算恢复取物理输入预算（§5.3）：
 
-`S = min(α × O, β × B_c)`，向下取整到 100 的倍数。
+`S = min(α × O, β × budget)`，向下取整到 100 的倍数。
 
 - `α × O` 为思考和超出留下 `(1 − α) × O` 的额度，遵守指令的摘要不会碰到 `max_tokens`。
-- `β × B_c` 限制替换内容在之后每个请求中占用的份额。压缩后上下文约为 `S` 加清单、钉住的输入和保留的尾部：这三项份额按本步骤的塑形预算缩放——自动触发为 `B_c`，手动压缩和预算恢复为物理输入预算（§5.3、§5.9、§5.10）——而 `S` 按 `B_c` 缩放；`B_c` 不大于 `B`，所以 `β = 0.10` 使整体不超出本步骤塑形预算的一半（§5.3），自动步骤低于触发点。
+- `β × budget` 限制替换内容在之后每个请求中占用的份额。压缩后上下文约为 `S` 加清单、钉住的输入和保留的尾部：四项都按本步骤的塑形预算缩放——自动触发为 `B_c`，手动压缩和预算恢复为物理输入预算（§5.3、§5.9、§5.10）——所以 `β = 0.10` 使整体不超出本步骤塑形预算的一半（§5.3），自动步骤低于触发点。
 - S 是软指令。`maxTokens` 仍为 `O`：在 S 处设硬上限会让每次超出都变成被截断的回复，再被对半拆分重试（#169）。
 
 评估的候选（§13.4）：`α ∈ {0.25, 0.5}`、`β ∈ {0.05, 0.10}`，以及不写指令。

@@ -115,7 +115,7 @@ impl CompactionStrategy for Context {
     fn name(&self) -> &str {
         "test"
     }
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, model: &dyn ContextModel, _: f64) -> f64 {
         self.replacement.unwrap_or_else(|| {
             model.count_tokens(&ModelRequest::new(
                 "",
@@ -2075,8 +2075,8 @@ impl CompactionStrategy for GatedContext {
     fn name(&self) -> &str {
         "test"
     }
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
-        self.0.replacement_size(model)
+    fn replacement_size(&self, model: &dyn ContextModel, budget: f64) -> f64 {
+        self.0.replacement_size(model, budget)
     }
     fn compact(
         &self,

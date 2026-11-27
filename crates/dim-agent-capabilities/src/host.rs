@@ -1433,8 +1433,11 @@ pub trait CompactionStrategy: Send + Sync + 'static {
     /// The planned token count of the messages `compact` returns: the summary's
     /// target plus its wrapper (ContextCompaction §4.2). The retention rule
     /// reserves it before the strategy runs; a reply that overshoots it is
-    /// kept and reported (ContextCompaction §5.2).
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64;
+    /// kept and reported (ContextCompaction §5.2). `budget` is the step's
+    /// shaping budget: the physical input budget for manual cuts and output
+    /// budget recovery, the compaction budget for the automatic trigger
+    /// (ContextCompaction §5.3, #2236).
+    fn replacement_size(&self, model: &dyn ContextModel, budget: f64) -> f64;
     fn compact(
         &self,
         input: CompactionInput,

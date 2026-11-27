@@ -45,7 +45,7 @@ impl CompactionStrategy for Scripted {
     fn name(&self) -> &str {
         "scripted"
     }
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, model: &dyn ContextModel, _: f64) -> f64 {
         let messages = match self.mode {
             Mode::TwoMessages => vec![
                 Message::text(Role::User, "first replacement"),

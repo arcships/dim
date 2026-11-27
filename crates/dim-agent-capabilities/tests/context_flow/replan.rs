@@ -51,7 +51,7 @@ impl CompactionStrategy for Overshoot {
     fn name(&self) -> &str {
         "test"
     }
-    fn replacement_size(&self, _: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, _: &dyn ContextModel, _: f64) -> f64 {
         self.planned
     }
     fn compact(

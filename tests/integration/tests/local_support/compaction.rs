@@ -76,7 +76,7 @@ impl CompactionStrategy for Window {
     fn name(&self) -> &str {
         "window"
     }
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, model: &dyn ContextModel, _: f64) -> f64 {
         model.count_tokens(&ModelRequest::new("", "", vec![summary_message("short")]))
     }
     fn compact(
