@@ -260,6 +260,13 @@ struct RealtimeState {
 struct FixtureAdapter {
     /// Model id to the operation ids it serves; `None` serves all three.
     served: Mutex<Option<BTreeMap<String, BTreeSet<String>>>>,
+    /// Model ids whose video generation only a Gemini protocol answer serves.
+    gemini_only: Mutex<BTreeSet<String>>,
+    /// Model id to the protocols its video generation answer drops.
+    unserved_protocols: Mutex<BTreeMap<String, Vec<dim_agent_types::ModelProtocol>>>,
+    /// Every `operations` question as (model id, qualified operation,
+    /// protocol), in call order.
+    protocols: Mutex<Vec<(String, String, Option<dim_agent_types::ModelProtocol>)>>,
     /// Operation id to its parameter schema.
     schemas: Mutex<BTreeMap<String, Value>>,
     available: AtomicBool,
@@ -285,6 +292,9 @@ impl Default for FixtureAdapter {
     fn default() -> Self {
         Self {
             served: Mutex::new(None),
+            gemini_only: Mutex::new(BTreeSet::new()),
+            unserved_protocols: Mutex::new(BTreeMap::new()),
+            protocols: Mutex::new(Vec::new()),
             schemas: Mutex::new(BTreeMap::new()),
             available: AtomicBool::new(true),
             behavior: Mutex::new(Behavior::default()),
@@ -318,6 +328,25 @@ impl FixtureAdapter {
                 })
                 .collect(),
         );
+    }
+    /// `model`'s video generation answers only a Gemini protocol; a
+    /// protocol-free or other protocol's answer drops it.
+    fn serve_video_only_for_gemini(&self, model: &str) {
+        self.gemini_only.lock().unwrap().insert(model.to_owned());
+    }
+    /// `model`'s video generation leaves the answer this protocol carries,
+    /// as a family without a media binding does.
+    fn drop_video_for_protocol(&self, model: &str, protocol: dim_agent_types::ModelProtocol) {
+        self.unserved_protocols
+            .lock()
+            .unwrap()
+            .entry(model.to_owned())
+            .or_default()
+            .push(protocol);
+    }
+    /// Every `operations` question in call order.
+    fn protocols(&self) -> Vec<(String, String, Option<dim_agent_types::ModelProtocol>)> {
+        self.protocols.lock().unwrap().clone()
     }
     fn set_available(&self, available: bool) {
         self.available.store(available, Ordering::SeqCst);
@@ -404,16 +433,38 @@ impl ModalityAdapter for FixtureAdapter {
     fn operations(
         &self,
         model: &ModelId,
-        _protocol: Option<dim_agent_types::ModelProtocol>,
+        protocol: Option<dim_agent_types::ModelProtocol>,
     ) -> Vec<AdapterOperation> {
         let served = self.served.lock().unwrap();
-        let operations: BTreeSet<String> = match served.as_ref() {
+        let mut operations: BTreeSet<String> = match served.as_ref() {
             Some(served) => served.get(&model.model_id).cloned().unwrap_or_default(),
             None => ["generate", "edit", "enhance"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
         };
+        drop(served);
+        if self.gemini_only.lock().unwrap().contains(&model.model_id)
+            && protocol != Some(dim_agent_types::ModelProtocol::Gemini)
+        {
+            operations.remove("video.generate");
+        }
+        if let Some(protocol) = protocol
+            && self
+                .unserved_protocols
+                .lock()
+                .unwrap()
+                .get(&model.model_id)
+                .is_some_and(|dropped| dropped.contains(&protocol))
+        {
+            operations.remove("video.generate");
+        }
+        let operations: Vec<String> = operations.into_iter().collect();
+        self.protocols.lock().unwrap().extend(
+            operations
+                .iter()
+                .map(|id| (model.model_id.clone(), id.clone(), protocol)),
+        );
         let schemas = self.schemas.lock().unwrap();
         operations
             .into_iter()
@@ -2264,6 +2315,25 @@ fn sha256(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// The created provider with a Gemini route (12.1): one video model the
+/// family resolution answers through the Gemini protocol.
+async fn create_gemini_video_provider(client: &mut Client) {
+    assert_ok(
+        &client
+            .rpc(
+                "provider.create",
+                json!({
+                    "providerId": PROVIDER,
+                    "displayName": "Fixture",
+                    "connection": {"driverKind": "gemini", "baseUrl": "http://127.0.0.1:1/v1beta", "auth": {"type": "anonymous"}},
+                    "models": [media("clip", &["video.generate"])],
+                    "enabled": true
+                }),
+            )
+            .await,
+    );
 }
 
 /// A provider whose models declare the image adapter operations, with the
@@ -4263,6 +4333,123 @@ async fn a_restart_interrupts_queued_and_unresumable_tasks() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_start_asks_serving_with_the_connections_protocol() {
+    let fixture = Arc::new(FixtureAdapter::default());
+    fixture.serve(&[("clip", &["video.generate"])]);
+    fixture.serve_video_only_for_gemini("clip");
+    let (server, home) = start(Some(fixture.clone()), "dm-protocol-submit").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_gemini_video_provider(&mut client).await;
+    let task = submit_task(
+        &mut client,
+        json!({"category": "video", "operation": "generate",
+            "params": {"prompt": "a cat"}, "model": model("clip")}),
+    )
+    .await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let finished = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&finished), "succeeded", "{finished}");
+    assert_eq!(
+        fixture.submits(),
+        1,
+        "the connection's Gemini route serves the adapter's answer"
+    );
+    let questions = fixture.protocols();
+    assert!(
+        questions.contains(&(
+            "clip".to_owned(),
+            "video.generate".to_owned(),
+            Some(dim_agent_types::ModelProtocol::Gemini)
+        )),
+        "the serving check reads the connection's protocol: {questions:?}"
+    );
+    assert!(
+        !questions.contains(&("clip".to_owned(), "video.generate".to_owned(), None)),
+        "no question about this model answers protocol-free: {questions:?}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_resumes_a_video_task_it_never_re_reads_the_route_for() {
+    let fixture = Arc::new(FixtureAdapter::default());
+    let gate = CancellationToken::new();
+    fixture.set_behavior(Behavior {
+        gate: Some(gate.clone()),
+        ..Default::default()
+    });
+    fixture.serve(&[("clip", &["video.generate"])]);
+    fixture.drop_video_for_protocol("clip", dim_agent_types::ModelProtocol::Anthropic);
+    let home = home("dm-recovery-video");
+    // A crash leaves the record `running` with its handle; the provider of
+    // the created route still exists.
+    let server = start_in(home.clone(), Some(fixture.clone())).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_gemini_video_provider(&mut client).await;
+    server.shutdown();
+    server.join().await.unwrap();
+    let task_id = "mt_video_crashed";
+    // The adapter keeps the job it submitted, so its wait can resume on the
+    // stored handle.
+    std::fs::create_dir_all(task_dir(&home, task_id).join("work")).unwrap();
+    fixture.jobs.lock().unwrap().insert(
+        task_id.to_owned(),
+        Job {
+            task_id: task_id.to_owned(),
+            category: "video".into(),
+            operation: "generate".into(),
+            model: ModelId {
+                provider_id: PROVIDER.into(),
+                model_id: "clip".into(),
+            },
+            params: json!({"prompt": "seed"}),
+            files: Vec::new(),
+            work_dir: task_dir(&home.canonicalize().unwrap(), task_id).join("work"),
+        },
+    );
+    fixture
+        .handles
+        .lock()
+        .unwrap()
+        .insert("handle-seeded".to_owned(), task_id.to_owned());
+    let mut record = seed_record(task_id, "running", "2026-11-06T00:00:00Z");
+    record["category"] = json!("video");
+    record["operation"] = json!("generate");
+    record["executor"]["provider"] = json!({"providerId": PROVIDER, "modelId": "clip"});
+    record["remote_handle"] = json!("handle-seeded");
+    write_task_record(&home, &record);
+
+    let server = start_in(home.clone(), Some(fixture.clone())).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let running = task_status(&mut client, task_id).await;
+    assert_eq!(
+        state_of(&running),
+        "running",
+        "a video task whose record the adapter serves stays running: {running}"
+    );
+    wait_until_waits(&fixture, 1).await;
+    assert_eq!(
+        fixture.submits(),
+        0,
+        "observation of the stored handle never submits again"
+    );
+    let questions = fixture.protocols();
+    assert!(
+        questions.contains(&("clip".to_owned(), "video.generate".to_owned(), None)),
+        "recovery asks serving without re-reading the route: {questions:?}"
+    );
+    gate.cancel();
+    let finished = wait_terminal(&mut client, task_id).await;
+    assert_eq!(state_of(&finished), "succeeded", "{finished}");
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retention_deletes_terminal_tasks_past_thirty_days() {
