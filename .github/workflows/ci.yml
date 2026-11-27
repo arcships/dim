@@ -37,6 +37,7 @@ jobs:
       scripts: ${{ steps.groups.outputs.scripts }}
       macos_scripts: ${{ steps.groups.outputs.macos_scripts }}
       dependencies: ${{ steps.groups.outputs.dependencies }}
+      platforms: ${{ steps.groups.outputs.platforms }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -121,30 +122,7 @@ jobs:
         shell: powershell
         env:
           CACHE_STAMP: ${{ hashFiles('rust-toolchain.toml') }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}
-        run: |
-          $targetDir = [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
-          $stampFile = Join-Path $targetDir '.cache-stamp'
-          $maxBytes = 12GB
-          $reset = $false
-          if (Test-Path $targetDir) {
-            $current = if (Test-Path $stampFile) { (Get-Content -Raw $stampFile).Trim() } else { '' }
-            if ($current -ne $env:CACHE_STAMP) {
-              Write-Output 'Resetting Windows target cache (toolchain or profile stamp changed).'
-              $reset = $true
-            } else {
-              $bytes = (Get-ChildItem -LiteralPath $targetDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-              if ($bytes -gt $maxBytes) {
-                Write-Output "Resetting Windows target cache ($([math]::Round($bytes / 1GB, 2)) GiB exceeded 12 GiB budget)."
-                $reset = $true
-              }
-            }
-          }
-          if ($reset) {
-            Remove-Item -LiteralPath $targetDir -Recurse -Force
-          }
-          New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-          Set-Content -LiteralPath $stampFile -Value $env:CACHE_STAMP -NoNewline
-          "CARGO_TARGET_DIR=$targetDir" >> $env:GITHUB_ENV
+        run: '& "$env:GITHUB_WORKSPACE\scripts\ci-windows-target.ps1"'
       - name: Verify native Windows CLI boundaries
         run: cargo test --locked -p dim-cli --lib
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -163,30 +141,7 @@ jobs:
           CMAKE_SHA256: 'd163cd3ab4959b0a53fa8988f2ddbd2e6c501658201e6a154386bad9dbe4f836'
           NASM_VERSION: '2.16.03'
           NASM_SHA256: '3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6'
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          function Add-PortableTool {
-            param([string]$Name, [string]$Version, [string]$Sha256, [string]$Url, [string]$VersionFlag)
-            if (Get-Command $Name -ErrorAction SilentlyContinue) {
-              Write-Output "Using the $Name already on PATH"
-              return
-            }
-            $archive = Join-Path $env:RUNNER_TEMP "$Name-$Version.zip"
-            Invoke-WebRequest -Uri $Url -OutFile $archive -UseBasicParsing
-            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-            if ($actual -ne $Sha256) { throw "$Name sha256 $actual does not match $Sha256" }
-            $directory = Join-Path $env:RUNNER_TEMP "dim-windows-native-$Name-$Version"
-            if (Test-Path $directory) { Remove-Item -LiteralPath $directory -Recurse -Force }
-            Expand-Archive -LiteralPath $archive -DestinationPath $directory -Force
-            $executable = Get-ChildItem -LiteralPath $directory -Recurse -File -Filter "$Name.exe" | Select-Object -First 1
-            if (-not $executable) { throw "$Name archive holds no $Name.exe" }
-            [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$($executable.DirectoryName)`n")
-            & $executable.FullName $VersionFlag
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Output "Provisioned $Name $Version from $Url"
-          }
-          Add-PortableTool -Name 'cmake' -Version $env:CMAKE_VERSION -Sha256 $env:CMAKE_SHA256 -Url "https://github.com/Kitware/CMake/releases/download/v$env:CMAKE_VERSION/cmake-$env:CMAKE_VERSION-windows-x86_64.zip" -VersionFlag '--version'
-          Add-PortableTool -Name 'nasm' -Version $env:NASM_VERSION -Sha256 $env:NASM_SHA256 -Url "https://www.nasm.us/pub/nasm/releasebuilds/$env:NASM_VERSION/win64/nasm-$env:NASM_VERSION-win64.zip" -VersionFlag '-v'
+        run: '& "$env:GITHUB_WORKSPACE\scripts\ci-windows-native-tools.ps1"'
       - name: Verify native Windows boundary flows
         # Scheduled sweeps select every check group, so they run these flows too.
         if: needs.changes.outputs.windows_native == 'true'
@@ -206,29 +161,7 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
       - name: Build and test the Web workspace
-        run: |
-          $declarations = 'web/src/auto-imports.d.ts', 'web/src/components.d.ts'
-          $original = @{}
-          foreach ($file in $declarations) {
-            $original[$file] = (Get-Content -Raw -Encoding UTF8 $file).Replace("`r`n", "`n")
-          }
-          $version = node -p "require('./npm/package.json').version"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:Path = "$env:WINDIR\System32;$env:Path"
-          node scripts/stage-web.mjs staging/release-web $version $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $notices = tar.exe -xOzf "staging/release-web/dimcode-web-$version.tar.gz" dimcode-web/web/THIRD-PARTY-NOTICES.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($package in 'vue', 'vue-router', 'pinia') {
-            $entry = $notices -cmatch "^${package}@"
-            if (-not $entry) { throw "Missing third-party notice for $package" }
-            Write-Output $entry
-          }
-          foreach ($file in $declarations) {
-            if ((Get-Content -Raw -Encoding UTF8 $file).Replace("`r`n", "`n") -cne $original[$file]) {
-              throw "Generated declaration changed: $file"
-            }
-          }
+        run: '& "$env:GITHUB_WORKSPACE\scripts\ci-web-check.ps1"'
       - name: Test the Web workspace
         run: npm.cmd test --prefix web
       - name: Test the chat-ui package
@@ -272,7 +205,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(github.event_name == 'pull_request' && '["linux"]' || github.event_name == 'push' && '["macos"]' || '["linux","macos"]') }}
+        platform: ${{ fromJSON(needs.changes.outputs.platforms) }}
     runs-on: ${{ matrix.platform == 'linux' && fromJSON('["self-hosted","linux","x64","dim-verify"]') || fromJSON('["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 75
     env:
@@ -323,6 +256,11 @@ jobs:
             cargo build --locked -p xtask
           fi
           target/debug/xtask check
+      - name: Derive test concurrency
+        if: needs.changes.outputs.rust == 'true'
+        id: concurrency
+        shell: bash
+        run: node scripts/ci-test-concurrency.mjs >> "$GITHUB_OUTPUT"
       - name: Run compiled workspace tests
         if: needs.changes.outputs.rust == 'true'
         shell: bash
@@ -330,33 +268,8 @@ jobs:
           DIM_TEST_TIMEOUT_MS: "900000"
         run: |
           set -euo pipefail
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            cpus=$(nproc)
-            # Runner hosts may share their physical cores between instances and
-            # report SMT siblings as CPUs; scale by the cores this job can use.
-            if command -v lscpu >/dev/null; then
-              cores=$(lscpu -p=Core,Socket | grep -v '^#' | sort -u | wc -l)
-              logical=$(lscpu -p=CPU | grep -vc '^#')
-              (( cores > 0 )) || cores=1
-              smt=$(( logical / cores ))
-              (( smt < 1 )) && smt=1
-              physical=$(( cpus / smt ))
-            else
-              physical=$cpus
-            fi
-            (( physical < 1 )) && physical=1
-            test_jobs=$(( physical / 3 ))
-            (( test_jobs < 3 )) && test_jobs=3
-            (( test_jobs > 8 )) && test_jobs=8
-            test_threads=$(( physical / 4 ))
-            (( test_threads < 2 )) && test_threads=2
-            (( test_threads > 6 )) && test_threads=6
-          else
-            test_jobs=3
-            test_threads=3
-          fi
-          echo "Workspace tests: DIM_TEST_JOBS=$test_jobs --test-threads=$test_threads"
-          DIM_TEST_JOBS="$test_jobs" node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace "--test-threads=$test_threads"
+          echo "Workspace tests: DIM_TEST_JOBS=${{ steps.concurrency.outputs.jobs }} --test-threads=${{ steps.concurrency.outputs.threads }}"
+          DIM_TEST_JOBS='${{ steps.concurrency.outputs.jobs }}' node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace "--test-threads=${{ steps.concurrency.outputs.threads }}"
           cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
       - name: Verify debug-only CLI tests
         if: needs.changes.outputs.debug == 'true'
