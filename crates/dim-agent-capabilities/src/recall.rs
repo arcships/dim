@@ -5,7 +5,7 @@
 //! `docs/architecture/rust-agent/plugins/Recall.md`.
 use crate::{
     host::{HostError, HostFuture, ToolExecutionContext},
-    narrative::{self, ABOUT, Person, Query},
+    narrative::{self, Person, Query},
     timeline_tree::TreeCommands,
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
@@ -37,32 +37,10 @@ pub fn install(builder: &mut AgentBuilder) {
 fn recall_definition() -> ToolDefinition {
     let mut definition = definition(
         RECALL_TOOL,
-        "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open a turn or anything in it by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id.",
+        "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open any line by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id.",
         json!({
             "type": "object",
-            "properties": {
-                "about": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": ABOUT,
-                    "description": "Words to look for; all must appear, in any order, ignoring case."
-                },
-                "tool": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Only calls to this tool."
-                },
-                "before": {"type": "string", "description": "An id; show what came before it."},
-                "open": {
-                    "type": "string",
-                    "description": "An id; show that turn, or that thing in full."
-                },
-                "offset": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "With open: continue from here, a line of a turn or a character of one thing."
-                }
-            },
+            "properties": narrative::query_properties(),
             "additionalProperties": false
         }),
     );

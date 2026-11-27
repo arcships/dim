@@ -1984,6 +1984,21 @@ async fn leader_delegates_and_team_members_communicate() {
              participants[].agentId for a team member. A name such as \"default\" is not an id."
         )
     );
+    for (field, declared) in dim_agent_capabilities::narrative::query_properties() {
+        assert_eq!(
+            schema["properties"][&field], declared,
+            "read declares Recall's query: {field}"
+        );
+    }
+    let member_guidance = &member_tools
+        .iter()
+        .find(|t| t.name == "agent")
+        .unwrap()
+        .description;
+    assert!(
+        member_guidance.contains("open any line by its id"),
+        "{member_guidance}"
+    );
     let leader_tools = events(&lead_session)
         .await
         .iter()
@@ -1999,7 +2014,8 @@ async fn leader_delegates_and_team_members_communicate() {
         .description;
     assert!(
         guidance.contains("agentId is copied exactly from list's agents[].agentId")
-            && guidance.contains("is not an agentId"),
+            && guidance.contains("is not an agentId")
+            && guidance.contains("open any line by its id"),
         "{guidance}"
     );
     let schema = serde_json::to_value(

@@ -31,9 +31,36 @@ const PAGE_CHARACTERS: usize = 8_000;
 /// Characters a variable part of a line keeps, its `…` included (§3.4).
 const PART: usize = 120;
 /// Longest `about` a query accepts (§5.2).
-pub const ABOUT: usize = 200;
+const ABOUT: usize = 200;
 /// Events one read asks for. The answer, not this page, ends the read.
 const PAGE_EVENTS: usize = 128;
+
+/// The schema properties of a [`Query`], the same for every reader (§5.2).
+pub fn query_properties() -> JsonObject {
+    let Value::Object(properties) = json!({
+        "about": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": ABOUT,
+            "description": "Words to look for; all must appear, in any order, ignoring case."
+        },
+        "tool": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Only calls to this tool."
+        },
+        "before": {"type": "string", "description": "A line's id; show what came before it."},
+        "open": {"type": "string", "description": "A line's id; show it in full."},
+        "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "With open: continue from here, a line of a turn or a character of one thing."
+        }
+    }) else {
+        unreachable!("an object literal")
+    };
+    properties
+}
 
 /// The grammatical person the account is told in (§3.8).
 #[derive(Clone, Copy, PartialEq, Eq)]

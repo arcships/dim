@@ -383,6 +383,10 @@ nothing; it only drops the address to the reader:
 
 Without a turn of its own, every turn without a `turn/end` on the read line is `in progress`.
 
+Every reader declares the query of §5.2 with the same schema properties, which the component
+owns (`narrative::query_properties`), so a reader's parameters cannot drift from what the
+projection accepts.
+
 A handle belongs to the line it was shown on (§4). A reader whose line can change between calls,
 as a member's current line can, may hold a handle the new line does not have; that handle is
 refused as any unknown id is (§6), and the refusal tells the reader to read again without `open`
@@ -417,7 +421,7 @@ Registered with the Session's `toolRegistry` under the name `recall`
 | `name` | `recall` |
 | `risk` | `session` |
 | `source` | `extension` |
-| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open a turn or anything in it by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
+| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open any line by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
 
 The declaration is the only prompt. The summary, the replacement and the system prompt do not
 mention the tool (§7).
@@ -432,8 +436,8 @@ mention the tool (§7).
                "description": "Words to look for; all must appear, in any order, ignoring case."},
     "tool":   {"type": "string", "minLength": 1,
                "description": "Only calls to this tool."},
-    "before": {"type": "string", "description": "An id; show what came before it."},
-    "open":   {"type": "string", "description": "An id; show that turn, or that thing in full."},
+    "before": {"type": "string", "description": "A line's id; show what came before it."},
+    "open":   {"type": "string", "description": "A line's id; show it in full."},
     "offset": {"type": "integer", "minimum": 0,
                "description": "With open: continue from here, a line of a turn or a character of one thing."}
   },

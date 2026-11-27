@@ -15213,7 +15213,7 @@ mod tests {
             &[],
         )
         .await;
-        let options = fixture.options(fixture.directory.join("out"));
+        let options = fixture.judge_options(fixture.directory.join("out"));
         let report = fixture.evaluate(&options).await.unwrap();
         assert!(
             report.contains("candidate is inconclusive: no comparison is a regression"),
@@ -15276,7 +15276,7 @@ mod tests {
             &[],
         )
         .await;
-        let options = fixture.options(fixture.directory.join("out"));
+        let options = fixture.judge_options(fixture.directory.join("out"));
         let report = fixture.evaluate(&options).await.unwrap();
         let records = fixture.records(&options.out);
         assert_eq!(records.len(), 2, "one run per arm");
@@ -15329,7 +15329,7 @@ mod tests {
             &[],
         )
         .await;
-        let options = fixture.options(fixture.directory.join("out"));
+        let options = fixture.judge_options(fixture.directory.join("out"));
         let report = fixture.evaluate(&options).await.unwrap();
         assert!(
             report.contains("candidate is inconclusive: no comparison is a regression"),
@@ -16036,7 +16036,7 @@ mod tests {
             &[],
         )
         .await;
-        let options = fixture.options(fixture.directory.join("out"));
+        let options = fixture.judge_options(fixture.directory.join("out"));
         let report = fixture.evaluate(&options).await.unwrap();
         assert!(
             report.contains("candidate is inconclusive: no comparison is a regression"),
@@ -16092,7 +16092,7 @@ mod tests {
             &[],
         )
         .await;
-        let options = fixture.options(fixture.directory.join("out"));
+        let options = fixture.judge_options(fixture.directory.join("out"));
         let report = fixture.evaluate(&options).await.unwrap();
         let records = fixture.records(&options.out);
         assert_eq!(records.len(), 2, "one run per arm");
@@ -16150,7 +16150,7 @@ mod tests {
             &[],
         )
         .await;
-        let options = fixture.options(fixture.directory.join("out"));
+        let options = fixture.judge_options(fixture.directory.join("out"));
         let report = fixture.evaluate(&options).await.unwrap();
         let records = fixture.records(&options.out);
         assert_eq!(records.len(), 2, "one run per arm");
@@ -16369,6 +16369,20 @@ mod tests {
                                 "maxOutputTokens": OUTPUT_TOKENS,
                                 "config": {"maxTokens": OUTPUT_TOKENS}
                             }]
+                        },
+                        // The same upstream model with a window between the
+                        // run's view and a deliberately overgrown one, so a
+                        // fit flow does not borrow the run model's window.
+                        {
+                            "id": "narrow",
+                            "kind": "openai-chat",
+                            "baseUrl": format!("http://{endpoint}/v1"),
+                            "models": [{
+                                "id": "mock",
+                                "contextWindow": 40000,
+                                "maxOutputTokens": OUTPUT_TOKENS,
+                                "config": {"maxTokens": OUTPUT_TOKENS}
+                            }]
                         }
                     ]
                 }))
@@ -16455,6 +16469,16 @@ mod tests {
             let mut options = self.options(out);
             options.judge = ModelId {
                 provider_id: "judge".into(),
+                model_id: "mock".into(),
+            };
+            options
+        }
+        /// [`options`](Self::options) with the judge under the provider entry
+        /// whose window holds a run-sized view but not an overgrown one.
+        fn narrow_judge_options(&self, out: PathBuf) -> Options {
+            let mut options = self.options(out);
+            options.judge = ModelId {
+                provider_id: "narrow".into(),
                 model_id: "mock".into(),
             };
             options
@@ -17153,22 +17177,21 @@ mod tests {
             &[],
         )
         .await;
-        // The second scenario's message makes its view exceed the judge's
-        // budget, which is the host model's window; the first scenario's view
-        // fits it.
+        // The second scenario's message makes its view exceed the narrow
+        // judge's budget; the first scenario's view fits it with room to spare.
         let over = fixture.scenarios.join("over");
         std::fs::create_dir_all(over.join("workspace")).unwrap();
         std::fs::write(
             over.join("scenario.json"),
             serde_json::to_string_pretty(&json!({
-                "message": format!("Say hello. {}", "x".repeat(20_000)),
+                "message": format!("Say hello. {}", "x".repeat(100_000)),
                 "budget": {"turns": 4, "seconds": 120, "window": 24000},
                 "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
             }))
             .unwrap(),
         )
         .unwrap();
-        let options = fixture.options(fixture.directory.join("out"));
+        let options = fixture.narrow_judge_options(fixture.directory.join("out"));
         let report = fixture.evaluate(&options).await.unwrap();
         let records = fixture.records(&options.out);
         assert_eq!(records.len(), 4, "one run per arm and scenario");
@@ -17183,6 +17206,16 @@ mod tests {
                 let error = record["judgeError"].as_str().unwrap();
                 assert!(error.starts_with("the judge view needs about "), "{error}");
                 assert!(error.contains(" tokens; the judge's budget is "), "{error}");
+                let numbers = error
+                    .split(|character: char| !character.is_ascii_digit() && character != '.')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| part.parse::<f64>().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(numbers.len(), 2, "{error}");
+                assert!(
+                    numbers[0] - numbers[1] > 4_000.,
+                    "the overgrown view clears the judge's budget with room to spare: {error}"
+                );
             }
         }
         assert_eq!(
@@ -17351,7 +17384,7 @@ mod tests {
                 "--model",
                 "gateway/mock",
                 "--judge",
-                "gateway/mock",
+                "judge/mock",
                 "--runs",
                 "1",
                 "--model-config",

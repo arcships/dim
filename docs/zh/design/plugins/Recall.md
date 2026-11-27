@@ -176,6 +176,8 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 
 没有自己的那一轮时，所读的线上每个没有 `turn/end` 的轮次都是 `in progress`。
 
+每个读者都用同样的 schema 属性声明 §5.2 的查询，这些属性由组件持有（`narrative::query_properties`），所以读者的参数不会与投影实际接受的不一致。
+
 把手属于显示它的那条线（§4）。所读的线在两次调用之间可能变化的读者，比如成员的当前线会变，可能拿着新线上没有的把手；这个把手与任何未知 id 一样被拒绝（§6），拒绝消息告诉读者不带 `open` 或 `before` 再读一次，从它现在所读的线的最近几轮开始。
 
 ## 4. 把手：时间与事件 id
@@ -198,7 +200,7 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 | `name` | `recall` |
 | `risk` | `session` |
 | `source` | `extension` |
-| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open a turn or anything in it by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
+| `description` | "Recall what happened earlier in this conversation, including what a compaction summarized: what the user said, what you did and what came back. With no arguments it lists past turns; open any line by its id, or search with about. A shortened input that ends in [input <id>] is read in full by opening that id." |
 
 工具声明是唯一的提示词。摘要、replacement 和系统提示词都不提这个工具（§7）。
 
@@ -212,8 +214,8 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
                "description": "Words to look for; all must appear, in any order, ignoring case."},
     "tool":   {"type": "string", "minLength": 1,
                "description": "Only calls to this tool."},
-    "before": {"type": "string", "description": "An id; show what came before it."},
-    "open":   {"type": "string", "description": "An id; show that turn, or that thing in full."},
+    "before": {"type": "string", "description": "A line's id; show what came before it."},
+    "open":   {"type": "string", "description": "A line's id; show it in full."},
     "offset": {"type": "integer", "minimum": 0,
                "description": "With open: continue from here, a line of a turn or a character of one thing."}
   },
