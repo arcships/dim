@@ -1350,3 +1350,123 @@ async fn a_created_providers_seedance_model_is_unavailable_end_to_end() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_created_providers_seedream_model_is_unavailable_end_to_end() {
+    // The generic compatible fallback cannot execute a Seedream image model —
+    // its endpoint answers URLs by default and the compatible package reads
+    // inline b64_json alone — so the listing projects it as unavailable with
+    // the adapter reason and submit refuses it before any request, while the
+    // same provider's other image model still runs.
+    let stub = stub(0).await;
+    let home = home("seedream-flow");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f4";
+    let descriptor = |model_id: &str, operations: Value| {
+        json!({
+            "modelId": model_id,
+            "displayName": model_id,
+            "status": "active",
+            "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata": {"raw": {"modalityCapabilities": operations}}
+        })
+    };
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [
+                    descriptor("seedream-5.0", json!(["image.generate"])),
+                    descriptor("doubao-seedream-4-0-250828", json!(["image.generate"])),
+                    descriptor("custom-image", json!(["image.generate"]))
+                ],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let options = image["options"].as_array().unwrap();
+    for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+        let option = options
+            .iter()
+            .find(|option| option["providerId"] == created && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("{model_id} is not an option: {image}"));
+        assert_eq!(
+            option["available"], false,
+            "{model_id} is unavailable: {option}"
+        );
+        assert_eq!(
+            option["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {option}"
+        );
+    }
+    let custom = options
+        .iter()
+        .find(|option| option["providerId"] == created && option["modelId"] == "custom-image")
+        .expect("custom-image is an option");
+    assert_eq!(
+        custom["available"], true,
+        "a non-seedream compatible image model stays available: {custom}"
+    );
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model(created, "seedream-5.0")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the seedream submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    // The same provider's non-seedream image model still runs on the family.
+    let task_id = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a red circle"}),
+        json!([]),
+        model(created, "custom-image"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+    assert_eq!(
+        stub.starts("/v1/images/generations"),
+        1,
+        "custom-image runs on the compatible image path"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
