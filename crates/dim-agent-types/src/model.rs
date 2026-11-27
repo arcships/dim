@@ -292,13 +292,16 @@ impl ModelCapabilitySnapshot {
 
 /// One model Provider would select for a non-conversational use, with the
 /// `<category>.<operation>` ids its catalog entry declares (Modality §9.2).
-/// It carries no limits: such a use does not run a chat request.
+/// It carries no limits: such a use does not run a chat request. `protocol`
+/// is the model's route: the adapter row a provider resolves to is read from
+/// it when its catalog id names no row (Modality A.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModalityModelSnapshot {
     pub target: ModelId,
     /// The declared operation ids, in the catalog's order.
     pub operations: Vec<String>,
+    pub protocol: ModelProtocol,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

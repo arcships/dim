@@ -99,16 +99,6 @@ impl MediaAdapter {
             jobs: Mutex::new(HashMap::new()),
         }
     }
-    /// The vendor of a model's provider, or `unavailable` for a created
-    /// provider this build has no row for.
-    fn vendor(&self, model: &ModelId) -> Result<&'static vendor::Vendor, AdapterError> {
-        vendor::vendor(&model.provider_id).ok_or_else(|| {
-            AdapterError::unavailable(format!(
-                "No adapter row serves the provider `{}`",
-                model.provider_id
-            ))
-        })
-    }
     /// Holds a blocking job until its `wait`, within the bounds above.
     fn keep(&self, job: Job, now: Instant) {
         let mut jobs = self.jobs.lock().unwrap();
@@ -138,7 +128,11 @@ impl ModalityAdapter for MediaAdapter {
         true
     }
 
-    fn operations(&self, model: &ModelId) -> Vec<AdapterOperation> {
+    fn operations(
+        &self,
+        model: &ModelId,
+        protocol: Option<dim_agent_types::ModelProtocol>,
+    ) -> Vec<AdapterOperation> {
         // The relay speaks the openai-realtime protocol a catalog entry
         // declares; the connection carries the base URL, headers and proxy,
         // so any provider with such an entry opens through it (A.2).
@@ -147,22 +141,62 @@ impl ModalityAdapter for MediaAdapter {
             operation: "voice".to_owned(),
             params_schema: realtime_schema(),
         }];
-        let Some(vendor) = vendor::vendor(&model.provider_id) else {
+        let provider_id = model.provider_id.as_str();
+        if let Some(vendor) = vendor::vendor(provider_id) {
+            let binding = vendor.binding();
+            let edit = media::serves_edit(&binding, &model.model_id);
+            for (kind, category, operation) in vendor.statements(edit) {
+                let schema = match (kind, operation) {
+                    (Operation::Image, "edit") => image_edit_schema(),
+                    (Operation::Image, _) => image_generate_schema(),
+                    (Operation::Video, _) => video_schema(),
+                    (Operation::Speech, _) => speech_schema(),
+                    (Operation::Transcription, _) => transcription_schema(),
+                };
+                operations.push(AdapterOperation {
+                    category: category.to_owned(),
+                    operation: operation.to_owned(),
+                    params_schema: schema,
+                });
+            }
             return operations;
-        };
-        let edit = media::serves_edit(vendor, &model.model_id);
-        for (kind, category, operation) in vendor.statements(edit) {
-            let schema = match (kind, operation) {
-                (Operation::Image, "edit") => image_edit_schema(),
-                (Operation::Image, _) => image_generate_schema(),
-                (Operation::Video, _) => video_schema(),
-                (Operation::Speech, _) => speech_schema(),
-                (Operation::Transcription, _) => transcription_schema(),
-            };
+        }
+        // A rowless provider — a created one's UUID, or the Dim account
+        // relay — answers what its protocol family serves (Modality A.2),
+        // in the same order a vendor row's statements list.
+        if let Ok(binding) = vendor::binding(provider_id, protocol, Operation::Image) {
             operations.push(AdapterOperation {
-                category: category.to_owned(),
-                operation: operation.to_owned(),
-                params_schema: schema,
+                category: "image".to_owned(),
+                operation: "generate".to_owned(),
+                params_schema: image_generate_schema(),
+            });
+            if media::serves_edit(&binding, &model.model_id) {
+                operations.push(AdapterOperation {
+                    category: "image".to_owned(),
+                    operation: "edit".to_owned(),
+                    params_schema: image_edit_schema(),
+                });
+            }
+        }
+        if vendor::binding(provider_id, protocol, Operation::Video).is_ok() {
+            operations.push(AdapterOperation {
+                category: "video".to_owned(),
+                operation: "generate".to_owned(),
+                params_schema: video_schema(),
+            });
+        }
+        if vendor::binding(provider_id, protocol, Operation::Speech).is_ok() {
+            operations.push(AdapterOperation {
+                category: "speech".to_owned(),
+                operation: "synthesize".to_owned(),
+                params_schema: speech_schema(),
+            });
+        }
+        if vendor::binding(provider_id, protocol, Operation::Transcription).is_ok() {
+            operations.push(AdapterOperation {
+                category: "speech".to_owned(),
+                operation: "transcribe".to_owned(),
+                params_schema: transcription_schema(),
             });
         }
         operations
@@ -175,27 +209,27 @@ impl ModalityAdapter for MediaAdapter {
         cancel: CancellationToken,
     ) -> AdapterFuture<'_, Submitted> {
         Box::pin(async move {
-            let vendor = self.vendor(&job.model)?;
             let kind = kind_of(&job)?;
-            if !vendor.kinds.serves(kind) {
-                return Err(AdapterError::unavailable(format!(
-                    "The {} provider serves no {}",
-                    vendor.catalog, job.operation
-                )));
-            }
-            if job.operation == "edit" && !media::serves_edit(vendor, &job.model.model_id) {
+            let binding = vendor::binding(&job.model.provider_id, Some(connection.protocol), kind)?;
+            if job.operation == "edit" && !media::serves_edit(&binding, &job.model.model_id) {
                 return Err(AdapterError::unavailable(format!(
                     "The {} provider serves no image.edit for `{}`",
-                    vendor.catalog, job.model.model_id
+                    job.model.provider_id, job.model.model_id
                 )));
             }
             if kind != Operation::Video {
                 self.keep(job, Instant::now());
                 return Ok(Submitted::default());
             }
-            let provider = media::provider(&connection, vendor, kind, &self.transport)?;
+            let provider = media::provider(
+                &connection,
+                &binding,
+                kind,
+                &self.transport,
+                &job.model.provider_id,
+            )?;
             let model = media::video_model(&provider, &connection.model)?;
-            let options = job::video_options(&job, vendor)?;
+            let options = job::video_options(&job, &binding)?;
             let started = model
                 .do_start(&options)
                 .await
@@ -240,7 +274,6 @@ impl ModalityAdapter for MediaAdapter {
                 ))
             })?;
             let job = pending.job;
-            let vendor = self.vendor(&job.model)?;
             let secrets = Secrets::of(&connection);
             match kind_of(&job)? {
                 Operation::Image => {
@@ -248,10 +281,20 @@ impl ModalityAdapter for MediaAdapter {
                         fraction: None,
                         message: Some("Generating the image".into()),
                     });
-                    let provider =
-                        media::provider(&connection, vendor, Operation::Image, &self.transport)?;
+                    let binding = vendor::binding(
+                        &job.model.provider_id,
+                        Some(connection.protocol),
+                        Operation::Image,
+                    )?;
+                    let provider = media::provider(
+                        &connection,
+                        &binding,
+                        Operation::Image,
+                        &self.transport,
+                        &job.model.provider_id,
+                    )?;
                     let model = media::image_model(&provider, &connection.model)?;
-                    let options = job::image_options(&job, vendor)?;
+                    let options = job::image_options(&job, &binding)?;
                     let result = aimux_core::image_model::generate_image(&*model, options)
                         .await
                         .map_err(|error| failure(error, &cancel, &secrets))?;
@@ -264,10 +307,20 @@ impl ModalityAdapter for MediaAdapter {
                         fraction: None,
                         message: Some("Synthesizing the audio".into()),
                     });
-                    let provider =
-                        media::provider(&connection, vendor, Operation::Speech, &self.transport)?;
+                    let binding = vendor::binding(
+                        &job.model.provider_id,
+                        Some(connection.protocol),
+                        Operation::Speech,
+                    )?;
+                    let provider = media::provider(
+                        &connection,
+                        &binding,
+                        Operation::Speech,
+                        &self.transport,
+                        &job.model.provider_id,
+                    )?;
                     let model = media::speech_model(&provider, &connection.model)?;
-                    let options = job::speech_options(&job, vendor)?;
+                    let options = job::speech_options(&job, &binding)?;
                     let result = aimux_core::speech_model::generate_speech(&*model, options)
                         .await
                         .map_err(|error| failure(error, &cancel, &secrets))?;
@@ -280,14 +333,20 @@ impl ModalityAdapter for MediaAdapter {
                         fraction: None,
                         message: Some("Transcribing the audio".into()),
                     });
+                    let binding = vendor::binding(
+                        &job.model.provider_id,
+                        Some(connection.protocol),
+                        Operation::Transcription,
+                    )?;
                     let provider = media::provider(
                         &connection,
-                        vendor,
+                        &binding,
                         Operation::Transcription,
                         &self.transport,
+                        &job.model.provider_id,
                     )?;
                     let model = media::transcription_model(&provider, &connection.model)?;
-                    let options = job::transcription_options(&job, vendor)?;
+                    let options = job::transcription_options(&job, &binding)?;
                     let result = aimux_core::transcription_model::transcribe(&*model, options)
                         .await
                         .map_err(|error| failure(error, &cancel, &secrets))?;
@@ -360,10 +419,20 @@ impl MediaAdapter {
         let handle: VideoHandle = serde_json::from_str(handle).map_err(|error| {
             AdapterError::provider_error(format!("The stored job handle is unreadable: {error}"))
         })?;
-        let vendor = self.vendor(&handle.job.model)?;
-        let provider = media::provider(connection, vendor, Operation::Video, &self.transport)?;
+        let binding = vendor::binding(
+            &handle.job.model.provider_id,
+            Some(connection.protocol),
+            Operation::Video,
+        )?;
+        let provider = media::provider(
+            connection,
+            &binding,
+            Operation::Video,
+            &self.transport,
+            &handle.job.model.provider_id,
+        )?;
         let model = media::video_model(&provider, &connection.model)?;
-        let options = job::video_options(&handle.job, vendor)?;
+        let options = job::video_options(&handle.job, &binding)?;
         let secrets = Secrets::of(connection);
         progress.send(AdapterProgress {
             fraction: None,

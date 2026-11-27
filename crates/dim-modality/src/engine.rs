@@ -1738,8 +1738,12 @@ impl Shared {
         let Some(adapter) = self.adapter_for(record) else {
             return false;
         };
+        // The record carries no route, and recovery must not re-resolve a
+        // connection to answer this: the adapter answers `None` with the
+        // operations its family rows could serve, and a route that no longer
+        // matches is the resumed wait's own `unavailable`.
         adapter.0.available()
-            && adapter.0.operations(provider).iter().any(|served| {
+            && adapter.0.operations(provider, None).iter().any(|served| {
                 served.category == record.category && served.operation == record.operation
             })
     }
@@ -1966,19 +1970,6 @@ impl Shared {
             }
             return None;
         };
-        if !adapter.0.operations(provider).iter().any(|served| {
-            served.category == record.category && served.operation == record.operation
-        }) {
-            if !slot.cancel_requested() {
-                self.fail(
-                    slot,
-                    "unavailable",
-                    "No available adapter serves the configured model",
-                )
-                .await;
-            }
-            return None;
-        }
         let files = match self.job_files(record).await {
             Ok(files) => files,
             Err(error) => {
@@ -2021,6 +2012,27 @@ impl Shared {
                 return None;
             }
         };
+        // The adapter's answer is per (model, protocol): the check runs on
+        // the route this resolution just read, which is the one `submit`
+        // dispatches on (A.2).
+        if !adapter
+            .0
+            .operations(provider, Some(connection.protocol))
+            .iter()
+            .any(|served| {
+                served.category == record.category && served.operation == record.operation
+            })
+        {
+            if !slot.cancel_requested() {
+                self.fail(
+                    slot,
+                    "unavailable",
+                    "No available adapter serves the configured model",
+                )
+                .await;
+            }
+            return None;
+        }
         // From here the adapter may already hold the job; a cancel must not
         // drop `submit`, because the handle it returns is the only way to
         // reach that job.

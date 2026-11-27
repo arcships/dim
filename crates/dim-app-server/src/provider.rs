@@ -2114,12 +2114,20 @@ impl ProviderService {
                 let Some(operations) = model.modality_operations() else {
                     continue;
                 };
+                // A selectable model routes: the record that admits it holds
+                // its route, and the connection resolution re-reads the same
+                // one. A catalog entry whose route is absent answers no
+                // non-conversational use either.
+                let Some(protocol) = model.endpoint else {
+                    continue;
+                };
                 models.push(ModalityModelSnapshot {
                     target: ModelId {
                         provider_id: provider_id.clone(),
                         model_id: model.id.clone(),
                     },
                     operations,
+                    protocol,
                 });
             }
         }

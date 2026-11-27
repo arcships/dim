@@ -401,7 +401,11 @@ impl ModalityAdapter for FixtureAdapter {
     fn available(&self) -> bool {
         self.available.load(Ordering::SeqCst)
     }
-    fn operations(&self, model: &ModelId) -> Vec<AdapterOperation> {
+    fn operations(
+        &self,
+        model: &ModelId,
+        _protocol: Option<dim_agent_types::ModelProtocol>,
+    ) -> Vec<AdapterOperation> {
         let served = self.served.lock().unwrap();
         let operations: BTreeSet<String> = match served.as_ref() {
             Some(served) => served.get(&model.model_id).cloned().unwrap_or_default(),

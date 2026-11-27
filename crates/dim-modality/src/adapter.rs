@@ -6,7 +6,7 @@
 //! resolves one `ModalityConnection` before each `submit`, `wait` and
 //! `cancel_remote` and drops it when the call returns.
 use dim_agent_capabilities::host::ModalityConnection;
-use dim_agent_types::ModelId;
+use dim_agent_types::{ModelId, ModelProtocol};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
@@ -266,9 +266,15 @@ pub enum RealtimeEnd {
 pub trait ModalityAdapter: Send + Sync + 'static {
     /// Whether the adapter can run now, without a reload (A.2 `available`).
     fn available(&self) -> bool;
-    /// The operations this adapter serves for `model`, each with its parameter
-    /// schema (A.2 `operations`).
-    fn operations(&self, model: &ModelId) -> Vec<AdapterOperation>;
+    /// The operations this adapter serves for `model` on `protocol`, each
+    /// with its parameter schema (A.2 `operations`). `protocol` is the
+    /// model's route, which decides the row a provider without its own
+    /// binding resolves to. `None` means the caller cannot know the route —
+    /// startup recovery, whose task record carries none — and an adapter
+    /// answers the operations its family rows could serve, so a resumable
+    /// task is not interrupted by a route the next resolution can re-read.
+    fn operations(&self, model: &ModelId, protocol: Option<ModelProtocol>)
+    -> Vec<AdapterOperation>;
     /// Starts one job (A.2 `submit`).
     fn submit(
         &self,

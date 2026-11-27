@@ -17,7 +17,7 @@ use dim_agent_capabilities::host::{ModalityConnection, ModelConnection, ModelNet
 use dim_modality::AdapterError;
 use std::sync::Arc;
 
-use crate::vendor::{Operation, Vendor};
+use crate::vendor::{Base, Binding, Operation, Package};
 
 /// Where a media call's transport comes from.
 pub enum Transport {
@@ -60,17 +60,51 @@ impl Transport {
     }
 }
 
+/// The base URL one binding composes from the connection's: vendor rows
+/// adjust the catalog's base to their package's path shape, and a family
+/// binding takes it as it is.
+fn binding_base(binding: &Binding, operation: Operation, url: &str) -> String {
+    let url = url.trim_end_matches('/');
+    match (binding.base, operation) {
+        (Base::FalImage, Operation::Image) => {
+            if let Some(rest) = url.strip_prefix("https://queue.fal.run") {
+                format!("https://fal.run{rest}")
+            } else {
+                url.to_owned()
+            }
+        }
+        (Base::Strip(suffix), _) => url
+            .strip_suffix(suffix)
+            .map(str::to_owned)
+            .unwrap_or_else(|| url.to_owned()),
+        (Base::Append(suffix), _) => {
+            if url.ends_with(suffix) {
+                url.to_owned()
+            } else {
+                format!("{url}{suffix}")
+            }
+        }
+        (_, _) => url.to_owned(),
+    }
+}
+
 /// The aimux provider that executes one connection's `operation`.
+///
+/// `provider_id` names the record in a refusal; the connection carries the
+/// endpoint but not the record's id.
 pub fn provider(
     connection: &ModalityConnection,
-    vendor: &Vendor,
+    binding: &Binding,
     operation: Operation,
     transport: &Transport,
+    provider_id: &str,
 ) -> Result<Arc<dyn Provider>, AdapterError> {
     match &connection.resolved.connection {
         ModelConnection::Http(http) => {
-            let (base_url, fetch) =
-                transport.resolve(&http.network, &vendor.base_url(operation, &http.base_url));
+            let (base_url, fetch) = transport.resolve(
+                &http.network,
+                &binding_base(binding, operation, &http.base_url),
+            );
             // A record may carry no base URL of its own (the bundled catalog
             // leaves google without one): the package's default then applies,
             // as it does for any other unset setting.
@@ -86,24 +120,46 @@ pub fn provider(
                 .clone()
                 .or_else(|| http.api_key.clone())
                 .unwrap_or_default();
-            let settings = PresetSettings {
-                api_key: Some(Resolvable::Value(credential)),
-                base_url,
-                headers: Some(
-                    http.headers
-                        .iter()
-                        .map(|(name, value)| (name.clone(), Some(value.clone())))
-                        .collect(),
-                ),
-                fetch: Some(fetch),
-                ..Default::default()
-            };
-            aimux_providers::create_provider(vendor.aimux, settings).map_err(|error| {
+            let unavailable = |error: AiMuxError| {
                 AdapterError::unavailable(format!(
-                    "The {} provider is unavailable: {error}",
-                    vendor.catalog
+                    "The {provider_id} provider is unavailable: {error}"
                 ))
-            })
+            };
+            match binding.package {
+                Package::Preset(name) => {
+                    let settings = PresetSettings {
+                        api_key: Some(Resolvable::Value(credential)),
+                        base_url,
+                        headers: Some(
+                            http.headers
+                                .iter()
+                                .map(|(name, value)| (name.clone(), Some(value.clone())))
+                                .collect(),
+                        ),
+                        fetch: Some(fetch),
+                        ..Default::default()
+                    };
+                    aimux_providers::create_provider(name, settings).map_err(unavailable)
+                }
+                Package::OpenaiCompatible => {
+                    let settings =
+                        aimux_providers::openai_compatible::OpenAICompatibleProviderSettings {
+                            base_url: base_url.unwrap_or_default(),
+                            api_key: (!credential.is_empty()).then_some(credential),
+                            headers: Some(
+                                http.headers
+                                    .iter()
+                                    .map(|(name, value)| (name.clone(), Some(value.clone())))
+                                    .collect(),
+                            ),
+                            fetch: Some(fetch),
+                            ..Default::default()
+                        };
+                    aimux_providers::openai_compatible::create_openai_compatible(settings)
+                        .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
+                        .map_err(unavailable)
+                }
+            }
         }
         ModelConnection::Bedrock(_) => Err(AdapterError::unavailable(
             "No bundled catalog model declares media on an Amazon Bedrock connection",
@@ -121,17 +177,38 @@ pub fn provider(
 /// package also reports file input per model (`supports_file_inputs`), a model
 /// that says `false` drops edit too. `None` — an unknown model — and a package
 /// that cannot be built keep the row's answer.
-pub fn serves_edit(vendor: &Vendor, model: &str) -> bool {
-    if !vendor.kinds.image_edit {
+pub fn serves_edit(binding: &Binding, model: &str) -> bool {
+    if !binding.image_edit {
         return false;
     }
-    let Ok(provider) = aimux_providers::create_provider(vendor.aimux, PresetSettings::default())
-    else {
-        return true;
-    };
-    match provider.image_model(model) {
-        Ok(image) => image.supports_file_inputs() != Some(false),
-        Err(_) => true,
+    match binding.package {
+        Package::Preset(name) => {
+            let Ok(provider) = aimux_providers::create_provider(name, PresetSettings::default())
+            else {
+                return true;
+            };
+            match provider.image_model(model) {
+                Ok(image) => image.supports_file_inputs() != Some(false),
+                Err(_) => true,
+            }
+        }
+        // The package's models answer file input per model; the probe needs
+        // no base URL because the model struct carries it without reading it.
+        Package::OpenaiCompatible => {
+            let settings = aimux_providers::openai_compatible::OpenAICompatibleProviderSettings {
+                base_url: "http://127.0.0.1".to_owned(),
+                ..Default::default()
+            };
+            let Ok(provider) =
+                aimux_providers::openai_compatible::create_openai_compatible(settings)
+            else {
+                return true;
+            };
+            match Provider::image_model(&provider, model) {
+                Ok(image) => image.supports_file_inputs() != Some(false),
+                Err(_) => true,
+            }
+        }
     }
 }
 

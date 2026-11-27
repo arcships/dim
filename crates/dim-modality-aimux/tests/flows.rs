@@ -144,6 +144,15 @@ async fn handle(State(state): State<StubState>, request: Request) -> Response {
         ("POST", "/v1/videos/generations") => {
             json_reply(StatusCode::OK, json!({"request_id": "req_1"}))
         }
+        // The openai-compatible package's own shape: a multipart start on
+        // /videos, a poll by id and the gateway's inline content download.
+        ("POST", "/v1/videos") => json_reply(StatusCode::OK, json!({"id": "vid1"})),
+        ("GET", "/v1/videos/vid1") => {
+            json_reply(StatusCode::OK, json!({"id": "vid1", "status": "completed"}))
+        }
+        ("GET", "/v1/videos/vid1/content") => {
+            (StatusCode::OK, [("content-type", "video/mp4")], VIDEO).into_response()
+        }
         ("GET", "/v1/videos/req_1") => {
             let poll = state.polls.fetch_add(1, Ordering::SeqCst) + 1;
             if poll <= state.pending {
@@ -921,7 +930,9 @@ async fn capabilities_show_the_mapped_provider_and_refuse_a_created_one() {
     );
     assert_no_credential(&capabilities);
 
-    // A created provider's id is a UUID, which no row names.
+    // A created provider's id is a UUID, which no vendor row names; a model
+    // that routes outside the OpenAI-compatible family resolves to no media
+    // binding either.
     let created = "018ec73f-0000-7000-8000-00000000c5b0";
     let reply = client
         .rpc(
@@ -929,7 +940,7 @@ async fn capabilities_show_the_mapped_provider_and_refuse_a_created_one() {
             json!({
                 "providerId": created,
                 "displayName": "Created",
-                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "connection": {"driverKind": "gemini", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
                 "models": [{
                     "modelId": "custom-image",
                     "displayName": "custom-image",
@@ -1011,6 +1022,212 @@ async fn a_specialized_adapter_claims_one_provider_beside_the_builtin() {
                 .any(|category| category["category"] == "image")),
         "the assembly with both adapters answers capabilities: {reply}"
     );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_created_providers_media_flows_resolve_by_protocol_family() {
+    let stub = stub(0).await;
+    let home = home("family-flow");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f1";
+    let descriptor = |model_id: &str, operations: Value| {
+        json!({
+            "modelId": model_id,
+            "displayName": model_id,
+            "status": "active",
+            "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata": {"raw": {"modalityCapabilities": operations}}
+        })
+    };
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [
+                    descriptor("custom-video", json!(["video.generate"])),
+                    descriptor("custom-image", json!(["image.generate"])),
+                    descriptor("custom-speech", json!(["speech.synthesize"])),
+                    descriptor("custom-ears", json!(["speech.transcribe"]))
+                ],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    // The created provider's video model runs on the openai-compatible
+    // package: a multipart start on /videos, a poll by id and the gateway's
+    // content download, all with the record's anonymous-no-credential shape.
+    let video = submit(
+        &mut client,
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model(created, "custom-video"),
+    )
+    .await;
+    let task = wait_state(&mut client, &video, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "video/mp4");
+    assert_eq!(read_result(&mut client, &video, "video-1.mp4").await, VIDEO);
+
+    // Speech and transcription stay on the OpenAI package's audio paths.
+    let speech = submit(
+        &mut client,
+        "speech",
+        "synthesize",
+        json!({"text": "hello"}),
+        json!([]),
+        model(created, "custom-speech"),
+    )
+    .await;
+    let task = wait_state(&mut client, &speech, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "audio/mpeg");
+    let transcription = submit(
+        &mut client,
+        "speech",
+        "transcribe",
+        json!({}),
+        json!([{"name": "clip.mp3", "media_type": "audio/mpeg",
+            "data_base64": base64::engine::general_purpose::STANDARD.encode(MP3)}]),
+        model(created, "custom-ears"),
+    )
+    .await;
+    let task = wait_state(&mut client, &transcription, &["succeeded"]).await;
+    assert_eq!(task["result"]["data"]["text"], "hello there");
+
+    // Image generation resolves to the openai-compatible package: the same
+    // /images/generations path, parsed for inline bytes.
+    let image = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a red circle"}),
+        json!([]),
+        model(created, "custom-image"),
+    )
+    .await;
+    let task = wait_state(&mut client, &image, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+
+    let requests = stub.requests();
+    let starts: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == "POST" && request.path == "/v1/videos")
+        .collect();
+    assert_eq!(starts.len(), 1, "one compatible video start");
+    let start_body = String::from_utf8_lossy(&starts[0].body);
+    assert!(
+        start_body.contains("custom-video"),
+        "the multipart start carries the model: {start_body}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.method == "GET" && request.path == "/v1/videos/vid1"),
+        "the job is polled by its id"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.path == "/v1/videos/vid1/content"),
+        "the gateway's content endpoint serves the download"
+    );
+    for path in [
+        "/v1/audio/speech",
+        "/v1/audio/transcriptions",
+        "/v1/images/generations",
+    ] {
+        assert!(
+            requests.iter().any(|request| request.path == path),
+            "the family serves {path}: {:?}",
+            requests
+                .iter()
+                .map(|request| request.path.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capabilities_list_a_created_compatible_providers_media_models() {
+    let stub = stub(0).await;
+    let home = home("family-capabilities");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f2";
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [{
+                    "modelId": "custom-media",
+                    "displayName": "custom-media",
+                    "status": "active",
+                    "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                        "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+                    "metadata": {"raw": {"modalityCapabilities": ["image.generate", "image.edit", "video.generate", "speech.synthesize", "speech.transcribe"]}}
+                }],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let categories = capabilities["result"]["categories"].as_array().unwrap();
+    let find = |category: &str, operation: &str| -> Value {
+        categories
+            .iter()
+            .find(|entry| entry["category"] == category)
+            .unwrap_or_else(|| panic!("no {category} category: {capabilities}"))["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["operation"] == operation)
+            .unwrap_or_else(|| panic!("no {category}.{operation}: {capabilities}"))
+            .clone()
+    };
+    for (category, operation) in [
+        ("image", "generate"),
+        ("image", "edit"),
+        ("video", "generate"),
+        ("speech", "synthesize"),
+        ("speech", "transcribe"),
+    ] {
+        let operation = find(category, operation);
+        let option = operation["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == created && option["modelId"] == "custom-media")
+            .unwrap_or_else(|| panic!("the created model is not an option: {operation}"));
+        assert_eq!(
+            option["available"], true,
+            "the compatible family serves the created provider's {category}: {operation}"
+        );
+    }
+
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

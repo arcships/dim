@@ -1,10 +1,15 @@
-//! The binding between a catalog provider and the aimux provider that
-//! executes its media models.
+//! The binding between a provider and the aimux package that executes its
+//! media models.
 //!
 //! One row per bundled catalog provider that declares a media operation and
-//! that an aimux vendor package serves. The catalog id is the provider record
-//! a seeded builtin keeps; a created provider's id is a UUID, so it can never
-//! match a row here and its media operations report `adapter` instead.
+//! that an aimux vendor package serves, resolved by the record's own id
+//! first. A provider whose id names no row — a created provider's UUID, or
+//! the Dim account relay — resolves by the protocol its media model routes
+//! to (Modality A.2): the OpenAI-compatible family serves video generation
+//! through the openai-compatible package and image generation and edit, and
+//! speech and transcription, through the OpenAI one. A model that routes to
+//! another protocol family, or the family a row does not serve, reports
+//! `adapter`.
 //!
 //! `kinds` is read from each package's `Provider` implementation, not from its
 //! files: xAI ships an image model file whose `image_model` answers
@@ -112,33 +117,6 @@ impl Vendor {
             statements.push((Operation::Transcription, "speech", "transcribe"));
         }
         statements
-    }
-
-    /// The base URL of one call: the catalog's value, held to the package's
-    /// own path shape.
-    pub fn base_url(&self, operation: Operation, url: &str) -> String {
-        let url = url.trim_end_matches('/');
-        match (self.base, operation) {
-            (Base::FalImage, Operation::Image) => {
-                if let Some(rest) = url.strip_prefix("https://queue.fal.run") {
-                    format!("https://fal.run{rest}")
-                } else {
-                    url.to_owned()
-                }
-            }
-            (Base::Strip(suffix), _) => url
-                .strip_suffix(suffix)
-                .map(str::to_owned)
-                .unwrap_or_else(|| url.to_owned()),
-            (Base::Append(suffix), _) => {
-                if url.ends_with(suffix) {
-                    url.to_owned()
-                } else {
-                    format!("{url}{suffix}")
-                }
-            }
-            (_, _) => url.to_owned(),
-        }
     }
 }
 
@@ -365,18 +343,6 @@ pub static VENDORS: &[Vendor] = &[
         base: Base::AsIs,
         format: None,
     },
-    // The Dim account relay speaks the OpenAI Image API on its `/v1` base:
-    // JSON `/images/generations` and multipart `/images/edits`, with the
-    // account's bearer. The relay names the model, so a model the package
-    // does not know keeps edit.
-    Vendor {
-        catalog: "dimcode-api-oauth",
-        aimux: "openai",
-        options: "openai",
-        kinds: kinds(true, false, false, false),
-        base: Base::AsIs,
-        format: Some("outputFormat"),
-    },
     // The catalog's `/speechtotext/v1` is the prefix the package appends.
     Vendor {
         catalog: "rev-ai",
@@ -391,4 +357,149 @@ pub static VENDORS: &[Vendor] = &[
 /// The row for a provider record, if this build serves its media models.
 pub fn vendor(provider_id: &str) -> Option<&'static Vendor> {
     VENDORS.iter().find(|vendor| vendor.catalog == provider_id)
+}
+
+/// How a binding builds its aimux provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Package {
+    /// The preset of [`aimux_providers::create_provider`], built with
+    /// [`aimux_providers::PresetSettings`].
+    Preset(&'static str),
+    /// [`aimux_providers::create_openai_compatible`], built with
+    /// [`aimux_providers::OpenAICompatibleProviderSettings`].
+    OpenaiCompatible,
+}
+
+/// What one (provider, operation) pair resolves to, vendor row or protocol
+/// family alike: the package, its `providerOptions` namespace and base
+/// composition, whether its image model reads an edit's input files, and
+/// whether an image create never retries.
+#[derive(Clone, Copy, Debug)]
+pub struct Binding {
+    pub package: Package,
+    /// The `providerOptions` key the package reads its own options from. The
+    /// package names it, not the catalog: Black Forest Labs reads
+    /// `blackForestLabs` whatever its provider is called.
+    pub options: &'static str,
+    pub base: Base,
+    /// Whether the image model reads the bytes an edit sends. The
+    /// openai-compatible package reads `options.files` on every model, so
+    /// the family's image binding keeps edit; [`crate::media::serves_edit`]
+    /// narrows it per model where the package reports one.
+    pub image_edit: bool,
+    /// The `providerOptions` key the package reads an image output format
+    /// from, when it reads one and spells it differently from aimux's
+    /// `outputFormat`. The requested format is the naming fallback for a
+    /// provider that returns bytes with no signature, so a binding without
+    /// one still names its files.
+    pub format: Option<&'static str>,
+    /// Whether an image create never retries a timed-out POST. Only the Dim
+    /// account relay plays back a request it already accepted, and its media
+    /// models resolve to the OpenAI package in both resolutions.
+    pub no_retry: bool,
+}
+
+impl Vendor {
+    /// The binding the row resolves every operation to: one package serves
+    /// the whole row, and no vendor row's image create is throttled.
+    pub fn binding(&self) -> Binding {
+        Binding {
+            package: Package::Preset(self.aimux),
+            options: self.options,
+            base: self.base,
+            image_edit: self.kinds.image_edit,
+            format: self.format,
+            no_retry: false,
+        }
+    }
+}
+
+/// The binding a model's media `operation` resolves to, or `unavailable`
+/// when nothing in this build serves it.
+///
+/// A provider whose id names a vendor row resolves to it whatever the
+/// protocol says (Modality A.2): the row is its own package's decision, and
+/// xAI's providers route `openai-compatible` while serving their video
+/// through the xAI one. Only a rowless provider — a created one's UUID, or
+/// the Dim account relay — falls back to the family, and only the
+/// OpenAI-compatible family carries media at all: video generation and
+/// image generation and edit go to the openai-compatible package, and
+/// speech and transcription to the OpenAI one, which is the only aimux
+/// package that serves them for this family. The relay's image generation
+/// is the one exception: its gateway answers the OpenAI Image API, whose
+/// package asks for inline bytes the compatible one does not, so it stays
+/// on the OpenAI package with its image create never retried. `None` is
+/// startup recovery's answer for a route it cannot re-read: the family
+/// answers as the compatible one would, and a route that no longer matches
+/// is the call's own failure.
+pub fn binding(
+    provider_id: &str,
+    protocol: Option<dim_agent_types::ModelProtocol>,
+    operation: Operation,
+) -> Result<Binding, dim_modality::AdapterError> {
+    let compatible = matches!(
+        protocol,
+        None | Some(dim_agent_types::ModelProtocol::OpenaiCompatible)
+    );
+    if let Some(vendor) = vendor(provider_id) {
+        return if vendor.kinds.serves(operation) {
+            Ok(vendor.binding())
+        } else {
+            Err(dim_modality::AdapterError::unavailable(format!(
+                "The {provider_id} provider serves no {}",
+                statement(operation)
+            )))
+        };
+    }
+    let binding = match (compatible, operation) {
+        (true, Operation::Image) if provider_id == "dimcode-api-oauth" => Binding {
+            package: Package::Preset("openai"),
+            options: "openai",
+            base: Base::AsIs,
+            image_edit: true,
+            format: Some("outputFormat"),
+            no_retry: true,
+        },
+        (true, Operation::Image) => Binding {
+            package: Package::OpenaiCompatible,
+            options: "openaiCompatible",
+            base: Base::AsIs,
+            image_edit: true,
+            format: Some("outputFormat"),
+            no_retry: false,
+        },
+        (true, Operation::Video) => Binding {
+            package: Package::OpenaiCompatible,
+            options: "openaiCompatible",
+            base: Base::AsIs,
+            image_edit: false,
+            format: None,
+            no_retry: false,
+        },
+        (true, Operation::Speech) | (true, Operation::Transcription) => Binding {
+            package: Package::Preset("openai"),
+            options: "openai",
+            base: Base::AsIs,
+            image_edit: false,
+            format: None,
+            no_retry: false,
+        },
+        (false, _) => {
+            return Err(dim_modality::AdapterError::unavailable(format!(
+                "No adapter row serves the provider `{provider_id}`"
+            )));
+        }
+    };
+    Ok(binding)
+}
+
+/// The `<category>.<operation>` statement an `Operation` names, for a
+/// refusal.
+fn statement(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Image => "image",
+        Operation::Video => "video.generate",
+        Operation::Speech => "speech.synthesize",
+        Operation::Transcription => "speech.transcribe",
+    }
 }
