@@ -13,7 +13,7 @@ permissions:
   checks: write
 
 concurrency:
-  group: issue-gate
+  group: issue-gate-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:

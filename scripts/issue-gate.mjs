@@ -223,7 +223,10 @@ async function beginCheckRun(pr) {
     title: 'Evaluating linked issue',
     summary: 'Checking the PR body and linked issue labels.',
   };
-  const existing = await findCheckRun(pr);
+  const existing = await findCheckRun(pr).catch((error) => {
+    console.error(`Could not read the existing issue-gate check: ${error.message}`);
+    return null;
+  });
   if (existing) {
     try {
       await api(`/repos/${repository}/check-runs/${existing.id}`, {
@@ -281,7 +284,13 @@ async function main() {
   const eventName = required('GITHUB_EVENT_NAME');
 
   if (eventName === 'pull_request_target') {
-    const pr = await getPr(event.pull_request.number);
+    const eventPr = event.pull_request;
+    const pr = {
+      number: eventPr.number,
+      body: eventPr.body ?? '',
+      head: eventPr.head.sha,
+      state: eventPr.state,
+    };
     let check;
     try {
       check = await beginCheckRun(pr);
