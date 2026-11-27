@@ -151,12 +151,10 @@ async function getClosingRefs(number) {
     .map((node) => node.number);
 }
 
-async function scanOpenPrsForIssue(issueNumber) {
-  const repository = required('GITHUB_REPOSITORY');
-  const prs = await pages(`/repos/${repository}/pulls?state=open`);
+async function scanOpenPrsForIssue(issueNumber, prs) {
   const linked = new Set();
-  const unreadable = [];
-  for (let index = 0; index < prs.length && linked.size < MAX_LINKED_PRS; index += SCAN_BATCH) {
+  const problems = [];
+  for (let index = 0; index < prs.length; index += SCAN_BATCH) {
     const batch = prs.slice(index, index + SCAN_BATCH);
     const matches = await Promise.all(
       batch.map(async (pr) => {
@@ -166,7 +164,7 @@ async function scanOpenPrsForIssue(issueNumber) {
             for (const number of await getClosingRefs(pr.number)) refs.add(number);
           } catch (error) {
             if (error.status !== 404) {
-              unreadable.push(`#${pr.number}: ${error.message}`);
+              problems.push(`#${pr.number}: ${error.message}`);
               console.error(`Could not read closing references for #${pr.number}: ${error.message}`);
             }
             return null;
@@ -177,28 +175,58 @@ async function scanOpenPrsForIssue(issueNumber) {
     );
     for (const number of matches) if (number) linked.add(number);
   }
-  if (!linked.size && unreadable.length) {
-    throw new Error(`Could not read linked pull requests: ${unreadable.join('; ')}`);
+  const numbers = [...linked].sort((left, right) => left - right);
+  if (numbers.length > MAX_LINKED_PRS) {
+    problems.push(`More than ${MAX_LINKED_PRS} linked open pull requests`);
   }
-  return [...linked].slice(0, MAX_LINKED_PRS);
+  return {
+    numbers: numbers.slice(0, MAX_LINKED_PRS),
+    complete: problems.length === 0,
+    problems,
+  };
 }
 
 async function getLinkedOpenPrs(issueNumber) {
   const repository = required('GITHUB_REPOSITORY');
+  const openPrs = await pages(`/repos/${repository}/pulls?state=open`);
+  const byNumber = new Map(openPrs.map((pr) => [pr.number, pr]));
+  let numbers;
+  let complete = true;
+  const problems = [];
   try {
     const events = await pages(`/repos/${repository}/issues/${issueNumber}/timeline`);
-    const numbers = new Set();
+    const linked = new Set();
     for (const event of events) {
       if (event.event !== 'cross-referenced') continue;
       const source = event.source;
       if (!sameRepository(source, repository)) continue;
-      if (source.issue.pull_request && source.issue.state === 'open') numbers.add(source.issue.number);
+      if (source.issue.pull_request && source.issue.state === 'open') linked.add(source.issue.number);
     }
-    return [...numbers].slice(0, MAX_LINKED_PRS);
+    numbers = [...linked].sort((left, right) => left - right);
+    if (numbers.length > MAX_LINKED_PRS) {
+      problems.push(`More than ${MAX_LINKED_PRS} linked open pull requests`);
+      complete = false;
+      numbers = numbers.slice(0, MAX_LINKED_PRS);
+    }
   } catch (error) {
     console.error(`Timeline read failed (${error.message}); scanning open PRs.`);
-    return scanOpenPrsForIssue(issueNumber);
+    const scan = await scanOpenPrsForIssue(issueNumber, openPrs);
+    numbers = scan.numbers;
+    complete = scan.complete;
+    problems.push(...scan.problems);
   }
+  const prs = [];
+  for (const number of numbers) {
+    const pr = byNumber.get(number);
+    if (!pr) continue;
+    const head = pr.head?.sha;
+    if (!head) {
+      problems.push(`#${number} has no head SHA`);
+      continue;
+    }
+    prs.push({ number, head });
+  }
+  return { prs, complete: complete && problems.length === 0, problems };
 }
 
 async function evaluate(pr) {
@@ -409,24 +437,47 @@ async function main() {
 
   if (process.argv.includes('--discover')) {
     if (eventName !== 'issues') throw new Error(`--discover requires an issues event, got ${eventName}`);
-    const prs = await getLinkedOpenPrs(event.issue.number);
-    console.log(JSON.stringify(prs));
+    const result = await getLinkedOpenPrs(event.issue.number);
+    if (!result.complete) {
+      console.error(`Incomplete linked-PR discovery: ${result.problems.join('; ')}`);
+    }
+    console.log(JSON.stringify(result));
     return;
   }
 
   const target = Number(required('TARGET_PR'));
   if (!Number.isInteger(target) || target <= 0) throw new Error(`Invalid TARGET_PR: ${target}`);
-  const pr = await getPr(target);
+  const eventHead =
+    eventName === 'pull_request_target' && event.pull_request?.number === target
+      ? event.pull_request.head?.sha
+      : undefined;
+  const knownHead = process.env.TARGET_HEAD || eventHead;
+  if (!knownHead) throw new Error(`No head SHA for PR #${target}`);
+  const knownPr = { number: target, head: knownHead };
 
   let checks;
   try {
-    checks = await beginCheckRun(pr);
+    checks = await beginCheckRun(knownPr);
+    const pr = await getPr(target);
+    if (pr.head !== knownHead) {
+      const changed = {
+        ok: false,
+        title: 'PR head changed',
+        summary: 'The pull request head changed before evaluation; the current revision is evaluated by its own event.',
+      };
+      const currentChecks = await beginCheckRun(pr);
+      await finishCheckRun(pr, currentChecks, changed);
+      await finishCheckRun(knownPr, checks, changed);
+      console.log(`#${target}: FAIL: ${changed.title}\n${changed.summary}`);
+      process.exitCode = 1;
+      return;
+    }
     const result = await evaluateStable(pr);
     await finishCheckRun(pr, checks, result);
     console.log(`#${target}: ${result.ok ? 'PASS' : 'FAIL'}: ${result.title}\n${result.summary}`);
     process.exitCode = result.ok ? 0 : 1;
   } catch (error) {
-    if (checks) await failCheckRun(pr, checks, error);
+    if (checks) await failCheckRun(knownPr, checks, error);
     throw error;
   }
 }

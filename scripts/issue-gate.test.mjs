@@ -45,7 +45,7 @@ async function startFakeApi(handler) {
   };
 }
 
-function runGate(api, { eventName, event, target, discover = false }) {
+function runGate(api, { eventName, event, target, targetHead, discover = false }) {
   return new Promise((resolve, reject) => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dim-issue-gate-'));
     const eventPath = path.join(directory, 'event.json');
@@ -62,7 +62,10 @@ function runGate(api, { eventName, event, target, discover = false }) {
       ISSUE_GATE_RETRY_ATTEMPTS: '1',
       ISSUE_GATE_RETRY_DELAY_MS: '0',
     };
-    if (target !== undefined) env.TARGET_PR = String(target);
+    if (target !== undefined) {
+      env.TARGET_PR = String(target);
+      env.TARGET_HEAD = targetHead ?? 'current-head';
+    }
     const child = spawn(process.execPath, ['scripts/issue-gate.mjs', ...(discover ? ['--discover'] : [])], {
       cwd: ROOT,
       env,
@@ -294,11 +297,8 @@ test('completes the check as a failure when evaluation cannot read the issue', a
   assert.equal(completed[0].output.title, 'Could not read linked issues');
 });
 
-test('fails discovery when neither the timeline nor the PR scan can be read', async (t) => {
+test('fails discovery when the open PR list cannot be read', async (t) => {
   const api = await startFakeApi((request) => {
-    if (request.path === `/repos/${REPOSITORY}/issues/1/timeline`) {
-      return reply(500, { message: 'temporary failure' });
-    }
     if (request.path === `/repos/${REPOSITORY}/pulls`) {
       return reply(500, { message: 'temporary failure' });
     }
@@ -321,6 +321,7 @@ test('scans open PRs beyond the newest twenty during fallback discovery', async 
   const prs = Array.from({ length: 21 }, (_, index) => ({
     number: index + 1,
     body: index === 20 ? 'Refs #1' : 'Refs #999',
+    head: { sha: `head-${index + 1}` },
   }));
   let closingReads = 0;
   const api = await startFakeApi((request) => {
@@ -345,8 +346,45 @@ test('scans open PRs beyond the newest twenty during fallback discovery', async 
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout.trim()), [21]);
+  const discovered = JSON.parse(result.stdout.trim());
+  assert.deepEqual(discovered.prs, [{ number: 21, head: 'head-21' }]);
+  assert.equal(discovered.complete, true);
   assert.equal(closingReads, 20);
+});
+
+test('reports incomplete discovery while still returning known linked PRs', async (t) => {
+  const prs = Array.from({ length: 21 }, (_, index) => ({
+    number: index + 1,
+    body: index === 20 ? 'Refs #1' : 'Refs #999',
+    head: { sha: `head-${index + 1}` },
+  }));
+  const api = await startFakeApi((request) => {
+    if (request.path === `/repos/${REPOSITORY}/issues/1/timeline`) {
+      return reply(500, { message: 'temporary failure' });
+    }
+    if (request.path === `/repos/${REPOSITORY}/pulls`) {
+      return reply(200, prs);
+    }
+    if (request.method === 'POST' && request.path === '/graphql') {
+      const { number } = JSON.parse(request.body).variables;
+      if (number === 1) return reply(500, { message: 'temporary failure' });
+      return closingRefs([]);
+    }
+    return undefined;
+  });
+  t.after(() => api.close());
+
+  const result = await runGate(api, {
+    eventName: 'issues',
+    event: { issue: { number: 1 } },
+    discover: true,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const discovered = JSON.parse(result.stdout.trim());
+  assert.deepEqual(discovered.prs, [{ number: 21, head: 'head-21' }]);
+  assert.equal(discovered.complete, false);
+  assert.match(result.stderr, /Incomplete linked-PR discovery/);
 });
 
 test('fails the check when the PR changes during evaluation', async (t) => {
@@ -438,9 +476,50 @@ test('completes the check as a gate error when the final state read fails', asyn
   assert.equal(completed[0].output.title, 'Gate error');
 });
 
+test('completes the check as a gate error when the initial PR read fails', async (t) => {
+  const checks = [];
+  const patches = [];
+  const api = await startFakeApi((request) => {
+    if (request.method === 'GET' && request.path === `/repos/${REPOSITORY}/pulls/77`) {
+      return reply(500, { message: 'temporary failure' });
+    }
+    if (request.method === 'GET' && request.path === `/repos/${REPOSITORY}/commits/current-head/check-runs`) {
+      return reply(200, { check_runs: checks });
+    }
+    if (request.method === 'POST' && request.path === `/repos/${REPOSITORY}/check-runs`) {
+      const created = { id: 1, name: 'issue-gate', external_id: 'issue-gate:77' };
+      checks.push(created);
+      return reply(201, created);
+    }
+    if (request.method === 'PATCH' && request.path === `/repos/${REPOSITORY}/check-runs/1`) {
+      patches.push(JSON.parse(request.body));
+      return reply(200, {});
+    }
+    return undefined;
+  });
+  t.after(() => api.close());
+
+  const result = await runGate(api, {
+    eventName: 'pull_request_target',
+    event: { pull_request: { number: 77 } },
+    target: 77,
+  });
+
+  assert.equal(result.status, 1);
+  assert.ok(api.requests.some((request) => request.path === `/repos/${REPOSITORY}/commits/current-head/check-runs`));
+  const completed = patches.filter((patch) => patch.status === 'completed');
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].conclusion, 'failure');
+  assert.equal(completed[0].output.title, 'Gate error');
+});
+
 test('the discovery step propagates a gate script failure', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'issue-gate.yml'), 'utf8');
   assert.match(workflow, /set -euo pipefail/);
-  assert.match(workflow, /prs=\$\(node scripts\/issue-gate\.mjs --discover\)/);
+  assert.match(workflow, /result=\$\(node scripts\/issue-gate\.mjs --discover\)/);
   assert.doesNotMatch(workflow, /echo "prs=\$\(node/);
+  assert.ok(workflow.includes('TARGET_HEAD: ${{ matrix.pr.head }}'));
+  assert.ok(workflow.includes('TARGET_HEAD: ${{ github.event.pull_request.head.sha }}'));
+  assert.match(workflow, /name: coverage/);
+  assert.match(workflow, /needs\.discover\.outputs\.complete != 'true'/);
 });

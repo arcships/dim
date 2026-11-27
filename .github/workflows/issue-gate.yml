@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       prs: ${{ steps.list.outputs.prs }}
+      complete: ${{ steps.list.outputs.complete }}
     steps:
       # Trusted definition: pull_request_target runs this file from the base branch.
       # Checkout the base branch only; never check out or run pull request code.
@@ -37,8 +38,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          prs=$(node scripts/issue-gate.mjs --discover)
+          result=$(node scripts/issue-gate.mjs --discover)
+          prs=$(printf '%s' "$result" | jq -c '.prs')
+          complete=$(printf '%s' "$result" | jq -r '.complete')
           printf 'prs=%s\n' "$prs" >> "$GITHUB_OUTPUT"
+          printf 'complete=%s\n' "$complete" >> "$GITHUB_OUTPUT"
 
   evaluate-pr:
     name: evaluate-pr
@@ -63,6 +67,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TARGET_PR: ${{ github.event.pull_request.number }}
+          TARGET_HEAD: ${{ github.event.pull_request.head.sha }}
         run: node scripts/issue-gate.mjs
 
   evaluate-issue:
@@ -76,7 +81,7 @@ jobs:
       matrix:
         pr: ${{ fromJSON(needs.discover.outputs.prs) }}
     concurrency:
-      group: issue-gate-pr-${{ matrix.pr }}
+      group: issue-gate-pr-${{ matrix.pr.number }}
       cancel-in-progress: true
     steps:
       # Trusted definition: pull_request_target runs this file from the base branch.
@@ -92,5 +97,18 @@ jobs:
       - name: Evaluate linked issue
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TARGET_PR: ${{ matrix.pr }}
+          TARGET_PR: ${{ matrix.pr.number }}
+          TARGET_HEAD: ${{ matrix.pr.head }}
         run: node scripts/issue-gate.mjs
+
+  coverage:
+    name: coverage
+    needs: [discover, evaluate-issue]
+    if: always() && !cancelled() && github.event_name == 'issues' && needs.discover.result == 'success' && needs.discover.outputs.complete != 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail on incomplete linked-PR discovery
+        run: |
+          echo "::error::Linked-PR discovery was incomplete; some issue-gate checks were not refreshed. Re-run after the API recovers."
+          exit 1
