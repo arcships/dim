@@ -1712,14 +1712,18 @@ async fn a_non_whole_word_seedance_id_is_neither_listed_nor_submitted() {
     );
     let alias = options
         .iter()
-        .find(|option| option["providerId"] == created && option["modelId"] == "doubao-seedance-1-0-pro-250528")
+        .find(|option| {
+            option["providerId"] == created && option["modelId"] == "doubao-seedance-1-0-pro-250528"
+        })
         .unwrap_or_else(|| panic!("the whole-word spelling is a video option: {video}"));
     assert_eq!(
         alias["available"], false,
         "the Ark word family is unavailable on the compatible route: {alias}"
     );
     assert!(
-        alias["reason"]["detail"].as_str().is_some_and(|detail| !detail.is_empty()),
+        alias["reason"]["detail"]
+            .as_str()
+            .is_some_and(|detail| !detail.is_empty()),
         "the refusal carries its reason: {alias}"
     );
     let served = options

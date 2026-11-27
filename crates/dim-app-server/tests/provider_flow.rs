@@ -2713,7 +2713,10 @@ async fn selectable_modality_models_recognize_video_speech_and_transcription() {
         ("stt-with-image-off", Some(&["speech.transcribe"])),
         ("seedancechat", None),
         ("minimax-h3max", None),
-        ("video-kind-declares-transcribe", Some(&["speech.transcribe"])),
+        (
+            "video-kind-declares-transcribe",
+            Some(&["speech.transcribe"]),
+        ),
     ];
     for (id, expected) in cases {
         let expected: Option<Vec<String>> = expected.map(|operations| {
