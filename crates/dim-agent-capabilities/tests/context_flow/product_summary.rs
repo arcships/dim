@@ -441,10 +441,6 @@ async fn product_session_with(
     .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one parameter per window and host the summary session is built from"
-)]
 /// A prompt host that serves `dim/session` from the session configuration's
 /// system prompt, the way PromptSources reads it (PromptSources §2): a large
 /// session prompt raises the request frame, where the window-narrowed
@@ -2570,8 +2566,8 @@ async fn retained_input(
     let raw = |data: &dim_agent_types::InputMessageData| {
         data.blocks
             .iter()
-            .filter_map(|block| match block {
-                InputBlock::Raw { text, .. } => Some(text.clone()),
+            .map(|block| match block {
+                InputBlock::Raw { text, .. } => text.clone(),
             })
             .collect::<Vec<_>>()
             .join("")
