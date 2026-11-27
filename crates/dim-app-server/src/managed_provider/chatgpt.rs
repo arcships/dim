@@ -5,7 +5,9 @@ use super::{
     AccountSnapshot, AccountView, CredentialLease, LeaseOwner, LoginState, ManagedCatalog,
     ManagedError, ManagedModel, ProviderDescriptor, management::BrowserLogin,
 };
-use crate::model_catalog::{ModelEntry, ModelStatus};
+use crate::model_catalog::{
+    CatalogCapabilities, ModelEntry, ModelMetadata, ModelReasoning, ModelStatus,
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use dim_agent_capabilities::{
     file_storage::{FileLease, FilePath, FileStorage, FileStorageError},
@@ -140,6 +142,94 @@ struct RemoteModel {
     slug: Option<String>,
     display_name: Option<String>,
     visibility: String,
+    supported_reasoning_levels: Option<serde_json::Value>,
+    default_reasoning_level: Option<serde_json::Value>,
+    input_modalities: Option<serde_json::Value>,
+}
+
+/// The effort values `POST /v1/responses` accepts for this route (#2189).
+const ACCEPTED_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+fn declared_efforts(levels: Option<&serde_json::Value>) -> Vec<String> {
+    let mut efforts = Vec::new();
+    let Some(items) = levels.and_then(serde_json::Value::as_array) else {
+        return efforts;
+    };
+    for item in items {
+        let Some(effort) = item
+            .get("effort")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|effort| ACCEPTED_EFFORTS.contains(effort))
+        else {
+            continue;
+        };
+        if !efforts.iter().any(|seen| seen.as_str() == effort) {
+            efforts.push(effort.to_owned());
+        }
+    }
+    efforts
+}
+
+fn declared_modalities(value: Option<&serde_json::Value>) -> Vec<String> {
+    let mut modalities = Vec::new();
+    if let Some(items) = value.and_then(serde_json::Value::as_array) {
+        for modality in items.iter().filter_map(serde_json::Value::as_str) {
+            let modality = modality.trim().to_ascii_lowercase();
+            if !modality.is_empty() && !modalities.contains(&modality) {
+                modalities.push(modality);
+            }
+        }
+    }
+    if !modalities.iter().any(|modality| modality == "text") {
+        modalities.insert(0, "text".into());
+    }
+    modalities
+}
+
+fn project_remote_model(model: &RemoteModel) -> (CatalogCapabilities, Option<ModelMetadata>) {
+    let mut efforts = declared_efforts(model.supported_reasoning_levels.as_ref());
+    // The picker's choices and the implicit default must stay inside what the
+    // model's actual request path accepts (#2189): the aimux Responses model
+    // drops an effort outside its per-slug table with a warning that fails
+    // the turn, so a level the route would reject is never offered, whatever
+    // the account catalog declares. A slug the table does not constrain is
+    // not filtered. The declared order is kept either way.
+    if let Some(accepted) = model
+        .slug
+        .as_deref()
+        .and_then(dim_agent_aimux::accepted_reasoning_efforts)
+    {
+        efforts.retain(|effort| accepted.contains(&effort.as_str()));
+    }
+    let modalities = declared_modalities(model.input_modalities.as_ref());
+    let mut capabilities = CatalogCapabilities {
+        vision: modalities.iter().any(|modality| modality == "image"),
+        modalities,
+        ..Default::default()
+    };
+    let metadata = if efforts.is_empty() {
+        None
+    } else {
+        capabilities.reasoning = true;
+        let default_effort = model
+            .default_reasoning_level
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|effort| efforts.iter().any(|option| option.as_str() == *effort))
+            .map(str::to_owned);
+        Some(ModelMetadata {
+            reasoning: Some(ModelReasoning {
+                supported: true,
+                effort: default_effort,
+                effort_options: Some(efforts),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    };
+    (capabilities, metadata)
 }
 
 impl Store {
@@ -641,6 +731,7 @@ impl ChatGpt {
             .into_iter()
             .filter(|model| model.visibility == "list")
         {
+            let (capabilities, metadata) = project_remote_model(&model);
             let model_id = model
                 .slug
                 .filter(|id| !id.trim().is_empty())
@@ -657,9 +748,10 @@ impl ChatGpt {
                     model_id,
                     display_name,
                     status: ModelStatus::Active,
-                    capabilities: Default::default(),
+                    capabilities,
                     model_guide_prompt: None,
-                    metadata: None,
+                    metadata,
+                    normalized_override: false,
                 },
                 protocol: ModelProtocol::OpenaiResponses,
                 unavailable_reason: Some("limits_undeclared".into()),

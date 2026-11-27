@@ -7,8 +7,13 @@ the model the history of its own branch. Design:
 ## Recall
 
 Owner: [recall.rs](../../../../crates/dim-agent-capabilities/src/recall.rs).
-Registers the Session `recall` tool. Each call pins the calling branch head and
-queries through `Branch::query`. The index selects the newest 21 turn positions
+Registers the Session `recall` tool, which reads its own line through the
+narrative projection,
+[narrative.rs](../../../../crates/dim-agent-capabilities/src/narrative.rs), in
+the second person. Collaboration's `agent read` reads a member's line through the
+same projection in the third person
+([Recall §3.8](../../../design/plugins/Recall.md#38-person-and-other-readers)).
+Each call pins the read branch head and queries through `Branch::query`. The index selects the newest 21 turn positions
 and streams their narrow control fields. It reads only opening input titles and
 counts tool starts; response bodies are not needed for turn summaries.
 

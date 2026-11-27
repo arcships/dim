@@ -70,6 +70,21 @@ pub struct ModelEntry {
     pub model_guide_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ModelMetadata>,
+    /// Set on a stored descriptor override whose pin set is complete (#2189):
+    /// every capability the user edited is named in the metadata's
+    /// `capability_override_fields`, so neither a read nor a row-replacing
+    /// write may infer further edits from it. Absent on a clone written
+    /// before this normalization existed, which the inference treats as a
+    /// legacy clone. Only overrides carry it; catalog rows and user models
+    /// never do — it is the server's own normalization record, so the inputs
+    /// that adopt a client descriptor clear it at the boundary instead of
+    /// storing or echoing what the client wrote. The flag sits beside the
+    /// descriptor rather than inside the metadata, which the stored record
+    /// validates field by field: a record an older release reads back ignores
+    /// the flag and the clone it marks reads as a legacy one, so a downgrade
+    /// degrades to the conservative inference instead of refusing the record.
+    #[serde(default, skip_serializing_if = "omitted_when_false")]
+    pub normalized_override: bool,
 }
 
 impl ModelEntry {
@@ -162,6 +177,10 @@ pub struct ModelMetadata {
     pub capability_override_fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub raw: Map<String, Value>,
+}
+
+fn omitted_when_false(value: &bool) -> bool {
+    !*value
 }
 
 /// The one model an id named, and the numbers something else supplied.
@@ -841,7 +860,14 @@ impl BundledCatalog {
         for item in overrides {
             if let Some(pos) = models.iter().position(|m| m.model_id == item.model_id) {
                 let base = &models[pos];
-                let mut model = inherit_limits(item.clone(), base);
+                let mut item = item.clone();
+                infer_capability_edits(base, &mut item);
+                let mut model = rebase_override(base, &item);
+                // The rebased entry's pins decide what identification may
+                // fill, so its record is recomputed here as the managed path
+                // does: the base row's fills are its own, and copying them
+                // would claim a fill the pin replaced.
+                self.identify_entry(provider, &mut model);
                 if provider.provider_id == "openai-codex"
                     && let Some(maximum) = base.codex_context_window_ceiling()
                 {
@@ -875,9 +901,11 @@ impl BundledCatalog {
         }
         if let Some(tool_calling) = edit.tool_calling {
             model.capabilities.tool_calling = tool_calling;
+            declare(&mut model, "toolCalling");
         }
         if let Some(vision) = edit.vision {
             model.capabilities.vision = vision;
+            declare(&mut model, "vision");
         }
         for (field, value, target) in [
             (
@@ -927,6 +955,7 @@ impl BundledCatalog {
             } else {
                 None
             };
+            declare(&mut model, "reasoning");
         }
         if let Some(capabilities) = edit.modality_capabilities {
             model.metadata.get_or_insert_default().raw.insert(
@@ -937,6 +966,7 @@ impl BundledCatalog {
                 "modalityCapabilities".into(),
                 Value::Array(capabilities.into_iter().map(Value::String).collect()),
             );
+            declare(&mut model, "modalityCapabilities");
         }
         model
     }
@@ -1124,6 +1154,7 @@ fn descriptor_entry(
         capabilities: caps,
         model_guide_prompt: None,
         metadata: Some(metadata),
+        normalized_override: false,
     })
 }
 
@@ -1280,15 +1311,148 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
     )
 }
 
-/// A limit the entry does not declare is inherited from the entry it replaces.
-pub fn inherit_limits(mut entry: ModelEntry, base: &ModelEntry) -> ModelEntry {
-    if entry.capabilities.context_window.is_none() {
-        entry.capabilities.context_window = base.capabilities.context_window;
+/// Marks the capability edits a legacy stored override cannot help but
+/// carry (#2189). An override written before capability edits were marked is
+/// a clone of the row it edited plus the user's values, with only its limits
+/// marked, so a capability the user chose reads exactly like one the clone
+/// captured. Where the override differs from the row it was taken from, the
+/// difference can only be the user's edit, and pinning it keeps an upgrade
+/// from silently discarding it: the row itself only moves when a refresh, a
+/// listing write or the reseed an upgrade admits replaces it, and each of
+/// those writes normalizes the stored overrides against the rows both sides
+/// of the replacement before the rows move — including the write whose
+/// replacement drops the row, which is the last chance to record the pins
+/// against it. A record whose rows were last replaced before this
+/// normalization existed may carry a clone the replaced rows left behind;
+/// its differences are pinned the same way, because the record cannot tell
+/// them from the user's edits.
+///
+/// The inference is sound only for a clone it has never normalized: an
+/// override that carries `normalizedOverride` already pins every edit, its
+/// unedited values are the row's own, and any later difference is the row
+/// having moved — inferring there would pin the stale capture as the user's
+/// edit, which is the freeze a listing gap otherwise causes (#2189). Such an
+/// override is returned untouched, so `base` — the entry the comparison is
+/// against, the row the record serves on a read or the row being replaced
+/// on a write — must be the row the clone was taken from, and callers run
+/// this once per read or write, before `rebase_override`.
+pub fn infer_capability_edits(base: &ModelEntry, pinned: &mut ModelEntry) {
+    if pinned.normalized_override {
+        return;
     }
-    if entry.capabilities.max_output_tokens.is_none() {
-        entry.capabilities.max_output_tokens = base.capabilities.max_output_tokens;
+    let marks: Vec<String> = pinned
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.capability_override_fields.clone())
+        .unwrap_or_default();
+    let marked = |field: &str| marks.iter().any(|name| name == field);
+    let reasoning_shape = |entry: &ModelEntry| {
+        (
+            entry.capabilities.reasoning,
+            entry
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.reasoning.as_ref())
+                .map(|reasoning| (reasoning.supported, reasoning.effort_options.clone())),
+        )
+    };
+    fn raw<'a>(entry: &'a ModelEntry, key: &str) -> Option<&'a Value> {
+        entry
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.raw.get(key))
     }
-    entry
+    let mut inferred = Vec::new();
+    if !marked("vision") && pinned.capabilities.vision != base.capabilities.vision {
+        inferred.push("vision");
+    }
+    if !marked("toolCalling") && pinned.capabilities.tool_calling != base.capabilities.tool_calling
+    {
+        inferred.push("toolCalling");
+    }
+    if !marked("reasoning") && reasoning_shape(pinned) != reasoning_shape(base) {
+        inferred.push("reasoning");
+    }
+    if !marked("modalityCapabilities")
+        && ["imageGeneration", "modalityCapabilities"]
+            .iter()
+            .any(|key| raw(pinned, key) != raw(base, key))
+    {
+        inferred.push("modalityCapabilities");
+    }
+    for field in inferred {
+        declare(pinned, field);
+    }
+}
+
+/// The override a record stores, rebased on the entry the current listing or
+/// catalog row serves (#2189). Everything the user never edited follows the
+/// base row, so a refresh that declares new capabilities serves them: the
+/// override was written as a clone of the row it edited, and its values are
+/// the old row's, not the user's. What the user edited is pinned, marked in
+/// `capabilityOverrideFields`; the display name is always the override's,
+/// because an unedited clone cannot be told from one the user typed. A pin
+/// that lives in the metadata survives a base row that declares none, since
+/// the mark itself is what keeps the pin across the next refresh.
+pub fn rebase_override(base: &ModelEntry, pinned: &ModelEntry) -> ModelEntry {
+    let mut merged = base.clone();
+    merged.display_name = pinned.display_name.clone();
+    let marks: Vec<String> = pinned
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.capability_override_fields.clone())
+        .unwrap_or_default();
+    let marked = |field: &str| marks.iter().any(|name| name == field);
+    if marked("contextWindow") {
+        merged.capabilities.context_window = pinned.capabilities.context_window;
+    }
+    if marked("maxOutputTokens") {
+        merged.capabilities.max_output_tokens = pinned.capabilities.max_output_tokens;
+    }
+    if marked("toolCalling") {
+        merged.capabilities.tool_calling = pinned.capabilities.tool_calling;
+    }
+    if marked("vision") {
+        merged.capabilities.vision = pinned.capabilities.vision;
+    }
+    if marked("reasoning") {
+        merged.capabilities.reasoning = pinned.capabilities.reasoning;
+    }
+    // A pin that lives in the metadata survives a base row that declares
+    // none: the row offers nowhere to hang the marks, so they are written into
+    // a default metadata, or the clone the write stores reads as unmarked and
+    // the next rebase serves the row's values instead of the user's (#2189).
+    if !marks.is_empty() {
+        merged.metadata.get_or_insert_default();
+    }
+    if let Some(metadata) = merged.metadata.as_mut() {
+        if marked("reasoning") {
+            metadata.reasoning = pinned
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.reasoning.clone());
+        }
+        if marked("modalityCapabilities")
+            && let Some(pinned_metadata) = pinned.metadata.as_ref()
+        {
+            for key in ["imageGeneration", "modalityCapabilities"] {
+                match pinned_metadata.raw.get(key) {
+                    Some(value) => {
+                        metadata.raw.insert(key.into(), value.clone());
+                    }
+                    None => {
+                        metadata.raw.remove(key);
+                    }
+                }
+            }
+        }
+        for field in marks {
+            if !metadata.capability_override_fields.contains(&field) {
+                metadata.capability_override_fields.push(field);
+            }
+        }
+    }
+    merged
 }
 
 /// A field named in `capabilityOverrideFields` is a declaration and must be

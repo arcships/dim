@@ -308,8 +308,9 @@ export interface Sessions {
    * (#2127). Agents loads and holds the Session for the call. A target that
    * cannot be selected answers `no_session`, `session_closing`,
    * `session_reloading` (retry later), `session_unavailable` (report the
-   * reason) or `no_line`; the target owner's own failure is `routed` with its
-   * name and message. */
+   * reason), `no_line` or `no_service` (the target does not provide the
+   * service); the target owner's own failure is `routed` with its name and
+   * message. */
   call<C extends import('./branch-services.js').SessionsCall>(
     request: C,
   ): Promise<SessionsResult<import('./branch-services.js').ReplyOf<C>>>;

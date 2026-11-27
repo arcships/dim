@@ -281,6 +281,15 @@ pub(crate) fn is_understand(category: &str, operation: &str) -> bool {
     category == "image" && operation == "understand"
 }
 
+/// Providers whose grants admit interactive client sessions only
+/// (docs/design/appserver/chatgpt-plan.md), never a Session-less auxiliary call.
+const SESSION_ONLY_UNDERSTAND_PROVIDERS: [&str; 1] = ["openai-chatgpt"];
+
+fn understand_candidate(model: &ModelCapabilitySnapshot) -> bool {
+    model.capabilities.vision
+        && !SESSION_ONLY_UNDERSTAND_PROVIDERS.contains(&model.target.provider_id.as_str())
+}
+
 /// Every `realtime.<operation>` is opened as a session, never submitted as a
 /// task (A.3, decision 6).
 pub(crate) fn is_realtime(category: &str) -> bool {
@@ -767,7 +776,7 @@ impl Evaluation {
         } else if is_understand(category, row.operation) {
             self.selectable
                 .iter()
-                .filter(|model| model.capabilities.vision)
+                .filter(|model| understand_candidate(model))
                 .map(|model| Self::option(&model.target))
                 .collect()
         } else {
@@ -816,6 +825,18 @@ impl Evaluation {
                 None => reason("provider", "Model is no longer selectable"),
                 Some(model) if !model.capabilities.vision => {
                     reason("configuration", "Model is not a selectable vision model")
+                }
+                // A vision model whose grant admits interactive client
+                // sessions only cannot serve this Session-less call (#2189);
+                // the restriction is the route's, not a missing adapter.
+                Some(model)
+                    if SESSION_ONLY_UNDERSTAND_PROVIDERS
+                        .contains(&model.target.provider_id.as_str()) =>
+                {
+                    reason(
+                        "configuration",
+                        "Model requires an interactive client session",
+                    )
                 }
                 Some(_) => reason(
                     "adapter",
@@ -1531,4 +1552,123 @@ pub fn install_with(builder: &mut AgentBuilder, options: InstallOptions) {
     builder.optional_plugin(move |names| {
         Ok(Box::new(ModalityPlugin::new(names, options.clone())?) as Box<dyn DynPlugin>)
     });
+}
+
+#[cfg(test)]
+mod understand_tests {
+    use super::*;
+    use dim_agent_types::{ModelCapabilities, ModelCapabilitySnapshot, ModelId};
+
+    fn vision_model(provider_id: &str, vision: bool) -> ModelCapabilitySnapshot {
+        ModelCapabilitySnapshot {
+            target: ModelId {
+                provider_id: provider_id.into(),
+                model_id: "fixture-model".into(),
+            },
+            capabilities: ModelCapabilities {
+                vision,
+                ..ModelCapabilities::with_limits(128000, 4096)
+            },
+            reasoning: None,
+            service_tier: None,
+        }
+    }
+
+    /// A vision model whose grant admits interactive client sessions only
+    /// (#2189) is never an `image.understand` option, while other vision
+    /// providers are.
+    #[test]
+    fn session_only_providers_are_not_understand_candidates() {
+        assert!(understand_candidate(&vision_model("openai", true)));
+        assert!(!understand_candidate(&vision_model("openai", false)));
+        assert!(!understand_candidate(&vision_model("openai-chatgpt", true)));
+    }
+
+    fn evaluation(
+        selectable: Vec<ModelCapabilitySnapshot>,
+        defaults: std::collections::BTreeMap<String, ModelId>,
+    ) -> Evaluation {
+        Evaluation {
+            defaults,
+            selectable,
+            declared: Vec::new(),
+            global: None,
+            ctx: Ctx::root().unwrap(),
+            has_resolved_adapter: OnceLock::new(),
+            host_platform: false,
+            ocr_helper: None,
+            pp_ocr: PluginTargetState::Absent,
+        }
+    }
+
+    /// An explicit or saved `image.understand` target on a vision model whose
+    /// grant admits interactive client sessions only (#2189) names that
+    /// restriction, not a missing adapter; the same reason answers both the
+    /// explicit query and the persisted default, automatic selection picks
+    /// another vision model, and the model keeps its vision on the
+    /// conversational route.
+    #[tokio::test]
+    async fn a_session_only_understand_target_reports_the_session_requirement() {
+        let mut chatgpt = vision_model("openai-chatgpt", true);
+        chatgpt.target.model_id = "chatgpt-vision".into();
+        let other = vision_model("openai", true);
+        let target = chatgpt.target.clone();
+        let category = catalog_category("image").unwrap();
+        let row = category
+            .rows
+            .iter()
+            .find(|row| row.operation == "understand")
+            .unwrap();
+
+        // The explicit and the saved target read the same vocabulary.
+        let explicit = evaluation(vec![chatgpt.clone(), other.clone()], Default::default());
+        let mut saved_defaults = std::collections::BTreeMap::new();
+        saved_defaults.insert(row.key.unwrap().to_owned(), target.clone());
+        let saved = evaluation(vec![chatgpt.clone(), other.clone()], saved_defaults);
+        for (label, evaluation) in [("explicit", &explicit), ("saved", &saved)] {
+            let reason =
+                evaluation.unavailable_reason(&target, "image", "understand", "understand");
+            assert_eq!(reason.dimension, "configuration", "{label}: {reason:?}");
+            assert!(
+                reason.detail.contains("interactive client session"),
+                "{label}: the reason is the session requirement, not a missing adapter: {reason:?}"
+            );
+        }
+
+        // The persisted default answers with the same restriction instead of
+        // silently selecting the other vision model.
+        let snapshot = saved.operation("image", row);
+        let default = snapshot.default.expect("the saved default is listed");
+        assert!(!default.available);
+        let reason = default.reason.expect("an unavailable default says why");
+        assert_eq!(reason.dimension, "configuration");
+        assert!(
+            reason.detail.contains("interactive client session"),
+            "{reason:?}"
+        );
+
+        // Automatic selection still picks the other vision model.
+        let automatic = evaluation(vec![chatgpt.clone(), other], Default::default());
+        let snapshot = automatic.operation("image", row);
+        assert!(snapshot.available, "{:?}", snapshot.reasons);
+        let effective = snapshot.effective.expect("an available operation resolves");
+        assert_eq!(effective.model_id, "fixture-model");
+
+        // The session-only model is selectable for the conversational route:
+        // it keeps its vision in the capability list, and only the auxiliary
+        // candidates skip it.
+        assert!(
+            explicit
+                .selectable(&target.provider_id, &target.model_id)
+                .is_some_and(|m| m.capabilities.vision),
+            "interactive chat keeps the model's vision"
+        );
+        let options = explicit.candidates_for("image", row);
+        assert!(
+            options
+                .iter()
+                .all(|option| option.provider_id != target.provider_id),
+            "the auxiliary candidates skip the session-only provider"
+        );
+    }
 }

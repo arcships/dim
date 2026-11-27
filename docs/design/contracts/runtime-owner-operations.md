@@ -46,8 +46,9 @@ envelope leaves `value` out so a process caller reads `undefined`; a direct call
 (`undefined`) either way. Agents loads the
 Session for the call and holds it while it runs (ADR 027 D5). A target that cannot be
 selected answers `no_session`, `session_closing`, `session_reloading` (retry later),
-`session_unavailable` (report the reason) or `no_line` (final for that line), before the
-target's operation runs. Tree history, directory and batch input continue to use the
+`session_unavailable` (report the reason), `no_line` (final for that line) or `no_service`
+(the selected target does not provide the service; final), before the target's operation
+runs. Tree history, directory and batch input continue to use the
 tree's own methods.
 
 | Session caller | Target operation |

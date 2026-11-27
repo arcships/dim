@@ -509,6 +509,16 @@ pub fn convert_legacy_provider(
     // is the seed the record starts from — the previous record's models or,
     // without a target, the bundled definition's — and not the row's input, so
     // it stays exactly as that seed states it.
+    // A legacy row predates the normalization mark (#2189): what it states is
+    // the server's own record of a normalized override, so a written file is
+    // not where the flag comes from.
+    for model in models
+        .iter_mut()
+        .chain(&mut user_models)
+        .chain(&mut overrides)
+    {
+        model.normalized_override = false;
+    }
     for model in &mut models {
         if models_source != "user" {
             drop_undeclared_limits(model);

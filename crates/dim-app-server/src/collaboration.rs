@@ -24,6 +24,7 @@ use dim_agent_capabilities::{
         ToolExecutionContext,
     },
     methods::RpcError,
+    narrative::{self, Person, Query},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::PromptSnapshot,
     timeline_tree::TreeCommands,
@@ -44,10 +45,8 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKe
 use rutis::{Ctx, Plugin};
 use serde::Deserialize;
 use serde_json::{Value, json};
-#[cfg(feature = "testing")]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     num::NonZeroU64,
     sync::{Arc, Mutex},
 };
@@ -55,8 +54,6 @@ use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const AGENT_TOOL: &str = "agent";
-const READ_PAGE_LIMIT: usize = 200;
-const TOOL_USE_START_PAGE: u64 = 1024;
 const INTERRUPTED: &str = "interrupted by leader";
 const CANCELLED: &str = "cancelled by leader";
 const CANCELLED_BY_CLIENT: &str = "cancelled by the client";
@@ -233,8 +230,6 @@ pub struct Collaboration {
     settings: Option<Arc<SettingsService>>,
     tasks: TaskTracker,
     stop: CancellationToken,
-    #[cfg(feature = "testing")]
-    reads: AtomicUsize,
 }
 struct Peer {
     usage: crate::agents::SessionUse,
@@ -253,17 +248,6 @@ struct Participant {
     status: &'static str,
 }
 impl Collaboration {
-    /// Counts one Timeline read `read` issues. Feature `testing` only.
-    fn note_read(&self) {
-        #[cfg(feature = "testing")]
-        self.reads.fetch_add(1, Ordering::SeqCst);
-    }
-    /// The Timeline reads `read` issued since the last call. Feature
-    /// `testing` only.
-    #[cfg(feature = "testing")]
-    pub fn take_reads(&self) -> usize {
-        self.reads.swap(0, Ordering::SeqCst)
-    }
     /// Creates a member Session under the target Agent (created first when
     /// temporary) and records the relation. `adopted` is the requesting
     /// branch's model selection, captured when its request was consumed.
@@ -786,8 +770,6 @@ impl DynPlugin for CollaborationPlugin {
                 settings,
                 tasks: TaskTracker::new(),
                 stop: CancellationToken::new(),
-                #[cfg(feature = "testing")]
-                reads: AtomicUsize::new(0),
             });
             let owner = service.clone();
             ctx.effect(move || async move {
@@ -1127,31 +1109,31 @@ impl CollaborationSession {
             Input::Read {
                 agent_id,
                 session_id,
-                after,
-                limit,
-                branch_id,
+                about,
+                tool,
+                before,
+                open,
+                offset,
             } => {
-                let limit = limit.unwrap_or(READ_PAGE_LIMIT);
-                if !(1..=READ_PAGE_LIMIT).contains(&limit) {
-                    return Ok(refusal(
-                        Refusal::InvalidInput,
-                        &format!(
-                            "limit must be between 1 and {READ_PAGE_LIMIT}; read more pages by passing nextCursor as after together with the branchId the page reported"
-                        ),
-                    ));
+                let mut fields = JsonObject::new();
+                for (field, text) in [
+                    ("about", about),
+                    ("tool", tool),
+                    ("before", before),
+                    ("open", open),
+                ] {
+                    if let Some(text) = text {
+                        fields.insert(field.into(), Value::String(text));
+                    }
                 }
-                if after > 0 && branch_id.as_deref().is_none_or(str::is_empty) {
-                    return Ok(refusal(
-                        Refusal::InvalidInput,
-                        "a continuation must pass the branchId the page reported with nextCursor",
-                    ));
+                if let Some(offset) = offset {
+                    fields.insert("offset".into(), offset.into());
                 }
-                if branch_id.as_deref() == Some("") {
-                    return Ok(refusal(Refusal::InvalidInput, "branchId must not be empty"));
-                }
-                return Ok(self
-                    .read(&agent_id, &session_id, branch_id, after, limit)
-                    .await);
+                let query = match Query::parse(AGENT_TOOL, &fields) {
+                    Ok(query) => query,
+                    Err(message) => return Ok(refusal(Refusal::InvalidInput, &message)),
+                };
+                return self.read(&agent_id, &session_id, &query, &cancel).await;
             }
             Input::Request {
                 prompt,
@@ -1508,197 +1490,32 @@ impl CollaborationSession {
         }
     }
 
+    /// A team member's default line, told by the narrative projection in the
+    /// third person (Recall §3.8).
     async fn read(
         &self,
         agent_id: &str,
         session_id: &str,
-        branch_id: Option<String>,
-        after: u64,
-        limit: usize,
-    ) -> ToolResult {
+        query: &Query,
+        cancel: &CancellationToken,
+    ) -> Result<ToolResult, HostError> {
         let peer = match self
             .collaboration
             .resolve(&self.session_id, agent_id, session_id)
             .await
         {
             Ok(peer) => peer,
-            Err(error) => return refusal(error, explain(error)),
+            Err(error) => return Ok(refusal(error, explain(error))),
         };
         let session = &peer.session;
-        // A continuation is read from the line its earlier page named, and a
-        // fresh read from the line the member's conversation is on: the line
-        // is chosen once for this read (design §9, §15).
-        let line = match branch_id {
-            Some(line) => {
-                if let Err(error) = session.state(&line) {
-                    return ToolResult::error(error.to_string());
-                }
-                line
-            }
-            None => match session.default_branch() {
-                Ok(line) => line,
-                Err(error) => return ToolResult::error(error.to_string()),
-            },
+        let (tree, line) = match (
+            session.session_service::<TreeCommands>(),
+            session.default_branch(),
+        ) {
+            (Ok(tree), Ok(line)) => (tree, line),
+            (Err(error), _) | (_, Err(error)) => return Ok(ToolResult::error(error.to_string())),
         };
-        self.collaboration.note_read();
-        let (next, events) = match read_page(
-            session,
-            &line,
-            after,
-            limit,
-            None,
-            &[
-                "input/message",
-                "step/text",
-                "step/tool-use-start",
-                "step/tool-call",
-                "step/tool-result",
-                "turn/end",
-            ],
-        )
-        .await
-        {
-            Ok(page) => page,
-            Err(error) => return ToolResult::error(error.to_string()),
-        };
-        let page: HashMap<&str, &Arc<AgentEvent>> = events
-            .iter()
-            .map(|event| (event.id.as_str(), event))
-            .collect();
-        let mut wanted_calls = BTreeSet::new();
-        let mut wanted_starts = Vec::<(String, String)>::new();
-        let mut requested = BTreeSet::new();
-        let mut started = HashMap::<(String, String), String>::new();
-        for event in &events {
-            match &event.kind {
-                EventKind::ToolUseStart(data) => {
-                    started.insert(
-                        (data.request_id.clone(), data.call_id.clone()),
-                        data.name.clone(),
-                    );
-                }
-                EventKind::ToolResult(data) => match &data.call_event_id {
-                    Some(call_event_id) => {
-                        if !page.contains_key(call_event_id.as_str()) {
-                            wanted_calls.insert(call_event_id.clone());
-                        }
-                    }
-                    None => {
-                        for result in &data.results {
-                            let key = (data.request_id.clone(), result.call_id.clone());
-                            if started.contains_key(&key) || !requested.insert(key.clone()) {
-                                continue;
-                            }
-                            wanted_starts.push(key);
-                        }
-                    }
-                },
-                _ => {}
-            }
-        }
-        let mut calls = HashMap::new();
-        if !wanted_calls.is_empty() {
-            self.collaboration.note_read();
-            let ids = wanted_calls.into_iter().collect::<Vec<_>>();
-            match read_events(session, &line, &ids).await {
-                Ok(events) => calls = events,
-                Err(error) => return ToolResult::error(error.to_string()),
-            }
-        }
-        if !wanted_starts.is_empty() {
-            self.collaboration.note_read();
-            match read_tool_use_starts(session, &line, &wanted_starts).await {
-                Ok(starts) => {
-                    for (key, event) in starts {
-                        if let EventKind::ToolUseStart(start) = &event.kind {
-                            started.insert(key, start.name.clone());
-                        }
-                    }
-                }
-                Err(error) => return ToolResult::error(error.to_string()),
-            }
-        }
-        let mut items: Vec<Value> = vec![];
-        let mut text: Option<(String, u64, String)> = None;
-        let mut previous = after;
-        for event in &events {
-            if event.sequence > previous + 1 {
-                flush_text(&mut items, &mut text);
-            }
-            previous = event.sequence;
-            if let EventKind::Text(data) = &event.kind {
-                match text.as_mut() {
-                    Some((request, _, merged)) if request == &data.request_id => {
-                        merged.push_str(&data.delta);
-                    }
-                    _ => {
-                        flush_text(&mut items, &mut text);
-                        text = Some((data.request_id.clone(), event.sequence, data.delta.clone()));
-                    }
-                }
-                continue;
-            }
-            flush_text(&mut items, &mut text);
-            match &event.kind {
-                EventKind::InputMessage(data) => items.push(json!({"sequence": event.sequence,
-                    "type": "input", "mode": data.effective_mode(), "user": data.user,
-                    "blocks": data.blocks})),
-                EventKind::ToolCall(data) => {
-                    for call in &data.calls {
-                        items.push(json!({"sequence": event.sequence, "type": "tool_call",
-                            "callId": call.id, "name": call.name}));
-                    }
-                }
-                EventKind::ToolResult(data) => {
-                    let call = data.call_event_id.as_ref().and_then(|call_event_id| {
-                        page.get(call_event_id.as_str())
-                            .copied()
-                            .or_else(|| calls.get(call_event_id))
-                    });
-                    let offered = call.and_then(|call| match &call.kind {
-                        EventKind::ToolCall(wire) => Some(&wire.calls),
-                        _ => None,
-                    });
-                    for result in &data.results {
-                        let name = match offered {
-                            Some(calls) => calls
-                                .iter()
-                                .find(|call| call.id == result.call_id)
-                                .map(|call| &call.name),
-                            None => started.get(&(data.request_id.clone(), result.call_id.clone())),
-                        };
-                        let mut item = json!({"sequence": event.sequence, "type": "tool_result",
-                            "callId": result.call_id, "name": name,
-                            "status": if result.result.is_error == Some(true) { "error" } else { "ok" }});
-                        if let Some(effects) = result.result.shortened_effects() {
-                            item["effects"] = json!(effects);
-                        }
-                        items.push(item);
-                    }
-                }
-                EventKind::TurnEnd(data) => {
-                    let mut item = json!({"sequence": event.sequence, "type": "turn_end"});
-                    match &data.outcome {
-                        TurnOutcome::Completed { .. } => item["status"] = json!("completed"),
-                        TurnOutcome::Failed { error } => {
-                            item["status"] = json!("failed");
-                            item["reason"] = json!(error);
-                        }
-                        TurnOutcome::Cancelled { reason } => {
-                            item["status"] = json!("cancelled");
-                            item["reason"] = json!(reason);
-                        }
-                    }
-                    items.push(item);
-                }
-                _ => {}
-            }
-        }
-        flush_text(&mut items, &mut text);
-        success(
-            json!({"agentId": agent_id, "sessionId": session_id, "branchId": line,
-            "events": items, "nextCursor": next}),
-        )
+        narrative::read(&tree, &line, None, Person::Third, query, cancel).await
     }
 
     fn consume(
@@ -3001,134 +2818,6 @@ async fn read_page(
     Ok((next, events.into_iter().map(|row| row.event).collect()))
 }
 
-/// The public main-line tool calls named by their event ids.
-async fn read_events(
-    session: &Session,
-    branch: &str,
-    event_ids: &[String],
-) -> dim_agent_runtime::Result<HashMap<String, Arc<dim_agent_types::AgentEvent>>> {
-    let Some(limit) = NonZeroU64::new(event_ids.len() as u64) else {
-        return Ok(HashMap::new());
-    };
-    let reply = session
-        .query(
-            branch,
-            TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                include_publishing: false,
-                from: None,
-                through: None,
-                query: QuerySpec {
-                    filter: Some(QueryFilter::And {
-                        conditions: vec![
-                            QueryFilter::In {
-                                value: QueryOperand::Field {
-                                    path: "kind".into(),
-                                },
-                                values: vec!["step/tool-call".into()],
-                            },
-                            QueryFilter::In {
-                                value: QueryOperand::Field { path: "id".into() },
-                                values: event_ids.iter().cloned().map(Into::into).collect(),
-                            },
-                        ],
-                    }),
-                    select: QuerySelect::Events,
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![],
-                },
-                page: Some(QueryPage { limit, after: None }),
-            },
-        )
-        .await?;
-    let QueryOutput::Events { events } = reply.result else {
-        unreachable!("event selection returns events")
-    };
-    Ok(events
-        .into_iter()
-        .map(|row| (row.event.id.clone(), row.event))
-        .collect())
-}
-
-/// The public main-line starts of the requested request/call pairs.
-async fn read_tool_use_starts(
-    session: &Session,
-    branch: &str,
-    keys: &[(String, String)],
-) -> dim_agent_runtime::Result<HashMap<(String, String), Arc<dim_agent_types::AgentEvent>>> {
-    let mut starts = HashMap::with_capacity(keys.len());
-    if keys.is_empty() {
-        return Ok(starts);
-    }
-    let through = session.sequence(branch)?;
-    let mut query = TimelineQuery {
-        scope: TimelineQueryScope::Branch,
-        include_publishing: false,
-        from: None,
-        through: Some(through),
-        query: QuerySpec {
-            filter: Some(QueryFilter::And {
-                conditions: vec![
-                    QueryFilter::In {
-                        value: QueryOperand::Field {
-                            path: "kind".into(),
-                        },
-                        values: vec!["step/tool-use-start".into()],
-                    },
-                    QueryFilter::Or {
-                        conditions: keys
-                            .iter()
-                            .map(|(request, call)| QueryFilter::And {
-                                conditions: vec![
-                                    QueryFilter::In {
-                                        value: QueryOperand::Field {
-                                            path: "data.request_id".into(),
-                                        },
-                                        values: vec![request.clone().into()],
-                                    },
-                                    QueryFilter::In {
-                                        value: QueryOperand::Field {
-                                            path: "data.call_id".into(),
-                                        },
-                                        values: vec![call.clone().into()],
-                                    },
-                                ],
-                            })
-                            .collect(),
-                    },
-                ],
-            }),
-            select: QuerySelect::Events,
-            group_by: vec![],
-            pick: None,
-            order_by: vec![],
-        },
-        page: Some(QueryPage {
-            limit: NonZeroU64::new(TOOL_USE_START_PAGE)
-                .expect("a page keeps at least one tool use"),
-            after: None,
-        }),
-    };
-    loop {
-        let reply = session.query(branch, query.clone()).await?;
-        let QueryOutput::Events { events } = reply.result else {
-            unreachable!("event selection returns events")
-        };
-        for row in events {
-            let EventKind::ToolUseStart(start) = &row.event.kind else {
-                unreachable!("query selects tool use starts")
-            };
-            starts.insert((start.request_id.clone(), start.call_id.clone()), row.event);
-        }
-        query.page.as_mut().unwrap().after = reply.next;
-        if query.page.as_ref().unwrap().after.is_none() || starts.len() == keys.len() {
-            break;
-        }
-    }
-    Ok(starts)
-}
-
 /// Result of a request's work range: from the member's `input/consumed` of
 /// the request input to its idle point; the last `turn/end` decides.
 async fn outcome(
@@ -3265,12 +2954,6 @@ fn success(result: Value) -> ToolResult {
     output.structured_content = result.as_object().cloned();
     output
 }
-/// Writes the merged text item a run of deltas has been accumulating.
-fn flush_text(items: &mut Vec<Value>, text: &mut Option<(String, u64, String)>) {
-    if let Some((_, sequence, text)) = text.take() {
-        items.push(json!({"sequence": sequence, "type": "text", "text": text}));
-    }
-}
 fn refusal(error: Refusal, explanation: &str) -> ToolResult {
     let code = serde_json::to_value(error).expect("error code serializes");
     let mut output = ToolResult::error(format!(
@@ -3363,15 +3046,11 @@ enum Input {
     Read {
         agent_id: String,
         session_id: String,
-        #[serde(default)]
-        after: u64,
-        limit: Option<usize>,
-        /// The line the previous page was read from, as that page reported
-        /// it. A continuation (`after` above 0) must carry it, so a move of
-        /// the member's default branch between pages never applies one
-        /// line's cursor to another (design §9, §15).
-        #[serde(default)]
-        branch_id: Option<String>,
+        about: Option<String>,
+        tool: Option<String>,
+        before: Option<String>,
+        open: Option<String>,
+        offset: Option<u64>,
     },
     List {},
     Models {},
@@ -3396,9 +3075,9 @@ const LEADER_DESCRIPTION_HEAD: &str = "Work with other agents as a team you lead
   on it now, waking it when idle. Mode \"append\" adds context the receiver sees in its
   next step without interrupting it, and waits while it is idle. A message starts no task
   and returns no result; give new work with request.
-- read: view a team member's recent activity, more pages by passing nextCursor as after
-  together with the branchId the page reported. list: show your team and the agents you
-  can use. inspect: show one agent's full profile (instructions, tools, model).";
+- read: a briefing of a team member's activity, latest turns first; open a turn or
+  anything in it by its id, or search with about. list: show your team and the agents
+  you can use. inspect: show one agent's full profile (instructions, tools, model).";
 /// The `models` bullet, between [`LEADER_DESCRIPTION_HEAD`] and
 /// [`LEADER_DESCRIPTION_TAIL`]: only a deployment that provides the selectable
 /// read offers the action.
@@ -3412,8 +3091,8 @@ const MEMBER_DESCRIPTION: &str = "You are a member of a team. You cannot delegat
 - message: send information to your leader or another member. Default mode \"steer\"
   has the receiver act on it now, waking it when idle. Mode \"append\" adds context the
   receiver sees in its next step without interrupting it, and waits while it is idle.
-- read: view a team member's recent activity, more pages by passing nextCursor as after
-  together with the branchId the page reported. list: show your team.
+- read: a briefing of a team member's activity, latest turns first; open a turn or
+  anything in it by its id, or search with about. list: show your team.
 When you finish a task, your last reply is the result the leader receives; do not send it
 as a message.";
 
@@ -3428,12 +3107,13 @@ fn agent_definition(
         "sessionId": {"type": "string"},
         "content": {"type": "string"},
         "mode": {"type": "string", "enum": ["append", "steer"]},
-        "after": {"type": "integer", "minimum": 0},
-        "branchId": {"type": "string",
-            "description": "The line an earlier read page reported as its branchId. Required with after above 0, so a continuation reads the same line; omit it on a fresh read."},
-        "limit": {"type": "integer", "minimum": 1, "maximum": READ_PAGE_LIMIT,
-            "default": READ_PAGE_LIMIT,
-            "description": "Target events per page. The final atomic batch is returned whole and may exceed the target. Pass nextCursor as after, with the page's branchId, to continue."},
+        "about": {"type": "string", "minLength": 1, "maxLength": narrative::ABOUT,
+            "description": "Words to look for; all must appear, in any order, ignoring case."},
+        "tool": {"type": "string", "minLength": 1, "description": "Only calls to this tool."},
+        "before": {"type": "string", "description": "An id; show what came before it."},
+        "open": {"type": "string", "description": "An id; show that turn, or that thing in full."},
+        "offset": {"type": "integer", "minimum": 0,
+            "description": "With open: continue from here, a line of a turn or a character of one thing."},
     });
     let (actions, description) = match role {
         CollaborationRole::Leader => {
@@ -3507,7 +3187,7 @@ fn agent_definition(
             let optional: &[&str] = match *action {
                 "request" if required.contains(&"agentId") => &["sessionId"],
                 "message" => &["mode"],
-                "read" => &["after", "limit", "branchId"],
+                "read" => &["about", "tool", "before", "open", "offset"],
                 _ => &[],
             };
             for field in optional {

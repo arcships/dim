@@ -183,9 +183,12 @@ impl ProviderService {
                 let expected = serde_json::to_value(&record).map_err(ProviderError::from)?;
                 let models = owner.discover(&provider_id, &record, &cancel).await?;
                 reject_user_model_conflicts(&record, &models)?;
+                let before = record.clone();
                 let version = record.version;
                 record.models = models;
                 record.remote_models = true;
+                record.model_config_overrides =
+                    normalize_static_overrides(&owner.bundled, &provider_id, &before, &record);
                 record.version = version
                     .checked_add(1)
                     .ok_or_else(|| failure("Provider version overflow"))?;

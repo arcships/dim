@@ -244,7 +244,11 @@ impl ProviderService {
                         ));
                     }
                     // A user model states its own limits, so what it declares
-                    // is what the bundle must not override.
+                    // is what the bundle must not override. It is not an
+                    // override, so the normalization mark the server's own
+                    // override writes carry (#2189) is not the client's to
+                    // state.
+                    model.normalized_override = false;
                     if model.capabilities.context_window.is_some() {
                         declare(&mut model, "contextWindow");
                     }
@@ -464,13 +468,21 @@ impl ProviderService {
                                             .context_window;
                                     }
                                 }
-                                let next = bundled.merge_visible_edit(&current, edit);
+                                let mut next = bundled.merge_visible_edit(&current, edit);
                                 if let Some(user) = user {
                                     record.user_models[user] = next;
-                                } else if let Some(index) = index {
-                                    record.model_config_overrides[index] = next;
                                 } else {
-                                    record.model_config_overrides.push(next);
+                                    // The edit writes a clone of the row it
+                                    // applies to with every edit marked, so
+                                    // the override is normalized the moment it
+                                    // is stored (#2189); a user model is not
+                                    // an override and never carries the mark.
+                                    next.normalized_override = true;
+                                    if let Some(index) = index {
+                                        record.model_config_overrides[index] = next;
+                                    } else {
+                                        record.model_config_overrides.push(next);
+                                    }
                                 }
                             }
                             Some(_) => {}
@@ -543,12 +555,25 @@ impl ProviderService {
                             }
                             match edit {
                                 Some(edit) if descriptor => {
-                                    let next = bundled.merge_visible_edit(
-                                        index
-                                            .map(|index| &record.model_config_overrides[index])
-                                            .unwrap_or(&default.entry),
-                                        edit,
-                                    );
+                                    // The edit may clone the record's stored
+                                    // override, which a pre-upgrade write left
+                                    // as a legacy clone: its pin set is not
+                                    // complete, so the pins it carries must be
+                                    // fastened against the row before the edit
+                                    // may declare the clone normalized. The
+                                    // static branch needs no such step because
+                                    // it clones the effective entry, which the
+                                    // read path has already inferred (#2189).
+                                    let mut base = index
+                                        .map(|index| record.model_config_overrides[index].clone())
+                                        .unwrap_or_else(|| default.entry.clone());
+                                    infer_capability_edits(&default.entry, &mut base);
+                                    let mut next = bundled.merge_visible_edit(&base, edit);
+                                    // As on the static record: the edit writes
+                                    // a clone whose every edit is marked, so
+                                    // the stored override is normalized at
+                                    // birth (#2189).
+                                    next.normalized_override = true;
                                     if let Some(index) = index {
                                         record.model_config_overrides[index] = next;
                                     } else {

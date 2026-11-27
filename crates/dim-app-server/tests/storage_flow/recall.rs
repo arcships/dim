@@ -1,8 +1,11 @@
 use super::*;
 use dim_agent_capabilities::{
-    adapters::EchoModel,
+    adapters::{EchoModel, MockTools},
     defaults,
-    host::{HostFuture, ModelChunk, ModelConnection, ModelDriver, ModelStream},
+    host::{
+        HostFuture, ModelChunk, ModelConnection, ModelDriver, ModelStream, ToolDriver,
+        ToolExecutionContext,
+    },
     recall::{self, testing::Narrative},
 };
 use futures_util::StreamExt;
@@ -36,6 +39,42 @@ impl ModelDriver for SplitReply {
     }
 }
 
+/// Mock tools plus `touch`, whose result text is only `touched` and which
+/// declares writing the file its input names (session boundary A.6).
+struct Touch;
+impl ToolDriver for Touch {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        let mut tools = MockTools.definitions();
+        let mut touch = dim_agent_capabilities::tool_registry::definition(
+            "touch",
+            "Declare writing the file the input names.",
+            json!({"type": "object", "additionalProperties": false, "properties": {
+                "path": {"type": "string"}}}),
+        );
+        touch.risk = Some("session".into());
+        tools.push(touch);
+        tools
+    }
+    fn execute(
+        &self,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        if call.name != "touch" {
+            let mock: &'static MockTools = &MockTools;
+            return mock.execute(call, context, cancel);
+        }
+        Box::pin(async move {
+            let mut result = ToolResult::text("touched");
+            result.effects = Some(vec![ToolEffect::FileWritten {
+                path: call.input["path"].as_str().unwrap_or_default().to_owned(),
+            }]);
+            Ok(result)
+        })
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_same_full_projection()
 {
@@ -44,11 +83,12 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
         let db = SqliteStorage::open(database.0.clone()).unwrap();
         let store = SqliteTimelineStore::new(db.clone());
         let mut builder = AgentBuilder::new(AgentConfig::default());
-        defaults::mock_hosts_with_model(
+        defaults::mock_model_hosts_with_model(
             &mut builder,
             HistoryRenderer::default(),
             Arc::new(SplitReply),
         );
+        defaults::tool_host(&mut builder, Arc::new(Touch));
         defaults::install(&mut builder);
         recall::install(&mut builder);
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
@@ -67,6 +107,7 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
             "first UNIQUENEEDLE",
             "a 中文 and İ message",
             "ordinary final message",
+            r#"tool:touch {"path":"/work/src/parse.py"}"#,
         ] {
             session
                 .submit(message.into(), InputMode::Queue, "main")
@@ -81,6 +122,8 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
             json!({"about":"中文"}),
             json!({"about":"İ"}),
             json!({"about":"uniqueneedle","tool":"echo"}),
+            json!({"about":"wrote /work/src/parse.py"}),
+            json!({"about":"wrote"}),
             json!({}),
         ] {
             store.record_query_statistics();
@@ -118,6 +161,15 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
             let expected =
                 Narrative::new(&history[..at]).answer(calling, arguments.as_object().unwrap());
             assert_eq!(actual.content, expected.content, "{arguments}");
+            if arguments["about"]
+                .as_str()
+                .is_some_and(|about| about.starts_with("wrote"))
+            {
+                let ToolContent::Text(text) = &actual.content else {
+                    panic!("{arguments}: {:?}", actual.content)
+                };
+                assert!(text.contains("called touch"), "{arguments}: {text}");
+            }
             assert_eq!(
                 actual.is_error.unwrap_or(false),
                 expected.is_error.unwrap_or(false),

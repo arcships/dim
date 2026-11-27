@@ -42,6 +42,17 @@ enum Limited {
     /// statement about the id can give it limits.
     Unidentified,
     ProviderUnavailable,
+    /// The same account's refreshed catalog declares reasoning efforts and
+    /// image input for the fixture model, as an upstream capability roll-out
+    /// does (#2189).
+    Evolved,
+    /// The same account's refreshed catalog stops declaring reasoning for the
+    /// fixture model, so its row carries no metadata at all, the way a model
+    /// whose supported levels are all dropped reads (#2189).
+    Stripped,
+    /// The same account's catalog stops listing the fixture model at all, the
+    /// way a model upstream retires for one listing reads (#2189).
+    Delisted,
 }
 
 /// A signed-in managed account whose first credential the relay rejects.
@@ -177,7 +188,33 @@ impl ManagedProvider for Provider {
             zdr: false,
         }];
         match *self.0.limited.lock().unwrap() {
-            Limited::Absent => {}
+            Limited::Evolved => {
+                let entry = &mut models[0].entry;
+                entry.capabilities.reasoning = true;
+                entry.capabilities.vision = true;
+                entry.capabilities.modalities =
+                    ["text", "image"].into_iter().map(str::to_owned).collect();
+                let metadata = entry.metadata.get_or_insert_default();
+                let reasoning = metadata.reasoning.get_or_insert_default();
+                reasoning.supported = true;
+                reasoning.effort_options = Some(
+                    ["low", "medium", "high", "xhigh"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                );
+                reasoning.effort = Some("high".into());
+            }
+            Limited::Stripped => {
+                let entry = &mut models[0].entry;
+                entry.capabilities.reasoning = false;
+                entry.metadata = None;
+            }
+            _ => {}
+        }
+        match *self.0.limited.lock().unwrap() {
+            Limited::Absent | Limited::Evolved | Limited::Stripped => {}
+            Limited::Delisted => models.clear(),
             Limited::ProviderUnavailable => return ready(Err(ManagedError::Transient)),
             Limited::Available => {
                 let entry: ModelEntry = serde_json::from_value(json!({"modelId":"limited-model",
@@ -1499,6 +1536,993 @@ async fn an_account_identifies_its_models_with_its_prefix_and_aliases() {
             &aliased["result"]["models"][at]["metadata"]["matchedModelId"],
         ),
         "a refresh recomputes what the alias names"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A regression for the override freezing the account's own declarations
+/// (#2189): an override that only supplies the model's limits must not stop a
+/// same-account refresh from serving the reasoning efforts and image input the
+/// refreshed catalog declares, on the effective catalog the picker reads. The
+/// edit goes through the public `provider.models.edit` path against the
+/// persisted Provider record, and the catalog evolves between two refreshes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limits_only_override_does_not_freeze_refreshed_capabilities() {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(AccountSnapshot {
+            credential_epoch: "epoch".into(),
+            generation: 1,
+            account: Some(AccountView {
+                issuer: "https://accounts.example".into(),
+                subject: "fixture".into(),
+                email: Some("fixture@example.com".into()),
+                name: Some("Fixture".into()),
+                granted_scopes: vec!["model".into()],
+            }),
+        }),
+        limited: StdMutex::new(Limited::Absent),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            session_defaults: dim_agent_runtime::SessionConfig {
+                tools: Some(["read"].map(String::from).to_vec()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    assert_eq!(created["result"]["version"], 1);
+    let model = &created["result"]["models"][0];
+    assert_eq!(model["capabilities"]["vision"], false);
+    assert_eq!(
+        model["metadata"]["reasoning"]["effortOptions"],
+        json!(["low", "high"]),
+        "the old catalog row declares the short list"
+    );
+    // The public edit path supplies just the limits.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"contextWindow":100000,"maxOutputTokens":8192}}),
+            )
+            .await,
+    );
+    // The same account's refreshed catalog now declares the new capabilities.
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window stands"
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the edited output stands"
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "the refreshed row's image input reaches the effective entry"
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["effortOptions"],
+        json!(["low", "medium", "high", "xhigh"]),
+        "the refreshed row's declared efforts reach the effective entry"
+    );
+    let management = client
+        .rpc(
+            "provider.management",
+            json!({"providerId":"managed-fixture"}),
+        )
+        .await;
+    assert_ok(&management);
+    let managed = management["result"]["providers"][0]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["model"]["modelId"] == json!("fixture-model"))
+        .cloned()
+        .expect("the management view lists the model");
+    assert_eq!(
+        managed["model"]["capabilities"]["vision"], true,
+        "the picker reads the refreshed declaration too"
+    );
+    assert_eq!(
+        managed["model"]["metadata"]["reasoning"]["effortOptions"],
+        json!(["low", "medium", "high", "xhigh"])
+    );
+    assert_eq!(
+        managed["model"]["capabilities"]["contextWindow"],
+        json!(100000)
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The pin the fix must not discard (#2189): a capability the user explicitly
+/// edited wins over the refreshed account declaration, while a capability the
+/// edit never touched still follows the refresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_explicit_capability_edit_survives_a_same_account_refresh() {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(AccountSnapshot {
+            credential_epoch: "epoch".into(),
+            generation: 1,
+            account: Some(AccountView {
+                issuer: "https://accounts.example".into(),
+                subject: "fixture".into(),
+                email: Some("fixture@example.com".into()),
+                name: Some("Fixture".into()),
+                granted_scopes: vec!["model".into()],
+            }),
+        }),
+        limited: StdMutex::new(Limited::Absent),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            session_defaults: dim_agent_runtime::SessionConfig {
+                tools: Some(["read"].map(String::from).to_vec()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user pins reasoning off on a model whose catalog row declares it.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the explicit reasoning edit wins over the refreshed declaration"
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["supported"], false,
+        "the pin covers the reasoning descriptor the picker reads"
+    );
+    assert!(
+        model["metadata"]["reasoning"]["effortOptions"].is_null()
+            || model["metadata"]["reasoning"]["effortOptions"] == json!([]),
+        "a pinned-off reasoning offers no efforts: {}",
+        model["metadata"]["reasoning"]
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "a capability the edit never touched follows the refresh"
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The fixture server and account the override tests share.
+async fn override_fixture() -> (RunningServer, Arc<Fixture>, std::path::PathBuf) {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(AccountSnapshot {
+            credential_epoch: "epoch".into(),
+            generation: 1,
+            account: Some(AccountView {
+                issuer: "https://accounts.example".into(),
+                subject: "fixture".into(),
+                email: Some("fixture@example.com".into()),
+                name: Some("Fixture".into()),
+                granted_scopes: vec!["model".into()],
+            }),
+        }),
+        limited: StdMutex::new(Limited::Absent),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            session_defaults: dim_agent_runtime::SessionConfig {
+                tools: Some(["read"].map(String::from).to_vec()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    (server, fixture, home)
+}
+
+fn stored(home: &std::path::Path) -> Value {
+    let store = rusqlite::Connection::open(home.join("rust").join("dimcode.sqlite")).unwrap();
+    dim_app_server::provider::testing::stored_provider(&store, "managed-fixture")
+        .unwrap()
+        .unwrap()
+}
+
+fn rewrite_stored(home: &std::path::Path, record: &Value) {
+    let store = rusqlite::Connection::open(home.join("rust").join("dimcode.sqlite")).unwrap();
+    dim_app_server::provider::testing::replace_provider(
+        &store,
+        "managed-fixture",
+        record["version"].as_u64().unwrap() as u32,
+        &record.to_string(),
+    )
+    .unwrap();
+}
+
+/// A regression for the upgrade silently discarding a capability the user
+/// edited (#2189): an override written before capability edits were marked is
+/// the same clone with only its limits marked, so the first read after the
+/// upgrade must still pin the edit, and a refresh that then rewrites the
+/// account's rows must keep it pinned while the fields the user never touched
+/// follow the refreshed declarations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pre_upgrade_capability_edit_is_pinned_on_the_first_read() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user pins reasoning off on a model whose catalog row declares it.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    // The record the pre-#2189 edit path wrote is this same clone without the
+    // capability marks and without the normalization record, so rewriting it
+    // without them is exactly what an upgrade reads, not an approximation of
+    // one.
+    let mut record = stored(&home);
+    let marks = &mut record["modelConfigOverrides"][0]["metadata"]["capabilityOverrideFields"];
+    *marks = json!(
+        marks
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|field| !matches!(
+                field.as_str().unwrap(),
+                "toolCalling" | "vision" | "reasoning" | "modalityCapabilities"
+            ))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(marks, &json!([]));
+    if let Some(entry) = record["modelConfigOverrides"][0].as_object_mut() {
+        entry.remove("normalizedOverride");
+    }
+    rewrite_stored(&home, &record);
+    // The first read after the upgrade, before any refresh: the pin must
+    // stand where the clone kept it.
+    let management = client
+        .rpc(
+            "provider.management",
+            json!({"providerId":"managed-fixture"}),
+        )
+        .await;
+    assert_ok(&management);
+    let models = management["result"]["providers"][0]["models"]
+        .as_array()
+        .unwrap();
+    let at = models
+        .iter()
+        .position(|model| model["model"]["modelId"] == json!("fixture-model"))
+        .unwrap();
+    assert_eq!(
+        models[at]["model"]["capabilities"]["reasoning"], false,
+        "an unmarked capability edit must survive the first read of the upgrade: {}",
+        models[at]["model"]
+    );
+    // The refreshed catalog declares reasoning and image input. The pin wins
+    // over the first, and the capability the user never edited follows the
+    // second.
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the unmarked pin must win over the refreshed declaration too"
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "a capability the edit never touched follows the refresh"
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
+    );
+    // The read that rewrote the rows also fastened the pin, so the stored
+    // override now carries the mark the pre-upgrade write could not.
+    let record = stored(&home);
+    let marks = record["modelConfigOverrides"][0]["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        marks.iter().any(|field| field == "reasoning"),
+        "the refresh must fasten the pin it carried across: {marks:?}"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A regression for the pin that a refreshed row without metadata dropped
+/// (#2189): the row keeps the capability but nothing to hang it on, and the
+/// pin the user wrote must still win over it, mark and all, or the next
+/// refresh silently loses the edit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reasoning_pin_survives_a_row_without_reasoning_metadata() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user pins the reasoning declaration to a narrower offer than the
+    // catalog row's.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":true,"effortOptions":["low"]}}}),
+            )
+            .await,
+    );
+    // The same account stops declaring reasoning: the refreshed row carries
+    // no reasoning metadata at all.
+    *fixture.limited.lock().unwrap() = Limited::Stripped;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], true,
+        "the pinned reasoning must win over a row that declares none: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["supported"], true,
+        "the pinned descriptor must survive the row without metadata: {}",
+        model["metadata"]
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["effortOptions"],
+        json!(["low"]),
+        "the pinned offer must survive the row without metadata"
+    );
+    let marks = model["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        marks.iter().any(|field| field == "reasoning"),
+        "the mark must survive the row without metadata, or the next refresh loses the pin: {marks:?}"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A regression for the limits pin a metadata-less row silently reverted
+/// (#2189): the rebase copies the pinned values onto a row that declares no
+/// metadata, but the row offers nowhere to hang the marks, so unless the
+/// marks are kept the stored override reads as unmarked afterwards and the
+/// next rebase serves the row's values instead of the user's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn limits_marks_survive_a_row_without_metadata() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user edits only the limits.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"contextWindow":100000,"maxOutputTokens":8192}}),
+            )
+            .await,
+    );
+    // The same account stops declaring reasoning, so the refreshed row carries
+    // no metadata at all.
+    *fixture.limited.lock().unwrap() = Limited::Stripped;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window must win over the row without metadata: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the edited output must win over the row without metadata"
+    );
+    let marks = |home: &std::path::Path| {
+        let record = stored(home);
+        record["modelConfigOverrides"][0]["metadata"]["capabilityOverrideFields"]
+            .as_array()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|field| field.as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    assert!(
+        marks(&home).iter().any(|field| field == "contextWindow")
+            && marks(&home).iter().any(|field| field == "maxOutputTokens"),
+        "the stored override must keep the limits marks, or the next refresh reverts the edit: {:?}",
+        marks(&home)
+    );
+    // One refresh later the same edit must still stand: the values the first
+    // metadata-less rebase stored are the base every later read compares
+    // against.
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window must survive the second refresh too: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the edited output must survive the second refresh too"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The modality half of the pin that a refreshed row without metadata must
+/// not drop (#2189): the edit writes two raw keys, and both the projection
+/// and the mark must survive the row that offers nothing to hang them on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_modality_capabilities_pin_survives_a_row_without_metadata() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user declares the model's modality capabilities where the catalog
+    // row declares none.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"modalityCapabilities":["image.generate"]}}),
+            )
+            .await,
+    );
+    // The same account stops declaring reasoning, so the refreshed row carries
+    // no metadata at all.
+    *fixture.limited.lock().unwrap() = Limited::Stripped;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["metadata"]["raw"]["imageGeneration"],
+        json!(true),
+        "the pinned image-generation projection must survive the row without metadata: {}",
+        model["metadata"]
+    );
+    assert_eq!(
+        model["metadata"]["raw"]["modalityCapabilities"],
+        json!(["image.generate"]),
+        "the pinned capability list must survive the row without metadata"
+    );
+    let marks = model["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        marks.iter().any(|field| field == "modalityCapabilities"),
+        "the mark must survive the row without metadata, or the next refresh loses the pin: {marks:?}"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The gap in the pin chain (#2189): a same-account listing that drops the
+/// model for one refresh and then brings it back with new capabilities must
+/// not freeze them. The override is a clone of the row it edited, so its
+/// unedited capability values belong to the row the clone was taken from; the
+/// write that drops the row is the last chance to tell the user's pins from
+/// the clone's capture, and the read must not mistake the capture for edits
+/// once the row comes back changed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unedited_capability_follows_the_row_across_a_listing_gap() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user edits only the limits, so no capability field is marked.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"contextWindow":100000,"maxOutputTokens":8192}}),
+            )
+            .await,
+    );
+    // The same account stops listing the model for one refresh, then
+    // another, and brings it back declaring capabilities the rows never
+    // declared while the override was written: nothing the clone captured
+    // may answer for them.
+    *fixture.limited.lock().unwrap() = Limited::Delisted;
+    for round in 0..2 {
+        let dropped = client
+            .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+            .await;
+        assert_ok(&dropped);
+        assert!(
+            dropped["result"]["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|model| model["id"] != json!("fixture-model")),
+            "the delisted refresh must not serve the model (round {round})"
+        );
+    }
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let returned = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&returned);
+    let model = &returned["result"]["models"][0];
+    assert_eq!(model["id"], json!("fixture-model"));
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window must survive the gap"
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the edited output must survive the gap"
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "a capability the edit never touched must follow the returning row across the gap: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"]),
+        "the returning row's modalities must reach the effective entry"
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["effortOptions"],
+        json!(["low", "medium", "high", "xhigh"]),
+        "the returning row's declared efforts must not freeze at the values the clone captured: {}",
+        model["metadata"]["reasoning"]
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The explicit half of the gap chain (#2189): a capability the user pinned
+/// before the model dropped out of the listing must still win after the gap,
+/// while every capability the edit left alone follows the returning row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_explicit_capability_pin_wins_across_a_listing_gap() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user pins reasoning off and edits the limits, so the override holds
+    // both kinds of marks.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"contextWindow":100000,
+                        "reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    // The model drops out of the listing for one refresh and comes back
+    // declaring capabilities the rows never declared while the override was
+    // written.
+    *fixture.limited.lock().unwrap() = Limited::Delisted;
+    let dropped = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&dropped);
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let returned = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&returned);
+    let model = &returned["result"]["models"][0];
+    assert_eq!(model["id"], json!("fixture-model"));
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the explicit reasoning pin must win after the gap too"
+    );
+    assert!(
+        model["metadata"]["reasoning"]["effortOptions"].is_null()
+            || model["metadata"]["reasoning"]["effortOptions"] == json!([]),
+        "the pinned-off reasoning offers no efforts after the gap: {}",
+        model["metadata"]["reasoning"]
+    );
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window must survive the gap beside the pin"
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "a capability the edit never touched must follow the returning row across the gap: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The legacy half of the gap chain (#2189): an override written before
+/// capability edits were marked is the same clone with only its limits
+/// marked, and it cannot be told from a normalized one by the marks alone.
+/// When the row disappears before any post-upgrade write can rebase the
+/// clone, the dropping write must still record what the clone pinned against
+/// the last row it saw, so the returning refresh applies only those pins:
+/// a capability the pre-upgrade user genuinely edited still wins after the
+/// gap, and one the clone merely captured follows the returning row instead
+/// of freezing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pre_upgrade_clone_applies_only_its_pins_across_a_listing_gap() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The pre-upgrade user edits the limits and pins reasoning off; the edit
+    // path of that era wrote the same clone but marked only the limits.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"contextWindow":100000,"maxOutputTokens":8192,
+                        "reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    // Rewriting the stored override without the capability marks and without
+    // the normalization record reproduces what the pre-#2189 edit path wrote,
+    // so an upgrade reads exactly this shape.
+    let mut record = stored(&home);
+    let override_entry = &mut record["modelConfigOverrides"][0];
+    let marks = &mut override_entry["metadata"]["capabilityOverrideFields"];
+    *marks = json!(
+        marks
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|field| !matches!(
+                field.as_str().unwrap(),
+                "toolCalling" | "vision" | "reasoning" | "modalityCapabilities"
+            ))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    if let Some(entry) = override_entry.as_object_mut() {
+        entry.remove("normalizedOverride");
+    }
+    rewrite_stored(&home, &record);
+    // The model disappears before any refresh can rebase the legacy clone
+    // against a row it is listed in, and comes back declaring capabilities
+    // the rows never declared while the clone was taken.
+    *fixture.limited.lock().unwrap() = Limited::Delisted;
+    let dropped = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&dropped);
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let returned = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&returned);
+    let model = &returned["result"]["models"][0];
+    assert_eq!(model["id"], json!("fixture-model"));
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the legacy clone's edited window must survive the gap"
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the legacy clone's edited output must survive the gap"
+    );
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the capability the pre-upgrade user pinned must still win after the gap"
+    );
+    assert!(
+        model["metadata"]["reasoning"]["effortOptions"].is_null()
+            || model["metadata"]["reasoning"]["effortOptions"] == json!([]),
+        "the pinned-off reasoning offers no efforts after the gap: {}",
+        model["metadata"]["reasoning"]
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "the returning row's vision must not freeze at the value the legacy clone captured: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A regression for the legacy clone the first edit carries across the
+/// upgrade (#2189): an account-model edit on a record whose stored override
+/// predates capability marks must fasten the pins the clone holds before the
+/// edit declares the override normalized, or the pin the pre-upgrade user
+/// wrote is lost inside that same edit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_legacy_clone_keeps_its_unmarked_pins_through_the_first_edit() {
+    let (server, _fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The pre-upgrade user pins reasoning off; the edit path of that era
+    // wrote the same clone without the capability marks.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    // Rewriting the stored override without the capability marks and without
+    // the normalization record reproduces exactly the shape an upgrade
+    // reads.
+    let mut record = stored(&home);
+    let override_entry = &mut record["modelConfigOverrides"][0];
+    let marks = &mut override_entry["metadata"]["capabilityOverrideFields"];
+    *marks = json!(
+        marks
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|field| !matches!(
+                field.as_str().unwrap(),
+                "toolCalling" | "vision" | "reasoning" | "modalityCapabilities"
+            ))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    if let Some(entry) = override_entry.as_object_mut() {
+        entry.remove("normalizedOverride");
+    }
+    rewrite_stored(&home, &record);
+    // The first operation after the upgrade is another edit on the same
+    // model, before any refresh could normalize the legacy clone. The edit
+    // must keep the pin the clone carried rather than dropping it inside the
+    // write that declares the override normalized.
+    let edited = client
+        .rpc(
+            "provider.models.edit",
+            json!({"providerId":"managed-fixture","expectedVersion":2,
+                "modelId":"fixture-model",
+                "edit":{"contextWindow":100000}}),
+        )
+        .await;
+    assert_ok(&edited);
+    let model = &edited["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the unmarked pin the legacy clone carried must survive the first edit: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edit itself lands beside the pin"
+    );
+    // The stored override the edit wrote pins every difference it carries
+    // and records the pin set as complete.
+    let record = stored(&home);
+    let override_entry = &record["modelConfigOverrides"][0];
+    assert_eq!(
+        override_entry["normalizedOverride"],
+        json!(true),
+        "the edit records the pin set as complete: {}",
+        override_entry
+    );
+    let marks = override_entry["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        marks.iter().any(|field| field == "reasoning"),
+        "the pin the clone carried must be marked before the set is declared complete: {marks:?}"
+    );
+    assert!(
+        marks.iter().any(|field| field == "contextWindow"),
+        "the edit's own mark lands beside it: {marks:?}"
     );
     assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
     server.join().await.unwrap();

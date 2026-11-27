@@ -1037,7 +1037,16 @@ pub(super) fn adopt(
         let previous =
             read_stored_static(connection, id)?.ok_or_else(|| storage("Provider disappeared"))?;
         let mut record = if let Some(definition) = definition {
-            reseed_candidate(&previous, definition)
+            let mut record = reseed_candidate(&previous, definition);
+            // The reseed replaces the rows the overrides were written against,
+            // so they are normalized the way every other row-replacing write
+            // normalizes them (#2189): an edit the clone cannot mark is pinned
+            // against the rows the record served, not against the bundle the
+            // reseed admits, and what the user never edited follows the rows
+            // the reseed writes.
+            record.model_config_overrides =
+                normalize_static_overrides(bundled, id, &previous, &record);
+            record
         } else {
             let mut record = previous.clone();
             record.enabled = false;

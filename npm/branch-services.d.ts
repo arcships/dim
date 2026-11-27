@@ -1416,6 +1416,7 @@ export type RouteError =
   | /** Agents is reloading and cannot take calls yet. A process caller retries later. */ { sessionReloading: string }
   | /** The Session exists but cannot be loaded now: its restore failed, or the Agent that owns it is unavailable. The caller reports the reason and does not retry. */ { sessionUnavailable: { session: string; reason: string } }
   | /** The Session is live but the line is closing, closed, or not one of its lines. Final for that line: no hold and no retry. */ { noLine: { session: string; line: string } }
+  | /** The Session or line was selected, but no provider of `service` is installed there, for example when its profile leaves the service out. The holder answers it, not an owner; final, no retry. */ { noService: { service: string } }
   | /** The name is not a data face a route resolves there: the assembly marks it internal, it is a mechanism registration point, or it is a scope lifecycle service. A permanent answer: the request is wrong. */ { notDataFace: { service: string } }
   | /** The service is a data face a route resolves, but this operation of it is not: its call needs a cancellation or a cleanup the routed call cannot carry, so only a direct call keeps its lifetime behaviour. */ { methodNotRoutable: { service: string; method: string } }
   | /** The name is a data face, but not of the scope the route reaches. */ { wrongScope: { service: string; group: string } }
@@ -1478,11 +1479,12 @@ export type PermissionState = {
 /** A Session service failure; generated exports throw this serde value. */
 export type SessionsError =
   | { code: "rejected"; message: string }
-  | /** A routed call could not select its target. These are the same codes a Session's own scope answers: `no_session`, `session_closing`, `session_reloading` (retryable), `session_unavailable`, `no_line`, `not_data_face`, `method_not_routable` and `wrong_scope`. */ { code: "no_session"; message: string }
+  | /** A routed call could not select its target. These are the same codes a Session's own scope answers: `no_session`, `session_closing`, `session_reloading` (retryable), `session_unavailable`, `no_line`, `no_service`, `not_data_face`, `method_not_routable` and `wrong_scope`. */ { code: "no_session"; message: string }
   | { code: "session_closing"; message: string }
   | { code: "session_reloading"; message: string }
   | /** The Session exists but cannot load; `reason` says why. */ { code: "session_unavailable"; message: string; reason: string }
   | /** The line is not the Session's, or it is gone; `line` names it. */ { code: "no_line"; message: string; line: string }
+  | /** The target was selected but does not provide `service`. */ { code: "no_service"; message: string; service: string }
   | { code: "not_data_face"; message: string; service: string }
   | { code: "method_not_routable"; message: string; service: string; method: string }
   | { code: "wrong_scope"; message: string; service: string; group: string }
@@ -1821,13 +1823,13 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
 /** What a method returning `Err(RouteError)` throws. */
-export type RouteErrorThrown = RustError<"RouteError", "noSession" | "sessionClosing" | "sessionReloading" | "sessionUnavailable" | "noLine" | "notDataFace" | "methodNotRoutable" | "wrongScope" | "owner", RouteError>
+export type RouteErrorThrown = RustError<"RouteError", "noSession" | "sessionClosing" | "sessionReloading" | "sessionUnavailable" | "noLine" | "noService" | "notDataFace" | "methodNotRoutable" | "wrongScope" | "owner", RouteError>
 
 /** What a method returning `Err(SessionInstanceError)` throws. */
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
 
 /** What a method returning `Err(SessionsError)` throws. */
-export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "no_session" | "session_closing" | "session_reloading" | "session_unavailable" | "no_line" | "not_data_face" | "method_not_routable" | "wrong_scope" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "no_session" | "session_closing" | "session_reloading" | "session_unavailable" | "no_line" | "no_service" | "not_data_face" | "method_not_routable" | "wrong_scope" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed" | "running", TaskError>

@@ -60,6 +60,8 @@ struct Search<'a> {
     head: u64,
     chain: Vec<String>,
     cancel: &'a CancellationToken,
+    person: Person,
+    reader: &'static str,
 }
 impl Search<'_> {
     fn request(&self, filter: QueryFilter, select: QuerySelect) -> TimelineQuery {
@@ -98,7 +100,7 @@ impl Search<'_> {
         let mut joined = Vec::new();
         loop {
             let reply = tokio::select! {
-                _ = self.cancel.cancelled() => return Err(HostError::Cancelled("recall".into())),
+                _ = self.cancel.cancelled() => return Err(HostError::Cancelled(self.reader.into())),
                 reply = self.branch.query(query.clone()) => reply.map_err(HostError::from_agent)?,
             };
             let QueryOutput::Events { events } = reply.result else {
@@ -159,7 +161,7 @@ impl Search<'_> {
                     ]))
                     .await?;
                 let events: Vec<_> = records.into_iter().map(|record| record.event).collect();
-                Ok(Narrative::fold(&events, 0, events.len())
+                Ok(Narrative::fold(&events, 0, events.len(), self.person)
                     .ids
                     .contains_key(id)
                     .then(|| position(row, 1)))
@@ -262,7 +264,7 @@ impl Search<'_> {
     async fn open_turn(
         &self,
         origin: &QueryRow,
-        arguments: &Arguments,
+        arguments: &Query,
     ) -> Result<ToolResult, HostError> {
         let id = value(origin, 0).as_str().expect("turn event id");
         let start = position(origin, 2);
@@ -362,7 +364,7 @@ impl Search<'_> {
                     })
                     .collect();
                 let current = self.current_keys(keys).await?;
-                let mut narrative = Narrative::fold(&events, 0, events.len());
+                let mut narrative = Narrative::fold(&events, 0, events.len(), self.person);
                 mark_current(&mut narrative, &current, compaction.as_deref());
                 for thing in &narrative.things {
                     if !anchors.contains(events[thing.anchor].id.as_str()) {
@@ -605,7 +607,7 @@ impl Search<'_> {
 }
 
 fn text_candidates(words: &[String]) -> Option<QueryFilter> {
-    const LABELS: &str = "current version in your context ended image file with messages denied by the user approval cancelled not run sub agent answered failed ran background task finished at running error result yet ok";
+    const LABELS: &str = "current version in your context ended image file with messages denied by the user approval cancelled not run sub agent answered failed ran wrote exit signal background task finished at running error result yet ok";
     let word = words
         .iter()
         .filter(|word| {
@@ -680,7 +682,8 @@ pub(super) async fn run(
     tree: &TreeCommands,
     branch: &Branch,
     branch_id: &str,
-    arguments: &Arguments,
+    person: Person,
+    arguments: &Query,
     cancel: &CancellationToken,
 ) -> Result<ToolResult, HostError> {
     let mut chain = vec![branch_id.to_owned()];
@@ -697,6 +700,8 @@ pub(super) async fn run(
         head: branch.sequence(),
         chain,
         cancel,
+        person,
+        reader: arguments.reader,
     };
     let mut conditions = vec![or(vec![
         kinds(ORIGINS),
@@ -716,10 +721,7 @@ pub(super) async fn run(
     }
     if let Some(id) = &arguments.before {
         let Some(anchor) = search.anchor(id).await? else {
-            return Ok(ToolResult::error(format!(
-                "No turn or line has id {}.",
-                part(id)
-            )));
+            return Ok(unknown(id));
         };
         let (ordinal, sequence) = search.order(&anchor);
         conditions.push(or(vec![
@@ -788,7 +790,7 @@ pub(super) async fn run(
                 })
                 .collect();
             let current = search.current_keys(keys).await?;
-            let mut narrative = Narrative::fold(&events, 0, events.len());
+            let mut narrative = Narrative::fold(&events, 0, events.len(), search.person);
             mark_current(&mut narrative, &current, current_compaction.as_deref());
             for index in narrative.matches(arguments.tool.as_deref(), &words, None) {
                 let thing = &narrative.things[index];
@@ -878,8 +880,8 @@ pub(super) async fn open(
     tree: &TreeCommands,
     branch: &Branch,
     branch_id: &str,
-    head: u64,
-    arguments: &Arguments,
+    person: Person,
+    arguments: &Query,
     cancel: &CancellationToken,
 ) -> Result<ToolResult, HostError> {
     let id = arguments.open.as_ref().expect("open argument");
@@ -894,9 +896,11 @@ pub(super) async fn open(
     chain.reverse();
     let search = Search {
         branch,
-        head,
+        head: branch.sequence(),
         chain,
         cancel,
+        person,
+        reader: arguments.reader,
     };
     let mut query = search.request(
         one_of("id", [json!(id)]),
@@ -921,7 +925,7 @@ pub(super) async fn open(
     let QueryOutput::Rows { mut rows } = reply.result else {
         unreachable!("Recall origin fields")
     };
-    let missing = || ToolResult::error(format!("No turn or line has id {}.", part(id)));
+    let missing = || unknown(id);
     let Some(row) = rows.first() else {
         return Ok(missing());
     };
@@ -968,7 +972,7 @@ pub(super) async fn open(
     } else {
         None
     };
-    let mut narrative = Narrative::fold(&events, 0, events.len());
+    let mut narrative = Narrative::fold(&events, 0, events.len(), search.person);
     mark_current(&mut narrative, &current, compaction.as_deref());
     Ok(narrative.answer("", arguments))
 }
@@ -983,7 +987,7 @@ struct TurnSummary {
 }
 
 impl TurnSummary {
-    fn line(self, outcome: &str) -> (TimelinePosition, u64, String, String) {
+    fn line(self, outcome: &str, person: Person) -> (TimelinePosition, u64, String, String) {
         let mut parts = vec![
             self.title
                 .map_or_else(|| "turn: no opening input".into(), |(_, title)| title),
@@ -1001,7 +1005,7 @@ impl TurnSummary {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            parts.push(format!("you called {}", part(&tools)));
+            parts.push(format!("{} {}", person.called(), part(&tools)));
         }
         parts.push(outcome.into());
         (self.position, self.time, self.id, parts.join(" — "))
@@ -1088,7 +1092,7 @@ impl Search<'_> {
             3
         };
         let title = match (write, &input.user) {
-            (Some(write), _) => format!("turn: {}", write_line(&write, false)),
+            (Some(write), _) => format!("turn: {}", write_line(&write, false, self.person)),
             (None, Some(user)) => format!("turn: user \"{}\"", part(&user_text(user))),
             (None, None) => format!("turn: {}", part(&blocks_name(&input.blocks, &live))),
         };
@@ -1101,8 +1105,8 @@ pub(super) async fn index(
     branch: &Branch,
     branch_id: &str,
     calling_turn: &str,
-    head: u64,
-    arguments: &Arguments,
+    person: Person,
+    arguments: &Query,
     cancel: &CancellationToken,
 ) -> Result<ToolResult, HostError> {
     let mut chain = vec![branch_id.to_owned()];
@@ -1116,16 +1120,15 @@ pub(super) async fn index(
     chain.reverse();
     let search = Search {
         branch,
-        head,
+        head: branch.sequence(),
         chain,
         cancel,
+        person,
+        reader: arguments.reader,
     };
     let before = if let Some(id) = &arguments.before {
         let Some(at) = search.anchor(id).await? else {
-            return Ok(ToolResult::error(format!(
-                "No turn or line has id {}.",
-                part(id)
-            )));
+            return Ok(unknown(id));
         };
         Some(at)
     } else {
@@ -1253,7 +1256,7 @@ pub(super) async fn index(
                         } else {
                             "in progress"
                         };
-                        push(turn.line(outcome));
+                        push(turn.line(outcome, search.person));
                     }
                     open = Some(TurnSummary {
                         position: at,
@@ -1271,12 +1274,12 @@ pub(super) async fn index(
                         .is_some_and(|turn| value(row, 7).as_str() == Some(turn.turn_id.as_str()))
                     {
                         let outcome = value(row, 9).as_str().unwrap();
-                        push(open.take().unwrap().line(outcome));
+                        push(open.take().unwrap().line(outcome, search.person));
                     }
                 }
                 "branch/start" => {
                     if let Some(turn) = open.take() {
-                        push(turn.line("continued on the parent line"));
+                        push(turn.line("continued on the parent line", search.person));
                     }
                     if at.branch_id == branch_id
                         && let QueryValue::Value {
@@ -1340,7 +1343,7 @@ pub(super) async fn index(
                         })
                         .collect();
                     let current = search.current_keys(keys).await?;
-                    let mut narrative = Narrative::fold(&events, 0, events.len());
+                    let mut narrative = Narrative::fold(&events, 0, events.len(), search.person);
                     mark_current(&mut narrative, &current, compaction.as_deref());
                     if let Some(thing) = narrative
                         .things
@@ -1364,7 +1367,7 @@ pub(super) async fn index(
         } else {
             "in progress"
         };
-        push(turn.line(outcome));
+        push(turn.line(outcome, search.person));
     }
     let more = entries.len() > PAGE_ENTRIES;
     let lines: Vec<_> = entries.into_iter().rev().take(PAGE_ENTRIES).collect();

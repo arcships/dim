@@ -28,7 +28,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -3605,15 +3605,36 @@ async fn until_events(
     branch: &str,
     done: impl Fn(&[Arc<AgentEvent>]) -> bool,
 ) -> Vec<Arc<AgentEvent>> {
-    for _ in 0..600 {
-        if let Ok(events) = line_events(session, branch).await
-            && done(&events)
-        {
-            return events;
+    let mut published = session.publication(branch).ok().map(|line| line.watch());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let expired = Instant::now() >= deadline;
+        let read = line_events(session, branch).await;
+        if read.as_ref().is_ok_and(|events| done(events)) {
+            return read.unwrap();
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        if published.is_none() || session.ended_head(branch).is_some() {
+            // The line ended while this read was in flight. Read the final
+            // committed history once before failing; the target event may
+            // have committed between the read and the ended check.
+            if let Ok(events) = line_events(session, branch).await
+                && done(&events)
+            {
+                return events;
+            }
+            panic!("timed out waiting for line {branch}");
+        }
+        assert!(!expired, "timed out waiting for line {branch}");
+        if read.is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            continue;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(remaining, published.as_mut().unwrap().changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => published = None,
+        }
     }
-    panic!("timed out waiting for line {branch}");
 }
 fn line_block(events: &[Arc<AgentEvent>]) -> Option<(String, bool)> {
     keyed_block(events, "branch:line")
@@ -8050,6 +8071,34 @@ async fn an_end_from_outside_a_tool_line_wakes_main_with_a_notice() {
             .iter()
             .any(|event| matches!(&event.kind, EventKind::BranchEnd(data)
         if data.source == source && data.ancestor.is_none()))
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn until_events_reads_an_already_ended_line() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
+        .await
+        .unwrap();
+    let line = open_line(&session, "watch the tests").await;
+    let source = BranchSource::Host {
+        operation_id: "test-end".into(),
+    };
+    soon(session.end_branch(&line, source.clone()))
+        .await
+        .unwrap();
+    let events = until_events(&session, &line, |events| {
+        events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::BranchEnd(data) if data.source == source))
+    })
+    .await;
+    assert!(
+        events.iter().any(
+            |event| matches!(&event.kind, EventKind::BranchEnd(data) if data.source == source)
+        )
     );
     soon(agent.close()).await.unwrap();
 }

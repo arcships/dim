@@ -8794,6 +8794,126 @@ fn legacy_import_leaves_the_builtin_seed_as_the_record_has_it() {
     check_row_entries(&record, "pristine target");
 }
 
+/// #2189: a written file never states the completion flag — it is the
+/// server's own record of a normalized override — so the conversion clears it
+/// out of the row's models, the user models they seed and the overrides, and
+/// out of the seed the record adopts.
+#[test]
+fn legacy_import_clears_the_completion_flag_from_every_list() {
+    let bundled = BundledCatalog::load().unwrap();
+    let limits = |context: u64, output: u64| {
+        json!({"modalities":["text"],"toolCalling":true,"streaming":true,
+            "structuredOutput":true,"vision":false,"audio":false,"reasoning":false,
+            "contextWindow":context,"maxOutputTokens":output})
+    };
+    let row = || LegacyRow {
+        id: "openai".into(),
+        version: 1,
+        digest: "digest".into(),
+        fields: [
+            ("accountUsageSettings".to_string(), Value::Null),
+            ("activeModelId".into(), Value::Null),
+            (
+                "auth".into(),
+                Value::String(
+                    json!({"type":"api_key","headerName":"Authorization","prefix":"Bearer "})
+                        .to_string(),
+                ),
+            ),
+            (
+                "baseUrl".into(),
+                Value::String("https://api.openai.com/v1".into()),
+            ),
+            ("capabilityDefaults".into(), Value::Null),
+            (
+                "credential".into(),
+                Value::String(
+                    json!({"type":"apiKey","apiKey":"legacy-openai-fixture-key"}).to_string(),
+                ),
+            ),
+            ("defaultBaseUrl".into(), Value::Null),
+            ("displayName".into(), Value::String("OpenAI".into())),
+            (
+                "driverKind".into(),
+                Value::String("openai-responses".into()),
+            ),
+            ("enabled".into(), Value::from(1)),
+            ("headers".into(), Value::Null),
+            ("metadata".into(), Value::String("{}".into())),
+            (
+                "modelConfigOverrides".into(),
+                Value::String(
+                    json!([{"modelId":"override-model","displayName":"Override model",
+                        "status":"active","normalizedOverride":true,
+                        "capabilities":limits(200_000, 20_000)}])
+                    .to_string(),
+                ),
+            ),
+            (
+                "models".into(),
+                Value::String(
+                    json!([{"modelId":"user-model","displayName":"User model",
+                        "status":"active","normalizedOverride":true,
+                        "capabilities":limits(64_000, 4_000)}])
+                    .to_string(),
+                ),
+            ),
+            ("modelsSource".into(), Value::String("user".into())),
+            ("proxy".into(), Value::Null),
+            ("retryConfig".into(), Value::Null),
+            ("source".into(), Value::String("builtin".into())),
+            ("timeoutMs".into(), Value::Null),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let stored = |conversion: &dim_app_server::provider::LegacyConversion| {
+        serde_json::to_value(&conversion.record).unwrap()
+    };
+    let check_flag_free = |record: &Value, case: &str| {
+        for (list, expected) in [
+            ("userModels", "user-model"),
+            ("modelConfigOverrides", "override-model"),
+        ] {
+            let entries = record[list].as_array().unwrap();
+            assert!(
+                entries.iter().any(|entry| entry["modelId"] == expected),
+                "{case}: the row input did not reach {list}: {entries:?}"
+            );
+            for entry in entries {
+                assert!(
+                    entry.get("normalizedOverride").is_none(),
+                    "{case}: the conversion keeps no completion flag in {list}: {entry}"
+                );
+            }
+        }
+    };
+    // Without a target the row's inputs are the only flagged entries.
+    let seeded = convert_legacy_provider(&row(), None, &bundled).unwrap();
+    let record = stored(&seeded);
+    check_flag_free(&record, "no target");
+    // Over a pristine target the seed is that record's models; the flag is
+    // cleared out of the seed the conversion adopts too.
+    let mut pristine = record.clone();
+    pristine["version"] = json!(1);
+    for entry in pristine["models"].as_array_mut().unwrap() {
+        entry["normalizedOverride"] = json!(true);
+    }
+    let pristine =
+        dim_app_server::provider::parse_static("openai", 1, &pristine.to_string()).unwrap();
+    let targeted = convert_legacy_provider(&row(), Some(pristine), &bundled).unwrap();
+    let record = stored(&targeted);
+    let models = record["models"].as_array().unwrap();
+    assert!(!models.is_empty(), "the adopted seed lost its entries");
+    for entry in models {
+        assert!(
+            entry.get("normalizedOverride").is_none(),
+            "the conversion keeps no completion flag in the adopted seed: {entry}"
+        );
+    }
+    check_flag_free(&record, "pristine target");
+}
+
 /// #522: a builtin `user` row's `models` is the store's own seed — the
 /// previous record's models or, without a target, the bundled definition's.
 /// The import keeps it exactly as the store states it, and the next start
@@ -9824,6 +9944,300 @@ async fn a_v25_seed_upgrades_to_the_fresh_bundle_record() {
         .unwrap();
     assert_eq!(whisper["capabilities"]["contextWindow"], Value::Null);
     assert_eq!(whisper["capabilities"]["maxOutputTokens"], Value::Null);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The premise the upgrade inference relies on (#2189): an override's
+/// difference from the row it cloned reads as the user's edit only because
+/// every write that replaces the rows rebases the clone first. A reseed is
+/// such a write, so it must compare the clone against the rows the record
+/// served, not against the bundle it admits: a record whose rows predate the
+/// vision declaration keeps its pinned limits while the capability the user
+/// never edited follows the reseeding bundle, instead of the bundle's own
+/// change freezing as the user's edit.
+#[tokio::test]
+async fn a_reseed_does_not_pin_the_bundles_own_capability_changes() {
+    let home = std::env::temp_dir().join(format!("provider-reseed-pin-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let cancel = CancellationToken::new();
+    let start = |home: PathBuf| {
+        let root = Ctx::root().unwrap();
+        root.plugin(
+            dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+                .unwrap(),
+        );
+        let plugins = [
+            root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+            root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+            root.plugin(ManagedProvidersPlugin::new(None)),
+            root.plugin(
+                dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap(),
+            ),
+            root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+            root.plugin(provider_part(ProviderPlugin::new)),
+            root.plugin(dim_agent_aimux::AimuxPlugin::default()),
+        ];
+        (root, plugins)
+    };
+    let (root, plugins) = start(home.clone());
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let catalog = provider
+        .catalog_for("openai".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let version = catalog.version;
+    // Rewrite the rows to the shape a bundle before the vision declaration
+    // wrote them: the capabilities the current bundle declares for `gpt-5.5`
+    // are exactly what a reseed must not mistake for the user's edits.
+    {
+        let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+        let mut record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+        let row = record["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|model| model["modelId"] == "gpt-5.5")
+            .expect("the bundle lists gpt-5.5");
+        row["capabilities"]["vision"] = json!(false);
+        row["capabilities"]["modalities"] = json!(["text"]);
+        dim_app_server::provider::testing::replace_provider(
+            &db,
+            "openai",
+            version,
+            &record.to_string(),
+        )
+        .unwrap();
+    }
+    // The user edits only the limits, through the same path a client edit
+    // takes, against the rows the record serves now.
+    let edited = provider
+        .update_model_config(
+            "openai".into(),
+            version,
+            "gpt-5.5".into(),
+            serde_json::from_value(json!({"contextWindow":100000,"maxOutputTokens":8192})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let at = edited
+        .models
+        .iter()
+        .position(|model| model.id == "gpt-5.5")
+        .unwrap();
+    assert_eq!(edited.models[at].capabilities.context_window, Some(100000));
+    root.shutdown().await.unwrap();
+    // The upgrade arrives with a bundle whose declaration of the same model
+    // has moved on, so the next start reseeds the record's rows.
+    {
+        let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+        db.execute_batch("DELETE FROM provider_catalog_revision; DELETE FROM provider_bundle")
+            .unwrap();
+        db.execute("UPDATE providers SET record=json_set(record,'$.definitionFingerprint','pre-upgrade-bundle') WHERE provider_id='openai'", []).unwrap();
+    }
+    let (root, plugins) = start(home.clone());
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let reopened = root.get::<ProviderService>().unwrap();
+    let upgraded = reopened
+        .catalog_for("openai".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let at = upgraded
+        .models
+        .iter()
+        .position(|model| model.id == "gpt-5.5")
+        .unwrap();
+    let model = &upgraded.models[at];
+    assert_eq!(
+        model.capabilities.context_window,
+        Some(100000),
+        "the edited limits stay pinned across the reseed"
+    );
+    assert_eq!(model.capabilities.max_output_tokens, Some(8192));
+    assert!(
+        model.capabilities.vision,
+        "the bundle's own vision declaration follows the reseed instead of pinning as the user's edit"
+    );
+    assert_eq!(model.capabilities.modalities, ["text", "image"]);
+    let record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+    let clone = record["modelConfigOverrides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["modelId"] == "gpt-5.5")
+        .expect("the override survives the reseed");
+    let marks = clone["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        marks.iter().any(|field| field == "contextWindow"),
+        "the edit's own marks survive: {marks:?}"
+    );
+    for field in ["vision", "toolCalling", "reasoning", "modalityCapabilities"] {
+        assert!(
+            !marks.iter().any(|mark| mark == field),
+            "a capability the user never edited must not pin: {marks:?}"
+        );
+    }
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The invariant the static edit path owes the normalization (#2189): the
+/// clone an edit stores may be declared normalized only because its pin set
+/// is complete. The static path clones the effective entry, which the read
+/// has already pinned, so an edit that starts from a legacy clone fastens
+/// every pin the clone carries before the record says so.
+#[tokio::test]
+async fn a_static_edit_marks_every_pin_before_declaring_the_set_complete() {
+    let home = std::env::temp_dir().join(format!("provider-edit-pin-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let cancel = CancellationToken::new();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin::new(None)),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let catalog = provider
+        .catalog_for("openai".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let version = catalog.version;
+    // The pre-upgrade user pins reasoning off on `gpt-5.5`; the edit path of
+    // that era wrote the same clone without the capability marks.
+    provider
+        .update_model_config(
+            "openai".into(),
+            version,
+            "gpt-5.5".into(),
+            serde_json::from_value(json!({"reasoning":{"supported":false}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    // Rewriting the stored override without the capability marks and without
+    // the normalization record reproduces exactly the shape an upgrade
+    // reads.
+    {
+        let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+        let mut record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+        let rewrite_version = record["version"].as_u64().unwrap() as u32;
+        let entry = record["modelConfigOverrides"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["modelId"] == "gpt-5.5")
+            .expect("the edit wrote the override");
+        let marks = &mut entry["metadata"]["capabilityOverrideFields"];
+        *marks = json!(
+            marks
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|field| !matches!(
+                    field.as_str().unwrap(),
+                    "toolCalling" | "vision" | "reasoning" | "modalityCapabilities"
+                ))
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        entry.as_object_mut().unwrap().remove("normalizedOverride");
+        dim_app_server::provider::testing::replace_provider(
+            &db,
+            "openai",
+            rewrite_version,
+            &record.to_string(),
+        )
+        .unwrap();
+    }
+    // The first operation after the upgrade is another edit on the same
+    // model, before any row-replacing write could normalize the legacy clone.
+    let edited = provider
+        .update_model_config(
+            "openai".into(),
+            version + 1,
+            "gpt-5.5".into(),
+            serde_json::from_value(json!({"contextWindow":100000})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let model = edited
+        .models
+        .iter()
+        .find(|model| model.id == "gpt-5.5")
+        .unwrap();
+    assert!(
+        !model.capabilities.reasoning,
+        "the unmarked pin the legacy clone carried must survive the first edit"
+    );
+    assert_eq!(
+        model.capabilities.context_window,
+        Some(100000),
+        "the edit itself lands beside the pin"
+    );
+    // The override the edit stores names every pin it carries, including the
+    // one the legacy clone never marked, and only then records the pin set
+    // as complete.
+    let record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+    let clone = record["modelConfigOverrides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["modelId"] == "gpt-5.5")
+        .expect("the override survives the edit");
+    let marks = clone["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    for pin in ["reasoning", "contextWindow"] {
+        assert!(
+            marks.iter().any(|mark| mark == pin),
+            "the pin must be marked before the set is declared complete: {marks:?}"
+        );
+    }
+    assert!(
+        !marks.iter().any(|mark| mark == "vision"),
+        "a capability the user never edited must not pin: {marks:?}"
+    );
+    assert_eq!(
+        clone["normalizedOverride"],
+        json!(true),
+        "only the complete pin set may carry the record: {}",
+        clone["metadata"]
+    );
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
@@ -11171,6 +11585,113 @@ async fn model_page_keeps_magpie_visible_without_the_dim_account_plugin() {
 
     root.shutdown().await.unwrap();
     server.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The completion flag is the server's own normalization record: it is never
+/// the client's to set, so neither input that adopts client descriptors keeps
+/// it, and neither the stored user model nor the management echo carries it
+/// (#2189).
+#[tokio::test]
+async fn a_client_written_completion_flag_neither_stores_nor_echoes() {
+    const FLAGGED: &str = "00000000-0000-4000-8000-000000000099";
+    let home = temp_home("provider-completion-flag");
+    let (root, provider) = provider_root(&home).await;
+    let cancel = CancellationToken::new();
+    let mut config = input(
+        FLAGGED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("flag-key"),
+        "flagged",
+        4_096,
+    );
+    let with_flag = |entry: &str| {
+        serde_json::from_value::<ModelEntry>(serde_json::json!({
+            "modelId": entry, "displayName": entry, "status": "active",
+            "normalizedOverride": true,
+            "capabilities": {"modalities": ["text"], "toolCalling": true,
+                "streaming": true, "structuredOutput": true, "vision": false,
+                "audio": false, "reasoning": false,
+                "contextWindow": 32000, "maxOutputTokens": 4096},
+        }))
+        .unwrap()
+    };
+    assert!(with_flag("listed").normalized_override);
+    config.models = vec![with_flag("listed")];
+    let created = provider.create(config, &cancel).await.unwrap();
+
+    let record: Value = serde_json::from_str(&stored_record_json(&home, FLAGGED)).unwrap();
+    assert!(
+        !serde_json::to_string(&record)
+            .unwrap()
+            .contains("normalizedOverride"),
+        "a provider create's client descriptors store nothing of the flag: {record}"
+    );
+    let catalog = provider
+        .create_model(
+            FLAGGED.into(),
+            created.info.version.unwrap(),
+            with_flag("added"),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(catalog.models.iter().any(|model| model.id == "added"));
+
+    let record: Value = serde_json::from_str(&stored_record_json(&home, FLAGGED)).unwrap();
+    assert!(
+        !serde_json::to_string(&record)
+            .unwrap()
+            .contains("normalizedOverride"),
+        "a models.create client descriptor stores nothing of the flag: {record}"
+    );
+    let view = serde_json::to_value(
+        provider
+            .management(FLAGGED.into(), None, &cancel)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !serde_json::to_string(&view)
+            .unwrap()
+            .contains("normalizedOverride"),
+        "the management read publishes no completion flag: {view}"
+    );
+
+    // Control: the server's own write does record the flag, so the stripping
+    // assertions above cannot pass by the write path never writing it.
+    provider
+        .update_model_config(
+            FLAGGED.into(),
+            catalog.version,
+            "listed".into(),
+            Some(serde_json::from_value(serde_json::json!({"vision": true})).unwrap()),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let record = stored_record_json(&home, FLAGGED);
+    assert!(
+        record.contains("normalizedOverride"),
+        "the edit stores the completion flag on its own override: {record}"
+    );
+    let view = serde_json::to_value(
+        provider
+            .management(FLAGGED.into(), None, &cancel)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !serde_json::to_string(&view)
+            .unwrap()
+            .contains("normalizedOverride"),
+        "not even the server's own override echoes the flag: {view}"
+    );
+
+    root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
 

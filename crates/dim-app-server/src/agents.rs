@@ -1823,8 +1823,8 @@ impl AgentIndex {
     /// the Session is loaded for the call and held while it runs, its own scope
     /// resolves a line, and the target's reply and error come back unchanged.
     /// A target that cannot be selected answers `NoSession`,
-    /// `SessionClosing`, `SessionReloading`, `SessionUnavailable` or `NoLine`
-    /// before the target's operation runs.
+    /// `SessionClosing`, `SessionReloading`, `SessionUnavailable`, `NoLine` or
+    /// `NoService` before the target's operation runs.
     pub(crate) async fn call(
         &self,
         request: crate::agents::sessions::CallRequest,

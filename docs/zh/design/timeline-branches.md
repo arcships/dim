@@ -138,7 +138,7 @@ BranchLine 注入 `B:Dispatcher`、`B:TimelineIdentity`、`B:BranchLifecycle` �
   | 其他任何组合：兄弟分支、相隔两代的线 | 不行 | 不行 | `branch_not_kin` |
 
   用户开的线是像工具线一样的对话线，它落在哪一行由它所处的那条边决定：作为被开出的线，它属于第二行，那一行的开线方是用户，不是它被切出来的那条线；作为工具线的开线方，它与其他开线方一样属于第一行。已结束的工具线保留它原来的那一行，只是发消息被拒：开线方仍然读它，开线方就是这样拿到它没来得及发出的结果。已结束的插件线仍归插件那一行，没有哪条线经工具读它。`end` 不属于任何组合：`end {content}` 不接受目标，所以它永远结束调用方自己（§10、§11）。协调沿父子关系走，所以它留在开线的那条线上，默认分支移动时它不跟着动；曾经的默认分支保留它开出的工具线，并继续与它们互发消息、互读。
-- **读取。** `read {branch, after?, limit?}` 返回目标已提交历史的一页，未结束或已结束都可以，经 `TreeCommands.page` 从存储读取，按 Collaboration 的 `read` 渲染成员页面的方式呈现：输入、文本、工具调用与结果、每轮结束，带 `nextCursor`；工具结果条目携带其工具在该结果上声明的效果（[工具契约 A.6](contracts/session-boundary.md#a6-工具效果)），仅当结果至少声明了一个时才存在，路径原样，命令在第 200 个字符处截断并标出截断。目标是被调用方切出来的那条线，或调用方开过的线。两个方向共用一条游标规则：
+- **读取。** `read {branch, after?, limit?}` 返回目标已提交历史的一页，未结束或已结束都可以，经 `TreeCommands.page` 从存储读取，呈现为条目：输入、文本、工具调用与结果、每轮结束，带 `nextCursor`；工具结果条目携带其工具在该结果上声明的效果（[工具契约 A.6](contracts/session-boundary.md#a6-工具效果)），仅当结果至少声明了一个时才存在，路径原样，命令在第 200 个字符处截断并标出截断。目标是被调用方切出来的那条线，或调用方开过的线。两个方向共用一条游标规则：
   - 不带 `after` 时，读取从调用方上一次成功读取该线的位置继续：最后一次返回了页的读取的 `nextCursor`。此前没有读过时，读被切出来的那条线从调用方的切点开始，读调用方开过的线从那条线的第一个事件开始。
   - 显式 `after` 从该点读取。读被切出来的那条线时，低于切点的值会抬到切点，因为切点之前的事件已经是这条线自己的历史。读自己开过的线时，值原样使用，所以 `after: 0` 会从一条线的开头重读。
   - 每次成功读取都把游标移到它的 `nextCursor`，显式 `after` 的读取也一样；以最后一次为准。游标是调用方自己那条线的事实：BranchLine 从调用方自己的 `step/tool-use` 和 `step/tool-result` 折叠得到，所以重载和压缩都能重建它。
@@ -615,7 +615,7 @@ WorkspaceTools 不变。
 | TreeTimeline | 消费 `branch/end`，以及由工具调用发出的结束时这条线的下一次轮次结束，并转给 TimelineTree。它把每一次 `turn/end` 报告给 TimelineTree，后者为这条线的子线发布 | 它现在就这样转 `branch/create` |
 | BranchTool | 按动作区分的工具，加上新的 BranchLine 分支部件。`read` 和 `message` 读、写调用方被切出来的那条线和它开出的工具线，共用一条游标规则。`create` 接受根和当前默认分支，其余线以 `branch_not_opener` 拒绝，然后检查 Session 上限，超过时以 `branch_limit_reached` 拒绝 | 工具的各个动作，以及一条线对自己相关各线的视图 |
 | Session 门面 | `Session::end_branch(id, source)`、`Session::default_branch(id)` 和 `Session::set_default_branch(id, source)`。已结束线的头部由 `Session::sequence` 给出；其历史在固定的头部经 `TreeCommands.page` 读取 | §17 |
-| App Server | `session.branch_end`（v3，用户来源，带生成的 `operation_id`；`session_execution` 打开、且连接的入口不是裸入口或守护进程 profile 未受保护时，`hello.features` 把它和其他会话方法一起列出）。`session.branch_set_default`（v3，同样的准入）。对已结束的线，`session.history` 立即返回，截到它存储的头部。`session.branches` 读树的目录并带 `defaultBranchId`（§14）。今天写死 `main` 的每个 Session 级缺省目标改读默认分支：`session.submit`、`session.stop`、`session.idle`、`session.goal.*` 和 `shell.run`，以及新建的排期任务。`session.model.update`、`session.agent.update` 和 `session.prompt.refresh` 作用于默认分支，而不是拒绝除根以外的每条线。`approval.respond` 仍用它通知里带的 `branchId`，所以已挂起的请求留在提问的那条线上。在投影只带根的连接（v1）上，省略 `branchId` 仍指向根；v2 及以后可以命名线，v3 连接的缺省调用跟随默认分支。`session.attach` 保持 `sequence` 为根的，并新增 `defaultBranch {branchId, sequence}`；目录行的 `sequence` 在两种投影里都是根的，而 `running` 与活动跟随默认分支，持久化的移动在自己的事务里刷新该活动。`session.branches` 在同一份树快照下读默认分支与目录。Collaboration 把一次请求的输入投递到的那条成员线存在请求上，空闲等待、结算和每次停止都读它；读取页报告它读的线，续读必须带上它，否则被拒绝。PromptSuggestion 把缓存的轮次、offer 和进行中的生成绑定到一条线，移动时清掉。EventHub 先回答准入、来源归属和类型，再解析缺省的目标分支。`ProductEvent::new` 在 v3 里带上新的事件种类，v1、v2 里不带 | 一个入口和三条读取路径，没有业务逻辑 |
+| App Server | `session.branch_end`（v3，用户来源，带生成的 `operation_id`；`session_execution` 打开、且连接的入口不是裸入口或守护进程 profile 未受保护时，`hello.features` 把它和其他会话方法一起列出）。`session.branch_set_default`（v3，同样的准入）。对已结束的线，`session.history` 立即返回，截到它存储的头部。`session.branches` 读树的目录并带 `defaultBranchId`（§14）。今天写死 `main` 的每个 Session 级缺省目标改读默认分支：`session.submit`、`session.stop`、`session.idle`、`session.goal.*` 和 `shell.run`，以及新建的排期任务。`session.model.update`、`session.agent.update` 和 `session.prompt.refresh` 作用于默认分支，而不是拒绝除根以外的每条线。`approval.respond` 仍用它通知里带的 `branchId`，所以已挂起的请求留在提问的那条线上。在投影只带根的连接（v1）上，省略 `branchId` 仍指向根；v2 及以后可以命名线，v3 连接的缺省调用跟随默认分支。`session.attach` 保持 `sequence` 为根的，并新增 `defaultBranch {branchId, sequence}`；目录行的 `sequence` 在两种投影里都是根的，而 `running` 与活动跟随默认分支，持久化的移动在自己的事务里刷新该活动。`session.branches` 在同一份树快照下读默认分支与目录。Collaboration 把一次请求的输入投递到的那条成员线存在请求上，空闲等待、结算和每次停止都读它；读取页曾报告它读的线，续读必须带上它，否则被拒绝；Collaboration 的 `read` 改为成员当前线的叙事后，这一条已不再存在（[Collaboration](plugins/Collaboration.md#读取成员的线)）。PromptSuggestion 把缓存的轮次、offer 和进行中的生成绑定到一条线，移动时清掉。EventHub 先回答准入、来源归属和类型，再解析缺省的目标分支。`ProductEvent::new` 在 v3 里带上新的事件种类，v1、v2 里不带 | 一个入口和三条读取路径，没有业务逻辑 |
 | dim-agent-types | 在 `EventKind` 和 v1 排除列表里加入 `branch/end`、`branch/ended`，再加入 `branch/default`，并在契约测试中登记。`BranchSource` 增加一个变体，表示用户开的线，与插件的区分开。冻结样本不变 | 核心事实（§16） |
 | 存储 | `FORMAT` 52 → 53，只升标记的升级 `(52, &[])`：不扫表、不迁移数据，所以旧 daemon 会直接拒绝这个库，而不是在第一次解码时失败。`SqliteTimelineStore` 的写线程为会话目录的最近活动缓存每个 Session 的默认分支，初值来自恢复用的同一条索引点查 | 新的事件种类和新的 `BranchSource` 变体，是 52 版 daemon 解不出的行 |
 | Goal（Pursuit 修订） | 从线的来源识别它的评审者，并结束它（[Pursuit §13](plugins/Pursuit.md#13-结束评审者随-427)） | 评审者的协议归 Goal |
@@ -630,7 +630,7 @@ WorkspaceTools 不变。
 - 一次 TreeCommands 读和一次写，`default_branch()` 与 `set_default_branch(id, source)`；
 - 目录回复上的 `defaultBranchId`；
 - `session.attach` 回复上的 `defaultBranch {branchId, sequence}`，与根的 `sequence` 并列，而 `session.summaries` 的条目不带它；
-- Collaboration 读取页报告的 `branchId`，续读时带回；
+- Collaboration 读取页曾报告、续读时带回的 `branchId`，已随该页面移除（[Collaboration](plugins/Collaboration.md#读取成员的线)）；
 - PromptSuggestion 清除通知与拒绝携带的 `branch_changed` 原因；
 - 一个 `BranchSource` 变体，表示用户开的线；
 - 名册的 key `branch:roster`，经 `<dim-branch-lines>` 指南条目告知模型；
@@ -715,7 +715,7 @@ BranchLine 的服务只由同一插件里的工具读取。轮次结束信号是
 | §4.4 核心不带业务含义 | Dispatcher、`before` 和批次不变；Timeline 的准入检查与条件提交都是通用的（§17 R1、R2）。身份文本属于 TimelineTree 自己的领域，即一个 Session 的各条线。工具线的协议写在 `first_input` 现在写工具专用文本的地方，也就是拥有该工具的模块里 |
 | §4.5 批次 | `branch/end` 单独一个批次，工具结束时带着它的最终消息。消息本身是父线上更晚的一条 `input/message`，id 由那次结束推出，所以两者有次序但不是同一个批次，补全这对的是恢复（§10）。`branch/ended` 在关闭之后最后写入。名册和结束通知是同一条输入。根上的 `branch/default` 单独一个批次，每条状态说明都是它之后的一条 Append |
 | §4.6 上下文 | 身份、名册、消息、通知和状态说明都是被采用的输入。`read` 返回工具结果。没有别的东西进入上下文 |
-| §4.7 公开事件与服务 | BranchLine 折叠的是它自己那条线的公开事件。工具读 BranchLine（同一插件）和 TreeCommands。`read` 像 Collaboration 的 `read` 一样，把已提交的事件作为工具结果返回，没有哪个部件折叠另一条线的事实。Goal 按它自己公开的 A5 约定判定开启输入（§7.4）。BranchLine 和 Goal 经公开服务 TreeCommands 读取 `TimelineInfo.source` |
+| §4.7 公开事件与服务 | BranchLine 折叠的是它自己那条线的公开事件。工具读 BranchLine（同一插件）和 TreeCommands。`read` 把已提交的事件作为工具结果返回，没有哪个部件折叠另一条线的事实。Goal 按它自己公开的 A5 约定判定开启输入（§7.4）。BranchLine 和 Goal 经公开服务 TreeCommands 读取 `TimelineInfo.source` |
 | §4.8 基础设施 | 门面和格式的改动即 R1（§17）。需求来自线的生命周期本身，在运行时内闭环。默认分支的那条事实、它的读和它的写也是同类基础设施：一种事件、一次 `TreeCommands` 读和一次写，绑定里没有业务规则 |
 | §4.9 只有后续决定要用的事实才进 Timeline | `branch/end` 决定关闭和恢复，而工具结束的最终消息随它一起写，因为恢复要用它决定还欠不欠一次送达、该送什么；其他来源不携带消息，诊断也不记录消息文本（§18）。`branch/ended` 决定恢复时是否活跃，以及名册。`branch/default` 决定 Session 的缺省目标指向哪条线、哪几条线能开线，两者都是后续调用会读的；它只带一条线和移动它的操作，没有别的。没有只给 UI 用的事件，也没有只给展示用的字段 |
 | ADR 002 D1 作用域 | 见 §5 |

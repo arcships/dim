@@ -570,7 +570,59 @@ use delete. `refresh` updates default models while preserving user models,
 overrides, preferences and explicit disables, with its existing
 admitted-configuration conflict check. A managed refresh for a different account
 clears preferences together with descriptor overrides and disables; a same-account
-refresh preserves them.
+refresh preserves them. Preserving a descriptor override means rebasing it on
+the row the refresh serves, and the refresh stores the rebased clone, so the
+clone never falls behind the row it compares against: the override was written
+as a clone of the row it edited, so its unedited values are the old row's, not
+the user's. Every field whose name the override marks in
+`capabilityOverrideFields` (§3.5) — a limit the edit stated, and `vision`,
+`toolCalling`, `reasoning` or `modalityCapabilities` for the capability the
+user chose (#2189) — keeps its overridden value; every other capability
+declaration follows the refreshed row, so an account that starts declaring
+vision or new reasoning levels serves them without losing the user's limits. A
+clone written before capability edits were marked carries the same edit
+without the mark: where its capability differs from the row it cloned, the
+difference reads as the user's edit, so the first read and the row-writing
+refresh pin it as marked (#2189). That reading holds because every write the
+implementation makes that replaces the rows — a managed refresh, a static
+refresh or connection update, and the reseed an upgrade admits — normalizes
+the overrides against the rows both sides of the replacement before the rows
+move, so the clone never falls behind the row it compares against. The write
+whose replacement drops a row is part of that chain: it is the last chance to
+compare the clone against the row before the row is gone, so the inference
+runs there too and the pins are recorded before the row disappears. An
+override whose pins are complete carries `normalizedOverride` beside the
+descriptor, set by the edit that writes it and by each of these normalizing
+writes — the edit path is part of the same chain, because an edit that clones
+the record's stored override may clone a legacy one, so it fastens the pins
+the clone carries against the row before it may declare the pin set complete —
+and neither a read nor a later write infers further edits from it: when the
+model returns to the listing, exactly the recorded pins are applied and every
+other declaration follows the returning row, even across a gap in which the
+row was absent for one refresh or several (#2189). A clone written before
+this normalization existed, including one that marks only its limits, carries
+no such record and is treated as a legacy clone: the conservative inference
+above applies to it until one of these writes normalizes it. A legacy clone
+whose row neither side of a replacement lists cannot be compared yet and
+stays unflagged, so its inference remains open until a row returns to compare
+against. A record whose rows were last replaced before this normalization
+existed may carry a clone the replaced rows left behind; its differences are
+pinned the same way, because the record cannot tell them from the user's
+edits.
+
+The format decision behind the placement (#2189): `normalizedOverride` is a
+new optional key on the persisted override entry. The entry ignores keys it
+does not know, so a release from before this change reads the record back
+with the flag dropped, and the override reads as a legacy clone — the
+conservative inference it already had; writing the record back loses the
+flag, and the next upgrade infers the clone again, which may pin what the
+row's own movement left in it, the behavior the inference exists for. The
+metadata, where the capability marks live, rejects keys it does not know
+instead, so the flag cannot sit there without the older release refusing the
+whole record. The record format otherwise keeps its shape: no key is renamed
+or removed, no migration runs, and a record written before the flag existed
+reads exactly as a legacy clone.
+
 For a static Provider with a saved credential or anonymous authentication,
 explicit refresh is available whenever its driver and definition support remote
 listing. A disabled Provider stays disabled after refresh, and its models remain
@@ -726,7 +778,7 @@ already records:
 | --- | --- | --- |
 | Provider descriptor | `capabilityOverrideFields` on the stored descriptor; a non-positive descriptor value reads as absent | The model that descriptor describes |
 | Bundled catalog | `metadataSource` naming the matched bundled provider: an entry declares a limit only where its `metadata.raw` does, and the bundle drops every other limit when it is loaded; that provider's `contextWindowOverride` and `contextWindowFallback` metadata stay declarations | The models the lookup matches, or every model of the provider |
-| User | The same `capabilityOverrideFields` field on the descriptor override or user model: `models.edit` writes it for each limit it edits, and either legacy importer for an imported value it keeps | The model the override names |
+| User | The same `capabilityOverrideFields` field on the descriptor override or user model: `models.edit` writes it for each limit it edits, and either legacy importer for an imported value it keeps. The same field also marks the capability edits of §3.2 (`vision`, `toolCalling`, `reasoning`, `modalityCapabilities`); those marks do not declare a limit | The model the override names |
 
 The bundled `openai-codex` chat rows declare a default `contextWindow` and a
 read-only `metadata.raw.max_context_window` for user configuration. These are the

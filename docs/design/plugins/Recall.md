@@ -40,8 +40,8 @@ three levels:
 3. **One thing.** Its full text, by id.
 
 A search (`about`, `tool`) returns the matching lines of level 2 from every turn, with the same
-ids. `about` matches each thing's full text (a call's whole input and result `content`, a reply's
-whole text), not the shortened line, so a word deep inside a fetched page or a sub-agent's report
+ids. `about` matches each thing's full text (a call's whole input, result `content` and declared
+effects, a reply's whole text), not the shortened line, so a word deep inside a fetched page or a sub-agent's report
 is found. Every result ends with the arguments of the next step, so the first call needs no prior
 knowledge.
 
@@ -306,6 +306,12 @@ tunable limit.
 the tool added are `with <n> context messages`. Opening the call shows all of it. When the result
 arrives in a later minute than the call, the ending carries its time.
 
+**Declared effects** are what the tool declared it did beside its text, a file written or a
+command run ([Session Boundary §5](../contracts/session-boundary.md#5-context-mapping)). They are
+part of the call's record, not of the result text: the line leaves them out, and opening the call
+shows each one under the ending, `wrote <path>` or `ran <command> (exit <code>)`, `(signal <name>)`
+or no status, the command shortened as the digest shortens it.
+
 ### 3.5 Not telling twice
 
 Some of what happened is still in front of the model. Recall points to it instead of repeating
@@ -353,6 +359,34 @@ descriptive only:
 All of them are core events, and the list is the allowlist of §3.2. Recall decides nothing from
 them; it only tells them. A change to
 their data contract that drops a join id of §3.2 breaks Recall.
+
+### 3.8 Person and other readers
+
+The projection is a component, [narrative.rs](../../../crates/dim-agent-capabilities/src/narrative.rs):
+it takes a Session's tree, a line id, the reader's own turn if it has one, a grammatical person,
+and the query of §5.2, and returns the page of §5.3 and §6. It reads and writes nothing else.
+`recall` is one reader: its own line, its own turn, the second person. Collaboration's
+`agent read` is another: a team member's current line, no turn of its own, the third person
+([Collaboration](Collaboration.md#read-a-members-line)).
+
+The second person is what §3.4 and §6 state. The third person tells the same lines and adds
+nothing; it only drops the address to the reader:
+
+| Second person | Third person |
+| --- | --- |
+| `you called` / `you started calling` | `called` / `started calling` |
+| `you`, `you (still writing)`, `your reply was cut off (<reason>)` | `reply`, `reply (still writing)`, `the reply was cut off (<reason>)` |
+| `(while you were working)` | `(while working)` |
+| `(current version in your context)` | `(current version)` |
+| `… summarized (that summary is in your context)` | `… summarized` |
+| `… without a message to you` | `… without a message` |
+
+Without a turn of its own, every turn without a `turn/end` on the read line is `in progress`.
+
+A handle belongs to the line it was shown on (§4). A reader whose line can change between calls,
+as a member's current line can, may hold a handle the new line does not have; that handle is
+refused as any unknown id is (§6), and the refusal tells the reader to read again without `open`
+or `before`, which starts from the latest turns of the line it now reads.
 
 ## 4. Handles: time and event id
 
@@ -491,7 +525,7 @@ End of turn. Open one: open=<id>.
 ```
 
 **One thing (`open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36`):** a heading line `14:04 3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 you called web_fetch`, the full
-input, then the full result; then `Continue: open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 offset=<next>.` or `End.`
+input, then the full result and the effects it declared (§3.4); then `Continue: open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 offset=<next>.` or `End.`
 
 | Result | Last line |
 | --- | --- |
@@ -507,7 +541,7 @@ Errors (`ToolResult::error`) say how to fix the call:
 | `open` with `about`, `tool` or `before` | `recall: open shows one turn or thing; drop about, tool and before.` |
 | `offset` without `open` | `recall: offset needs open.` |
 | Wrong type, empty or whitespace-only string, `about` over 200 characters, unknown field | `recall: <field> must be <what>.` |
-| `open` or `before` is not the id of a line | `No turn or line has id <id>.` |
+| `open` or `before` is not the id of a line | `No turn or line has id <id>. Read without open or before for the latest turns.` |
 | `offset` past the end of a turn or a thing | `Turn <id> has <n> lines.` / `<id> has <len> characters.` |
 
 Host errors, as `wait` maps them: a branch facade read that fails because the Session is reloading
@@ -643,7 +677,8 @@ in `crates/dim-app-server/tests` that finds `recall` in the tool table of both t
    text, tools with counts and outcome; `before=` pages back to `Nothing earlier.`
 2. **A turn.** Opening a turn tells its user text verbatim, its replies, each call with its result
    on one line, and an interrupt, in order, each with time and id.
-3. **One thing.** Opening a call's id shows its full input and result, 8,000 characters a page,
+3. **One thing.** Opening a call's id shows its full input and result and the effects it declared,
+   8,000 characters a page,
    paged with `offset` to
    `End.`; CJK text is never split. Opening one input that carries user content and three blocks
    shows the user content and then the three blocks in order, paged by characters across them.

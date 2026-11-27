@@ -1,6 +1,8 @@
 use dim_app_server::model_catalog::{
-    BundledCatalog, ModelEdit, ModelEntry, ModelIdentification, ModelSource, ProviderProjection,
+    BundledCatalog, CatalogCapabilities, ModelEdit, ModelEntry, ModelIdentification, ModelSource,
+    ProviderProjection, infer_capability_edits, rebase_override,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -2771,4 +2773,248 @@ fn contested() -> Vec<String> {
     ["acme/acme-code-latest", "globex/acme-code-latest"]
         .map(str::to_owned)
         .to_vec()
+}
+
+/// The static shape of the managed override freeze (#2189): the stored
+/// override is rebased on the row the refresh wrote, so only the fields the
+/// user pinned survive, and every unedited declaration follows the refreshed
+/// row. `effective_models` is the one merge the static and the managed path
+/// share, so the semantics are pinned here once.
+#[test]
+fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
+    let catalog = BundledCatalog::load().unwrap();
+    let provider = ProviderProjection {
+        provider_id: "custom".into(),
+        source: Some(ModelSource::Custom),
+        ..Default::default()
+    };
+    let row = |vision: bool, efforts: Vec<&str>| {
+        catalog
+            .project(
+                &provider,
+                &json!({
+                    "id": "zz-evolve",
+                    "vision": vision,
+                    "modalities": if vision { json!(["text", "image"]) } else { json!(["text"]) },
+                    "toolCalling": true,
+                    "modalityCapabilities": ["image.generate"],
+                    "context_window": 32000, "max_output_tokens": 4096,
+                    "reasoning": true,
+                    "supported_reasoning_levels": efforts.iter().map(|effort| json!({"effort": effort})).collect::<Vec<_>>(),
+                }),
+            )
+            .unwrap()
+    };
+    let v1 = row(false, vec!["low", "high"]);
+    assert!(!v1.capabilities.vision);
+    let base_v1 = catalog.effective_models(&provider, std::slice::from_ref(&v1), &[]);
+    // The user supplies the limits through the edit path.
+    let edited = catalog.merge_visible_edit(
+        &base_v1[0],
+        ModelEdit {
+            context_window: std::num::NonZeroU64::new(100_000),
+            max_output_tokens: std::num::NonZeroU64::new(8_192),
+            ..Default::default()
+        },
+    );
+    // The refresh replaces the row with one that declares the capabilities,
+    // and the row-writing refresh rebases the stored override on it before the
+    // merge ever sees the pair: the inference the normalization runs treats the
+    // override as the clone of the row it edited, so only the capability the
+    // clone genuinely diverged on joins its marks.
+    let v2 = row(true, vec!["low", "medium", "high", "xhigh"]);
+    assert!(
+        v2.capabilities.vision,
+        "the fixture rows differ as a refresh does"
+    );
+    let mut normalized = edited.clone();
+    infer_capability_edits(&v1, &mut normalized);
+    let normalized = rebase_override(&v2, &normalized);
+    let merged = catalog.effective_models(
+        &provider,
+        std::slice::from_ref(&v2),
+        std::slice::from_ref(&normalized),
+    );
+    assert_eq!(
+        merged[0].capabilities.context_window,
+        Some(100_000),
+        "the edited window stands"
+    );
+    assert_eq!(
+        merged[0].capabilities.max_output_tokens,
+        Some(8_192),
+        "the edited output stands"
+    );
+    assert!(
+        merged[0].capabilities.vision,
+        "the unedited vision declaration follows the refresh"
+    );
+    assert_eq!(merged[0].capabilities.modalities, ["text", "image"]);
+    let reasoning = merged[0]
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.reasoning.clone())
+        .expect("the refreshed row declares reasoning");
+    assert_eq!(
+        reasoning.effort_options.unwrap(),
+        ["low", "medium", "high", "xhigh"]
+    );
+
+    // The pin: an explicit vision edit wins over the refreshed declaration,
+    // while the limits the edit never touched follow the refreshed row.
+    let pinned = catalog.merge_visible_edit(
+        &base_v1[0],
+        ModelEdit {
+            vision: Some(false),
+            ..Default::default()
+        },
+    );
+    let v3 = row(true, vec!["low", "high"]);
+    let mut normalized = pinned.clone();
+    infer_capability_edits(&v1, &mut normalized);
+    let normalized = rebase_override(&v3, &normalized);
+    let merged = catalog.effective_models(
+        &provider,
+        std::slice::from_ref(&v3),
+        std::slice::from_ref(&normalized),
+    );
+    assert!(
+        !merged[0].capabilities.vision,
+        "the explicit vision edit is pinned"
+    );
+    assert_eq!(
+        merged[0].capabilities.context_window, v3.capabilities.context_window,
+        "a limit the edit never touched follows the refresh"
+    );
+
+    // The remaining pin branches walk the same merge: a toolCalling edit pins
+    // tool calling, and a modalityCapabilities edit pins both raw keys, while
+    // the declarations the edit never made still follow the refreshed row.
+    let pinned = catalog.merge_visible_edit(
+        &base_v1[0],
+        ModelEdit {
+            tool_calling: Some(false),
+            modality_capabilities: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    assert!(
+        v3.capabilities.tool_calling,
+        "the refreshed row declares tool calling for this pin to override"
+    );
+    let mut normalized = pinned.clone();
+    infer_capability_edits(&v1, &mut normalized);
+    let normalized = rebase_override(&v3, &normalized);
+    let merged = catalog.effective_models(
+        &provider,
+        std::slice::from_ref(&v3),
+        std::slice::from_ref(&normalized),
+    );
+    assert!(
+        !merged[0].capabilities.tool_calling,
+        "the explicit toolCalling edit is pinned"
+    );
+    assert!(
+        merged[0].capabilities.vision,
+        "a capability the edit never touched follows the refresh here too"
+    );
+    let raw = &merged[0].metadata.as_ref().unwrap().raw;
+    assert_eq!(
+        raw.get("imageGeneration"),
+        Some(&json!(false)),
+        "the modalityCapabilities edit's image-generation projection is pinned"
+    );
+    assert_eq!(
+        raw.get("modalityCapabilities"),
+        Some(&json!([])),
+        "the modalityCapabilities edit itself is pinned"
+    );
+}
+
+/// The shape an older release deserializes a stored model entry with (#2189):
+/// capability marks and metadata validation as they stood before this change,
+/// without the normalization record.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DowngradedEntry {
+    model_id: String,
+    display_name: String,
+    status: dim_app_server::model_catalog::ModelStatus,
+    capabilities: CatalogCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_guide_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<DowngradedMetadata>,
+}
+
+/// The metadata the same older release expects: the field-by-field
+/// validation rejects any key it does not know, which is why the completion
+/// record must sit beside the descriptor rather than inside it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DowngradedMetadata {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    capability_override_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    raw: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The downgrade half of the format decision (#2189): a record written with
+/// the completion record reads back in the shape an older release
+/// deserializes, because the flag sits beside the descriptor where unknown
+/// keys are ignored. The older read cannot tell the override from a legacy
+/// clone, so the clone degrades to the conservative inference instead of the
+/// record being rejected outright — which is what the flag inside the
+/// metadata would cause, since the metadata validates unknown keys.
+#[test]
+fn a_record_with_the_completion_flag_reads_in_the_downgraded_shape() {
+    let entry: ModelEntry = serde_json::from_value(json!({
+        "modelId": "zz-downgrade",
+        "displayName": "Downgrade fixture",
+        "status": "active",
+        "capabilities": {"modalities": ["text"], "toolCalling": true,
+            "streaming": true, "structuredOutput": true, "vision": false,
+            "audio": false, "reasoning": false,
+            "contextWindow": 32000, "maxOutputTokens": 4096},
+    }))
+    .unwrap();
+    // The override a normalizing write stores: the entry it clones plus the
+    // completion record.
+    let mut stored = entry.clone();
+    stored
+        .metadata
+        .get_or_insert_default()
+        .capability_override_fields
+        .push("contextWindow".into());
+    stored.normalized_override = true;
+    let body = serde_json::to_string(&stored).unwrap();
+    assert!(
+        body.contains("normalizedOverride"),
+        "the write records the complete pin set: {body}"
+    );
+    // The older release reads the entry whole: the record it does not know
+    // is ignored where it sits, and the descriptor itself round-trips.
+    let downgraded: DowngradedEntry = serde_json::from_str(&body).unwrap();
+    assert_eq!(downgraded.model_id, stored.model_id);
+    assert_eq!(downgraded.capabilities, stored.capabilities);
+    assert_eq!(
+        downgraded
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.capability_override_fields.clone()),
+        stored
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.capability_override_fields.clone()),
+        "the pins the override carries survive the downgrade read"
+    );
+    // The same flag inside the metadata is what the metadata validation
+    // rejects, which is the failure the placement avoids.
+    let mut inside: serde_json::Value = serde_json::from_str(&body).unwrap();
+    inside["metadata"]["normalizedOverride"] = json!(true);
+    inside.as_object_mut().unwrap().remove("normalizedOverride");
+    assert!(
+        serde_json::from_str::<DowngradedEntry>(&inside.to_string()).is_err(),
+        "the metadata validation rejects the key the placement keeps outside it"
+    );
 }

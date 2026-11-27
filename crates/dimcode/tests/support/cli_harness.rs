@@ -22,6 +22,7 @@ pub use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -510,16 +511,24 @@ pub fn configured_event(sequence: u64, model_id: &str, preferences: Value) -> Va
     json!({"id":format!("configured-{sequence}"),"sequence":sequence,"create_at":1,"type":"context","name":"configured","data":data})
 }
 
-pub fn wait(mut child: Child) -> Output {
-    let deadline = Instant::now() + HANG_GUARD;
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
+pub fn wait(child: Child) -> Output {
+    let pid = child.id();
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    match receiver.recv_timeout(HANG_GUARD) {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => panic!("CLI output could not be read: {error}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // SAFETY: the child was spawned by this test and is the process
+            // this pid names while the worker still owns it.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            let _ = reader.join();
             panic!("CLI did not settle");
         }
-        thread::sleep(Duration::from_millis(10));
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("CLI output reader stopped"),
     }
-    child.wait_with_output().unwrap()
 }
 
 /// A process a flow starts and must end. A `Child` does not end when it is

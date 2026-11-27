@@ -299,7 +299,7 @@ pub enum SessionsError {
     /// A routed call could not select its target. These are the same codes a
     /// Session's own scope answers: `no_session`, `session_closing`,
     /// `session_reloading` (retryable), `session_unavailable`, `no_line`,
-    /// `not_data_face`, `method_not_routable` and `wrong_scope`.
+    /// `no_service`, `not_data_face`, `method_not_routable` and `wrong_scope`.
     #[error("{message}")]
     NoSession { message: String },
     #[error("{message}")]
@@ -312,6 +312,9 @@ pub enum SessionsError {
     /// The line is not the Session's, or it is gone; `line` names it.
     #[error("{message}")]
     NoLine { message: String, line: String },
+    /// The target was selected but does not provide `service`.
+    #[error("{message}")]
+    NoService { message: String, service: String },
     #[error("{message}")]
     NotDataFace { message: String, service: String },
     #[error("{message}")]
@@ -935,6 +938,7 @@ fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
             SessionsError::SessionUnavailable { message, reason }
         }
         RouteError::NoLine { line, .. } => SessionsError::NoLine { message, line },
+        RouteError::NoService { service } => SessionsError::NoService { message, service },
         RouteError::Owner {
             name,
             code,

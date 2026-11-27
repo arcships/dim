@@ -132,7 +132,7 @@ sequenceDiagram
 
 ## 5. 上下文映射
 
-方法没有模型可见的效果。改变模型上下文的方法通过其所有者的输入或 Timeline 事实来做到，适用这些所有者的映射。注册的工具与任何工具一样，只通过其声明和 `ToolResult` 到达模型。工具的效果声明本身没有模型可见的效果：它们随结果携带，由三个读取方投影进上下文。压缩清单把它们折叠进一次压缩的替换内容，并负责命令保留 200 个字符的截断（[ContextCompaction §5.10](../plugins/ContextCompaction.md#510-第-3a-类清单)）。两个读取页，即分支读取和 Collaboration 的成员读取，把它们携带在每个工具结果条目上，按同样的规则截断（[Timeline 分支 §6](../timeline-branches.md#6-线之间的消息)）。读取页随工具结果携带，所以读取页不新增进入模型上下文的路径：页本身就是一个 `ToolResult`。
+方法没有模型可见的效果。改变模型上下文的方法通过其所有者的输入或 Timeline 事实来做到，适用这些所有者的映射。注册的工具与任何工具一样，只通过其声明和 `ToolResult` 到达模型。工具的效果声明本身没有模型可见的效果：它们随结果携带，由三个读取方投影进上下文。压缩清单把它们折叠进一次压缩的替换内容，并负责命令保留 200 个字符的截断（[ContextCompaction §5.10](../plugins/ContextCompaction.md#510-第-3a-类清单)）。分支读取页把它们携带在每个工具结果条目上，按同样的规则截断（[Timeline 分支 §6](../timeline-branches.md#6-线之间的消息)）。`recall` 与 Collaboration 的成员读取共用的叙述投影，在展开一次调用时给出它们，按同样的规则截断（[Recall §3.4](../plugins/Recall.md#34-每件事怎么讲)）。两者都随工具结果携带，所以不新增进入模型上下文的路径：页本身就是一个 `ToolResult`。
 
 ## 6. 接口（摘要）
 
@@ -162,7 +162,7 @@ sequenceDiagram
 | §4 第 6 条（模型上下文） | 方法对模型不可见，注册的工具只通过其声明和 `ToolResult` 到达模型（§5）。 |
 | §4 第 7 条（公开事件与服务） | 提供方只通过分支的公开服务到达分支，Rpc 只经 Session 的 `sessionMethods` 分发。 |
 | §4 第 8 条（需求） | Session 门面上的 Session 作用域在 §9.4 提出；按名称带 key 的读取、卸载时等待 drain、列出已激活提供方已撤回（§9.1 至 §9.3）。 |
-| §4 第 9 条（只有决定用的事实进 Timeline） | 方法表与入口服务范围是运行时状态，从不是 Timeline 事实（§2）。效果声明也不新增事实：它是执行器写在 `step/tool-result` 上的结果的可选字段，读取它的是三个读取方（A.6）：压缩清单和两个读取页，即分支读取和 Collaboration 的成员读取。它们都不写入任何事实。 |
+| §4 第 9 条（只有决定用的事实进 Timeline） | 方法表与入口服务范围是运行时状态，从不是 Timeline 事实（§2）。效果声明也不新增事实：它是执行器写在 `step/tool-result` 上的结果的可选字段，读取它的是三个读取方（A.6）：压缩清单、分支读取页，以及 `recall` 与 Collaboration 的成员读取共用的叙述投影。它们都不写入任何事实。 |
 | §1（Capability 与 App Server 边界） | Rpc 只路由和分发；每个方法的业务代码在其提供方插件中。 |
 | ADR 002 D1 | `sessionMethods` 与工具注册是 Session 级，`managementMethods` 是进程级，与其所有者一致。 |
 | ADR 002 D2 | 不新增端口或 Management 插件；方法命名空间注册到其作用域的方法表，工具注册到拥有本 Session 工具的 ToolRegistry。 |

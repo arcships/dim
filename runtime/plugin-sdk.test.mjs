@@ -137,7 +137,7 @@ const preset: 'read-only' | 'workspace-write' | 'full-access' = defaults.preset;
 const allowed: string[] = livePolicy.allowedTools;
 const disallowed: string[] = defaults.disallowedTools;
 declare const permissionError: SessionsErrorThrown;
-const permissionCode: 'rejected' | 'routed' | 'no_session' | 'session_closing' | 'session_reloading' | 'session_unavailable' | 'no_line' | 'not_data_face' | 'method_not_routable' | 'wrong_scope' | 'agent_unknown' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'future_sequence' | 'ambiguous' | 'publication_unknown' | 'failed' = permissionError.code;
+const permissionCode: 'rejected' | 'routed' | 'no_session' | 'session_closing' | 'session_reloading' | 'session_unavailable' | 'no_line' | 'no_service' | 'not_data_face' | 'method_not_routable' | 'wrong_scope' | 'agent_unknown' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'future_sequence' | 'ambiguous' | 'publication_unknown' | 'failed' = permissionError.code;
 void permissionVersion; void preset; void allowed; void disallowed; void permissionCode;
 // @ts-expect-error permission reads require a branch identity.
 void permissions.permission({ sessionId: 'session' });

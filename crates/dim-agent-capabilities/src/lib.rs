@@ -23,6 +23,7 @@ pub mod images;
 pub mod input_queue;
 pub mod methods;
 pub mod model_provider;
+pub mod narrative;
 mod os_string;
 mod output;
 pub mod permission;

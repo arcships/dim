@@ -2282,3 +2282,85 @@ async fn gemini_capture_or_error(
         Err(error) => (None, Some(error.to_string())),
     }
 }
+
+/// The wire half of the published-offer contract (#2189): whatever the
+/// per-slug acceptance table reports for the slugs the ChatGPT catalog
+/// serves, dim's conversion passes the effort through unchanged and the
+/// aimux Responses model — the request path the route actually runs —
+/// serializes every one of those efforts without an unsupported warning,
+/// because such a warning ends the turn before any content. The table is the
+/// live one `accepted_reasoning_efforts` reads rather than a copy of it, so
+/// the test does not go red when the table alone changes; what it pins is
+/// the invariant that an effort the table accepts cannot be dropped on the
+/// wire. The negative control proves the harness sees a rejection: the first
+/// effort value outside the table must be dropped with a warning rather than
+/// serialized.
+#[test]
+fn the_chatgpt_effort_offer_survives_responses_serialization() {
+    let prepared = |model: &str, effort: &str| {
+        let mut request = request(json!({"reasoning": {"effort": effort}}));
+        request.model_id = model.into();
+        convert(
+            &request,
+            &ProviderKind::OpenaiResponses,
+            Some("openai-chatgpt"),
+        )
+        .unwrap()
+        .options
+    };
+    // One minor-versioned and one major-only spelling, the two table shapes
+    // the catalog projection intersects with.
+    for model in ["gpt-6.2-sol", "gpt-6-sol"] {
+        let accepted = crate::accepted_reasoning_efforts(model)
+            .expect("the fixture slugs are constrained by the acceptance table");
+        assert!(
+            !accepted.is_empty(),
+            "the fixture slugs must accept some effort for this test to mean anything"
+        );
+        for effort in accepted {
+            let result = aimux_providers::openai::responses::build_responses_request_body(
+                model,
+                &prepared(model, effort),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                result.body["reasoning"]["effort"],
+                json!(effort),
+                "an effort the table accepts must reach the wire unchanged"
+            );
+            assert!(
+                result.warnings.iter().all(|warning| !matches!(
+                    warning,
+                    aimux_core::types::Warning::Unsupported { .. }
+                )),
+                "an effort the table accepts must not fail the turn: {:?}",
+                result.warnings
+            );
+        }
+        let rejected = [
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+        ]
+        .into_iter()
+        .find(|effort| !accepted.contains(effort))
+        .expect("the acceptance table never covers every candidate");
+        let result = aimux_providers::openai::responses::build_responses_request_body(
+            model,
+            &prepared(model, rejected),
+            false,
+        )
+        .unwrap();
+        assert!(
+            result.warnings.iter().any(|warning| matches!(
+                warning,
+                aimux_core::types::Warning::Unsupported { feature, .. } if feature == "reasoningEffort"
+            )),
+            "the control effort outside the table must be dropped with a warning: {:?}",
+            result.warnings
+        );
+        assert!(
+            result.body["reasoning"]["effort"].is_null(),
+            "a rejected effort must not be serialized"
+        );
+    }
+}

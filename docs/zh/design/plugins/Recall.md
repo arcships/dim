@@ -20,7 +20,7 @@ Recall 就像客户端里的会话视图，只是讲给模型而不是展示给�
 2. **一轮。** 按顺序讲这一轮：发生的每件事一行，各带时间和 id。
 3. **一件事。** 按 id 给出全文。
 
-检索（`about`、`tool`）从所有轮次中返回命中的第 2 层的行，id 相同。`about` 匹配每件事的全文（调用的完整输入和结果 `content`、回复的完整文本），而不是缩短后的那一行，所以抓取页面或子 agent 报告深处的词也能找到。每个结果最后都给出下一步的参数，所以第一次调用不需要任何先验知识。
+检索（`about`、`tool`）从所有轮次中返回命中的第 2 层的行，id 相同。`about` 匹配每件事的全文（调用的完整输入、结果 `content` 和声明的效果，回复的完整文本），而不是缩短后的那一行，所以抓取页面或子 agent 报告深处的词也能找到。每个结果最后都给出下一步的参数，所以第一次调用不需要任何先验知识。
 
 ```
  recall()                         recall(open="e41c07d2")              recall(open="3f9a2c1b")
@@ -130,6 +130,8 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 
 **结果**是 `content` 的文本；blob 和图片为 `[file]` 与 `[image]`；工具带入的上下文消息为 `with <n> context messages`。展开这次调用时给出全部内容。结果比调用晚到不同的分钟时，结局带上结果的时间。
 
+**声明的效果**是工具在文本之外声明自己做过的事：写了一个文件，或运行了一条命令（[Session Boundary §5](../contracts/session-boundary.md#5-上下文映射)）。它们属于这次调用的记录，不属于结果文本：行里不出现；展开这次调用时，在结局下逐条给出，`wrote <path>` 或 `ran <command> (exit <code>)`、`(signal <name>)` 或不带状态，命令按摘要的规则截短。
+
 ### 3.5 不重复讲
 
 有些经历此刻仍在模型眼前。Recall 指向它们，而不是重复：
@@ -156,6 +158,25 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 | 依赖（每次调用读取历史；不读其他事件） | `input/message`、`input/consumed`、`turn/start`、`turn/end`、`step/model-start`、`step/text`、`step/model-content`、`step/model-output-end`、`step/tool-use-start`、`step/tool-use`、`step/tool-result`、`approval/request`、`approval/respond`、`approval/cancelled`、`exec/started`、`exec/ended`、`collaboration/request`、`collaboration/message`、`collaboration/result`、`branch/create`、`branch/start`、`stop/interrupt`、`permission/changed`、`context/compaction`、`session/forked` |
 
 它们都是核心事件，这份列表就是 §3.2 的白名单。Recall 不据此做决定，只讲述它们。若这些事件的数据合同去掉了 §3.2 的某个关联 id，Recall 就会失效。
+
+### 3.8 人称与其他读者
+
+这个投影是一个组件，[narrative.rs](../../../../crates/dim-agent-capabilities/src/narrative.rs)：输入一个 Session 的树、一条线的 id、读者自己的那一轮（有的话）、一种人称和 §5.2 的查询，返回 §5.3 与 §6 的页面。它不读也不写别的。`recall` 是一个读者：读自己的线，有自己的那一轮，用第二人称。Collaboration 的 `agent read` 是另一个：读团队成员当前的线，没有自己的那一轮，用第三人称（[Collaboration](Collaboration.md#读取成员的线)）。
+
+第二人称就是 §3.4 与 §6 写的样子。第三人称讲同样的行，不增加任何信息，只去掉对读者的称呼：
+
+| 第二人称 | 第三人称 |
+| --- | --- |
+| `you called` / `you started calling` | `called` / `started calling` |
+| `you`、`you (still writing)`、`your reply was cut off (<reason>)` | `reply`、`reply (still writing)`、`the reply was cut off (<reason>)` |
+| `(while you were working)` | `(while working)` |
+| `(current version in your context)` | `(current version)` |
+| `… summarized (that summary is in your context)` | `… summarized` |
+| `… without a message to you` | `… without a message` |
+
+没有自己的那一轮时，所读的线上每个没有 `turn/end` 的轮次都是 `in progress`。
+
+把手属于显示它的那条线（§4）。所读的线在两次调用之间可能变化的读者，比如成员的当前线会变，可能拿着新线上没有的把手；这个把手与任何未知 id 一样被拒绝（§6），拒绝消息告诉读者不带 `open` 或 `before` 再读一次，从它现在所读的线的最近几轮开始。
 
 ## 4. 把手：时间与事件 id
 
@@ -265,7 +286,7 @@ Earlier: before=a7730e5f-91c4-4d2b-b6e8-3f0a7c2d5e19. Open one: open=<id>.
 End of turn. Open one: open=<id>.
 ```
 
-**一件事（`open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36`）：** 一行标题 `14:04 3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 you called web_fetch`，完整输入，然后完整结果；最后是 `Continue: open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 offset=<next>.` 或 `End.`
+**一件事（`open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36`）：** 一行标题 `14:04 3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 you called web_fetch`，完整输入，然后完整结果及其声明的效果（§3.4）；最后是 `Continue: open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 offset=<next>.` 或 `End.`
 
 | 结果 | 最后一行 |
 | --- | --- |
@@ -281,7 +302,7 @@ End of turn. Open one: open=<id>.
 | `open` 与 `about`、`tool` 或 `before` 同时出现 | `recall: open shows one turn or thing; drop about, tool and before.` |
 | 没有 `open` 却给了 `offset` | `recall: offset needs open.` |
 | 类型错误、空字符串或只有空白、`about` 超过 200 字符、未知字段 | `recall: <field> must be <what>.` |
-| `open` 或 `before` 不是某一行的 id | `No turn or line has id <id>.` |
+| `open` 或 `before` 不是某一行的 id | `No turn or line has id <id>. Read without open or before for the latest turns.` |
 | `offset` 超出一轮或一件事的末尾 | `Turn <id> has <n> lines.` / `<id> has <len> characters.` |
 
 宿主错误按 `wait` 的映射：Session 正在重载导致 Branch 门面读取失败时返回 `HostError::Cancelled(CAPABILITY_RELOADING)`，其他门面错误（未知或已关闭的分支）返回带其文本的 `HostError::failed`，被取消的调用返回 `HostError::Cancelled`。ToolExecutor 把它们各自变成该调用的终态结果。
@@ -380,7 +401,7 @@ End of turn. Open one: open=<id>.
 
 1. **轮次索引。** 无参数调用按最近在前列出各轮，带时间、id、第一段用户文本、工具及次数和结局；沿 `before=` 往前翻直到 `Nothing earlier.`。
 2. **一轮。** 展开一轮时按顺序讲出用户原文、回复、每次调用连同其结局的一行，以及一次中断，各带时间和 id。
-3. **一件事。** 展开一次调用的 id 显示其完整输入和结果，每页 8,000 字符，用 `offset` 分页直到 `End.`；CJK 文本从不被拆开。展开一个带用户内容和三个块的输入，先显示用户内容，再按顺序显示三个块，跨块按字符分页。
+3. **一件事。** 展开一次调用的 id 显示其完整输入、结果和声明的效果，每页 8,000 字符，用 `offset` 分页直到 `End.`；CJK 文本从不被拆开。展开一个带用户内容和三个块的输入，先显示用户内容，再按顺序显示三个块，跨块按字符分页。
 4. **选取。** 已撤回和已删除的输入和 thinking 从不出现，§3.2 未点名的任何类型的事件（如 `context/prepare` 或 `step/tool-start`）也从不出现；Prompt 规则、Prompt state 和后台通知块各按其标签和属性出现，key 仍生效的块标为 `(current)`，retire 块标为 `(ended)`。带用户内容和多个块的输入是一个条目，结束在它上面的检索页以 `before=<它的 id>` 从下一个更早的条目继续，不漏掉任何条目。`project_history` 放进上下文的每个事件都属于某件事，包括本行开通输入的身份块和其他行写来的输入。
 5. **压缩。** 两次压缩之后，Recall 仍能回到第一轮；每次压缩是一行；压缩前返回的 id 在压缩后仍展开同样的内容。
 6. **检索。** 顺序和大小写都不同的词作为 `about`，能找到第一次压缩之前的一条用户消息，长工具结果深处的一个词能找到那次调用；`tool` 只保留该工具的调用。

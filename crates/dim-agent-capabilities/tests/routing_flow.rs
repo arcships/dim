@@ -1,5 +1,6 @@
 //! Flow: a Session's parts and their runtimes reach its own lines and faces by
-//! id, and answer `SessionClosing`, `NoLine` or a reach refusal otherwise
+//! id, and answer `SessionClosing`, `NoLine`, `NoService` or a reach refusal
+//! otherwise
 //! ([#2127](https://github.com/arcships/dim/issues/2127)).
 
 use dim_agent_capabilities::defaults;
@@ -76,6 +77,10 @@ impl Rig {
             ("sessionScope", "session"),
             ("toolRegistry", "session"),
             ("branchLifecycle", "branch"),
+            // A face the catalog shares but this rig's profile does not
+            // install.
+            ("notInstalled", "branch"),
+            ("notInstalledHere", "session"),
         ] {
             builder.catalog_mut().register_shared_instance(name, group);
         }
@@ -595,6 +600,26 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
             group: "branch".into()
         },
         "a Session face is not a line face"
+    );
+    assert_eq!(
+        scope
+            .line_call(LineCall::new("main", "notInstalled", "read", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::NoService {
+            service: "notInstalled".into()
+        },
+        "the holder answers a face the line does not install"
+    );
+    assert_eq!(
+        scope
+            .call(SessionCall::new("notInstalledHere", "read", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::NoService {
+            service: "notInstalledHere".into()
+        },
+        "the holder answers a face the Session does not install"
     );
     let error = scope
         .line_call(LineCall::new("main", "timeline", "absent", vec![]))

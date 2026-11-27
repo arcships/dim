@@ -816,7 +816,7 @@ async fn a_child_branch_opens_inherited_ids_and_tells_its_fork_and_the_cut_paren
 
         let (page, error) = recall(&session, &child, json!({ "open": "not-a-line" })).await;
         assert!(error);
-        assert_eq!(page, "No turn or line has id not-a-line.");
+        assert_eq!(page, "No turn or line has id not-a-line. Read without open or before for the latest turns.");
 
         // The opening input on the child is its identity block.
         let (page, error) = recall(&session, &child, json!({})).await;
@@ -1840,6 +1840,63 @@ fn a_line_starts_at_the_first_text_that_says_something() {
     assert!(call.contains("old=\"fn a()…\""), "{call}");
     assert!(call.contains("new=\"fn a() {}\""), "{call}");
     assert!(call.contains("→ ok: applied"), "{call}");
+}
+
+#[test]
+// §3.4: a call's declared effects are part of its full view and of what
+// `about` searches, and stay off its line.
+fn opening_a_call_shows_the_effects_it_declared() {
+    let mut recorded = Recorded::new();
+    recorded.at(9, 0);
+    let input = recorded.push(input_message("fix it"));
+    recorded.push(turn_start("t1"));
+    recorded.push(consumed(&input));
+    recorded.push(model_start("t1", "r1"));
+    let call = recorded.push(call_start("t1", "r1", "c1", "touch"));
+    recorded.push(call_input("t1", "r1", "c1", "touch", json!({"note": "n"})));
+    recorded.push(model_end("t1", "r1", output_tool_use()));
+    let mut result = ToolResult::text("touched");
+    result.effects = Some(vec![
+        ToolEffect::FileWritten {
+            path: "/work/a.txt".into(),
+        },
+        ToolEffect::CommandRun {
+            command: "cargo test".into(),
+            exit_code: Some(0),
+            signal: None,
+        },
+        ToolEffect::CommandRun {
+            command: "sleep 9".into(),
+            exit_code: None,
+            signal: Some("SIGTERM".into()),
+        },
+    ]);
+    recorded.push(EventKind::ToolResult(ToolResultData {
+        turn_id: "t1".into(),
+        request_id: "r1".into(),
+        call_event_id: Some("dispatch".into()),
+        results: vec![ToolCallResult {
+            call_id: "c1".into(),
+            result,
+        }],
+    }));
+    recorded.push(turn_ends("t1", completed_turn()));
+
+    let (full, error) = recorded.answer("t2", json!({"open": call}));
+    assert!(!error, "{full}");
+    assert!(
+        full.contains(
+            "ok: touched\nwrote /work/a.txt\nran cargo test (exit 0)\nran sleep 9 (signal SIGTERM)\n"
+        ),
+        "{full}"
+    );
+    let (found, error) = recorded.answer("t2", json!({"about": "wrote /work/a.txt"}));
+    assert!(!error, "{found}");
+    assert_eq!(
+        line_of(&found, &call),
+        format!("09:00 {call} you called touch note=n → ok: touched"),
+        "the line leaves the effects out"
+    );
 }
 
 /// A turn with one consumed input and one reply.
@@ -2887,8 +2944,14 @@ fn the_arguments_and_the_paginations_say_how_to_fix_the_call() {
             json!({ "nope": 1 }),
             "recall: nope must be a known argument.",
         ),
-        (json!({ "open": "nope" }), "No turn or line has id nope."),
-        (json!({ "before": "nope" }), "No turn or line has id nope."),
+        (
+            json!({ "open": "nope" }),
+            "No turn or line has id nope. Read without open or before for the latest turns.",
+        ),
+        (
+            json!({ "before": "nope" }),
+            "No turn or line has id nope. Read without open or before for the latest turns.",
+        ),
     ] {
         let (page, error) = recorded.answer("t2", arguments.clone());
         assert!(error, "{arguments} is not an error: {page}");

@@ -36,7 +36,8 @@ the id instead, and the owner of the index looks it up at the call: `sessionScop
 for a line of its own Session, `sessions.call` for a Session or a line of it, from the
 process. Both carry `{service, method, args}` — the target's own operation — and answer
 `no_session`, `session_closing`, `session_reloading`, `session_unavailable` or `no_line` when
-the target cannot be selected; the target owner's own failure arrives unchanged
+the target cannot be selected, and `no_service` when the selected target does not provide the
+service (its profile leaves it out); the target owner's own failure arrives unchanged
 ([#2127](https://github.com/arcships/dim/issues/2127), ADR 027).
 
 ```ts
@@ -61,11 +62,11 @@ again.
 
 The two entries name a failure with different spellings. `sessions.call` answers the
 `sessions` envelope with snake_case codes — `no_session`, `session_closing`,
-`session_reloading`, `session_unavailable`, `no_line`, `not_data_face`,
+`session_reloading`, `session_unavailable`, `no_line`, `no_service`, `not_data_face`,
 `method_not_routable`, `wrong_scope`, and `routed` for the owner's own failure.
 `sessionScope.lineCall`/`call` throw a `RouteError` whose variants carry the same kinds in
 camelCase (`noSession`, `sessionClosing`, `sessionReloading`, `sessionUnavailable`,
-`noLine`, `notDataFace`, `methodNotRoutable`, `wrongScope`, `owner`), and `owner` keeps the
+`noLine`, `noService`, `notDataFace`, `methodNotRoutable`, `wrongScope`, `owner`), and `owner` keeps the
 owner's `name`, `message`, `data` and `reloading`. Only `session_reloading`/`sessionReloading`
 and an owner failure that says it reloads may be retried. A routed method that replies nothing
 answers `null` through `sessionScope`; `sessions.call` leaves `value` out, so a process caller

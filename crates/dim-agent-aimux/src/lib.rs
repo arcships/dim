@@ -36,6 +36,18 @@ pub fn failure(error: AiMuxError, cancel: &CancellationToken) -> HostError {
     stream::error(error, cancel)
 }
 
+/// The reasoning efforts this crate's request preparation accepts for the
+/// model, in the order the model's own table declares them, or `None` when
+/// the table does not constrain the model. This is the per-model table the
+/// request path applies to the value it sends (#2189): an effort the table
+/// does not name is dropped with a warning that fails the turn, so a catalog
+/// serving choices for these protocols intersects with this table rather
+/// than offering a value the wire cannot take.
+pub fn accepted_reasoning_efforts(model_id: &str) -> Option<&'static [&'static str]> {
+    aimux_providers::openai::language_model_capabilities::get_model_capabilities(model_id)
+        .supported_reasoning_efforts
+}
+
 use dim_agent_runtime::AgentBuilder;
 
 /// Registers the names of this crate's services (plugin contract §4).

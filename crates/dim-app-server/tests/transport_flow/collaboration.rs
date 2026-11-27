@@ -1260,6 +1260,11 @@ fn last_ok(events: &[Arc<AgentEvent>]) -> Value {
     assert!(!error, "{text}");
     serde_json::from_str(&text).unwrap()
 }
+fn last_text(events: &[Arc<AgentEvent>]) -> String {
+    let (error, text) = results(events).pop().unwrap();
+    assert!(!error, "{text}");
+    text
+}
 fn last_error(events: &[Arc<AgentEvent>]) -> String {
     let (error, text) = results(events).pop().unwrap();
     assert!(error, "{text}");
@@ -1786,7 +1791,6 @@ async fn leader_delegates_and_team_members_communicate() {
     assert_eq!(last_ok(&timeline)["status"], "cancelled");
     assert!(agent_results(&timeline)[2].contains("Status: cancelled."));
 
-    let read_after = lead_session.sequence("main").unwrap();
     say(&mut client, &lead, tool(json!({"action": "list"})), "queue").await;
     idle(&mut client, &lead).await;
     let listed = last_ok(&events(&lead_session).await);
@@ -1859,8 +1863,32 @@ async fn leader_delegates_and_team_members_communicate() {
             .count()
     };
     let before = facts(&member_session).await;
+    let member_read = async |query: Value| {
+        let mut input = json!({"action": "read", "agentId": default_agent, "sessionId": lead});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(query.as_object().unwrap().clone());
+        member_session
+            .submit(tool(input), dim_agent_types::InputMode::Queue, "main")
+            .await
+            .unwrap();
+        member_session.idle("main").await.unwrap();
+        last_text(&events(&member_session).await)
+    };
+    let found = member_read(json!({"about": "note for leader"})).await;
+    let message = found
+        .lines()
+        .find(|line| line.contains(" dim-agent-message agent="))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or_else(|| panic!("a member finds its message on its leader's line: {found}"))
+        .to_owned();
+    let opened = member_read(json!({"open": message})).await;
+    assert!(
+        opened.contains("sent you this message:\nnote for leader"),
+        "opening the message shows its whole body: {opened}"
+    );
     for input in [
-        json!({"action": "read", "agentId": default_agent, "sessionId": lead, "after": read_after, "branchId": "main", "limit": 200}),
         json!({"action": "list"}),
         json!({"action": "request", "agentId": default_agent, "prompt": "x"}),
         json!({"action": "inspect", "agentId": default_agent}),
@@ -1872,25 +1900,6 @@ async fn leader_delegates_and_team_members_communicate() {
         member_session.idle("main").await.unwrap();
     }
     let member_results = results(&events(&member_session).await);
-    let read: Value = serde_json::from_str(&member_results[member_results.len() - 4].1).unwrap();
-    assert_eq!(read["sessionId"], lead.as_str());
-    assert!(read["nextCursor"].as_u64().unwrap() > 0);
-    let items = read["events"].as_array().unwrap();
-    assert!(
-        items
-            .iter()
-            .any(|item| item["type"] == "input" && item.to_string().contains("note for leader"))
-    );
-    assert!(
-        items
-            .iter()
-            .any(|item| item["type"] == "tool_call" && item["name"] == "agent")
-    );
-    assert!(
-        items
-            .iter()
-            .any(|item| item["type"] == "turn_end" && item["status"] == "completed")
-    );
     let listed: Value = serde_json::from_str(&member_results[member_results.len() - 3].1).unwrap();
     assert_eq!(listed["role"], "member");
     assert!(listed.get("agents").is_none());
@@ -2052,8 +2061,13 @@ async fn leader_delegates_and_team_members_communicate() {
         &json!({"action":"request","prompt":"work","title":"Review change","agentId":default_agent,"sessionId":member})
     ));
     assert!(validator.is_valid(
-        &json!({"action":"read","agentId":default_agent,"sessionId":member,"after":1,"limit":2})
+        &json!({"action":"read","agentId":default_agent,"sessionId":member,"open":"e-1","offset":2})
     ));
+    assert!(
+        !validator.is_valid(
+            &json!({"action":"read","agentId":default_agent,"sessionId":member,"after":1})
+        )
+    );
     assert!(
         validator.is_valid(&json!({"action":"cancel","agentId":default_agent,"sessionId":member}))
     );
@@ -2373,15 +2387,16 @@ async fn members_cancel_close_and_leave_the_team() {
     )
     .await;
     idle(&mut client, &lead).await;
-    let read = last_ok(&events(&lead_session).await);
-    let ends: Vec<&Value> = read["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|item| item["type"] == "turn_end")
+    let read = last_text(&events(&lead_session).await);
+    let turns: Vec<&str> = read
+        .lines()
+        .filter(|line| line.contains(" turn: "))
         .collect();
-    assert_eq!(ends.len(), 2);
-    assert_eq!(ends[1]["status"], "cancelled");
+    assert_eq!(turns.len(), 2, "{read}");
+    assert!(
+        turns[0].ends_with(" — cancelled"),
+        "the latest turn comes first: {read}"
+    );
     idle(&mut client, &member).await;
     say(
         &mut client,
@@ -3566,106 +3581,86 @@ async fn member_work(mut config: ServerConfig) {
             .contains("Status: completed.\nResult preview:\nEcho: follow-up\n")
     );
 
-    let read = |after: u64, limit: usize| {
-        tool(
-            json!({"action": "read", "agentId": holder, "sessionId": member,
-            "after": after, "branchId": "main", "limit": limit}),
-        )
+    let read = async |client: &mut Client, query: Value| {
+        let mut input = json!({"action": "read", "agentId": holder, "sessionId": member});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(query.as_object().unwrap().clone());
+        say(client, &lead, tool(input), "queue").await;
+        idle(client, &lead).await;
+        last_text(&events(&lead_session).await)
     };
-    for limit in [0, 201, usize::MAX] {
-        say(&mut client, &lead, read(0, limit), "queue").await;
-        idle(&mut client, &lead).await;
-        let error = last_error(&events(&lead_session).await);
-        assert!(error.starts_with("invalid_input"), "{error}");
-        assert!(
-            error.contains("1 and 200") && error.contains("nextCursor"),
-            "{error}"
-        );
+    let id_of = |page: &str, marker: &str| -> String {
+        page.lines()
+            .find(|line| line.contains(marker))
+            .unwrap_or_else(|| panic!("no line with {marker} in {page}"))
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_owned()
+    };
+    let turns = read(&mut client, json!({})).await;
+    assert!(turns.ends_with("Nothing earlier."), "{turns}");
+    assert!(
+        turns.contains("— called hold ×2 — completed"),
+        "the latest turns come first and name their calls: {turns}"
+    );
+    assert!(
+        turns
+            .lines()
+            .filter(|line| line.contains(" turn: "))
+            .count()
+            >= 2,
+        "{turns}"
+    );
+    for own in ["you ", "your ", "in your context"] {
+        assert!(!turns.contains(own), "a read addresses no one: {turns}");
     }
-    say(&mut client, &lead, read(0, 200), "queue").await;
+    let turn = id_of(&turns, "called hold");
+    let opened = read(&mut client, json!({"open": turn})).await;
+    assert!(
+        opened.contains("\nEnd of turn. Open one: open="),
+        "{opened}"
+    );
+    let call = id_of(&opened, "called hold");
+    let full = read(&mut client, json!({"open": call})).await;
+    assert!(
+        full.contains(&format!("{call} called hold\n{{}}\n\nok: released")),
+        "{full}"
+    );
+    assert!(full.ends_with("End."), "{full}");
+    let found = read(&mut client, json!({"about": "follow-up"})).await;
+    assert!(found.contains("Echo: follow-up"), "{found}");
+    assert!(found.ends_with("No more."), "{found}");
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "read", "agentId": holder, "sessionId": member, "offset": 1})),
+        "queue",
+    )
+    .await;
     idle(&mut client, &lead).await;
-    let history = events(&lead_session).await;
-    let schema = history
-        .iter()
-        .find_map(|event| match &event.kind {
-            EventKind::ModelCall(data) => data
-                .request
-                .tools
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|tool| tool.name == "agent")
-                .map(|tool| serde_json::to_value(&tool.input_schema).unwrap()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(schema["properties"]["limit"]["minimum"], 1);
-    assert_eq!(schema["properties"]["limit"]["maximum"], 200);
-    assert_eq!(schema["properties"]["limit"]["default"], 200);
-    let full = last_ok(&history);
-    let end = member_session.sequence("main").unwrap();
-    assert_eq!(full["nextCursor"], end);
-    let mut paged = vec![];
-    let mut after = 0;
-    let mut pages = 0;
-    let mut split_call = false;
-    loop {
-        say(&mut client, &lead, read(after, 1), "queue").await;
-        idle(&mut client, &lead).await;
-        let page = last_ok(&events(&lead_session).await);
-        let next = page["nextCursor"].as_u64().unwrap();
-        let items = page["events"].as_array().unwrap();
-        for item in items {
-            let sequence = item["sequence"].as_u64().unwrap();
-            assert!(after < sequence && sequence <= next, "{item}");
-        }
-        split_call |= items.iter().any(|item| {
-            item["type"] == "tool_result"
-                && !items
-                    .iter()
-                    .any(|other| other["type"] == "tool_call" && other["callId"] == item["callId"])
-        });
-        paged.extend(items.iter().cloned());
-        if next == after {
-            assert!(items.is_empty());
-            break;
-        }
-        after = next;
-        pages += 1;
-        assert!(pages <= end, "paging advances");
-    }
-    assert!(pages > 1);
-    assert!(
-        split_call,
-        "a page must start with a result of an earlier call"
-    );
-    assert!(
-        paged
-            .iter()
-            .filter(|item| item["type"] == "tool_result")
-            .all(|item| item["name"].is_string()),
-        "a result names its call however far before the page it is"
-    );
-    assert_eq!(after, end);
-    assert_eq!(&paged, full["events"].as_array().unwrap());
+    let error = last_error(&events(&lead_session).await);
+    assert_eq!(error, "invalid_input: agent: offset needs open.");
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "read", "agentId": holder, "sessionId": "no-such-member"})),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    assert!(last_error(&events(&lead_session).await).starts_with("team_member_not_found"));
 
     if native {
         unload(&agent, &member).await;
         assert!(agent.get_session(&member).is_none());
-        say(&mut client, &lead, read(0, 200), "queue").await;
-        idle(&mut client, &lead).await;
-        let restored = agent
+        let again = read(&mut client, json!({})).await;
+        agent
             .get_session(&member)
             .expect("the authorized read acquires its peer");
-        let read = last_ok(&events(&lead_session).await);
-        assert_eq!(
-            business_events(&read["events"]),
-            business_events(&full["events"])
-        );
-        assert!(
-            (full["nextCursor"].as_u64().unwrap()..=restored.sequence("main").unwrap())
-                .contains(&read["nextCursor"].as_u64().unwrap())
-        );
+        assert_eq!(again, turns, "an unloaded member reads the same");
     }
 
     assert_pairing(&events(&lead_session).await);
@@ -5927,8 +5922,8 @@ const UNFINISHED_CALLS: usize = 3;
 /// More calls than one statement may name; the store reads them in chunks.
 const MANY_CALLS: usize = 520;
 
-/// A result closing undispatched calls (ADR agent-029) names them from their
-/// `step/tool-use-start`, however far before the read page it is.
+/// A result closing undispatched calls (ADR agent-029) reads as those calls not
+/// run, named from their `step/tool-use-start`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn undispatched_results_name_calls_from_their_starts() {
     use dim_agent_capabilities::{
@@ -5989,7 +5984,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
     .await;
     let member = next_member(&lead_session, 0).await;
     let member_session = agent.get_session(&member).unwrap();
-    let start = poll("member call start", async || {
+    poll("member call start", async || {
         let events = events(&member_session).await;
         let usage = events
             .iter()
@@ -6012,12 +6007,12 @@ async fn undispatched_results_name_calls_from_their_starts() {
             )
             .await,
     );
-    let through = poll("published facts", async || {
-        let events = events(&member_session).await;
-        events
+    poll("published facts", async || {
+        events(&member_session)
+            .await
             .iter()
             .any(|event| matches!(&event.kind, EventKind::ToolResult(data) if data.call_event_id.is_none()))
-            .then(|| events.last().unwrap().sequence)
+            .then_some(())
     })
     .await;
     poll("member report", async || {
@@ -6025,56 +6020,26 @@ async fn undispatched_results_name_calls_from_their_starts() {
     })
     .await;
     idle(&mut client, &lead).await;
-    let after = start.sequence + PARTIAL_USAGE - 1;
-    let collaboration = server
-        .service::<dim_app_server::collaboration::Collaboration>()
-        .expect("the collaboration service");
-    collaboration.take_reads();
-    say(
-        &mut client,
-        &lead,
-        tool(
-            json!({"action": "read", "agentId": holder, "sessionId": member,
-            "after": after, "branchId": "main", "limit": 200}),
-        ),
-        "queue",
-    )
-    .await;
-    idle(&mut client, &lead).await;
-    let read = last_ok(&events(&lead_session).await);
-    assert!(read["nextCursor"].as_u64().unwrap() >= through);
-    let closed: Vec<_> = read["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|item| item["type"] == "tool_result")
+    let calls = async |client: &mut Client, session: &str, name: &str| {
+        say(
+            client,
+            &lead,
+            tool(json!({"action": "read", "agentId": holder, "sessionId": session, "tool": name})),
+            "queue",
+        )
+        .await;
+        idle(client, &lead).await;
+        last_text(&events(&lead_session).await)
+    };
+    let closed = calls(&mut client, &member, "echo").await;
+    let lines: Vec<&str> = closed
+        .lines()
+        .filter(|line| line.contains("calling echo"))
         .collect();
-    assert_eq!(closed.len(), UNFINISHED_CALLS, "{read}");
-    for (at, item) in closed.iter().enumerate() {
-        assert_eq!(item["callId"], format!("unfinished-{at}"));
-        assert_eq!(item["name"], "echo", "{item}");
-        assert_eq!(item["status"], "error", "{item}");
-    }
-    assert_eq!(
-        collaboration.take_reads(),
-        2,
-        "one page and one read of every start it names"
-    );
-    say(
-        &mut client,
-        &lead,
-        tool(
-            json!({"action": "read", "agentId": holder, "sessionId": member,
-            "after": through, "branchId": "main", "limit": 200}),
-        ),
-        "queue",
-    )
-    .await;
-    idle(&mut client, &lead).await;
-    assert_eq!(
-        collaboration.take_reads(),
-        1,
-        "a page without results reads only itself"
+    assert_eq!(lines.len(), UNFINISHED_CALLS, "{closed}");
+    assert!(
+        lines.iter().all(|line| line.contains(" → not run")),
+        "{closed}"
     );
     say(
         &mut client,
@@ -6127,66 +6092,36 @@ async fn undispatched_results_name_calls_from_their_starts() {
     })
     .await;
     idle(&mut client, &lead).await;
-    collaboration.take_reads();
-    say(
-        &mut client,
-        &lead,
-        tool(
-            json!({"action": "read", "agentId": holder, "sessionId": many,
-            "after": closed_at.0 - 1, "branchId": "main", "limit": 200}),
-        ),
-        "queue",
-    )
-    .await;
-    idle(&mut client, &lead).await;
-    let page = last_ok(&events(&lead_session).await);
-    let named: Vec<_> = page["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|item| item["type"] == "tool_result")
-        .collect();
-    assert_eq!(named.len(), MANY_CALLS, "{page}");
-    for (at, item) in named.iter().enumerate() {
-        assert_eq!(item["callId"], format!("unfinished-{at}"));
-        assert_eq!(item["name"], "wait", "{item}");
-    }
+    let waits = calls(&mut client, &many, "wait").await;
     assert_eq!(
-        collaboration.take_reads(),
-        2,
-        "one page and one read of the starts"
+        waits
+            .lines()
+            .filter(|line| line.contains("calling wait"))
+            .count(),
+        20,
+        "{waits}"
     );
-    say(
-        &mut client,
-        &lead,
-        tool(json!({"action":"read","agentId":holder,
-        "sessionId":member,"after":after,"branchId":"main","limit":200})),
-        "queue",
-    )
-    .await;
-    idle(&mut client, &lead).await;
-    let earlier = last_ok(&events(&lead_session).await);
-    let earlier: Vec<_> = earlier["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|event| event["type"] == "tool_result")
-        .collect();
-    assert_eq!(earlier.len(), UNFINISHED_CALLS);
-    assert!(
-        earlier.iter().all(|event| event["name"] == "echo"),
-        "reused call ids in a later request must not rename earlier results"
+    assert!(waits.contains("\nMore: before="), "{waits}");
+    let earlier = calls(&mut client, &member, "echo").await;
+    assert_eq!(
+        earlier
+            .lines()
+            .filter(|line| line.contains("calling echo"))
+            .count(),
+        UNFINISHED_CALLS,
+        "reused call ids in a later request must not rename earlier results: {earlier}"
     );
     server.shutdown();
     server.join().await.unwrap();
 }
 
-/// A member's page carries the effects its tool results declared: the path
-/// verbatim, a command cut at 200 characters with the cut marked, and no
-/// `effects` member when the result declared none; the `tool_call` items are
-/// unchanged (#1033).
+/// Opening a member's call shows the effects its result declared beside its
+/// text: the path verbatim, a command cut at 200 characters with the cut
+/// marked, and nothing for a result that declared none; the call's line in a
+/// page leaves them out, and `about` finds the phrase opening shows (Recall
+/// §3.4, session boundary §5).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_page_carries_the_effects_its_tool_results_declared() {
+async fn opening_a_member_call_shows_the_effects_it_declared() {
     let (server, agent) = launch_with_agent(Arc::new(EffectTools), ServerConfig::default()).await;
     let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
@@ -6215,65 +6150,61 @@ async fn a_member_page_carries_the_effects_its_tool_results_declared() {
     .await;
     let temporary = started["agentId"].as_str().unwrap().to_owned();
     let member = started["sessionId"].as_str().unwrap().to_owned();
-    say(
-        &mut client,
-        &member,
+    for input in [
         format!("tool:touch {{\"command\":\"{command}\"}}"),
-        "queue",
-    )
-    .await;
-    idle(&mut client, &member).await;
-    say(
-        &mut client,
-        &member,
         r#"tool:touch {"note":"neither"}"#.to_string(),
-        "queue",
-    )
-    .await;
-    idle(&mut client, &member).await;
-    say(
-        &mut client,
-        &lead,
-        tool(
-            json!({"action": "read", "agentId": temporary, "sessionId": member,
-            "after": 0, "limit": 200}),
-        ),
-        "queue",
-    )
-    .await;
-    idle(&mut client, &lead).await;
-    let page = last_ok(&events(&lead_session).await);
-    let items = page["events"].as_array().expect("page items");
-    let results: Vec<&Value> = items
-        .iter()
-        .filter(|item| item["type"] == "tool_result" && item["name"] == "touch")
-        .collect();
-    assert_eq!(results.len(), 3, "{page}");
-    assert_eq!(
-        results[0]["effects"],
-        json!([{"kind": "fileWritten", "path": path}]),
-        "{page}"
-    );
-    let command_effect = &results[1]["effects"][0];
-    assert_eq!(command_effect["kind"], "commandRun");
-    let shortened = command_effect["command"].as_str().expect("command");
-    assert_eq!(shortened.chars().count(), 201, "{page}");
-    assert_eq!(
-        shortened.strip_suffix('…').expect("the cut is marked"),
-        &command[..200],
-        "{page}"
-    );
-    assert_eq!(command_effect["exitCode"], 0);
-    assert!(results[2].get("effects").is_none(), "{page}");
-    let calls: Vec<&Value> = items
-        .iter()
-        .filter(|item| item["type"] == "tool_call")
-        .collect();
-    assert!(calls.len() >= 3, "{page}");
-    for call in calls {
-        let keys: Vec<&String> = call.as_object().expect("call item").keys().collect();
-        assert_eq!(keys, ["sequence", "type", "callId", "name"], "{call}");
+    ] {
+        say(&mut client, &member, input, "queue").await;
+        idle(&mut client, &member).await;
     }
+
+    let read = async |client: &mut Client, query: Value| {
+        let mut input = json!({"action": "read", "agentId": temporary, "sessionId": member});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(query.as_object().unwrap().clone());
+        say(client, &lead, tool(input), "queue").await;
+        idle(client, &lead).await;
+        last_text(&events(&lead_session).await)
+    };
+    let calls = read(&mut client, json!({"tool": "touch"})).await;
+    let id_of = |marker: &str| -> String {
+        calls
+            .lines()
+            .find(|line| line.contains(marker))
+            .unwrap_or_else(|| panic!("no line with {marker} in {calls}"))
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_owned()
+    };
+    assert!(
+        !calls.contains("wrote ") && !calls.contains("(exit 0)"),
+        "a call's line leaves its effects out: {calls}"
+    );
+
+    let written = id_of("path=");
+    let found = read(&mut client, json!({"about": format!("wrote {path}")})).await;
+    assert!(
+        found.contains(&format!("{written} called touch")),
+        "the phrase opening shows is found: {found}"
+    );
+    let wrote = read(&mut client, json!({"open": written})).await;
+    assert!(
+        wrote.contains(&format!("ok: touched\nwrote {path}\n")),
+        "{wrote}"
+    );
+    let ran = read(&mut client, json!({"open": id_of("command=")})).await;
+    assert!(
+        ran.contains(&format!("ok: touched\nran {}… (exit 0)\n", &command[..200])),
+        "{ran}"
+    );
+    let neither = read(&mut client, json!({"open": id_of("note=")})).await;
+    assert!(
+        !neither.contains("wrote ") && !neither.contains("\nran "),
+        "{neither}"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -6422,8 +6353,8 @@ async fn stored_member_read_acquires_it_and_it_can_unload_and_work_again() {
     )
     .await;
     idle(&mut client, &lead).await;
-    let read = last_ok(&events(&session).await);
-    assert!(!read["events"].as_array().unwrap().is_empty());
+    let read = last_text(&events(&session).await);
+    assert!(read.contains(" turn: "), "{read}");
     assert!(
         agent.get_session(&member).is_some(),
         "history reads acquire the member"
@@ -7290,13 +7221,15 @@ async fn the_idle_unload_pass_keeps_a_leader_with_an_open_request() {
     assert_pairing(&events(&lead_session).await);
     drop(lead_session);
 
-    let read = tool(json!({"action": "read", "agentId": holder, "sessionId": member}));
+    let read = tool(
+        json!({"action": "read", "agentId": holder, "sessionId": member, "about": "Echo again"}),
+    );
     let mut reads = vec![];
     for _ in 0..3 {
         say(&mut client, &lead, read.clone(), "queue").await;
         let lead_session = agent.get_session(&lead).unwrap();
         idle(&mut client, &lead).await;
-        reads.push(last_ok(&events(&lead_session).await));
+        reads.push(last_text(&events(&lead_session).await));
     }
     super::deletion::eventually("the member unloads after peer reads", || {
         agent.get_session(&member).is_none()
@@ -7306,7 +7239,7 @@ async fn the_idle_unload_pass_keeps_a_leader_with_an_open_request() {
     say(&mut client, &lead, read, "queue").await;
     let lead_session = agent.get_session(&lead).unwrap();
     idle(&mut client, &lead).await;
-    reads.push(last_ok(&events(&lead_session).await));
+    reads.push(last_text(&events(&lead_session).await));
     drop(lead_session);
     assert_eq!(
         loads.of(&member),
@@ -7315,18 +7248,11 @@ async fn the_idle_unload_pass_keeps_a_leader_with_an_open_request() {
     );
     let first = &reads[0];
     assert!(
-        first.to_string().contains("Echo: again"),
+        first.contains("reply: Echo: again"),
         "the read holds the second request: {first}"
     );
     for read in &reads {
-        let initial = first["events"].as_array().unwrap();
-        let events = read["events"].as_array().unwrap();
-        assert!(events.len() >= initial.len());
-        assert_eq!(&events[..initial.len()], initial);
-        assert!(events[initial.len()..].iter().all(|event| {
-            event["type"] == "input" && event["mode"] == "append" && event["user"].is_null()
-        }));
-        assert!(read["nextCursor"].as_u64().unwrap() >= first["nextCursor"].as_u64().unwrap());
+        assert_eq!(read, first, "a restored member reads the same");
     }
     loads.released(&member).await;
     super::deletion::eventually("the leader unloads", || agent.get_session(&lead).is_none()).await;
@@ -9353,12 +9279,11 @@ async fn a_cancel_stops_the_line_the_request_was_delivered_to() {
     server.join().await.unwrap();
 }
 
-/// A page's continuation is bound to the branch it read: after the member
-/// moves its default branch between pages, a bare `after` is refused and the
-/// page's `branchId` continues the original line, whose sequence numbers
-/// overlap the new default's (design §9, §15).
+/// A read tells the member's default line as it is when the read runs: after
+/// the member moves its default back, the side line's turn is not told, and
+/// its handle is refused with the way to start again (design §9, Recall §3.8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_read_continuation_stays_on_the_branch_its_page_read() {
+async fn a_read_tells_the_line_the_member_is_on() {
     let (server, agent, mut client, lead, lead_session, holder, _gate) = launch_branch_team().await;
     let (member, member_session) =
         settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
@@ -9381,20 +9306,25 @@ async fn a_read_continuation_stays_on_the_branch_its_page_read() {
             .await,
     );
 
-    let read = |after: u64, limit: usize, branch: Option<&str>| {
-        let mut input = json!({"action": "read", "agentId": holder, "sessionId": member,
-            "after": after, "limit": limit});
-        if let Some(branch) = branch {
-            input["branchId"] = json!(branch);
-        }
-        tool(input)
+    let read = async |client: &mut Client| {
+        say(
+            client,
+            &lead,
+            tool(json!({"action": "read", "agentId": holder, "sessionId": member})),
+            "queue",
+        )
+        .await;
+        idle(client, &lead).await;
+        last_text(&events(&lead_session).await)
     };
-    say(&mut client, &lead, read(0, 2, None), "queue").await;
-    idle(&mut client, &lead).await;
-    let first = last_ok(&events(&lead_session).await);
-    assert_eq!(first["branchId"], json!(side), "{first}");
-    let cursor = first["nextCursor"].as_u64().unwrap();
-    assert!(cursor > 0 && cursor < member_session.sequence(&side).unwrap());
+    let on_side = read(&mut client).await;
+    assert!(on_side.contains("turn: user \"side turn\""), "{on_side}");
+    let side_turn = on_side
+        .lines()
+        .find(|line| line.contains("side turn"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap()
+        .to_owned();
 
     assert_ok(
         &client
@@ -9404,28 +9334,25 @@ async fn a_read_continuation_stays_on_the_branch_its_page_read() {
             )
             .await,
     );
-    let root_head = member_session.sequence("main").unwrap();
+    let on_main = read(&mut client).await;
     assert!(
-        root_head >= cursor,
-        "the lines' sequence numbers overlap: {root_head} vs {cursor}"
+        !on_main.contains("side turn"),
+        "a read tells the line the member is on: {on_main}"
     );
-    say(&mut client, &lead, read(cursor, 200, None), "queue").await;
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "read", "agentId": holder, "sessionId": member, "open": side_turn})),
+        "queue",
+    )
+    .await;
     idle(&mut client, &lead).await;
-    let refused = last_error(&events(&lead_session).await);
-    assert!(refused.starts_with("invalid_input"), "{refused}");
-    assert!(refused.contains("branchId"), "{refused}");
-
-    say(&mut client, &lead, read(cursor, 200, Some(&side)), "queue").await;
-    idle(&mut client, &lead).await;
-    let page = last_ok(&events(&lead_session).await);
-    assert_eq!(page["branchId"], json!(side), "{page}");
-    assert!(
-        page["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|item| item["sequence"].as_u64().unwrap() > cursor),
-        "the continuation resumes the line it read: {page}"
+    assert_eq!(
+        last_error(&events(&lead_session).await),
+        format!(
+            "No turn or line has id {side_turn}. Read without open or before for the latest turns."
+        ),
+        "a handle from the line the member left restarts from the latest turns"
     );
     server.shutdown();
     server.join().await.unwrap();

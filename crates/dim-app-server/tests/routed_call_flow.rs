@@ -71,6 +71,10 @@ impl Rig {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
+        // A face the catalog shares but this profile does not install.
+        builder
+            .catalog_mut()
+            .register_shared_instance("notInstalled", "branch");
         let observed = Arc::new(OnceLock::new());
         let probe = observed.clone();
         builder.plugin(move |_| Ok(Box::new(Probe(probe.clone())) as Box<dyn DynPlugin>));
@@ -158,6 +162,40 @@ async fn a_routed_call_loads_and_holds_an_admitted_session() {
     assert_eq!(
         restored["ok"], true,
         "sessions.call reloads an admitted Session (D5): {restored}"
+    );
+    rig.server.shutdown();
+    rig.server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uninstalled_service_answers_no_service_after_the_line() {
+    let rig = Rig::start().await;
+    let launched = rig
+        .call("launch", json!({"cwd": rig.home.path().to_string_lossy()}))
+        .await;
+    let id = launched["value"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a Session launches through Agents: {launched}"))
+        .to_owned();
+    let missing = rig
+        .call(
+            "call",
+            json!({"sessionId": id, "lineId": "main", "service": "notInstalled", "method": "read"}),
+        )
+        .await;
+    assert_eq!(missing["ok"], false, "{missing}");
+    assert_eq!(missing["error"]["code"], "no_service", "{missing}");
+    assert_eq!(missing["error"]["service"], "notInstalled", "{missing}");
+    assert_eq!(missing["error"]["retryable"], false, "{missing}");
+    let no_line = rig
+        .call(
+            "call",
+            json!({"sessionId": id, "lineId": "absent", "service": "notInstalled", "method": "read"}),
+        )
+        .await;
+    assert_eq!(
+        no_line["error"]["code"], "no_line",
+        "the line is selected before the service: {no_line}"
     );
     rig.server.shutdown();
     rig.server.join().await.unwrap();

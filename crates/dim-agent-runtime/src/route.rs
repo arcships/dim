@@ -23,7 +23,7 @@
 //!   takes the same two forms for a process caller.
 //!
 //! Each call looks the target up again, so a caller never keeps a live target
-//! (D4). Rust calls the same two operations: it builds `args` from the target
+//! (D4). Rust calls the same two `SessionScope` operations: it builds `args` from the target
 //! operation's request type and reads the reply as its reply type.
 //!
 //! What a call resolves is the target scope's data face in the catalog. A name
@@ -40,7 +40,9 @@
 //! closing answers [`RouteError::SessionClosing`], and a line target answers it
 //! too, because closing the Session closes its lines. A line that is closing or
 //! closed, or that belongs to another Session, answers [`RouteError::NoLine`];
-//! that is final for the line: routing never retries it.
+//! that is final for the line: routing never retries it. A selected scope
+//! that has no provider of the service answers [`RouteError::NoService`], for
+//! example when its profile does not install that service.
 
 use crate::*;
 use rutis::Ctx;
@@ -81,6 +83,11 @@ pub enum RouteError {
     /// lines. Final for that line: no hold and no retry.
     #[error("no line {line} in Session {session}")]
     NoLine { session: String, line: String },
+    /// The Session or line was selected, but no provider of `service` is
+    /// installed there, for example when its profile leaves the service out.
+    /// The holder answers it, not an owner; final, no retry.
+    #[error("{service} is not provided there")]
+    NoService { service: String },
     /// The name is not a data face a route resolves there: the assembly marks
     /// it internal, it is a mechanism registration point, or it is a scope
     /// lifecycle service. A permanent answer: the request is wrong.
@@ -120,6 +127,7 @@ impl RouteError {
             Self::SessionReloading(_) => "session_reloading",
             Self::SessionUnavailable { .. } => "session_unavailable",
             Self::NoLine { .. } => "no_line",
+            Self::NoService { .. } => "no_service",
             Self::NotDataFace { .. } => "not_data_face",
             Self::MethodNotRoutable { .. } => "method_not_routable",
             Self::WrongScope { .. } => "wrong_scope",
@@ -437,12 +445,8 @@ pub(crate) async fn call_face(
 ) -> Routed<Option<serde_json::Value>> {
     let dispatch = ctx
         .get_at::<dyn HostDispatch>(&host_key_in(service, instance))
-        .ok_or_else(|| RouteError::Owner {
-            name: service.into(),
-            code: None,
-            message: format!("{service} is not provided now"),
-            data: None,
-            reloading: false,
+        .ok_or_else(|| RouteError::NoService {
+            service: service.into(),
         })?;
     let args = BridgeValue::List(
         args.iter()
