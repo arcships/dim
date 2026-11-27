@@ -628,10 +628,11 @@ fn same_schema(actual: &[(String, String)], mut expected: Vec<(&str, String)>) -
 }
 /// The read indexes the daemon creates at open: the latest-turn window's
 /// ([session-history-window §5.1](../../../../docs/design/appserver/session-history-window.md#51-the-derived-index)),
-/// the policy window's turn starts, and the event query's by kind, which carries
-/// the event id so a kind read needs no table body for it (ADR 019 D4). They
-/// carry no data and no decode rule, so they are not part of the format: `schema`
-/// and the format gate ignore them, and every open recreates them.
+/// the policy window's turn starts, the event query's by kind, which carries
+/// the event id so a kind read needs no table body for it (ADR 019 D4), and the
+/// case-insensitive Session id lookup the creation collision checks run (#2204).
+/// They carry no data and no decode rule, so they are not part of the format:
+/// `schema` and the format gate ignore them, and every open recreates them.
 const DERIVED_INDEXES: &[(&str, &str)] = &[
     (
         "timeline_history_anchors",
@@ -644,6 +645,10 @@ const DERIVED_INDEXES: &[(&str, &str)] = &[
     (
         "timeline_policy_turns",
         "CREATE INDEX IF NOT EXISTS timeline_policy_turns ON timeline_events(session_id, branch_id, kind, sequence, event_id) WHERE kind = 'turn/start'",
+    ),
+    (
+        "agent_sessions_session_id_nocase",
+        "CREATE INDEX IF NOT EXISTS agent_sessions_session_id_nocase ON agent_sessions(session_id COLLATE NOCASE)",
     ),
 ];
 /// The schema objects of `connection`'s database that belong to the format,

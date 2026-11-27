@@ -245,14 +245,16 @@ valid in v48, and v16 request rows stay readable as written.
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）、
 `timeline_policy_turns`（`(session_id, branch_id, kind, sequence, event_id) WHERE kind = 'turn/start'`，
-已无读者，删除它要作为格式步骤）与事件查询的
+已无读者，删除它要作为格式步骤）、事件查询的
 `timeline_events_by_kind`（`(session_id, branch_id, kind, sequence, event_id)`，按 kind
-读取事件而不碰事件体，[ADR 019](../../adr/019-event-query.md) D4）：读写打开在启动事务内用
-`CREATE INDEX IF NOT EXISTS` 创建或补建，只读导出只接受它们。它们不含数据，可从
-`timeline_events` 重新推导，读同一份事件不因它们有无而不同，因此不属于格式：启动门禁的
-精确结构比较忽略这些名字，格式标记不变（当前 v48）；其余任何多余对象仍按原规则拒绝。代价是早于
+读取事件而不碰事件体，[ADR 019](../../adr/019-event-query.md) D4）与
+`agent_sessions_session_id_nocase`（`agent_sessions(session_id COLLATE NOCASE)`，#2204
+创建写入入口的大小写冲突检查走它做索引查找而不是扫表）：读写打开在启动事务内用
+`CREATE INDEX IF NOT EXISTS` 创建或补建，只读导出只接受它们。它们不含数据，可从其
+基表重新推导，读同一份数据不因它们有无而不同，因此不属于格式：启动门禁的
+精确结构比较忽略这些名字，格式标记不变（当前 v53）；其余任何多余对象仍按原规则拒绝。代价是早于
 该变更的二进制不认识这些名字，会以 "unsupported SQLite schema … preserved" 拒绝已有该
-索引的库（行不变，新二进制可再次打开）。
+索引的库（行不变，原库保留，新二进制可再次打开）。
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
 in loader rows, events, diagnostics, Sessions or Timelines.
 

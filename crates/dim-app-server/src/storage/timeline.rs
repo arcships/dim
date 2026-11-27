@@ -1700,6 +1700,7 @@ impl SessionStore {
     ) -> Result<()> {
         dim_agent_runtime::check_session_id(source)?;
         dim_agent_runtime::check_session_id(fork)?;
+        dim_agent_runtime::check_new_session_id(fork)?;
         let _ownership = self.ownership.lock().await;
         if let Some(cwd) = config_cwd(config) {
             self.reject_deletion(&cwd).await?;
@@ -1726,6 +1727,7 @@ impl SessionStore {
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
         dim_agent_runtime::check_session_id(session_id)?;
+        dim_agent_runtime::check_new_session_id(session_id)?;
         let session = session_id.to_owned();
         let config = config.clone();
         let agent = agent_id.to_owned();
@@ -2359,6 +2361,26 @@ impl DynPlugin for SessionStorePlugin {
     }
 }
 
+/// The stored Session ids equal to `candidate` under the case-insensitive
+/// collation (#2204). The covering derived index `agent_sessions_session_id_nocase`
+/// resolves the lookup; the caller compares bytes to tell a case-only variant,
+/// which it rejects with InvalidInput, from a byte-identical duplicate, which
+/// keeps its Storage error.
+fn case_conflicts(connection: &Connection, candidate: &str) -> Result<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT session_id FROM agent_sessions WHERE session_id = ?1 COLLATE NOCASE",
+        )
+        .map_err(error)?;
+    for row in statement
+        .query_map([candidate], |row| row.get::<_, String>(0))
+        .map_err(error)?
+    {
+        rows.push(row.map_err(error)?);
+    }
+    Ok(rows)
+}
 fn create_session(
     connection: &Connection,
     session: &str,
@@ -2366,6 +2388,14 @@ fn create_session(
     leader: Option<&str>,
     origin: SessionOrigin,
 ) -> Result<()> {
+    if case_conflicts(connection, session)?
+        .iter()
+        .any(|stored| stored != session)
+    {
+        return Err(AgentError::InvalidInput(format!(
+            "Session id {session} differs from a stored one only by case"
+        )));
+    }
     let config = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
@@ -3116,6 +3146,11 @@ fn chunk<T>(connection: &mut Connection, step: impl FnOnce(&Connection) -> Resul
 
 /// Copies a fork's rows in bounded transactions; the final transaction
 /// inserts the session row, so an interrupted copy leaves no Session.
+///
+/// A fork id that already names a stored Session — byte-identical or only by
+/// case — is refused before the first chunk transaction (#2204): the refusal
+/// writes nothing and runs no cleanup, so the cleanup's drop of every row of
+/// the id can never reach the Session that already owned it.
 fn copy_fork(
     connection: &mut Connection,
     source: &str,
@@ -3125,6 +3160,7 @@ fn copy_fork(
     arrays: &BTreeMap<String, u64>,
     config: &str,
 ) -> Result<()> {
+    reject_conflicting_id(connection, fork)?;
     let copied = copy_fork_rows(connection, source, fork, at, content, arrays, config);
     if copied.is_err()
         && let Err(cleanup) = drop_session(connection, fork)
@@ -3132,6 +3168,23 @@ fn copy_fork(
         tracing::error!(session_id = fork, error = %cleanup, "Incomplete fork rows were kept");
     }
     copied
+}
+
+/// Rejects `candidate` when a stored Session id equals it under the
+/// case-insensitive collation: byte-identical keeps the duplicate's Storage
+/// error, a case-only variant is InvalidInput (#2204).
+fn reject_conflicting_id(connection: &Connection, candidate: &str) -> Result<()> {
+    let conflicts = case_conflicts(connection, candidate)?;
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(if conflicts.iter().any(|stored| stored != candidate) {
+        AgentError::InvalidInput(format!(
+            "Session id {candidate} differs from a stored one only by case"
+        ))
+    } else {
+        error(format!("Session id {candidate} already exists"))
+    })
 }
 
 fn copy_fork_rows(
@@ -3273,6 +3326,9 @@ fn copy_fork_rows(
         .pragma_update(None, "synchronous", "FULL")
         .map_err(error)?;
     chunk(connection, |tx| {
+        // The pre-check covered the copy's start; this re-check closes the
+        // race against an insertion committed while the chunks copied (#2204).
+        reject_conflicting_id(tx, fork)?;
         // A fork is a new Session of the client that forked it, never its
         // source's origin (session classification §3.2).
         tx.execute(
