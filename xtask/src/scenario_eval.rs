@@ -1197,6 +1197,8 @@ fn pooled_record(source: &Path, run: SavedRun, scenarios: &[Scenario]) -> Result
         error: run.error,
         judge_error: run.judge_error,
         judge_reasks: run.judge_reasks,
+        judge_estimate: run.judge_estimate,
+        judge_budget: run.judge_budget,
         judge_calls: run.judge_calls,
         temperature_dropped: run.temperature_dropped,
         decline_retries: run.decline_retries,
@@ -1280,7 +1282,11 @@ async fn rejudge_one(
             .join(format!("run-{}.judge-view.jsonl", saved.run));
         let view = std::fs::read_to_string(&path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        judge_export(host, resolver, judge, scenario, &view, limits, cancel).await
+        let mut fit = None;
+        judge_export(
+            host, resolver, judge, scenario, &view, limits, cancel, &mut fit,
+        )
+        .await
     };
     let stop = stop_name(&saved.stop)?;
     Ok(RunRecord {
@@ -1300,6 +1306,8 @@ async fn rejudge_one(
         judge_error: judging.error,
         judge_reasks: judging.reasks,
         judge_calls: judging.calls,
+        judge_estimate: judging.fit.map(|(estimate, _)| estimate),
+        judge_budget: judging.fit.map(|(_, budget)| budget),
         temperature_dropped: Some(judging.temperature_dropped),
         decline_retries: saved.decline_retries,
         switch_retries: saved.switch_retries,
@@ -1340,6 +1348,10 @@ struct SavedRun {
     judge_error: Option<String>,
     #[serde(default)]
     judge_reasks: u32,
+    #[serde(default)]
+    judge_estimate: Option<f64>,
+    #[serde(default)]
+    judge_budget: Option<f64>,
     #[serde(default)]
     judge_calls: Vec<JudgeCall>,
     /// The texts the arm was given; empty in a record written before the
@@ -2856,6 +2868,13 @@ struct RunRecord {
     /// How many times the judge was asked again for an answer it could not
     /// use.
     judge_reasks: u32,
+    /// The view's estimate against the judge's budget the fit check compared:
+    /// present when the check ran — judged, unreadable, a failed call, unfit,
+    /// or a judge phase that timed out after it — and `None` when no view was
+    /// built, the judge was not resolved, the run is incomplete, or the judge
+    /// phase timed out before the check ran.
+    judge_estimate: Option<f64>,
+    judge_budget: Option<f64>,
     /// One entry per judge call the run made, in order: what its stream
     /// reported.
     judge_calls: Vec<JudgeCall>,
@@ -3200,6 +3219,12 @@ struct ChildOutcome {
     /// The judge's declared window and output cap: `(0, 0)` when the child
     /// never resolved them, as a run the parent killed has not.
     judge_window: (u64, u64),
+    /// The view's estimate and the judge's budget the fit check compared;
+    /// absent in an outcome written before the child recorded them.
+    #[serde(default)]
+    judge_estimate: Option<f64>,
+    #[serde(default)]
+    judge_budget: Option<f64>,
 }
 
 /// The child outcome of a run the harness aborted.
@@ -3230,6 +3255,8 @@ fn harness_outcome(error: String, preflight: Vec<PreflightCheck>) -> ChildOutcom
         model_configuration: None,
         judge_configuration: None,
         judge_window: (0, 0),
+        judge_estimate: None,
+        judge_budget: None,
     }
 }
 
@@ -3800,6 +3827,8 @@ async fn child_drive(
         model_configuration: carried_parts(&instrument_configuration(&model)),
         judge_configuration: carried_parts(&instrument_configuration(&judge)),
         judge_window: (limits.window, limits.max_output),
+        judge_estimate: judging.fit.map(|(estimate, _)| estimate),
+        judge_budget: judging.fit.map(|(_, budget)| budget),
     })
 }
 
@@ -5383,6 +5412,8 @@ fn supervisor_outcome(
         model_configuration: None,
         judge_configuration: None,
         judge_window: (0, 0),
+        judge_estimate: None,
+        judge_budget: None,
     }
 }
 
@@ -5740,6 +5771,8 @@ fn child_record(
 
         judge_error: outcome.judge_error.clone(),
         judge_reasks: outcome.judge_reasks,
+        judge_estimate: outcome.judge_estimate,
+        judge_budget: outcome.judge_budget,
         judge_calls: outcome.judge_calls.clone(),
         temperature_dropped: Some(outcome.temperature_dropped),
         decline_retries: Some(outcome.decline_retries),
@@ -5839,6 +5872,11 @@ struct Judging {
     calls: Vec<JudgeCall>,
     /// Whether the judge had to drop its temperature.
     temperature_dropped: bool,
+    /// The view's estimate and the judge's budget the fit check compared,
+    /// once the check has run — including a run it left unfit, and a judge
+    /// phase that then timed out (model-prompts §8.1). `None` before the
+    /// check, or when there was no view to check.
+    fit: Option<(f64, f64)>,
 }
 impl Judging {
     /// A run the judge was never asked about: it left no export, the profile
@@ -5852,11 +5890,13 @@ impl Judging {
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit: None,
         }
     }
-    /// A timed-out run whose judge did not answer within its cleanup grace:
-    /// the call is recorded as failed, and every probe stays unparsed.
-    fn unfinished(scenario: &Scenario, error: String) -> Self {
+    /// A timed-out run whose judge did not answer within its grace: the call
+    /// is recorded as failed, every probe stays unparsed, and the fit the run
+    /// took before its first call is kept when it reached the check.
+    fn unfinished(scenario: &Scenario, error: String, fit: Option<(f64, f64)>) -> Self {
         Self {
             outcome: JudgeOutcome::CallFailed,
             probes: unparsed(scenario),
@@ -5864,6 +5904,7 @@ impl Judging {
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit,
         }
     }
     /// A run the harness stopped before a request its probes read existed:
@@ -5878,6 +5919,7 @@ impl Judging {
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit: None,
         }
     }
 }
@@ -6104,10 +6146,13 @@ async fn drive_once(
     // answered by the deadline leaves the run's judgment unfinished instead of
     // holding the child — and the worker that runs it — open. A run that did
     // not stop on its wall clock judges as before.
+    let mut fit = None;
     let judging = if let Some(deadline) = driven.cleanup_deadline {
         match tokio::time::timeout_at(
             deadline,
-            judge_export(&host, &resolver, judge, scenario, &view, limits, cancel),
+            judge_export(
+                &host, &resolver, judge, scenario, &view, limits, cancel, &mut fit,
+            ),
         )
         .await
         {
@@ -6117,6 +6162,7 @@ async fn drive_once(
                 "the judge did not finish within the cleanup grace after the run stopped on \
                  its wall clock"
                     .to_owned(),
+                fit,
             ),
         }
     } else {
@@ -6128,7 +6174,9 @@ async fn drive_once(
         let budget = judge_phase_budget(settings.judge_budget_ms);
         match tokio::time::timeout(
             budget,
-            judge_export(&host, &resolver, judge, scenario, &view, limits, cancel),
+            judge_export(
+                &host, &resolver, judge, scenario, &view, limits, cancel, &mut fit,
+            ),
         )
         .await
         {
@@ -6139,6 +6187,7 @@ async fn drive_once(
                     "the judge did not finish within its phase budget of {}s",
                     budget.as_secs_f64()
                 ),
+                fit,
             ),
         }
     };
@@ -8992,6 +9041,11 @@ async fn judge_window(
 /// probe without one, is asked again with what was wrong, at most [`REASKS`]
 /// times; a call that fails during a re-ask ends the asking. An answer that
 /// stays unusable leaves every probe `unparsed` (model-prompts §8.1).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per part of one run's judging, plus the slot a timeout \
+              reads so it can keep the fit the check took"
+)]
 async fn judge_export(
     host: &Arc<ModelHost>,
     resolver: &Arc<ProviderConnectionResolver>,
@@ -9000,6 +9054,7 @@ async fn judge_export(
     view: &str,
     limits: JudgeWindow,
     cancel: &CancellationToken,
+    fit: &mut Option<(f64, f64)>,
 ) -> Judging {
     let statements = scenario
         .probes
@@ -9024,6 +9079,8 @@ async fn judge_export(
     let facts = window_facts(limits.window, allowance, &whole);
     let estimate = facts.count_tokens(&whole);
     let budget = facts.context_window() - facts.output_tokens();
+    let pair = Some((estimate, budget));
+    *fit = pair;
     if estimate > budget {
         return Judging {
             outcome: JudgeOutcome::Unfit,
@@ -9034,6 +9091,7 @@ async fn judge_export(
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit: pair,
         };
     }
     let (outcome, probes, error) = loop {
@@ -9117,6 +9175,7 @@ async fn judge_export(
         reasks,
         calls,
         temperature_dropped: dropped,
+        fit: pair,
     }
 }
 
@@ -9848,6 +9907,8 @@ mod tests {
             error: None,
             judge_error: None,
             judge_reasks: 0,
+            judge_estimate: None,
+            judge_budget: None,
             judge_calls: Vec::new(),
             temperature_dropped: Some(false),
             decline_retries: Some(0),
@@ -14972,6 +15033,7 @@ mod tests {
                 max_output: 1_024,
             },
             &CancellationToken::new(),
+            &mut None,
         )
         .await;
         assert_eq!(
@@ -15095,6 +15157,7 @@ mod tests {
                 max_output: 384_000,
             },
             &CancellationToken::new(),
+            &mut None,
         )
         .await;
         assert_eq!(
@@ -15472,6 +15535,18 @@ mod tests {
             records[1]["declineRetries"], 3,
             "a re-judged run keeps the count its source recorded: {}",
             records[1]
+        );
+        for record in &records[..2] {
+            assert!(
+                record["judgeEstimate"].is_f64() && record["judgeBudget"].is_f64(),
+                "a re-judged run states the fit its new judge took: {record}"
+            );
+        }
+        assert_eq!(
+            records[2]["judgeEstimate"],
+            Value::Null,
+            "a run whose judge was never asked records no fit: {}",
+            records[2]
         );
         assert_eq!(
             previously_unjudged["arm"], "current",
@@ -17197,24 +17272,28 @@ mod tests {
         assert_eq!(records.len(), 4, "one run per arm and scenario");
         for record in &records {
             assert_eq!(record["failed"], false, "{record}");
+            let estimate = record["judgeEstimate"].as_f64().unwrap();
+            let budget = record["judgeBudget"].as_f64().unwrap();
+            assert_eq!(
+                budget, 39_800.,
+                "the judge's budget is its declared window less its output cap"
+            );
             if record["scenario"] == "case" {
                 assert_eq!(record["judgeOutcome"], "judged", "{record}");
                 assert_eq!(record["probes"][0]["verdict"], "present", "{record}");
+                assert!(
+                    budget - estimate > 4_000.,
+                    "the judged view keeps headroom under the judge's budget: {record}"
+                );
             } else {
                 assert_eq!(record["judgeOutcome"], "unfit", "{record}");
                 assert_eq!(record["probes"][0]["verdict"], "unparsed", "{record}");
                 let error = record["judgeError"].as_str().unwrap();
                 assert!(error.starts_with("the judge view needs about "), "{error}");
                 assert!(error.contains(" tokens; the judge's budget is "), "{error}");
-                let numbers = error
-                    .split(|character: char| !character.is_ascii_digit() && character != '.')
-                    .filter(|part| !part.is_empty())
-                    .map(|part| part.parse::<f64>().unwrap())
-                    .collect::<Vec<_>>();
-                assert_eq!(numbers.len(), 2, "{error}");
                 assert!(
-                    numbers[0] - numbers[1] > 4_000.,
-                    "the overgrown view clears the judge's budget with room to spare: {error}"
+                    estimate - budget > 4_000.,
+                    "the overgrown view clears the judge's budget with room to spare: {record}"
                 );
             }
         }
@@ -17247,6 +17326,44 @@ mod tests {
             report.contains("candidate is inconclusive: no comparison is a regression"),
             "{report}"
         );
+    }
+
+    /// A judge that outlives its phase budget records a failed call, and the
+    /// record keeps the fit the run took before the judge's first call, so it
+    /// reads apart from a run that never reached the check
+    /// (model-prompts §8.1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_judge_that_outlives_its_budget_keeps_the_fit_it_took() {
+        let fixture = Fixture::holding(
+            "judge-timeout",
+            judged,
+            |text| {
+                text.contains("You check statements")
+                    .then_some(Duration::from_secs(60))
+            },
+            json!({
+                "message": "Say hello.",
+                "budget": {"turns": 4, "seconds": 120, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[],
+            24_000,
+        )
+        .await;
+        let mut options = fixture.judge_options(fixture.directory.join("out"));
+        options.judge_budget_ms = Some(200);
+        fixture.evaluate(&options).await.unwrap();
+        let records = fixture.records(&options.out);
+        assert_eq!(records.len(), 2, "one run per arm");
+        for record in &records {
+            assert_eq!(record["judgeOutcome"], "call_failed", "{record}");
+            let estimate = record["judgeEstimate"].as_f64().unwrap();
+            let budget = record["judgeBudget"].as_f64().unwrap();
+            assert!(
+                estimate < budget,
+                "the view fitted the judge before its first call: {record}"
+            );
+        }
     }
 
     /// A run offers the shipped assembly's whole tool catalog — the workspace
