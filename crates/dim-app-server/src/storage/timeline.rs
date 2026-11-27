@@ -3147,10 +3147,12 @@ fn chunk<T>(connection: &mut Connection, step: impl FnOnce(&Connection) -> Resul
 /// Copies a fork's rows in bounded transactions; the final transaction
 /// inserts the session row, so an interrupted copy leaves no Session.
 ///
-/// A fork id that already names a stored Session — byte-identical or only by
-/// case — is refused before the first chunk transaction (#2204): the refusal
-/// writes nothing and runs no cleanup, so the cleanup's drop of every row of
-/// the id can never reach the Session that already owned it.
+/// A fork id that names a stored Session — byte-identical or only by case —
+/// is refused inside the first chunk transaction, before its first write
+/// (#2204): the refusal rolls that transaction back, so it writes nothing and
+/// runs no cleanup. The cleanup of a copy refused later drops the id's rows
+/// only while no Session of that exact id exists; one another connection
+/// committed during the copy keeps the cleanup from deleting its rows.
 fn copy_fork(
     connection: &mut Connection,
     source: &str,
@@ -3160,12 +3162,20 @@ fn copy_fork(
     arrays: &BTreeMap<String, u64>,
     config: &str,
 ) -> Result<()> {
-    reject_conflicting_id(connection, fork)?;
     let copied = copy_fork_rows(connection, source, fork, at, content, arrays, config);
-    if copied.is_err()
-        && let Err(cleanup) = drop_session(connection, fork)
-    {
-        tracing::error!(session_id = fork, error = %cleanup, "Incomplete fork rows were kept");
+    if copied.is_err() {
+        match drop_fork_rows(connection, fork) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::error!(
+                    session_id = fork,
+                    "Incomplete fork rows were kept: a Session of that id was committed during the copy"
+                )
+            }
+            Err(cleanup) => {
+                tracing::error!(session_id = fork, error = %cleanup, "Incomplete fork rows were kept")
+            }
+        }
     }
     copied
 }
@@ -3204,6 +3214,12 @@ fn copy_fork_rows(
         .map_err(error)?;
     let mut branches = Vec::new();
     chunk(connection, |tx| {
+        // The first conflict check shares this transaction's write lock with
+        // the copy's first writes: a conflicting Session committed before the
+        // transaction started is seen here, and none can commit before the
+        // writes once the lock is held (#2204). A refusal rolls the chunk
+        // back, so the copy writes nothing.
+        reject_conflicting_id(tx, fork)?;
         branches = tx
             .prepare("SELECT branch_id, info FROM timeline_branches WHERE session_id=?1")
             .map_err(error)?
@@ -3326,8 +3342,9 @@ fn copy_fork_rows(
         .pragma_update(None, "synchronous", "FULL")
         .map_err(error)?;
     chunk(connection, |tx| {
-        // The pre-check covered the copy's start; this re-check closes the
-        // race against an insertion committed while the chunks copied (#2204).
+        // The first chunk's check covered the copy's start; this re-check
+        // closes the race against an insertion committed while the chunks
+        // copied (#2204).
         reject_conflicting_id(tx, fork)?;
         // A fork is a new Session of the client that forked it, never its
         // source's origin (session classification §3.2).
@@ -3413,43 +3430,45 @@ fn copy_fork_rows(
     })
 }
 
-/// Removes what makes a Session visible in one transaction, then its large
-/// Timeline tables in bounded transactions.
-fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(error)?;
-    let released = chunk(connection, |tx| {
-        let released = files::release(tx, session).map_err(error)?;
+/// The rows that make a Session visible: its file and output owners, grants,
+/// title, catalog, owner and session rows and its branch directories.
+fn drop_visible_rows(tx: &Connection, session: &str) -> Result<usize> {
+    let released = files::release(tx, session).map_err(error)?;
+    tx.execute(
+        "UPDATE agent_sessions SET leader_session_id=NULL WHERE leader_session_id=?1
+         AND CASE WHEN json_valid(config) THEN json_extract(config, '$.collaborationRole') END IS NOT 'member'",
+        [session],
+    )
+    .map_err(error)?;
+    for table in [
+        "session_output_owners",
+        "session_grants",
+        "session_worktrees",
+        "session_metadata",
+        "session_catalog",
+        "session_owners",
+        "timeline_branches",
+        "agent_sessions",
+    ] {
         tx.execute(
-            "UPDATE agent_sessions SET leader_session_id=NULL WHERE leader_session_id=?1
-             AND CASE WHEN json_valid(config) THEN json_extract(config, '$.collaborationRole') END IS NOT 'member'",
+            &format!("DELETE FROM {table} WHERE session_id=?1"),
             [session],
         )
         .map_err(error)?;
-        for table in [
-            "session_output_owners",
-            "session_grants",
-            "session_worktrees",
-            "session_metadata",
-            "session_catalog",
-            "session_owners",
-            "timeline_branches",
-            "agent_sessions",
-        ] {
-            tx.execute(
-                &format!("DELETE FROM {table} WHERE session_id=?1"),
-                [session],
-            )
-            .map_err(error)?;
-        }
-        Ok(released)
-    })?;
-    // The Session is invisible now; a lost delete chunk only leaves
-    // unreachable rows for a retry.
-    connection
-        .pragma_update(None, "synchronous", "NORMAL")
-        .map_err(error)?;
+    }
+    Ok(released)
+}
+
+/// The large Timeline tables of a Session, in bounded transactions. `owned`
+/// gates each transaction together with its delete: a copy cleanup passes a
+/// check that the id still names no stored Session, so rows another
+/// connection commits under the id are never deleted; a delete passes no
+/// gate.
+fn drop_timeline_rows(
+    connection: &mut Connection,
+    session: &str,
+    owned: impl Fn(&Connection) -> bool,
+) -> Result<Option<()>> {
     for table in [
         "timeline_output_ids",
         "timeline_member_roots",
@@ -3464,7 +3483,10 @@ fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
         "timeline_array_elements",
     ] {
         loop {
-            let deleted = chunk(connection, |tx| {
+            let Some(deleted) = chunk(connection, |tx| {
+                if !owned(tx) {
+                    return Ok(None);
+                }
                 tx.execute(
                     &format!(
                         "DELETE FROM {table} WHERE rowid IN \
@@ -3473,13 +3495,69 @@ fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
                     [session],
                 )
                 .map_err(error)
-            })?;
+                .map(Some)
+            })?
+            else {
+                return Ok(None);
+            };
             if deleted == 0 {
                 break;
             }
         }
     }
+    Ok(Some(()))
+}
+
+/// Removes what makes a Session visible in one transaction, then its large
+/// Timeline tables in bounded transactions.
+fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(error)?;
+    let released = chunk(connection, |tx| drop_visible_rows(tx, session))?;
+    // The Session is invisible now; a lost delete chunk only leaves
+    // unreachable rows for a retry.
+    connection
+        .pragma_update(None, "synchronous", "NORMAL")
+        .map_err(error)?;
+    drop_timeline_rows(connection, session, |_| true)?;
     Ok(released)
+}
+
+/// The rows a failed fork copy committed, best effort. Every delete shares
+/// its transaction with a check that the id still names no stored Session:
+/// the copy is the only writer that ever wrote rows of the id without its
+/// session row, so while that check holds the rows are provably the copy's
+/// own. Once another connection has committed a Session of the id the rows
+/// can no longer be told apart, so nothing more is deleted and the copy's
+/// rows stay as unreachable rows of the id (#2204). Returns false when such
+/// a Session stopped the cleanup.
+fn drop_fork_rows(connection: &mut Connection, fork: &str) -> Result<bool> {
+    let unclaimed = |connection: &Connection, id: &str| -> Result<bool> {
+        connection
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(error)
+    };
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(error)?;
+    if !chunk(connection, |tx| {
+        if !unclaimed(tx, fork)? {
+            return Ok(false);
+        }
+        drop_visible_rows(tx, fork)?;
+        Ok(true)
+    })? {
+        return Ok(false);
+    }
+    connection
+        .pragma_update(None, "synchronous", "NORMAL")
+        .map_err(error)?;
+    Ok(drop_timeline_rows(connection, fork, |tx| unclaimed(tx, fork).unwrap_or(false))?.is_some())
 }
 
 /// The content rows the events of `source`'s `main` through `at` reference,

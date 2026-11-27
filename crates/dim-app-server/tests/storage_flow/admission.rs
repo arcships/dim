@@ -490,3 +490,246 @@ async fn case_collision_check_uses_the_derived_index() {
     drop(connection);
     db.close().await.unwrap();
 }
+
+/// A trigger that stands in for another connection committing a Session of
+/// `winner` the moment the copy writes its first `into` row for `fork` — the
+/// timing a concurrent creation would have. Its rows ride the copy's own
+/// transaction, so the interleaving is deterministic: `branches` makes the
+/// commit land with the copy's first chunk, `events` with a chunk after it.
+/// `INSERT OR IGNORE` keeps the copies of a later row from failing the
+/// statement once the commit already happened.
+fn commit_winner_when_copy_writes(connection: &Connection, into: &str, fork: &str, winner: &str) {
+    connection
+        .execute_batch(&format!(
+            "CREATE TRIGGER concurrent_creation AFTER INSERT ON {into}
+             WHEN NEW.session_id = '{fork}'
+             BEGIN
+                 INSERT OR IGNORE INTO agent_sessions (session_id, config, created_at_ms, origin)
+                     VALUES ('{winner}', '{{\"cwd\":\"/winner\"}}', 1, 'client');
+                 INSERT OR IGNORE INTO session_catalog (session_id, updated_at_ms, preview, cwd)
+                     VALUES ('{winner}', 1, 'winner-preview', '/winner');
+                 INSERT OR IGNORE INTO session_metadata (session_id, revision, title, title_source)
+                     VALUES ('{winner}', 1, 'winner-title', 'manual');
+                 INSERT OR IGNORE INTO timeline_events (session_id, branch_id, sequence, last_sequence, kind, body, event_id)
+                     VALUES ('{winner}', 'main', 99, 99, 'winner-kind', '{{\"winner\":true}}', 'winner-marker');
+             END;"
+        ))
+        .unwrap();
+}
+
+/// The concurrent winner's own rows, asserted field by field: the copy's
+/// cleanup must never reach a Session another connection committed.
+fn assert_winner_intact(connection: &Connection, winner: &str) {
+    let row: Option<(String, String)> = connection
+        .query_row(
+            "SELECT config, origin FROM agent_sessions WHERE session_id=?1",
+            [winner],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .unwrap();
+    let (config, origin) =
+        row.unwrap_or_else(|| panic!("the winning Session {winner:?} lost its agent_sessions row"));
+    assert_eq!(
+        config, "{\"cwd\":\"/winner\"}",
+        "the winning Session's config was overwritten"
+    );
+    assert_eq!(
+        origin, "client",
+        "the winning Session's origin was overwritten"
+    );
+    let catalog: Option<(i64, Option<String>, String)> = connection
+        .query_row(
+            "SELECT updated_at_ms, preview, cwd FROM session_catalog WHERE session_id=?1",
+            [winner],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(
+        catalog,
+        Some((1, Some("winner-preview".to_owned()), "/winner".to_owned())),
+        "the winning Session's catalog row must survive unchanged"
+    );
+    let metadata: Option<(i64, Option<String>)> = connection
+        .query_row(
+            "SELECT revision, title FROM session_metadata WHERE session_id=?1",
+            [winner],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(
+        metadata,
+        Some((1, Some("winner-title".to_owned()))),
+        "the winning Session's metadata row must survive unchanged"
+    );
+    let marker: Option<(String, String)> = connection
+        .query_row(
+            "SELECT kind, body FROM timeline_events WHERE session_id=?1 AND branch_id='main' AND sequence=99",
+            [winner],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(
+        marker,
+        Some(("winner-kind".to_owned(), "{\"winner\":true}".to_owned())),
+        "the winning Session's Timeline rows must survive the copy cleanup"
+    );
+}
+
+/// #2204: another connection commits the fork's target byte-identically while
+/// the copy's first chunk writes. The fork is refused and the winning Session
+/// keeps every row it committed; the cleanup may only remove rows the fork
+/// itself wrote.
+#[tokio::test]
+async fn a_concurrent_creation_during_the_first_copy_write_is_refused_and_the_winner_survives() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("source", "main"),
+        vec![text(1, "first"), text(2, "second"), text(3, "third")],
+    )
+    .await
+    .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    commit_winner_when_copy_writes(
+        &connection,
+        "timeline_branches",
+        "fork-target",
+        "fork-target",
+    );
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result = sessions
+        .fork_session("source", "fork-target", 3, &config)
+        .await;
+    assert!(
+        matches!(result, Err(AgentError::Storage(_))),
+        "a byte-identical concurrent creation must keep the fork's Storage refusal, got {result:?}"
+    );
+    assert_winner_intact(&connection, "fork-target");
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// #2204: the concurrent creation commits after the copy's first chunks, so
+/// only the final transaction's re-check can see it. The refusal must be the
+/// re-check's, and the cleanup after it must still leave the winning Session
+/// intact.
+#[tokio::test]
+async fn a_concurrent_creation_caught_by_the_final_recheck_keeps_the_winner_intact() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("source", "main"),
+        vec![text(1, "first"), text(2, "second"), text(3, "third")],
+    )
+    .await
+    .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    commit_winner_when_copy_writes(&connection, "timeline_events", "fork-target", "fork-target");
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result = sessions
+        .fork_session("source", "fork-target", 3, &config)
+        .await;
+    assert!(
+        matches!(result, Err(AgentError::Storage(_))),
+        "a byte-identical concurrent creation must keep the fork's Storage refusal, got {result:?}"
+    );
+    assert_winner_intact(&connection, "fork-target");
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// The final transaction's re-check tells a case-only variant apart from a
+/// byte-identical duplicate: the concurrent creation commits `Fork-Target`
+/// while the copy targets `fork-target`, so the refusal is InvalidInput and
+/// the variant's rows stay untouched.
+#[tokio::test]
+async fn the_final_recheck_rejects_a_case_variant_with_invalid_input() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("source", "main"),
+        vec![text(1, "first"), text(2, "second"), text(3, "third")],
+    )
+    .await
+    .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    commit_winner_when_copy_writes(&connection, "timeline_events", "fork-target", "Fork-Target");
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result = sessions
+        .fork_session("source", "fork-target", 3, &config)
+        .await;
+    assert!(
+        matches!(result, Err(AgentError::InvalidInput(_))),
+        "a concurrent creation differing only by case must be InvalidInput, got {result:?}"
+    );
+    assert_winner_intact(&connection, "Fork-Target");
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
