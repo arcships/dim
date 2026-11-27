@@ -35,7 +35,10 @@ jobs:
         name: List linked open PRs
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: echo "prs=$(node scripts/issue-gate.mjs --discover)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          prs=$(node scripts/issue-gate.mjs --discover)
+          printf 'prs=%s\n' "$prs" >> "$GITHUB_OUTPUT"
 
   evaluate-pr:
     name: evaluate-pr
