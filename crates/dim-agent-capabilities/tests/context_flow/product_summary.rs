@@ -2233,3 +2233,87 @@ async fn the_regrowth_floor_debounces_compactions_at_a_narrow_window() {
     );
     agent.close().await.unwrap();
 }
+
+/// Under a narrowed compaction window the length sentence's target scales
+/// with the compaction budget, not the physical input budget (ContextCompaction
+/// §13.3, #2235): the window leaves a physical input budget of 3,600 and a
+/// compaction budget of 1,600, so the target is min(0.5 × 400, 0.10 × 1,600)
+/// rounded down to 100, where the physical budget would give 200.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_summary_target_scales_with_the_compaction_budget() {
+    let prompt: Arc<str> = Arc::from(
+        "Keep the summary factual and complete, and preserve the constraints in force. ".repeat(40),
+    );
+    let sentence = "Aim for a summary of about {target} tokens.";
+    let recorder = Arc::new(Recorder {
+        prefix: prompt.clone(),
+        ..Default::default()
+    });
+    let (agent, session) = product_session_with(
+        recorder.clone(),
+        400,
+        ProductSummaryStrategyConfig {
+            system_prompt: Some(prompt.clone()),
+            target: Some(TargetRule {
+                output_share: 0.5,
+                input_share: 0.10,
+            }),
+            length_sentence: Some(LengthSentence::new(sentence).unwrap()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let adopted = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+        .unwrap()
+        .unwrap()
+        .configuration
+        .unwrap();
+    let mut selected = ModelSelection {
+        provider_id: adopted.provider_id,
+        model_id: adopted.model_id,
+        capability_snapshot: adopted.capability_snapshot,
+        config: adopted.config,
+        metadata: adopted.metadata,
+    };
+    selected.metadata = Some(RequestMetadata {
+        session_id: Some("old-session".into()),
+        run_id: Some("old-run".into()),
+        trace_id: Some("old-trace".into()),
+        turn_id: Some("old-turn".into()),
+        startup: Some(ModelStartup {
+            connection: None,
+            auto_compact_window: Some(2_000),
+        }),
+        agent_id: None,
+        extensions: Default::default(),
+    });
+    session
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(Some(selected), Vec::new())
+        .await
+        .unwrap();
+    for text in [cjk(6_000), cjk(1_800), cjk(1_800), cjk(1_800)] {
+        session
+            .submit(text, InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let (_command, _events) = compact_now(&session).await;
+    let requests = recorder.requests.lock().unwrap().clone();
+    assert!(!requests.is_empty(), "the summarizer runs");
+    let expected = format!("{prompt} {}", sentence.replace("{target}", "100"));
+    for request in &requests {
+        let Some(SystemPrompt::Text(system)) = request.system.as_deref() else {
+            panic!("a summarizer request has no system prompt")
+        };
+        assert_eq!(
+            system,
+            expected.as_str(),
+            "the target in the length sentence scales with the compaction budget"
+        );
+    }
+    agent.close().await.unwrap();
+}
