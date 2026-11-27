@@ -2449,11 +2449,16 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
 }
 
 /// Entries without an explicit `modalityCapabilities` list are recognized for
-/// video, speech and transcription by their kind, or — when the kind is
-/// conversational or absent — by a video-only or audio-only output or a
-/// `seedance`/`minimax-h3` id. An explicit generation kind wins over the
-/// output and id guesses: a malformed row like the zenmux video entries
-/// declares `image-generation` with a video output and serves nothing.
+/// video, speech and transcription by their kind — normalized as the catalog
+/// normalizes it, so `video_generation` is `video-generation` and `model` is
+/// unspecified — or, when the kind is conversational or absent, by a
+/// video-only or audio-only output or a whole-word `seedance`/`minimax-h3`
+/// id. An explicit generation kind wins over the output and id guesses and
+/// answers by its own rule alone: a malformed row like the zenmux video
+/// entries declares `image-generation` with a video output and serves
+/// nothing, a stale image marker adds no image operation to a transcription
+/// entry, and `imageGeneration: false` wins over every inferred image
+/// operation, an `image-edit` kind's included.
 #[tokio::test]
 async fn selectable_modality_models_recognize_video_speech_and_transcription() {
     let home =
@@ -2548,7 +2553,8 @@ async fn selectable_modality_models_recognize_video_speech_and_transcription() {
             "bytedance/seedance-2.0",
             json!({"type":"chat","modalities":{"input":["text","image"]}}),
         ),
-        // `imageGeneration: false` negates the image inference alone.
+        // `imageGeneration: false` negates the image operations alone,
+        // never the video, speech or transcription ones.
         undeclared(
             "video-with-image-off",
             json!({"type":"video-generation","imageGeneration":false,
@@ -2584,6 +2590,78 @@ async fn selectable_modality_models_recognize_video_speech_and_transcription() {
         undeclared(
             "plain-chat",
             json!({"type":"chat","modalities":{"input":["text"],"output":["text"]}}),
+        ),
+        // The catalog's kind normalization (`_` as `-`, `model` as
+        // unspecified) answers for the recognizer too.
+        undeclared(
+            "video-underscore-kind",
+            json!({"type":"video_generation","modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        undeclared(
+            "speech-underscore-kind",
+            json!({"type":"speech_synthesis","modalities":{"input":["text"],"output":["audio"]}}),
+        ),
+        undeclared(
+            "model-kind-image-output",
+            json!({"type":"model","modalities":{"input":["text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "model-kind-video-output",
+            json!({"type":"model","modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        // `imageGeneration: false` opts the entry out of image generation:
+        // it wins over the inferred image operations of a declared image
+        // kind, an `image-edit` one included.
+        undeclared(
+            "image-edit-kind",
+            json!({"type":"image-edit","modalities":{"input":["image","text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "image-edit-optout",
+            json!({"type":"image-edit","imageGeneration":false,
+                "modalities":{"input":["image","text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "image-edit-underscore-optout",
+            json!({"type":"image_edit","imageGeneration":false,
+                "modalities":{"input":["image","text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "image-kind-optout",
+            json!({"type":"image-generation","imageGeneration":false,
+                "modalities":{"input":["text","image"],"output":["image"]}}),
+        ),
+        // A declared non-image kind answers by its own rule alone: a stale
+        // image marker adds no image operation to it.
+        undeclared(
+            "stt-stale-image-flag",
+            json!({"type":"stt","imageGeneration":true,
+                "modalities":{"input":["audio"],"output":["text"]}}),
+        ),
+        undeclared(
+            "doubao-seedream-transcriber",
+            json!({"type":"stt","modalities":{"input":["audio"],"output":["text"]}}),
+        ),
+        undeclared(
+            "stt-with-image-off",
+            json!({"type":"stt","imageGeneration":false,
+                "modalities":{"input":["audio"],"output":["text"]}}),
+        ),
+        // The id rules read whole words: `seedancechat` and `minimax-h3max`
+        // name no family, while the catalog's alias spellings do.
+        undeclared(
+            "seedancechat",
+            json!({"type":"chat","modalities":{"input":["text"],"output":["text"]}}),
+        ),
+        undeclared(
+            "minimax-h3max",
+            json!({"type":"chat","modalities":{"input":["text"],"output":["text"]}}),
+        ),
+        // An explicit non-empty declaration is the whole answer too.
+        undeclared(
+            "video-kind-declares-transcribe",
+            json!({"type":"video-generation","modalityCapabilities":["speech.transcribe"],
+                "modalities":{"input":["text"],"output":["video"]}}),
         ),
     ];
     provider.create(mine, &cancel).await.unwrap();
@@ -2622,6 +2700,20 @@ async fn selectable_modality_models_recognize_video_speech_and_transcription() {
         ("zenmux-malformed", None),
         ("audio-kind", None),
         ("plain-chat", None),
+        ("video-underscore-kind", Some(&["video.generate"])),
+        ("speech-underscore-kind", Some(&["speech.synthesize"])),
+        ("model-kind-image-output", Some(&["image.generate"])),
+        ("model-kind-video-output", Some(&["video.generate"])),
+        ("image-edit-kind", Some(&["image.edit"])),
+        ("image-edit-optout", None),
+        ("image-edit-underscore-optout", None),
+        ("image-kind-optout", None),
+        ("stt-stale-image-flag", Some(&["speech.transcribe"])),
+        ("doubao-seedream-transcriber", Some(&["speech.transcribe"])),
+        ("stt-with-image-off", Some(&["speech.transcribe"])),
+        ("seedancechat", None),
+        ("minimax-h3max", None),
+        ("video-kind-declares-transcribe", Some(&["speech.transcribe"])),
     ];
     for (id, expected) in cases {
         let expected: Option<Vec<String>> = expected.map(|operations| {

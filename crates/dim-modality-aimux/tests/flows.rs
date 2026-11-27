@@ -1649,3 +1649,119 @@ async fn cataloged_seedream_image_entries_list_unavailable_with_the_adapter_reas
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_non_whole_word_seedance_id_is_neither_listed_nor_submitted() {
+    // Recognition and routing read the same whole-word families: a neutral
+    // row whose id merely contains `seedance` names no family, so it declares
+    // no video operation and never becomes a video option, and submitting it
+    // is refused before any request; the whole-word spelling of the same
+    // catalog stays an option with the adapter reason.
+    let stub = stub(0).await;
+    let home = home("seedance-word-family");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f5";
+    let descriptor = |model_id: &str| {
+        json!({
+            "modelId": model_id,
+            "displayName": model_id,
+            "status": "active",
+            "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata": {"raw": {"type": "chat",
+                "modalities": {"input": ["text"], "output": ["text"]}}}
+        })
+    };
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [descriptor("seedancechat"), descriptor("doubao-seedance-1-0-pro-250528"), descriptor("minimax-h3")],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let video = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "video")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let options = video["options"].as_array().unwrap();
+    assert!(
+        !options
+            .iter()
+            .any(|option| option["modelId"] == "seedancechat"),
+        "seedancechat declares no video operation: {video}"
+    );
+    let alias = options
+        .iter()
+        .find(|option| option["providerId"] == created && option["modelId"] == "doubao-seedance-1-0-pro-250528")
+        .unwrap_or_else(|| panic!("the whole-word spelling is a video option: {video}"));
+    assert_eq!(
+        alias["available"], false,
+        "the Ark word family is unavailable on the compatible route: {alias}"
+    );
+    assert!(
+        alias["reason"]["detail"].as_str().is_some_and(|detail| !detail.is_empty()),
+        "the refusal carries its reason: {alias}"
+    );
+    let served = options
+        .iter()
+        .find(|option| option["providerId"] == created && option["modelId"] == "minimax-h3")
+        .unwrap_or_else(|| panic!("minimax-h3 is a video option: {video}"));
+    assert_eq!(
+        served["available"], true,
+        "the compatible minimax id is served end to end, so the operation itself answers: {served}"
+    );
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "video", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model(created, "seedancechat")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "model_unavailable",
+        "seedancechat is no selectable modality model: {refused}"
+    );
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "video", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model(created, "doubao-seedance-1-0-pro-250528")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the whole-word spelling is refused by the adapter: {refused}"
+    );
+    assert_eq!(
+        stub.starts("/v1/videos"),
+        0,
+        "no video start reaches the gateway"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

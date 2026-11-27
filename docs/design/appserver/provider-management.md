@@ -1115,27 +1115,35 @@ order; a model that declares none is omitted. An entry declares its operations
 in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
 included, is the whole answer. An entry with no list is recognized for each
 operation from its kind, its output or its id, because relay and account
-catalogs list such models without media metadata. A `type` of `video` or
+catalogs list such models without media metadata. The kind is read the way
+the catalog reads every `type` — lowercased, `_` as `-`, `model` and empty as
+unspecified — so equivalent spellings answer alike. A kind of `video` or
 `video-generation` declares `video.generate`, `speech`, `speech-synthesis` or
-`tts` declares `speech.synthesize`, `transcription`, `speech-transcription` or
-`stt` declares `speech.transcribe`, and `image-edit` declares `image.edit`
-alone. A conversational or unspecified kind (`chat`, `other` or no `type`) is
-neutral about generation, so the output and the id speak there: an output of
-`video` alone, or an id whose last path segment names `seedance` or starts
-with `minimax-h3` (outside the `minimax-h3-image` variants, which are image
-models), declares `video.generate`, and an output of `audio` alone declares
-`speech.synthesize`. No rule infers a use the entry's own kind contradicts: a
-declared generation kind answers by its own rule alone, so a gateway row
-typed `image-generation` with a video output serves nothing until its
-declaration is corrected. The entry is recognized as an image model when its
-id is `arcship-image`, a known ID in the `gpt-image-2` or
-`grok-imagine-image` family, or names `seedream`, or its `type` is
-`image`/`image-generation` with image or no stated output, or `imageGeneration`
-is true, or a neutral kind carries an output of `image` alone. Such a model
-declares `image.generate`, and `image.edit` too when it also reads images or
-is a known model; `imageGeneration: false` negates the image inference alone,
-not the video, speech or transcription ones. The connection rule below reads
-the same declaration. The read applies the same provider, account, model,
+`tts` declares `speech.synthesize`, `transcription`, `speech-transcription`
+or `stt` declares `speech.transcribe`, `image` or `image-generation` with
+image or no stated output declares the image operations, and `image-edit`
+declares `image.edit` alone. `imageGeneration: false` opts the entry out of
+image generation and wins over every inferred image operation, a declared
+image kind included, so an `image-edit` entry that carries it serves nothing;
+the opt-out negates the image operations alone, not the video, speech or
+transcription ones. A declared kind answers by its own rule alone, so no
+output, id or `imageGeneration` marker adds a use it contradicts: a
+transcription entry with a stale image marker transcribes alone, and a
+gateway row typed `image-generation` with a video output serves nothing
+until its declaration is corrected. Only a conversational or unspecified
+kind (`chat`, `other` or no `type`) is neutral about generation, so the
+output and the id speak there alone: an output of `video` alone, or an id
+naming the `seedance` word family or both `minimax` and `h3` words without
+`image` — the same whole-word families the adapter routing reads, so
+`seedancechat` names none and `minimax-h3-image` is an image model —
+declares `video.generate`, and an output of `audio` alone declares
+`speech.synthesize`. On a neutral kind the entry is recognized as an image
+model when its id is `arcship-image`, a known ID in the `gpt-image-2` or
+`grok-imagine-image` family, or names `seedream`, or `imageGeneration` is
+true, or the output is `image` alone, always subject to the opt-out. Such a
+model declares `image.generate`, and `image.edit` too when it also reads
+images or is a known model. The connection rule below reads the same
+declaration. The read applies the same provider, account, model,
 route, credential and status rules as `selectableModels`, without its
 text-modality, chat-kind and declared-text-limit requirements: a model without
 a `text` modality, a non-chat model and a model with `limits_undeclared`
