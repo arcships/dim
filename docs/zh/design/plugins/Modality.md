@@ -292,7 +292,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 - **问题。** `modality.capabilities` 必须从 Provider 能选择的模型中计算 `options` 与自动解析。Provider 的模型选择端口只解析单个模型，而目录读取是客户端管理方法，因此进程所有者无法枚举可选集合及其声明能力。
 - **现有机制。** 单模型选择端口无法按操作能力过滤。新增客户端方法会把管理面暴露给所有者并重复目录。Provider 侧的只读契约由 [#790](https://github.com/arcships/dim/issues/790) 单独跟踪。已交付：`dim-agent-capabilities` 中的进程 host 端口 `SelectableModelsHost`，由 Provider 与配置式模型配置提供，其 `selectableModels` 读取枚举执行时接受的模型及其声明能力。
-- **需要的能力。** 该读取是按执行形态定制的：未声明 `text` modality 的模型、非 chat 模型以及未声明文本上限的模型都不会出现，因此 Modality 路由到的图像、视频、语音、音乐、音频、资产、动作与实时模型全部缺失。Provider 在同一端口上新增一次读取 `selectableForModality`，返回它为非对话用途会选择的每个模型，以及该模型目录条目声明的 `<category>.<operation>` id。它应用与 `selectableModels` 相同的 provider、账号、模型、路由、凭据与状态规则，但去掉上述三项对话要求。
+- **需要的能力。** 该读取是按执行形态定制的：未声明 `text` modality 的模型、非 chat 模型以及未声明文本上限的模型都不会出现，因此 Modality 路由到的图像、视频、语音、音乐、音频、资产、动作与实时模型全部缺失。Provider 在同一端口上新增一次读取 `selectableForModality`，返回它为非对话用途会选择的每个模型、该模型目录条目声明的 `<category>.<operation>` id，以及目录把它解析到的那条路由的 `ModelProtocol`——按协议家族的解析据此分派（A.2）。它应用与 `selectableModels` 相同的 provider、账号、模型、路由、凭据与状态规则，但去掉上述三项对话要求。
 - **顺序影响。** 每次 `capabilities` 调用和任务提交时读取；不重载，不涉及 Timeline。
 - **所有者/issue。** Provider，[#790](https://github.com/arcships/dim/issues/790) 与本次改动。
 

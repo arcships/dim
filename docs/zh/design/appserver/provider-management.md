@@ -630,7 +630,9 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 **第二个操作：`selectableForModality`。** 同一端口还提供一次面向非对话用途的进程读取
 （Modality §9.2）：操作 `selectableForModality`，异步，请求 `{}`，回复
 `{models: ModalityModelSnapshot[]}`，元素为
-`{target: {providerId, modelId}, operations: string[]}`。`operations` 是该模型目录条目声明的
+`{target: {providerId, modelId}, operations: string[], protocol: ModelProtocol}`。`protocol`
+是该模型的路由：消费方按它解析没有厂商行对应的提供方的适配器绑定（Modality A.2）。
+`operations` 是该模型目录条目声明的
 `<category>.<operation>` id，按条目中的顺序；未声明任何操作的模型被省略。条目在
 `metadata.raw.modalityCapabilities` 中声明操作，显式列表（包括空列表）就是全部答案。没有列表的
 条目会被识别为图像模型，因为中转与账号目录列出这类模型时不带媒体元数据：其 id 是已知图像模型之一

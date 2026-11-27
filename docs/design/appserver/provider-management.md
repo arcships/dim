@@ -1107,7 +1107,9 @@ read. Errors use the public codes stated below.
 process read, for non-conversational uses (Modality §9.2): operation
 `selectableForModality`, asynchronous, request `{}`, reply
 `{models: ModalityModelSnapshot[]}` with each element
-`{target: {providerId, modelId}, operations: string[]}`. `operations` holds the
+`{target: {providerId, modelId}, operations: string[], protocol: ModelProtocol}`.
+`protocol` is the model's route: the consumer resolves the adapter binding of a
+provider no vendor row names from it (Modality A.2). `operations` holds the
 `<category>.<operation>` ids the model's catalog entry declares, in that entry's
 order; a model that declares none is omitted. An entry declares its operations
 in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
