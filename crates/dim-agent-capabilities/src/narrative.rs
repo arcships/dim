@@ -1047,7 +1047,7 @@ impl<'a> Narrative<'a> {
             Some((input, live)) => parts.push(match (line_write(input), &input.user) {
                 (Some(write), _) => format!("turn: {}", write_line(&write, false, self.person)),
                 (None, Some(user)) => format!("turn: user \"{}\"", part(&user_text(user))),
-                (None, None) => format!("turn: {}", part(&blocks_name(&input.blocks, live))),
+                (None, None) => format!("turn: {}", blocks_line(&input.blocks, live)),
             }),
             None => parts.push("turn: no opening input".into()),
         }
@@ -1384,11 +1384,7 @@ fn input_line(input: &InputMessageData, live: &[bool], working: bool, person: Pe
     match (&input.user, input.blocks.is_empty()) {
         (Some(user), true) => format!("{speaker}: {}", part(&user_text(user))),
         (Some(user), false) => format!("{speaker}: {} + {}", part(&user_text(user)), part(&blocks)),
-        (None, _) => format!(
-            "{}: {}",
-            part(&blocks),
-            part(&first_body_line(&input.blocks))
-        ),
+        (None, _) => blocks_line(&input.blocks, live),
     }
 }
 
@@ -1443,7 +1439,7 @@ fn line_write(input: &InputMessageData) -> Option<LineWrite<'_>> {
         let write = match name {
             "dim-branch-message" => LineWrite::Message {
                 from: attribute(head, "from")?,
-                text: body_line(text, name),
+                text: body_line(text),
                 final_message: attribute(head, "final") == Some("true"),
             },
             "dim-branch-idle" => LineWrite::Idle {
@@ -1505,13 +1501,20 @@ fn write_line(write: &LineWrite<'_>, working: bool, person: Person) -> String {
     }
 }
 
-/// The first line of a marked block's body, without its closing tag.
-fn body_line<'a>(text: &'a str, name: &str) -> &'a str {
-    let Some((_, rest)) = text.split_once('>') else {
-        return text;
+/// The first line of a block's body: after its opening tag and without its
+/// closing tag, or of its text when it opens with no tag (§3.4).
+fn body_line(text: &str) -> &str {
+    let body = match tag(text) {
+        Some(head) => {
+            let name = head.split(' ').next().unwrap_or_default();
+            let (_, rest) = text.split_once('>').unwrap_or_default();
+            let rest = rest.trim();
+            rest.strip_suffix(format!("</{name}>").as_str())
+                .unwrap_or(rest)
+                .trim()
+        }
+        None => text,
     };
-    let closing = format!("</{name}>");
-    let body = rest.trim().trim_end_matches(closing.as_str()).trim();
     body.lines().next().unwrap_or_default()
 }
 
@@ -1532,19 +1535,17 @@ fn tag(text: &str) -> Option<&str> {
     (!head.is_empty() && !head.starts_with('/')).then_some(head)
 }
 
-/// The first line of a block's body: after its opening tag, or of its text.
-fn first_body_line(blocks: &[InputBlock]) -> String {
-    let Some(InputBlock::Raw { text, .. }) = blocks.first() else {
-        return String::new();
-    };
-    let body = match tag(text) {
-        Some(_) => text
-            .split_once('>')
-            .map(|(_, body)| body.trim_start_matches('\n'))
-            .unwrap_or(text),
-        None => text.as_str(),
-    };
-    body.split('\n').next().unwrap_or_default().to_owned()
+/// An input with blocks only, told by its blocks and the first line of the
+/// first block's body, or by its blocks alone when that body is empty (§3.4);
+/// a turn it opens is titled the same (§3.6).
+fn blocks_line(blocks: &[InputBlock], live: &[bool]) -> String {
+    let names = part(&blocks_name(blocks, live));
+    match blocks.first() {
+        Some(InputBlock::Raw { text, .. }) if !body_line(text).is_empty() => {
+            format!("{names}: {}", part(body_line(text)))
+        }
+        _ => names,
+    }
 }
 
 fn call_line(call: &Call, origin: u64, person: Person) -> String {
