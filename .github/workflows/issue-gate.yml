@@ -12,19 +12,42 @@ permissions:
   pull-requests: read
   checks: write
 
-concurrency:
-  group: issue-gate-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
-
 jobs:
-  evaluate:
-    name: evaluate
+  discover:
+    name: discover
+    if: github.event_name == 'issues'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    outputs:
+      prs: ${{ steps.list.outputs.prs }}
     steps:
       # Trusted definition: pull_request_target runs this file from the base branch.
       # Checkout the base branch only; never check out or run pull request code.
-      # The script owns the required issue-gate check on the PR head for both events.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - id: list
+        name: List linked open PRs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: echo "prs=$(node scripts/issue-gate.mjs --discover)" >> "$GITHUB_OUTPUT"
+
+  evaluate-pr:
+    name: evaluate-pr
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    concurrency:
+      group: issue-gate-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # Trusted definition: pull_request_target runs this file from the base branch.
+      # Checkout the base branch only; never check out or run pull request code.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -36,4 +59,35 @@ jobs:
       - name: Evaluate linked issue
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ github.event.pull_request.number }}
+        run: node scripts/issue-gate.mjs
+
+  evaluate-issue:
+    name: evaluate-issue
+    needs: discover
+    if: always() && !cancelled() && needs.discover.result == 'success' && needs.discover.outputs.prs != '[]'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.discover.outputs.prs) }}
+    concurrency:
+      group: issue-gate-pr-${{ matrix.pr }}
+      cancel-in-progress: true
+    steps:
+      # Trusted definition: pull_request_target runs this file from the base branch.
+      # Checkout the base branch only; never check out or run pull request code.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Evaluate linked issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ matrix.pr }}
         run: node scripts/issue-gate.mjs

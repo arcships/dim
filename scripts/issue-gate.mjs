@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 const API = 'https://api.github.com';
 const CHECK_NAME = 'issue-gate';
 const MAX_REFS = 20;
+const MAX_PAGES = 10;
+const MAX_LINKED_PRS = 20;
 const MAX_SUMMARY = 60_000;
 
 export function stripNonLinks(body) {
@@ -67,12 +69,13 @@ async function api(path, options = {}) {
 
 async function pages(path) {
   const items = [];
-  for (let page = 1; ; page += 1) {
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
     const separator = path.includes('?') ? '&' : '?';
     const batch = await api(`${path}${separator}per_page=100&page=${page}`);
     items.push(...batch);
     if (batch.length < 100) return items;
   }
+  throw new Error(`Too many pages: ${path}`);
 }
 
 async function getPr(number) {
@@ -114,17 +117,41 @@ async function getClosingRefs(number) {
     .map((node) => node.number);
 }
 
+async function scanOpenPrsForIssue(issueNumber) {
+  const repository = required('GITHUB_REPOSITORY');
+  const prs = await pages(`/repos/${repository}/pulls?state=open`);
+  const linked = new Set();
+  for (const pr of prs.slice(0, MAX_LINKED_PRS)) {
+    const refs = new Set(parseRefs(pr.body ?? ''));
+    if (!refs.has(issueNumber)) {
+      try {
+        for (const number of await getClosingRefs(pr.number)) refs.add(number);
+      } catch (error) {
+        if (error.status === 404) continue;
+        throw error;
+      }
+    }
+    if (refs.has(issueNumber)) linked.add(pr.number);
+  }
+  return [...linked];
+}
+
 async function getLinkedOpenPrs(issueNumber) {
   const repository = required('GITHUB_REPOSITORY');
-  const events = await pages(`/repos/${repository}/issues/${issueNumber}/timeline`);
-  const numbers = new Set();
-  for (const event of events) {
-    if (event.event !== 'cross-referenced') continue;
-    const source = event.source;
-    if (!sameRepository(source, repository)) continue;
-    if (source.issue.pull_request && source.issue.state === 'open') numbers.add(source.issue.number);
+  try {
+    const events = await pages(`/repos/${repository}/issues/${issueNumber}/timeline`);
+    const numbers = new Set();
+    for (const event of events) {
+      if (event.event !== 'cross-referenced') continue;
+      const source = event.source;
+      if (!sameRepository(source, repository)) continue;
+      if (source.issue.pull_request && source.issue.state === 'open') numbers.add(source.issue.number);
+    }
+    return [...numbers].slice(0, MAX_LINKED_PRS);
+  } catch (error) {
+    console.error(`Timeline read failed (${error.message}); scanning open PRs.`);
+    return scanOpenPrsForIssue(issueNumber);
   }
-  return [...numbers];
 }
 
 async function evaluate(pr) {
@@ -139,7 +166,7 @@ async function evaluate(pr) {
     };
   }
   const refs = parseRefs(pr.body);
-  const numbers = [...new Set([...closing, ...refs])].slice(0, MAX_REFS);
+  const numbers = [...new Set([...refs, ...closing.slice(0, MAX_REFS)])].slice(0, MAX_REFS * 2);
   if (!numbers.length) {
     return {
       ok: false,
@@ -203,17 +230,26 @@ function checkId(pr) {
   return `${CHECK_NAME}:${pr.number}`;
 }
 
-async function findCheckRun(pr) {
+async function findCheckRuns(pr) {
   const repository = required('GITHUB_REPOSITORY');
   const response = await api(
-    `/repos/${repository}/commits/${pr.head}/check-runs?check_name=${CHECK_NAME}&per_page=100`,
+    `/repos/${repository}/commits/${pr.head}/check-runs?check_name=${CHECK_NAME}&filter=all&per_page=100`,
   );
   const runs = Array.isArray(response) ? response : response.check_runs ?? [];
-  return (
-    runs.find((run) => run.name === CHECK_NAME && run.external_id === checkId(pr)) ??
-    runs.find((run) => run.name === CHECK_NAME && !run.external_id) ??
-    null
-  );
+  const own = runs
+    .filter((run) => run.name === CHECK_NAME && run.external_id === checkId(pr))
+    .sort((left, right) => right.id - left.id);
+  if (own.length) return own;
+  return runs.filter((run) => run.name === CHECK_NAME && !run.external_id).slice(0, 1);
+}
+
+async function patchCheckRun(id, payload) {
+  const repository = required('GITHUB_REPOSITORY');
+  await api(`/repos/${repository}/check-runs/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 }
 
 async function beginCheckRun(pr) {
@@ -223,18 +259,23 @@ async function beginCheckRun(pr) {
     title: 'Evaluating linked issue',
     summary: 'Checking the PR body and linked issue labels.',
   };
-  const existing = await findCheckRun(pr).catch((error) => {
+  const existing = await findCheckRuns(pr).catch((error) => {
     console.error(`Could not read the existing issue-gate check: ${error.message}`);
-    return null;
+    return [];
   });
-  if (existing) {
+  if (existing.length) {
     try {
-      await api(`/repos/${repository}/check-runs/${existing.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'in_progress', external_id: checkId(pr), output, ...(details ? { details_url: details } : {}) }),
-      });
-      return existing.id;
+      await Promise.all(
+        existing.map((run) =>
+          patchCheckRun(run.id, {
+            status: 'in_progress',
+            external_id: checkId(pr),
+            output,
+            ...(details ? { details_url: details } : {}),
+          }),
+        ),
+      );
+      return existing.map((run) => run.id);
     } catch (error) {
       if (error.status !== 422) throw error;
     }
@@ -251,28 +292,27 @@ async function beginCheckRun(pr) {
       ...(details ? { details_url: details } : {}),
     }),
   });
-  return created.id;
+  return [created.id];
 }
 
-async function finishCheckRun(id, result) {
-  const repository = required('GITHUB_REPOSITORY');
+async function finishCheckRun(ids, result) {
   const details = detailsUrl();
-  await api(`/repos/${repository}/check-runs/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      status: 'completed',
-      conclusion: result.ok ? 'success' : 'failure',
-      completed_at: new Date().toISOString(),
-      output: checkOutput(result),
-      ...(details ? { details_url: details } : {}),
-    }),
-  });
+  await Promise.all(
+    ids.map((id) =>
+      patchCheckRun(id, {
+        status: 'completed',
+        conclusion: result.ok ? 'success' : 'failure',
+        completed_at: new Date().toISOString(),
+        output: checkOutput(result),
+        ...(details ? { details_url: details } : {}),
+      }),
+    ),
+  );
 }
 
-async function failCheckRun(id, error) {
+async function failCheckRun(ids, error) {
   try {
-    await finishCheckRun(id, { ok: false, title: 'Gate error', summary: error.message });
+    await finishCheckRun(ids, { ok: false, title: 'Gate error', summary: error.message });
   } catch (finishError) {
     console.error(`Could not record the gate failure: ${finishError.message}`);
   }
@@ -283,56 +323,37 @@ async function main() {
   const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
   const eventName = required('GITHUB_EVENT_NAME');
 
-  if (eventName === 'pull_request_target') {
-    const eventPr = event.pull_request;
-    const pr = {
-      number: eventPr.number,
-      body: eventPr.body ?? '',
-      head: eventPr.head.sha,
-      state: eventPr.state,
-    };
-    let check;
-    try {
-      check = await beginCheckRun(pr);
-      const result = await evaluate(pr);
-      await finishCheckRun(check, result);
-      console.log(`${result.ok ? 'PASS' : 'FAIL'}: ${result.title}\n${result.summary}`);
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      if (check) await failCheckRun(check, error);
-      throw error;
-    }
+  if (process.argv.includes('--discover')) {
+    if (eventName !== 'issues') throw new Error(`--discover requires an issues event, got ${eventName}`);
+    const prs = await getLinkedOpenPrs(event.issue.number);
+    console.log(JSON.stringify(prs));
     return;
   }
 
-  if (eventName === 'issues') {
-    const issueNumber = event.issue.number;
-    const prs = await getLinkedOpenPrs(issueNumber);
-    if (!prs.length) {
-      console.log(`No open linked PR for #${issueNumber}.`);
-      return;
-    }
-    let failed = false;
-    for (const number of prs) {
-      let check;
-      try {
-        const pr = await getPr(number);
-        check = await beginCheckRun(pr);
-        const result = await evaluate(pr);
-        await finishCheckRun(check, result);
-        console.log(`#${number}: ${result.ok ? 'PASS' : 'FAIL'} — ${result.title}`);
-        if (!result.ok) failed = true;
-      } catch (error) {
-        if (check) await failCheckRun(check, error);
-        console.error(`#${number}: could not update issue-gate: ${error.message}`);
-        failed = true;
+  const target = Number(required('TARGET_PR'));
+  if (!Number.isInteger(target) || target <= 0) throw new Error(`Invalid TARGET_PR: ${target}`);
+  const eventPr =
+    eventName === 'pull_request_target' && event.pull_request?.number === target ? event.pull_request : null;
+  const pr = eventPr
+    ? {
+        number: target,
+        body: eventPr.body ?? '',
+        head: eventPr.head.sha,
+        state: eventPr.state,
       }
-    }
-    if (failed) process.exitCode = 1;
-    return;
-  }
+    : await getPr(target);
 
-  throw new Error(`Unsupported event: ${eventName}`);
+  let checks;
+  try {
+    checks = await beginCheckRun(pr);
+    const result = await evaluate(pr);
+    await finishCheckRun(checks, result);
+    console.log(`#${target}: ${result.ok ? 'PASS' : 'FAIL'}: ${result.title}\n${result.summary}`);
+    process.exitCode = result.ok ? 0 : 1;
+  } catch (error) {
+    if (checks) await failCheckRun(checks, error);
+    throw error;
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
