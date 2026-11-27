@@ -164,7 +164,9 @@ impl ModalityAdapter for MediaAdapter {
         // A rowless provider — a created one's UUID, or the Dim account
         // relay — answers what its protocol family serves (Modality A.2),
         // in the same order a vendor row's statements list.
-        if let Ok(binding) = vendor::binding(provider_id, protocol, Operation::Image) {
+        if let Ok(binding) =
+            vendor::binding(provider_id, &model.model_id, protocol, Operation::Image)
+        {
             operations.push(AdapterOperation {
                 category: "image".to_owned(),
                 operation: "generate".to_owned(),
@@ -178,21 +180,28 @@ impl ModalityAdapter for MediaAdapter {
                 });
             }
         }
-        if vendor::binding(provider_id, protocol, Operation::Video).is_ok() {
+        if vendor::binding(provider_id, &model.model_id, protocol, Operation::Video).is_ok() {
             operations.push(AdapterOperation {
                 category: "video".to_owned(),
                 operation: "generate".to_owned(),
                 params_schema: video_schema(),
             });
         }
-        if vendor::binding(provider_id, protocol, Operation::Speech).is_ok() {
+        if vendor::binding(provider_id, &model.model_id, protocol, Operation::Speech).is_ok() {
             operations.push(AdapterOperation {
                 category: "speech".to_owned(),
                 operation: "synthesize".to_owned(),
                 params_schema: speech_schema(),
             });
         }
-        if vendor::binding(provider_id, protocol, Operation::Transcription).is_ok() {
+        if vendor::binding(
+            provider_id,
+            &model.model_id,
+            protocol,
+            Operation::Transcription,
+        )
+        .is_ok()
+        {
             operations.push(AdapterOperation {
                 category: "speech".to_owned(),
                 operation: "transcribe".to_owned(),
@@ -210,7 +219,12 @@ impl ModalityAdapter for MediaAdapter {
     ) -> AdapterFuture<'_, Submitted> {
         Box::pin(async move {
             let kind = kind_of(&job)?;
-            let binding = vendor::binding(&job.model.provider_id, Some(connection.protocol), kind)?;
+            let binding = vendor::binding(
+                &job.model.provider_id,
+                &job.model.model_id,
+                Some(connection.protocol),
+                kind,
+            )?;
             if job.operation == "edit" && !media::serves_edit(&binding, &job.model.model_id) {
                 return Err(AdapterError::unavailable(format!(
                     "The {} provider serves no image.edit for `{}`",
@@ -283,6 +297,7 @@ impl ModalityAdapter for MediaAdapter {
                     });
                     let binding = vendor::binding(
                         &job.model.provider_id,
+                        &job.model.model_id,
                         Some(connection.protocol),
                         Operation::Image,
                     )?;
@@ -309,6 +324,7 @@ impl ModalityAdapter for MediaAdapter {
                     });
                     let binding = vendor::binding(
                         &job.model.provider_id,
+                        &job.model.model_id,
                         Some(connection.protocol),
                         Operation::Speech,
                     )?;
@@ -335,6 +351,7 @@ impl ModalityAdapter for MediaAdapter {
                     });
                     let binding = vendor::binding(
                         &job.model.provider_id,
+                        &job.model.model_id,
                         Some(connection.protocol),
                         Operation::Transcription,
                     )?;
@@ -421,6 +438,7 @@ impl MediaAdapter {
         })?;
         let binding = vendor::binding(
             &handle.job.model.provider_id,
+            &handle.job.model.model_id,
             Some(connection.protocol),
             Operation::Video,
         )?;

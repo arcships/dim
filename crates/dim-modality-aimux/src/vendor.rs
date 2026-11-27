@@ -359,6 +359,51 @@ pub fn vendor(provider_id: &str) -> Option<&'static Vendor> {
     VENDORS.iter().find(|vendor| vendor.catalog == provider_id)
 }
 
+/// The bundled vendor-role catalog providers whose media models no aimux
+/// package serves: they carry the `openai-compatible` placeholder driver
+/// kind, so their ids would pass for a created provider's compatible family
+/// if the family fallback did not name them. Extracted from
+/// `crates/dim-app-server/resources/default-catalog.json`; a new bundled
+/// entry of this shape joins the table until its package arrives.
+static BUNDLED_WITHOUT_ROWS: &[&str] = &[
+    "adobe-firefly",
+    "alibaba-dashscope",
+    "amazon-speech",
+    "beatoven",
+    "bytedance",
+    "d-id",
+    "fish-audio",
+    "heygen",
+    "ibm-watson-speech",
+    "ideogram",
+    "mubert",
+    "musicapi-ai",
+    "pika",
+    "pixverse",
+    "playht",
+    "reve-ai",
+    "sarvam-ai",
+    "soniox",
+    "speechmatics",
+    "step-plan",
+    "stepfun",
+    "suno",
+    "synthesia",
+    "tavus",
+    "vidu",
+];
+
+/// Whether the model id names the Ark video word family. The Ark video API
+/// is a different route from the compatible family's `/videos`
+/// (`/contents/generations/tasks`, JSON), so the compatible binding cannot
+/// execute these models; they are refused until the per-model route exists.
+fn is_ark_video_model(model_id: &str) -> bool {
+    model_id
+        .to_ascii_lowercase()
+        .split(['.', '/', '_', '-'])
+        .any(|part| part == "seedance")
+}
+
 /// How a binding builds its aimux provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Package {
@@ -432,8 +477,19 @@ impl Vendor {
 /// startup recovery's answer for a route it cannot re-read: the family
 /// answers as the compatible one would, and a route that no longer matches
 /// is the call's own failure.
+///
+/// Two exclusions narrow the fallback. A bundled vendor-role provider whose
+/// media models no package serves ([`BUNDLED_WITHOUT_ROWS`]) carries the
+/// `openai-compatible` placeholder driver kind for its chat models alone:
+/// it is not a created provider, and its media models stay unserved rather
+/// than answering generic endpoints the vendor never documented. And a
+/// video model whose id names the Ark word family (`seedance`,
+/// `doubao-seedance`) is refused: the Ark video API is a different route
+/// from the compatible family's `/videos`, and the per-model binding that
+/// serves it is a later slice (#1927).
 pub fn binding(
     provider_id: &str,
+    model_id: &str,
     protocol: Option<dim_agent_types::ModelProtocol>,
     operation: Operation,
 ) -> Result<Binding, dim_modality::AdapterError> {
@@ -450,6 +506,17 @@ pub fn binding(
                 statement(operation)
             )))
         };
+    }
+    if BUNDLED_WITHOUT_ROWS.contains(&provider_id) {
+        return Err(dim_modality::AdapterError::unavailable(format!(
+            "The {provider_id} provider serves no {}",
+            statement(operation)
+        )));
+    }
+    if operation == Operation::Video && is_ark_video_model(model_id) {
+        return Err(dim_modality::AdapterError::unavailable(format!(
+            "The `{model_id}` model's video generation needs its provider's own route"
+        )));
     }
     let binding = match (compatible, operation) {
         (true, Operation::Image) if provider_id == "dimcode-api-oauth" => Binding {
