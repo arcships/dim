@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isAccepted, parseRefs, stripNonLinks } from './issue-gate.mjs';
+import { isAccepted, parseRefs, sameRepository, stripNonLinks } from './issue-gate.mjs';
 
 test('parses closing and reference keywords', () => {
   assert.deepEqual(parseRefs('Fixes #1'), [1]);
@@ -36,6 +36,19 @@ test('keep a real link after stripping non-link contexts', () => {
   const body = '```\nFixes #1\n```\n\nRefs #2272';
   assert.deepEqual(parseRefs(body), [2272]);
   assert.ok(stripNonLinks(body).includes('Refs #2272'));
+});
+
+test('caps the number of parsed references', () => {
+  const refs = Array.from({ length: 25 }, (_, index) => `#${index + 1}`).join(' ');
+  assert.deepEqual(parseRefs(`Fixes ${refs}`), Array.from({ length: 20 }, (_, index) => index + 1));
+});
+
+test('only same-repository timeline sources are gated', () => {
+  const base = { issue: { repository_url: 'https://api.github.com/repos/arcships/dim' } };
+  const foreign = { issue: { repository_url: 'https://api.github.com/repos/other/dim' } };
+  assert.equal(sameRepository(base, 'arcships/dim'), true);
+  assert.equal(sameRepository(foreign, 'arcships/dim'), false);
+  assert.equal(sameRepository(undefined, 'arcships/dim'), false);
 });
 
 test('accepted means P0, P1 or P2', () => {
