@@ -441,36 +441,9 @@ async fn product_session_with(
     .await
 }
 
-/// A prompt host that serves `dim/session` from the session configuration's
-/// system prompt, the way PromptSources reads it (PromptSources §2): a large
-/// session prompt raises the request frame, where the window-narrowed
-/// replacement reservation moves the fitted cut (#2236).
-struct SessionPromptHost(String);
-impl LoadPrompt for SessionPromptHost {
-    fn load(
-        &self,
-        target: PromptSourceTarget,
-        _: CancellationToken,
-    ) -> HostFuture<'_, Option<PromptEntry>> {
-        let body = self.0.clone();
-        Box::pin(async move {
-            if target.source != dim_agent_capabilities::prompt_sources::SESSION {
-                return Err(HostError::failed(format!(
-                    "unknown prompt source: {}",
-                    target.source
-                )));
-            }
-            Ok(dim_agent_capabilities::prompt_sources::session_entry(
-                body,
-                target.scope,
-            ))
-        })
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
-    reason = "one parameter per host and configuration the product session is assembled from"
+    reason = "one parameter per window and host the summary session is built from"
 )]
 async fn product_session_on(
     window: u64,
@@ -527,14 +500,9 @@ async fn product_session_on(
     let snapshot: ModelCapabilitySnapshot = serde_json::from_value(snapshot).unwrap();
     defaults::install_with_prompt(
         &mut builder,
-        Arc::new(SessionPromptHost(config_session.system_prompt.clone())),
+        Arc::new(EmptyPromptHost),
         Some(ConfigureUpdate {
-            sources: vec![PromptSourceTarget {
-                source: dim_agent_capabilities::prompt_sources::SESSION.into(),
-                scope: PromptScope::Branch {
-                    timeline: "main".into(),
-                },
-            }],
+            sources: Vec::new(),
             model: Some(ModelSelection {
                 provider_id: "local".into(),
                 model_id: "small".into(),
@@ -2486,7 +2454,7 @@ async fn invariance_session(
     driver: Arc<dyn ModelDriver>,
     window: Option<u64>,
 ) -> (MinimalHost, dim_agent_runtime::Session) {
-    let (agent, session) = product_session_on(
+    let (agent, session) = product_session_on_session_prompt(
         100_000,
         Arc::new(MockTools),
         driver,
@@ -2749,4 +2717,127 @@ async fn the_recovery_cut_does_not_follow_the_automatic_window() {
         windowed_input.take(),
         "recovery",
     );
+}
+
+/// A prompt host that serves `dim/session` from the session configuration's
+/// system prompt, the way PromptSources reads it (PromptSources §2): a large
+/// session prompt raises the request frame, where the window-narrowed
+/// replacement reservation moves the fitted cut (#2236).
+struct SessionPromptHost(String);
+impl LoadPrompt for SessionPromptHost {
+    fn load(
+        &self,
+        target: PromptSourceTarget,
+        _: CancellationToken,
+    ) -> HostFuture<'_, Option<PromptEntry>> {
+        let body = self.0.clone();
+        Box::pin(async move {
+            if target.source != dim_agent_capabilities::prompt_sources::SESSION {
+                return Err(HostError::failed(format!(
+                    "unknown prompt source: {}",
+                    target.source
+                )));
+            }
+            Ok(dim_agent_capabilities::prompt_sources::session_entry(
+                body,
+                target.scope,
+            ))
+        })
+    }
+}
+
+/// Assembles the same product session as `product_session_on`, except the
+/// prompt host serves the session configuration's system prompt through the
+/// SESSION source instead of `EmptyPromptHost`. `product_session_on` is the
+/// shared pre-existing fixture the window-invariance comparison cannot
+/// change; only the manual and recovery cut regressions need the raised
+/// request frame (#2236).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per window and host the window-invariance session is built from"
+)]
+async fn product_session_on_session_prompt(
+    window: u64,
+    tools: Arc<dyn ToolDriver>,
+    driver: Arc<dyn ModelDriver>,
+    output: u64,
+    config: ProductSummaryStrategyConfig,
+    config_session: SessionConfig,
+    stored_config: Option<ModelConfig>,
+    connection: Arc<dyn ResolveModelConnection>,
+    reasoning: Option<serde_json::Value>,
+    settings: Option<Arc<dyn SummaryPromptSettings>>,
+) -> (MinimalHost, dim_agent_runtime::Session) {
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    if let Some(settings) = settings {
+        dim_agent_runtime::names::register::<SummaryPromptSettingsHost>(
+            builder.catalog_mut(),
+            None,
+        );
+        let host: Arc<dyn SummaryPromptSettings> = settings;
+        builder.process_value(Arc::new(SummaryPromptSettingsHost(host)));
+    }
+    builder
+        .session_value(Arc::new(ToolHost(tools)))
+        .session_value(Arc::new(HistoryRenderer::default()))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(Some(Arc::new(
+            ProductContextModel,
+        )))))
+        .require_feature(Feature::new("ProductSummaryStrategy").session(
+            "ProductSummaryStrategy",
+            move |names| {
+                Ok(Box::new(ProductSummaryStrategyPlugin::new(
+                    names,
+                    config.clone(),
+                )?))
+            },
+        ))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    let mut snapshot = serde_json::json!({
+        "target": {"providerId": "local", "modelId": "small"},
+        "capabilities": {"modalities": ["text"], "toolCalling": true, "streaming": true,
+            "structuredOutput": false, "vision": false, "audio": false, "reasoning": false,
+            "contextWindow": window, "maxOutputTokens": output}
+    });
+    if let Some(reasoning) = reasoning {
+        snapshot["capabilities"]["reasoning"] = serde_json::json!(true);
+        snapshot["reasoning"] = reasoning;
+    }
+    let snapshot: ModelCapabilitySnapshot = serde_json::from_value(snapshot).unwrap();
+    defaults::install_with_prompt(
+        &mut builder,
+        Arc::new(SessionPromptHost(config_session.system_prompt.clone())),
+        Some(ConfigureUpdate {
+            sources: vec![PromptSourceTarget {
+                source: dim_agent_capabilities::prompt_sources::SESSION.into(),
+                scope: PromptScope::Branch {
+                    timeline: "main".into(),
+                },
+            }],
+            model: Some(ModelSelection {
+                provider_id: "local".into(),
+                model_id: "small".into(),
+                capability_snapshot: Some(snapshot),
+                config: stored_config,
+                metadata: None,
+            }),
+        }),
+    );
+    let agent = MinimalHost::start_with(&builder, |root, _| {
+        root.provide(ModelHost(driver.clone()))?;
+        root.provide(ProviderConnectionResolver(connection))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(config_session, Default::default())
+        .await
+        .unwrap();
+    (agent, session)
 }
