@@ -1995,6 +1995,50 @@ async fn the_dim_account_relay_splits_video_from_image_by_family() {
 }
 
 #[tokio::test]
+async fn a_compatible_family_image_forwards_the_output_format_to_the_wire() {
+    // The family binding builds the openai-compatible package, which forwards
+    // the caller's provider options to the endpoint under the binding's own
+    // namespace: the format a job asks for reaches the request body.
+    let dir = work_dir("family-image-format");
+    let png = [PNG_HEADER, b"format-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) = scripted(move |_| {
+        ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
+    });
+    let output = run(
+        &adapter,
+        job(
+            "6f1c2f9e-0000-4000-8000-000000000000",
+            "custom-image",
+            "image",
+            "generate",
+            json!({"prompt": "a cat", "outputFormat": "webp"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://router.example.test/v1",
+        "custom-image",
+    )
+    .await
+    .unwrap();
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(
+        request.url,
+        "https://router.example.test/v1/images/generations"
+    );
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(
+        body["outputFormat"], "webp",
+        "the output format the job asked for reaches the request body: {body}"
+    );
+    assert_eq!(output.files.len(), 1);
+    assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+}
+
+#[tokio::test]
 async fn the_dim_account_relay_listing_comes_from_the_compatible_family() {
     // The relay id matches no vendor row, so its listing is the family's:
     // image stays (with the OpenAI package serving it), and the video,

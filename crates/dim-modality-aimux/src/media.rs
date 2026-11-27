@@ -144,6 +144,10 @@ pub fn provider(
                 Package::OpenaiCompatible => {
                     let settings =
                         aimux_providers::openai_compatible::OpenAICompatibleProviderSettings {
+                            // The name is every model's providerOptions
+                            // namespace; the binding declares the one its
+                            // options travel under.
+                            name: binding.options.to_owned(),
                             base_url: base_url.unwrap_or_default(),
                             api_key: (!credential.is_empty()).then_some(credential),
                             headers: Some(
