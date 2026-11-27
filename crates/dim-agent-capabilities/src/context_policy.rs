@@ -77,21 +77,25 @@ fn rising_chain(
     }
 }
 
-/// Share of the input budget a compaction keeps verbatim, the keyed baseline
+/// Share of the shaping budget a compaction keeps verbatim, the keyed baseline
 /// included; provisional (#128, #428).
 const RETAINED_SHARE: f64 = 0.25;
 
-/// Share of the input budget the running turn's pinned inputs may take
+/// Share of the shaping budget the running turn's pinned inputs may take
 /// (ContextCompaction §5.9); provisional (#428).
 const PINNED_SHARE: f64 = 0.1;
 
-/// Share of the input budget the whole context after a compaction is held
+/// Share of the shaping budget the whole context after a compaction is held
 /// to at most (ContextCompaction §5.3); provisional (#428).
 const BOUND_SHARE: f64 = 0.5;
 
-/// Share of the input budget the digest part may take (ContextCompaction
+/// Share of the shaping budget the digest part may take (ContextCompaction
 /// §5.10); provisional (#428).
 const DIGEST_SHARE: f64 = 0.05;
+
+/// Floor of the regrowth gate, against a compaction every turn on a narrow
+/// shaping budget (#2235); provisional (#428).
+const REGROWTH_FLOOR_TOKENS: f64 = 16_000.;
 
 /// Facts one page of the compaction-reuse read keeps.
 const REUSE_PAGE: u64 = 64;
@@ -316,6 +320,8 @@ struct Pass<'a> {
     /// The running turn and the pins it already carries (§5.9).
     turn: Option<(&'a str, Option<&'a CarriedPins>)>,
     recovery: bool,
+    /// The shaping budget the step's pinned inputs and digest scale with.
+    budget: f64,
     history: &'a [HistoryEntry],
     /// The index in the view's history where `history` starts.
     offset: usize,
@@ -344,8 +350,15 @@ impl Pass<'_> {
         if !(cut.within_limit || (!within && (self.recovery || cut.entry < self.history.len()))) {
             return Err("Compaction cut lies inside the retained tail.");
         }
-        let pinned = pinned_inputs(self.view, Some(window), self.turn, &retain_from, self.model);
-        let digest = digest_entries(self.view, window, self.model);
+        let pinned = pinned_inputs(
+            self.view,
+            Some(window),
+            self.turn,
+            &retain_from,
+            self.model,
+            self.budget,
+        );
+        let digest = digest_entries(self.view, window, self.model, self.budget);
         let message = digest
             .as_ref()
             .map(|digest| digest_message(&digest.entries, digest.dropped));
@@ -1113,9 +1126,7 @@ impl ContextPolicy {
                             usage
                                 .growth(evidence.as_ref().expect("proved request"), &at)
                                 .await?
-                                .map(|tokens| {
-                                    tokens >= RETAINED_SHARE * input_budget(model.as_ref())
-                                })
+                                .map(|tokens| tokens >= regrowth_gate(model.as_ref()))
                         }
                     };
                 }
@@ -1346,13 +1357,18 @@ impl ContextPolicy {
         let carried = turn_id.and_then(|turn| carried_pins(view, turn));
         let turn = turn_id.map(|turn| (turn, carried.as_ref()));
         let manual = step.trigger == CompactionTrigger::Manual;
+        let recovery = step.provider_budget.is_some();
+        // Manual steps and budget recovery shape with the physical budget;
+        // the automatic trigger shapes with the compaction budget (#2235).
+        let budget = if manual || recovery {
+            input_budget(model.as_ref())
+        } else {
+            model.compaction_budget()
+        };
         let rule = Retention::new(view, model.as_ref(), turn, manual, &order);
+        let replacement_size = self.strategy.replacement_size(model.as_ref());
         let mut cuts = legal_cuts(&order, &view.history);
-        let limit = rule.limit(
-            &view.history,
-            &cuts,
-            self.strategy.replacement_size(model.as_ref()),
-        );
+        let limit = rule.limit(&view.history, &cuts, replacement_size, budget);
         if let Some(limit) = limit {
             for cut in &mut cuts[..=limit] {
                 cut.within_limit = true;
@@ -1435,7 +1451,7 @@ impl ContextPolicy {
                         composed.parts,
                     ),
                     composed.tokens,
-                    BOUND_SHARE * input_budget(model.as_ref()),
+                    BOUND_SHARE * budget,
                 );
                 ContextCompactionResult::Completed {
                     retain_from: composed.retain_from.clone(),
@@ -1458,7 +1474,7 @@ impl ContextPolicy {
         if step.trigger == CompactionTrigger::Threshold
             && first_input
                 .cut()
-                .is_some_and(|cut| !self.shrinks(view, model.as_ref(), turn, cut))
+                .is_some_and(|cut| !self.shrinks(view, model.as_ref(), turn, cut, budget))
         {
             let outcome = ContextCompactionResult::Skipped {
                 reason: "nothing_to_compact".into(),
@@ -1487,6 +1503,7 @@ impl ContextPolicy {
                     model: model.as_ref(),
                     turn,
                     recovery: step.provider_budget.is_some(),
+                    budget,
                     history: &view.history,
                     offset: 0,
                     cuts: &cuts,
@@ -1506,8 +1523,18 @@ impl ContextPolicy {
                 // (§5.2, §5.3). The limit is then recomputed from the
                 // replacement's actual size, and a later cut re-runs the
                 // strategy once as a rolling continuation of this one.
-                let redo = (composed.tokens > BOUND_SHARE * input_budget(model.as_ref()))
-                    .then(|| replanned(view, model.as_ref(), turn, manual, &composed, &order))
+                let redo = (composed.tokens > BOUND_SHARE * budget)
+                    .then(|| {
+                        replanned(
+                            view,
+                            model.as_ref(),
+                            turn,
+                            manual,
+                            &composed,
+                            &order,
+                            budget,
+                        )
+                    })
                     .flatten();
                 match redo {
                     None => completed(composed, diagnostics, limit_from),
@@ -1520,6 +1547,7 @@ impl ContextPolicy {
                                     model: model.as_ref(),
                                     turn: turn_id.map(|turn| (turn, Some(&redo.carried))),
                                     recovery: step.provider_budget.is_some(),
+                                    budget,
                                     history: &redo.history,
                                     offset: composed.kept,
                                     cuts: &redo.cuts,
@@ -1617,6 +1645,7 @@ impl ContextPolicy {
         model: &dyn ContextModel,
         turn: Option<(&str, Option<&CarriedPins>)>,
         cut: &CompactionCut,
+        budget: f64,
     ) -> bool {
         let count =
             |messages: Vec<Message>| model.count_tokens(&ModelRequest::new("", "", messages));
@@ -1628,7 +1657,8 @@ impl ContextPolicy {
                 .collect(),
         ) - empty;
         let pinned =
-            count(pinned_inputs(view, None, turn, &cut.retain_from, model).messages) - empty;
+            count(pinned_inputs(view, None, turn, &cut.retain_from, model, budget).messages)
+                - empty;
         let previous = view.checkpoint.as_ref().map_or(0., |checkpoint| {
             let len = checkpoint.replacement.len();
             let strategy = checkpoint
@@ -1995,6 +2025,7 @@ fn digest_entries(
     view: &View,
     window: &CutWindow,
     model: &dyn ContextModel,
+    budget: f64,
 ) -> Option<DigestEntries> {
     let previous = view
         .reused_compaction
@@ -2056,7 +2087,7 @@ fn digest_entries(
                 vec![digest_message(entries, dropped)],
             )) - empty
         };
-        let limit = DIGEST_SHARE * input_budget(model);
+        let limit = DIGEST_SHARE * budget;
         if (dropped || !entries.is_empty()) && count(&entries, dropped) > limit {
             dropped = true;
             let fits = |kept: usize| count(&entries[kept..], true) <= limit;
@@ -2128,6 +2159,7 @@ fn pinned_inputs(
     turn: Option<(&str, Option<&CarriedPins>)>,
     retain_from: &str,
     model: &dyn ContextModel,
+    budget: f64,
 ) -> Pinned {
     let Some((turn_id, carried)) = turn else {
         return Pinned::default();
@@ -2212,7 +2244,7 @@ fn pinned_inputs(
         model.count_tokens(&ModelRequest::new("", "", messages.to_vec()))
             - model.count_tokens(&ModelRequest::new("", "", Vec::new()))
     };
-    let limit = PINNED_SHARE * input_budget(model);
+    let limit = PINNED_SHARE * budget;
     let total: f64 = pins.iter().map(|pin| count(&pin.messages)).sum();
     let share = if total <= limit {
         limit
@@ -2333,12 +2365,23 @@ fn regrown(view: &View, start: Option<(&TimelinePosition, u64)>, model: &dyn Con
         })
         .map(|entry| count(vec![entry.message.as_ref().clone()]) - empty)
         .sum();
-    new >= RETAINED_SHARE * input_budget(model)
+    new >= regrowth_gate(model)
 }
 
-/// The input budget `context_window − output_tokens`.
+/// The physical input budget `context_window − output_tokens`: what cannot
+/// safely shrink — request validation, overflow recovery and manual cut
+/// points (#2235).
 fn input_budget(model: &dyn ContextModel) -> f64 {
     (model.context_window() - model.output_tokens()).max(0.)
+}
+
+/// The new history a threshold compaction must accumulate: `RETAINED_SHARE`
+/// of the shaping budget, never below the smaller of the physical budget's
+/// share and `REGROWTH_FLOOR_TOKENS`, so a narrow window cannot start a
+/// compaction every turn (#2235).
+fn regrowth_gate(model: &dyn ContextModel) -> f64 {
+    (RETAINED_SHARE * model.compaction_budget())
+        .max((RETAINED_SHARE * input_budget(model)).min(REGROWTH_FLOOR_TOKENS))
 }
 
 /// The tokens `history[index..]` counts for every index.
@@ -2424,6 +2467,7 @@ impl<'a> Retention<'a> {
         history: &[HistoryEntry],
         cut: &CompactionCut,
         replacement_size: f64,
+        budget: f64,
     ) -> f64 {
         let count = |messages: Vec<Message>| {
             self.model
@@ -2436,10 +2480,18 @@ impl<'a> Retention<'a> {
                 .map(|entry| entry.message.as_ref().clone())
                 .collect(),
         ) - self.empty;
-        let pins =
-            count(pinned_inputs(self.view, None, self.turn, &cut.retain_from, self.model).messages)
-                - self.empty;
-        self.frame + baseline + pins + DIGEST_SHARE * input_budget(self.model) + replacement_size
+        let pins = count(
+            pinned_inputs(
+                self.view,
+                None,
+                self.turn,
+                &cut.retain_from,
+                self.model,
+                budget,
+            )
+            .messages,
+        ) - self.empty;
+        self.frame + baseline + pins + DIGEST_SHARE * budget + replacement_size
     }
 
     /// The tokens `messages` count, beyond the empty list's own bytes.
@@ -2450,21 +2502,21 @@ impl<'a> Retention<'a> {
     }
 
     /// The index in `cuts` of the earliest cut whose kept tail fits
-    /// `min(RETAINED_SHARE × B, BOUND_SHARE × B − resident)`; for a manual
-    /// step, the latest turn's start when it keeps less. The cut that
-    /// replaces everything fits whenever the resident parts fit half the
-    /// budget, so the compaction reaches the bound by keeping no tail
-    /// (§5.3). None when no cut qualifies.
+    /// `min(RETAINED_SHARE × B, BOUND_SHARE × B − resident)` at the step's
+    /// shaping budget; for a manual step, the latest turn's start when it
+    /// keeps less. The cut that replaces everything fits whenever the
+    /// resident parts fit half the budget, so the compaction reaches the
+    /// bound by keeping no tail (§5.3). None when no cut qualifies.
     fn limit(
         &self,
         history: &[HistoryEntry],
         cuts: &[CompactionCut],
         replacement_size: f64,
+        budget: f64,
     ) -> Option<usize> {
         let tail = tail_tokens(history, self.empty, self.model);
-        let budget = input_budget(self.model);
         let fits = cuts.iter().position(|cut| {
-            let resident_tokens = self.resident(history, cut, replacement_size);
+            let resident_tokens = self.resident(history, cut, replacement_size, budget);
             tail[cut.entry] <= (RETAINED_SHARE * budget).min(BOUND_SHARE * budget - resident_tokens)
         });
         let latest_turn = self
@@ -2499,6 +2551,7 @@ fn replanned(
     manual: bool,
     first: &Composed,
     order: &CutOrder,
+    budget: f64,
 ) -> Option<Replan> {
     let carried = CarriedPins::new(
         &first.retain_from,
@@ -2519,7 +2572,12 @@ fn replanned(
         .parts
         .map_or(first.replacement.len(), |parts| parts.strategy as usize)
         .min(first.replacement.len());
-    let limit = rule.limit(history, &cuts, rule.tokens(&first.replacement[..strategy]))?;
+    let limit = rule.limit(
+        history,
+        &cuts,
+        rule.tokens(&first.replacement[..strategy]),
+        budget,
+    )?;
     if cuts[limit].entry == 0 {
         return None;
     }

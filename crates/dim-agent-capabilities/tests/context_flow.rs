@@ -33,9 +33,12 @@ struct Context {
     /// `"short"`. It can overshoot the planned size, which stays planned
     /// (ContextCompaction §5.2).
     summary: Option<&'static str>,
-    /// Window facts override the default 4096 / 64 when nonzero.
+    /// Window facts override the default 4096 / 64 when nonzero. `compaction`
+    /// overrides the compaction budget directly, the shaping window a
+    /// startup configuration gives the model (#2235).
     window: f64,
     output: f64,
+    compaction: f64,
 }
 impl ResolveContextModel for Context {
     fn resolve(
@@ -60,6 +63,13 @@ impl ContextModel for Context {
     }
     fn threshold_tokens(&self) -> f64 {
         self.threshold.unwrap_or(10_000.)
+    }
+    fn compaction_budget(&self) -> f64 {
+        if self.compaction == 0. {
+            (self.context_window() - self.output_tokens()).max(0.)
+        } else {
+            self.compaction
+        }
     }
     fn count_tokens(&self, request: &ModelRequest) -> f64 {
         serde_json::to_vec(&request.messages).unwrap().len() as f64

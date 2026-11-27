@@ -38,6 +38,7 @@ impl std::fmt::Debug for StartupConnectionInput {
 #[serde(untagged)]
 pub enum AutoCompactWindow {
     Auto(AutoWindow),
+    Percent(CompactPercent),
     Tokens(u64),
 }
 
@@ -45,6 +46,40 @@ pub enum AutoCompactWindow {
 #[serde(rename_all = "lowercase")]
 pub enum AutoWindow {
     Auto,
+}
+
+/// A compaction window given as a percentage of the model's adopted context
+/// capacity, such as `"40%"` (#2235). Zero and values above 100 are invalid.
+#[derive(Clone, Copy, Debug)]
+pub struct CompactPercent(f64);
+
+impl<'de> Deserialize<'de> for CompactPercent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        let percent = text
+            .strip_suffix('%')
+            .and_then(|number| number.parse::<f64>().ok())
+            .filter(|percent| *percent > 0.0 && *percent <= 100.0);
+        percent.map(Self).ok_or_else(|| {
+            serde::de::Error::custom(
+                "Auto-compaction percentage must be a positive number ending in %, at most 100",
+            )
+        })
+    }
+}
+
+/// The least compaction window a configuration may shape with
+/// (#2235): 32k tokens, capped at a tenth of the model's capacity.
+pub fn compact_window_floor(context_window: u64) -> u64 {
+    32_000.min(context_window / 10)
+}
+
+/// The tokens a compaction window of `percent` of the capacity is.
+pub fn compact_window_tokens(percent: CompactPercent, context_window: u64) -> u64 {
+    (percent.0 * context_window as f64 / 100.0).floor() as u64
 }
 
 pub(super) struct Binding {
@@ -389,25 +424,36 @@ impl ProviderService {
         model.config.get_or_insert_default().max_tokens = Some(allowance as f64);
         let metadata = model.metadata.get_or_insert_default();
         let startup = metadata.startup.get_or_insert_default();
+        let capacity = snapshot.capabilities.context_window;
         match input.auto_compact_window {
             Some(AutoCompactWindow::Auto(_)) => startup.auto_compact_window = None,
             Some(AutoCompactWindow::Tokens(tokens)) => {
-                if tokens == 0 || tokens > snapshot.capabilities.context_window {
-                    return Err(failure(
-                        "Auto-compaction window must be positive and no larger than the context capacity",
-                    ));
+                if tokens == 0 {
+                    return Err(failure("Auto-compaction window must be positive"));
                 }
                 startup.auto_compact_window = Some(tokens);
             }
+            Some(AutoCompactWindow::Percent(percent)) => {
+                startup.auto_compact_window = Some(compact_window_tokens(percent, capacity));
+            }
             None => {}
         }
-        if startup
-            .auto_compact_window
-            .is_some_and(|window| window > snapshot.capabilities.context_window)
-        {
-            return Err(failure(
-                "Auto-compaction window exceeds the adopted context capacity",
-            ));
+        // Token counts are a soft cap: a value wider than the model shapes at
+        // the model's own budget instead of failing (#2235), and the shaping
+        // floor keeps a narrow window off the resident parts.
+        if let Some(window) = startup.auto_compact_window {
+            let floor = compact_window_floor(capacity);
+            let clamped = window.min(capacity).max(floor);
+            if clamped != window {
+                startup.auto_compact_window = Some(clamped);
+                tracing::warn!(
+                    capacity,
+                    floor,
+                    window,
+                    clamped,
+                    "Auto-compaction window clamped to the model's capacity and shaping floor"
+                );
+            }
         }
         let pending = if let Some((mut source, connection)) = admitted {
             if let Some(previous) = current

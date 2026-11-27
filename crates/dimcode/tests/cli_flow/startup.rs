@@ -1087,6 +1087,37 @@ fn anonymous_direct_startup_sends_no_credentials() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("startup fixture rejection"));
 }
 
+/// A percentage compaction window reaches the daemon as the percentage
+/// string the server resolves against the adopted model (#2235).
+#[test]
+fn a_percentage_compaction_window_reaches_the_daemon_as_a_percentage() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+        let create = wire.read("session.create");
+        assert_eq!(
+            create["params"]["startup"],
+            json!({"connection":{
+            "baseUrl":"https://gateway.example/prefix","apiFormat":"openai-compatible"},
+            "autoCompactWindow":"40%"})
+        );
+        reject(wire, &create);
+    });
+    let output = command(&home)
+        .envs([
+            ("DIM_BASE_URL", "https://gateway.example/prefix"),
+            ("DIM_API_FORMAT", "openai-compatible"),
+            ("DIM_MODEL", "model"),
+        ])
+        .args(["--autocompact", "40%"])
+        .args(["exec", "-p", "Hello"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("startup fixture rejection"));
+}
+
 #[test]
 fn an_output_limit_at_or_above_the_context_limit_reaches_the_daemon() {
     let home = Home::new();
@@ -1239,6 +1270,18 @@ fn invalid_startup_inputs_fail_before_daemon_creation_without_echoing_values() {
             vec![],
             "too large",
         ),
+        (
+            vec![("DIM_AUTO_COMPACT_WINDOW", "0%")],
+            vec![],
+            "at most 100",
+        ),
+        (
+            vec![("DIM_AUTO_COMPACT_WINDOW", "101%")],
+            vec![],
+            "at most 100",
+        ),
+        (vec![], vec!["--autocompact", "abc%"], "at most 100"),
+        (vec![], vec!["--autocompact", "200%"], "at most 100"),
         (vec![("DIM_MODEL", "")], vec![], "must not be empty"),
         (vec![], vec!["--provider", "fixture"], "requires --model"),
         (

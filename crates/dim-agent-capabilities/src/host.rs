@@ -1325,6 +1325,14 @@ pub trait ContextModel: Send + Sync + 'static {
     fn context_window(&self) -> f64;
     fn output_tokens(&self) -> f64;
     fn threshold_tokens(&self) -> f64;
+    /// The budget that shapes automatic compaction (ContextCompaction §5.1):
+    /// the input budget `context_window − output_tokens`, narrowed by a
+    /// configured compaction window to at most that window minus the output
+    /// allowance. The default is the physical input budget, which is what a
+    /// model without a configured window shapes with.
+    fn compaction_budget(&self) -> f64 {
+        (self.context_window() - self.output_tokens()).max(0.)
+    }
     fn count_tokens(&self, request: &ModelRequest) -> f64;
     /// Additive counting for persisted context statistics, or `None` when this
     /// model's complete-request count cannot be composed from contributions.

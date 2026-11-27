@@ -533,7 +533,8 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | --- | --- |
 | `context_window` | `snapshot.capabilities.contextWindow`, the catalog value with its existing overrides |
 | `output_tokens` | The adopted output allowance: `request.config.maxTokens`, which Provider derives from the declared pair as `max(1, min(declared maxOutputTokens, 131,072, contextWindow / 2))`. A stored value that is absent or above that function is repaired on read at the request boundary; the declared `maxOutputTokens` fact is not rewritten. The allowance bounds the whole reply, not only its answer: a request that thinks keeps `answer_tokens` of it for the answer ([model configuration](model-configuration.md#model-parameters)), so compaction plans against the cap the request may spend in total |
-| `threshold_tokens` | `B − reserve`, where `B = context_window − output_tokens` (the input budget) and `reserve = min(max(0.10 × B, 16,000), 0.20 × B)`. The reserve absorbs the estimation error of the next request; it is a provisional heuristic that does not cover every request without a provider baseline ([research §3.3, §6.4](../research/compaction-trigger.md#33-recommendation)) |
+| `threshold_tokens` | `B_c − reserve`, where `B_c` is the compaction budget below and `reserve = min(max(0.10 × B_c, 16,000), 0.20 × B_c)`. The reserve absorbs the estimation error of the next request; it is a provisional heuristic that does not cover every request without a provider baseline ([research §3.3, §6.4](../research/compaction-trigger.md#33-recommendation)) |
+| `compaction_budget` | `min(B, max(0, W − O))` when a startup compaction window `W` is adopted, otherwise `B = context_window − output_tokens`, the physical input budget. `O` is the output reserve inside the effective window, capped at half of it: `O = min(output_tokens, W / 2)`. The compaction budget shapes automatic compaction everywhere this document scales with `B` — the retention, bound, regrowth, pinned-inputs and digest shares of §5.3, §5.6, §5.9 and §5.10, and the summary target `S` of §13.3 — while validation, overflow recovery, summary chunking and manual cut points keep scaling with the physical budget `B` (#2235) |
 | `count_tokens` | UTF-8 bytes of the serialized system prompt, messages and tool declarations divided by 4; each image part counts a fixed 1,600 tokens. Provisional (#128). Used for deltas over the provider's `prompt_tokens`, the first request, `validate` and the reduction check |
 
 **Composable counting.** Window facts may expose an optional contribution counter;
@@ -583,14 +584,23 @@ while the capability is unknown.
 with their overrides: `B`, `0.5 × B`, `0.25 × B` and `S` scale with the declared capacity.
 The output allowance is Provider's adopted value, not the declared maximum: a reply ceiling
 (131,072 tokens) and half the window bound it, so `B` is at least half the window even when
-a source declares an output at or above it. An adopted [startup](../model-startup.md)
-`auto_compact_window = W` caps only `threshold_tokens` at `max(0, W − output_tokens)`: the
-effective threshold is the minimum of that cap and `B − reserve` above. The output allowance
-remains reserved; the smaller trigger window neither reduces actual capacity nor changes
-chunking, retention, regrowth or manual compaction. Provider validates that W is positive and
-does not exceed adopted capacity. Without W, including startup `auto`, the threshold is
-unchanged. Compaction has no constant capacity cap of its own; a different actual capacity is
-declared by Provider or the existing `contextWindow` override.
+a source declares an output at or above it.
+
+An adopted [startup](../model-startup.md) `auto_compact_window = W` splits the budget in
+two (#2235): the physical input budget `B` stays what validation, overflow recovery,
+summary chunking and manual compaction measure, while everything that shapes automatic
+compaction scales with the compaction budget `B_c = min(B, max(0, W − O))` — the
+effective threshold, the retained-tail share, the post-compaction bound including the
+re-plan trigger, the regrowth gate, the pinned-inputs and digest shares, and the summary
+replacement target. The smaller shaping window never reduces actual capacity: a turn that
+legitimately outgrows `W` compacts instead of failing, and compaction returns the context
+inside the shaping budget on time. Token-count values are a soft cap: a value wider than
+the model's capacity shapes at the model's own budget instead of failing validation, and
+a value below the floor `min(32,000, 10% of the capacity)` clamps to it with a one-time
+notice. Percentages are taken of the adopted capacity. Without W, including startup
+`auto`, `B_c` is `B` and nothing changes. Compaction has no constant capacity cap of its
+own; a different actual capacity is declared by Provider or the existing `contextWindow`
+override.
 
 ### 5.2 ProductSummaryStrategy
 
@@ -691,8 +701,13 @@ How the summary is produced:
 
 `compact_step` is the existing compaction section of `ContextPolicy::prepare`, extracted:
 
-1. **Resident parts and retention limit.** With `B = context_window − output_tokens` (§5.1), the
-   parts a compaction at a cut cannot shrink are:
+1. **Resident parts and retention limit.** The step's shaping budget is the model's compaction
+   budget for the automatic trigger and the physical input budget for a manual step or budget
+   recovery (#2235); in what follows `B` is that shaping budget, so without a startup window
+   every formula is unchanged. A compaction whose resident parts exceed half its shaping budget
+   falls back to the latest content-keeping cut with the insufficient-space mark, and the
+   regrowth gate's absolute floor debounces the next attempt (§5.6); no budget is raised beyond
+   the step's own shaping budget. The parts a compaction at a cut cannot shrink are:
    - the request frame: the system prompt, the tool declarations, and any messages the
      preparation appended beyond the history;
    - the keyed baseline at the cut;
@@ -728,6 +743,9 @@ How the summary is produced:
    insufficient-space mark (step 5). When the context's last event placed entries that do not
    fit, no cut exists after that event, so those entries stay and the result carries no mark:
    every part the compaction cannot shrink fits.
+
+   A manual step shapes with the physical input budget, so its token-rule cut keeps the share
+   the full capacity allows; the turn-start rule is a semantic cut and does not scale.
 2. **Start.** It appends `context/compaction-start` with the caller's ids, `command`,
    `through`, `trigger` and `strategy.name()`. The automatic threshold trigger stops here,
    before the strategy is called, on a conservative planned-size heuristic: when the entries
@@ -957,8 +975,10 @@ requests, budget recovery, `LoopSnapshot` and `context/prepare`.
   `CompactionStrategyHost`, and its policy exists when both hosts are `Some`.
 - **Trigger.** Below or at the input budget, threshold compaction runs in `prepare` only when both hold:
   - the estimate reaches `threshold_tokens` (existing);
-  - at least `0.25 × B` of new history has accumulated since the branch's latest compaction
-    attempt. New history is the entries placed by events after that attempt's
+  - at least `0.25 × B_c` of new history has accumulated since the branch's latest compaction
+    attempt, and never less than `min(0.25 × B_phys, 16,000)` tokens: the absolute floor keeps
+    a narrow configured window from starting a compaction every turn (#2235). New history is
+    the entries placed by events after that attempt's
     `context/compaction-start` `through`, counted with `count_tokens` each and summed. The
     attempt is the latest start of any trigger and any outcome; a branch with no start has all
     its history new.

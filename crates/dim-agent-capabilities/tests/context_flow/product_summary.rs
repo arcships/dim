@@ -1629,7 +1629,7 @@ async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowi
         assert_eq!(usage.output_tokens, 80.);
         assert_eq!(
             usage.threshold_tokens,
-            if startup { 1_920. } else { 3_136. }
+            if startup { 1_536. } else { 3_136. }
         );
 
         for text in [cjk(2_000), cjk(1_400)] {
@@ -1978,10 +1978,7 @@ async fn a_stored_allowance_from_before_the_rule_is_repaired_at_the_request() {
 
 /// A selection identical to the one `configure_loaded` adopted, with a startup
 /// compaction window the way a CLI `--autocompact` launch carries it.
-fn startup_selection(
-    adopted: ModelSelection,
-    auto_compact_window: u64,
-) -> ModelSelection {
+fn startup_selection(adopted: ModelSelection, auto_compact_window: u64) -> ModelSelection {
     let mut selected = adopted;
     selected.metadata = Some(RequestMetadata {
         startup: Some(ModelStartup {
@@ -2012,9 +2009,7 @@ fn adopted_selection(session: &dim_agent_runtime::Session) -> ModelSelection {
 }
 
 /// Every compaction outcome on the branch, oldest first.
-async fn compaction_outcomes(
-    session: &dim_agent_runtime::Session,
-) -> Vec<ContextCompactionData> {
+async fn compaction_outcomes(session: &dim_agent_runtime::Session) -> Vec<ContextCompactionData> {
     chain_events(session, "main", ..)
         .await
         .unwrap()
@@ -2054,7 +2049,10 @@ async fn a_startup_window_at_a_fifth_of_the_window_compacts_instead_of_drifting(
         .service::<dim_agent_capabilities::prompt::Prompt>("main")
         .unwrap()
         .configure_loaded(
-            Some(startup_selection(adopted_selection(&session), STARTUP_WINDOW)),
+            Some(startup_selection(
+                adopted_selection(&session),
+                STARTUP_WINDOW,
+            )),
             Vec::new(),
         )
         .await
@@ -2072,17 +2070,19 @@ async fn a_startup_window_at_a_fifth_of_the_window_compacts_instead_of_drifting(
         "the inputs above the startup threshold attempt compaction"
     );
     assert!(
-        !outcomes.iter().any(|data| matches!(
-            &data.outcome,
-            ContextCompactionResult::Skipped { .. }
-        )),
+        !outcomes
+            .iter()
+            .any(|data| matches!(&data.outcome, ContextCompactionResult::Skipped { .. })),
         "no attempt skips: the accumulated history is far larger than the summary it would keep, {outcomes:#?}"
     );
     let completed = outcomes
         .iter()
         .filter(|data| matches!(&data.outcome, ContextCompactionResult::Completed { .. }))
         .count();
-    assert!(completed >= 2, "compaction repeats as the history grows, {outcomes:#?}");
+    assert!(
+        completed >= 2,
+        "compaction repeats as the history grows, {outcomes:#?}"
+    );
     let largest_attempt = outcomes
         .iter()
         .filter_map(|data| match &data.outcome {
@@ -2127,7 +2127,10 @@ async fn a_startup_window_scales_the_retained_tail_and_the_next_attempt() {
         .service::<dim_agent_capabilities::prompt::Prompt>("main")
         .unwrap()
         .configure_loaded(
-            Some(startup_selection(adopted_selection(&session), STARTUP_WINDOW)),
+            Some(startup_selection(
+                adopted_selection(&session),
+                STARTUP_WINDOW,
+            )),
             Vec::new(),
         )
         .await
@@ -2147,7 +2150,10 @@ async fn a_startup_window_scales_the_retained_tail_and_the_next_attempt() {
             _ => None,
         })
         .collect();
-    assert!(completed.len() >= 2, "compaction repeats as the history grows, {outcomes:#?}");
+    assert!(
+        completed.len() >= 2,
+        "compaction repeats as the history grows, {outcomes:#?}"
+    );
     let first_size = completed[0]
         .estimated_output_tokens
         .expect("a completed compaction reports its projected size");
@@ -2168,6 +2174,62 @@ async fn a_startup_window_scales_the_retained_tail_and_the_next_attempt() {
     assert!(
         largest_attempt <= 45_000.,
         "the next attempt follows the grown history near the startup window instead of drifting past half of it, {outcomes:#?}"
+    );
+    agent.close().await.unwrap();
+}
+
+/// After a compaction attempt the regrowth gate does not fire again on the
+/// narrow scale alone: the 16,000-token floor keeps a low configured window
+/// from starting a compaction every few turns (ContextCompaction §5.6,
+/// #2235). Across 20 turns after the first completion the regrowth needed to
+/// pass the quarter share (~3800 tokens at the 20k window) is met many times
+/// over, so extra compactions can only pass the absolute floor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_regrowth_floor_debounces_compactions_at_a_narrow_window() {
+    const STARTUP_WINDOW: u64 = 20_000;
+    let recorder = Arc::new(HonestRecorder {
+        inner: Recorder::default(),
+    });
+    let (agent, session) = product_session_on(
+        100_000,
+        Arc::new(MockTools),
+        recorder.clone(),
+        3_200,
+        ProductSummaryStrategyConfig::default(),
+        SessionConfig::default(),
+        None,
+        Arc::new(Local),
+        None,
+        None,
+    )
+    .await;
+    session
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(startup_selection(
+                adopted_selection(&session),
+                STARTUP_WINDOW,
+            )),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    for _ in 0..20 {
+        session
+            .submit(cjk(1_500), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let outcomes = compaction_outcomes(&session).await;
+    let completed = outcomes
+        .iter()
+        .filter(|data| matches!(&data.outcome, ContextCompactionResult::Completed { .. }))
+        .count();
+    assert!(
+        (1..=3).contains(&completed),
+        "the floor debounces compactions: not once per turn, not locked up, {completed} completions in 20 turns, {outcomes:#?}"
     );
     agent.close().await.unwrap();
 }

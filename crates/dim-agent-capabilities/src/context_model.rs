@@ -147,13 +147,20 @@ impl ContextModel for WindowFacts {
         self.output_tokens
     }
     fn threshold_tokens(&self) -> f64 {
-        let budget = (self.context_window - self.output_tokens).max(0.);
-        let threshold = budget
+        let budget = self.compaction_budget();
+        budget
             - (RESERVE_RATIO * budget)
                 .max(RESERVE_MIN_TOKENS)
-                .min(RESERVE_MAX_RATIO * budget);
-        self.auto_compact_window.map_or(threshold, |window| {
-            threshold.min((window as f64 - self.output_tokens).max(0.))
+                .min(RESERVE_MAX_RATIO * budget)
+    }
+    fn compaction_budget(&self) -> f64 {
+        let budget = (self.context_window - self.output_tokens).max(0.);
+        self.auto_compact_window.map_or(budget, |window| {
+            // Inside the effective window the output reserve is capped at
+            // half of it, so a large declared output cannot consume a small
+            // configured window (#2235 §3.4).
+            let reserve = self.output_tokens.min(window as f64 / 2.);
+            budget.min((window as f64 - reserve).max(0.))
         })
     }
     fn count_tokens(&self, request: &ModelRequest) -> f64 {

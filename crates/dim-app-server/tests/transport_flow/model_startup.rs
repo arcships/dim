@@ -623,8 +623,10 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
         ),
         ("/contextWindow", json!(0)),
         ("/contextWindow", json!(9_007_199_254_740_992u64)),
-        ("/autoCompactWindow", json!(64001)),
         ("/autoCompactWindow", json!(0)),
+        ("/autoCompactWindow", json!("0%")),
+        ("/autoCompactWindow", json!("101%")),
+        ("/autoCompactWindow", json!("garbage")),
     ] {
         let mut invalid = input.clone();
         let (parent, field) = pointer.rsplit_once('/').unwrap();
@@ -1281,6 +1283,124 @@ async fn an_output_limit_above_the_window_is_adopted_with_the_derived_allowance(
     submit(&mut client, &sid, "main").await;
     let body = seen.lock().unwrap().last().unwrap().2.clone();
     assert_eq!(body["max_tokens"], 32000, "{body}");
+    server.shutdown();
+    server.join().await.unwrap();
+    fixture.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A compaction window in tokens is a soft cap: a value wider than the
+/// model clamps to the capacity instead of failing, and a narrower one rises
+/// to the floor of 32,000 or 10% of the capacity when it is smaller; a
+/// percentage resolves against the declared context window (ContextCompaction
+/// §5.1, #2235).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_compaction_window_resolves_percentages_soft_caps_and_floors() {
+    let home = std::env::temp_dir().join(format!("dim-window-resolve-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for (window, expected) in [
+        (json!("40%"), 25_600),
+        (json!("100%"), 64_000),
+        (json!(1000), 6_400),
+        (json!(48000), 48_000),
+        (json!(100000), 64_000),
+    ] {
+        let mut input = startup(&base, "openai-compatible", "private-window");
+        input["autoCompactWindow"] = window.clone();
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":home,"model":{"modelId":"startup-fixture"},"startup":input}),
+            )
+            .await;
+        assert_ok(&created);
+        let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        submit(&mut client, &sid, "main").await;
+        let session = server.agent().unwrap().get_session(&sid).unwrap();
+        let state = session.get::<PromptSnapshot>("main").unwrap().unwrap();
+        assert_eq!(
+            state
+                .configuration
+                .unwrap()
+                .metadata
+                .unwrap()
+                .startup
+                .unwrap()
+                .auto_compact_window,
+            Some(expected),
+            "{window}"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    fixture.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A large model window raises the floor to 32,000, and a window small enough
+/// that 10% of it is the floor resolves a small percentage against it
+/// (ContextCompaction §5.1, #2235).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_compaction_window_floor_scales_with_the_model_window() {
+    let home = std::env::temp_dir().join(format!("dim-window-floor-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for (window, max_output, percentage, expected) in [
+        (1_000_000, 1_000, "1%", 32_000),
+        (10_000, 1_000, "5%", 1_000),
+        (1_000_000, 1_000, "50%", 500_000),
+    ] {
+        let mut input = startup(&base, "openai-compatible", "private-window");
+        input["contextWindow"] = json!(window);
+        input["maxOutputTokens"] = json!(max_output);
+        input["autoCompactWindow"] = json!(percentage);
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":home,"model":{"modelId":"startup-fixture"},"startup":input}),
+            )
+            .await;
+        assert_ok(&created);
+        let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        submit(&mut client, &sid, "main").await;
+        let session = server.agent().unwrap().get_session(&sid).unwrap();
+        let state = session.get::<PromptSnapshot>("main").unwrap().unwrap();
+        assert_eq!(
+            state
+                .configuration
+                .unwrap()
+                .metadata
+                .unwrap()
+                .startup
+                .unwrap()
+                .auto_compact_window,
+            Some(expected),
+            "{window} x {percentage}"
+        );
+    }
     server.shutdown();
     server.join().await.unwrap();
     fixture.abort();

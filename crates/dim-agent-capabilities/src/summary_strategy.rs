@@ -56,8 +56,8 @@ impl SummaryReasoning {
 }
 
 /// The target summary length `S = min(α × O, β × B)`, where `O` is the
-/// summarizer's output allowance and `B` the model's input budget, rounded
-/// down to a multiple of 100 (ContextCompaction §13.3).
+/// summarizer's output allowance and `B` the model's compaction budget,
+/// rounded down to a multiple of 100 (ContextCompaction §13.3).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TargetRule {
     pub output_share: f64,
@@ -66,7 +66,7 @@ pub struct TargetRule {
 impl TargetRule {
     fn tokens(self, model: &dyn ContextModel) -> f64 {
         let output = model.output_tokens();
-        let budget = model.context_window() - output;
+        let budget = model.compaction_budget();
         let target = (self.output_share * output).min(self.input_share * budget);
         (target / 100.).floor() * 100.
     }

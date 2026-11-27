@@ -312,6 +312,120 @@ fn starts_of(events: &[Arc<AgentEvent>]) -> Vec<Option<u64>> {
         .collect()
 }
 
+/// Manual cut points shape with the physical budget, not the compaction
+/// window (ContextCompaction §5.3, #2235): after two 1300-token turns inside
+/// a 1500-token compaction budget, the manual compaction keeps a tail only
+/// the 2032-token physical cap allows, not the 375 tokens automatic shaping
+/// at the compaction scale would cap it at.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_cut_points_keep_the_physical_scale_under_a_narrow_window() {
+    let strategy = Arc::new(Scripted {
+        mode: Mode::Cut,
+        context: Context {
+            threshold: Some(10_000.),
+            window: 8_192.,
+            compaction: 1_500.,
+            ..Context::default()
+        },
+        ..Scripted::default()
+    });
+    let agent = MinimalHost::start(&builder_with_strategy(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        strategy,
+        None,
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    for text in ["x".repeat(600), "y".repeat(600)] {
+        session
+            .submit(text, InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let command = session
+        .service::<AgentLoop>("main")
+        .unwrap()
+        .compact()
+        .unwrap();
+    let events = until(&session, |events| result_for(events, command).is_some()).await;
+    let result = result_for(&events, command).unwrap();
+    let ContextCompactionResult::Completed { diagnostics, .. } = &result.outcome else {
+        panic!("the manual compaction completes, {events:#?}");
+    };
+    let output = diagnostics
+        .estimated_output_tokens
+        .expect("a completed compaction reports its projected size");
+    assert!(
+        output >= 1_500.,
+        "the retained tail scales with the physical budget, not the compaction window, {output}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ContextCompactionStart(data) if data.trigger == CompactionTrigger::Threshold
+        )),
+        "no automatic compaction ran: the tail's size is the manual step's"
+    );
+    agent.close().await.unwrap();
+}
+
+/// Request validation compares with the physical input budget, not the
+/// compaction window (ContextCompaction §5.3, #2235): a request well above
+/// the 1500-token compaction budget but inside the 8128-token physical budget
+/// completes instead of exhausting the window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_above_the_compaction_window_validates_at_the_physical_scale() {
+    let strategy = Arc::new(Scripted {
+        mode: Mode::Cut,
+        context: Context {
+            threshold: Some(10_000.),
+            window: 8_192.,
+            compaction: 1_500.,
+            ..Context::default()
+        },
+        ..Scripted::default()
+    });
+    let agent = MinimalHost::start(&builder_with_strategy(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        strategy,
+        None,
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    session
+        .submit("x".repeat(2_000), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        !events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TurnEnd(data) if matches!(&data.outcome, TurnOutcome::Failed { .. })
+        )),
+        "the turn completes: validation reads the physical budget, {events:#?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ModelOutputEnd(data) if matches!(&data.outcome, ModelOutputOutcome::Completed { .. })
+        )),
+        "the model output completes"
+    );
+    agent.close().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn steers_wait_for_compaction_and_explicit_interrupts_still_cancel() {
     for (trigger, interrupt) in [

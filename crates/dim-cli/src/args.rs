@@ -228,7 +228,7 @@ Options:
   --model-config PATH             Explicit API-key model configuration
   --model ID [--provider ID]      Temporary model selection (also on resume)
   --effort LEVEL                  Temporary reasoning effort (also on resume)
-  --autocompact auto|TOKENS       Temporary compaction window (k/m suffixes)
+  --autocompact auto|TOKENS|N%    Temporary compaction window (k/m suffixes)
   --permission PRESET             read-only, workspace-write or full-access
                                   for a new session, or for the resumed main
                                   branch
@@ -264,8 +264,9 @@ Model startup:
   DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS declare positive capacities
     up to 9007199254740991; the request output allowance is derived from them.
     For openai-codex, a context window above the model's ceiling fails startup.
-  --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto or a positive count,
-    optionally suffixed k/m (1000/1000000). This is not the model capacity.
+  --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto, a positive count
+    optionally suffixed k/m (1000/1000000), or a percentage such as 40%.
+    This window is a soft cap on shaping, not the model capacity.
   Effort, autocompact and capacity startup controls require the product Provider
     and cannot be used with --model-config; set API-key generation settings
     in that configuration file instead.
@@ -2012,6 +2013,14 @@ impl Options {
         if let Some(value) = &autocompact {
             startup["autoCompactWindow"] = if value == "auto" {
                 serde_json::json!("auto")
+            } else if let Some(digits) = value.strip_suffix('%') {
+                let percent: f64 = digits.parse().map_err(|_| {
+                    "--autocompact / DIM_AUTO_COMPACT_WINDOW percentage must be a positive number of at most 100"
+                })?;
+                if percent <= 0.0 || percent > 100.0 {
+                    return Err("--autocompact / DIM_AUTO_COMPACT_WINDOW percentage must be a positive number of at most 100".into());
+                }
+                serde_json::json!(value)
             } else {
                 let (digits, multiplier) = match value.as_bytes().last() {
                     Some(b'k' | b'K') => (&value[..value.len() - 1], 1_000),
