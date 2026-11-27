@@ -1470,3 +1470,182 @@ async fn a_created_providers_seedream_model_is_unavailable_end_to_end() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn corrected_catalog_video_entries_list_unavailable_with_the_adapter_reason() {
+    // The corrected aihubmix and zenmux rows declare no modalityCapabilities:
+    // recognition infers video.generate from the entry itself, and the
+    // adapter answer then differs by the model id. A seedance row names the
+    // Ark word family the compatible family cannot execute, so it lists
+    // unavailable with the adapter reason and submit refuses it before any
+    // request; a minimax-h3 row is the family's own shape and stays
+    // available end to end.
+    let stub = stub(0).await;
+    let home = home("catalog-video-availability");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "aihubmix", &stub.base_url).await;
+    point_at_stub(&mut client, "zenmux", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let video = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "video")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let options = video["options"].as_array().unwrap();
+    let option = |provider_id: &str, model_id: &str| -> Value {
+        options
+            .iter()
+            .find(|option| option["providerId"] == provider_id && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("{provider_id}/{model_id} is not a video option: {video}"))
+            .clone()
+    };
+    for (provider_id, model_id) in [
+        ("aihubmix", "doubao-seedance-1-0-pro-250528"),
+        ("zenmux", "bytedance/doubao-seedance-2.0"),
+    ] {
+        let entry = option(provider_id, model_id);
+        assert_eq!(
+            entry["available"], false,
+            "{provider_id}/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+    for (provider_id, model_id) in [
+        ("aihubmix", "minimax-h3-max"),
+        ("zenmux", "minimax/minimax-h3"),
+    ] {
+        let entry = option(provider_id, model_id);
+        assert_eq!(
+            entry["available"], true,
+            "{provider_id}/{model_id} stays available: {entry}"
+        );
+    }
+    assert!(
+        options
+            .iter()
+            .any(|option| option["available"] == true && option["reason"].is_null()),
+        "an available option carries no reason: {video}"
+    );
+
+    for (provider_id, model_id) in [
+        ("aihubmix", "doubao-seedance-1-0-pro-250528"),
+        ("zenmux", "bytedance/doubao-seedance-2.0"),
+    ] {
+        let refused = client
+            .rpc(
+                "modality.task.submit",
+                json!({"category": "video", "operation": "generate", "params": {"prompt": "a cat"},
+                    "files": [], "model": model(provider_id, model_id)}),
+            )
+            .await;
+        assert_eq!(
+            app_error(&refused),
+            "unavailable",
+            "{provider_id}/{model_id} submit is refused before any request: {refused}"
+        );
+    }
+    assert_eq!(
+        stub.starts("/v1/videos"),
+        0,
+        "no video start reaches either gateway"
+    );
+
+    // The same read's positive entries run on the compatible family: one of
+    // the corrected minimax-h3 rows submits and completes on /videos.
+    let task_id = submit(
+        &mut client,
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model("zenmux", "minimax/minimax-h3"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "video/mp4");
+    assert_eq!(stub.starts("/v1/videos"), 1, "minimax-h3 runs on /videos");
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cataloged_seedream_image_entries_list_unavailable_with_the_adapter_reason() {
+    // The catalog's own seedream rows declare no modalityCapabilities either:
+    // recognition infers image.generate and image.edit, and the generic
+    // compatible fallback refuses the seedream word family, so an aggregator
+    // gateway's rows list unavailable with the adapter reason and submit
+    // refuses them before any request.
+    let stub = stub(0).await;
+    let home = home("catalog-seedream-availability");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "aihubmix", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap();
+    let generate = image["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    for model_id in ["doubao-seedream-4-0", "doubao-seedream-5.0-pro"] {
+        let entry = generate["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == "aihubmix" && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("aihubmix/{model_id} is not an image option: {generate}"));
+        assert_eq!(
+            entry["available"], false,
+            "aihubmix/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model("aihubmix", "doubao-seedream-4-0")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the catalog seedream submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
