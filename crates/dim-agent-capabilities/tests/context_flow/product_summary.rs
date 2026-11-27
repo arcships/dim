@@ -64,7 +64,17 @@ async fn compact_now(session: &dim_agent_runtime::Session) -> (u64, Vec<Arc<Agen
         .unwrap();
     let events = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let events = chain_events(session, "main", ..).await.unwrap();
+            let events = match chain_events(session, "main", ..).await {
+                Ok(events) => events,
+                Err(error) => {
+                    // A fault closes the session and its store entry, so the
+                    // poll's own error names neither; the close outcome does.
+                    let close = tokio::time::timeout(Duration::ZERO, session.closed()).await;
+                    panic!(
+                        "the session stopped serving the compaction fact: {error}; close: {close:?}"
+                    );
+                }
+            };
             if events.iter().any(|event| {
                 matches!(&event.kind,
                 EventKind::ContextCompaction(data) if data.command == Some(command))

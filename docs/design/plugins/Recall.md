@@ -236,7 +236,7 @@ context is the origin of, or joined to, a thing (§14).
 
 | Thing | Line |
 | --- | --- |
-| Input | with user content: `user: <text>` (images as `[image]`), followed by `+ <blocks>` when it also carries blocks; with blocks only: `<blocks>: <first line of the first block's body>`. `<blocks>` names each block in order by its opening tag and attributes as written, or `block` for a block whose text opens with no tag, with `(current)` for a live block and `(ended)` for one that retires its `key` |
+| Input | with user content: `user: <text>` (images as `[image]`), followed by `+ <blocks>` when it also carries blocks; with blocks only: `<blocks>: <first line of the first block's body>`, or `<blocks>` alone when that body is empty. A block's body is the text between its opening tag and its own closing tag, so a tag inside the body stays; a block whose text opens with no tag has that text as its body. `<blocks>` names each block in order by its opening tag and attributes as written, or `block` for a block whose text opens with no tag, with `(current)` for a live block and `(ended)` for one that retires its `key` |
 | Your reply | `you: <text>`, thinking left out; an output that did not complete is `your reply was cut off (<reason>): <partial text>`, with the committed text and the outcome of its `step/model-output-end`; an output the head ends inside is `you (still writing): <text so far>` |
 | Tool call | `you called <tool> <input brief> → <ending>`; a call whose arguments never arrived is `you started calling <tool> (arguments not received) → <ending>` |
 | Interrupt | `the user interrupted the turn` |
@@ -334,8 +334,8 @@ tools it called with counts, and its outcome from `turn/end` (`completed`, `fail
 The inputs that open a turn are the ones it consumed before its first model request; an input read
 later, such as a steer while it works, does not open it. The line gives the first user text among
 the opening inputs; when none of them carries user text (a Goal continuation, a message from
-another line), the first of them that carries a line write (§3.4), or else the driving input's
-`<blocks>`: the first opening input that is not Append, since an Append input joins the request
+another line), the first of them that carries a line write (§3.4), or else the driving input as its line
+reads, `<blocks>: <first line of the first block's body>`: the first opening input that is not Append, since an Append input joins the request
 but does not open the turn. A turn with no opening input has none of these: its line reads
 `turn: no opening input`.
 

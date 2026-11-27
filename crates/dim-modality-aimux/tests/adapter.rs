@@ -2067,3 +2067,392 @@ async fn the_dim_account_relay_listing_comes_from_the_compatible_family() {
         "the family answers every operation for a compatible route"
     );
 }
+
+/// The operation names one adapter listing carries, in `<category>.<operation>`
+/// form.
+fn operation_names(
+    adapter: &MediaAdapter,
+    model: &ModelId,
+    protocol: Option<ModelProtocol>,
+) -> Vec<String> {
+    adapter
+        .operations(model, protocol)
+        .into_iter()
+        .map(|operation| format!("{}.{}", operation.category, operation.operation))
+        .collect()
+}
+
+#[tokio::test]
+async fn the_ark_video_word_family_carries_no_compatible_binding() {
+    // #1927 keeps the Ark route out of this slice: the compatible family's
+    // multipart /videos cannot execute a Seedance model, so listing and
+    // submit refuse it together, on the relay and on a created provider.
+    let adapter = MediaAdapter::new();
+    for (provider_id, model_id) in [
+        ("dimcode-api-oauth", "seedance-2.0"),
+        ("dimcode-api-oauth", "doubao-seedance-1-0-pro-250528"),
+        ("6f1c2f9e-0000-4000-8000-000000000000", "seedance-2.0"),
+        (
+            "6f1c2f9e-0000-4000-8000-000000000000",
+            "doubao-seedance-1-0-pro-250528",
+        ),
+    ] {
+        let model = ModelId {
+            provider_id: provider_id.to_owned(),
+            model_id: model_id.to_owned(),
+        };
+        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+            let names = operation_names(&adapter, &model, protocol);
+            assert!(
+                !names.contains(&"video.generate".to_owned()),
+                "{provider_id}/{model_id} ({protocol:?}) lists no video.generate: {names:?}"
+            );
+            assert!(
+                names.contains(&"image.generate".to_owned()),
+                "the exclusion is the video operation alone: {names:?}"
+            );
+        }
+
+        let dir = work_dir("ark-video");
+        let (scripted_adapter, requests) = scripted(|_| ok_json(json!({})));
+        let task = job(
+            provider_id,
+            model_id,
+            "video",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let error = scripted_adapter
+            .submit(
+                task,
+                connection("https://router.example.test/v1", model_id),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            AdapterErrorCode::Unavailable,
+            "{provider_id}/{model_id} submit is refused: {error}"
+        );
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "a refused submit sends no request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_non_ark_compatible_video_model_still_runs_on_the_family() {
+    // minimax-h3 is the compatible family's own shape, so the exclusion does
+    // not reach it: video.generate stays listed and submit still starts the
+    // job, on the relay and on a created provider.
+    let adapter = MediaAdapter::new();
+    for provider_id in ["dimcode-api-oauth", "6f1c2f9e-0000-4000-8000-000000000000"] {
+        let model = ModelId {
+            provider_id: provider_id.to_owned(),
+            model_id: "minimax-h3".into(),
+        };
+        let names = operation_names(&adapter, &model, Some(ModelProtocol::OpenaiCompatible));
+        assert!(
+            names.contains(&"video.generate".to_owned()),
+            "{provider_id}/minimax-h3 keeps video.generate: {names:?}"
+        );
+
+        let dir = work_dir("h3-video");
+        let (scripted_adapter, _) = scripted(|request| {
+            if request.method == Method::POST {
+                return ok_json(json!({"id": "vid1"}));
+            }
+            ok_json(json!({}))
+        });
+        let task = job(
+            provider_id,
+            "minimax-h3",
+            "video",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let submitted = scripted_adapter
+            .submit(
+                task,
+                connection("https://router.example.test/v1", "minimax-h3"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            submitted.remote_handle.is_some(),
+            "{provider_id}/minimax-h3 submit starts the job"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_bundled_vendor_without_a_row_does_not_fall_back_to_the_family() {
+    // These vendor-role catalog providers carry the openai-compatible
+    // placeholder driver kind for their chat models alone; their media
+    // models no aimux package executes, so they report adapter rather than
+    // answering generic endpoints the vendor never documented.
+    let adapter = MediaAdapter::new();
+    for provider_id in [
+        "adobe-firefly",
+        "alibaba-dashscope",
+        "amazon-speech",
+        "beatoven",
+        "bytedance",
+        "d-id",
+        "fish-audio",
+        "heygen",
+        "ibm-watson-speech",
+        "ideogram",
+        "mubert",
+        "musicapi-ai",
+        "pika",
+        "pixverse",
+        "playht",
+        "reve-ai",
+        "sarvam-ai",
+        "soniox",
+        "speechmatics",
+        "step-plan",
+        "stepfun",
+        "suno",
+        "synthesia",
+        "tavus",
+        "vidu",
+    ] {
+        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+            let names = operation_names(
+                &adapter,
+                &ModelId {
+                    provider_id: provider_id.to_owned(),
+                    model_id: "vendor-media".into(),
+                },
+                protocol,
+            );
+            assert_eq!(
+                names,
+                vec!["realtime.voice"],
+                "{provider_id} ({protocol:?}) serves no media operation"
+            );
+        }
+
+        let dir = work_dir("bundled-norow");
+        let (scripted_adapter, requests) = scripted(|_| ok_json(json!({})));
+        let task = job(
+            provider_id,
+            "vendor-media",
+            "video",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let error = scripted_adapter
+            .submit(
+                task,
+                connection("https://vendor.example.test/v1", "vendor-media"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            AdapterErrorCode::Unavailable,
+            "{provider_id} submit is refused: {error}"
+        );
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "{provider_id}: a refused submit sends no request"
+        );
+    }
+    // Aggregator gateways are not proprietary vendors: they keep the
+    // compatible family fallback.
+    let names = operation_names(
+        &adapter,
+        &ModelId {
+            provider_id: "aihubmix".into(),
+            model_id: "vendor-media".into(),
+        },
+        Some(ModelProtocol::OpenaiCompatible),
+    );
+    assert!(
+        names.contains(&"video.generate".to_owned()),
+        "an aggregator gateway keeps the family fallback: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_seedream_image_word_family_carries_no_compatible_binding() {
+    // The generic image fallback is the exclusion's only reach: a Seedream
+    // endpoint answers image URLs by default and the compatible package reads
+    // inline b64_json alone, so listing and submit refuse the model together
+    // on a created provider. The Dim account relay is not the generic
+    // fallback: its image generation stays on the OpenAI package.
+    let adapter = MediaAdapter::new();
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+        let model = ModelId {
+            provider_id: created.to_owned(),
+            model_id: model_id.to_owned(),
+        };
+        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+            let names = operation_names(&adapter, &model, protocol);
+            assert!(
+                !names.contains(&"image.generate".to_owned())
+                    && !names.contains(&"image.edit".to_owned()),
+                "{model_id} ({protocol:?}) lists no image operation: {names:?}"
+            );
+            assert!(
+                names.contains(&"video.generate".to_owned()),
+                "the exclusion is the image operations alone: {names:?}"
+            );
+        }
+    }
+    for model_id in ["seedream5", "seedreaming"] {
+        let model = ModelId {
+            provider_id: created.to_owned(),
+            model_id: model_id.to_owned(),
+        };
+        let names = operation_names(&adapter, &model, Some(ModelProtocol::OpenaiCompatible));
+        assert!(
+            names.contains(&"image.generate".to_owned()),
+            "only a whole seedream word is refused: {names:?}"
+        );
+    }
+    let relay = ModelId {
+        provider_id: "dimcode-api-oauth".into(),
+        model_id: "seedream-5.0".into(),
+    };
+    for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+        let names = operation_names(&adapter, &relay, protocol);
+        assert!(
+            names.contains(&"image.generate".to_owned())
+                && names.contains(&"image.edit".to_owned()),
+            "the relay's seedream stays on the OpenAI package ({protocol:?}): {names:?}"
+        );
+    }
+
+    for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+        let dir = work_dir("seedream-image");
+        let (scripted_adapter, requests) = scripted(|_| {
+            ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]}))
+        });
+        let task = job(
+            created,
+            model_id,
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let error = scripted_adapter
+            .submit(
+                task,
+                connection("https://router.example.test/v1", model_id),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            AdapterErrorCode::Unavailable,
+            "{model_id} submit is refused: {error}"
+        );
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "a refused image submit sends no request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_seedream_exclusion_reaches_the_video_wait_binding() {
+    // wait re-resolves the binding on the way to a video poll, through the
+    // same check submit applies. The blocking image wait cannot be reached
+    // without a submit the refusal prevents, so the video handle is the
+    // structure the wait path offers.
+    let dir = work_dir("seedream-wait");
+    let (adapter, requests) = scripted(|_| ok_json(json!({})));
+    let video_job = job(
+        "6f1c2f9e-0000-4000-8000-000000000000",
+        "seedance-2.0",
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        Vec::new(),
+        &dir,
+    );
+    let handle = json!({
+        "operation": {"id": "vid1"},
+        "job": serde_json::to_value(&video_job).unwrap(),
+        "started_at": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+    });
+    let error = adapter
+        .wait(
+            &video_job.task_id,
+            Some(&handle.to_string()),
+            connection("https://router.example.test/v1", "seedance-2.0"),
+            ProgressSink::none(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        AdapterErrorCode::Unavailable,
+        "wait refuses the model through the same binding check: {error}"
+    );
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "a refused wait sends no request"
+    );
+}
+
+#[tokio::test]
+async fn the_dim_account_relay_image_binding_still_serves_seedream() {
+    // The relay resolves image generation to the OpenAI package, whose
+    // requests ask for inline bytes; a seedream model id does not leave that
+    // resolution, so the call pins the OpenAI image path as before.
+    let dir = work_dir("relay-seedream");
+    let (adapter, requests) =
+        scripted(|_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]})));
+    let output = run(
+        &adapter,
+        job(
+            "dimcode-api-oauth",
+            "seedream-5.0",
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://relay.example.test/v1",
+        "seedream-5.0",
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.files.len(), 1);
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "the relay image generation runs");
+    let request = &requests[0];
+    assert!(
+        request.url.ends_with("/images/generations"),
+        "the relay keeps the OpenAI image path: {}",
+        request.url
+    );
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(
+        body["response_format"], "b64_json",
+        "the OpenAI package keeps asking the relay for inline bytes: {body}"
+    );
+    assert_eq!(body["model"], "seedream-5.0");
+}

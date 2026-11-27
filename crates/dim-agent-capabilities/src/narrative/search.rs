@@ -1094,7 +1094,7 @@ impl Search<'_> {
         let title = match (write, &input.user) {
             (Some(write), _) => format!("turn: {}", write_line(&write, false, self.person)),
             (None, Some(user)) => format!("turn: user \"{}\"", part(&user_text(user))),
-            (None, None) => format!("turn: {}", part(&blocks_name(&input.blocks, &live))),
+            (None, None) => format!("turn: {}", blocks_line(&input.blocks, &live)),
         };
         Ok(Some((priority, title)))
     }

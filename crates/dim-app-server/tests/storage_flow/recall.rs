@@ -115,6 +115,28 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
                 .unwrap();
             session.idle("main").await.unwrap();
         }
+        for text in [
+            "<note><note>Ready</note></note>",
+            "<note><b></b></note>",
+            "<note></note>",
+            "plain first line\nsecond line",
+        ] {
+            session
+                .input(
+                    InputMessageData {
+                        blocks: vec![dim_agent_capabilities::context_block::raw(
+                            text.to_owned(),
+                            None,
+                        )],
+                        mode: Some(InputMode::Queue),
+                        ..InputMessageData::default()
+                    },
+                    "main",
+                )
+                .await
+                .unwrap();
+            session.idle("main").await.unwrap();
+        }
         for arguments in [
             json!({"about":"uniqueneedle"}),
             json!({"about":"absentwordxyz"}),
@@ -161,6 +183,19 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
             let expected =
                 Narrative::new(&history[..at]).answer(calling, arguments.as_object().unwrap());
             assert_eq!(actual.content, expected.content, "{arguments}");
+            if arguments == json!({}) {
+                let ToolContent::Text(index) = &actual.content else {
+                    panic!("{:?}", actual.content)
+                };
+                for title in [
+                    " turn: note: <note>Ready</note> — ",
+                    " turn: note: <b></b> — ",
+                    " turn: note — ",
+                    " turn: block: plain first line — ",
+                ] {
+                    assert!(index.contains(title), "{title} in {index}");
+                }
+            }
             if arguments["about"]
                 .as_str()
                 .is_some_and(|about| about.starts_with("wrote"))

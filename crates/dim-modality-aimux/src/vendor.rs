@@ -359,6 +359,67 @@ pub fn vendor(provider_id: &str) -> Option<&'static Vendor> {
     VENDORS.iter().find(|vendor| vendor.catalog == provider_id)
 }
 
+/// The bundled vendor-role catalog providers whose media models no aimux
+/// package serves: they carry the `openai-compatible` placeholder driver
+/// kind, so their ids would pass for a created provider's compatible family
+/// if the family fallback did not name them. Extracted from
+/// `crates/dim-app-server/resources/default-catalog.json`; a new bundled
+/// entry of this shape joins the table until its package arrives.
+static BUNDLED_WITHOUT_ROWS: &[&str] = &[
+    "adobe-firefly",
+    "alibaba-dashscope",
+    "amazon-speech",
+    "beatoven",
+    "bytedance",
+    "d-id",
+    "fish-audio",
+    "heygen",
+    "ibm-watson-speech",
+    "ideogram",
+    "mubert",
+    "musicapi-ai",
+    "pika",
+    "pixverse",
+    "playht",
+    "reve-ai",
+    "sarvam-ai",
+    "soniox",
+    "speechmatics",
+    "step-plan",
+    "stepfun",
+    "suno",
+    "synthesia",
+    "tavus",
+    "vidu",
+];
+
+/// Whether the model id names `word` after the provider-resolution
+/// splitting: case-insensitively, on the `.`, `/`, `_` and `-` boundaries the
+/// Provider layer recognizes.
+fn in_word_family(model_id: &str, word: &str) -> bool {
+    model_id
+        .to_ascii_lowercase()
+        .split(['.', '/', '_', '-'])
+        .any(|part| part == word)
+}
+
+/// Whether the model id names the Ark video word family. The Ark video API
+/// is a different route from the compatible family's `/videos`
+/// (`/contents/generations/tasks`, JSON), so the compatible binding cannot
+/// execute these models; they are refused until the per-model route exists.
+fn is_ark_video_model(model_id: &str) -> bool {
+    in_word_family(model_id, "seedance")
+}
+
+/// Whether the model id names the Seedream image word family (`seedream`,
+/// `doubao-seedream`). A Seedream endpoint answers image URLs by default, and
+/// the compatible package reads inline `b64_json` alone, so the compatible
+/// binding cannot execute these models; they are refused until the per-model
+/// route exists.
+fn is_seedream_image_model(model_id: &str) -> bool {
+    in_word_family(model_id, "seedream")
+}
+
 /// How a binding builds its aimux provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Package {
@@ -432,8 +493,23 @@ impl Vendor {
 /// startup recovery's answer for a route it cannot re-read: the family
 /// answers as the compatible one would, and a route that no longer matches
 /// is the call's own failure.
+///
+/// Three exclusions narrow the fallback. A bundled vendor-role provider whose
+/// media models no package serves ([`BUNDLED_WITHOUT_ROWS`]) carries the
+/// `openai-compatible` placeholder driver kind for its chat models alone:
+/// it is not a created provider, and its media models stay unserved rather
+/// than answering generic endpoints the vendor never documented. A video
+/// model whose id names the Ark word family (`seedance`, `doubao-seedance`)
+/// is refused: the Ark video API is a different route from the compatible
+/// family's `/videos`, and the per-model binding that serves it is a later
+/// slice (#1927). And an image model whose id names the Seedream word family
+/// (`seedream`, `doubao-seedream`) is refused by the generic fallback alone —
+/// the relay stays on the OpenAI package — because a Seedream endpoint
+/// answers image URLs by default while the compatible package reads inline
+/// `b64_json` alone, and the per-model binding is the same later slice.
 pub fn binding(
     provider_id: &str,
+    model_id: &str,
     protocol: Option<dim_agent_types::ModelProtocol>,
     operation: Operation,
 ) -> Result<Binding, dim_modality::AdapterError> {
@@ -451,6 +527,17 @@ pub fn binding(
             )))
         };
     }
+    if BUNDLED_WITHOUT_ROWS.contains(&provider_id) {
+        return Err(dim_modality::AdapterError::unavailable(format!(
+            "The {provider_id} provider serves no {}",
+            statement(operation)
+        )));
+    }
+    if operation == Operation::Video && is_ark_video_model(model_id) {
+        return Err(dim_modality::AdapterError::unavailable(format!(
+            "The `{model_id}` model's video generation needs its provider's own route"
+        )));
+    }
     let binding = match (compatible, operation) {
         (true, Operation::Image) if provider_id == "dimcode-api-oauth" => Binding {
             package: Package::Preset("openai"),
@@ -460,6 +547,11 @@ pub fn binding(
             format: Some("outputFormat"),
             no_retry: true,
         },
+        (true, Operation::Image) if is_seedream_image_model(model_id) => {
+            return Err(dim_modality::AdapterError::unavailable(format!(
+                "The `{model_id}` model's image generation needs its provider's own route"
+            )));
+        }
         (true, Operation::Image) => Binding {
             package: Package::OpenaiCompatible,
             options: "openaiCompatible",
