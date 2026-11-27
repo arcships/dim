@@ -1353,14 +1353,13 @@ impl ContextPolicy {
         let carried = turn_id.and_then(|turn| carried_pins(view, turn));
         let turn = turn_id.map(|turn| (turn, carried.as_ref()));
         let manual = step.trigger == CompactionTrigger::Manual;
-        let recovery = step.provider_budget.is_some();
         // Manual steps and budget recovery shape with the physical budget;
         // the automatic trigger shapes with the compaction budget (#2235).
-        let budget = if manual || recovery {
-            input_budget(model.as_ref())
-        } else {
-            model.compaction_budget()
-        };
+        let budget = crate::summary_strategy::shaping_budget(
+            step.trigger,
+            step.provider_budget.as_ref(),
+            model.as_ref(),
+        );
         let rule = Retention::new(view, model.as_ref(), turn, manual, &order);
         let replacement_size = self.strategy.replacement_size(model.as_ref(), budget);
         let mut cuts = legal_cuts(&order, &view.history);
