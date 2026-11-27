@@ -2198,13 +2198,12 @@ impl ProviderService {
                 let Some(operations) = model.modality_operations() else {
                     continue;
                 };
-                // A selectable model routes: the record that admits it holds
-                // its route, and the connection resolution re-reads the same
-                // one. A catalog entry whose route is absent answers no
-                // non-conversational use either.
-                let Some(protocol) = model.endpoint else {
-                    continue;
-                };
+                // A selectable model routes: a missing route already
+                // excludes the entry from a non-conversational use, so the
+                // endpoint of a selectable one is always present.
+                let protocol = model
+                    .endpoint
+                    .expect("a modality-selectable model routes");
                 models.push(ModalityModelSnapshot {
                     target: ModelId {
                         provider_id: provider_id.clone(),
