@@ -429,6 +429,7 @@ pub struct ConfigurationResult {
     pub outcome: &'static str,
 }
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelUpdateResult {
     pub model: ModelId,
     pub outcome: &'static str,
