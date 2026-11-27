@@ -501,8 +501,7 @@ impl ProviderService {
                     "Auto-compaction window raised to the shaping floor"
                 );
                 elevation = Some(AutoCompactWindowElevation {
-                    requested: requested_window
-                        .unwrap_or(AutoCompactWindow::Tokens(window)),
+                    requested: requested_window.unwrap_or(AutoCompactWindow::Tokens(window)),
                     effective_tokens: floor,
                 });
             }

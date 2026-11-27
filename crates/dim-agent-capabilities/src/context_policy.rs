@@ -93,7 +93,6 @@ const BOUND_SHARE: f64 = 0.5;
 /// §5.10); provisional (#428).
 const DIGEST_SHARE: f64 = 0.05;
 
-
 /// Facts one page of the compaction-reuse read keeps.
 const REUSE_PAGE: u64 = 64;
 

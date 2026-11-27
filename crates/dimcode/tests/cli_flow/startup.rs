@@ -1113,14 +1113,13 @@ fn the_shaping_floor_notice_appears_once_in_both_tui_modes() {
             assert_eq!(wire.trailing_request(), None);
         });
         let mut command = command(&home);
-        command
-            .envs([
-                ("DIM_BASE_URL", "https://gateway.example/prefix"),
-                ("DIM_API_FORMAT", "openai-compatible"),
-                ("DIM_API_KEY", "first-secret"),
-                ("DIM_MODEL", "first-model"),
-                ("DIM_AUTO_COMPACT_WINDOW", "40%"),
-            ]);
+        command.envs([
+            ("DIM_BASE_URL", "https://gateway.example/prefix"),
+            ("DIM_API_FORMAT", "openai-compatible"),
+            ("DIM_API_KEY", "first-secret"),
+            ("DIM_MODEL", "first-model"),
+            ("DIM_AUTO_COMPACT_WINDOW", "40%"),
+        ]);
         if fullscreen {
             command.arg("--fullscreen");
         }
@@ -1162,9 +1161,12 @@ fn the_shaping_floor_notice_reaches_stderr_and_json_skips_it() {
                 create["params"]["startup"]["autoCompactWindow"],
                 json!("40%")
             );
-            wire.reply(&create, json!({"sessionId":"session","sequence":8,
+            wire.reply(
+                &create,
+                json!({"sessionId":"session","sequence":8,
                 "model":{"providerId":"test","modelId":"model"},
-                "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}));
+                "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}),
+            );
             wire.attached();
             quiet_turn(wire);
         });
@@ -1217,8 +1219,11 @@ fn a_resumed_startup_raise_is_reported_in_line_mode() {
             "startup":{"connection":{"baseUrl":"https://gateway.example/prefix",
                 "apiFormat":"anthropic","apiKey":"resume-secret"},"autoCompactWindow":"40%"}})
         );
-        wire.reply(&update, json!({"outcome":"adopted",
-            "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}));
+        wire.reply(
+            &update,
+            json!({"outcome":"adopted",
+            "autoCompactWindowElevation":{"requested":"40%","effectiveTokens":32000}}),
+        );
         let history = wire.read("session.history");
         wire.reply(
             &history,

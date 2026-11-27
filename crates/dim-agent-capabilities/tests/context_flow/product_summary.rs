@@ -472,6 +472,10 @@ impl LoadPrompt for SessionPromptHost {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per host and configuration the product session is assembled from"
+)]
 async fn product_session_on(
     window: u64,
     tools: Arc<dyn ToolDriver>,
@@ -2333,22 +2337,30 @@ async fn the_summary_target_scales_with_the_compaction_budget() {
         .unwrap();
     session.idle("main").await.unwrap();
     let automatic = recorder.requests.lock().unwrap().len();
-    assert!(automatic > 0, "the automatic compaction runs the summarizer");
     assert!(
-        compaction_outcomes(&session).await.iter().any(|outcome| matches!(
-            &outcome.outcome,
-            ContextCompactionResult::Completed { diagnostics, .. }
-                if diagnostics.trigger == CompactionTrigger::Threshold
-        )),
+        automatic > 0,
+        "the automatic compaction runs the summarizer"
+    );
+    assert!(
+        compaction_outcomes(&session)
+            .await
+            .iter()
+            .any(|outcome| matches!(
+                &outcome.outcome,
+                ContextCompactionResult::Completed { diagnostics, .. }
+                    if diagnostics.trigger == CompactionTrigger::Threshold
+            )),
         "the automatic compaction is a threshold compaction, the only trigger the compaction budget shapes"
     );
     let (_command, events) = compact_now(&session).await;
     assert!(
-        events.iter().any(|event| matches!(&event.kind,
+        events.iter().any(|event| matches!(
+            &event.kind,
             EventKind::ContextCompaction(ContextCompactionData {
                 outcome: ContextCompactionResult::Completed { .. },
                 ..
-            }))),
+            })
+        )),
         "the manual compaction completed, {events:#?}"
     );
     let requests = recorder.requests.lock().unwrap().clone();
@@ -2549,9 +2561,7 @@ async fn retained_input(
     session: &dim_agent_runtime::Session,
     diagnostics: &dim_agent_types::CompactionDiagnosticsRecord,
 ) -> Option<String> {
-    let Some(retain_from) = diagnostics.retain_from.as_deref() else {
-        return None;
-    };
+    let retain_from = diagnostics.retain_from.as_deref()?;
     let events = chain_events(session, "main", ..).await.unwrap();
     // The retained cut lands either on a seeded input or on the turn start of
     // the first retained turn; both normalize to the turn's seeded raw text,
@@ -2570,9 +2580,7 @@ async fn retained_input(
         if let EventKind::InputMessage(data) = &event.kind {
             return Some(raw(data));
         }
-        if matches!(&event.kind, EventKind::TurnStart(_))
-            && event.id != retain_from
-        {
+        if matches!(&event.kind, EventKind::TurnStart(_)) && event.id != retain_from {
             return None;
         }
     }
