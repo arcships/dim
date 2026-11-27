@@ -608,6 +608,9 @@ async fn an_unmapped_provider_is_unavailable() {
     // the OpenAI-compatible family carries no media binding either.
     let mut connection = connection("https://api.example.test/v1", "anything");
     connection.protocol = ModelProtocol::Gemini;
+    if let ModelConnection::Http(http) = &mut connection.resolved.connection {
+        http.protocol = ModelProtocol::Gemini;
+    }
     let task = job(
         "6f1c2f9e-0000-4000-8000-000000000000",
         "anything",
