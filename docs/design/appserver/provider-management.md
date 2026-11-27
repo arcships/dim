@@ -1113,15 +1113,28 @@ provider no vendor row names from it (Modality A.2). `operations` holds the
 `<category>.<operation>` ids the model's catalog entry declares, in that entry's
 order; a model that declares none is omitted. An entry declares its operations
 in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
-included, is the whole answer. An entry with no list is recognized as an image
-model, because relay and account catalogs list such models without media
-metadata: its id is `arcship-image`, a known ID in the `gpt-image-2` or
+included, is the whole answer. An entry with no list is recognized for each
+operation from its kind, its output or its id, because relay and account
+catalogs list such models without media metadata. A `type` of `video` or
+`video-generation` declares `video.generate`, `speech`, `speech-synthesis` or
+`tts` declares `speech.synthesize`, `transcription`, `speech-transcription` or
+`stt` declares `speech.transcribe`, and `image-edit` declares `image.edit`
+alone. A conversational or unspecified kind (`chat`, `other` or no `type`) is
+neutral about generation, so the output and the id speak there: an output of
+`video` alone, or an id whose last path segment names `seedance` or starts
+with `minimax-h3` (outside the `minimax-h3-image` variants, which are image
+models), declares `video.generate`, and an output of `audio` alone declares
+`speech.synthesize`. No rule infers a use the entry's own kind contradicts: a
+declared generation kind answers by its own rule alone, so a gateway row
+typed `image-generation` with a video output serves nothing until its
+declaration is corrected. The entry is recognized as an image model when its
+id is `arcship-image`, a known ID in the `gpt-image-2` or
 `grok-imagine-image` family, or names `seedream`, or its `type` is
 `image`/`image-generation` with image or no stated output, or `imageGeneration`
-is true, or its only output is `image`. Such a model declares
-`image.generate`, and `image.edit` too when it also reads images or is a known
-model; a `type` of `image-edit` declares `image.edit` alone, and
-`imageGeneration: false` recognizes nothing. The connection rule below reads
+is true, or a neutral kind carries an output of `image` alone. Such a model
+declares `image.generate`, and `image.edit` too when it also reads images or
+is a known model; `imageGeneration: false` negates the image inference alone,
+not the video, speech or transcription ones. The connection rule below reads
 the same declaration. The read applies the same provider, account, model,
 route, credential and status rules as `selectableModels`, without its
 text-modality, chat-kind and declared-text-limit requirements: a model without

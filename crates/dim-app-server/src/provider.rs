@@ -783,9 +783,23 @@ impl ProviderModel {
     /// The `<category>.<operation>` ids this entry serves for modality
     /// (Modality §9.2, provider management §3.6); `None` when it serves none.
     /// An explicit `modalityCapabilities` list is the answer, an empty one
-    /// included. Without one, an image model is recognized from its id or its
-    /// kind and output: `image.generate`, and `image.edit` when it also reads
-    /// images; `imageGeneration: false` recognizes nothing.
+    /// included. Without one, each operation is recognized from the entry's
+    /// kind, its output or its id. A kind of `video`/`video-generation`
+    /// declares `video.generate`, `speech`/`speech-synthesis`/`tts` declares
+    /// `speech.synthesize`, `transcription`/`speech-transcription`/`stt`
+    /// declares `speech.transcribe` and `image-edit` declares `image.edit`
+    /// alone. A conversational or unspecified kind (`chat`, `other` or no
+    /// `type`) is neutral about generation, so a video-only output or a
+    /// `seedance`/`minimax-h3` id declares `video.generate` there and an
+    /// audio-only output declares `speech.synthesize` — but no rule infers a
+    /// use the entry's own kind contradicts, so a gateway row typed
+    /// `image-generation` with a video output serves nothing until its
+    /// declaration is corrected. An image model is recognized as before: its
+    /// id is a known one or names `seedream`, `imageGeneration` is true, its
+    /// kind is `image`/`image-generation` with image or no stated output, or
+    /// its output is images alone; it declares `image.generate`, and
+    /// `image.edit` too when it also reads images or is a known id.
+    /// `imageGeneration: false` negates the image inference alone.
     fn modality_operations(&self) -> Option<Vec<String>> {
         let raw = self.metadata.as_ref().map(|metadata| &metadata.raw);
         let field = |name: &str| raw.and_then(|raw| raw.get(name));
@@ -796,9 +810,6 @@ impl ProviderModel {
                 .map(str::to_owned)
                 .collect();
             return (!operations.is_empty()).then_some(operations);
-        }
-        if field("imageGeneration") == Some(&serde_json::Value::Bool(false)) {
-            return None;
         }
         let modalities = |direction: &str| -> Vec<&str> {
             field("modalities")
@@ -814,29 +825,56 @@ impl ProviderModel {
         };
         let (input, output) = (modalities("input"), modalities("output"));
         let kind = field("type").and_then(serde_json::Value::as_str);
-        let operations: &[&str] = if KNOWN_IMAGE_MODELS.contains(&self.id.as_str())
-            || self
-                .id
-                .split(['.', '/', '_', '-'])
-                .any(|part| part == "seedream")
-        {
-            &["image.generate", "image.edit"]
-        } else if kind == Some("image-edit") {
-            &["image.edit"]
-        } else if field("imageGeneration") == Some(&serde_json::Value::Bool(true))
-            || (matches!(kind, Some("image" | "image-generation"))
-                && (output.is_empty() || output.contains(&"image")))
-            || (output == ["image"])
-        {
-            if input.contains(&"image") {
-                &["image.generate", "image.edit"]
-            } else {
-                &["image.generate"]
+        if kind == Some("image-edit") {
+            return Some(vec!["image.edit".to_owned()]);
+        }
+        // A conversational or unspecified kind is neutral about generation;
+        // a declared generation kind wins over the output and id guesses, so
+        // a row whose kind contradicts them infers nothing.
+        let neutral_kind = matches!(kind, None | Some("chat" | "other"));
+        let basename = self
+            .id
+            .rsplit_once('/')
+            .map_or(self.id.as_str(), |(_, segment)| segment)
+            .to_lowercase();
+        let video_id = basename.contains("seedance")
+            || (basename.starts_with("minimax-h3") && !basename.starts_with("minimax-h3-image"));
+        let video_kind = matches!(kind, Some("video" | "video-generation"));
+        let speech_kind = matches!(kind, Some("speech" | "speech-synthesis" | "tts"));
+        let transcription_kind =
+            matches!(kind, Some("transcription" | "speech-transcription" | "stt"));
+        let video = video_kind || (neutral_kind && (output == ["video"] || video_id));
+        let speech = speech_kind || (neutral_kind && output == ["audio"]);
+        let transcription = transcription_kind;
+        let seedream = self
+            .id
+            .split(['.', '/', '_', '-'])
+            .any(|part| part == "seedream");
+        let known_image = KNOWN_IMAGE_MODELS.contains(&self.id.as_str());
+        let image = field("imageGeneration") != Some(&serde_json::Value::Bool(false))
+            && (known_image
+                || seedream
+                || field("imageGeneration") == Some(&serde_json::Value::Bool(true))
+                || (matches!(kind, Some("image" | "image-generation"))
+                    && (output.is_empty() || output.contains(&"image")))
+                || (neutral_kind && output == ["image"]));
+        let mut operations: Vec<&str> = Vec::new();
+        if image {
+            operations.push("image.generate");
+            if input.contains(&"image") || known_image || seedream {
+                operations.push("image.edit");
             }
-        } else {
-            return None;
-        };
-        Some(operations.iter().map(|id| (*id).to_owned()).collect())
+        }
+        if video {
+            operations.push("video.generate");
+        }
+        if speech {
+            operations.push("speech.synthesize");
+        }
+        if transcription {
+            operations.push("speech.transcribe");
+        }
+        (!operations.is_empty()).then_some(operations.iter().map(|id| (*id).to_owned()).collect())
     }
 
     /// The realtime transport this entry's `metadata.raw.realtime` declares,

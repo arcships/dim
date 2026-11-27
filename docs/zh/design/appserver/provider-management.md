@@ -635,11 +635,18 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 `operations` 是该模型目录条目声明的
 `<category>.<operation>` id，按条目中的顺序；未声明任何操作的模型被省略。条目在
 `metadata.raw.modalityCapabilities` 中声明操作，显式列表（包括空列表）就是全部答案。没有列表的
-条目会被识别为图像模型，因为中转与账号目录列出这类模型时不带媒体元数据：其 id 是已知图像模型之一
-（`arcship-image`、`gpt-image-2` 和 `grok-imagine-image` 系列中的已知 ID）或包含 `seedream`；或其 `type`
-为 `image`/`image-generation` 且输出包含图像或未说明；或 `imageGeneration` 为 true；或其唯一输出是
-`image`。这样的模型声明 `image.generate`，当它也读取图像或是已知模型时还声明 `image.edit`；`type`
-为 `image-edit` 时只声明 `image.edit`，`imageGeneration: false` 不识别任何操作。下面的连接规则读取
+条目按类型、输出或 id 分别识别各个操作，因为中转与账号目录列出这类模型时不带媒体元数据：`type`
+为 `video` 或 `video-generation` 时声明 `video.generate`，为 `speech`、`speech-synthesis` 或 `tts` 时声明
+`speech.synthesize`，为 `transcription`、`speech-transcription` 或 `stt` 时声明 `speech.transcribe`，为
+`image-edit` 时只声明 `image.edit`。会话型或未指定的类型（`chat`、`other` 或无 `type`）对生成用途是中性的，
+输出与 id 在那里说话：唯一输出为 `video`、或 id 的最后一段路径包含 `seedance` 或以 `minimax-h3` 开头
+（`minimax-h3-image` 系列除外，那是图像模型）时声明 `video.generate`；唯一输出为 `audio` 时声明
+`speech.synthesize`。任何规则都不推断与条目自身类型矛盾的用途：显式生成类型只按它自己的规则回答，
+所以类型为 `image-generation` 而输出为视频的网关条目在其声明修正之前不提供任何操作。图像模型的识别照旧：
+其 id 是已知图像模型之一（`arcship-image`、`gpt-image-2` 和 `grok-imagine-image` 系列中的已知 ID）或包含
+`seedream`；或其 `type` 为 `image`/`image-generation` 且输出包含图像或未说明；或 `imageGeneration` 为 true；
+或中性类型下唯一输出为 `image`。这样的模型声明 `image.generate`，当它也读取图像或是已知模型时还声明
+`image.edit`；`imageGeneration: false` 只否定图像推断，不影响视频、语音与转写的推断。下面的连接规则读取
 同一份声明。本次读取应用与 `selectableModels` 相同的 provider、账号、模型、
 路由、凭据与状态规则，但去掉其 text modality、chat 类型与已声明文本上限三项要求：没有
 `text` modality 的模型、非 chat 模型与 `limits_undeclared` 的模型只要声明了 modality 操作
