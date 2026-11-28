@@ -22043,7 +22043,9 @@ mod tests {
         for fullscreen in [false, true] {
             let (mut app, sent, _home) = session_with_queue(false, &[]);
             app.fullscreen = fullscreen;
-            typed(&mut app, "/mod");
+            typed(&mut app, "/");
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::Down);
             press(&mut app, KeyCode::Enter);
             assert!(matches!(app.prompt, Some(Prompt::Models(_))));
             assert!(matches!(sent.borrow().last(), Some(Command::ListModels)));
@@ -22054,7 +22056,7 @@ mod tests {
                 app.composer.palette_open(),
                 "the command list stays open at the panel's root"
             );
-            assert_eq!(app.composer.text(), "/mod", "the list query is restored");
+            assert_eq!(app.composer.text(), "/", "the list query is restored");
 
             let before = sent.borrow().len();
             press(&mut app, KeyCode::Enter);
