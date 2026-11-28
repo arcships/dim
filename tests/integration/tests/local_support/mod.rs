@@ -434,6 +434,88 @@ impl DynPlugin for LifecycleProbePlugin {
     }
 }
 
+/// A required Session part that reports a component fault the way a native
+/// part does when it cannot continue, either while it assembles or once its
+/// Session is published. Both forms return from `apply` as a success (#1955).
+pub struct StartupFault {
+    after_publication: bool,
+    session: Mutex<Option<String>>,
+    pub reported: Arc<Notify>,
+}
+impl StartupFault {
+    /// Reports during `apply`, before the Session publishes.
+    pub fn while_assembling() -> Self {
+        Self {
+            after_publication: false,
+            session: Mutex::default(),
+            reported: Arc::default(),
+        }
+    }
+    /// Reports from its own task once the Session is published.
+    pub fn after_publication() -> Self {
+        Self {
+            after_publication: true,
+            ..Self::while_assembling()
+        }
+    }
+    /// The Session the part applied in, read through its Session identity.
+    pub fn session(&self) -> String {
+        self.session
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the fault part applied")
+    }
+}
+struct StartupFaultPlugin {
+    fault: Arc<StartupFault>,
+    lifecycle: Key<SessionLifecycle>,
+    identity: Key<SessionIdentity>,
+}
+impl StartupFaultPlugin {
+    fn new(names: &Names<'_>, fault: Arc<StartupFault>) -> rutis::Result<Self> {
+        Ok(Self {
+            fault,
+            lifecycle: names.key()?,
+            identity: names.key()?,
+        })
+    }
+    fn fault() -> SessionFault {
+        SessionFault::Fault {
+            component: "StartupFault".into(),
+            message: "the part reported a fault".into(),
+        }
+    }
+}
+impl DynPlugin for StartupFaultPlugin {
+    fn name(&self) -> &str {
+        "StartupFault"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.lifecycle.erase(), self.identity.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let id = ctx.require_at(&self.identity)?.session_id.clone();
+            *self.fault.session.lock().unwrap() = Some(id);
+            if self.fault.after_publication {
+                let reported = self.fault.reported.clone();
+                tokio::spawn(async move {
+                    if lifecycle.activated().await {
+                        lifecycle.report_fault(StartupFaultPlugin::fault());
+                        reported.notify_one();
+                    }
+                });
+            } else {
+                self.fault.reported.notify_one();
+                lifecycle.report_fault(StartupFaultPlugin::fault());
+            }
+            Ok(Effect::Done)
+        })
+    }
+}
+
 pub struct Env {
     pub root: rutis::Ctx,
     pub agent: MinimalHost,
@@ -476,6 +558,8 @@ pub struct Options {
     /// The inactivity budget of every Session and branch opening.
     pub startup_timeout: Option<std::time::Duration>,
     pub probe: Option<Arc<LifecycleProbe>>,
+    /// A required Session part that reports a fault and returns success.
+    pub startup_fault: Option<Arc<StartupFault>>,
     /// Skills' factory configuration: the text replacing the built-in
     /// instructions.
     pub instructions: Option<Arc<str>>,
@@ -516,6 +600,7 @@ impl Default for Options {
             opening_dispatch_hold: None,
             startup_timeout: None,
             probe: None,
+            startup_fault: None,
             instructions: None,
             require_without_install: false,
             clients: None,
@@ -696,6 +781,13 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
         builder.require_feature(
             Feature::new("LifecycleProbe").session("LifecycleProbe", move |names| {
                 Ok(Box::new(LifecycleProbePlugin::new(names, probe.clone())?))
+            }),
+        );
+    }
+    if let Some(fault) = options.startup_fault {
+        builder.require_feature(
+            Feature::new("StartupFault").session("StartupFault", move |names| {
+                Ok(Box::new(StartupFaultPlugin::new(names, fault.clone())?))
             }),
         );
     }
