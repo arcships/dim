@@ -55,6 +55,9 @@ mod prompt_migration;
 #[path = "storage_flow/reclaim.rs"]
 mod reclaim;
 
+#[path = "storage_flow/admission.rs"]
+mod admission;
+
 const INTERPRETER: &str = "dim/context-projection/v4";
 fn snapshot(sequence: u64, checkpoint: &ProjectionCheckpoint) -> RecoverySnapshot {
     let mut snapshot = RecoverySnapshot {
@@ -686,7 +689,8 @@ fn schema(connection: &Connection) -> Vec<String> {
         .prepare(
             "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' \
              AND name NOT IN ('timeline_history_anchors', 'timeline_events_by_kind', \
-                              'timeline_policy_turns')
+                              'timeline_policy_turns', 'agent_sessions_session_id_nocase', \
+                              'agent_sessions_session_id_non_ascii_word')
              AND name NOT IN (SELECT name FROM pragma_table_list WHERE type='shadow' AND name LIKE 'timeline_text_fts_%')",
         )
         .unwrap()
@@ -8543,7 +8547,14 @@ async fn a_v41_store_upgrades_in_place_once_keeping_internal_launches() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(indexed, ["agent_sessions_by_leader"]);
+    assert_eq!(
+        indexed,
+        [
+            "agent_sessions_by_leader",
+            "agent_sessions_session_id_nocase",
+            "agent_sessions_session_id_non_ascii_word"
+        ]
+    );
     for (session, expected) in [("s1", "client"), ("member", "internal")] {
         let origin: String = connection
             .query_row(

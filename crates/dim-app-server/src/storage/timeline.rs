@@ -30,6 +30,7 @@ use rutis::host::{CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis_bridge::session::{HostDispatch, host_key};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     ops::RangeInclusive,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -94,6 +95,7 @@ enum Command {
 #[cfg(feature = "testing")]
 pub mod testing {
     use super::{StoredEvent, TimelineKey};
+    use std::path::PathBuf;
     use std::sync::{Arc, Condvar, Mutex};
     use tokio::sync::mpsc;
 
@@ -187,6 +189,104 @@ pub mod testing {
         let mut released = released.lock().unwrap();
         while !*released {
             released = wake.wait(released).unwrap();
+        }
+    }
+
+    type ResolutionWatch = (
+        PathBuf,
+        mpsc::UnboundedSender<()>,
+        Arc<(Mutex<bool>, Condvar)>,
+    );
+    static RESOLUTION_WATCHES: Mutex<Vec<ResolutionWatch>> = Mutex::new(Vec::new());
+
+    /// One registered watch of the output-root resolution the admission
+    /// comparison runs (#2204). Feature `testing` only; production builds
+    /// have no hook. The tests of one process run in parallel, so the watch
+    /// matches the exact output-root path the store resolves and never
+    /// observes another test's root.
+    pub struct RootResolutionWatch {
+        output_root: PathBuf,
+        arrivals: mpsc::UnboundedReceiver<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl RootResolutionWatch {
+        /// Resolves once the resolution is entered. For a hold, the
+        /// resolution thread is parked at that point.
+        pub async fn arrived(&mut self) {
+            let _ = self.arrivals.recv().await;
+        }
+        /// The arrivals drained so far: how often the watched root resolved.
+        pub fn count(&mut self) -> usize {
+            let mut count = 0;
+            while self.arrivals.try_recv().is_ok() {
+                count += 1;
+            }
+            count
+        }
+        /// Lets a held resolution continue; a no-op for a pure observer.
+        pub fn release(&self) {
+            let (released, wake) = &*self.release;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+    }
+    impl Drop for RootResolutionWatch {
+        fn drop(&mut self) {
+            self.release();
+            let output_root = std::mem::take(&mut self.output_root);
+            RESOLUTION_WATCHES
+                .lock()
+                .unwrap()
+                .retain(|(root, ..)| *root != output_root);
+        }
+    }
+
+    fn watch(output_root: PathBuf, released: bool) -> RootResolutionWatch {
+        let (arrived, arrivals) = mpsc::unbounded_channel();
+        let release = Arc::new((Mutex::new(released), Condvar::new()));
+        RESOLUTION_WATCHES
+            .lock()
+            .unwrap()
+            .push((output_root.clone(), arrived, release.clone()));
+        RootResolutionWatch {
+            output_root,
+            arrivals,
+            release,
+        }
+    }
+
+    /// Reports every output-root resolution of `output_root` without
+    /// disturbing it: the watch counts how often the admission comparison
+    /// resolves the root at all.
+    pub fn observe_root_resolutions(output_root: PathBuf) -> RootResolutionWatch {
+        watch(output_root, true)
+    }
+
+    /// Parks the next output-root resolution of `output_root` at its entry
+    /// until [`RootResolutionWatch::release`]. It runs on the resolving
+    /// thread, so the hold takes no async lock and holds none while it waits.
+    pub fn hold_root_resolutions(output_root: PathBuf) -> RootResolutionWatch {
+        watch(output_root, false)
+    }
+
+    /// Runs at the entry of every output-root resolution; production builds
+    /// carry no hook.
+    pub(super) fn resolution(output_root: &std::path::Path) {
+        let found = {
+            let watches = RESOLUTION_WATCHES.lock().unwrap();
+            watches
+                .iter()
+                .filter(|(root, ..)| root == output_root)
+                .map(|(_, arrived, release)| (arrived.clone(), release.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (arrived, release) in found {
+            let _ = arrived.send(());
+            let (released, wake) = &*release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = wake.wait(released).unwrap();
+            }
         }
     }
 }
@@ -619,6 +719,55 @@ impl From<dim_agent_runtime::TimelineAppend> for TimelineBatch {
     }
 }
 
+/// Runs a Session-inserting write through the admission's two phases
+/// (#2204): the first transaction passes no output root, so a store whose
+/// legacy index is empty inserts and commits in that one transaction without
+/// a single filesystem probe. When the index is not empty the first
+/// transaction reports it and rolls back unwritten, the output root resolves
+/// outside the write lock and the connection mutex — the resolution walks the
+/// filesystem — and a second transaction re-runs the authoritative conflict
+/// lookup against it and the insertion together.
+async fn write_with_output_root<W>(db: &Arc<SqliteStorage>, write: W) -> Result<()>
+where
+    W: Fn(&Connection, Option<&OutputRoot>) -> Result<bool> + Send + Sync + 'static,
+{
+    let write = Arc::new(write);
+    let first = {
+        let write = write.clone();
+        db.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            let needs = write(&tx, None)?;
+            if needs {
+                return Ok(true);
+            }
+            tx.commit().map_err(error)?;
+            Ok(false)
+        })
+        .await?
+    };
+    if !first {
+        return Ok(());
+    }
+    let output_root = db.output_root.clone();
+    let resolved = tokio::task::spawn_blocking(move || output_root_destinations(&output_root))
+        .await
+        .map_err(error)?;
+    db.run(move |connection| {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        if write(&tx, Some(&resolved))? {
+            return Err(error(
+                "the admission needed the output root after it was resolved",
+            ));
+        }
+        tx.commit().map_err(error)
+    })
+    .await
+}
+
 impl SqliteStorage {
     pub(super) async fn batch_end(self: &Arc<Self>, key: TimelineKey, sequence: u64) -> Result<()> {
         if self.batch_end_at(key, sequence).await? > sequence {
@@ -670,12 +819,15 @@ impl SqliteStorage {
         session: String,
         config: SessionConfig,
     ) -> Result<()> {
-        self.run(move |connection| {
-            let tx = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(error)?;
-            create_session(&tx, &session, &config, None, SessionOrigin::Unknown)?;
-            tx.commit().map_err(error)
+        write_with_output_root(self, move |connection, root| {
+            create_session(
+                connection,
+                root,
+                &session,
+                &config,
+                None,
+                SessionOrigin::Unknown,
+            )
         })
         .await
     }
@@ -1700,6 +1852,7 @@ impl SessionStore {
     ) -> Result<()> {
         dim_agent_runtime::check_session_id(source)?;
         dim_agent_runtime::check_session_id(fork)?;
+        dim_agent_runtime::check_new_session_id(fork)?;
         let _ownership = self.ownership.lock().await;
         if let Some(cwd) = config_cwd(config) {
             self.reject_deletion(&cwd).await?;
@@ -1726,6 +1879,7 @@ impl SessionStore {
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
         dim_agent_runtime::check_session_id(session_id)?;
+        dim_agent_runtime::check_new_session_id(session_id)?;
         let session = session_id.to_owned();
         let config = config.clone();
         let agent = agent_id.to_owned();
@@ -1758,37 +1912,44 @@ impl SessionStore {
                 },
             )
             .transpose()?;
-        self.timeline
-            .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                create_session(&tx, &session, &config, leader.as_deref(), origin)?;
-                tx.execute(
+        write_with_output_root(&self.timeline.db, move |connection, output_root| {
+            if create_session(
+                connection,
+                output_root,
+                &session,
+                &config,
+                leader.as_deref(),
+                origin,
+            )? {
+                return Ok(true);
+            }
+            connection
+                .execute(
                     "INSERT INTO session_owners VALUES (?1, ?2, ?3)",
                     params![session, agent, protocol_version],
                 )
                 .map_err(error)?;
-                if let Some((repository, root, subtree, now)) = worktree {
-                    tx.execute(
+            if let Some((repository, root, subtree, now)) = &worktree {
+                connection
+                    .execute(
                         "INSERT INTO worktree_directories (repository, root, last_used_at_ms) \
                          VALUES (?1, ?2, ?3) ON CONFLICT (repository, root) \
                          DO UPDATE SET last_used_at_ms=excluded.last_used_at_ms",
                         params![repository, root, now],
                     )
                     .map_err(error)?;
-                    tx.execute(
+                connection
+                    .execute(
                         "INSERT INTO session_worktrees (session_id, repository, root, subtree) \
                          VALUES (?1, ?2, ?3, ?4) ON CONFLICT (session_id, repository, root) \
                          DO UPDATE SET subtree=excluded.subtree",
                         params![session, repository, root, subtree],
                     )
                     .map_err(error)?;
-                }
-                tx.commit().map_err(error)
-            })
-            .await
+            }
+            Ok(false)
+        })
+        .await
     }
     /// Atomically records a Git-verified directory and its Session association.
     /// Paths must be canonical absolute UTF-8 paths and `subtree` must be inside
@@ -2359,13 +2520,633 @@ impl DynPlugin for SessionStorePlugin {
     }
 }
 
+/// The stored Session ids equal to `candidate` under the case-insensitive
+/// collation (#2204). The covering derived index `agent_sessions_session_id_nocase`
+/// resolves the lookup; the caller compares bytes to tell a case-only variant,
+/// which it rejects with InvalidInput, from a byte-identical duplicate, which
+/// keeps its Storage error.
+fn case_conflicts(connection: &Connection, candidate: &str) -> Result<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT session_id FROM agent_sessions WHERE session_id = ?1 COLLATE NOCASE",
+        )
+        .map_err(error)?;
+    for row in statement
+        .query_map([candidate], |row| row.get::<_, String>(0))
+        .map_err(error)?
+    {
+        rows.push(row.map_err(error)?);
+    }
+    Ok(rows)
+}
+
+/// The stored ids outside the alphabet every newly admitted id has, read
+/// through the covering partial index `agent_sessions_session_id_non_ascii_word`
+/// (#2204): they are the only ids that can share an output directory with a
+/// newly admitted one beyond ASCII case folding. A store without legacy rows
+/// is empty here, so the lookup is constant-time.
+fn non_ascii_word_conflicts(connection: &Connection) -> Result<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT session_id FROM agent_sessions WHERE session_id GLOB '*[^0-9A-Za-z_-]*'",
+        )
+        .map_err(error)?;
+    for row in statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(error)?
+    {
+        rows.push(row.map_err(error)?);
+    }
+    Ok(rows)
+}
+
+/// The identity of `name` on a volume that folds case — APFS, HFS+ or a
+/// Linux casefold directory — as one canonical key: the Unicode
+/// default-ignorable code points stripped first, which a casefold volume
+/// drops before comparing, then lowercase, uppercase, then ASCII-lowercase.
+/// Lowercase alone misses the pairs whose lowercase is the same non-ASCII
+/// letter while their uppercase differs; uppercasing in between maps every
+/// folding pair onto one key — ASCII case, the Kelvin sign, the long s, ß/ẞ
+/// onto ss, the ligatures onto their expansion.
+fn casefold_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !is_default_ignorable(*c))
+        .collect::<String>()
+        .to_lowercase()
+        .to_uppercase()
+        .to_ascii_lowercase()
+}
+
+/// The Unicode default-ignorable code points a casefold volume strips from a
+/// directory name before comparing it. Ranges per the
+/// Default_Ignorable_Code_Point property in DerivedCoreProperties.txt
+/// (Unicode 15.1): the soft hyphen, combining grapheme joiner, Arabic and
+/// Mongolian format characters, the zero-width and directional formatting
+/// characters, the Hangul fillers, variation selectors, tag characters and
+/// the musical format controls.
+fn is_default_ignorable(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x034F | 0x061C | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180F
+        | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x3164
+        | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFF8
+        | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0000..=0xE0FFF)
+}
+
+/// `stored` lowercased under the Windows volume rules: ASCII letters fold,
+/// and the dotted capital İ, the dotless ı, the long s and the Kelvin sign
+/// map onto their ASCII pair. Windows neither expands ß nor strips ignorable
+/// characters; those forms are covered by the casefold rule.
+fn windows_lower(stored: &str) -> String {
+    stored
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' => c.to_ascii_lowercase(),
+            '\u{130}' | '\u{131}' => 'i',
+            '\u{17F}' => 's',
+            '\u{212A}' => 'k',
+            other => other,
+        })
+        .collect()
+}
+
+/// Whether two path components can address the same entry on a Windows
+/// volume: equal after the syntactic rules — the part before the first
+/// colon, which the directory itself and every stream of it share, trailing
+/// dots and spaces trimmed — under the Windows case mapping, or one the 8.3
+/// short name the volume can serve the other as.
+fn windows_names_share(one: &str, other: &str) -> bool {
+    let windows_name = |name: &str| {
+        windows_lower(
+            name.split(':')
+                .next()
+                .unwrap_or(name)
+                .trim_end_matches(['.', ' ']),
+        )
+    };
+    let (one, other) = (windows_name(one), windows_name(other));
+    one == other || windows_8_3_share(&one, &other) || windows_8_3_share(&other, &one)
+}
+
+/// Whether `short` can be the 8.3 short name a Windows volume serves `long`
+/// as, the directional half of [`windows_names_share`]: the classic form
+/// truncates at the stem, so the name must exceed the eight characters the
+/// volume caps the short form at.
+fn windows_8_3_share(short: &str, long: &str) -> bool {
+    long.len() > 8 && short.len() <= 8 && windows_8_3_collides(short, long)
+}
+
+/// Whether two path components can address the same entry under the identity
+/// rules of a supported filesystem — a volume folding case, or a Windows
+/// volume with its colon syntax, trailing characters and 8.3 short names.
+fn components_share(one: &str, other: &str) -> bool {
+    casefold_name(one) == casefold_name(other) || windows_names_share(one, other)
+}
+
+/// Whether `stem` (the Windows form of a stored id, tilde and tail included)
+/// can be the 8.3 short name a Windows volume serves `candidate` as: the
+/// classic form truncates the long name at the stem, and the hashed form
+/// keeps the long name's leading characters, replaces the middle with four
+/// hexadecimal checksum digits and appends the tail — so a candidate starting
+/// with what precedes those digits collides with it too. The tails generated
+/// are ASCII digits whose first digit runs from 1 upward, growing to two and
+/// more digits as the collisions of one stem accumulate; the outer length
+/// rule already caps the whole short name at eight characters.
+fn windows_8_3_collides(stem: &str, candidate: &str) -> bool {
+    let Some((stem, tail)) = stem.rsplit_once('~') else {
+        return false;
+    };
+    if stem.is_empty()
+        || !matches!(tail.bytes().next(), Some(b'1'..=b'9'))
+        || !tail.bytes().all(|digit| digit.is_ascii_digit())
+    {
+        return false;
+    }
+    if candidate.starts_with(stem) {
+        return true;
+    }
+    let letters: Vec<char> = stem.chars().collect();
+    letters.len() >= 5
+        && letters[letters.len() - 4..]
+            .iter()
+            .all(|c| c.is_ascii_hexdigit())
+        && candidate.starts_with(&letters[..letters.len() - 4].iter().collect::<String>())
+}
+
+/// The volume a destination lives on, normalized so that the verbatim forms
+/// a canonicalized Windows path carries name the same volume as the plain
+/// forms (#2204): `\\?\C:` is `Disk('C')` and `\\?\UNC\host\share` is
+/// `Unc(host, share)`. `Volume` is the host volume an output root or a rooted
+/// path sits on when no letter or share names it — a POSIX store parsed under
+/// Windows rules has no volume, yet every rooted id inherits it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VolumeAnchor {
+    Posix,
+    Disk(char),
+    Unc(String, String),
+    Volume,
+}
+
+/// A resolved filesystem destination: the volume it lives on and the
+/// components below that volume's anchor, `.` and `..` already consumed.
+/// `undecidable` marks a shape no static resolution can place — a device
+/// namespace path or a drive-relative one on its own volume — which refuses
+/// every candidate rather than a directory it cannot name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Destination {
+    anchor: VolumeAnchor,
+    segments: Vec<String>,
+    undecidable: bool,
+}
+
+impl Destination {
+    fn decided(anchor: VolumeAnchor, segments: Vec<String>) -> Self {
+        Self {
+            anchor,
+            segments,
+            undecidable: false,
+        }
+    }
+    fn undecidable() -> Self {
+        Self {
+            anchor: VolumeAnchor::Volume,
+            segments: Vec::new(),
+            undecidable: true,
+        }
+    }
+}
+
+/// The output root as the filesystem sees it, parsed once per platform's
+/// rules (#2204): POSIX separator parsing in `posix`, Windows prefix and
+/// separator parsing in `windows`. Each side holds the literal absolute form
+/// and, when it differs, the form the longest existing prefix canonicalizes
+/// to — `/var` and `/private/var` are the same directory, and a comparison
+/// that knew only one spelling would miss the overlap.
+struct OutputRoot {
+    posix: Vec<Destination>,
+    windows: Vec<Destination>,
+}
+
+/// The prefix a Windows parse strips before the segments: the volume the path
+/// is anchored to, or the marker that the join keeps the base's anchor.
+enum Prefix {
+    Disk(char),
+    Unc(String, String),
+    /// Rooted at the volume of the path it is joined onto (`\abc`).
+    Rooted,
+    /// `\\?\` or `\\.\` without a drive letter or UNC share behind it:
+    /// the device namespace, whose destinations no static comparison places.
+    Device,
+    /// `c:rest` with no separator after the colon: relative to the drive's
+    /// own current directory, which a static check cannot know.
+    DriveRelative(char),
+    /// Two leading separators with no usable host and share.
+    Malformed,
+    /// No prefix: the join keeps the base.
+    Join,
+}
+
+fn ascii_prefix_insensitive(text: &str, prefix: &str) -> bool {
+    text.len() >= prefix.len()
+        && text.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
+/// `host\share\rest` with both parts nonempty: the normalized UNC anchor and
+/// the rest. Host and share compare case-insensitively, so they normalize
+/// lowercase here.
+fn split_unc(text: &str) -> Option<(Prefix, &str)> {
+    let mut parts = text.splitn(3, ['/', '\\']);
+    let host = parts.next()?;
+    let share = parts.next()?;
+    if host.is_empty() || share.is_empty() {
+        return None;
+    }
+    let rest = parts.next().unwrap_or("");
+    Some((Prefix::Unc(host.to_lowercase(), share.to_lowercase()), rest))
+}
+
+/// Parses the Windows prefix of `text` — verbatim drive and UNC forms,
+/// ordinary drive and UNC forms, rooted and drive-relative — returning the
+/// rest of the string with the prefix removed.
+fn windows_prefix(text: &str) -> (Prefix, &str) {
+    let separator = |byte: u8| byte == b'/' || byte == b'\\';
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && separator(bytes[0]) && separator(bytes[1]) {
+        let rest = text[2..].trim_start_matches(['/', '\\']);
+        if let Some(device) = rest.strip_prefix('?') {
+            let device = device.trim_start_matches(['/', '\\']);
+            if ascii_prefix_insensitive(device, "unc") {
+                let after = device[3..].trim_start_matches(['/', '\\']);
+                if let Some((anchor, tail)) = split_unc(after) {
+                    return (anchor, tail);
+                }
+                return (Prefix::Device, "");
+            }
+            let device_bytes = device.as_bytes();
+            if device_bytes.len() >= 2
+                && device_bytes[1] == b':'
+                && device_bytes[0].is_ascii_alphabetic()
+            {
+                let tail = device[2..].trim_start_matches(['/', '\\']);
+                return (
+                    Prefix::Disk((device_bytes[0] as char).to_ascii_uppercase()),
+                    tail,
+                );
+            }
+            return (Prefix::Device, "");
+        }
+        if rest.starts_with('.') {
+            return (Prefix::Device, "");
+        }
+        if let Some((anchor, tail)) = split_unc(rest) {
+            return (anchor, tail);
+        }
+        return (Prefix::Malformed, "");
+    }
+    if bytes.first().is_some_and(|byte| separator(*byte)) {
+        return (Prefix::Rooted, text[1..].trim_start_matches(['/', '\\']));
+    }
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let letter = (bytes[0] as char).to_ascii_uppercase();
+        if bytes.len() >= 3 && separator(bytes[2]) {
+            return (
+                Prefix::Disk(letter),
+                text[3..].trim_start_matches(['/', '\\']),
+            );
+        }
+        return (Prefix::DriveRelative(letter), &text[2..]);
+    }
+    (Prefix::Join, text)
+}
+
+/// Resolution states one id may fork into. A segment of nothing but dots and
+/// spaces keeps both its Windows resolution and its literal reading, so the
+/// states multiply with the segment count; a segment whose doubling would
+/// pass this cap ends the resolution as undecidable — the literal branch the
+/// cap would drop is the only one that can prove an overlap, and a comparison
+/// that cannot place the destination refuses rather than guessing disjoint.
+const RESOLUTION_STATES: usize = 16;
+
+/// Advances one Windows resolution state over a segment: exact `.` and `..`
+/// resolve on every platform, a segment of nothing but dots and spaces
+/// normalizes to one of them once the trailing trim consumes the tail — the
+/// parent when it begins with `..`, the current directory otherwise — and
+/// forks into that resolution reading and the literal one, anything else is a
+/// name — pushed raw, since the comparison normalizes trailing characters.
+/// `None` when the fork would pass [`RESOLUTION_STATES`]: the bounded
+/// comparison cannot establish the destination, so the caller treats the id
+/// as undecidable and refuses (#2204).
+fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Option<Vec<Vec<String>>> {
+    let trimmed = segment.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty()
+        && !matches!(segment, "" | "." | "..")
+        && states.len() * 2 > RESOLUTION_STATES
+    {
+        return None;
+    }
+    let mut advanced = Vec::new();
+    for state in states {
+        if segment.is_empty() || segment == "." {
+            advanced.push(state);
+            continue;
+        }
+        if segment == ".." {
+            let mut state = state;
+            state.pop();
+            advanced.push(state);
+            continue;
+        }
+        if trimmed.is_empty() {
+            let mut resolved = state.clone();
+            if segment.starts_with("..") {
+                resolved.pop();
+            }
+            advanced.push(resolved);
+            let mut literal = state;
+            literal.push(segment.into());
+            advanced.push(literal);
+            continue;
+        }
+        let mut state = state;
+        state.push(segment.into());
+        advanced.push(state);
+    }
+    Some(advanced)
+}
+
+/// Advances one POSIX resolution state over a segment: only exact `.` and
+/// `..` resolve, every other byte sequence — trailing dots and spaces
+/// included — is a literal name.
+fn advance_posix(state: &mut Vec<String>, segment: &str) {
+    if segment.is_empty() || segment == "." {
+        return;
+    }
+    if segment == ".." {
+        state.pop();
+        return;
+    }
+    state.push(segment.into());
+}
+
+/// The destinations `stored` resolves to under a POSIX parse: `/` separates,
+/// a leading one anchors the path at the POSIX root and replaces the output
+/// root, anything else joins below it.
+fn posix_destination(root: &Destination, stored: &str) -> Destination {
+    let (mut segments, anchor) = if stored.starts_with('/') {
+        (Vec::new(), VolumeAnchor::Posix)
+    } else {
+        (root.segments.clone(), root.anchor.clone())
+    };
+    for segment in stored.split('/') {
+        advance_posix(&mut segments, segment);
+    }
+    Destination::decided(anchor, segments)
+}
+
+/// The destinations `stored` resolves to under a Windows parse — both
+/// separators, the prefix handling of [`windows_prefix`], relative segments
+/// resolved — one per fork the ambiguous segments take, and `None` for the
+/// drive-relative shape provably disjoint from the root's volume. A rooted
+/// id inherits the root form's anchor: joining `\abc` onto `C:\x` yields
+/// `C:\abc`.
+fn windows_destinations(root: &Destination, stored: &str) -> Vec<Destination> {
+    let (prefix, text) = windows_prefix(stored);
+    if let Prefix::DriveRelative(letter) = prefix {
+        // A drive-relative id resolves against the drive's own current
+        // directory, which no static comparison knows: undecidable where the
+        // root can be that drive, disjoint where it provably is not.
+        if root.anchor == VolumeAnchor::Disk(letter) || root.anchor == VolumeAnchor::Volume {
+            return vec![Destination::undecidable()];
+        }
+        return Vec::new();
+    }
+    if matches!(prefix, Prefix::Device | Prefix::Malformed) {
+        return vec![Destination::undecidable()];
+    }
+    let anchor = match &prefix {
+        Prefix::Join | Prefix::Rooted => root.anchor.clone(),
+        Prefix::Disk(letter) => VolumeAnchor::Disk(*letter),
+        Prefix::Unc(host, share) => VolumeAnchor::Unc(host.clone(), share.clone()),
+        Prefix::DriveRelative(_) | Prefix::Device | Prefix::Malformed => {
+            unreachable!()
+        }
+    };
+    // A provably disjoint volume answers the comparison before any segment
+    // resolution runs, so a state-cap undecidable cannot widen a disjoint
+    // drive into a refusal (#2204).
+    if anchors_disjoint(&anchor, &root.anchor) {
+        return Vec::new();
+    }
+    let mut states = if matches!(prefix, Prefix::Join) {
+        vec![root.segments.clone()]
+    } else {
+        vec![Vec::new()]
+    };
+    for segment in text.split(['/', '\\']) {
+        let Some(advanced) = advance_windows(states, segment) else {
+            return vec![Destination::undecidable()];
+        };
+        states = advanced;
+    }
+    states
+        .into_iter()
+        .map(|segments| Destination::decided(anchor.clone(), segments))
+        .collect()
+}
+
+/// The Windows parse of an absolute root path: the prefix names its anchor,
+/// the segments below resolve lexically. Rooted and unanchored forms — a
+/// POSIX path read under Windows rules — sit on the host volume.
+fn windows_root(text: &str) -> Destination {
+    let (prefix, rest) = windows_prefix(text);
+    let mut segments: Vec<String> = Vec::new();
+    for segment in rest.split(['/', '\\']) {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if segment == ".." {
+            segments.pop();
+            continue;
+        }
+        segments.push(segment.into());
+    }
+    let anchor = match prefix {
+        Prefix::Disk(letter) => VolumeAnchor::Disk(letter),
+        Prefix::Unc(host, share) => VolumeAnchor::Unc(host, share),
+        _ => VolumeAnchor::Volume,
+    };
+    Destination::decided(anchor, segments)
+}
+
+/// The POSIX parse of an absolute root path.
+fn posix_root(text: &str) -> Destination {
+    let mut segments: Vec<String> = Vec::new();
+    for segment in text.split('/') {
+        advance_posix(&mut segments, segment);
+    }
+    Destination::decided(VolumeAnchor::Posix, segments)
+}
+
+/// The real forms of `output_root`: the absolute literal spelling and the
+/// spelling the longest existing prefix canonicalizes to with the missing
+/// tail rejoined — the same directory either way once the filesystem
+/// resolves it. Canonicalization failure of the whole chain keeps the
+/// literal form, which is correct for the fresh paths a new home carries.
+fn real_root_forms(output_root: &Path) -> Vec<PathBuf> {
+    let absolute = std::env::current_dir()
+        .map(|cwd| cwd.join(output_root))
+        .unwrap_or_else(|_| output_root.to_path_buf());
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut existing = absolute.as_path();
+    loop {
+        match existing.canonicalize() {
+            Ok(canonical) => {
+                let mut form = canonical;
+                for component in missing.iter().rev() {
+                    form.push(component);
+                }
+                let mut forms = vec![absolute];
+                if form != forms[0] {
+                    forms.push(form);
+                }
+                return forms;
+            }
+            Err(_) => {
+                let Some(parent) = existing.parent() else {
+                    return vec![absolute];
+                };
+                match existing.file_name() {
+                    Some(name) => missing.push(name.to_os_string()),
+                    None => return vec![absolute],
+                }
+                existing = parent;
+            }
+        }
+    }
+}
+
+/// The output root's destinations per platform parse. Components are strings
+/// because resolution and comparison are textual; a non-UTF-8 component
+/// compares by its lossy form, which can only widen a refusal. Resolving the
+/// root probes the filesystem, so the admission only runs it outside every
+/// write lock, once the legacy index proves a comparison is needed (#2204).
+fn output_root_destinations(output_root: &Path) -> OutputRoot {
+    #[cfg(feature = "testing")]
+    testing::resolution(output_root);
+    let mut posix = Vec::new();
+    let mut windows = Vec::new();
+    for form in real_root_forms(output_root) {
+        let text = form.to_string_lossy().into_owned();
+        for destination in [posix_root(&text), windows_root(&text)] {
+            let targets = if destination.anchor == VolumeAnchor::Posix {
+                &mut posix
+            } else {
+                &mut windows
+            };
+            if !targets.contains(&destination) {
+                targets.push(destination);
+            }
+        }
+    }
+    OutputRoot { posix, windows }
+}
+
+/// Whether two anchors provably never name the same volume: the POSIX root
+/// against anything the Windows parse produces, two drive letters, or two
+/// UNC shares. Everything else stays undecided — `Volume` can be any letter,
+/// and a UNC share can alias a drive — so the segments decide, and where the
+/// segments cannot (a UNC path against a non-UNC root) the branch refuses.
+fn anchors_disjoint(one: &VolumeAnchor, other: &VolumeAnchor) -> bool {
+    match (one, other) {
+        (VolumeAnchor::Posix, anchor) | (anchor, VolumeAnchor::Posix) => {
+            *anchor != VolumeAnchor::Posix
+        }
+        (VolumeAnchor::Disk(a), VolumeAnchor::Disk(b)) => a != b,
+        (VolumeAnchor::Unc(host_a, share_a), VolumeAnchor::Unc(host_b, share_b)) => {
+            host_a != host_b || share_a != share_b
+        }
+        _ => false,
+    }
+}
+
+/// Whether one resolved branch overlaps the candidate's output directory:
+/// the candidate's directory is the root form with the candidate appended,
+/// so a positional walk over the shorter side decides — equality or one side
+/// a prefix of the other is an overlap, any divergence within the walk is
+/// disjoint. Segments compare under the union of the identity rules a
+/// supported filesystem applies. A mixed UNC/non-UNC pair can never prove
+/// its segments align on one volume — the share can alias the drive — so it
+/// refuses without the walk.
+fn branch_overlaps_candidate(branch: &Destination, root: &Destination, candidate: &str) -> bool {
+    if branch.undecidable {
+        return true;
+    }
+    if anchors_disjoint(&branch.anchor, &root.anchor) {
+        return false;
+    }
+    let unc = |anchor: &VolumeAnchor| matches!(anchor, VolumeAnchor::Unc(_, _));
+    if unc(&branch.anchor) != unc(&root.anchor) {
+        return true;
+    }
+    let length = branch.segments.len().min(root.segments.len() + 1);
+    for position in 0..length {
+        let root_component = if position < root.segments.len() {
+            root.segments[position].as_str()
+        } else {
+            candidate
+        };
+        if !components_share(&branch.segments[position], root_component) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether a stored Session id can share its output directory with a newly
+/// admitted id, judged on the resolved destinations (#2204): the id parses
+/// under both platforms' rules, each parse against the root forms of its own
+/// platform, and any branch whose destination equals or contains the
+/// candidate's directory — or whose destination no static resolution can
+/// place — refuses. An id resolving onto the output root or one of its
+/// ancestors overlaps every candidate, so it refuses them all until its row
+/// is deleted; that is the isolation the refusal protects, not a false
+/// positive. Both rule sets apply wherever the store runs, so a store moving
+/// between platforms keeps its isolation: refusing too much is safe, missing
+/// a collision is not.
+fn shares_output_directory(root: &OutputRoot, stored: &str, candidate: &str) -> bool {
+    for form in &root.posix {
+        let branch = posix_destination(form, stored);
+        if branch_overlaps_candidate(&branch, form, candidate) {
+            return true;
+        }
+    }
+    for form in &root.windows {
+        for branch in windows_destinations(form, stored) {
+            if branch_overlaps_candidate(&branch, form, candidate) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Inserts a Session record after the admission check. Returns `true` when
+/// `output_root` was `None` and the legacy index is not empty: nothing was
+/// inserted, and the caller must resolve the output root outside the write
+/// lock and run the insertion again with `Some` (#2204).
 fn create_session(
     connection: &Connection,
+    output_root: Option<&OutputRoot>,
     session: &str,
     config: &SessionConfig,
     leader: Option<&str>,
     origin: SessionOrigin,
-) -> Result<()> {
+) -> Result<bool> {
+    dim_agent_runtime::check_new_session_id(session)?;
+    if reject_conflicting_id(connection, output_root, session)? {
+        return Ok(true);
+    }
     let config = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
@@ -2387,7 +3168,8 @@ fn create_session(
         create_anchor: None,
     };
     insert_branch(connection, session, &info)?;
-    super::catalog::create(connection, session)
+    super::catalog::create(connection, session)?;
+    Ok(false)
 }
 /// The creation origin a stored value names. The column's `CHECK` and the
 /// format gate keep any other text out; reaching this error means the store
@@ -2728,7 +3510,9 @@ fn write_batch(
     // words, whatever line the conversation moved to (session catalog §3.3).
     if batch.key.branch_id == ROOT_BRANCH_ID
         && batch.events.first().is_some_and(|record| record.event.sequence <= 256)
-        && batch.events.iter().any(|record| matches!(&record.event.kind, EventKind::InputMessage(input) if input.user.is_some()))
+        && batch.events.iter().any(|record| {
+            matches!(&record.event.kind, EventKind::InputMessage(input) if input.user.is_some())
+        })
     {
         super::catalog::refresh_preview(connection, &batch.key.session_id)?;
     }
@@ -3033,10 +3817,20 @@ impl SqliteTimelineStore {
             .collect();
         let (source, fork, config) = (source.to_owned(), fork.to_owned(), config.to_owned());
         let reset = fork.clone();
+        let output_root = self.db.output_root.clone();
         let copied = self
             .db
             .run_copy(move |connection| {
-                copy_fork(connection, &source, &fork, at, &content, &arrays, &config)
+                copy_fork(
+                    connection,
+                    &output_root,
+                    &source,
+                    &fork,
+                    at,
+                    &content,
+                    &arrays,
+                    &config,
+                )
             })
             .await;
         if copied.is_ok() {
@@ -3114,10 +3908,58 @@ fn chunk<T>(connection: &mut Connection, step: impl FnOnce(&Connection) -> Resul
     Ok(value)
 }
 
+/// Runs `step` with the admission's two phases (#2204): the first
+/// transaction passes no output root, and when the legacy index is not empty
+/// the transaction rolls back unwritten, the root resolves outside the write
+/// transaction — this connection is the copy's own, so the resolution runs on
+/// its blocking thread — and `resolved` keeps it for every later recheck of
+/// the copy. A step that reports the need for a root after it was resolved
+/// never wrote its transaction, so rolling it back loses nothing.
+fn admission_chunk<T>(
+    connection: &mut Connection,
+    output_root: &Path,
+    resolved: &mut Option<OutputRoot>,
+    mut step: impl FnMut(&Connection, Option<&OutputRoot>) -> Result<(T, bool)>,
+) -> Result<T> {
+    loop {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        let (value, needs) = step(&tx, resolved.as_ref())?;
+        if !needs {
+            tx.commit().map_err(error)?;
+            std::thread::sleep(Duration::from_millis(2));
+            return Ok(value);
+        }
+        if resolved.is_some() {
+            return Err(error(
+                "the admission needed the output root after it was resolved",
+            ));
+        }
+        tx.rollback().map_err(error)?;
+        *resolved = Some(output_root_destinations(output_root));
+    }
+}
+
 /// Copies a fork's rows in bounded transactions; the final transaction
 /// inserts the session row, so an interrupted copy leaves no Session.
+///
+/// A fork id that names a stored Session — byte-identical or only by case —
+/// is refused inside the first chunk transaction, before its first write
+/// (#2204): the refusal rolls that transaction back, so it writes nothing and
+/// no cleanup runs — a cleanup would only ever run against rows the copy
+/// itself committed, and that transaction is the copy's only failure point
+/// ahead of its first commit. The cleanup of a copy refused later drops the
+/// id's rows only while no Session of that exact id exists; one another
+/// connection committed during the copy keeps the cleanup from deleting its
+/// rows.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per piece of the copy"
+)]
 fn copy_fork(
     connection: &mut Connection,
+    output_root: &Path,
     source: &str,
     fork: &str,
     at: u64,
@@ -3125,23 +3967,97 @@ fn copy_fork(
     arrays: &BTreeMap<String, u64>,
     config: &str,
 ) -> Result<()> {
-    let copied = copy_fork_rows(connection, source, fork, at, content, arrays, config);
-    if copied.is_err()
-        && let Err(cleanup) = drop_session(connection, fork)
-    {
-        tracing::error!(session_id = fork, error = %cleanup, "Incomplete fork rows were kept");
+    let committed = Cell::new(false);
+    let copied = copy_fork_rows(
+        connection,
+        output_root,
+        source,
+        fork,
+        at,
+        content,
+        arrays,
+        config,
+        &committed,
+    );
+    if copied.is_err() && committed.get() {
+        match drop_fork_rows(connection, fork) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::error!(
+                    session_id = fork,
+                    "Incomplete fork rows were kept: a Session of that id was committed during the copy"
+                )
+            }
+            Err(cleanup) => {
+                tracing::error!(session_id = fork, error = %cleanup, "Incomplete fork rows were kept")
+            }
+        }
     }
     copied
 }
 
+/// Rejects `candidate` when a stored Session id collides with it: equals it
+/// under the case-insensitive collation or shares its output directory under
+/// a supported filesystem's identity rules. Byte-identical keeps the
+/// duplicate's Storage error even when a case variant or a directory-shape
+/// collision is stored beside it (#2204); a case-only variant and a
+/// directory-shape collision are InvalidInput.
+///
+/// The directory comparison judges the legacy rows of the covering partial
+/// index against `output_root`, resolved before the call because resolving
+/// the root probes the filesystem and must never run inside a write
+/// transaction. With `output_root` `None` only the indexed lookups run: an
+/// empty index clears the candidate with no filesystem access at all, and a
+/// nonempty one returns `true` — undecided — so the caller rolls back, resolves
+/// the root outside the write lock, and runs the authoritative check again.
+fn reject_conflicting_id(
+    connection: &Connection,
+    output_root: Option<&OutputRoot>,
+    candidate: &str,
+) -> Result<bool> {
+    let conflicts = case_conflicts(connection, candidate)?;
+    if conflicts.iter().any(|stored| stored == candidate) {
+        return Err(error(format!("Session id {candidate} already exists")));
+    }
+    if !conflicts.is_empty() {
+        return Err(AgentError::InvalidInput(format!(
+            "Session id {candidate} differs from a stored one only by case"
+        )));
+    }
+    let rows = non_ascii_word_conflicts(connection)?;
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    let Some(root) = output_root else {
+        return Ok(true);
+    };
+    for stored in rows {
+        if shares_output_directory(root, &stored, candidate) {
+            return Err(AgentError::InvalidInput(format!(
+                "Session id {candidate} would share an output directory with stored Session {stored}"
+            )));
+        }
+    }
+    Ok(false)
+}
+
+/// Copies the rows; `committed` flips the moment the first chunk transaction
+/// commits, so the caller can tell rows it may clean up apart from a refusal
+/// that rolled back before the first write.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per piece of the copy plus its commit report"
+)]
 fn copy_fork_rows(
     connection: &mut Connection,
+    output_root: &Path,
     source: &str,
     fork: &str,
     at: u64,
     content: &[String],
     arrays: &BTreeMap<String, u64>,
     config: &str,
+    committed: &Cell<bool>,
 ) -> Result<()> {
     let cut = sql_sequence(at)?;
     // Intermediate chunks need no sync of their own: the final transaction
@@ -3149,8 +4065,17 @@ fn copy_fork_rows(
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(error)?;
+    let mut resolved = None;
     let mut branches = Vec::new();
-    chunk(connection, |tx| {
+    admission_chunk(connection, output_root, &mut resolved, |tx, root| {
+        // The first conflict check shares this transaction's write lock with
+        // the copy's first writes: a conflicting Session committed before the
+        // transaction started is seen here, and none can commit before the
+        // writes once the lock is held (#2204). A refusal rolls the chunk
+        // back, so the copy writes nothing.
+        if reject_conflicting_id(tx, root, fork)? {
+            return Ok(((), true));
+        }
         branches = tx
             .prepare("SELECT branch_id, info FROM timeline_branches WHERE session_id=?1")
             .map_err(error)?
@@ -3178,8 +4103,9 @@ fn copy_fork_rows(
             .map_err(error)?;
             super::members::branch(tx, fork, id)?;
         }
-        Ok(())
+        Ok(((), false))
     })?;
+    committed.set(true);
     for (array, length) in arrays {
         let mut after = 0;
         while after < *length {
@@ -3272,7 +4198,13 @@ fn copy_fork_rows(
     connection
         .pragma_update(None, "synchronous", "FULL")
         .map_err(error)?;
-    chunk(connection, |tx| {
+    admission_chunk(connection, output_root, &mut resolved, |tx, root| {
+        // The first chunk's check covered the copy's start; this re-check
+        // closes the race against an insertion committed while the chunks
+        // copied (#2204).
+        if reject_conflicting_id(tx, root, fork)? {
+            return Ok(((), true));
+        }
         // A fork is a new Session of the client that forked it, never its
         // source's origin (session classification §3.2).
         tx.execute(
@@ -3353,47 +4285,49 @@ fn copy_fork_rows(
         files::share(tx, source, fork).map_err(error)?;
         files::share_output(tx, source, fork).map_err(error)?;
         // A fork is a new Session and does not inherit grants (ADR 012 D1).
-        Ok(())
+        Ok(((), false))
     })
 }
 
-/// Removes what makes a Session visible in one transaction, then its large
-/// Timeline tables in bounded transactions.
-fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(error)?;
-    let released = chunk(connection, |tx| {
-        let released = files::release(tx, session).map_err(error)?;
+/// The rows that make a Session visible: its file and output owners, grants,
+/// title, catalog, owner and session rows and its branch directories.
+fn drop_visible_rows(tx: &Connection, session: &str) -> Result<usize> {
+    let released = files::release(tx, session).map_err(error)?;
+    tx.execute(
+        "UPDATE agent_sessions SET leader_session_id=NULL WHERE leader_session_id=?1
+         AND CASE WHEN json_valid(config) THEN json_extract(config, '$.collaborationRole') END IS NOT 'member'",
+        [session],
+    )
+    .map_err(error)?;
+    for table in [
+        "session_output_owners",
+        "session_grants",
+        "session_worktrees",
+        "session_metadata",
+        "session_catalog",
+        "session_owners",
+        "timeline_branches",
+        "agent_sessions",
+    ] {
         tx.execute(
-            "UPDATE agent_sessions SET leader_session_id=NULL WHERE leader_session_id=?1
-             AND CASE WHEN json_valid(config) THEN json_extract(config, '$.collaborationRole') END IS NOT 'member'",
+            &format!("DELETE FROM {table} WHERE session_id=?1"),
             [session],
         )
         .map_err(error)?;
-        for table in [
-            "session_output_owners",
-            "session_grants",
-            "session_worktrees",
-            "session_metadata",
-            "session_catalog",
-            "session_owners",
-            "timeline_branches",
-            "agent_sessions",
-        ] {
-            tx.execute(
-                &format!("DELETE FROM {table} WHERE session_id=?1"),
-                [session],
-            )
-            .map_err(error)?;
-        }
-        Ok(released)
-    })?;
-    // The Session is invisible now; a lost delete chunk only leaves
-    // unreachable rows for a retry.
-    connection
-        .pragma_update(None, "synchronous", "NORMAL")
-        .map_err(error)?;
+    }
+    Ok(released)
+}
+
+/// The large Timeline tables of a Session, in bounded transactions. `owned`
+/// gates each transaction together with its delete: a copy cleanup passes a
+/// check that the id still names no stored Session, so rows another
+/// connection commits under the id are never deleted; a delete passes no
+/// gate.
+fn drop_timeline_rows(
+    connection: &mut Connection,
+    session: &str,
+    owned: impl Fn(&Connection) -> Result<bool>,
+) -> Result<Option<()>> {
     for table in [
         "timeline_output_ids",
         "timeline_member_roots",
@@ -3408,7 +4342,10 @@ fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
         "timeline_array_elements",
     ] {
         loop {
-            let deleted = chunk(connection, |tx| {
+            let Some(deleted) = chunk(connection, |tx| {
+                if !owned(tx)? {
+                    return Ok(None);
+                }
                 tx.execute(
                     &format!(
                         "DELETE FROM {table} WHERE rowid IN \
@@ -3417,13 +4354,69 @@ fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
                     [session],
                 )
                 .map_err(error)
-            })?;
+                .map(Some)
+            })?
+            else {
+                return Ok(None);
+            };
             if deleted == 0 {
                 break;
             }
         }
     }
+    Ok(Some(()))
+}
+
+/// Removes what makes a Session visible in one transaction, then its large
+/// Timeline tables in bounded transactions.
+fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(error)?;
+    let released = chunk(connection, |tx| drop_visible_rows(tx, session))?;
+    // The Session is invisible now; a lost delete chunk only leaves
+    // unreachable rows for a retry.
+    connection
+        .pragma_update(None, "synchronous", "NORMAL")
+        .map_err(error)?;
+    drop_timeline_rows(connection, session, |_| Ok(true))?;
     Ok(released)
+}
+
+/// The rows a failed fork copy committed, best effort. Every delete shares
+/// its transaction with a check that the id still names no stored Session:
+/// the copy is the only writer that ever wrote rows of the id without its
+/// session row, so while that check holds the rows are provably the copy's
+/// own. Once another connection has committed a Session of the id the rows
+/// can no longer be told apart, so nothing more is deleted and the copy's
+/// rows stay as unreachable rows of the id (#2204). Returns false when such
+/// a Session stopped the cleanup.
+fn drop_fork_rows(connection: &mut Connection, fork: &str) -> Result<bool> {
+    let unclaimed = |connection: &Connection, id: &str| -> Result<bool> {
+        connection
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(error)
+    };
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(error)?;
+    if !chunk(connection, |tx| {
+        if !unclaimed(tx, fork)? {
+            return Ok(false);
+        }
+        drop_visible_rows(tx, fork)?;
+        Ok(true)
+    })? {
+        return Ok(false);
+    }
+    connection
+        .pragma_update(None, "synchronous", "NORMAL")
+        .map_err(error)?;
+    Ok(drop_timeline_rows(connection, fork, |tx| unclaimed(tx, fork))?.is_some())
 }
 
 /// The content rows the events of `source`'s `main` through `at` reference,

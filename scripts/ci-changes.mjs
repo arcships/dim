@@ -22,7 +22,8 @@ const windowsNative=[
   /^crates\/dim-agent-capabilities\/src\/(?:file_storage\.rs|file_storage\/|host_platform\.rs|host_platform\/)/,
   /^crates\/dim-agent-capabilities\/tests\/(?:capabilities_flow|file_storage_flow|host_platform_windows_flow)\.rs$/,
   /^crates\/dim-app-server\/src\/(?:lib|transport|pipe_client|cli|worktrees)\.rs$/,
-  /^crates\/dim-app-server\/tests\/(?:app_server_flow|named_pipe_flow|worktree_removal_flow)\.rs$/,
+  /^crates\/dim-app-server\/src\/storage\/timeline\.rs$/,
+  /^crates\/dim-app-server\/tests\/(?:app_server_flow|named_pipe_flow|worktree_removal_flow|windows_output_isolation_flow)\.rs$/,
   /^scripts\/test-windows-native\.mjs$/,
 ];
 

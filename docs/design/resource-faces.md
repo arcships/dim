@@ -509,11 +509,17 @@ operation, without repeated remote probes. `trace` takes the same position and r
 and `saveSnapshot {sessionId,branchId,snapshot}` return `{}`. `sessionConfig {sessionId}` returns
 `{config}`. `latestSnapshot {sessionId,branchId,through,interpreter}` returns `{snapshot}`.
 These are storage lifecycle steps. `createSession` prepares the backend record; it does not
-initialize or publish an Agent Session. `rollbackSession` undoes a successfully prepared creation
-whose initialization failed, after its producers have stopped; it is not the general deletion
-workflow. `releaseSession` drains accepted backend writes and releases their resources without
-closing the Agent Session or its admission. App Server creation/deletion retain the repository
-and lifecycle obligations in §5.2.
+initialize or publish an Agent Session. Its id is caller-selected, so the native store's shared
+insertion boundary applies the same admission as the creation entries in §5.2: one to sixty-four
+characters of `[a-z0-9_-]`, never a Windows reserved device name, rejected with `invalid` before
+anything is written, as is an id differing from a stored one only by case or sharing its output
+directory with a stored legacy id; a byte-identical duplicate keeps its `storage` error. Ids
+already stored are never re-validated: restoration reads them as written, and deletion plus use
+as a fork source keep the single normal path component check (#2204). `rollbackSession` undoes a
+successfully prepared creation whose initialization failed, after its producers have stopped; it
+is not the general deletion workflow. `releaseSession` drains accepted backend writes and releases
+their resources without closing the Agent Session or its admission. App Server creation/deletion
+retain the repository and lifecycle obligations in §5.2.
 
 Snapshots retain their canonical fields (`sequence`, `event_id`, `interpreter`, `state`), optional
 acceleration semantics and owner validation. Domain errors preserve `{code,message}` using
@@ -589,9 +595,17 @@ per-caller Session ownership or grant scoping. The lifecycle owner remains respo
   then initialize the fork under the source Agent/protocol. The repository copies the supplied
   text without applying live protocol exclusions or rebuilding the configuration.
 
-`createOwnedSession`, `fork` and `delete` reject Session ids that are not a single normal path
-component with `invalid`, before acquiring ownership or touching rows or output paths. These
-checks are shared with the native Session admission/deletion boundary.
+`createOwnedSession` and `fork` targets admit only lowercase ASCII Session ids — one to
+sixty-four characters of `[a-z0-9_-]`, never a Windows reserved device name — rejecting any
+other shape with `invalid` before acquiring ownership or touching rows or output paths. They
+also reject with `invalid` an id that differs from a stored one only by case, and an id that
+would share an output directory with a stored legacy id under a supported filesystem's
+identity rules — Unicode folding pairs, default-ignorable code points, and the Windows
+separators, trailing characters and 8.3 short names ([native storage
+format](appserver/native-storage-format.md), #2204); a byte-identical duplicate keeps its
+`storage` error. These creation checks are shared with the native Session admission boundary.
+`delete` applies only the single normal path component check, so ids stored before the
+admission rule stay deletable.
 
 Grant kind is `file` or `dir`, mode is `read` or `write`; adding read never downgrades
 an existing write grant. `language` is a ReplyLanguage code or null to clear it.

@@ -585,6 +585,7 @@ pub fn run_with(
                         .unwrap_or_else(|| product_home.join("rust")),
                 )
                 .join(crate::storage::COMMAND_OUTPUT_DIRECTORY);
+            config.output_root = Some(output_root.clone());
             defaults::install_local_execution(
                 &mut builder,
                 ModelProviderPlugin::process,

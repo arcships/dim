@@ -92,6 +92,8 @@ test('Windows-native flows follow their storage, host and named pipe paths',()=>
     'crates/dim-app-server/tests/app_server_flow.rs',
     'crates/dim-app-server/tests/named_pipe_flow.rs',
     'crates/dim-app-server/tests/worktree_removal_flow.rs',
+    'crates/dim-app-server/tests/windows_output_isolation_flow.rs',
+    'crates/dim-app-server/src/storage/timeline.rs',
     'scripts/test-windows-native.mjs',
   ]) assert.equal(classify([file]).windows_native,true,file);
   for (const file of [

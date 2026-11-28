@@ -62,7 +62,8 @@ impl CreateSessionOptions {
     /// completes. Without it, the Session is created under a generated UUIDv4.
     ///
     /// The id must be one normal path component, which is what Session
-    /// command-output storage addresses ([`check_session_id`]);
+    /// command-output storage addresses ([`check_session_id`]), and have the
+    /// shape every newly admitted id has ([`check_new_session_id`]);
     /// [`Agent::create_session`] rejects any other id before it prepares,
     /// writes or publishes.
     pub fn prepare<F>(mut self, id: impl Into<String>, prepare: F) -> Self
@@ -110,6 +111,33 @@ pub fn check_session_id(id: &str) -> Result<()> {
     }
     Ok(())
 }
+/// The Windows device names a directory can never be named, with or without
+/// an extension: on a Windows output volume they alias the device.
+const WINDOWS_DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+    "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+/// Requires the shape every newly admitted Session id has (#2204): one to
+/// sixty-four characters, each a lowercase ASCII letter, digit, underscore or
+/// hyphen, and never a Windows reserved device name. Lowercase ASCII has no
+/// folding variants, so two ids admitted under this rule can never address
+/// the same output directory on a volume that folds case; the length bound
+/// and the reserved names close the Windows aliasing and overlong-name
+/// hazards by construction. Only creation entries apply it — deletion, a
+/// fork's source and restoration keep [`check_session_id`], so ids stored
+/// before this rule stay operable.
+pub fn check_new_session_id(id: &str) -> Result<()> {
+    if id.is_empty()
+        || id.len() > 64
+        || !id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+        })
+        || WINDOWS_DEVICE_NAMES.contains(&id)
+    {
+        return Err(AgentError::InvalidInput(format!("invalid Session id {id}")));
+    }
+    Ok(())
+}
 impl Agent {
     pub(crate) fn new(builder: AgentBuilder, assembly: Assembly, placement: Placement) -> Self {
         Self(Arc::new(AgentInner {
@@ -144,6 +172,7 @@ impl Agent {
         let (id, start) = match prepare {
             Some((id, prepare)) => {
                 check_session_id(&id)?;
+                check_new_session_id(&id)?;
                 (id, SessionStart::Prepared(prepare))
             }
             None => (Uuid::new_v4().to_string(), SessionStart::Create),
