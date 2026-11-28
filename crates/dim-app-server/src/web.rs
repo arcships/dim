@@ -193,7 +193,7 @@ pub struct WebSessionPlugin {
     settings: Key<Settings>,
     tools: Key<ToolRegistry>,
     managed: Key<ManagedSearch>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
     session: InstanceId,
 }

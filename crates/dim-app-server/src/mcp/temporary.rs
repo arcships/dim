@@ -95,7 +95,7 @@ pub(super) struct TemporaryMcp {
     files: Key<dim_agent_capabilities::host::SessionFiles>,
     session: InstanceId,
     methods: Key<SessionMethods>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     tools: Key<ToolRegistry>,
     lifecycle: Key<SessionLifecycle>,
 }

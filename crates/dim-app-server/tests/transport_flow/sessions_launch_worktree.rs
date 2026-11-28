@@ -26,7 +26,7 @@ impl CreationControl {
 }
 struct CreationGate {
     control: CreationControl,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
 }
 impl rutis::host::DynPlugin for CreationGate {
     fn name(&self) -> &str {

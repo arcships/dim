@@ -159,7 +159,7 @@ pub struct SchedulerSession {
     methods: Key<SessionMethods>,
     tools: Key<ToolRegistry>,
     guide: Key<GuideEntries>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     identity: Key<SessionScope>,
     description: String,
 }

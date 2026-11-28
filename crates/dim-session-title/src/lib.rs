@@ -142,7 +142,7 @@ struct SessionTitle {
     store: Key<SessionMetadataService>,
     auxiliary: Key<AuxiliaryModel>,
     identity: Key<SessionScope>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,
 }

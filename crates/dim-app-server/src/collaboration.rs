@@ -3691,7 +3691,7 @@ struct CollaborationSessionPlugin {
     instance: InstanceId,
     collaboration: Key<Collaboration>,
     identity: Key<SessionScope>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     tree: Key<TreeCommands>,
     lifecycle: Key<SessionLifecycle>,
     tools: Key<ToolRegistry>,

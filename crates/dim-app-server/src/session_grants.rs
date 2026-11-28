@@ -43,7 +43,7 @@ struct SessionGrantsPlugin {
     host: Key<SessionGrantsHost>,
     store: Key<Store>,
     identity: Key<SessionScope>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     methods: Key<SessionMethods>,
 }
 impl SessionGrantsPlugin {

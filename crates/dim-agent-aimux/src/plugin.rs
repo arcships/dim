@@ -292,7 +292,7 @@ impl ResolveModalityConnection for ConfiguredConnection {
 pub struct ConfiguredModelPlugin {
     prepare: Key<PrepareModelHost>,
     models: Key<AimuxModels>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     identity: Key<SessionScope>,
 }
 impl ConfiguredModelPlugin {
