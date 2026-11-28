@@ -1304,6 +1304,14 @@ async fn an_execute_without_a_claim_waits_for_its_answer() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert!(registered, "execute registered the call without a claim");
+    assert_eq!(
+        session
+            .session_service::<dim_agent_questions::Questions>()
+            .unwrap()
+            .pending_summary(),
+        PendingRequestSummary::default(),
+        "a bare handler invocation has no published prompt"
+    );
     respond(
         &session,
         params(

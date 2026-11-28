@@ -80,6 +80,10 @@ async fn catalog_pages_and_searches_a_large_dormant_store_without_reading_histor
         .collect();
     assert_eq!(ids.len(), 50);
     assert_eq!(ids[0], "catalog-0299");
+    let dormant = &page["result"]["sessions"][0];
+    assert_eq!(dormant["pendingApprovalCount"], 0);
+    assert_eq!(dormant["pendingQuestionCount"], 0);
+    assert!(dormant.get("lastAttentionAt").is_none());
     let cursor = page["result"]["nextCursor"].as_str().unwrap().to_owned();
     for params in [
         json!({"cursor":cursor}),

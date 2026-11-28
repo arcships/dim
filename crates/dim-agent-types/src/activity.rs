@@ -1,5 +1,25 @@
 use serde::{Deserialize, Serialize};
 
+/// Live requests held by one owner and the earliest start among them, in Unix milliseconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRequestSummary {
+    pub count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_at: Option<u64>,
+}
+
+impl PendingRequestSummary {
+    pub fn from_start_times(times: impl Iterator<Item = u64>) -> Self {
+        let mut summary = Self::default();
+        for time in times {
+            summary.count += 1;
+            summary.oldest_at = Some(summary.oldest_at.map_or(time, |oldest| oldest.min(time)));
+        }
+        summary
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PendingExec {

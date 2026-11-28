@@ -213,6 +213,20 @@ async fn approval_decide_answers_the_admission_the_typed_service_started() {
     .await;
     assert_eq!(typed, wire, "the face lists what the owner holds");
 
+    let summary = approval.pending_summary();
+    assert_eq!(summary.count, 1);
+    assert_eq!(
+        call(
+            &branch_ctx,
+            branch_instance,
+            "approval",
+            "pendingSummary",
+            Vec::new()
+        )
+        .await,
+        serde_json::to_value(summary).unwrap()
+    );
+
     let approval_id = pending[0].approval_id.clone();
     call(
         &branch_ctx,

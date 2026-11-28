@@ -55,7 +55,8 @@ const text = element => (element.type === "comment" ? "" : element.text) + eleme
 const flush = async () => { for (let index = 0; index < 8; index++) { await Promise.resolve(); await nextTick() } }
 
 test("title metadata is required at the wire boundary and unrelated notices remain ignored", () => {
-  assert.deepEqual(readSummaries([summary()]), [summary()])
+  const withAttention = summary({ pendingApprovalCount: 1, pendingQuestionCount: 2, lastAttentionAt: 120 })
+  assert.deepEqual(readSummaries([summary(), withAttention]), [summary(), withAttention])
   for (const fields of [{ title: undefined }, { titleSource: "other" }, { titleSource: "auto" }, { titleRevision: -1 }, { titleRevision: undefined }]) {
     assert.throws(() => readSummaries([summary(fields)]), ProtocolError)
     assert.throws(() => readNotification("session.notice", { sessionId: "session", source: "SessionStore", kind: "title", data: { ...title(null, 1), ...fields } }), ProtocolError)

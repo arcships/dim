@@ -17,6 +17,9 @@ its `ToolResult`, so Questions writes no events. Design:
 | `S:SessionMethods` | Register the `session.question` namespace, until this part unloads. |
 | `S:TreeCommands` | Resolve the branch facade for pending-question queries. |
 
+The Session part provides the [`questions` data face](../../../design/plugins/Questions.md#2-data-and-state).
+Its pending summary reads the same registrations used to accept responses and checks each batch against the published sequence of its branch.
+
 ## Tool
 
 `ask_user {questions: [{id?, header?, question, options: [{label, description?}], multiSelect?, allowCustom?}]}`,
@@ -67,7 +70,7 @@ the `sessionId`; the answer is checked here, against the call it answers.
 ## Events and lifetime
 
 No Timeline writes, no `StateCell`, no Dispatcher subscription. The Session
-part keeps one table, `(branchId, requestId, callId) -> {questions, sender}`,
+part keeps one table, `(branchId, requestId, callId) -> {questions, sender, startedAt}`,
 under a mutex. An entry is created by the handler's claim, immediately before
 Loop appends the `step/tool-call`, and lives until the call's answer or the end
 of the claim; whoever removes it under the lock decides the call's output:
@@ -148,7 +151,9 @@ reuses, which leave the later call waiting for its own answer.
 covers the method through Rpc and `session.methods`, the `step/tool-result` a
 client reads, a non-interactive Session, the fork refusal at a pending
 question, and a second client's late answer and decline to a call id the model
-reuses in the next turn, with the answer the model then reads. The configured
+reuses in the next turn, with the answer the model then reads. A fresh client reads
+the live count with zero attachments, checks it against the Session data face,
+and sees it clear after the call receives its response. The configured
 binary flow in
 [transport_flow.rs](../../../../crates/dim-app-server/tests/transport_flow.rs)
 checks that the product tools include `ask_user`.

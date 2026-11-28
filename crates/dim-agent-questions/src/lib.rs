@@ -19,11 +19,12 @@ use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
     timeline_tree::TreeCommands,
     tool_registry::{
-        ToolClaim, ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition,
+        ToolCallPublication, ToolClaim, ToolConcurrency, ToolContribution, ToolHandler,
+        ToolRegistry, definition,
     },
 };
 use dim_agent_runtime::{AgentBuilder, CAPABILITY_RELOADING, Names, SessionConfig};
-use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
+use dim_agent_types::{PendingRequestSummary, ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,10 @@ const CANCELLED: &str = "The question was cancelled before the user answered.";
 /// `ask_user` tool and the `session.question` namespace; installation never
 /// reads `interactive`.
 pub fn install(builder: &mut AgentBuilder) {
+    builder.catalog_mut().register_shared_instance(
+        dim_agent_runtime::names::name_of::<Questions>(),
+        dim_agent_runtime::SESSION_GROUP,
+    );
     builder.require_feature(
         dim_agent_runtime::Feature::new("Questions").session("Questions", |names| {
             Ok(Box::new(QuestionsPlugin::new(names)?))
@@ -264,6 +269,8 @@ fn result(questions: &[Question], answered: Answered) -> ToolResult {
 }
 
 struct Waiter {
+    started_at: u64,
+    publication: Option<ToolCallPublication>,
     questions: Arc<[Question]>,
     sender: oneshot::Sender<Answered>,
 }
@@ -327,15 +334,42 @@ impl Drop for Claim {
     }
 }
 
-struct Questions {
+pub struct Questions {
     config: Arc<SessionConfig>,
     waiters: Arc<Mutex<Waiters>>,
+}
+
+impl dim_agent_runtime::PublicService for Questions {}
+
+#[rutis::service]
+impl Questions {
+    /// Counts answerable `ask_user` calls across the Session, with the oldest registration time.
+    pub fn pending_summary(&self) -> PendingRequestSummary {
+        let waiters = self.waiters.lock().unwrap();
+        PendingRequestSummary::from_start_times(
+            waiters
+                .table
+                .values()
+                .filter(|waiter| {
+                    waiter
+                        .publication
+                        .as_ref()
+                        .is_none_or(ToolCallPublication::is_published)
+                })
+                .map(|waiter| waiter.started_at),
+        )
+    }
 }
 
 impl Questions {
     /// Registers the waiter of one call, or says why it never waits; the
     /// reason is the result `ask` reports.
-    fn register(&self, call: &ToolCall, context: &ToolExecutionContext) -> Result<Claim, String> {
+    fn register(
+        &self,
+        call: &ToolCall,
+        context: &ToolExecutionContext,
+        publication: Option<ToolCallPublication>,
+    ) -> Result<Claim, String> {
         let questions: Arc<[Question]> = parse(call.input.clone())
             .map_err(|reason| format!("Invalid ask_user input: {reason}"))?
             .into();
@@ -361,6 +395,8 @@ impl Questions {
         waiters.table.insert(
             key.clone(),
             Waiter {
+                started_at: dim_agent_runtime::core::unix_millis(),
+                publication,
                 questions: questions.clone(),
                 sender,
             },
@@ -372,24 +408,17 @@ impl Questions {
             waiters: self.waiters.clone(),
         })
     }
-    /// Claims a live call that has no retained claim.
-    fn claimed(
-        &self,
-        call: &ToolCall,
-        context: &ToolExecutionContext,
-    ) -> Option<Box<dyn ToolClaim>> {
-        Some(Box::new(self.register(call, context).ok()?))
-    }
     async fn ask(
         &self,
         call: ToolCall,
         context: ToolExecutionContext,
         cancel: CancellationToken,
+        publication: Option<ToolCallPublication>,
     ) -> Result<ToolResult, HostError> {
         if cancel.is_cancelled() {
             return Err(HostError::Cancelled(CANCELLED.into()));
         }
-        match self.register(&call, &context) {
+        match self.register(&call, &context, publication) {
             Ok(claim) => Box::new(claim).dispatch(call, context, cancel).await,
             Err(reason) if reason == CAPABILITY_RELOADING => {
                 Err(HostError::Cancelled(CAPABILITY_RELOADING.into()))
@@ -454,7 +483,19 @@ impl ToolHandler for AskUser {
         ToolConcurrency::Concurrent
     }
     fn claim(&self, call: &ToolCall, context: &ToolExecutionContext) -> Option<Box<dyn ToolClaim>> {
-        self.0.claimed(call, context)
+        self.claim_in_batch(call, context, &ToolCallPublication::default())
+    }
+    fn claim_in_batch(
+        &self,
+        call: &ToolCall,
+        context: &ToolExecutionContext,
+        publication: &ToolCallPublication,
+    ) -> Option<Box<dyn ToolClaim>> {
+        Some(Box::new(
+            self.0
+                .register(call, context, Some(publication.clone()))
+                .ok()?,
+        ))
     }
     fn execute(
         &self,
@@ -462,7 +503,16 @@ impl ToolHandler for AskUser {
         context: ToolExecutionContext,
         cancel: CancellationToken,
     ) -> HostFuture<'_, ToolResult> {
-        Box::pin(self.0.ask(call, context, cancel))
+        self.execute_in_batch(call, context, cancel, Some(ToolCallPublication::default()))
+    }
+    fn execute_in_batch(
+        &self,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+        publication: Option<ToolCallPublication>,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(self.0.ask(call, context, cancel, publication))
     }
 }
 
@@ -509,6 +559,7 @@ fn ask_user_definition() -> ToolDefinition {
 /// The Questions Session part: `ask_user` registered with `toolRegistry` and
 /// `session.question` with `sessionMethods`.
 pub struct QuestionsPlugin {
+    questions: Key<Questions>,
     config: Key<SessionConfig>,
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
@@ -517,6 +568,7 @@ pub struct QuestionsPlugin {
 impl QuestionsPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            questions: names.key()?,
             config: names.key()?,
             tools: names.key()?,
             methods: names.key()?,
@@ -553,6 +605,7 @@ impl DynPlugin for QuestionsPlugin {
                 waiters.table.clear();
                 Ok(())
             })?;
+            ctx.provide_at(self.questions.clone(), questions.clone())?;
             tools.register(
                 ctx,
                 ToolContribution {

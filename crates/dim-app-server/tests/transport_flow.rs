@@ -1848,7 +1848,16 @@ async fn attach_replies_the_record_the_listing_shows_for_that_session() {
             entry.get("defaultBranch").is_none(),
             "a listing item is a directory row and carries no default branch cursor (design §14)"
         );
-        for field in ["preview", "updatedAt", "closed"] {
+        assert_eq!(entry["pendingApprovalCount"], 0);
+        assert_eq!(entry["pendingQuestionCount"], 0);
+        assert!(entry.get("lastAttentionAt").is_none());
+        for field in [
+            "preview",
+            "updatedAt",
+            "closed",
+            "pendingApprovalCount",
+            "pendingQuestionCount",
+        ] {
             entry.as_object_mut().unwrap().remove(field);
         }
         let mut attached_info = attached["result"].clone();

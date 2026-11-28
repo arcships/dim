@@ -24,6 +24,12 @@ export type ApprovalRequestData = {
   reason: string
 }
 
+/** Live requests held by one owner and the earliest start among them, in Unix milliseconds. */
+export type PendingRequestSummary = {
+  count: number | bigint
+  oldestAt?: number | bigint | null
+}
+
 export type ApprovalDecision = "allow" | "deny"
 
 export interface Approval {
@@ -32,6 +38,8 @@ export interface Approval {
    * order: what the `approval` face's `pending` reads.
    */
   pending(): Promise<ApprovalRequestData[]>
+  /** Counts unanswered requests on this branch, with the oldest request's creation time. */
+  pendingSummary(): Promise<PendingRequestSummary>
   /**
    * Answers request `request_id` with `decision`: what the `approval`
    * face's `decide` calls, and answered once the branch dispatched the
@@ -1166,6 +1174,11 @@ export interface BackgroundExec {
   stop(taskId: string): Promise<ExecEndedData>
 }
 
+export interface Questions {
+  /** Counts answerable `ask_user` calls across the Session, with the oldest registration time. */
+  pendingSummary(): Promise<PendingRequestSummary>
+}
+
 export type AgentConfig2 = {
   name: string
   systemPrompt: string
@@ -1942,6 +1955,7 @@ export interface Services {
   branchLine: BranchLine
   wait: Wait
   backgroundExec: BackgroundExec
+  questions: Questions
   agentConfig: AgentConfig
   sessionConfig: SessionConfig
   timelineIdentity: TimelineIdentity
@@ -1984,6 +1998,7 @@ export type SessionFaces = {
   collaborationConfig: CollaborationConfig
   initialPromptConfiguration: InitialPromptConfiguration
   mcpSession: McpSession
+  questions: Questions
   sessionConfig: SessionConfig
   sessionIdentity: SessionIdentity
   sessionLanguage: SessionLanguage

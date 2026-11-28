@@ -1712,7 +1712,7 @@ impl AgentLoop {
                             self.end(turn, TurnOutcome::Cancelled { reason })?;
                         } else if !request.calls.is_empty() {
                             // Claims must precede the append.
-                            self.binding.claim(
+                            let publication = self.binding.claim(
                                 &request.id,
                                 &request.calls,
                                 &ToolExecutionContext {
@@ -1721,13 +1721,17 @@ impl AgentLoop {
                                     branch_id: self.branch.clone(),
                                 },
                             );
-                            let event = self.timeline.append(
+                            let event = self.timeline.append_registered(
                                 EventKind::ToolCall(ToolCallData {
                                     turn_id: turn.id.clone(),
                                     request_id: request.id.clone(),
                                     calls: request.calls.clone(),
                                 })
                                 .into(),
+                                |event| {
+                                    publication.assign(&self.timeline, event.sequence);
+                                    Ok(())
+                                },
                             )?;
                             request.call_event_id = Some(event.id.clone());
                         } else if self.driven() {

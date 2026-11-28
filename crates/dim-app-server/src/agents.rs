@@ -1,11 +1,11 @@
 use crate::{
     ProcessActivity, ProcessHold, ServerConfig,
-    protocol::{AgentInfo, CreateWorktree, SessionOrigin},
+    protocol::{AgentInfo, CreateWorktree, SessionAttention, SessionOrigin},
     settings::SettingsService,
     storage::{PreparedWorktree, SessionMetadataService, SessionStore, SqliteStorage, Store},
     worktrees::{CreatedWorktree, ManagedWorktrees, WorktreeError},
 };
-use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
+use dim_agent_capabilities::{approval::Approval, host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
     AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, CreateSessionOptions, InUse,
     Modules, Names, NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
@@ -59,6 +59,32 @@ impl From<CreateSessionError> for RpcError {
 /// The member a `sessions.launch` caller's title is stored under in a stored
 /// `SessionConfig`, whose serde form is camelCase.
 const INITIAL_TITLE: &str = "initialTitle";
+
+impl SessionAttention {
+    pub(crate) fn read(session: &Session) -> Self {
+        let questions = session
+            .session_service::<dim_agent_questions::Questions>()
+            .map(|owner| owner.pending_summary())
+            .unwrap_or_default();
+        let mut attention = Self {
+            pending_question_count: questions.count,
+            last_attention_at: questions.oldest_at,
+            ..Self::default()
+        };
+        for branch in session.branches() {
+            if let Ok(owner) = session.service::<Approval>(&branch.id) {
+                let approvals = owner.pending_summary();
+                attention.pending_approval_count += approvals.count;
+                attention.last_attention_at = attention
+                    .last_attention_at
+                    .into_iter()
+                    .chain(approvals.oldest_at)
+                    .min();
+            }
+        }
+        attention
+    }
+}
 
 /// The process default profile carries the process Session defaults.
 fn process_default(defaults: &SessionConfig) -> AgentProfile {
@@ -1436,20 +1462,23 @@ impl AgentIndex {
             .await?;
         for summary in &mut page.sessions {
             summary.closed = closed.contains(&summary.session.session_id);
-            if let Some((_, session)) = self.session(&summary.session.session_id) {
-                // The row's `sequence` stays the root's, as the persisted row
-                // stores it, so loading or unloading never changes it; the
-                // running state follows the line the conversation is on
-                // (design §14, §15).
-                match session.default_branch().and_then(|default| {
-                    self.line(&summary.session.session_id, &default)
-                        .and_then(|line| line.context().state())
-                }) {
-                    Ok(state) => summary.session.running = state.running,
-                    Err(_) if session.is_unloading() => {}
-                    Err(error) => {
-                        tracing::warn!(session_id=%summary.session.session_id, %error, "Session state was not read for the catalog");
-                    }
+            let Some((_, session)) = self.session(&summary.session.session_id) else {
+                summary.attention = Some(SessionAttention::default());
+                continue;
+            };
+            summary.attention = Some(SessionAttention::read(&session));
+            // The row's `sequence` stays the root's, as the persisted row
+            // stores it, so loading or unloading never changes it; the
+            // running state follows the line the conversation is on
+            // (design §14, §15).
+            match session.default_branch().and_then(|default| {
+                self.line(&summary.session.session_id, &default)
+                    .and_then(|line| line.context().state())
+            }) {
+                Ok(state) => summary.session.running = state.running,
+                Err(_) if session.is_unloading() => {}
+                Err(error) => {
+                    tracing::warn!(session_id=%summary.session.session_id, %error, "Session state was not read for the catalog");
                 }
             }
         }
