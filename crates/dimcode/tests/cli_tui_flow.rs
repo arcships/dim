@@ -740,7 +740,7 @@ fn interactive_paste_cancellation_drains_the_put_and_reuses_its_confirmed_path()
     terminal.signal(libc::SIGINT);
     terminal.until("Still waiting for the text attachment to settle");
     release.send(()).unwrap();
-    terminal.until("Preparation cancelled");
+    terminal.until("Attachment preparation cancelled; draft retained");
     terminal.write(b"\n");
     terminal.until("\n> ");
     terminal.write(b"/exit\n");
