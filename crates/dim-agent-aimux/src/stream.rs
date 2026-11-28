@@ -51,6 +51,10 @@ pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// `scan_thinking_tags` converts the `<thinking>` sections the managed
 /// openai-codex provider writes into its text stream; every other provider
 /// streams text verbatim.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per stream or cancellation handle the conversion is assembled from"
+)]
 pub(crate) fn convert(
     result: StreamResult,
     tool_names: ToolNames,

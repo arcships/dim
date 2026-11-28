@@ -63,11 +63,11 @@ impl TagScan {
                     pending.push_str(&rest);
                     rest.clear();
                     let trimmed = pending.trim_start();
-                    if trimmed.starts_with(OPEN) {
+                    let after = trimmed.strip_prefix(OPEN).map(str::to_owned);
+                    if let Some(after) = after {
                         // The whitespace before the tag is part of the tag's
                         // formatting, not text: keeping it would put a
                         // whitespace text block before the thinking.
-                        let after = trimmed[OPEN.len()..].to_owned();
                         self.scan = Scan::Thinking(String::new());
                         out.push(ScanOutput::Opened);
                         rest = after;
