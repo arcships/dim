@@ -763,6 +763,7 @@ const scenarios = [
   },
   {
     name: 'remote_draft_uploads_local_bytes_and_mentions_target_files',
+    requiresSharing: true,
     area: 'composer',
     title: 'Both terminal layouts send dragged bytes and choose mentions on the selected computer',
     async run(tui) {
@@ -809,6 +810,7 @@ const scenarios = [
           const terminal = await tui.launch([...args, '--cwd', project], {command, env, cols: 110, rows: 32, waitForComposer: true});
           terminal.send('Compare ');
           terminal.paste(source);
+          await terminal.waitFor('[notes.txt]');
           terminal.send(' to @notes');
           await terminal.waitFor('@notes.txt');
           terminal.key('Tab', 'Enter');
@@ -822,6 +824,7 @@ const scenarios = [
           const prompt = 'Compare pictures ' + (args.length ? 'fullscreen' : 'scrollback');
           terminal.send(prompt + ' ');
           terminal.paste(photo);
+          await terminal.waitFor('[Image #1]');
           terminal.send(' and @photo');
           await terminal.waitFor('@photo.png');
           terminal.key('Tab', 'Enter');

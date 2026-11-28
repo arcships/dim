@@ -540,6 +540,7 @@ mod windows_flow {
                             &mut draft,
                             None,
                             &std::env::temp_dir(),
+                            None,
                             &mut interrupts
                         )
                         .await

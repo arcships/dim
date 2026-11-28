@@ -433,7 +433,11 @@ pub async fn chat(
                 reader,
                 &mut draft,
                 notice.take(),
-                if options.endpoint.is_some() { options.launch_dir() } else { options.workspace().path() },
+                if options.endpoint.is_some() {
+                    options.launch_dir()
+                } else {
+                    options.workspace().path()
+                },
                 options.endpoint.as_ref().map(|_| (
                     client.connection_config(),
                     client.instance_id(),
@@ -622,7 +626,10 @@ pub async fn chat(
             let submission = if let Some(text) = text.filter(|text| text.starts_with('!')) {
                 Submission::Shell(text)
             } else {
-                match draft.prepare(client, &session_id, &conversation, &mut interrupts, &mut notice).await? {
+                match draft
+                    .prepare(client, &session_id, &conversation, &mut interrupts, &mut notice)
+                    .await?
+                {
                     Some(user) => Submission::Message(user),
                     None => continue,
                 }

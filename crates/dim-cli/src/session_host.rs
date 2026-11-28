@@ -671,7 +671,11 @@ async fn run(
                             _ = cancel.cancelled() => Err("Attachment preparation cancelled".into()),
                         };
                         Update::RemoteDraftPrepared {
-                            session, line, mode, parts, error: result.err().map(|error|error.to_string())
+                            session,
+                            line,
+                            mode,
+                            parts,
+                            error: result.err().map(|error| error.to_string()),
                         }
                     });
                 } else if let Err(error) = worker.command(command).await {
