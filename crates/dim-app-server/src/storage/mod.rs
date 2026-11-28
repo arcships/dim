@@ -5,6 +5,7 @@ mod codec;
 mod export;
 mod face;
 mod files;
+pub(crate) use files::MAX_BYTES as MAX_SESSION_FILE_BYTES;
 mod identities;
 mod image_upgrade;
 mod members;

@@ -1,6 +1,48 @@
 //! French model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Conversation state could not be read; retry the read before submitting" => {
+            "Impossible de lire l’état de la conversation. Rechargez-la avant l’envoi"
+        }
+        "The centre moved before the command ran; the draft was kept" => {
+            "La session ou la branche a changé avant l’envoi. Le brouillon a été conservé"
+        }
+        "The selected device restarted during file search" => {
+            "L’appareil sélectionné a redémarré pendant la recherche"
+        }
+        "Target does not support file completion; type the remote path" => {
+            "La cible ne prend pas en charge la complétion de fichiers. Saisissez le chemin distant"
+        }
+        "Select a regular file to upload" => "Sélectionnez un fichier ordinaire à envoyer",
+        "Target did not return an image" => "La cible n’a renvoyé aucune image",
+        "File search interrupted" => "Recherche de fichiers interrompue",
+        "Target changed during attachment preparation" => {
+            "La cible a changé pendant la préparation des pièces jointes"
+        }
+        "Attachment preparation cancelled" => "Préparation des pièces jointes annulée",
+        "The session or line changed during upload; the draft was kept" => {
+            "La session ou la ligne a changé pendant l’envoi. Le brouillon est conservé"
+        }
+        "Preparing attachments · Ctrl+C to cancel" => {
+            "Préparation des pièces jointes · Ctrl+C pour annuler"
+        }
+        "{reason}; draft retained" => "{reason}. Brouillon conservé",
+        "The previous attachment submission is pending; draft retained" => {
+            "L’envoi précédent avec pièces jointes est en attente. Brouillon conservé"
+        }
+        "Submitting attachments" => "Envoi du message avec pièces jointes",
+        "Delivery unconfirmed · Enter on an empty draft to check and retry" => {
+            "Envoi non confirmé · Entrée dans un brouillon vide pour vérifier et réessayer"
+        }
+        "Delivery unconfirmed: {reason}" => "Envoi non confirmé : {reason}",
+        "Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit" => {
+            "Envoi non confirmé : {reason}. Entrée pour vérifier et réessayer, Ctrl+C pour quitter"
+        }
+        "The selected device restarted" => "L’appareil sélectionné a redémarré",
+        "The original submission was accepted" => "L’envoi initial a été accepté",
+        "The current model does not accept clipboard images; draft retained" => {
+            "Le modèle actuel n’accepte pas les images du presse-papiers. Brouillon conservé"
+        }
         "Details unavailable; collapse and expand to retry" => {
             "Détails indisponibles ; repliez puis dépliez pour réessayer"
         }

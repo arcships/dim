@@ -200,10 +200,7 @@ impl WebEntry {
         let address = listener.local_addr().map_err(io_error)?;
         let bootstrap = new_token();
         let stop = hub.closing().child_token();
-        let database = hub.with_rpc(|rpc| rpc.config.database_path.clone())?;
-        let staging = tokio::task::spawn_blocking(move || uploads::Staging::open(database))
-            .await
-            .map_err(|error| RpcError::invalid(error.to_string()))??;
+        let staging = hub.upload_staging().await?.clone();
         let site = Arc::new(Site {
             staging,
             hub: hub.clone(),
@@ -212,7 +209,6 @@ impl WebEntry {
             port: address.port(),
             bootstrap: digest(&bootstrap),
             access: Mutex::new(HashSet::new()),
-            uploads: tokio::sync::Semaphore::new(4),
             throttle: Mutex::new(Throttle::default()),
         });
         let router = Router::new()
@@ -415,9 +411,8 @@ impl Assets {
 }
 
 struct Site {
-    staging: uploads::Staging,
+    staging: Arc<crate::connection::UploadStaging>,
     stopping: CancellationToken,
-    uploads: tokio::sync::Semaphore,
     hub: Arc<ConnectionHub>,
     assets: Assets,
     port: u16,

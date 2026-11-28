@@ -370,7 +370,9 @@ export class Terminal {
   bytes(buffer) {
     const hex = Array.from(buffer, (byte) => byte.toString(16).padStart(2, '0'));
     this.owner.log(`bytes ${this.session} ${hex.join(' ')}`);
-    this.owner.tmuxRun(['send-keys', '-t', this.session, '-H', ...hex]);
+    for (let offset = 0; offset < hex.length; offset += 512) {
+      this.owner.tmuxRun(['send-keys', '-t', this.session, '-H', ...hex.slice(offset, offset + 512)]);
+    }
   }
 
   paste(text) {

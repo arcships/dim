@@ -939,7 +939,7 @@ impl Options {
                     if options.endpoint.is_some() {
                         options.remote_workspace = Some(path);
                     } else {
-                        options.cwd = PathBuf::from(path);
+                        options.cwd = path.into();
                     }
                 }
                 "--server" => options.server = Some(PathBuf::from(value(&mut args)?)),
@@ -1889,6 +1889,10 @@ impl Options {
         {
             return Err("Login options require the login command".into());
         }
+        if options.named_target.is_some() && options.cwd_explicit && options.endpoint.is_none() {
+            let path = std::mem::replace(&mut options.cwd, std::env::current_dir()?);
+            options.remote_workspace = Some(path.to_string_lossy().into_owned());
+        }
         options.cwd = std::fs::canonicalize(options.cwd)?;
         if !options.cwd.is_dir() {
             return Err("--cwd must name a directory".into());
@@ -2338,6 +2342,28 @@ pub fn default_home() -> PathBuf {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn named_target_keeps_workspace_validation_on_the_target_in_both_argument_orders() {
+        let home = tempfile::tempdir().unwrap();
+        let target_dir = home.path().join("only-on-target");
+        let target_dir = target_dir.to_str().unwrap();
+        for flags in [
+            ["--cwd", target_dir, "--target", "office"],
+            ["--target", "office", "--cwd", target_dir],
+        ] {
+            let args = ["--home", home.path().to_str().unwrap()]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_owned);
+            let options = Options::parse(args).unwrap();
+            assert_eq!(options.remote_workspace.as_deref(), Some(target_dir));
+            assert_eq!(
+                options.launch_dir(),
+                std::env::current_dir().unwrap().canonicalize().unwrap()
+            );
+        }
+    }
 
     /// Every parse that reaches a request takes the same step the CLI takes:
     /// a piped prompt, when the row has one, then `resolve_workspace`.

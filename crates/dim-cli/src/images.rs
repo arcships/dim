@@ -4,7 +4,10 @@
 
 use crate::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use dim_agent_capabilities::images::{ImageRefusal, ImageSize, MAX_PIXELS};
+pub use dim_agent_capabilities::images::is_image;
+use dim_agent_capabilities::images::{
+    ImageRefusal, ImageSize, MAX_PIXELS, image_extension, image_header,
+};
 use dim_agent_types::{ContentBlock, ImageSource, ImageSourceType};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -212,26 +215,6 @@ pub fn marker(index: usize, details: &str) -> String {
     format!("[Image #{index}{details}]")
 }
 
-/// Whether a local file is meant as an image: its first bytes or its
-/// extension say so. Unreadable files are not.
-pub fn is_image(path: &Path) -> bool {
-    if image_extension(path) {
-        return true;
-    }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(libc::O_NONBLOCK);
-    let Ok(file) = options.open(path) else {
-        return false;
-    };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return false;
-    }
-    let mut bytes = Vec::new();
-    file.take(32).read_to_end(&mut bytes).is_ok() && image_header(&bytes)
-}
-
 /// The line exec writes for an image whose sent form differs from its file:
 /// the source and sent sizes when the size changed, the first-frame note of an
 /// animation, and the sent encoding of a re-encode.
@@ -293,30 +276,12 @@ fn attach(
     Ok(Attached::new(image, source_media_type))
 }
 
-fn image_header(bytes: &[u8]) -> bool {
-    matches!(
-        image::guess_format(bytes),
-        Ok(image::ImageFormat::Png
-            | image::ImageFormat::Jpeg
-            | image::ImageFormat::WebP
-            | image::ImageFormat::Gif)
-    )
-}
-
-fn image_extension(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| {
-        image::ImageFormat::from_extension(extension).is_some()
-            || extension
-                .to_str()
-                .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "svg" | "heic" | "heif"))
-    })
-}
-
 /// Imports the accepted draft image bytes before submitting their references.
 pub async fn import(
     client: &mut crate::client::Client,
     session: &str,
     blocks: &mut [ContentBlock],
+    remote: bool,
 ) -> crate::Result<()> {
     for block in blocks {
         let ContentBlock::Image { source } = block else {
@@ -326,6 +291,21 @@ pub async fn import(
             continue;
         }
         let bytes = STANDARD.decode(source.data.as_deref().ok_or("Image data is missing")?)?;
+        if remote {
+            let stored = client
+                .upload_session_file(
+                    dim_agent_types::native_files::Header {
+                        session_id: session.into(),
+                        name: "image".into(),
+                        byte_length: bytes.len() as u64,
+                        image: true,
+                    },
+                    bytes.as_slice(),
+                )
+                .await?;
+            *source = stored.image.ok_or("Target did not return an image")?;
+            continue;
+        }
         let mut file = tempfile::NamedTempFile::new()?;
         std::io::Write::write_all(&mut file, &bytes)?;
         #[derive(serde::Deserialize)]

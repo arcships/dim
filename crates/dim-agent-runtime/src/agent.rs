@@ -785,6 +785,10 @@ impl Session {
     pub fn failure(&self) -> Option<AgentError> {
         self.0.owner.lifecycle.faults.failure()
     }
+    /// Resolves when this Session starts closing, including owner-initiated teardown.
+    pub async fn closing(&self) {
+        self.0.owner.closing.cancelled().await;
+    }
     /// Observes complete Session cleanup without initiating it.
     pub fn closed(&self) -> BoxFuture<'static, Result<()>> {
         self.0.close.wait()

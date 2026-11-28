@@ -1,6 +1,48 @@
 //! German model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Conversation state could not be read; retry the read before submitting" => {
+            "Der Gesprächsstatus konnte nicht gelesen werden. Bitte vor dem Senden erneut laden"
+        }
+        "The centre moved before the command ran; the draft was kept" => {
+            "Die Sitzung oder der Gesprächszweig wurde gewechselt. Der Entwurf wurde behalten"
+        }
+        "The selected device restarted during file search" => {
+            "Das ausgewählte Gerät wurde während der Dateisuche neu gestartet"
+        }
+        "Target does not support file completion; type the remote path" => {
+            "Das Ziel unterstützt keine Dateivervollständigung. Gib den entfernten Pfad ein"
+        }
+        "Select a regular file to upload" => "Wähle eine reguläre Datei zum Hochladen",
+        "Target did not return an image" => "Das Ziel hat kein Bild zurückgegeben",
+        "File search interrupted" => "Dateisuche unterbrochen",
+        "Target changed during attachment preparation" => {
+            "Das Ziel hat sich bei der Vorbereitung der Anhänge geändert"
+        }
+        "Attachment preparation cancelled" => "Vorbereitung der Anhänge abgebrochen",
+        "The session or line changed during upload; the draft was kept" => {
+            "Sitzung oder Gesprächslinie beim Hochladen gewechselt. Entwurf beibehalten"
+        }
+        "Preparing attachments · Ctrl+C to cancel" => {
+            "Anhänge werden vorbereitet · Ctrl+C zum Abbrechen"
+        }
+        "{reason}; draft retained" => "{reason}. Entwurf beibehalten",
+        "The previous attachment submission is pending; draft retained" => {
+            "Die vorherige Nachricht mit Anhängen ist noch offen. Entwurf beibehalten"
+        }
+        "Submitting attachments" => "Nachricht mit Anhängen wird gesendet",
+        "Delivery unconfirmed · Enter on an empty draft to check and retry" => {
+            "Zustellung unbestätigt · Enter im leeren Entwurf zum Prüfen und Wiederholen"
+        }
+        "Delivery unconfirmed: {reason}" => "Zustellung unbestätigt: {reason}",
+        "Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit" => {
+            "Zustellung unbestätigt: {reason}. Enter zum Prüfen und Wiederholen, Ctrl+C zum Beenden"
+        }
+        "The selected device restarted" => "Das ausgewählte Gerät wurde neu gestartet",
+        "The original submission was accepted" => "Die ursprüngliche Nachricht wurde angenommen",
+        "The current model does not accept clipboard images; draft retained" => {
+            "Das aktuelle Modell akzeptiert keine Zwischenablagebilder. Entwurf beibehalten"
+        }
         "Details unavailable; collapse and expand to retry" => {
             "Details nicht verfügbar; zum Wiederholen schließen und öffnen"
         }

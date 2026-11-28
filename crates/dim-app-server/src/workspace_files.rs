@@ -17,6 +17,8 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod completion;
+
 const NAMESPACE: &str = "workspace.files";
 const DIRECTORIES: &str = "workspace.files.directories";
 const SEARCH_METHOD: &str = "workspace.files.search";
@@ -53,6 +55,7 @@ impl DynPlugin for WorkspaceFilesPlugin {
                 NAMESPACE,
                 vec![
                     MethodDecl::new(SEARCH_METHOD, false, Interruption::Report),
+                    MethodDecl::new("workspace.files.complete", false, Interruption::Report),
                     MethodDecl::new(DIRECTORIES, false, Interruption::Report),
                 ],
                 Arc::new(move |call, _, _| {
@@ -63,6 +66,18 @@ impl DynPlugin for WorkspaceFilesPlugin {
                     } = call;
                     let index = index.clone();
                     Box::pin(async move {
+                        if method == "workspace.files.complete" {
+                            let request = params(value)?;
+                            return reply(
+                                tokio::task::spawn_blocking(move || {
+                                    completion::complete(&index, request)
+                                })
+                                .await
+                                .map_err(|e| {
+                                    RpcError::service("session_files_failed", e.to_string())
+                                })??,
+                            );
+                        }
                         if method == DIRECTORIES {
                             let DirectoryRequest { path } = params(value)?;
                             let page = tokio::task::spawn_blocking(move || directories(path))

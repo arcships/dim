@@ -150,7 +150,7 @@ async function main() {
   process.stderr.write(`tui-tmux: ${version.printed}, ${chosen.length} scenario(s), binary ${options.binary}\n`);
   process.stderr.write(`tui-tmux: failure artifacts under ${artifactsRoot}\n\n`);
 
-  let failed = 0;
+  let failed = 0, skipped = 0;
   let active = null;
   let stopping = false;
   const stop = async (code, why) => {
@@ -176,6 +176,11 @@ async function main() {
   });
   for (const [index, scenario] of chosen.entries()) {
     if (stopping) break;
+    if (scenario.requiresSharing && !fs.existsSync(path.join(path.dirname(options.binary), 'dim-sharing'))) {
+      skipped++;
+      process.stderr.write(`SKIP ${scenario.name} (build dim-sharing beside the CLI to run this scenario)\n`);
+      continue;
+    }
     const started = Date.now();
     const caseRoot = path.join(root, String(index));
     const owner = new TmuxCase({
@@ -230,7 +235,7 @@ async function main() {
     }
   }
   if (!options.keep) fs.rmSync(root, {recursive: true, force: true});
-  process.stderr.write(`${chosen.length - failed}/${chosen.length} scenario(s) passed\n`);
+  process.stderr.write(`${chosen.length - failed - skipped}/${chosen.length - skipped} scenario(s) passed${skipped ? `, ${skipped} skipped` : ''}\n`);
   if (failed) process.exitCode = 1;
 }
 

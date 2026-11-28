@@ -7,6 +7,8 @@
 //! read-only views. Optional methods missing from a daemon produce an
 //! unavailable diagnostic.
 
+pub(crate) mod submission;
+
 use crate::model::shell::ShellResult;
 use crate::model::view::{MemberConversationState, TaskOutputState, TaskTarget, ViewSnapshot};
 use crate::wire::Configuration;
@@ -22,12 +24,29 @@ pub const ACCOUNT_NAMESPACE: &str = "account";
 /// One piece of a draft sent with [`Command::SubmitDraft`], in order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DraftPart {
+    File {
+        path: std::path::PathBuf,
+        label: String,
+        target_image: bool,
+    },
     Text(String),
     /// Pasted text; a long one is stored as a session attachment.
     Paste(String),
     /// An image or other content block inserted from a file or the
     /// clipboard.
     Block(dim_agent_types::ContentBlock),
+}
+
+impl DraftPart {
+    pub(crate) fn needs_preparation(&self) -> bool {
+        match self {
+            Self::Paste(_) | Self::File { .. } => true,
+            Self::Block(dim_agent_types::ContentBlock::Image { source }) => {
+                source.source_type == dim_agent_types::ImageSourceType::Base64
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,8 +216,13 @@ pub enum Command {
         line: String,
         session: Origin,
     },
+    DeliverDraft {
+        draft: std::sync::Arc<crate::model::session::submission::PreparedDraft>,
+        reconcile: bool,
+    },
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft {
+        preparation: Option<tokio_util::sync::CancellationToken>,
         parts: Vec<DraftPart>,
         mode: SubmitMode,
         line: String,
@@ -1334,6 +1358,17 @@ impl DeleteOutcome {
 }
 
 pub enum Update {
+    DraftDelivery {
+        id: String,
+        result: crate::model::session::submission::Delivery,
+    },
+    RemoteDraftPrepared {
+        session: String,
+        line: String,
+        mode: SubmitMode,
+        parts: Vec<DraftPart>,
+        error: Option<String>,
+    },
     Reportable {
         error: crate::report::Captured,
         show_error: bool,

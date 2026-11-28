@@ -1,6 +1,42 @@
 //! Model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Conversation state could not be read; retry the read before submitting" => {
+            "会话状态读取失败，请重新读取后再提交"
+        }
+        "The centre moved before the command ran; the draft was kept" => {
+            "当前会话或会话线已切换，草稿已保留"
+        }
+        "The selected device restarted during file search" => "文件搜索期间，所选设备已重启",
+        "Target does not support file completion; type the remote path" => {
+            "目标设备不支持文件补全，请输入远程路径"
+        }
+        "Select a regular file to upload" => "请选择要上传的普通文件",
+        "Target did not return an image" => "目标设备未返回图片",
+        "File search interrupted" => "文件搜索已中断",
+        "Target changed during attachment preparation" => "准备附件时目标设备已改变",
+        "Attachment preparation cancelled" => "已取消准备附件",
+        "The session or line changed during upload; the draft was kept" => {
+            "上传期间会话或会话线已切换，草稿已保留"
+        }
+        "Preparing attachments · Ctrl+C to cancel" => "正在准备附件 · Ctrl+C 取消",
+        "{reason}; draft retained" => "{reason}，草稿已保留",
+        "The previous attachment submission is pending; draft retained" => {
+            "上一份附件消息仍在处理，草稿已保留"
+        }
+        "Submitting attachments" => "正在提交附件消息",
+        "Delivery unconfirmed · Enter on an empty draft to check and retry" => {
+            "发送结果待确认 · 在空草稿中按 Enter 核对并重试"
+        }
+        "Delivery unconfirmed: {reason}" => "发送结果待确认：{reason}",
+        "Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit" => {
+            "发送结果待确认：{reason}。按 Enter 核对并重试，Ctrl+C 退出"
+        }
+        "The selected device restarted" => "所选设备已重启",
+        "The original submission was accepted" => "原消息已被接收",
+        "The current model does not accept clipboard images; draft retained" => {
+            "当前模型不支持剪贴板图片，草稿已保留"
+        }
         "Details unavailable; collapse and expand to retry" => "详情不可用；收起后展开重试",
         "The response above is incomplete." => "以上响应不完整。",
         "Could not reach the provider, or the connection dropped" => "无法连接提供方，或连接中断",
