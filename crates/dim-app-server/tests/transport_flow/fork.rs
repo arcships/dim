@@ -88,7 +88,7 @@ fn error(reply: &Value) -> (String, String) {
 
 /// Acceptance 3, 4 and 5: a fork at a rest point copies `main` through the
 /// cut byte for byte with the content rows its events reference, copies no
-/// branch `main` created by then, and runs nothing until a client sends it
+/// line still open at the cut, and runs nothing until a client sends it
 /// input, while the source's children go on unaffected. A restart reloads it
 /// without a second failed creation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
