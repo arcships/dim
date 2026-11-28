@@ -3,6 +3,7 @@
 //! vocabulary, bounded lookup settling, overlap skips, legacy mapping and
 //! retention.
 use crate::support;
+use dim_agent_runtime::SessionLines;
 use dim_agent_scheduler::testing::retention;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -2237,7 +2238,12 @@ async fn an_uncertain_write_looks_up_only_its_own_delivery() {
             .iter()
             .find(|run| run["run_id"] == run_id.as_str())
             .expect("the manual window is recorded");
-        if own["state"] == "delivering" && own["attempts"] == json!(1) {
+        // The lost reply's own lookup either settles the round `delivered`
+        // or, when the write had not committed, leaves it `delivering` for
+        // the next pass. Either way the lookup is this delivery's first.
+        if matches!(own["state"].as_str(), Some("delivering" | "delivered"))
+            && own["attempts"] == json!(1)
+        {
             let own = own.clone();
             observed = Some((runs, own));
             break;

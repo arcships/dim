@@ -1,5 +1,9 @@
 # Agents `sessions` service
 
+`timelineContext` is a line's own data face: a process caller reaches it as
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })`
+([ADR 027](../../adr/027-cross-scope-access-by-id.md)).
+
 Status: Implemented in S2 ([#98](https://github.com/arcships/dim/pull/98)); `sessions.delete` (§6.8) was added once S5c
 ([#97](https://github.com/arcships/dim/pull/97)) had merged. Informed by a spike (§2); the changes made during
 implementation are in §17. Roadmap item S2 ([#62](https://github.com/arcships/dim/issues/62)), after C2
@@ -27,8 +31,9 @@ for the old writer.
 ## 1. Summary
 
 Agents exposes the process service `sessions`, so a process plugin in any language can start and drive Sessions as
-Collaboration does. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `pending`, `stop`,
-`idle`, `defaultBranchId` and `delete`.
+Collaboration does. Its methods are `launch`, `exists`, `history`, `withdraw`, `pending`, `defaultBranchId`,
+`delete` and `call`; a line's input, lookup, stop and idle are that line's own operations, reached through
+`call`.
 Each one maps onto Agents' existing Session creation and admission (`AgentIndex`) and the public Session facade.
 `withdraw` forwards to the InputQueue withdrawal service that S1 added, and `delete` to S5c's `AgentIndex::delete`.
 
@@ -69,7 +74,7 @@ The throwaway tests and measurements were deleted; nothing from them is committe
 | --- | --- | --- | --- | --- |
 | 1 | Where does the starter's current policy live? | Test: a starter created with full access, then narrowed by `Permission::update` | `Session::config().permission_policy` stays full access: it is the creation-time seed. `Session::get::<PermissionState>(branch)` reads the dispatched workspace-write policy. A Session created with a capped `SessionConfig.permission_policy` reads it back as its `PermissionState` at version 0 | The bound is read from `PermissionState`; the cap is applied at creation; no runtime change |
 | 2 | Can two policies be capped? | `PermissionPreset` has no order and nothing intersects two policies. Throwaway exhaustive check of the rule in §6.1 against Permission's own `decide`: 3 × 3 presets, 16 list memberships, 2 tool names and 7 risks, 2016 cases in all | The capped policy is never more permissive than either input. It equals the pointwise minimum in 2006 cases. In the other 10, a tool appears in `allowedTools` only on the side with the lower preset, and the cap denies it where the minimum would ask or allow | The cap rule in §6.1. It is conservative on purpose |
-| 3 | Can `idle` return before a just-written input runs? | Code: `TimelineContext::idle` waits for Loop `Idle`, no pending publication and dispatch at the tail. InputQueue applies an input, and Loop starts a turn, while the preceding event is being dispatched. Test, 40 runs: three Queue inputs, then `idle` | No. Every input is consumed and followed by `turn/end` at or before the cutoff. `idle` on an idle branch returns the same cutoff at once. An Append input is applied but not consumed at the cutoff | `idle` is the facade call, raced only against close and reload (§6.4) |
+| 3 | Can `idle` return before a just-written input runs? | Code: `BranchRuntime::idle` waits for Loop `Idle`, no pending publication and dispatch at the tail. InputQueue applies an input, and Loop starts a turn, while the preceding event is being dispatched. Test, 40 runs: three Queue inputs, then `idle` | No. Every input is consumed and followed by `turn/end` at or before the cutoff. `idle` on an idle branch returns the same cutoff at once. An Append input is applied but not consumed at the cutoff | `idle` is the facade call, raced only against close and reload (§6.4) |
 | 4 | What does a pending approval do to `idle`? | Test: a non-interactive workspace-write Session whose model calls `exec` | `approval/request` is written and `idle` has not returned after 500 ms. `stop` ends the turn and `idle` returns; `exec` never ran. Nothing reads `interactive` for approvals | Approvals keep `idle` open; callers bound a run with `stop` (§6.4) |
 | 5 | How does a TypeScript consumer reach a Rust service? | The `pluginFiles` precedent and the rutis 0.10 sources | A `dyn HostDispatch` at `host_key(name)` plus `ServiceCatalog::register_shared(name)` is visible to JavaScript rows. `HostDispatch::invoke(method, args)` carries no caller identity. The JavaScript plugin API has only `inject`, a hard dependency with no per-use lookup. rutis 0.10 does not carry a JavaScript `AbortSignal` into a Rust call ([App Server README](../../../crates/dim-app-server/README.md#trusted-plugin-storage)) | `sessions` comes from the directory part (§5). "Source fixed by Agents" leaves A.1. Cancellation from JavaScript is raised to C4 (§14) |
 | 6 | What does a loaded Session cost? | `xtask measure`, release build, mock model, Apple M4 | About 300 KB of Rust allocations and 43 Tokio tasks per loaded idle Session. Mean creation time is 1.5 ms with 10 Sessions loaded, 4.0 ms with 100 and 57 ms with 1000. The App Server never unloads idle Sessions ([#57](https://github.com/arcships/dim/issues/57)) | Launched Sessions accumulate until restart; idle unload is raised as a follow-up (§8.6) |
@@ -307,14 +312,14 @@ Status: decided for [#32](https://github.com/arcships/dim/issues/32): `submissio
 
 #32 described the field as client-protocol data that no runtime capability uses. It asked for an idempotency record
 owned by Rpc or SessionStore and written atomically with the input. Since then, S2 has made the field required on
-every `sessions.input`, Goal writes it through `Branch::input`, and Workflow, with Scheduler in draft, decides its
+every `timelineContext.input`, Goal writes it through `Branch::input`, and Workflow, with Scheduler in draft, decides its
 recovery from it:
 
 | Owner | Writes | Decides from it |
 | --- | --- | --- |
 | Rpc `session.submit`, protocol v3 ([connection/tree.rs](../../../crates/dim-app-server/src/connection/tree.rs)) | An optional UUID | — |
-| Agents `sessions.input` (§6.2) | A required, non-empty id, `<source>:<uuid>` by convention | — |
-| The branch Timeline ([core/timeline.rs](../../../crates/dim-agent-runtime/src/core/timeline.rs)), through `Session::input` and `Session::lookup` (`sessions.input`, `sessions.lookup`, Rpc's `session.submit` and `session.input_lookup`) | — | Accepts each id once per branch; `accepted`, `unknown` or `ambiguous` for lookup |
+| Agents `timelineContext.input` (§6.2) | A required, non-empty id, `<source>:<uuid>` by convention | — |
+| The branch Timeline ([core/timeline.rs](../../../crates/dim-agent-runtime/src/core/timeline.rs)), through `Session::input` and `Session::lookup` (`timelineContext.input`, `timelineContext.lookup`, Rpc's `session.submit` and `session.input_lookup`) | — | Accepts each id once per branch; `accepted`, `unknown` or `ambiguous` for lookup |
 | Goal parts ([crates/dim-goal](../../../crates/dim-goal)) | `goal:<uuid>`, through `TreeCommands::input` | Nothing |
 | Workflow ([engine.ts](../../../runtime/plugins/workflow/engine.ts)) | `workflow:<uuid>` for each stage input and report, stored in its run file before the write | A retry, by the same or a replacement generation, resubmits the same id and settles from the reply |
 | Scheduler ([A.5](../plugins/Scheduler.md#a5-timeline-and-capability-mechanics), [A.6](../plugins/Scheduler.md#a6-run-outcome-delivery); runtime in draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>`, one per delivery | An uncertain reply is settled by lookup (A.6); a window is never written twice |
@@ -749,7 +754,7 @@ it was raised; §17 lists what S2 adapted.
 
 | Item | Content |
 | --- | --- |
-| Blocked by | ADR 002 D5 defines cancellation as the consumer dropping the call. rutis 0.10 does not carry a JavaScript `AbortSignal` into a Rust call, so a TypeScript caller cannot abandon a pending `sessions.idle` (§8.4) |
+| Blocked by | ADR 002 D5 defines cancellation as the consumer dropping the call. rutis 0.10 does not carry a JavaScript `AbortSignal` into a Rust call, so a TypeScript caller cannot abandon a pending `timelineContext.idle` (§8.4) |
 | Existing mechanisms considered | `pluginFiles`' extra cancellation Promise argument: a convention of one service, not a binding rule. `stop` or `withdraw`: they end the run as well as the wait |
 | Generic capability | In the neutral binding, a TypeScript caller that abandons a call to a Rust-provided shared service drops the Rust future. The binding also keeps the App Server envelope (§5) for process services, so `SessionsError` arrives as data |
 | Effect on sequence, batch, interrupt, reload | None: dropping a wait writes nothing |
@@ -794,7 +799,7 @@ was stubbed (roadmap §3.6).
 1. Done. Types and the seven `AgentIndex` methods in the Agents lane (Appendix A).
 2. Done. The directory part provides `sessions`; App Server `lib.rs` registers `register_shared("sessions")` (one line
    in the assembly lane).
-3. Done. Lookup is the branch's (`Session::lookup`, §6.3); `sessions.lookup` and Rpc's `session.input_lookup` both
+3. Done. Lookup is the branch's (`Session::lookup`, §6.3); `timelineContext.lookup` and Rpc's `session.input_lookup` both
    call it.
 4. Done. `sessions.delete` forwards to S5c's `AgentIndex::delete` ([#97](https://github.com/arcships/dim/pull/97))
    and has its row in A.1 (§6.8).

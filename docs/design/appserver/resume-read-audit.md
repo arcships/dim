@@ -131,7 +131,7 @@ SQL 跟踪读取 SQLite 3.54.1 的实际 statement VM/fullscan/sort/autoindex �
 | 守护进程匿名内存 | 19.25 MiB | 47.59 MiB |
 | 进程 read-call | 6.68 MiB | 36.95 MiB |
 
-这两个跟踪样本中，第一条上下文范围 SQL 完成时间分别在 attach 返回后约 95 ms / 108 ms；这些是插桩时序证据，不能当作产品延迟。`TimelineContext::finish_opening` 等待打开事件、初始化回执及提交位置的分发，不等待新模型轮次完成；`AgentLoop::start_preparation` 在自己的异步任务中读取上下文。因此，打开之后等待 250 ms 或等待 turn 结束的进程总量都不能直接标成 resume 成本。异步执行可与客户端后续加载并发，RPC 返回时刻也不是通用的任务成本分界。
+这两个跟踪样本中，第一条上下文范围 SQL 完成时间分别在 attach 返回后约 95 ms / 108 ms；这些是插桩时序证据，不能当作产品延迟。`BranchRuntime::finish_opening` 等待打开事件、初始化回执及提交位置的分发，不等待新模型轮次完成；`AgentLoop::start_preparation` 在自己的异步任务中读取上下文。因此，打开之后等待 250 ms 或等待 turn 结束的进程总量都不能直接标成 resume 成本。异步执行可与客户端后续加载并发，RPC 返回时刻也不是通用的任务成本分界。
 
 完整轮次总量的 SQL 拆分如下。指令数是 SQLite 虚拟机指令，不是 CPU 硬件指令；执行次数包括 SQLite 内部语句。
 

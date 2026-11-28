@@ -89,16 +89,20 @@ export default definePlugin({
             await pause('opened')
             progress({ phase: 'input' })
             const text = `<dim-workflow kind="report" run_id="${run.run_id}">completed</dim-workflow>`
-            const reply = await sessions.input({ ...target, submissionId, mode: 'steer',
-              rawBlocks: [{ text }], content: [{ type: 'text', text }] })
-            if (!reply.ok && reply.error.code === 'ambiguous') {
+            const written = await sessions.call({ sessionId: target.sessionId, lineId: target.branchId,
+              service: 'timelineContext', method: 'input',
+              args: [{ submission_id: submissionId, mode: 'steer', blocks: [{ type: 'raw', text }] }] })
+            const code = written.ok ? undefined : written.error.owner_code ?? written.error.code
+            const reply = written.ok ? written : { ok: false as const, error: { code: code!, retryable: written.error.retryable === true } }
+            if (!reply.ok && reply.error.code === 'AmbiguousSubmission') {
               const delivered = await store(run => { run.report = { state: 'delivered' } })
               progress({ phase: 'duplicate_report_violation' })
               return delivered
             }
             return store(run => {
+              const gone = ['no_session', 'no_line', 'Closed', 'UnknownBranch', 'BranchEnded']
               if (reply.ok) run.report = { state: 'delivered' }
-              else if (['session_closed', 'branch_missing', 'branch_ended', 'rejected'].includes(reply.error.code)) {
+              else if (gone.includes(reply.error.code) || reply.error.code === 'InvalidInput') {
                 run.report = { state: 'undeliverable', reason: reply.error.code }
               } else if (run.report.state === 'pending') run.report.attempt_open = false
             }, () => pause('reply_write'))

@@ -432,10 +432,17 @@ impl Shared {
         )
         .await;
         let value = match answer {
-            Ok(Ok(value)) => value,
-            Ok(Err(code)) => {
+            Ok(Ok(Some(value))) => value,
+            Ok(Ok(None)) => {
                 return Err(SchedulerError::new(
-                    sessions_code(&code),
+                    "service_unavailable",
+                    "the sessions service answered no default branch",
+                ));
+            }
+            Ok(Err(refusal)) => {
+                let code = refusal.recorded();
+                return Err(SchedulerError::new(
+                    sessions_code(code),
                     format!("the Session's default branch was not read: {code}"),
                 ));
             }
@@ -486,8 +493,8 @@ impl Shared {
 /// `service_reloading`.
 fn sessions_code(code: &str) -> &'static str {
     match code {
-        "session_closed" => "session_closed",
-        "reloading" => "service_reloading",
+        "session_closed" | "no_session" => "session_closed",
+        "reloading" | "session_reloading" | "session_closing" => "service_reloading",
         _ => "service_unavailable",
     }
 }

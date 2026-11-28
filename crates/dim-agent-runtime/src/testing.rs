@@ -547,3 +547,134 @@ async fn read<R: std::ops::RangeBounds<u64> + Send>(
     }
     Ok(events)
 }
+
+/// The line operations a flow test drives, now that a [`Session`] carries
+/// none: each resolves the line through the same route production uses, and
+/// answers the operation's own result.
+///
+/// A test names the line it drives, as a caller does. Feature `testing` only:
+/// a build without it has no such entry, which is the point of moving tests
+/// off the facade.
+#[allow(
+    async_fn_in_trait,
+    reason = "flow tests await these directly; the trait is a fixture, never a dyn object"
+)]
+pub trait SessionLines {
+    /// The line, resolved as the route resolves it.
+    fn line_of(&self, line: &str) -> Result<crate::route::Line>;
+    async fn submit(
+        &self,
+        text: String,
+        mode: dim_agent_types::InputMode,
+        line: &str,
+    ) -> Result<Arc<dim_agent_types::AgentEvent>> {
+        self.input(
+            dim_agent_types::InputMessageData::text(text, Some(mode)),
+            line,
+        )
+        .await
+    }
+    async fn input(
+        &self,
+        data: dim_agent_types::InputMessageData,
+        line: &str,
+    ) -> Result<Arc<dim_agent_types::AgentEvent>> {
+        Ok(self.line_of(line)?.context().input(data).await?.event)
+    }
+    async fn input_commit(
+        &self,
+        data: dim_agent_types::InputMessageData,
+        line: &str,
+    ) -> Result<(Arc<dim_agent_types::AgentEvent>, crate::InputCommit)> {
+        let reply = self.line_of(line)?.context().input(data).await?;
+        Ok((
+            reply.event,
+            if reply.written {
+                crate::InputCommit::Written
+            } else {
+                crate::InputCommit::Existing
+            },
+        ))
+    }
+    async fn inputs(
+        &self,
+        inputs: Vec<dim_agent_types::InputMessageData>,
+        line: &str,
+    ) -> Result<Vec<Arc<dim_agent_types::AgentEvent>>> {
+        self.line_of(line)?.context().inputs(inputs).await
+    }
+    async fn lookup(
+        &self,
+        line: &str,
+        id: &str,
+    ) -> Result<Option<Arc<dim_agent_types::AgentEvent>>> {
+        self.line_of(line)?.context().lookup(id.to_owned()).await
+    }
+    fn interrupt(&self, line: &str, reason: String) -> Result<u64> {
+        self.line_of(line)?.context().interrupt(reason)
+    }
+    async fn stop(&self, line: &str, reason: String) -> Result<u64> {
+        self.line_of(line)?.context().stop(reason).await
+    }
+    async fn idle(&self, line: &str) -> Result<u64> {
+        let idle = self.line_of(line)?.context().idle().await;
+        if idle.is_ok() {
+            crate::memory::trim_if_large();
+        }
+        idle
+    }
+    fn state(&self, line: &str) -> Result<crate::BranchStatus> {
+        self.line_of(line)?.context().state()
+    }
+    fn sequence(&self, line: &str) -> Result<u64> {
+        match self.line_of(line) {
+            Ok(line) => Ok(line.timeline().sequence()),
+            Err(error) => self.ended_head(line).ok_or(error),
+        }
+    }
+    /// The fixed head of an ended line, `None` for an open or unknown one.
+    fn ended_head(&self, line: &str) -> Option<u64>;
+    async fn query(
+        &self,
+        line: &str,
+        query: crate::TimelineQuery,
+    ) -> Result<crate::TimelineQueryReply> {
+        if query.include_publishing {
+            return Err(AgentError::InvalidInput(
+                "a facade read stops at the published head".into(),
+            ));
+        }
+        self.line_of(line)?.timeline().query(query).await
+    }
+    async fn batch_end(&self, line: &str, sequence: u64) -> Result<()> {
+        self.line_of(line)?.timeline().batch_end(sequence).await
+    }
+    fn watch(&self, line: &str) -> Result<watch::Receiver<()>> {
+        Ok(self.line_of(line)?.watch())
+    }
+    fn dispatch_watch(&self, line: &str) -> Result<watch::Receiver<crate::core::DispatchState>> {
+        Ok(self.line_of(line)?.dispatch_watch())
+    }
+    fn publication(&self, line: &str) -> Result<Publication> {
+        Ok(self.line_of(line)?.publication())
+    }
+    fn branch_diagnostics(
+        &self,
+        line: &str,
+    ) -> Result<rutis::host::diagnostics::RuntimeDiagnostics> {
+        Ok(self.line_of(line)?.diagnostics())
+    }
+}
+
+impl SessionLines for crate::Session {
+    /// The line a flow test drives, selected as the facade selected it: a
+    /// line the tree still holds is served even while it closes, so a test
+    /// reads the last state a client could read. An unknown line and an ended
+    /// one answer as they did before the handle existed.
+    fn line_of(&self, line: &str) -> Result<crate::route::Line> {
+        self.line_for_test(line)
+    }
+    fn ended_head(&self, line: &str) -> Option<u64> {
+        crate::Session::ended_head(self, line)
+    }
+}

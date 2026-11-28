@@ -2,6 +2,7 @@
 use super::*;
 use dim_agent_capabilities::tool_registry::{ToolProvider, ToolRegistry, ToolSourceSet};
 use dim_agent_runtime::Names;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_app_server::managed_provider::{
     AccountSnapshot, CredentialLease, ManagedCatalog, ManagedError, ManagedFuture, ManagedProvider,

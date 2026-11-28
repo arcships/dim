@@ -13,6 +13,7 @@ use dim_agent_capabilities::{
         PrepareContextHost,
     },
 };
+use dim_agent_runtime::SessionLines;
 pub use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{
     Agent, AgentBuilder, AgentConfig, AgentError, BoxFuture, Feature, Names, Session, Timeline,

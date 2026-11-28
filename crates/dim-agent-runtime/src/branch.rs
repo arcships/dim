@@ -47,9 +47,9 @@ pub enum InputCommit {
 /// The facade of one published branch for callers outside its subtree:
 /// validated input, stop, idle, configuration, read-only history and
 /// capability state. It cannot write arbitrary events; the branch tree owns
-/// the [`TimelineContext`] behind it.
+/// the [`BranchRuntime`] behind it.
 #[derive(Clone)]
-pub struct Branch(pub(crate) Arc<TimelineContext>);
+pub struct Branch(pub(crate) Arc<BranchRuntime>);
 impl Branch {
     pub fn id(&self) -> &str {
         self.0.id()
@@ -94,15 +94,6 @@ impl Branch {
         head: u64,
     ) -> Result<Option<Arc<AgentEvent>>> {
         self.0.input_if_head(data, head).await
-    }
-    /// [`Self::input`], also saying whether this call wrote the input. The
-    /// append under the commit lock decides, so concurrent duplicates cannot
-    /// both answer [`InputCommit::Written`].
-    pub(crate) async fn input_commit(
-        &self,
-        data: InputMessageData,
-    ) -> Result<(Arc<AgentEvent>, InputCommit)> {
-        self.0.input_commit(data).await
     }
     /// Appends validated inputs as one atomic batch, in the given order: the
     /// events commit at contiguous sequences and publish together. Every

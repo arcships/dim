@@ -1,6 +1,7 @@
 use super::deletion::Store;
 use super::*;
 use dim_agent_capabilities::prompt_state::PromptSnapshot;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events, timeline_events};
 use dim_agent_runtime::{
     Agent, CollaborationRole, Names, Session, SessionIdentity, TimelineQueryScope, TimelineStore,
@@ -7808,6 +7809,75 @@ async fn unloaded_members_deleted_across_a_reload_end_with_their_temporary_agent
 /// releases the leader too: when the member is closed from outside, when a
 /// reload of Collaboration settles it, and when the leader closes, which its
 /// hold never delays. Each settled member then unloads too.
+/// A stop that is still waiting when Agents reloads is delivered by the next
+/// generation: the record survives the reload, the member's turn ends and its
+/// Session unloads ([#2027], design rule 8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_issued_before_a_reload_still_ends_the_member_turn() {
+    let (server, agent, _gate, directory) = launch_holding_team().await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
+    )
+    .await;
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "tool:hold {}"})),
+        "queue",
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let member = next_member(&lead_session, 0).await;
+    let member_session = agent.get_session(&member).unwrap();
+    assert!(held(&lead_session).await);
+
+    // The request fails with the reload that starts while its turn runs.
+    let collaboration = server
+        .service::<dim_app_server::collaboration::Collaboration>()
+        .expect("the process serves Collaboration");
+    let before = collaboration.delivered_stops();
+    server.restart("Agents").await.unwrap();
+    poll("the failed request's result", async || {
+        result_of(&events(&lead_session).await, &member)
+            .into_iter()
+            .find(|outcome| matches!(outcome, CollaborationOutcome::Failed { .. }))
+    })
+    .await;
+    poll("the member's cancelled turn", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .any(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::TurnEnd(data)
+                        if matches!(data.outcome, dim_agent_types::TurnOutcome::Cancelled { .. })
+                )
+            })
+            .then_some(())
+    })
+    .await;
+    // The stop was carried by the generation the reload installed, and a
+    // delivered stop leaves no record ([#2027]).
+    assert!(
+        collaboration.delivered_stops() > before,
+        "the reload's generation delivers the stop"
+    );
+    assert!(
+        !collaboration.recorded_stops().contains(&member),
+        "a delivered stop leaves no record: {:?}",
+        collaboration.recorded_stops()
+    );
+    unload(&agent, &member).await;
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_settlement_of_a_request_releases_its_leader() {
     let (server, agent, _gate, directory) = launch_holding_team().await;

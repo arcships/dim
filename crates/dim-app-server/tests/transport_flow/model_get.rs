@@ -2,6 +2,7 @@
 //! cutoff.
 use super::*;
 use dim_agent_capabilities::prompt_state::PromptSnapshot;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{ConfigureUpdate, Dispatcher, Timeline, TimelineIdentity};
 use dim_agent_types::{
     ContextConfiguredData, EventKind, ModelConfiguration, PromptChange, PromptChangeReason,

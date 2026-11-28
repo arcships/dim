@@ -45,7 +45,7 @@ fn reply_usage() -> Usage {
 async fn projected(session: &dim_agent_runtime::Session, branch: &str) -> Vec<Message> {
     let through = session.sequence(branch).unwrap();
     let context = dim_agent_capabilities::history::HistoryRenderer::default()
-        .context_in(session, branch, through)
+        .context(session.line_of(branch).unwrap().timeline(), through)
         .await
         .unwrap();
     let history = project_context_history(&context).unwrap();

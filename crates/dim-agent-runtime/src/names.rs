@@ -105,6 +105,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<crate::SessionScope>(&mut catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<Timeline>(&mut catalog, branch);
+    register::<TimelineContext>(&mut catalog, branch);
     register::<Dispatcher>(&mut catalog, branch);
     register::<TimelineIdentity>(&mut catalog, branch);
     register::<BranchLifecycle>(&mut catalog, branch);

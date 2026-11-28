@@ -8,6 +8,7 @@ use dim_agent_capabilities::{
     shell_session::ShellSessionPlugin,
     workspace_tools::WorkspaceToolsConfig,
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::{AgentError, Session, SessionConfig};
 use dim_agent_types::{ApprovalCallData, InputMode, PermissionPolicy, PermissionPreset};

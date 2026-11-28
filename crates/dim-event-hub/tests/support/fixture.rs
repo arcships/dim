@@ -34,7 +34,7 @@ use std::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// One `sessions.input` write as the fake service received it.
+/// One `timelineContext.input` write as the fake service received it.
 #[derive(Debug, Clone)]
 pub struct InputCall {
     pub session_id: String,
@@ -42,15 +42,18 @@ pub struct InputCall {
     pub mode: String,
     pub submission_id: String,
     pub text: String,
-    pub key: Option<Json>,
+    /// The block's key name, absent for a block that is delivered once.
+    pub key: Option<String>,
+    pub retire: bool,
 }
 
 impl InputCall {
     pub fn key_use(&self) -> Option<&str> {
-        self.key.as_ref()?.get("use")?.as_str()
+        self.key.as_ref()?;
+        Some(if self.retire { "retire" } else { "live" })
     }
     pub fn key_name(&self) -> Option<&str> {
-        self.key.as_ref()?.get("name")?.as_str()
+        self.key.as_deref()
     }
 }
 
@@ -213,10 +216,7 @@ impl FakeSessions {
 
 impl HostDispatch for FakeSessions {
     fn methods(&self) -> Option<Json> {
-        Some(
-            json!({ "input": "async", "lookup": "async", "exists": "async",
-            "defaultBranchId": "async" }),
-        )
+        Some(json!({ "call": "async", "exists": "async", "defaultBranchId": "async" }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
         let Json::Array(args) = args.json()? else {
@@ -226,34 +226,15 @@ impl HostDispatch for FakeSessions {
             return Err(BridgeError::value("expected one request object"));
         };
         match method {
-            // The `sessions.lookup` reply (design §2.4).
-            "lookup" => {
-                self.inner.lookups.fetch_add(1, Ordering::SeqCst);
-                let key = format!(
-                    "{}|{}|{}",
-                    write["sessionId"].as_str().unwrap_or_default(),
-                    write["branchId"].as_str().unwrap_or_default(),
-                    write["submissionId"].as_str().unwrap_or_default()
-                );
-                let held = self.inner.accepted.lock().unwrap().get(&key).cloned();
-                return Ok(Value::future(async move {
-                    Ok(match held {
-                        Some((input_id, sequence)) => json!({
-                            "ok": true,
-                            "value": { "status": "accepted", "inputId": input_id, "sequence": sequence },
-                        }),
-                        None => json!({ "ok": true, "value": { "status": "unknown" } }),
-                    }
-                    .into())
-                }));
-            }
+            // One `timelineContext` operation on a line (design §2.4).
+            "call" => self.line_call(write),
             // The `sessions.exists` read (design §3.4).
             "exists" => {
                 let session = write["sessionId"].as_str().unwrap_or_default().to_owned();
                 let exists = !self.inner.missing.lock().unwrap().contains(&session);
-                return Ok(Value::future(async move {
+                Ok(Value::future(async move {
                     Ok(json!({ "ok": true, "value": { "exists": exists } }).into())
-                }));
+                }))
             }
             // The `sessions.defaultBranchId` read (timeline branches §20.22):
             // every fixture Session is on its root, and one the fixture was
@@ -283,7 +264,7 @@ impl HostDispatch for FakeSessions {
                             .contains(&session)
                             .then_some("session_closed")
                     });
-                return Ok(Value::future(async move {
+                Ok(Value::future(async move {
                     if let Some(code) = failure {
                         Ok(json!({ "ok": false, "error": { "code": code,
                             "message": "the Session's default branch was not read" } })
@@ -291,30 +272,73 @@ impl HostDispatch for FakeSessions {
                     } else {
                         Ok(json!({ "ok": true, "value": { "defaultBranchId": "main" } }).into())
                     }
-                }));
+                }))
             }
-            "input" => {}
-            other => {
-                return Err(BridgeError::value(format!(
-                    "the fixture sessions service has no method {other}"
-                )));
-            }
+            other => Err(BridgeError::value(format!(
+                "the fixture sessions service has no method {other}"
+            ))),
         }
+    }
+}
+
+impl FakeSessions {
+    /// A routed call the fixture resolves itself: `timelineContext.input`,
+    /// `waitPublished` and `lookup` on the line `lineId` names.
+    fn line_call(&self, request: Json) -> Reply {
+        if request["service"] != json!("timelineContext") {
+            return Err(BridgeError::value(format!(
+                "the fixture sessions service does not route {}",
+                request["service"]
+            )));
+        }
+        let method = request["method"].as_str().unwrap_or_default().to_owned();
+        let args = request["args"].clone();
+        let first = args.get(0).cloned().unwrap_or(Json::Null);
+        if method == "waitPublished" {
+            return Ok(Value::future(
+                async move { Ok(json!({ "ok": true }).into()) },
+            ));
+        }
+        if method == "lookup" {
+            self.inner.lookups.fetch_add(1, Ordering::SeqCst);
+            let key = format!(
+                "{}|{}|{}",
+                request["sessionId"].as_str().unwrap_or_default(),
+                request["lineId"].as_str().unwrap_or_default(),
+                first.as_str().unwrap_or_default()
+            );
+            let held = self.inner.accepted.lock().unwrap().get(&key).cloned();
+            return Ok(Value::future(async move {
+                Ok(match held {
+                    Some((input_id, sequence)) => json!({
+                        "ok": true,
+                        "value": { "id": input_id, "sequence": sequence },
+                    }),
+                    None => json!({ "ok": true, "value": null }),
+                }
+                .into())
+            }));
+        }
+        if method != "input" {
+            return Err(BridgeError::value(format!(
+                "the fixture sessions service has no operation {method}"
+            )));
+        }
+        let write = first;
         let call = InputCall {
-            session_id: write["sessionId"].as_str().unwrap_or_default().to_owned(),
-            branch_id: write["branchId"].as_str().unwrap_or_default().to_owned(),
+            session_id: request["sessionId"].as_str().unwrap_or_default().to_owned(),
+            branch_id: request["lineId"].as_str().unwrap_or_default().to_owned(),
             mode: write["mode"].as_str().unwrap_or_default().to_owned(),
-            submission_id: write["submissionId"]
+            submission_id: write["submission_id"]
                 .as_str()
                 .unwrap_or_default()
                 .to_owned(),
-            text: write["rawBlocks"][0]["text"]
+            text: write["blocks"][0]["text"]
                 .as_str()
                 .unwrap_or_default()
                 .to_owned(),
-            key: write["rawBlocks"][0]["key"]
-                .is_object()
-                .then(|| write["rawBlocks"][0]["key"].clone()),
+            key: write["blocks"][0]["key"].as_str().map(str::to_owned),
+            retire: write["blocks"][0]["retire"] == json!(true),
         };
         let inner = self.inner.clone();
         // Recorded at arrival, before any gate: the order of the recorded
@@ -369,7 +393,10 @@ impl HostDispatch for FakeSessions {
                     );
                     Ok(json!({
                         "ok": true,
-                        "value": { "inputId": input_id, "sequence": sequence },
+                        "value": {
+                            "event": { "id": input_id, "sequence": sequence },
+                            "written": true,
+                        },
                     })
                     .into())
                 }

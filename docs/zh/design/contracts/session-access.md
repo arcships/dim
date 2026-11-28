@@ -1,10 +1,14 @@
 # Session 访问：Agents 与 Session 公共接口补充
 
+`timelineContext` 是线自己的数据面：进程调用方经
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })` 到达
+（[ADR 027](../../adr/027-cross-scope-access-by-id.md)）。
+
 状态：草案。总体设计：[总览 §3 集成](../overview.md#3-基于现有机制的集成)、[附录 B Agents 与 InputQueue](../overview.md#附录-b-现有插件的补充)；规则：[ADR 002](../../adr/002-plugin-scope.md) D1–D3、D5。阶段：P0。语言：语言中立合同；Rust 绑定见[附录 E](#附录-e-rust-绑定)。
 
 > **离线资源节点。** 关于资源节点离线的各行描述的是 P3 多节点行为。#5 已撤回（rutis 是外部依赖，链接断开时会撤掉导入的服务），这些行在 P3 按总览 §6.3 重新设计：节点服务在每次调用时按 Session 的资源节点查找，该字段在 P3 加入 `SessionConfig`（[A.3](#a3-sessionconfig-字段)）。P1/P2 中每个 Session 都使用控制节点。
 
-进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`pending`、`stop`、`idle` 和 `delete`，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
+进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`exists`、`history`、`withdraw`、`pending`、`delete` 和 `call`；线上的输入、查找、停止与空闲是该线自己的操作，经 `call` 到达，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
 
 | 补充 | 所有者 | 使用方 |
 | --- | --- | --- |
@@ -148,14 +152,14 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | 接口 | 模式 | 用途 |
 | --- | --- | --- |
 | `sessions.launch(LaunchRequest) -> {sessionId, policy, worktree?}` | async | 为自动化创建非交互 Session，策略受上限约束 |
-| `sessions.input(InputWrite) -> {inputId, sequence}` | async | 写入带来源 raw 块的输入 |
-| `sessions.lookup({sessionId, branchId, submissionId}) -> LookupReply` | async | 在结果不确定后查找已提交的输入 |
+| `timelineContext.input(InputWrite) -> {inputId, sequence}` | async | 写入带来源 raw 块的输入 |
+| `timelineContext.lookup({sessionId, branchId, submissionId}) -> LookupReply` | async | 在结果不确定后查找已提交的输入 |
 | `sessions.history(HistoryRequest) -> HistoryPage` | async | 读取历史，可选为以已发布 head 为界的固定前缀 |
 | `session.input.withdraw {sessionId, branchId, inputId, reason?}` | RPC | 客户端撤回；InputQueue 的 `sessionMethods`（命名空间 `session.input`） |
 | `sessions.withdraw(WithdrawRequest) -> WithdrawReply` | async | 按 `input_id` 为调用方写入的输入写入 `input/withdraw`，并返回 InputQueue 的决定 |
 | `sessions.pending(PendingRequest) -> PendingReply` | async | 回答 `input_id` 在该分支上是否仍待处理（§2）；分支不持有的 id 为 `false` |
-| `sessions.stop({sessionId, branchId, reason?}) -> {sequence}` | async | 中断该分支的 turn |
-| `sessions.idle({sessionId, branchId}) -> {sequence}` | async | 等待分支空闲；返回的序号是最后提交的序号，位于整批次边界 |
+| `timelineContext.stop({sessionId, branchId, reason?}) -> {sequence}` | async | 中断该分支的 turn |
+| `timelineContext.idle({sessionId, branchId}) -> {sequence}` | async | 等待分支空闲；返回的序号是最后提交的序号，位于整批次边界 |
 | `sessions.delete({sessionId}) -> {}` | async | 删除一个 Session：Agents 关闭它，并删除它的行与文件（[Session 删除](../appserver/session-deletion-and-fork.md#3-删除)） |
 | `SessionConfig.interactive` | 数据 | 创建时配置 |
 | `session.create {interactive}` | RPC | 非交互创建 |
@@ -300,7 +304,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | --- | --- |
 | 标记 | 第一个 raw 块是现有上下文块格式中的元素 `<dim-<source> kind="..." ...>body</dim-<source>>`。它是生产方插件写给模型看的文本；共享组件从不解析它，只有生产方插件可以解释自己写的内容（例如 Goal 折叠自己的块） |
 | Key | `RawBlock.key`，`use` 为 `live` 或 `retire`，按分支 Timeline 区分。完整的 key 由写入方自己起；按约定以写入方自己的前缀开头（总览约束 14），不做检查 |
-| 提交标识 | `<source>:<uuid>`，每次逻辑提交生成一个。分支对每个标识只接受一次：重复提交不写入，回复第一条输入的回执，输入被消费或撤回后也是如此。`sessions.lookup`（与 `session.input_lookup` 语义相同）查找已提交的输入（`accepted`、`unknown`），不写入。错误 `ambiguous`（来自 `input` 或 `lookup`）表示多条输入共用该标识，写于分支只接受一次之前。标识是已提交 `input/message` 的 `submission_id` 字段，随输入一起提交、分叉和删除，没有单独的记录（[sessions 服务 §6.3](../appserver/sessions-service.md#提交标识存放在哪里)，#32） |
+| 提交标识 | `<source>:<uuid>`，每次逻辑提交生成一个。分支对每个标识只接受一次：重复提交不写入，回复第一条输入的回执，输入被消费或撤回后也是如此。`timelineContext.lookup`（与 `session.input_lookup` 语义相同）查找已提交的输入（`accepted`、`unknown`），不写入。错误 `ambiguous`（来自 `input` 或 `lookup`）表示多条输入共用该标识，写于分支只接受一次之前。标识是已提交 `input/message` 的 `submission_id` 字段，随输入一起提交、分叉和删除，没有单独的记录（[sessions 服务 §6.3](../appserver/sessions-service.md#提交标识存放在哪里)，#32） |
 | 绝不可能 | 写入 `input/message`、经 `withdraw` 的 `input/withdraw` 和经 `stop` 的 `stop/interrupt` 之外的事件；写入 `input/deleted`；编辑历史 |
 
 ### A.3 SessionConfig 字段

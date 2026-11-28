@@ -1,5 +1,9 @@
 # Workflow
 
+`timelineContext` 是线自己的数据面：进程调用方经
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })` 到达
+（[ADR 027](../../adr/027-cross-scope-access-by-id.md)）。
+
 状态：可选包已实现。总体设计：[overview §4](../overview.md#4-插件目录)；作用域：[ADR 002](../../adr/002-plugin-scope.md)（进程 + Session）。阶段：P2。语言：优先 TypeScript（[overview 附录 C](../overview.md#附录-c-实现语言)）。
 
 **交付边界。** 可选 [Workflow 包](../../../../runtime/plugins/workflow/README.md)通过既有公开绑定提供定义来源、运行引擎、Session 工具和管理方法。SDK 与真实 Node/App Server 流程按[附录 D](../../../../runtime/plugins/workflow/README.md#acceptance-coverage)覆盖实时准入权限、来源授权、停止、保留期和后台报告恢复。原生保留期验收覆盖删除/读取/替换失败、引用保护和无活动运行时的分钟重试。宿主按 §1.3 显式安装；反复创建阶段的发布前仍须 Agents 空闲卸载 #126，不扩充 core 或 rutis。
@@ -182,7 +186,7 @@ sequenceDiagram
   WF->>AG: launch(starter?, policy?, model?)
   AG-->>WF: sessionId, actual policy
   WF->>ST: 持久化 Session 和首阶段 policy 上限（A17）
-  WF->>SS: sessions.input main Queue，标记 stage，渲染后的提示词
+  WF->>SS: timelineContext.input main Queue，标记 stage，渲染后的提示词
   WF->>ST: 持久化阶段 running 及 input_event_id
   SS->>SS: Dispatcher：input/applied、input/consumed、轮次
   WF->>SS: sessions.history 按页读取同一已发布前缀
@@ -200,7 +204,7 @@ sequenceDiagram
   participant STB as Starter branch
   alt 运行 completed、failed 或 interrupted，且有 report_to
     WF->>ST: 报告 pending(submission_id)
-    WF->>STB: sessions.input Steer，标记 report
+    WF->>STB: timelineContext.input Steer，标记 report
     WF->>ST: delivered；分支缺失或 Session 关闭时 undeliverable
   else workflow stop
     WF->>ST: stopping
@@ -213,9 +217,9 @@ sequenceDiagram
 
 每个阶段有一个自持历史跟踪任务，使用已保存的输入回执。提交后读取一次，此后每秒读取，不保留原生 idle 等待。首次 history {after} 回复固定已发布截止点 H，后续分页保持 through: H。读完整个前缀再决定，并把最后序号作为下次游标。匹配本阶段 inputId，保留已发布终态，不把其他轮次结束当成本阶段完成。待处理审批不阻止历史读取。
 
-停止时先读完整个已发布前缀并保留已有终态。本输入已应用、随后中断，且该前缀没有匹配的消费时，按 A.6 将阶段结算为 stopped，不再调用 stop。否则只撤回本阶段尚未消费的输入；deleted 使其停止；notHeld 只表示这次撤回没有删除输入，输入可能已删除或已消费。重读历史并应用同样的规则：匹配删除或消费前已中断则结算，其他未消费输入继续等待。仅在观察到消费且没有后续结束事实时调用 sessions.stop。本地 stopped 终态不会收回已应用输入。每个已准入变更调用由任务持有至结算，丢弃 JS Promise 不等于原生取消。
+停止时先读完整个已发布前缀并保留已有终态。本输入已应用、随后中断，且该前缀没有匹配的消费时，按 A.6 将阶段结算为 stopped，不再调用 stop。否则只撤回本阶段尚未消费的输入；deleted 使其停止；notHeld 只表示这次撤回没有删除输入，输入可能已删除或已消费。重读历史并应用同样的规则：匹配删除或消费前已中断则结算，其他未消费输入继续等待。仅在观察到消费且没有后续结束事实时调用 timelineContext.stop。本地 stopped 终态不会收回已应用输入。每个已准入变更调用由任务持有至结算，丢弃 JS Promise 不等于原生取消。
 
-sessions.stop 作用于轮次，以分支寻址，不接受预期轮次 id，也不取消分支中的脱离工作。观察到的轮次可能在调用生效前结束，另一轮次可能开始。每秒历史轮询、可能中断后续轮次及保留已应用输入，是已接受的首版限制，不增加原子指定轮次、锁、协议或 core 需求。阶段跟踪不结算报告写入（§3.4）。
+timelineContext.stop 作用于轮次，以分支寻址，不接受预期轮次 id，也不取消分支中的脱离工作。观察到的轮次可能在调用生效前结束，另一轮次可能开始。每秒历史轮询、可能中断后续轮次及保留已应用输入，是已接受的首版限制，不增加原子指定轮次、锁、协议或 core 需求。阶段跟踪不结算报告写入（§3.4）。
 
 ### 3.3 阶段的 policy
 
@@ -248,7 +252,7 @@ flowchart LR
 既有运行任务负责终态结算及其报告（E15）。阶段跟踪任务向它提供结果，status 读取和保留期清理不发送报告。单个运行最多有一个在途报告操作，不同运行可独立推进，不增进程级报告队列或锁。
 
 1. 在同一个 A.4 文件事务中保存运行终态、ended_at；completed、failed 或 interrupted 且有 report_to 时，同时保存 report: pending{submission_id, attempt_open:false}，只分配一次提交 id。显式 stopped 或没有目标的运行保持 report: none。终态结果和目标固定，每次重试都从该结果渲染同一份报告、使用同一个提交 id。终态结算之后的 stop 不清除 pending 报告。
-2. 每次 sessions.input 前，先持久化 attempt_open:true 并等待替换完成，释放文件事务后再调用 input。等待实际 S2 回复；定时器、工具取消或卸载不能通过 Promise.race 放弃调用，也不能把丢弃 Promise 当作取消。等待 input 时不持有文件事务。
+2. 每次 timelineContext.input 前，先持久化 attempt_open:true 并等待替换完成，释放文件事务后再调用 input。等待实际 S2 回复；定时器、工具取消或卸载不能通过 Promise.race 放弃调用，也不能把丢弃 Promise 当作取消。等待 input 时不持有文件事务。
 3. 按下表处理回复，在同一次替换中保存报告终态，或在写入已结算的实际回复后保存 pending 且 attempt_open:false。已实现的 [S2 input 生命周期](../appserver/sessions-service.md#62-input)保留已准入的追加/发布工作至实际回复，包含 index 重载情形。持久化失败时按 A.4 停止新的运行副作用。
 4. 恢复时每条 pending 报告都按第 2 步重新提交。目标分支对 submission id 只接受一次（[S2 §6.2](../appserver/sessions-service.md#62-input)）：先前尝试或上一代已写入的报告（已发布或仍在进行）以该输入的回执回答，不会再写一次。attempt_open 仍持久化但不参与任何决定；去掉它需要格式决定。恢复 running/stopping 运行时按第 1 步原子保存 interrupted 及其新 pending 报告，不重新启动阶段。
 
@@ -511,7 +515,7 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 | 契约 | 所有者 | 用途 |
 | --- | --- | --- |
 | sessions.launch {agent?,cwd,model?:{providerId,modelId},policy?,starter?:{sessionId,branchId}} → {sessionId,policy} | 既有 [S2](../appserver/sessions-service.md) | Agents 解析模型/权限，每个阶段非交互，Workflow 写首条输入。阶段不声明 `origin`，因此保持 `internal`：一次运行的 Session 在 `session.catalog` 下维持默认隐藏，列出 automation Session 时也不会列出它们 |
-| 对自己的输入执行 `sessions.withdraw {sessionId, branchId, inputId}`；按 `submissionId` 执行 `sessions.lookup` | session-access（InputQueue） | 停止时撤回自己未消费的阶段输入；回复 `deleted` 或 `notHeld` |
+| 对自己的输入执行 `sessions.withdraw {sessionId, branchId, inputId}`；按 `submissionId` 执行 `timelineContext.lookup` | session-access（InputQueue） | 停止时撤回自己未消费的阶段输入；回复 `deleted` 或 `notHeld` |
 
 ### A.6 Timeline 与 Capability 机制
 
@@ -519,12 +523,12 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 | --- | --- |
 | 启动 | 校验定义/参数，保留 starter 身份，持久化 Run running、首准入 pending 后返回 run_id；阶段推进归进程任务 owner，不直接写 Timeline；A17 已确认。 |
 | 阶段启动 | 按 A.1 渲染并检查整步长度后才准入任何同组阶段，复核运行状态，持久化 launching，S2 launch 省略未设置 agent/model；首回复在输入前保存 sessionId 和 policy 上限，后续启动显式传入已存 policy；保存 `submissionId = workflow:<uuid>`。 |
-| 阶段输入 | `sessions.input {sessionId,branchId:"main",mode:"queue",submissionId,rawBlocks:[{text:"<dim-workflow …>…</dim-workflow>"}],content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`；Workflow 输入边界构建/转义标记，S2 接受 RawBlock {text,key?} 而非结构化 marker，先存 receipt 再继续。 |
+| 阶段输入 | `timelineContext.input {sessionId,branchId:"main",mode:"queue",submissionId,rawBlocks:[{text:"<dim-workflow …>…</dim-workflow>"}],content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`；Workflow 输入边界构建/转义标记，S2 接受 RawBlock {text,key?} 而非结构化 marker，先存 receipt 再继续。 |
 | 消费 | 阶段 Session 的 InputQueue 和 Loop 在各自的 Dispatcher 上（`input/applied`、`input/consumed`），然后是轮次 |
 | 完成 | 自持历史跟踪（§3.2），每次固定一个已发布截止点。本输入消费前：匹配的 input/deleted，或本输入 input/applied 后接 stop/interrupt → stopped，否则继续等待；消费后第一个 turn/end 决定 completed/failed/stopped，取该轮次最后的回复文本。 |
 | 推进 | 持久化阶段结果；某一步的所有阶段都到达终态时，启动下一步或结束运行；失败的阶段会停止运行中的同组阶段并使运行失败（A4） |
 | 报告 | §3.4：原子保存运行终态和 pending 报告，每次 Steer 输入前持久化开放尝试标记。一个运行任务持有结算；恢复时以同一 submission id 重新提交，目标只写入一次。 |
-| 停止 | 持久化 stopping；等待中的阶段 skipped；按 §3.2 撤回本阶段输入，notHeld 后重读历史。保留已有终态；已应用、随后中断且本输入未消费 → stopped，不再 stop，输入仍已应用；其他未消费输入继续等待。消费后无结束事实才可调用按分支寻址、无预期轮次 id 的轮次范围 sessions.stop；运行 stopped，无报告。 |
+| 停止 | 持久化 stopping；等待中的阶段 skipped；按 §3.2 撤回本阶段输入，notHeld 后重读历史。保留已有终态；已应用、随后中断且本输入未消费 → stopped，不再 stop，输入仍已应用；其他未消费输入继续等待。消费后无结束事实才可调用按分支寻址、无预期轮次 id 的轮次范围 timelineContext.stop；运行 stopped，无报告。 |
 | 重载、重启 | Agents index 重载不重载 Workflow。自身卸载先停新工作，停止自持阶段（A13），等待已准入调用/写入结束再关闭存储。恢复标为 interrupted/lost、不重新启动，再按 §3.4 复核 pending 报告。绑定所有权已验证，真实阶段/运行恢复仍须包验收。 |
 
 ## 附录 B. 完整冲突表
@@ -552,7 +556,7 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 | Workflow 在工具调用期间重载 | — | 提供者结算已接受工作，C3 保持核心继续；已发出的调用保持其代际，按 §1.1 返回退役错误；下一代的工具在其 Active 后提供 | Workflow、ToolExecutor |
 | 阶段资源节点离线（P3） | — | 不属 P1/P2，按独立 P3 节点设计，不向 rutis 提需求 | Agents、阶段 Session |
 | 轮次中阶段 Session 的 Capability 重载 | 轮次以 `Failed` 结束 | 阶段 `failed` | 阶段 Loop |
-| 报告时起始方 Session 已卸载 | — | `sessions.input` 先恢复它，再写入 | Agents |
+| 报告时起始方 Session 已卸载 | — | `timelineContext.input` 先恢复它，再写入 | Agents |
 | 运行中进程重启 | — | `interrupted`/`lost`；已提交但未消费的阶段输入留在各自 Session 中 | Workflow |
 | 报告写入不确定 | — | 以同一 submission id 重新提交，目标分支只写入一次；E15 仍串行化一个运行的报告尝试 | Workflow |
 | 启动后项目定义被编辑 | — | 运行保留其快照；之后的阶段使用该快照；已启用定义的之后运行直接使用修改后的文件，不再询问（ADR 003 D4） | Workflow |

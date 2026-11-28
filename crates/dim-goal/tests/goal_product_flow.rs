@@ -16,6 +16,7 @@ use dim_agent_capabilities::host::{
     HostError, HostFuture, ModelChunk, ModelConnection, ModelDriver, ModelStopReason, ModelStream,
 };
 use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{BranchOptions, Session};
 use dim_agent_types::{
     BranchSource, ContextBaselineEntry, ContextCompactData, ContextCompactionData,

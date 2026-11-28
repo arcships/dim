@@ -6,7 +6,7 @@
 //! deadline, and never appears in `schedule.list` or in the run history.
 use crate::{
     document::{MAX_PROMPT_BYTES, canonical_instant, format_instant},
-    engine::{GRACE_SECONDS, lookup_input, sessions, target_gone},
+    engine::{GRACE_SECONDS, lookup_input, target_gone},
     methods::{Shared, face_arguments, face_call, face_failure},
     runs::SchedulerError,
     session::{
@@ -398,14 +398,19 @@ impl Wakeups {
                 escaped(&wakeup.wakeup_id)
             );
             let input = json!({
-                "sessionId": session_id,
-                "branchId": branch_id,
+                "submission_id": format!("wakeup:{}", wakeup.wakeup_id),
                 "mode": "queue",
-                "submissionId": format!("wakeup:{}", wakeup.wakeup_id),
-                "rawBlocks": [{"text": marker}],
-                "content": [{"type": "text", "text": wakeup.prompt}],
+                "blocks": [{"type": "raw", "text": marker}],
+                "user": {"content": [{"type": "text", "text": wakeup.prompt}]},
             });
-            match sessions(self.shared.sessions.as_ref(), "input", input).await {
+            match crate::engine::write_published(
+                self.shared.sessions.as_ref(),
+                &session_id,
+                &branch_id,
+                input,
+            )
+            .await
+            {
                 Ok(Ok(_)) => {
                     let wakeup_id = wakeup.wakeup_id;
                     outcomes.push((wakeup_id.clone(), WakeupState::Fired));
@@ -416,7 +421,7 @@ impl Wakeups {
                     #[cfg(test)]
                     crate::wakeup_pass::pause(&wakeup_id).await;
                 }
-                Ok(Err(code)) if target_gone(&code) => {
+                Ok(Err(refusal)) if target_gone(&refusal) => {
                     outcomes.push((wakeup.wakeup_id, WakeupState::Cancelled))
                 }
                 // `reloading`, transport failures and any other code leave the
@@ -454,7 +459,7 @@ impl Wakeups {
                 // the answer is definite: settle the record `cancelled` as the
                 // fire path does instead of repeating a lookup that cannot
                 // succeed (§10.4).
-                Err(code) if target_gone(&code) => {
+                Err(code) if crate::engine::target_gone_code(&code) => {
                     outcomes.push((wakeup.wakeup_id, WakeupState::Cancelled))
                 }
                 // Any other failure says nothing about delivery, so the record

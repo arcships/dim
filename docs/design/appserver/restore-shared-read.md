@@ -83,12 +83,12 @@ Agent::restore_session(id, options)
           BranchScope: Timeline(b, ancestry, h); Dispatcher, not yet running       ─┐
           capabilities apply in dependency waves; each rebuilds from a read        │ opening of b
             (table below); some append settlement terminals                       │ (BranchLifecycle
-          TimelineContext::start: dispatch begins                                  │  Loading)
+          BranchRuntime::start: dispatch begins                                  │  Loading)
         append branch/resume, wait until it is dispatched                          │
           opening handlers: ToolBinding reconciles, Prompt adopts its initial      │
           configuration; each reads the context                                   │
         finish_opening: opening receipts, then the committed fence                 │
-        TimelineContext::activate: branch published                               ─┘
+        BranchRuntime::activate: branch published                               ─┘
     Session::start, entries Ready, Session::activate: Session published
 ```
 
@@ -153,7 +153,7 @@ prototype, same Session
   reader's range starts with the same `1..=h` and differs only in a short tail written during the opening.
 - **Hot window or store.** At construction the hot window is empty and the published sequence is `h`, so `1..=h` comes
   from the store. Events appended during the opening enter the hot window (the Dispatcher does not run until
-  `TimelineContext::start`), and once the writer commits them they are also in the store. The Dispatcher itself reads
+  `BranchRuntime::start`), and once the writer commits them they are also in the store. The Dispatcher itself reads
   only the hot window.
 
 ### 2.3 The multiplier
@@ -194,7 +194,7 @@ The copy belongs to one branch's `Timeline` and lives exactly while that branch 
 | Point | Where | Effect |
 | --- | --- | --- |
 | The branch scope builds the Timeline at `h` (`BranchScopePlugin::apply`) | assembly.rs | The opening starts, with the branch's ancestry and `h`, and the branch's `BranchLifecycle` holds it; nothing is read yet. A branch with `h` = 0 and no ancestry has nothing to share and starts none |
-| The branch leaves `Loading` (`BranchLifecycle` advances to `Active` or `Closing`) | config.rs | The lifecycle drops the opening. One signal covers every way out: `TimelineContext::activate` (published), the start of `TimelineContext::finish` (close or unload: failure, cancellation, Session close during the restore) and the rollback of a build that failed before a `TimelineContext` existed |
+| The branch leaves `Loading` (`BranchLifecycle` advances to `Active` or `Closing`) | config.rs | The lifecycle drops the opening. One signal covers every way out: `BranchRuntime::activate` (published), the start of `BranchRuntime::finish` (close or unload: failure, cancellation, Session close during the restore) and the rollback of a build that failed before a `BranchRuntime` existed |
 
 The Timeline keeps only a weak reference to the opening, so the opening ends with the phase change and no call site of
 its own; a lifecycle dropped with its scope drops it too.
@@ -503,7 +503,7 @@ runtime's Timeline and zero new public content.
 | Module or content | Change | Reason |
 | --- | --- | --- |
 | `dim-agent-runtime` `core/timeline.rs` | The opening's copy in the committed-history read path: its two seams (own part, ancestry) and the function that begins it (crate-private) | The read cost is the Timeline's own |
-| `dim-agent-runtime` `assembly.rs`, `config.rs` | `BranchScopePlugin` begins the opening; `BranchLifecycle` holds it and drops it when the branch leaves `Loading` | The branch lifecycle already delimits `Loading`; `TimelineContext` is unchanged |
+| `dim-agent-runtime` `assembly.rs`, `config.rs` | `BranchScopePlugin` begins the opening; `BranchLifecycle` holds it and drops it when the branch leaves `Loading` | The branch lifecycle already delimits `Loading`; `BranchRuntime` is unchanged |
 | `testing` feature | `Agent::live_openings`: the Agent's branch openings that are alive, with or without their copy, for the release checks of §14, like #224's node-load counter; release builds count nothing | After a failed or cancelled build no public call can reach the Timeline, so its release is not observable otherwise; the read counts need no hook (a counting store) |
 | `dim-app-server` `examples/restore_cost.rs` | Heap peak and live bytes, store calls with their ranges, an optional child and an optional pause before the create, the openings alive at the first idle | The measurements of §8 and §14 items 8 and 9; nothing is asserted |
 | Dispatcher, hot window, `TimelineStore`, storage, event types, fixtures, capabilities, plugins, protocols | None | §3 |

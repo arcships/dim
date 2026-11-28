@@ -12,6 +12,7 @@ use std::{
 };
 
 use dim_agent_capabilities::{defaults, timeline_tree::TreeCommands};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{MinimalHost, branch_events};
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BoxFuture, Feature, LoopSnapshot, LoopState,

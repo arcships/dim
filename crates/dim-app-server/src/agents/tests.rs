@@ -4,13 +4,9 @@
 //! stored Agent's instance creation inside its creation timeout, as a slow
 //! Agent would. The hold exists only in this crate's unit tests, like the
 //! title-write hold of the storage flow tests.
-use super::{
-    AgentDirectory, AgentIndex, Inner, SessionRestored,
-    sessions::{InputWrite, LaunchRequest, RawBlock},
-};
+use super::{AgentDirectory, AgentIndex, Inner, SessionRestored, sessions::LaunchRequest};
 use crate::ServerConfig;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
-use dim_agent_types::InputMode;
 use rutis::Ctx;
 use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, host_key};
@@ -188,8 +184,30 @@ async fn call(root: &Ctx, method: &str, request: Value) -> Value {
         reply => panic!("sessions replies asynchronously: {:?}", reply.json()),
     }
 }
+/// The routed call that asks the line for the input `SUBMISSION` names.
 fn lookup(session: &str) -> Value {
-    json!({"sessionId": session, "branchId": "main", "submissionId": SUBMISSION})
+    json!({
+        "sessionId": session,
+        "lineId": "main",
+        "service": "timelineContext",
+        "method": "lookup",
+        "args": [SUBMISSION],
+    })
+}
+
+/// The routed call that writes the stored input.
+fn stored_input(session: &str) -> Value {
+    json!({
+        "sessionId": session,
+        "lineId": "main",
+        "service": "timelineContext",
+        "method": "input",
+        "args": [{
+            "submission_id": SUBMISSION,
+            "mode": "append",
+            "blocks": [{"type": "raw", "text": "stored input"}],
+        }],
+    })
 }
 
 async fn launch(index: &Arc<AgentIndex>, agent: Option<String>, cwd: &Path) -> String {
@@ -231,22 +249,12 @@ async fn stored() -> Stored {
     let server = crate::serve(builder(), config(&directory)).await.unwrap();
     let index = server.root.get::<AgentIndex>().unwrap();
     let session = launch(&index, None, &directory).await;
-    index
-        .input(InputWrite {
-            session_id: session.clone(),
-            branch_id: "main".into(),
-            mode: InputMode::Append,
-            submission_id: SUBMISSION.into(),
-            raw_blocks: vec![RawBlock {
-                text: "stored input".into(),
-                key: None,
-            }],
-            content: vec![],
-        })
-        .await
-        .unwrap();
-    let accepted = call(&server.root, "lookup", lookup(&session)).await;
-    assert_eq!(accepted["value"]["status"], "accepted", "{accepted}");
+    call(&server.root, "call", stored_input(&session)).await;
+    let accepted = call(&server.root, "call", lookup(&session)).await;
+    assert_eq!(
+        accepted["value"]["data"]["submission_id"], SUBMISSION,
+        "the line answers the input it holds: {accepted}"
+    );
     let default_agent = index.default_agent_id().to_owned();
     server.shutdown();
     server.join().await.unwrap();
@@ -270,13 +278,13 @@ async fn sessions_never_fails_a_stored_session_while_its_owner_installs() {
         root = held.arrived() => root,
         result = &mut starting => panic!("startup ended unheld: {:?}", result.err()),
     };
-    let reply = call(&root, "lookup", lookup(&stored.session)).await;
-    assert_eq!(reply["error"]["code"], "reloading", "{reply}");
+    let reply = call(&root, "call", lookup(&stored.session)).await;
+    assert_eq!(reply["error"]["code"], "session_reloading", "{reply}");
     assert_eq!(reply["error"]["retryable"], true, "{reply}");
     drop(held);
     let server = starting.await.unwrap();
     assert_eq!(
-        call(&server.root, "lookup", lookup(&stored.session)).await,
+        call(&server.root, "call", lookup(&stored.session)).await,
         stored.accepted
     );
     server.shutdown();
@@ -316,8 +324,8 @@ async fn a_stored_agent_creation_timeout_settles_during_progressing_startup() {
     let index = server.root.get::<AgentIndex>().unwrap();
     let reason = index.unavailable_agent(&stored.default_agent).unwrap();
     assert!(reason.contains("timed out"), "{reason}");
-    let reply = call(&server.root, "lookup", lookup(&stored.session)).await;
-    assert_eq!(reply["error"]["code"], "failed", "{reply}");
+    let reply = call(&server.root, "call", lookup(&stored.session)).await;
+    assert_eq!(reply["error"]["code"], "session_unavailable", "{reply}");
     drop(held);
     server.shutdown();
     server.join().await.unwrap();
@@ -325,7 +333,7 @@ async fn a_stored_agent_creation_timeout_settles_during_progressing_startup() {
         .await
         .unwrap();
     assert_eq!(
-        call(&server.root, "lookup", lookup(&stored.session)).await,
+        call(&server.root, "call", lookup(&stored.session)).await,
         stored.accepted
     );
     server.shutdown();
@@ -390,7 +398,7 @@ async fn a_failed_owner_read_fails_startup_and_cleans_up() {
         .await
         .unwrap();
     assert_eq!(
-        call(&server.root, "lookup", lookup(&stored.session)).await,
+        call(&server.root, "call", lookup(&stored.session)).await,
         stored.accepted
     );
     server.shutdown();
@@ -410,7 +418,7 @@ async fn agents_restart_records_a_creation_timeout_and_keeps_loaded_sessions() {
         .unwrap();
     let index = server.root.get::<AgentIndex>().unwrap();
     assert_eq!(
-        call(&server.root, "lookup", lookup(&stored.session)).await,
+        call(&server.root, "call", lookup(&stored.session)).await,
         stored.accepted
     );
     let (_, loaded) = index.session(&stored.session).unwrap();
@@ -420,8 +428,8 @@ async fn agents_restart_records_a_creation_timeout_and_keeps_loaded_sessions() {
     let mut held = HeldCreation::new(&peer);
     let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
         let root = held.arrived().await;
-        let reply = call(&root, "lookup", lookup(&stored.session)).await;
-        assert_eq!(reply["error"]["code"], "reloading", "{reply}");
+        let reply = call(&root, "call", lookup(&stored.session)).await;
+        assert_eq!(reply["error"]["code"], "session_reloading", "{reply}");
     });
     restarted.unwrap();
     let index = server.root.get::<AgentIndex>().unwrap();
@@ -430,11 +438,11 @@ async fn agents_restart_records_a_creation_timeout_and_keeps_loaded_sessions() {
     assert!(index.host(Some(&peer)).is_none());
     assert!(index.session(&stored.session).is_some() && !loaded.is_unloading());
     assert_eq!(
-        call(&server.root, "lookup", lookup(&stored.session)).await,
+        call(&server.root, "call", lookup(&stored.session)).await,
         stored.accepted
     );
-    let reply = call(&server.root, "lookup", lookup(&peer_session)).await;
-    assert_eq!(reply["error"]["code"], "failed", "{reply}");
+    let reply = call(&server.root, "call", lookup(&peer_session)).await;
+    assert_eq!(reply["error"]["code"], "session_unavailable", "{reply}");
     assert_eq!(reply["error"]["retryable"], false, "{reply}");
     drop(held);
     server.shutdown();
@@ -462,8 +470,8 @@ async fn a_dependency_reload_records_a_creation_timeout_and_continues() {
     let mut held = HeldCreation::new(&peer);
     let (restarted, ()) = tokio::join!(server.processes.loader.restart("Settings"), async {
         let root = held.arrived().await;
-        let reply = call(&root, "lookup", lookup("unknown")).await;
-        assert_eq!(reply["error"]["code"], "reloading", "{reply}");
+        let reply = call(&root, "call", lookup("unknown")).await;
+        assert_eq!(reply["error"]["code"], "session_reloading", "{reply}");
     });
     restarted.unwrap();
     server

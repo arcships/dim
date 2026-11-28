@@ -1,6 +1,7 @@
 //! `session.delete` through the wire (S5c §3, acceptance 1, 2 and 9) on
 //! disposable native stores.
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{Dispatcher, Names};
 use rusqlite::Connection;
 use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};

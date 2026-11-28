@@ -48,7 +48,7 @@ Thinking without native continuation data stays visible, in the reply and in the
 | Crate | Contents | Dependency limits |
 | --- | --- | --- |
 | `dim-agent-types` | Events, messages, model requests, tool results, identities | No Tokio, rutis, HTTP or capabilities |
-| `dim-agent-runtime` | Agent/Session, Timeline, Dispatcher, TimelineContext, the `Branch` facade, the service catalog, the part registry and control ports | Does not reference default capabilities or the App Server |
+| `dim-agent-runtime` | Agent/Session, Timeline, Dispatcher, BranchRuntime, the `Branch` facade, the service catalog, the part registry and control ports | Does not reference default capabilities or the App Server |
 | `dim-agent-capabilities` | Default capabilities and their host ports | Does not depend on the App Server |
 | `dim-agent-aimux` | Model configuration, model table, rutis plugin, request and stream mapping | aimux types stay inside the crate; no App Server |
 | `dim-app-server` | RPC, connections, Session registry, approval host, transport, daemon | Composes runtime and capabilities; does not reference the CLI |
@@ -65,12 +65,13 @@ The runtime defines control interfaces and factory contracts; host ports for mod
 | Agent | Configuration, Session registry, its plugins and the parts they register | Does not run the model loop; one configuration can create many Sessions |
 | Session | Workspace, approvals, TimelineTree, Session-scoped capabilities | Independent of connections; Sessions share no mutable business state |
 | Timeline | Hot window, publish watermark, ancestor chain; events live in the TimelineStore | The single historical fact; published events never change |
-| TimelineContext | Runtime owner of one loaded branch: its subtree, Timeline, Dispatcher and `BranchLifecycle` | A container only: business state belongs to capabilities and is rebuilt from the Timeline |
+| BranchRuntime | Runtime owner of one loaded branch: its subtree, Timeline, Dispatcher and `BranchLifecycle` | A container only: business state belongs to capabilities and is rebuilt from the Timeline |
+| TimelineContext | The line's data face (`timelineContext`): input, execution and state operations for a caller that names `(Session, line)` | Speaks for its `BranchRuntime`; owns no state of its own |
 | Branch | Facade for validated input, stop, idle, configuration, read-only history and capability state | Callers cannot write arbitrary events |
 | Capability | Own state, declared dependencies, subscriptions, resources and errors | Defined in any crate; the runtime does not enumerate them |
 | Connection | Pending requests, subscription cursors, I/O tasks, outbound queue | Disconnect releases only connection resources |
 
-Each process has one rutis root; Sessions and branches are scoped subtrees keyed by instance. The Timeline owns persistent state and the TimelineContext owns runtime memory state: only I/O resources (processes, connections, streams) cannot be rebuilt, and they settle to a terminal state on reload or restart.
+Each process has one rutis root; Sessions and branches are scoped subtrees keyed by instance. The Timeline owns persistent state and the BranchRuntime owns runtime memory state: only I/O resources (processes, connections, streams) cannot be rebuilt, and they settle to a terminal state on reload or restart.
 
 ## Event conventions
 

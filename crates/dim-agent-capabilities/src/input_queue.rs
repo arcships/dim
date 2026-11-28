@@ -9,7 +9,6 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, Dispatcher, InputSnapshot, Names, Registrations, Result, StateCell, Timeline,
-    TimelineIdentity,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -34,14 +33,6 @@ pub enum Withdrawal {
     Deleted { sequence: u64 },
     /// Unknown, already applied or already deleted: nothing was written.
     NotHeld,
-}
-
-/// The identity of one committed input.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InputRef {
-    pub input_id: String,
-    pub sequence: u64,
 }
 
 type WithdrawalAnswer = (Withdrawal, Option<Arc<AgentEvent>>);
@@ -208,8 +199,6 @@ pub struct InputQueue {
     observable: Arc<StateCell<InputSnapshot>>,
     pending_snapshot: Mutex<Option<(u64, usize)>>,
     timeline: Arc<Timeline>,
-    tree: Arc<TreeCommands>,
-    branch_id: String,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
     answers: Mutex<HashMap<u64, Option<(u64, WithdrawalAnswer)>>>,
@@ -231,15 +220,6 @@ impl Drop for WithdrawalWaiter<'_> {
 
 #[rutis::service]
 impl InputQueue {
-    /// Commits an input through the branch entry, accepting each submission id once.
-    pub async fn submit(&self, input: InputMessageData) -> Result<InputRef> {
-        let event = self.tree.get(&self.branch_id)?.input(input).await?;
-        Ok(InputRef {
-            input_id: event.id.clone(),
-            sequence: event.sequence,
-        })
-    }
-
     /// Withdraws a held input without replacing it. Steer candidates must enter
     /// through `session.input.withdraw`, which validates and checks them first.
     pub async fn withdraw(&self, command: InputWithdrawData) -> Result<Withdrawal> {
@@ -366,8 +346,6 @@ pub struct InputQueuePlugin {
     queue: Key<InputQueue>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    tree: Key<TreeCommands>,
-    identity: Key<TimelineIdentity>,
 }
 impl InputQueuePlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
@@ -376,8 +354,6 @@ impl InputQueuePlugin {
             queue: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
-            tree: names.key()?,
-            identity: names.key()?,
         })
     }
 }
@@ -386,26 +362,17 @@ impl DynPlugin for InputQueuePlugin {
         "InputQueue"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![
-            self.timeline.erase(),
-            self.dispatcher.erase(),
-            self.tree.erase(),
-            self.identity.erase(),
-        ]
+        vec![self.timeline.erase(), self.dispatcher.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
-            let tree = ctx.require_at(&self.tree)?;
-            let identity = ctx.require_at(&self.identity)?;
             let queue = Arc::new(InputQueue {
                 state: Mutex::new(QueueState::default()),
                 observable: Arc::new(StateCell::new(InputSnapshot::default())),
                 pending_snapshot: Mutex::new(None),
                 timeline,
-                tree,
-                branch_id: identity.branch_id.clone(),
                 answers: Mutex::new(HashMap::new()),
                 answered: tokio::sync::Notify::new(),
                 lifecycle: ctx.cancellation_token(),

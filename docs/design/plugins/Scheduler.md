@@ -1,5 +1,9 @@
 # Scheduler
 
+`timelineContext` is a line's own data face: a process caller reaches it as
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })`
+([ADR 027](../../adr/027-cross-scope-access-by-id.md)).
+
 Status: Design approved. Overall design: [overview §4](../overview.md#4-plugin-catalog); scope: [ADR 002](../../adr/002-plugin-scope.md) (process + Session). Phase: P2. Language: Rust, native, with no Node dependency ([overview Appendix C](../overview.md#appendix-c-implementation-language)). The TypeScript package it replaces is removed with the migration; [Appendix G](#appendix-g-rust-binding) is the Rust binding.
 
 **A job is a delivery.** A job names a target and, on each due window, writes its saved prompt to that target as one ordinary branch input. The target is an existing Session and branch by default — the one that saved the job — or a new Session the job launches, a route only a management client can choose. Scheduler reads no Timeline and keeps no run outcome: it records what it delivered and what failed, and nothing else. The process part owns the jobs, the timer and the delivery records; the Session part offers the `schedule` tool and the `session.wakeup` methods.
@@ -8,7 +12,7 @@ Status: Design approved. Overall design: [overview §4](../overview.md#4-plugin-
 
 A loop is a second record kind beside the jobs and the wakeups (§12): a session-scoped rhythm whose rounds are ordinary queued inputs, bounded to seven days.
 
-Scheduler keeps scheduled jobs, which are user-written configuration, in its Settings business source `schedule`, and its delivery records in [`pluginFiles`](../../../crates/dim-app-server/README.md#trusted-plugin-storage). For each due window the process part writes the job prompt as one input through `sessions.input` ([session-access](../contracts/session-access.md)), with its own source marker, to the job's target: the branch that saved the job, or a Session this job launched. `queue` is the default wiring; a job may store `steer` or `append`. The Session part declares the `schedule` and `wakeup` tools (risk `persistent_configuration`) in every Session; only interactive leader Sessions can use them. Operators use the specified `schedule.*` management methods. All contracts are language-neutral ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding limits are in [Appendix G](#appendix-g-rust-binding). Scheduler writes no Timeline event of its own: its deliveries are ordinary inputs to other owners' branches, and its records live in its own stores.
+Scheduler keeps scheduled jobs, which are user-written configuration, in its Settings business source `schedule`, and its delivery records in [`pluginFiles`](../../../crates/dim-app-server/README.md#trusted-plugin-storage). For each due window the process part writes the job prompt as one input through `timelineContext.input` ([session-access](../contracts/session-access.md)), with its own source marker, to the job's target: the branch that saved the job, or a Session this job launched. `queue` is the default wiring; a job may store `steer` or `append`. The Session part declares the `schedule` and `wakeup` tools (risk `persistent_configuration`) in every Session; only interactive leader Sessions can use them. Operators use the specified `schedule.*` management methods. All contracts are language-neutral ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding limits are in [Appendix G](#appendix-g-rust-binding). Scheduler writes no Timeline event of its own: its deliveries are ordinary inputs to other owners' branches, and its records live in its own stores.
 
 Scheduler also declares the process-scoped data service
 [`processActivity`](../../../crates/dim-app-server/README.md#process-activity).
@@ -26,7 +30,7 @@ and loops), the startup retention pass and restored stop timers each await
 `processActivity.activated()` in their own tasks. It resolves once the host has
 opened after the required process rows are Active, is `false` when startup fails or
 shutdown begins before that observation, and a row reload does not reset it. This
-keeps the first `sessions.lookup` out of the interval where the stable face answers
+keeps the first `timelineContext.lookup` out of the interval where the stable face answers
 `reloading` because `AgentIndex` is not published yet; A.6's answer counting and
 lookup bound do not change. Each wait also ends on this generation's stop token, so
 unloading while waiting finishes the owned tasks without spending an attempt.
@@ -58,7 +62,7 @@ flowchart LR
   Sched --> Set
   Sched -->|"registers schedule"| MM
   Rpc -->|"reads per call"| MM
-  Agents -->|"sessions.input"| TL
+  Agents -->|"timelineContext.input"| TL
   Agents -->|"sessions.launch, input, stop, delete"| RTL
   classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
   class Sched,MM,Tool new
@@ -195,7 +199,7 @@ A delivery records one window. Its state is `delivering` while the write is unse
 
 | State | Meaning | Terminal |
 | --- | --- | --- |
-| `delivering` | The record names the target and, once the launch answered, the Session a `launch` created; the input may or may not have been accepted. Settled by `sessions.lookup` after a restart (A.6). | no |
+| `delivering` | The record names the target and, once the launch answered, the Session a `launch` created; the input may or may not have been accepted. Settled by `timelineContext.lookup` after a restart (A.6). | no |
 | `delivered` | The target branch published the input; `input_event_id` is its receipt. | yes |
 | `failed` | The window wrote no input, or the Session to write to could not be created. `detail` carries the reason. | yes |
 | `lost` | The write's outcome was not determined within the lookup bound (A.6), and the window is not retried. `detail` names the last lookup answer. | yes |
@@ -234,7 +238,7 @@ sequenceDiagram
   participant IQ as InputQueue and Loop
   T->>SET: read the job document
   T->>ST: persist delivering (target, submission id)
-  T->>AG: sessions.input(sessionId, branchId, mode, marker, prompt)
+  T->>AG: timelineContext.input(sessionId, branchId, mode, marker, prompt)
   AG-->>T: {inputId, sequence}
   T->>ST: persist delivered
   S->>IQ: Dispatcher: input/applied, input/consumed, turn
@@ -251,10 +255,10 @@ sequenceDiagram
   T->>AG: sessions.launch(cwd, agent?, policy?, origin: "automation", title: job.name)
   AG-->>T: {sessionId, policy}
   T->>ST: persist sessionId, branch, policy
-  T->>AG: sessions.input(sessionId, main, queue, marker, prompt)
+  T->>AG: timelineContext.input(sessionId, main, queue, marker, prompt)
   AG-->>T: {inputId, sequence}
   T->>ST: persist delivered
-  Note over T: at deadline_at: sessions.stop(main)
+  Note over T: at deadline_at: timelineContext.stop(main)
 ```
 
 Those are the whole target: one launch, one input and the stop timer. Scheduler reads no history of the launched Session and subscribes to no broadcast, so a delivery is settled by its own write and nothing follows the launched work (A.6).
@@ -277,7 +281,7 @@ The `delivering` record is persisted before any external effect, so a restart se
 
 **Timeout.** Only a `launch` target has one. `max_run_minutes` is the Session's stop time, fixed when the delivery is accepted as `created_at + max_run_minutes`; the timer stops the Session at it:
 
-- `sessions.stop {sessionId, branchId:"main", reason:"scheduled run reached its stop time"}`. The delivery stays `delivered`; a stop is a bound on the launched work, not a run outcome.
+- `timelineContext.stop {sessionId, branchId:"main", reason:"scheduled run reached its stop time"}`. The delivery stays `delivered`; a stop is a bound on the launched work, not a run outcome.
 - A stop that fails is retried by the timer at most once a minute while the record still exists. Nothing about the delivery changes.
 - A Session stopped at its stop time is deleted by retention when its last naming record leaves the store (A.7), never before its stop time.
 
@@ -311,13 +315,13 @@ Scheduler learns nothing after the write. Every disagreement between a delivery 
 | Scenario | Sequence order | Outcome | Owner |
 | --- | --- | --- | --- |
 | Target branch busy | — | The input is queued; it is consumed after the running turn (A5) | InputQueue, Loop |
-| Target branch idle-unloaded | — | `sessions.input` acquires and restores it | Agents |
+| Target branch idle-unloaded | — | `timelineContext.input` acquires and restores it | Agents |
 | Target branch running with a pending approval | — | The input waits behind the turn; Scheduler is not involved | Approval, InputQueue |
 | User interrupts or withdraws the delivered input | input < interrupt or withdraw | The input is deleted or ends with the turn; the delivery stays `delivered` | Loop, InputQueue |
 | Target Session deleted or closed | — | The write fails `session_closed`; the run is `failed: session_closed` and the job is disabled (§A.3) | Agents, Scheduler |
 | Target branch ended | — | The write fails `branch_ended`; the run is `failed: branch_ended` and the job is disabled | Agents, Scheduler |
 | Agents index reload | — | The write answers `reloading`; a delivery in flight settles by lookup (A.6) | Agents |
-| Scheduler reload or restart | — | `delivering` records settle by `sessions.lookup`; no window is written twice | Scheduler |
+| Scheduler reload or restart | — | `delivering` records settle by `timelineContext.lookup`; no window is written twice | Scheduler |
 | Daemon down over a window | — | `missed`; no catch-up (E5) | Scheduler |
 | Two windows due at once | — | One delivery per window; a window beyond its grace or due while the job has an unsettled delivery is `missed` | Scheduler |
 | Job deleted while a launch Session runs | — | The delivery stands and the Session keeps running to its stop time, then retention deletes it (A14) | Scheduler |
@@ -432,7 +436,7 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 
 | Rule | How this document complies |
 | --- | --- |
-| §4.1 Command events for others' state | Scheduler changes a target branch only by writing one `input/message` through `sessions.input`; InputQueue and Loop decide what it becomes. A launch target additionally uses `sessions.launch`, `stop` and `delete`, which belong to Agents. |
+| §4.1 Command events for others' state | Scheduler changes a target branch only by writing one `input/message` through `timelineContext.input`; InputQueue and Loop decide what it becomes. A launch target additionally uses `sessions.launch`, `stop` and `delete`, which belong to Agents. |
 | §4.2 No take-back after hand-off | Scheduler never withdraws or stops a delivered input. A launch Session is stopped only at its own stop time, which is part of that Session's creation. |
 | §4.3 Intervene only through before callbacks | Not applicable: Scheduler adds no entry check and no before callback; job validation is the owner's own boundary validation of its methods and tool. |
 | §4.4 Core mechanisms carry no business meaning | Scheduler uses existing tool, Settings, storage and sessions contracts; the delivery policy belongs to Scheduler. |
@@ -454,7 +458,7 @@ The runtime assembly entries the binding uses (`AgentBuilder::optional_plugin`, 
 
 ### R1. Initial process publication
 
-- **Blocked:** Startup recovery, the timer and restored stop timers are process background work. [Plugin contract §7.1](../plugin-contract.md#71-phases) defines Activated only for Session and branch parts, so Scheduler can call `sessions.lookup` while `AgentIndex` is still being installed. The stable face answers `reloading`; a persisted attempt is spent and a healthy stored delivery can settle `lost` (A.6), contrary to the stored-ownership acceptance in [S2 §17.1](../appserver/sessions-service.md#171-stored-ownership-before-index-publication).
+- **Blocked:** Startup recovery, the timer and restored stop timers are process background work. [Plugin contract §7.1](../plugin-contract.md#71-phases) defines Activated only for Session and branch parts, so Scheduler can call `timelineContext.lookup` while `AgentIndex` is still being installed. The stable face answers `reloading`; a persisted attempt is spent and a healthy stored delivery can settle `lost` (A.6), contrary to the stored-ownership acceptance in [S2 §17.1](../appserver/sessions-service.md#171-stored-ownership-before-index-publication).
 - **Existing mechanisms considered:** `ServerControl` has the exact readiness state but is `internal(control)`; `AgentIndex` is `internal(owner-api)`, and `KeyedGate` would reload Scheduler with the index (S2 D1); two-phase row assembly changes startup for every optional row; a blocking or new `sessions` reply changes S2. None exposes process publication without a new consumer dependency or retry policy.
 - **Needed:** one process-scope data-face method, `processActivity.activated() -> boolean`, resolving once per host start after the required process rows are Active, resolving `false` when startup fails or shutdown begins before that observation, and not reset by a row reload. Its shared catalog name, `HostDispatch` and native binding are the same operation with the same cancellation semantics. It carries no business meaning, retry policy or storage.
 - **Effect:** no Timeline, event, storage-format, Session-input or `sessions` change; one additive data-face method backed by the existing readiness watch. The `hold`/`release` admission contract is unchanged.
@@ -497,15 +501,15 @@ The `wakeup` tool takes `{at, prompt}` and defaults the Session and branch to th
 
 ### 10.3 Firing and the cancel boundary
 
-The timer evaluates wakeups as part of the same one-second pass as job windows; there is no second scheduler and no Job-engine path. A `scheduled` record whose instant is observed within the grace window fires once: the process owner writes one Queue input through the public `sessions.input` with `submissionId` `wakeup:<wakeup_id>`, a first raw block `<dim-scheduler kind="wakeup">wakeup id</dim-scheduler>`, and the prompt as content. Nothing else is called: no `sessions.launch`, no `sessions.stop`, no `withdraw`, no deadline. Several records due in one pass reach their Sessions in `at` order, with the record id as the stable tie-breaker between records sharing an instant; the file's order is not a contract.
+The timer evaluates wakeups as part of the same one-second pass as job windows; there is no second scheduler and no Job-engine path. A `scheduled` record whose instant is observed within the grace window fires once: the process owner writes one Queue input through the public `timelineContext.input` with `submissionId` `wakeup:<wakeup_id>`, a first raw block `<dim-scheduler kind="wakeup">wakeup id</dim-scheduler>`, and the prompt as content. Nothing else is called: no `sessions.launch`, no `timelineContext.stop`, no `withdraw`, no deadline. Several records due in one pass reach their Sessions in `at` order, with the record id as the stable tie-breaker between records sharing an instant; the file's order is not a contract.
 
-The target's own InputQueue and turn scheduler decide what the input becomes: an idle Session gets a turn, a running one queues the input behind it one turn per `turn/end`, and an unloaded Session is restored by the acquire inside `sessions.input`. The Session keeps its id, its `main` branch and its whole Timeline; a fork is a different Session id and inherits nothing.
+The target's own InputQueue and turn scheduler decide what the input becomes: an idle Session gets a turn, a running one queues the input behind it one turn per `turn/end`, and an unloaded Session is restored by the acquire inside `timelineContext.input`. The Session keeps its id, its `main` branch and its whole Timeline; a fork is a different Session id and inherits nothing.
 
-The record is settled `fired` only after the input's write is published. That write is the cancel/fire boundary: a `session.wakeup.cancel` that settles the record first prevents the input from being written, and one that arrives after the write reports `fired` and is not an error. The pass and a cancel are serialized at the record level, so those two outcomes are exhaustive: a `{}` reply never covers a record whose input was written. A cancel can therefore wait for as long as a cold-session restore takes, because the pass holds the lock across the input write. The same lock covers the expiry check of §10.4, whose `sessions.lookup` acquires the target too: checking a stale record can restore an idle-unloaded Session, and a cancel can wait for that restore. That is accepted because answering exactly whether the prompt was delivered reads the target's Timeline, and the `sessions` service has no read that skips the acquire. The cost is bounded to records past the grace, one lookup each: a definite answer settles the record, so the lookup repeats only while a transient failure keeps it from settling. A record whose target Session is gone (`session_closed`, `branch_missing`, or `branch_ended`: an ended line accepts no new input) is settled `cancelled` and never relaunches a Session. Any other write failure leaves the record `scheduled`: the next pass retries with the same submission id, which a branch accepts once, or the grace window expires it.
+The record is settled `fired` only after the input's write is published. That write is the cancel/fire boundary: a `session.wakeup.cancel` that settles the record first prevents the input from being written, and one that arrives after the write reports `fired` and is not an error. The pass and a cancel are serialized at the record level, so those two outcomes are exhaustive: a `{}` reply never covers a record whose input was written. A cancel can therefore wait for as long as a cold-session restore takes, because the pass holds the lock across the input write. The same lock covers the expiry check of §10.4, whose `timelineContext.lookup` acquires the target too: checking a stale record can restore an idle-unloaded Session, and a cancel can wait for that restore. That is accepted because answering exactly whether the prompt was delivered reads the target's Timeline, and the `sessions` service has no read that skips the acquire. The cost is bounded to records past the grace, one lookup each: a definite answer settles the record, so the lookup repeats only while a transient failure keeps it from settling. A record whose target Session is gone (`session_closed`, `branch_missing`, or `branch_ended`: an ended line accepts no new input) is settled `cancelled` and never relaunches a Session. Any other write failure leaves the record `scheduled`: the next pass retries with the same submission id, which a branch accepts once, or the grace window expires it.
 
 ### 10.4 Restart and expiry
 
-A record survives an idle unload of the target and a daemon restart. The rule is enforced by the timer's per-second pass, which starts with the row: on start it re-evaluates every `scheduled` record. An instant still inside the 60 s grace (A.4's window rule) fires; an older one becomes `expired` and is never replayed; a record whose Session or branch is gone becomes `cancelled`. The input write is published before the record is settled, so a process that stops between the two leaves a `scheduled` record whose prompt is already in the target's history; before it expires such a record the pass performs the same `sessions.lookup` a restart performs for an uncertain run (`submissionId` `wakeup:<wakeup_id>`) and settles `fired` when the input is found, without writing a second one, so a delivered prompt is never reported `expired` and delivery stays exactly-once. Only a lookup that answers that the target never accepted the submission expires the record, and one that answers that the Session or branch is gone settles it `cancelled`; any other failure leaves it `scheduled` for the next pass, which repeats the check until it gets a definite answer. An instant already past the grace at create is recorded `expired` immediately. An expiry check launches and stops nothing and writes no input; its only effect on the target is the acquire inside `sessions.lookup`, which can restore an idle-unloaded Session (§10.3).
+A record survives an idle unload of the target and a daemon restart. The rule is enforced by the timer's per-second pass, which starts with the row: on start it re-evaluates every `scheduled` record. An instant still inside the 60 s grace (A.4's window rule) fires; an older one becomes `expired` and is never replayed; a record whose Session or branch is gone becomes `cancelled`. The input write is published before the record is settled, so a process that stops between the two leaves a `scheduled` record whose prompt is already in the target's history; before it expires such a record the pass performs the same `timelineContext.lookup` a restart performs for an uncertain run (`submissionId` `wakeup:<wakeup_id>`) and settles `fired` when the input is found, without writing a second one, so a delivered prompt is never reported `expired` and delivery stays exactly-once. Only a lookup that answers that the target never accepted the submission expires the record, and one that answers that the Session or branch is gone settles it `cancelled`; any other failure leaves it `scheduled` for the next pass, which repeats the check until it gets a definite answer. An instant already past the grace at create is recorded `expired` immediately. An expiry check launches and stops nothing and writes no input; its only effect on the target is the acquire inside `timelineContext.lookup`, which can restore an idle-unloaded Session (§10.3).
 
 **Retention.** A terminal record has no consumer after it settles: `list` is its only reader, and a record nobody listed is already unrecoverable, so the bound costs no information the design promises. A terminal record is removed once seven days have passed since it settled — `settled_at`, not `created_at`, so a record created long before it fired is not dropped early; the timer pass removes it in the same write that settles the pass's other outcomes, so the file never grows without bound, the per-second pass never parses more than it must, and `list` reads exactly what is stored. The pass reads the file once per second, takes one clock reading, and writes at most once per pass.
 
@@ -583,9 +587,9 @@ Loops live in `scheduler/loops.json`: one inner v1 JSON document inside the host
 
 ### 12.2 A round is a delivery
 
-Each round is one `input/message` through the public `sessions.input`, `mode: queue`, to the branch that started the loop, with `submissionId` `loop:<loop_id>:<round>` and the first raw block `<dim-scheduler kind="loop" loop="<id>" round="<n>">`. A branch accepts each identity once, so a retry is idempotent. The target's own InputQueue and turn scheduler decide what the input becomes: an idle branch gets a turn and a running one queues it behind, exactly as for a job delivery (§3.2). Nothing else is called, and Scheduler reads no Timeline of the target.
+Each round is one `input/message` through the public `timelineContext.input`, `mode: queue`, to the branch that started the loop, with `submissionId` `loop:<loop_id>:<round>` and the first raw block `<dim-scheduler kind="loop" loop="<id>" round="<n>">`. A branch accepts each identity once, so a retry is idempotent. The target's own InputQueue and turn scheduler decide what the input becomes: an idle branch gets a turn and a running one queues it behind, exactly as for a job delivery (§3.2). Nothing else is called, and Scheduler reads no Timeline of the target.
 
-The loop pass runs in the same one-second pass that serves the job windows and the wakeups (§3.1): it reads the file once, takes one clock reading, and writes at most once over the records it changed. `delivering_round` is persisted before any external effect, so a restart settles it by `sessions.lookup` with the same submission id instead of writing the round again (§A.6's rule for a job delivery).
+The loop pass runs in the same one-second pass that serves the job windows and the wakeups (§3.1): it reads the file once, takes one clock reading, and writes at most once over the records it changed. `delivering_round` is persisted before any external effect, so a restart settles it by `timelineContext.lookup` with the same submission id instead of writing the round again (§A.6's rule for a job delivery).
 
 `session.loop.start` records `next_at = now`, so the user's first round is a normal delivery with the loop's marker and never a plain user message; the `loop` tool's `start` records `next_at = now + delay_seconds` instead, and its result states that due time, the seconds until it, and that nothing is delivered at the call.
 
@@ -632,7 +636,7 @@ The model tool's `start`, `next` and `stop` replies carry a UTF-8 prompt preview
 
 | Rule | How this section complies |
 | --- | --- |
-| §4.1 Command events for others' state | A round is one `input/message` through `sessions.input`; InputQueue and Loop decide what it becomes |
+| §4.1 Command events for others' state | A round is one `input/message` through `timelineContext.input`; InputQueue and Loop decide what it becomes |
 | §4.2 No take-back after hand-off | Scheduler never withdraws a delivered round |
 | §4.6 Model context holds only handed-over events | A round reaches the model only as a consumed input of the target branch |
 | §4.9 Only facts later decisions use enter the Timeline | No loop event; the record lives in Scheduler's own store |
@@ -653,7 +657,7 @@ None.
 | Job target, `launch` | `cwd`, `agent_id?` (an Agent profile; absent, the default profile), `policy?` (an optional preset), `max_run_minutes?` (default 60, A7) |
 | Delivery | `run_id`, `job_id`, `window` (instant or `manual`), `state` (§2.2), `session_id?`, `branch_id?`, `input_event_id?`, `submission_id`, `deadline_at?`, `created_at`, `ended_at?`, `detail`, `attempts?`, `released?`, `job_revision?`. Timestamps use UTC `YYYY-MM-DDTHH:mm:ss.sssZ`, always three fractional digits, so chronological and lexical order agree. |
 
-Delivery states: `delivering`, `delivered`, `failed`, `lost`, `missed`. A terminal delivery carries `ended_at`; a `delivering` record does not. `delivered` requires both `input_event_id` and the target identity; a `launch` delivery also carries `deadline_at`. A `missed` record carries no target and no input. `session_id` and `branch_id` are both present or both absent. `submission_id` is `scheduler:<run_id>`. A `delivering` record may carry `attempts`, the number of `sessions.lookup` attempts made for it; it is absent before the first attempt and reads as zero. A record may carry `released: true`, which marks its launch-origin Session as released (A.7): the record keeps the `session_origin: launch` it recorded and no longer carries deletion authority for that Session. `released` is valid only on a record whose `session_origin` is `launch`; a record with any other origin, or none, that carries it is invalid data. A delivery written by this change also records `job_revision`, the job revision it was due under (§A.7).
+Delivery states: `delivering`, `delivered`, `failed`, `lost`, `missed`. A terminal delivery carries `ended_at`; a `delivering` record does not. `delivered` requires both `input_event_id` and the target identity; a `launch` delivery also carries `deadline_at`. A `missed` record carries no target and no input. `session_id` and `branch_id` are both present or both absent. `submission_id` is `scheduler:<run_id>`. A `delivering` record may carry `attempts`, the number of `timelineContext.lookup` attempts made for it; it is absent before the first attempt and reads as zero. A record may carry `released: true`, which marks its launch-origin Session as released (A.7): the record keeps the `session_origin: launch` it recorded and no longer carries deletion authority for that Session. `released` is valid only on a record whose `session_origin` is `launch`; a record with any other origin, or none, that carries it is invalid data. A delivery written by this change also records `job_revision`, the job revision it was due under (§A.7).
 
 A job saved before this change may also carry `mode`, `session_id`, `cwd`, `model`, `agent_id`, `policy`, `policy_cap` and `max_run_minutes`. They are read and mapped by §2.3, preserved by every write and never reported; no save writes one. A job therefore stores no captured authority: its `target.policy` is the only preset it names, and `sessions.launch` caps that against the bound in force at the launch (§3.3). A stored `enabled_at` keeps its meaning: the successful Settings CAS sets it to the save's UTC time on creation enabled or a disabled → enabled transition; disabling removes it. An already-enabled save preserves it, including a schedule edit. Direct local configuration supplies the same invariant; there is no schema default or load-time replacement with now.
 
@@ -741,10 +745,10 @@ A delivery touches the Timeline once, by writing one input; Scheduler never read
 | Step | Path |
 | --- | --- |
 | Trigger | The timer task computes the next window per enabled job; at a window it applies the grace and enablement rules and persists `delivering` with a fresh `run_id` |
-| Session target | `sessions.input {sessionId, branchId, mode, submissionId:"scheduler:<run_id>", rawBlocks:[{text:"<dim-scheduler …>…</dim-scheduler>"}], content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`. The marker text is constructed/escaped at Scheduler's external-input boundary; S2 accepts `RawBlock {text,key?}`, not a structured marker object. |
+| Session target | `timelineContext.input {sessionId, branchId, mode, submissionId:"scheduler:<run_id>", rawBlocks:[{text:"<dim-scheduler …>…</dim-scheduler>"}], content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`. The marker text is constructed/escaped at Scheduler's external-input boundary; S2 accepts `RawBlock {text,key?}`, not a structured marker object. |
 | Launch target | `sessions.launch {agent?, cwd, policy?}` → `{sessionId,policy}`. Agents chooses the profile's model and caps the policy against the live bound; Scheduler does not resolve either. Persist the Session identity and the reply's `policy` on the `delivering` record, start its stop timer, then write the same input shape to the Session's `main` branch. Nothing else is called and nothing follows the Session afterwards. |
 | Settle | `{inputId,sequence}` → `delivered` with `input_event_id`. A definite refusal → `failed: <code>`; with a target-gone code, disable the job (A.3). |
-| Uncertain reply | `reloading`, `publication_unknown`, `ambiguous` or a transport failure → `sessions.lookup {sessionId,branchId,submissionId}` (§A.6). |
+| Uncertain reply | `reloading`, `publication_unknown`, `ambiguous` or a transport failure → `timelineContext.lookup {sessionId,branchId,submissionId}` (§A.6). |
 | Missed | A window older than the grace is one `missed` record; no launch, no input. |
 | Stop | A launch Session is stopped at `deadline_at` by the record's own stop timer; the record stays `delivered` (§3.2). |
 
@@ -765,7 +769,7 @@ Scheduler delivers no run outcome to a Session, writes no report input, and send
 | A window is due while the job has a `delivering` delivery | `missed: previous_delivery_unsettled` | No input; the window is not retried, and the record is prunable (A.7) |
 | The daemon missed the window | `missed` | No launch and no input |
 
-Recovery never rewrites a settled record and never resends a window. A crash between persisting `delivering` and the input's reply is settled by `sessions.lookup` at the next start; a crash after a launched Session was created but before its identity was recorded leaves a Session named by no record (the known limit in Appendix F), and its record names no Session, so no lookup can reach it and it settles `lost` with `detail: launch_reply_unknown`. A lookup always targets the identity its record holds at the start of the pass, so a delivery whose launch reply arrived after the caller's own snapshot predated it is reconciled against the launched Session, not settled `lost` on a stale copy. A launch record that carries its Session resumes only its stop timer in any state, `delivered`, `lost` or `failed`: the timer is `deadline_at`, which the record carries, and it belongs to the launched Session until retention removes the record (A.7). Each `delivering` record is looked up once per timer pass and at most five times in all, across restarts. An `accepted` answer settles it `delivered`; the fifth answer without a fact settles it `lost` (§3.1). Recovery settles a record whose stored `attempts` is already at the bound `lost` with `detail: lookup_budget_exhausted`, before it looks anything up. Each pass persists the incremented `attempts` before the lookup, so a crash between attempts does not start the count again. "Never pruned while unsettled" therefore stays true and becomes bounded: a job whose target keeps failing neither grows records without bound nor writes twice.
+Recovery never rewrites a settled record and never resends a window. A crash between persisting `delivering` and the input's reply is settled by `timelineContext.lookup` at the next start; a crash after a launched Session was created but before its identity was recorded leaves a Session named by no record (the known limit in Appendix F), and its record names no Session, so no lookup can reach it and it settles `lost` with `detail: launch_reply_unknown`. A lookup always targets the identity its record holds at the start of the pass, so a delivery whose launch reply arrived after the caller's own snapshot predated it is reconciled against the launched Session, not settled `lost` on a stale copy. A launch record that carries its Session resumes only its stop timer in any state, `delivered`, `lost` or `failed`: the timer is `deadline_at`, which the record carries, and it belongs to the launched Session until retention removes the record (A.7). Each `delivering` record is looked up once per timer pass and at most five times in all, across restarts. An `accepted` answer settles it `delivered`; the fifth answer without a fact settles it `lost` (§3.1). Recovery settles a record whose stored `attempts` is already at the bound `lost` with `detail: lookup_budget_exhausted`, before it looks anything up. Each pass persists the incremented `attempts` before the lookup, so a crash between attempts does not start the count again. "Never pruned while unsettled" therefore stays true and becomes bounded: a job whose target keeps failing neither grows records without bound nor writes twice.
 
 Initial process publication is not a lookup answer. Before `processActivity.activated()` resolves, recovery sends no lookup and persists no attempt, so a stored record stays exactly as written. After publication, a `reloading` answer from an owner generation's stop or load is a real answer: it counts toward the bound as this section states, including the fifth answer settling `lost`.
 
@@ -773,7 +777,7 @@ Initial process publication is not a lookup answer. Before `processActivity.acti
 
 The process owner opens one `pluginFiles` scope and uses `scheduler/runs.json`, relative to the host-authorized root. Its text is one JSON document `{ "version": 1, "runs": [Delivery] }`, with `Delivery` defined in A.1. The host's S10 `{version:1,text}` envelope is separate: Scheduler supplies only the inner JSON text and never reads or writes that envelope itself. Jobs remain solely in Settings; a delivery records its job identity and what the window did, not another editable job configuration.
 
-Inner v1 is unchanged and keeps its old bytes: it decodes a delivery whose `state` is one of this design's states, and it decodes the state names written before this change — `skipped`, `submitted`, `running`, `completed`, `cancelled`, `timed_out`, `lost`, `launching` — with the invariants they were written under. New records use §2.2's vocabulary and omit the fields that no longer apply. No migration pass rewrites the file, and the version stays 1 because no previously written record changes meaning. A delivery may also carry `attempts`, the number of `sessions.lookup` attempts made for it. The field is additive and optional: a record without it reads as zero, and its first lookup pass after a restart is attempt one. No state written before this change is `delivering`, so a stored record from an earlier build never lacks the field. A delivery also records the job revision it was due under, `job_revision`; a record without that field cannot prove its claim is current and never disables its job (A.3).
+Inner v1 is unchanged and keeps its old bytes: it decodes a delivery whose `state` is one of this design's states, and it decodes the state names written before this change — `skipped`, `submitted`, `running`, `completed`, `cancelled`, `timed_out`, `lost`, `launching` — with the invariants they were written under. New records use §2.2's vocabulary and omit the fields that no longer apply. No migration pass rewrites the file, and the version stays 1 because no previously written record changes meaning. A delivery may also carry `attempts`, the number of `timelineContext.lookup` attempts made for it. The field is additive and optional: a record without it reads as zero, and its first lookup pass after a restart is attempt one. No state written before this change is `delivering`, so a stored record from an earlier build never lacks the field. A delivery also records the job revision it was due under, `job_revision`; a record without that field cannot prove its claim is current and never disables its job (A.3).
 
 A missing file means no delivery history. At this persistence boundary, reject malformed JSON, missing or unknown versions, invalid record fields and duplicate `run_id` values. Do not reset, rewrite, back up or migrate invalid bytes automatically. Validate once on read, then pass the typed records directly. A changed committed format requires a new inner version and an explicit compatibility decision. The previous reader rejects a record whose field or state it does not know as invalid data and writes nothing ([runs.rs](../../../crates/dim-agent-scheduler/src/runs.rs)); a file this design writes is therefore refused by a downgrade as `invalid_data`, never silently dropped or reset, and `attempts`, `released` and `job_revision` join the states `delivering` and `delivered` in that set. The version stays 1 because no previously written record changes meaning; downgrade readability is not provided. The job document follows the same rule: a job this design saves carries `target`, so an earlier build's reader that does not know the field refuses the whole document, keeps its bytes and leaves only Scheduler unavailable until an upgrade; downgrade readability of the job document is not provided, and the older build refuses it without rewriting.
 
@@ -798,7 +802,7 @@ Run a retention pass after startup recovery, each settled delivery and `schedule
 | Target Session deleted before the write | — | `failed: session_closed`, and the job is disabled with that reason | Agents, Scheduler |
 | Target branch ended before the write | — | `failed: branch_ended`, and the job is disabled with that reason | Agents, Scheduler |
 | Target Session deleted while a delivery is in flight | — | The write fails `session_closed` or is committed and published; either outcome is the record's | Agents |
-| Target Session idle-unloaded between delivery and read | — | No read to fail: the next window's `sessions.input` acquires and restores it | Agents |
+| Target Session idle-unloaded between delivery and read | — | No read to fail: the next window's `timelineContext.input` acquires and restores it | Agents |
 | Agents index reload | — | `reloading`; a `delivering` record settles by lookup | Agents |
 | `unknown`, `reloading` or a transport failure persists | — | Lookup stops at five answers without a fact and settles `lost`, and the count survives a restart; a due window meanwhile is `missed: previous_delivery_unsettled`; every record this design writes is terminal and prunable | Scheduler, Agents |
 | A crash after the fifth attempt was persisted | — | Recovery settles the record `lost` with `detail: lookup_budget_exhausted` without another lookup; an input the branch accepted is recorded `lost`, and nothing is written twice | Scheduler |
@@ -807,7 +811,7 @@ Run a retention pass after startup recovery, each settled delivery and `schedule
 | Daemon down over a window | — | `missed`; no catch-up | Scheduler |
 | Launch refused (missing cwd, unknown Agent, policy refusal) | — | `failed: <code>`; no input | Agents, Scheduler |
 | Launch reply lost | — | `lost: launch_reply_unknown`; the Session, if any, is named by no record (Appendix F) | Scheduler |
-| Stop timer fires while the Session is busy | — | `sessions.stop` ends its turn; the delivery stays `delivered` | Agents, Scheduler |
+| Stop timer fires while the Session is busy | — | `timelineContext.stop` ends its turn; the delivery stays `delivered` | Agents, Scheduler |
 | Job deleted while a launch Session runs | — | The delivery stands; the Session keeps running to its stop time, then retention deletes it (A14) | Scheduler |
 | Job edited between the document read and the write | — | The window uses the read snapshot; later windows use the new job | Scheduler |
 | Job saved with a new target | — | Later windows use the new target; recorded deliveries are unchanged | Scheduler |
@@ -861,7 +865,7 @@ Verify actual flows through the management methods and the `schedule` tool, with
 19. **Absent attempts read as zero.** A stored `delivering` record without `attempts` reads as zero attempts, and its first lookup pass after the restart is attempt one.
 20. **An in-flight write is not settled by `unknown`.** The lookup answers `unknown`, the record stays `delivering` and the attempt counts; a later lookup answers `accepted`, the record settles `delivered`, and no second input was written.
 21. **Exhausted lookup budget.** A stored `delivering` record whose `attempts` is at the bound, read after a restart, settles `lost` with `detail: lookup_budget_exhausted`; no lookup is sent for it and no input is written.
-22. **Initial publication.** While the host has not published the process, Scheduler sends no `sessions.lookup` and persists no attempt; releasing publication performs one real attempt. A stored bound settles after publication without a lookup. Host shutdown or generation unload while waiting leaves records and attempts unchanged for the next start. A restored overdue stop acts after publication without the 60 s retry.
+22. **Initial publication.** While the host has not published the process, Scheduler sends no `timelineContext.lookup` and persists no attempt; releasing publication performs one real attempt. A stored bound settles after publication without a lookup. Host shutdown or generation unload while waiting leaves records and attempts unchanged for the next start. A restored overdue stop acts after publication without the 60 s retry.
 
 ## Appendix E. Assumptions
 
@@ -890,7 +894,7 @@ The first-release business choices and public bindings are specified. The remain
 | --- | --- |
 | Gated-row failure reporting | Pinned rutis supplies failed-owner diagnostics and `service_unavailable`. Appendix D items 10 and 14 check incomplete-v1 rejection, known-failed owners and invalid inner versions, with dependencies and assertions unchanged. |
 | Public run store | Process-typescript §5.2 supplies the existing pluginFiles provider and actual public storage acceptance. The package must persist `delivering` before its effect; no private managed-plugin slot or direct filesystem access. |
-| Sessions | `sessions.input`, `launch`, `stop` and `delete` are the delivered S2 methods; §1.1 keeps their envelopes. |
+| Sessions | `timelineContext.input`, `launch`, `stop` and `delete` are the delivered S2 methods; §1.1 keeps their envelopes. |
 | Native input lifetime | An admitted input keeps running across unload and index reload; the record's settle waits for it. |
 | Launch stop timer | Owned by the process part, in its task tracker; it survives a restart through `deadline_at`, and a launch record this process inherits resumes it in any state. A record an earlier build left in `launching`, `submitted` or `running` has no stop timer here: it is retained as written (A.7). |
 | Records | A.1 defines the job and delivery fields and A.7 the inner v1 storage; Appendix D exercises restart, uncertain replies, the stop timer and retention. No core or protocol requirement. |

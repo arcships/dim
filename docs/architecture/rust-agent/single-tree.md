@@ -189,14 +189,14 @@ Session 与分支能力不向进程服务登记自己：RPC 经 `Session::servic
 | 对象 | 建立与释放 |
 | --- | --- |
 | `SessionScopePlugin` | `Agent` 创建 Session 时载入；`apply` 以本实例键提供身份、配置、故障报告、`TimelineFactory`、Session 生命周期 `SessionLifecycle`（Loading → Active → Closing → Closed：`Agent` 在 entries 锁内发布时 Active；关闭 token 取消即 Closing；关闭完成或装配失败时由运行时记录 Closed）与宿主值，挂载本实例的两个挂载器并把它们的视图交给创建，被请求的扩展也在这里创建；Session 部件由挂载器挂载，经名字依赖这些服务；关闭 Session 即永久卸载该子树 |
-| `BranchScopePlugin` | `TimelineTree` 创建分支时在 SessionScope 下载入；`apply` 提供 Timeline、Dispatcher、分支身份与分支生命周期 `BranchLifecycle`（Loading → Active → Closing → Closed，只由 TimelineContext 推进），挂载分支的两个挂载器并把它们的视图交给创建；分支部件由挂载器挂载；分支结束即永久卸载该子树 |
-| `TimelineContext` | 分支能力全部 Active 后由 `TimelineFactory::build` 建立并启动分发，`TimelineTree` 持有；关闭时先结算、再卸载 BranchScope 子树、最后关闭 Timeline。不作为分支服务提供，能力不经它取依赖 |
+| `BranchScopePlugin` | `TimelineTree` 创建分支时在 SessionScope 下载入；`apply` 提供 Timeline、Dispatcher、分支身份与分支生命周期 `BranchLifecycle`（Loading → Active → Closing → Closed，只由 BranchRuntime 推进），挂载分支的两个挂载器并把它们的视图交给创建；分支部件由挂载器挂载；分支结束即永久卸载该子树 |
+| `BranchRuntime` | 分支能力全部 Active 后由 `TimelineFactory::build` 建立并启动分发，`TimelineTree` 持有；关闭时先结算、再卸载 BranchScope 子树、最后关闭 Timeline。对外是它的数据面 `TimelineContext`（分支名 `timelineContext`，由 `build` 在本实例提供）：输入、执行与状态操作都从这里按 `(Session, line)` 到达，能力不注入 `BranchRuntime` |
 | 部件 | 挂载器为每个实例挂载一份已登记的部件，作为自己的子节点；随实例卸载，登记它的插件卸载时撤下 |
 | 宿主值 | `AgentBuilder::session_value(Arc<T>)` 由每个 SessionScope 在 `apply` 中以 Session 名字的键提供；`AgentBuilder::process_value(Arc<T>)` 由 Agent 分组行以进程名字提供，每个 Agent 实例一份 |
 
 成对能力（TimelineTree/TreeTimeline 等）的分支半边经 `Deps` 取得 Session 服务。
 
-分支作用域的装配状态只保留到 `TimelineContext` 接管或装配失败回滚。已装配的行与部件句柄由 `TimelineContext` 持有，分支装配对象不持有指回自身的作用域句柄。
+分支作用域的装配状态只保留到 `BranchRuntime` 接管或装配失败回滚。已装配的行与部件句柄由 `BranchRuntime` 持有，分支装配对象不持有指回自身的作用域句柄。
 
 Session 与 Timeline 在结构图中分别由 `SessionScopePlugin` 和 `BranchScopePlugin` 表示；Timeline 是后者提供并管理的服务，不另建 `TimelinePlugin`。`TimelineTreePlugin` 管分支目录和创建，创建关系不等于 BranchScope 注入 TimelineTree。
 
@@ -350,7 +350,7 @@ Dispatcher 与 before 的精确名称、`*`、`领域/*` 只过滤同一分支�
 | 传播 | 上游重载时，rutis 沿 `Deps` 依赖驱逐并重新装载下游，可跨进程、Session、分支作用域 |
 | 能力 | 随上游重载的能力按[能力重载协议](#能力重载协议)卸载与装载 |
 | 核心状态 | Timeline、TimelineTree、Dispatcher、AgentIndex 内的 Agent 句柄不注入可重载的上游 |
-| 门面 | `Branch` 经 TimelineContext 每次调用按分支键查找 `LoopState` 与公开服务，不持有能力实例；状态查询在 Loop 重载期间返回可重试错误。写入输入不查找任何能力端口，InputQueue 重载期间的输入由新一代从 Timeline 接收；stop、idle 只等待 `LoopState`，不拼装其他能力的状态：Loop 重载期间等新一代接手（重载即重启，见[总纲](time-bus.md)第 5 条），分支正在关闭且 Loop 不在时，优先返回已记录的 Dispatcher 故障，否则返回 `Closed`（新 stop 的关闭准入见[中断 §3](interrupt.md#3-完成与并发)）；关闭开始时 Loop 正在重载，则中断已提交、不再等待，不算关闭失败，未完成的 turn 按重载结算。分支仍存活时，`approval.respond` 因审批服务换代失败返回 `service_reloading`。`Session` 持有的 TimelineTree 不注入可重载的上游 |
+| 门面 | `Branch` 经 BranchRuntime 每次调用按分支键查找 `LoopState` 与公开服务，不持有能力实例；状态查询在 Loop 重载期间返回可重试错误。写入输入不查找任何能力端口，InputQueue 重载期间的输入由新一代从 Timeline 接收；stop、idle 只等待 `LoopState`，不拼装其他能力的状态：Loop 重载期间等新一代接手（重载即重启，见[总纲](time-bus.md)第 5 条），分支正在关闭且 Loop 不在时，优先返回已记录的 Dispatcher 故障，否则返回 `Closed`（新 stop 的关闭准入见[中断 §3](interrupt.md#3-完成与并发)）；关闭开始时 Loop 正在重载，则中断已提交、不再等待，不算关闭失败，未完成的 turn 按重载结算。分支仍存活时，`approval.respond` 因审批服务换代失败返回 `service_reloading`。`Session` 持有的 TimelineTree 不注入可重载的上游 |
 | 拥有 | 作用域 Plugin 卸载即关闭该实例 |
 | 代次结算 | 移除一代服务前先停止新工作、排空已受理工作并写完必需终态（AGENTS 规则 8）；连接断开不等于关闭 Session，运行时句柄不是持久身份。依赖丢失回到 Pending 时的业务结算语义仍为 Proposed（issue #6，见 ADR 001） |
 | 触发 | 需要替换服务实现的配置变化、显式 restart、`check()` 变化；普通配置值更新由服务内部通知，不重载。故障不触发重载。各 Plugin 的设计列出自身触发来源 |

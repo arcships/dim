@@ -1,5 +1,9 @@
 # Workflow
 
+`timelineContext` is a line's own data face: a process caller reaches it as
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })`
+([ADR 027](../../adr/027-cross-scope-access-by-id.md)).
+
 Status: Optional package implemented. Overall design: [overview §4](../overview.md#4-plugin-catalog); scope: [ADR 002](../../adr/002-plugin-scope.md) (process + Session). Phase: P2. Language: TypeScript first ([overview Appendix C](../overview.md#appendix-c-implementation-language)).
 
 **Delivery boundary.** The optional [Workflow package](../../../runtime/plugins/workflow/README.md) implements definition sources, the run engine, Session tool and management methods through the existing public bindings. Its SDK and actual Node/App Server flows map to [Appendix D](../../../runtime/plugins/workflow/README.md#acceptance-coverage), including live admission authority, source trust, stop, retention and background report recovery. Native retention covers deletion/read/replace failures, protected references and minute retries without active runs. Installation is explicit under §1.3; Agents idle unloading (#126) remains required before shipping repeated stage creation. No core or rutis change is needed.
@@ -215,7 +219,7 @@ sequenceDiagram
   WF->>AG: launch(starter?, policy?, model?)
   AG-->>WF: sessionId, actual policy
   WF->>ST: persist Session and first-stage policy cap (A17)
-  WF->>SS: sessions.input main Queue, marker stage, rendered prompt
+  WF->>SS: timelineContext.input main Queue, marker stage, rendered prompt
   WF->>ST: persist stage running with input_event_id
   SS->>SS: Dispatcher: input/applied, input/consumed, turn
   WF->>SS: sessions.history pages through one fixed published cutoff
@@ -233,7 +237,7 @@ sequenceDiagram
   participant STB as Starter branch
   alt run completed, failed or interrupted, with report_to
     WF->>ST: report pending(submission_id)
-    WF->>STB: sessions.input Steer, marker report
+    WF->>STB: timelineContext.input Steer, marker report
     WF->>ST: delivered, or undeliverable on branch missing or Session closed
   else workflow stop
     WF->>ST: stopping
@@ -246,9 +250,9 @@ An explicit owner stop never wakes the starter ([event-driven flows §3](../../a
 
 Each stage has one owned history tracker using its persisted input receipt. It reads on submission and on a one-second timer, without leaving a native `idle` wait outstanding. The first `history {after}` reply fixes the published cutoff `H`; subsequent pages keep `through: H`. Finish the prefix before deciding, then keep its final sequence as the next cursor. Match the stage's own `inputId`, preserve its published terminal outcome and never treat an unrelated turn's end as stage completion. A pending approval does not prevent these history reads.
 
-On stop, read the whole published prefix and preserve any terminal outcome. An own input applied then interrupted, without matching consumption in that prefix, settles the stage as `stopped` without another `stop`, as in A.6. Otherwise withdraw only the stage's own input if not yet consumed. `deleted` settles it as stopped. `notHeld` only says that this withdrawal deleted nothing; the input may already have been deleted or consumed. Refresh history and apply the same rules: a matching deletion or the interrupted-before-consumption case settles the stage; other unconsumed inputs remain pending. Only observed consumption without a following end permits `sessions.stop`. A local stopped outcome does not retract an applied input. Keep each admitted mutation owned until settlement; a discarded JavaScript Promise is not native cancellation.
+On stop, read the whole published prefix and preserve any terminal outcome. An own input applied then interrupted, without matching consumption in that prefix, settles the stage as `stopped` without another `stop`, as in A.6. Otherwise withdraw only the stage's own input if not yet consumed. `deleted` settles it as stopped. `notHeld` only says that this withdrawal deleted nothing; the input may already have been deleted or consumed. Refresh history and apply the same rules: a matching deletion or the interrupted-before-consumption case settles the stage; other unconsumed inputs remain pending. Only observed consumption without a following end permits `timelineContext.stop`. A local stopped outcome does not retract an applied input. Keep each admitted mutation owned until settlement; a discarded JavaScript Promise is not native cancellation.
 
-`sessions.stop` is turn-scoped, addressed by branch, with no expected turn id; it does not cancel detached branch work. The observed turn can finish and another can start before the call takes effect. The one-second cadence, possible later-turn interruption and retained applied inputs are accepted first-release limits; no atomic turn targeting, lock, protocol or core requirement is added. Stage tracking does not settle report writes (§3.4).
+`timelineContext.stop` is turn-scoped, addressed by branch, with no expected turn id; it does not cancel detached branch work. The observed turn can finish and another can start before the call takes effect. The one-second cadence, possible later-turn interruption and retained applied inputs are accepted first-release limits; no atomic turn targeting, lock, protocol or core requirement is added. Stage tracking does not settle report writes (§3.4).
 
 ### 3.3 Policy of a stage
 
@@ -282,7 +286,7 @@ If the first step is parallel, obtain and persist the first declared stage's lau
 The existing run task owns terminal settlement and its report (E15). Stage trackers supply outcomes to it; status reads and retention never send reports. A run has at most one outstanding report operation. Different runs may progress independently; no process-wide report queue or new lock is needed.
 
 1. In one A.4 file transaction, persist the run's terminal state, `ended_at` and `report: pending{submission_id, attempt_open:false}` for `completed`, `failed` or `interrupted` with `report_to`. Allocate the submission id once. Explicit `stopped` runs and runs without a destination keep `report: none`. The terminal result and destination are fixed; every retry renders the same report from that result and uses the same submission id. A stop after terminal settlement does not erase a pending report.
-2. Before each `sessions.input`, persist `attempt_open:true` and await that replacement. Release the file transaction, then call input. Await the actual S2 reply; a timer, tool cancellation or unload must not abandon the call through `Promise.race` or treat a discarded Promise as cancellation. No file transaction is held while awaiting input.
+2. Before each `timelineContext.input`, persist `attempt_open:true` and await that replacement. Release the file transaction, then call input. Await the actual S2 reply; a timer, tool cancellation or unload must not abandon the call through `Promise.race` or treat a discarded Promise as cancellation. No file transaction is held while awaiting input.
 3. Apply the reply table below. In one replacement, persist either the terminal report outcome or `pending` with `attempt_open:false` after a settled input reply. The implemented [S2 input lifetime](../appserver/sessions-service.md#62-input) retains admitted append/publication work until its actual reply, including across index reload. On a persistence failure stop new run effects as in A.4.
 4. Recovery resubmits every `pending` report with step 2. The destination branch accepts the submission id once ([S2 §6.2](../appserver/sessions-service.md#62-input)): a report an earlier attempt or generation wrote, published or still in flight, is answered with that input's receipt and never written again. `attempt_open` is persisted but decides nothing; removing it needs a format decision. Recovery of running/stopping runs atomically records `interrupted` and a new pending report as in step 1; stages are not relaunched.
 
@@ -544,7 +548,7 @@ Run a retention pass after startup recovery, each terminal transition and each r
 | Contract | Owner | Use |
 | --- | --- | --- |
 | `sessions.launch {agent?,cwd,model?:{providerId,modelId},policy?,starter?:{sessionId,branchId}}` → `{sessionId,policy}` | Existing [S2](../appserver/sessions-service.md) | Agents resolves model and policy; every stage is non-interactive; Workflow writes the first input. A stage declares no `origin`, so it stays `internal`: a run's Sessions keep their default hiding under `session.catalog`, and listing automation Sessions never lists them |
-| `sessions.withdraw {sessionId, branchId, inputId}` of an own input; `sessions.lookup` by `submissionId` | session-access (InputQueue) | Withdraw own unconsumed stage inputs on stop; reply `deleted` or `notHeld` |
+| `sessions.withdraw {sessionId, branchId, inputId}` of an own input; `timelineContext.lookup` by `submissionId` | session-access (InputQueue) | Withdraw own unconsumed stage inputs on stop; reply `deleted` or `notHeld` |
 
 ### A.6 Timeline and capability mechanics
 
@@ -552,12 +556,12 @@ Run a retention pass after startup recovery, each terminal transition and each r
 | --- | --- |
 | Start | Validate definition/params, retain starter identity, persist Run running with first admission pending, then return run_id; advancement belongs to the process task owner. No direct Timeline write. A17 is confirmed. |
 | Stage launch | Render and size-check the whole step under A.1 before any sibling admission, recheck run state, persist launching, use S2 launch (omit agent/model when absent). First reply persists sessionId and policy cap before input; remaining launches use the explicit stored policy. Persist `submissionId = workflow:<uuid>`. |
-| Stage input | `sessions.input {sessionId,branchId:"main",mode:"queue",submissionId,rawBlocks:[{text:"<dim-workflow …>…</dim-workflow>"}],content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`. Construct/escape marker text at Workflow's input boundary; S2 takes `RawBlock {text,key?}`, not a structured marker object. Persist the receipt before proceeding. |
+| Stage input | `timelineContext.input {sessionId,branchId:"main",mode:"queue",submissionId,rawBlocks:[{text:"<dim-workflow …>…</dim-workflow>"}],content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`. Construct/escape marker text at Workflow's input boundary; S2 takes `RawBlock {text,key?}`, not a structured marker object. Persist the receipt before proceeding. |
 | Consumption | Stage Session's InputQueue and Loop on their Dispatchers (`input/applied`, `input/consumed`), then turns |
 | Completion | Owned history tracker (§3.2), with one fixed published cutoff per read. Before own `input/consumed`: matching `input/deleted`, or own `input/applied` followed by `stop/interrupt` → `stopped`, else wait again. After consumption: the first following `turn/end` decides `completed`/`failed`/`stopped`; that turn's last response text is the result. |
 | Advance | Persist the stage result; when all stages of a step are terminal, start the next step or end the run; a failed stage stops running siblings and fails the run (A4) |
 | Report | §3.4: atomically persist the terminal run and pending report; persist its open-attempt marker before each Steer input. One run task owns settlement; recovery resubmits with the same submission id, which the destination writes once. |
-| Stop | Persist `stopping`; waiting stages `skipped`; follow §3.2 to withdraw own inputs and refresh history after `notHeld`. Preserve published outcomes; applied then interrupted without own consumption → `stopped` without another stop, leaving the input applied; other unconsumed inputs wait. Consumption without an end permits turn-scoped `sessions.stop`, addressed by branch with no expected turn id. Run `stopped`, no report. |
+| Stop | Persist `stopping`; waiting stages `skipped`; follow §3.2 to withdraw own inputs and refresh history after `notHeld`. Preserve published outcomes; applied then interrupted without own consumption → `stopped` without another stop, leaving the input applied; other unconsumed inputs wait. Consumption without an end permits turn-scoped `timelineContext.stop`, addressed by branch with no expected turn id. Run `stopped`, no report. |
 | Reload, restart | Agents index reload does not reload Workflow. For its own unload, stop new work, stop owned stages (A13), and join admitted calls/writes before closing storage. Recovery records interrupted/lost without relaunch, then reconciles pending reports as in §3.4. Binding ownership is verified; actual stage/run recovery remains package acceptance. |
 
 ## Appendix B. Full conflict table
@@ -585,7 +589,7 @@ Run a retention pass after startup recovery, each terminal transition and each r
 | Workflow reload during a tool call | — | Provider settles accepted work; C3 keeps core consumers running; an issued call keeps its generation and follows §1.1's retirement errors; the next generation's tool is offered once active | Workflow; ToolExecutor |
 | Stage resource node offline (P3) | — | Outside P1/P2; follows the separate P3 node design, not a requirement on rutis | Agents, stage Session |
 | Stage Session capability reload mid-turn | turn ends `Failed` | Stage `failed` | Stage Loop |
-| Starter Session unloaded at report time | — | `sessions.input` restores it, then writes | Agents |
+| Starter Session unloaded at report time | — | `timelineContext.input` restores it, then writes | Agents |
 | Process restart mid-run | — | `interrupted`/`lost`; committed unconsumed stage inputs stay in their Sessions | Workflow |
 | Report write uncertain | — | Resubmit with the same submission id; the destination branch writes it once. E15 still serializes a run's report attempts | Workflow |
 | Project definition edited after start | — | Run keeps its snapshot; later stages use the snapshot; later runs of an enabled definition use the edited file without asking again (ADR 003 D4) | Workflow |

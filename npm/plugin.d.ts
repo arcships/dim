@@ -231,19 +231,6 @@ export interface LaunchReply {
   /** The created worktree; omitted when the request did not ask for one. */
   worktree?: WorktreeReply;
 }
-export interface RawBlock {
-  text: string;
-  key?: { use: 'live' | 'retire'; name: string } | null;
-}
-export interface InputWrite extends SessionRef {
-  mode: 'queue' | 'steer' | 'append';
-  submissionId: string;
-  rawBlocks: RawBlock[];
-  content: ContentBlock[];
-}
-export interface InputReceipt { inputId: string; sequence: number }
-export interface LookupRequest extends SessionRef { submissionId: string }
-export type LookupReply = { status: 'accepted'; inputId: string; sequence: number } | { status: 'unknown' };
 export interface HistoryRequest extends SessionRef {
   after?: number | null;
   through?: number | null;
@@ -277,8 +264,6 @@ export interface WithdrawRequest extends SessionRef { inputId: string; reason?: 
  * not pending. */
 export interface PendingRequest extends SessionRef { inputId: string }
 export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 'notHeld' };
-export interface StopRequest extends SessionRef { reason?: string | null }
-export interface SequenceReply { sequence: number }
 export type SessionsErrorCode = import('./branch-services.js').SessionsErrorThrown['code'];
 /** The failure a `sessions` call reports: the generated union, so each code carries
  * the details the server sends (`reason`, `line`, `service`, `name`, `data`), plus
@@ -289,8 +274,6 @@ export type SessionsResult<T> = { ok: true; value: T } | { ok: false; error: Ses
 /** Process service `sessions`; these methods are not terminal RPC methods. */
 export interface Sessions {
   launch(request: LaunchRequest): Promise<SessionsResult<LaunchReply>>;
-  input(request: InputWrite): Promise<SessionsResult<InputReceipt>>;
-  lookup(request: LookupRequest): Promise<SessionsResult<LookupReply>>;
   /** Whether the id still exists: absent means deleted, and a closed,
    * restorable Session exists. Reads only; never acquires or restores a
    * Session. */
@@ -301,8 +284,6 @@ export interface Sessions {
   history(request: HistoryRequest): Promise<SessionsResult<HistoryPage>>;
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
   pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
-  stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
-  idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
   /** Calls a data face of a live Session, or of one of its lines, by id
    * (#2127). Agents loads and holds the Session for the call. A target that

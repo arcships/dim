@@ -318,7 +318,7 @@ async fn a_delivery_in_flight_updates_the_view_the_next_generation_reads() {
     );
     assert_eq!(
         receipt["deliveries"][0]["code"],
-        json!("branch_ended"),
+        json!("branch_missing"),
         "{receipt}"
     );
 

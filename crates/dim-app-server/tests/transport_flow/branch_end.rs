@@ -1,4 +1,5 @@
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_types::{BranchSource, InputMode};
 

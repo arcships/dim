@@ -6,7 +6,7 @@
 use dim_agent_capabilities::defaults;
 use dim_agent_runtime::testing::{MinimalHost, hold_close};
 use dim_agent_runtime::*;
-use dim_agent_types::BranchSource;
+use dim_agent_types::{BranchSource, InputMessageData, InputMode};
 use rutis::Ctx;
 use rutis::host::{CtxHost, DynPlugin, Effect, InstanceId, TypeKey};
 use rutis_bridge::session::{
@@ -64,6 +64,7 @@ impl Rig {
             ("inputQueue", "branch"),
             ("permission", "branch"),
             ("timeline", "branch"),
+            ("timelineContext", "branch"),
             ("sessionConfig", "session"),
             ("treeCommands", "session"),
             ("uiResources", "session"),
@@ -213,6 +214,110 @@ async fn a_session_part_reaches_its_own_line_and_its_own_faces() {
         config,
         Some(serde_json::to_value(session.config()).unwrap())
     );
+
+    rig.host.close().await.unwrap();
+}
+
+/// A wait admitted for a sequence the line never dispatches ends with the
+/// line instead of holding its close open ([#2227](https://github.com/arcships/dim/issues/2227),
+/// design rule 8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dispatched_wait_settles_when_the_line_ends() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let child = session
+        .branch(
+            "main".into(),
+            0,
+            BranchOptions {
+                prompt: String::new(),
+                source: BranchSource::Tool {
+                    turn_id: "wait-ends".into(),
+                    request_id: "wait-ends".into(),
+                    call_id: "wait-ends".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let beyond = session.sequence(&child).unwrap() + 1000;
+    let line = child.clone();
+    let waiting = tokio::spawn(async move {
+        scope
+            .line_call(LineCall::new(
+                line,
+                "timelineContext",
+                "waitDispatched",
+                vec![serde_json::json!(beyond)],
+            ))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    session
+        .end_branch(
+            &child,
+            BranchSource::Host {
+                operation_id: "wait-ends".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let settled = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the wait settles with the line")
+        .unwrap();
+    assert!(
+        settled.is_err(),
+        "a line that ended before the sequence fails the wait: {settled:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_answers_its_own_operations_through_a_routed_call() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let input = || {
+        let mut data = InputMessageData::text("routed input", Some(InputMode::Queue));
+        data.submission_id = Some("routing-input".into());
+        data
+    };
+    let call = |method: &str, args: Vec<serde_json::Value>| {
+        scope.line_call(LineCall::new("main", "timelineContext", method, args))
+    };
+
+    let first = call("input", vec![serde_json::to_value(input()).unwrap()])
+        .await
+        .unwrap()
+        .expect("input answers its write");
+    assert_eq!(first["written"], serde_json::json!(true), "{first}");
+    let sequence = first["event"]["sequence"]
+        .as_u64()
+        .expect("a committed event carries its sequence");
+
+    let again = call("input", vec![serde_json::to_value(input()).unwrap()])
+        .await
+        .unwrap()
+        .expect("input answers its write");
+    assert_eq!(
+        again["written"],
+        serde_json::json!(false),
+        "the line holds a submission id once: {again}"
+    );
+    assert_eq!(again["event"], first["event"]);
+
+    call("waitPublished", vec![serde_json::json!(sequence)])
+        .await
+        .unwrap();
+    call("waitDispatched", vec![serde_json::json!(sequence)])
+        .await
+        .unwrap();
+    let state = call("state", vec![])
+        .await
+        .unwrap()
+        .expect("state answers the line's status");
+    assert!(state.get("running").is_some(), "{state}");
 
     rig.host.close().await.unwrap();
 }

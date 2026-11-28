@@ -1,10 +1,14 @@
 # Session access: Agents and Session public-interface supplement
 
+`timelineContext` is a line's own data face: a process caller reaches it as
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })`
+([ADR 027](../../adr/027-cross-scope-access-by-id.md)).
+
 Status: Draft. Overall design: [overview §3 integration](../overview.md#3-integration-by-existing-mechanisms), [Appendix B Agents and InputQueue](../overview.md#appendix-b-supplements-to-existing-plugins); rules: [ADR 002](../../adr/002-plugin-scope.md) D1–D3, D5. Phase: P0. Language: neutral contract; Rust binding in [Appendix E](#appendix-e-rust-binding).
 
 > **Offline resource nodes.** Rows about an offline resource node describe P3 multi-node behaviour. #5 is withdrawn (rutis is an external dependency, and it withdraws imported services when a link drops), so these rows are redesigned in P3 following overview §6.3: node services are looked up on each call by the Session's resource node, which P3 adds to `SessionConfig` ([A.3](#a3-sessionconfig-fields)). In P1/P2 every Session uses the control node.
 
-Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `pending`, `stop`, `idle` and `delete`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload ends cancellable calls, retains own-outcome calls, and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
+Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `exists`, `history`, `withdraw`, `pending`, `delete` and `call`; a line's input, lookup, stop and idle are that line's own operations, reached through `call`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload ends cancellable calls, retains own-outcome calls, and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
 
 | Supplement | Owner | Used by |
 | --- | --- | --- |
@@ -152,13 +156,13 @@ Queue inputs are consumed when Loop starts the turn they drive. Steer inputs are
 | Interface | Mode | Purpose |
 | --- | --- | --- |
 | `sessions.launch(LaunchRequest) -> {sessionId, policy, worktree?}` | async | Create a non-interactive Session for automation with a capped policy |
-| `sessions.input(InputWrite) -> {inputId, sequence}` | async | Write input with source raw blocks |
-| `sessions.lookup({sessionId, branchId, submissionId}) -> LookupReply` | async | Find a committed input after an uncertain outcome |
+| `timelineContext.input(InputWrite) -> {inputId, sequence}` | async | Write input with source raw blocks |
+| `timelineContext.lookup({sessionId, branchId, submissionId}) -> LookupReply` | async | Find a committed input after an uncertain outcome |
 | `sessions.history(HistoryRequest) -> HistoryPage` | async | Read history, optionally as a fixed prefix bounded by the published head |
 | `session.input.withdraw {sessionId, branchId, inputId, reason?}` | RPC | Client withdrawal; InputQueue's `sessionMethods` (namespace `session.input`) |
 | `sessions.withdraw(WithdrawRequest) -> WithdrawReply` | async | Write `input/withdraw` for an input the caller wrote, by its `input_id`, and return InputQueue's decision |
-| `sessions.stop({sessionId, branchId, reason?}) -> {sequence}` | async | Interrupt the branch's turn |
-| `sessions.idle({sessionId, branchId}) -> {sequence}` | async | Wait until the branch is idle; the returned sequence is the last committed one, a whole-batch boundary |
+| `timelineContext.stop({sessionId, branchId, reason?}) -> {sequence}` | async | Interrupt the branch's turn |
+| `timelineContext.idle({sessionId, branchId}) -> {sequence}` | async | Wait until the branch is idle; the returned sequence is the last committed one, a whole-batch boundary |
 | `sessions.delete({sessionId}) -> {}` | async | Delete a Session: Agents closes it and removes its rows and files ([session deletion](../appserver/session-deletion-and-fork.md#3-deletion)) |
 | `SessionConfig.interactive` | data | Creation-time configuration |
 | `session.create {interactive}` | RPC | Non-interactive creation |
@@ -304,7 +308,7 @@ Implemented: every method above, served by Agents' directory part (S2, [#98](htt
 | --- | --- |
 | Marker | The first raw block is the element `<dim-<source> kind="..." ...>body</dim-<source>>` in the existing context-block format. It is model-facing text written by the producing plugin; shared components never parse it, and only the producing plugin may interpret its own content (for example Goal folding its own blocks) |
 | Keys | `RawBlock.key` with `use: live` or `retire`, per branch Timeline. The writer chooses the full key; by convention it starts with the writer's own prefix (overview constraint 14), and nothing checks it |
-| Submission identity | `<source>:<uuid>`, generated per logical submission. A branch accepts each identity once: a resubmission writes nothing and replies the first input's receipt, also after the input is consumed or withdrawn. `sessions.lookup` (same semantics as `session.input_lookup`) finds a committed input (`accepted`, `unknown`) without writing. Error `ambiguous` (from `input` or `lookup`) means several inputs share the identity, written before branches accepted each once. The identity is the `submission_id` field of the committed `input/message`, so it commits, forks and is deleted with the input; no separate record exists ([sessions service §6.3](../appserver/sessions-service.md#where-the-submission-identity-lives), #32) |
+| Submission identity | `<source>:<uuid>`, generated per logical submission. A branch accepts each identity once: a resubmission writes nothing and replies the first input's receipt, also after the input is consumed or withdrawn. `timelineContext.lookup` (same semantics as `session.input_lookup`) finds a committed input (`accepted`, `unknown`) without writing. Error `ambiguous` (from `input` or `lookup`) means several inputs share the identity, written before branches accepted each once. The identity is the `submission_id` field of the committed `input/message`, so it commits, forks and is deleted with the input; no separate record exists ([sessions service §6.3](../appserver/sessions-service.md#where-the-submission-identity-lives), #32) |
 | Never possible | Writing events other than `input/message`, `input/withdraw` through `withdraw` and `stop/interrupt` through `stop`; writing `input/deleted`; editing history |
 
 ### A.3 SessionConfig fields

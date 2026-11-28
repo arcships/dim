@@ -6,6 +6,7 @@ use dim_agent_capabilities::{
     host::{HostFuture, ModelConnection, ModelDriver, ModelStream},
     input_queue::{CheckSubmission, SubmitCheckReply, SubmitCheckRequest, SubmitChecks},
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{Feature, Names};
 use dim_agent_types::{ContentBlock, InputMessageData, MessageContent, MessagePart, ModelRequest};

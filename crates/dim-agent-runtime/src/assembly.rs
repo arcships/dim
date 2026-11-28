@@ -1165,7 +1165,7 @@ impl SessionAssembly {
     /// published, has ended, or is already closing. The tree's own view decides
     /// publication, so the process path and a Session part see the same state
     /// (ADR 027 D2).
-    pub(crate) fn line(&self, id: &str) -> Option<Arc<TimelineContext>> {
+    pub(crate) fn line(&self, id: &str) -> Option<Arc<BranchRuntime>> {
         let loaded = self.loaded().ok()?;
         let tree = loaded
             .ctx
@@ -1465,7 +1465,7 @@ impl TimelineFactory {
         id: String,
         ancestors: Vec<(String, u64)>,
         cancel: CancellationToken,
-    ) -> BoxFuture<'_, std::result::Result<Arc<TimelineContext>, TimelineBuildError>> {
+    ) -> BoxFuture<'_, std::result::Result<Arc<BranchRuntime>, TimelineBuildError>> {
         Box::pin(async move {
             let parent = self
                 .0
@@ -1538,7 +1538,7 @@ impl TimelineFactory {
                 let ctx = &branch.scope.ctx;
                 let scope = branch.scope.scope;
                 required::<dyn LoopState>(ctx, scope.key::<dyn LoopState>())?;
-                let context = TimelineContext::start(
+                let context = BranchRuntime::start(
                     id.clone(),
                     ctx.clone(),
                     created.view.clone(),
@@ -1560,6 +1560,11 @@ impl TimelineFactory {
                     parent.assembly.catalog.clone(),
                     parent.assembly.faces.clone(),
                 );
+                ctx.provide_at(
+                    scope.key::<crate::TimelineContext>(),
+                    Arc::new(context.face()),
+                )
+                .map_err(|error| AgentError::fault("branch scope", error.to_string()))?;
                 Ok(context)
             })
             .catch_unwind()

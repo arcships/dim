@@ -3,6 +3,7 @@
 use super::*;
 use dim_agent_capabilities::context_block;
 use dim_agent_capabilities::input_queue::{InputQueue, Withdrawal};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_types::{InputBlock, InputMessageData, InputMode, InputWithdrawData};
 

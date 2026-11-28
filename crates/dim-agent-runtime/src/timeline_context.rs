@@ -7,6 +7,7 @@ use dim_agent_types::{
 };
 use rutis::Ctx;
 use rutis::host::{CtxHost, FiberView};
+use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -24,9 +25,9 @@ use tokio_util::sync::CancellationToken;
 /// them per call and never caches their instances or aggregates their state.
 ///
 /// Obtained only from [`TimelineFactory::build`] and held by the branch tree.
-/// Callers outside the tree get a [`Branch`], which cannot write arbitrary
-/// events.
-pub struct TimelineContext {
+/// A caller outside the tree names the line and calls one of the operations of
+/// its data face, [`TimelineContext`].
+pub struct BranchRuntime {
     id: String,
     ctx: Ctx,
     view: FiberView,
@@ -66,7 +67,7 @@ const LOOP_RETURN_POLL: std::time::Duration = std::time::Duration::from_millis(1
 /// The latest stop and the sequence of its interrupt (0 until written).
 type StopOperation = (Arc<CloseOnce<u64>>, Arc<AtomicU64>);
 
-impl TimelineContext {
+impl BranchRuntime {
     /// Dispatches the opening through `through`, seals registration and waits
     /// for capability receipts and their committed fence. First activations,
     /// dispatch advancement and receipt completion renew the inactivity limit.
@@ -131,7 +132,7 @@ impl TimelineContext {
     /// Starts dispatch once every capability of the subtree is Active.
     #[expect(
         clippy::too_many_arguments,
-        reason = "one parameter per handle a branch's TimelineContext is built from"
+        reason = "one parameter per handle a branch's BranchRuntime is built from"
     )]
     pub(crate) fn start(
         id: String,
@@ -244,9 +245,14 @@ impl TimelineContext {
             self.lifecycle.advance(BranchPhase::Active);
         }
     }
-    /// The facade handed to callers outside the branch tree.
+    /// The facade handed to callers inside the tree.
     pub fn branch(self: &Arc<Self>) -> Branch {
         Branch(self.clone())
+    }
+    /// The line's data face, which [`TimelineFactory::build`] provides in the
+    /// branch scope.
+    pub fn face(self: &Arc<Self>) -> TimelineContext {
+        TimelineContext { line: self.clone() }
     }
     pub fn id(&self) -> &str {
         &self.id
@@ -600,6 +606,67 @@ impl TimelineContext {
             .ok_or_else(|| AgentError::Storage(format!("committed input {sequence} is missing")))
     }
 
+    /// Waits until dispatch has consumed through `through`. Loop and every
+    /// consumer reload as a restart, so a dispatcher that is merely replaced
+    /// keeps this waiting; a dispatcher that failed answers its failure.
+    pub(crate) async fn wait_dispatched(&self, through: u64) -> Result<()> {
+        let mut dispatch = self.dispatcher.watch();
+        let mut state = self.watch();
+        loop {
+            if let Some(error) = self.dispatcher.failure() {
+                return Err(error);
+            }
+            if self.dispatcher.sequence() >= through {
+                return Ok(());
+            }
+            // A line that ended answers here instead of holding its close
+            // open: dispatch reaching the asked sequence is the wait, and one
+            // that did not is a terminal failure ([ADR 027][027], [rule 8]).
+            //
+            // [027]: ../../../docs/adr/027-cross-scope-access-by-id.md
+            // [rule 8]: ../../../docs/architecture/rust-agent/principles.md
+            if self.close.started() || self.is_closing() {
+                return match self.dispatcher.sequence() >= through {
+                    true => Ok(()),
+                    false => Err(self
+                        .dispatcher
+                        .failure()
+                        .or_else(|| self.timeline.failure())
+                        .unwrap_or_else(|| AgentError::Closed(self.id.clone()))),
+                };
+            }
+            tokio::select! {
+                result = dispatch.changed() => {
+                    result.map_err(|_| AgentError::Closed(self.id.clone()))?;
+                }
+                result = state.changed() => {
+                    // The status changed: the loop re-reads it, which settles a
+                    // line that started closing.
+                    let _ = result;
+                }
+            }
+        }
+    }
+    /// Waits until the Timeline published `sequence`. A Timeline that closed
+    /// before it answers its failure, or `Closed`.
+    pub(crate) async fn wait_published(&self, sequence: u64) -> Result<()> {
+        let mut log = self.timeline.watch();
+        loop {
+            let (published, closed) = *log.borrow_and_update();
+            if published >= sequence {
+                return Ok(());
+            }
+            if closed {
+                return Err(self
+                    .timeline
+                    .failure()
+                    .unwrap_or_else(|| AgentError::Closed(self.id.clone())));
+            }
+            log.changed()
+                .await
+                .map_err(|_| AgentError::Closed(self.id.clone()))?;
+        }
+    }
     /// Waits until Loop has dispatched the Timeline tail and has no unclosed
     /// turn; returns that dispatched sequence.
     pub(crate) async fn idle(&self) -> Result<u64> {
@@ -704,6 +771,12 @@ impl TimelineContext {
         written: Option<&AtomicU64>,
     ) -> Result<u64> {
         let interrupt = self.commit_interrupt(reason, scope, written)?;
+        self.await_settled(interrupt).await
+    }
+    /// Waits until dispatch passed `interrupt` and the turn it ended settled.
+    /// The interrupt is committed before this, so a running tool sees the stop
+    /// (and can write its own terminal result) while this waits ([#2027]).
+    async fn await_settled(&self, interrupt: u64) -> Result<u64> {
         let mut dispatch = self.dispatcher.watch();
         let mut phase = self.loop_watch().await?;
         let mut settled_through = None;
@@ -804,6 +877,18 @@ impl TimelineContext {
         self.close.start(self.ctx.handle(), async move {
             #[cfg(feature = "testing")]
             crate::testing::closing(&this.timeline.key().session_id, &this.id).await;
+            // The closing interrupt is committed before the branch lock: a
+            // tool that is running sees the stop, writes its own terminal
+            // result, and only then does this wait for the turn to settle. The
+            // lock a close takes is the same one a stop holds while it waits,
+            // so committing after it would deadlock the two ([#2027]).
+            let interrupt = match unloading {
+                true => Ok(this.timeline.sequence()),
+                false => {
+                    this.timeline.thaw();
+                    this.commit_interrupt("timeline closed".into(), InterruptScope::Branch, None)
+                }
+            };
             let _guard = this.control.lock().await;
             let span = tracing::info_span!(
                 "timeline.close",
@@ -812,15 +897,14 @@ impl TimelineContext {
                 outcome = tracing::field::Empty,
             );
             let mut errors = vec![];
-            let stopped = if unloading {
-                Ok(this.timeline.sequence())
-            } else {
-                this.timeline.thaw();
-                guarded("timeline.stop", async {
-                    this.stop_inner("timeline closed".into(), InterruptScope::Branch, None)
-                        .await
-                })
-                .await
+            let stopped = match interrupt {
+                Ok(interrupt) if !unloading => {
+                    guarded("timeline.stop", async {
+                        this.await_settled(interrupt).await
+                    })
+                    .await
+                }
+                other => other,
             };
             let stopped = match stopped {
                 Err(AgentError::Closed(_)) if this.loop_state().is_err() => Ok(0),
@@ -857,5 +941,107 @@ impl TimelineContext {
             );
             AgentError::aggregate(errors)
         })
+    }
+}
+
+/// The data face of one line ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md)
+/// D1): what a caller that names `(Session, line)` reaches, with every
+/// operation answering data. The runtime owner behind it ([`BranchRuntime`])
+/// stays with the branch tree, which opens, publishes and closes the line.
+///
+/// `TimelineFactory::build` provides it in the branch scope, and the catalog
+/// shares the name across languages, so the same operations serve a Session
+/// part (`sessionScope.lineCall`) and a process caller (`sessions.call`).
+pub struct TimelineContext {
+    line: Arc<BranchRuntime>,
+}
+
+/// One input write as the append under the commit lock decided it: a line
+/// holds a submission id once, so only the call that wrote it answers
+/// `written`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputWrite {
+    pub event: Arc<AgentEvent>,
+    pub written: bool,
+}
+
+// The operations spell out `std::result::Result` for rutis' export generator,
+// which resolves an alias's item type where the alias is defined
+// (arcships/rutis#463).
+#[rutis::service]
+impl TimelineContext {
+    /// Commits validated input ([`Timeline::input_checked`]), and says whether
+    /// this call wrote it. Whether it starts a turn is Loop's decision when
+    /// the input is dispatched.
+    pub async fn input(
+        &self,
+        data: InputMessageData,
+    ) -> std::result::Result<InputWrite, AgentError> {
+        match self.line.input_commit(data).await? {
+            (event, InputCommit::Written) => Ok(InputWrite {
+                event,
+                written: true,
+            }),
+            (event, InputCommit::Existing) => Ok(InputWrite {
+                event,
+                written: false,
+            }),
+        }
+    }
+    /// [`Self::input`] only while the line's last assigned sequence is still
+    /// `head`: a fact behind `head` writes nothing and answers `null`, even
+    /// for a submission id already committed.
+    pub async fn input_if_head(
+        &self,
+        data: InputMessageData,
+        head: u64,
+    ) -> std::result::Result<Option<Arc<AgentEvent>>, AgentError> {
+        self.line.input_if_head(data, head).await
+    }
+    /// Commits a batch of input as one atomic commit; see
+    /// [`BranchRuntime::inputs`] for the contract.
+    pub async fn inputs(
+        &self,
+        inputs: Vec<InputMessageData>,
+    ) -> std::result::Result<Vec<Arc<AgentEvent>>, AgentError> {
+        self.line.inputs(inputs).await
+    }
+    /// The published input with submission id `id`; `null` when the line
+    /// holds none.
+    pub async fn lookup(
+        &self,
+        id: String,
+    ) -> std::result::Result<Option<Arc<AgentEvent>>, AgentError> {
+        self.line.lookup(&id).await
+    }
+    /// Commits a turn interrupt and answers its sequence without waiting for
+    /// dispatch or settlement.
+    pub fn interrupt(&self, reason: String) -> std::result::Result<u64, AgentError> {
+        self.line.interrupt(reason)
+    }
+    /// Stops the line and answers its confirmed dispatched sequence.
+    pub async fn stop(&self, reason: String) -> std::result::Result<u64, AgentError> {
+        self.line.stop(reason).await
+    }
+    /// Waits until dispatch has consumed the line's tail with no unclosed
+    /// turn, and answers that dispatched sequence.
+    pub async fn idle(&self) -> std::result::Result<u64, AgentError> {
+        self.line.idle().await
+    }
+    /// The line's status as it stands: execution from Loop, failure from
+    /// dispatch or the owner, closure from the branch lifecycle.
+    pub fn state(&self) -> std::result::Result<BranchStatus, AgentError> {
+        self.line.state()
+    }
+    /// Waits until dispatch has consumed through `through`; a capability that
+    /// reloads is a restart, so this waits for its successor.
+    pub async fn wait_dispatched(&self, through: u64) -> std::result::Result<(), AgentError> {
+        self.line.wait_dispatched(through).await
+    }
+    /// Waits until the Timeline published `sequence`; a Timeline that closed
+    /// answers its failure, or `Closed`.
+    pub async fn wait_published(&self, sequence: u64) -> std::result::Result<(), AgentError> {
+        self.line.wait_published(sequence).await
     }
 }

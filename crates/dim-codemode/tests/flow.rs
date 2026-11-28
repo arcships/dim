@@ -11,6 +11,7 @@ use dim_agent_capabilities::{
     methods::{RpcError, SessionMethods},
     tool_registry::definition,
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, Feature, MemoryTimelineStore, Session, SessionConfig,
     testing::{MinimalHost, branch_events},

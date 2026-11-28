@@ -32,7 +32,7 @@
 
 `Branch`（`branch.rs`）：`history` :126、`page_cursor` :132、`page` :138、`local` :146、`context` :164、`compaction_cut` :170、`context_page` :176、`trace` :188。
 `Session`（`agent.rs`）：`context` :524、`compaction_cut` :528、`context_page` :532、`history` :543、`local` :550、`local_page` :562、`trace` :659。
-提交查找：`Branch::lookup`（`branch.rs:73`）经 `Session::lookup`（`agent.rs:490`）到 `TimelineContext::lookup`（`timeline_context.rs:392`），再到 :411 的点读；调用方 `connection/tree.rs:99`、`agents/sessions.rs:569`。
+提交查找：`Branch::lookup`（`branch.rs:73`）经 `Session::lookup`（`agent.rs:490`）到 `BranchRuntime::lookup`（`timeline_context.rs:392`），再到 :411 的点读；调用方 `connection/tree.rs:99`、`agents/sessions.rs:569`。
 只删 `Timeline` 上的方法，这些读仍然可达。
 
 ### 1.3 Dispatcher 导出给 TypeScript 的读（`core/dispatcher.rs`）

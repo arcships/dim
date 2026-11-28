@@ -43,7 +43,9 @@ impl Connection {
             Some(branch) => branch,
             None => self.unnamed_branch(&session).map_err(RpcError::from)?,
         };
-        let publication = session.publication(&branch).map_err(RpcError::from)?;
+        let publication = self
+            .line_ended_aware(&session, &branch)
+            .map(|line| line.publication())?;
         if let Some(provider) = rpc.ctx.get::<crate::provider::ProviderService>() {
             let adopted = session
                 .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch)?
@@ -137,10 +139,20 @@ impl Connection {
                 warnings
             }
         };
-        let (event, commit) = session
-            .input_commit(data, &branch)
+        let written = self
+            .line_ended_aware(&session, &branch)?
+            .context()
+            .input(data)
             .await
             .map_err(RpcError::from)?;
+        let (event, commit) = (
+            written.event,
+            if written.written {
+                InputCommit::Written
+            } else {
+                InputCommit::Existing
+            },
+        );
         // A warning describes the write of this call. A resubmission of a
         // `submissionId` the branch already holds wrote nothing, so it answers
         // the first input's receipt with none of this attempt's warnings.
@@ -186,8 +198,10 @@ impl Connection {
         let session = self.session(rpc, &params.session_id)?;
         let branch = params.branch_id.as_deref().expect("validated branchId");
         Ok(Reply::InputLookup(
-            match session
-                .lookup(branch, &params.submission_id)
+            match self
+                .line_ended_aware(&session, branch)?
+                .context()
+                .lookup(params.submission_id.clone())
                 .await
                 .map_err(RpcError::from)?
             {
@@ -251,12 +265,14 @@ impl Connection {
         }
         let session = self.session(rpc, &params.session_id)?;
         let branch = params.branch_id.as_deref().expect("validated branchId");
-        let mut dispatched = match session.dispatch_watch(branch) {
-            Ok(dispatched) => Some(dispatched),
-            Err(AgentError::BranchEnded(_)) => None,
-            Err(error) => return Err(RpcError::from(error)),
+        let line = self.line(&session, branch).ok();
+        let mut dispatched = line.as_ref().map(|line| line.dispatch_watch());
+        // A line that ended between the selection and the read is served at
+        // its fixed head, which only the tree knows.
+        let head = match &line {
+            Some(line) => line.sequence(),
+            None => session.ended_head(branch).ok_or_else(RpcError::closed)?,
         };
-        let head = session.sequence(branch).map_err(RpcError::from)?;
         let position = dispatched
             .as_ref()
             .map_or(head, |dispatched| dispatched.borrow().sequence);
@@ -315,10 +331,13 @@ impl Connection {
                 }
             };
             let before = params.before.unwrap_or_else(|| through.saturating_add(1));
-            let read = if session.ended_head(branch).is_some() {
-                HistoryRead::Ended(&tree, self.protocol_version())
-            } else {
-                HistoryRead::Open(&session, self.protocol_version())
+            let open = match session.ended_head(branch) {
+                Some(_) => None,
+                None => Some(self.line(&session, branch)?),
+            };
+            let read = match &open {
+                Some(line) => HistoryRead::Open(line, self.protocol_version()),
+                None => HistoryRead::Ended(&tree, self.protocol_version()),
             };
             let reply = if transcript {
                 display_transcript(&read, branch, before, limit, through).await
@@ -359,10 +378,13 @@ impl Connection {
         let tree = session
             .session_service::<TreeCommands>()
             .map_err(history_error)?;
-        let read = if session.ended_head(branch).is_some() {
-            HistoryRead::Ended(&tree, self.protocol_version())
-        } else {
-            HistoryRead::Open(&session, self.protocol_version())
+        let open = match session.ended_head(branch) {
+            Some(_) => None,
+            None => Some(self.line(&session, branch)?),
+        };
+        let read = match &open {
+            Some(line) => HistoryRead::Open(line, self.protocol_version()),
+            None => HistoryRead::Ended(&tree, self.protocol_version()),
         };
         let reply = forward_page(&read, branch, after, limit, through, display).await;
         let reply = match reply {
@@ -405,7 +427,13 @@ impl Connection {
         }
         let session = self.session(rpc, &params.session_id)?;
         let branch = params.branch_id.as_deref().expect("validated branchId");
-        if params.sequence > session.sequence(branch).map_err(history_error)? {
+        // An ended line is read at its fixed head: the user ended it, and the
+        // archive of it stays readable ([#2227]).
+        let head = match self.line(&session, branch) {
+            Ok(line) => line.sequence(),
+            Err(error) => session.ended_head(branch).ok_or(error)?,
+        };
+        if params.sequence > head {
             return Err(RpcError::invalid("Future detail position"));
         }
         let query = TimelineQuery {
@@ -438,15 +466,25 @@ impl Connection {
                 after: None,
             }),
         };
-        let reply = match session.query(branch, query.clone()).await {
-            Err(AgentError::BranchEnded(_)) => {
+        let reply = match self.line(&session, branch) {
+            Ok(line) => match line.query(query.clone()).await {
+                Ok(reply) => Ok(reply),
+                Err(AgentError::BranchEnded(_) | AgentError::UnknownBranch(_)) => {
+                    session
+                        .session_service::<TreeCommands>()
+                        .map_err(history_error)?
+                        .query(branch.to_owned(), query)
+                        .await
+                }
+                other => other,
+            },
+            Err(_) => {
                 session
                     .session_service::<TreeCommands>()
                     .map_err(history_error)?
                     .query(branch.to_owned(), query)
                     .await
             }
-            other => other,
         }
         .map_err(history_error)?;
         let QueryOutput::Rows { rows } = reply.result else {
@@ -492,7 +530,16 @@ impl Connection {
     pub(super) async fn keys(&self, rpc: &RpcService, params: Keys) -> Result<Reply, RpcError> {
         let session = self.session(rpc, &params.session_id)?;
         let branch = params.branch_id.as_deref().expect("validated branchId");
-        let head = session.sequence(branch).map_err(RpcError::from)?;
+        let ended = session.ended_head(branch);
+        let line = match ended {
+            Some(_) => None,
+            None => Some(self.line(&session, branch)?),
+        };
+        let head = match (&line, ended) {
+            (Some(line), _) => line.sequence(),
+            (None, Some(head)) => head,
+            (None, None) => return Err(RpcError::closed()),
+        };
         let through = match params.through {
             Some(through) if through > head => {
                 return Err(RpcError::invalid("Future keyed-block position"));
@@ -500,19 +547,9 @@ impl Connection {
             Some(through) => through,
             None => head,
         };
-        let entries = if session.ended_head(branch).is_some() {
-            let tree = session
-                .session_service::<TreeCommands>()
-                .map_err(history_error)?;
-            scan_keys(
-                &HistoryRead::Ended(&tree, self.protocol_version()),
-                branch,
-                through,
-            )
-            .await?
-        } else {
+        let entries = if let Some(line) = &line {
             match scan_keys(
-                &HistoryRead::Open(&session, self.protocol_version()),
+                &HistoryRead::Open(line, self.protocol_version()),
                 branch,
                 through,
             )
@@ -538,6 +575,16 @@ impl Connection {
                 }
                 other => other?,
             }
+        } else {
+            let tree = session
+                .session_service::<TreeCommands>()
+                .map_err(history_error)?;
+            scan_keys(
+                &HistoryRead::Ended(&tree, self.protocol_version()),
+                branch,
+                through,
+            )
+            .await?
         };
         let result = wire::KeysResult { through, entries };
         let bytes = serde_json::to_vec(&result)
@@ -713,8 +760,9 @@ impl Connection {
         params: BranchCreate,
     ) -> Result<Reply, RpcError> {
         let session = self.session(rpc, &params.session_id)?;
-        session
-            .state(&params.parent_branch_id)
+        self.line_ended_aware(&session, &params.parent_branch_id)?
+            .context()
+            .state()
             .map_err(RpcError::from)?;
         if params.prompt.trim().is_empty() {
             return Err(RpcError::invalid("Branch prompt must not be empty"));
@@ -727,9 +775,8 @@ impl Connection {
         {
             return Err(RpcError::invalid("Branch tool is not enabled"));
         }
-        let boundary = dim_agent_capabilities::history::validate_context_boundary_in(
-            &session,
-            &params.parent_branch_id,
+        let boundary = dim_agent_capabilities::history::validate_context_boundary_at(
+            self.line(&session, &params.parent_branch_id)?.timeline(),
             params.at,
         )
         .await
@@ -1065,7 +1112,7 @@ async fn turn_window(
 /// Timeline, through its Session, or an ended line's stored history, through
 /// the tree that owns its fixed head (ADR 021 D2).
 enum HistoryRead<'a> {
-    Open(&'a Session, u32),
+    Open(&'a dim_agent_runtime::Line, u32),
     Ended(&'a TreeCommands, u32),
 }
 
@@ -1076,14 +1123,14 @@ impl HistoryRead<'_> {
         query: TimelineQuery,
     ) -> Result<dim_agent_runtime::TimelineQueryReply, AgentError> {
         match self {
-            Self::Open(session, _) => session.query(branch, query).await,
+            Self::Open(line, _) => line.query(query).await,
             Self::Ended(tree, _) => tree.query(branch.to_owned(), query).await,
         }
     }
 
     async fn batch_end(&self, branch: &str, sequence: u64) -> Result<(), AgentError> {
         match self {
-            Self::Open(session, _) => session.batch_end(branch, sequence).await,
+            Self::Open(line, _) => line.batch_end(sequence).await,
             Self::Ended(tree, _) => tree.batch_end(branch.to_owned(), sequence).await,
         }
     }

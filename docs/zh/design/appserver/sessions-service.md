@@ -1,5 +1,9 @@
 # Agents `sessions` 服务
 
+`timelineContext` 是线自己的数据面：进程调用方经
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })` 到达
+（[ADR 027](../../adr/027-cross-scope-access-by-id.md)）。
+
 状态：已在 S2 实现（[#98](https://github.com/arcships/dim/pull/98)）；`sessions.delete`（§6.8）在 S5c（[#97](https://github.com/arcships/dim/pull/97)）合入后加入。依据 spike 结论（§2）；实现过程中的设计变更见 §17。路线图工作项 S2（[#62](https://github.com/arcships/dim/issues/62)），在 C2（[#48](https://github.com/arcships/dim/issues/48)，已合入）与 S1（[#58](https://github.com/arcships/dim/issues/58)，已在 [#94](https://github.com/arcships/dim/pull/94) 合入）之后。合同：[Session 访问 A.1](../contracts/session-access.md#a1-sessions-服务)。总览：[附录 B.2](../overview.md#b2-app-server-进程插件) Agents 行。作用域：[ADR 002](../../adr/002-plugin-scope.md) 的进程作用域，放在现有的 Agents 插件内。使用方：[Scheduler](../plugins/Scheduler.md)（P6）与 [Workflow](../plugins/Workflow.md)（P7），都用 TypeScript。
 
 Agents 的稳定目录还提供生成的只读服务 `sessionPermissions`：`permission({sessionId, branchId})` 返回当前分发后的 `PermissionState`，`permissionDefaults({})` 返回宿主当前权限上限。这些调用直接返回值或抛出生成的 `RustError`；`sessions` 保留现有回复信封。见[原生访问 §2](../../../design/p6-p7-bindings.md#2-read-only-permission-access)。
@@ -8,7 +12,7 @@ Agents 的稳定目录还提供生成的只读服务 `sessionPermissions`：`per
 
 ## 1. 概要
 
-Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`pending`、`stop`、`idle`、`defaultBranchId` 和 `delete`，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务，`delete` 转交给 S5c 的 `AgentIndex::delete`。
+Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`exists`、`history`、`withdraw`、`pending`、`defaultBranchId`、`delete` 和 `call`；线上的输入、查找、停止与空闲经 `call` 到达线自己的数据面，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务，`delete` 转交给 S5c 的 `AgentIndex::delete`。
 
 - **形态。** 一个具名进程服务 `sessions`，没有实例 key。它是 `host_key("sessions")` 上的 `dyn HostDispatch`，像 `pluginFiles` 一样经服务目录跨语言共享。由 Agents 中从不重载的目录部分提供，每次调用时查找 Agents 索引，因此使用方从不随索引重载（#35）。
 - **启动。** `launch` 创建非交互 Session。它的权限策略是请求的策略，以启动方分支的当前策略为上限；当前策略即由 `permission/changed` 事实折叠出的 `PermissionState`。没有启动方时，上限是宿主的 Session 默认值。Agents 在创建前经 `SessionConfig.permission_policy` 施加上限。
@@ -28,7 +32,7 @@ S2 是 L 级工作项，因此先做 spike（[路线图 §5.4](../../../design/r
 | --- | --- | --- | --- | --- |
 | 1 | 启动方的当前策略在哪里？ | 测试：以 full access 创建启动方，再用 `Permission::update` 收窄 | `Session::config().permission_policy` 仍是 full access：它是创建时的初始值。`Session::get::<PermissionState>(branch)` 读到已分发的 workspace-write 策略。以收窄后的 `SessionConfig.permission_policy` 创建的 Session，读回的 `PermissionState` 就是它，版本为 0 | 上限从 `PermissionState` 读取，在创建时施加；运行时不变 |
 | 2 | 两个策略能取上限吗？ | `PermissionPreset` 没有顺序，也没有求两个策略交集的操作。用 Permission 自己的 `decide` 对 §6.1 的规则做临时穷举检查：3 × 3 个预设、16 种列表归属、2 个工具名、7 种风险，共 2016 种情况 | 取上限后的策略从不比任一输入更宽。2006 种情况等于逐点取最小。其余 10 种是某工具只出现在预设较低一方的 `allowedTools` 中：逐点最小会询问或允许，上限规则拒绝 | 采用 §6.1 的上限规则，有意保守 |
-| 3 | 刚写入的输入还没运行时，`idle` 会返回吗？ | 代码：`TimelineContext::idle` 等待 Loop `Idle`、没有待发布事件、分发追到尾部。InputQueue 采纳输入、Loop 启动 turn，都发生在前一个事件的分发过程中。测试，运行 40 次：三条 Queue 输入后调用 `idle` | 不会。每条输入都在截止点或之前被消费，随后有 `turn/end`。分支空闲时调用 `idle` 立即返回同一个截止点。Append 输入在截止点已被采纳但未被消费 | `idle` 就是门面调用，只与关闭和重载竞争（§6.4） |
+| 3 | 刚写入的输入还没运行时，`idle` 会返回吗？ | 代码：`BranchRuntime::idle` 等待 Loop `Idle`、没有待发布事件、分发追到尾部。InputQueue 采纳输入、Loop 启动 turn，都发生在前一个事件的分发过程中。测试，运行 40 次：三条 Queue 输入后调用 `idle` | 不会。每条输入都在截止点或之前被消费，随后有 `turn/end`。分支空闲时调用 `idle` 立即返回同一个截止点。Append 输入在截止点已被采纳但未被消费 | `idle` 就是门面调用，只与关闭和重载竞争（§6.4） |
 | 4 | 待处理的审批对 `idle` 有什么影响？ | 测试：非交互的 workspace-write Session，模型调用 `exec` | 写入了 `approval/request`，500 ms 后 `idle` 仍未返回。`stop` 结束 turn 后 `idle` 返回；`exec` 从未运行。没有任何部件为审批读取 `interactive` | 审批让 `idle` 保持等待；调用方用 `stop` 给运行设上限（§6.4） |
 | 5 | TypeScript 使用方怎样访问 Rust 服务？ | `pluginFiles` 先例与 rutis 0.10 源码 | `host_key(name)` 上的 `dyn HostDispatch` 加上 `ServiceCatalog::register_shared(name)`，JavaScript 行就能看到它。`HostDispatch::invoke(method, args)` 不携带调用方身份。JavaScript 插件 API 只有 `inject`，是硬依赖，没有按次查找。rutis 0.10 不会把 JavaScript 的 `AbortSignal` 带进 Rust 调用（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)） | `sessions` 由目录部分提供（§5）；A.1 删去“由 Agents 确定来源”；JavaScript 侧的取消提给 C4（§14） |
 | 6 | 一个已装载的 Session 成本多少？ | `xtask measure`，release 构建，mock 模型，Apple M4 | 每个已装载的空闲 Session 约 300 KB Rust 分配、43 个 Tokio 任务。已装载 10 个时平均创建耗时 1.5 ms，100 个时 4.0 ms，1000 个时 57 ms。App Server 从不卸载空闲 Session（[#57](https://github.com/arcships/dim/issues/57)） | 启动的 Session 会累积到重启为止；空闲卸载作为后续项提出（§8.6） |
@@ -217,13 +221,13 @@ Agents 取得该分支的发布观察器，调用 `Session::input`；它像对�
 
 状态：[#32](https://github.com/arcships/dim/issues/32) 已决定：`submission_id` 仍是 `input/message` 的字段，不在别处另作记录。按 main `bb4028d` 核对。原生格式保持 v18（[格式决定](../../../design/appserver/native-storage-format.md#32-格式决定)）。
 
-#32 把该字段描述为没有运行时能力使用的客户端协议数据，要求由 Rpc 或 SessionStore 持有一条与输入原子写入的幂等记录。此后 S2 让每次 `sessions.input` 都必须带它，Goal 经 `Branch::input` 写入它，Workflow（以及 draft 中的 Scheduler）据它决定恢复：
+#32 把该字段描述为没有运行时能力使用的客户端协议数据，要求由 Rpc 或 SessionStore 持有一条与输入原子写入的幂等记录。此后 S2 让每次 `timelineContext.input` 都必须带它，Goal 经 `Branch::input` 写入它，Workflow（以及 draft 中的 Scheduler）据它决定恢复：
 
 | 所有者 | 写入 | 据此决定 |
 | --- | --- | --- |
 | Rpc `session.submit`，协议 v3（[connection/tree.rs](../../../../crates/dim-app-server/src/connection/tree.rs)） | 可选的 UUID | — |
-| Agents `sessions.input`（§6.2） | 必填、非空，按约定为 `<source>:<uuid>` | — |
-| 分支 Timeline（[core/timeline.rs](../../../../crates/dim-agent-runtime/src/core/timeline.rs)），经 `Session::input` 与 `Session::lookup`（`sessions.input`、`sessions.lookup`、Rpc 的 `session.submit` 与 `session.input_lookup`） | — | 每个分支对每个标识只接受一次；查找回答 `accepted`、`unknown` 或 `ambiguous` |
+| Agents `timelineContext.input`（§6.2） | 必填、非空，按约定为 `<source>:<uuid>` | — |
+| 分支 Timeline（[core/timeline.rs](../../../../crates/dim-agent-runtime/src/core/timeline.rs)），经 `Session::input` 与 `Session::lookup`（`timelineContext.input`、`timelineContext.lookup`、Rpc 的 `session.submit` 与 `session.input_lookup`） | — | 每个分支对每个标识只接受一次；查找回答 `accepted`、`unknown` 或 `ambiguous` |
 | Goal 的部件（[crates/dim-goal](../../../../crates/dim-goal)） | 经 `TreeCommands::input` 写 `goal:<uuid>` | 不读取 |
 | Workflow（[engine.ts](../../../../runtime/plugins/workflow/engine.ts)） | 每个阶段输入和报告写 `workflow:<uuid>`，写入前先存入运行文件 | 同一代或替换代重试时以同一标识重新提交，按回复结算 |
 | Scheduler([A.5](../plugins/Scheduler.md#a5-timeline-与-capability-机制)、[A.6](../plugins/Scheduler.md#a6-运行结果投递)；运行时在 draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>`，每个投递一个 | 不确定的回复由查询结算(A.6)；同一窗口绝不写两次 |
@@ -513,7 +517,7 @@ S1 的撤回合同（A.4）、输入约定（A.2）与 `interactive`（A.3）不
 
 | 项 | 内容 |
 | --- | --- |
-| 被什么挡住 | ADR 002 D5 把取消定义为使用方放弃调用。rutis 0.10 不会把 JavaScript 的 `AbortSignal` 带进 Rust 调用，因此 TypeScript 调用方无法放弃一个待处理的 `sessions.idle`（§8.4） |
+| 被什么挡住 | ADR 002 D5 把取消定义为使用方放弃调用。rutis 0.10 不会把 JavaScript 的 `AbortSignal` 带进 Rust 调用，因此 TypeScript 调用方无法放弃一个待处理的 `timelineContext.idle`（§8.4） |
 | 考虑过的现有机制 | `pluginFiles` 额外的取消 Promise 参数：是单个服务的约定，不是绑定规则。`stop` 或 `withdraw`：它们在结束等待的同时也结束了运行 |
 | 需要的通用能力 | 在语言中立绑定中，TypeScript 调用方放弃对 Rust 提供的共享服务的调用时，丢弃对应的 Rust future。绑定对进程服务也沿用 App Server 的信封（§5），使 `SessionsError` 以数据形式到达 |
 | 对序号、批次、中断、重载的影响 | 无：放弃等待不写入任何内容 |
@@ -551,7 +555,7 @@ S1 合入后在 [#98](https://github.com/arcships/dim/pull/98) 上实现，`sess
 
 1. 完成。在 Agents 负责线中实现类型与七个 `AgentIndex` 方法（附录 A）。
 2. 完成。目录部分提供 `sessions`；App Server `lib.rs` 注册 `register_shared("sessions")`（装配负责线中的一行）。
-3. 完成。查找属于分支（`Session::lookup`，§6.3）；`sessions.lookup` 与 Rpc 的 `session.input_lookup` 都调用它。
+3. 完成。查找属于分支（`Session::lookup`，§6.3）；`timelineContext.lookup` 与 Rpc 的 `session.input_lookup` 都调用它。
 4. 完成。`sessions.delete` 转交给 S5c 的 `AgentIndex::delete`（[#97](https://github.com/arcships/dim/pull/97)），A.1 中有它的行（§6.8）。
 
 流程测试在 [transport_flow/sessions.rs](../../../../crates/dim-app-server/tests/transport_flow/sessions.rs)。`serve` 不接受额外的进程行，因此由一个测试 Session 部分按名称注入 `sessions`（`Keyed<dyn HostDispatch>`，与 `plugin_files_flow` 相同），测试再调用它，从而走语言中立路径。计划中的用例对应如下：

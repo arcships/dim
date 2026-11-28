@@ -705,14 +705,17 @@ async fn pending(service: &dyn HostDispatch, record: &Loop, input_id: &str) -> P
         "inputId": input_id,
     });
     match sessions(service, "pending", request).await {
-        Ok(Ok(reply)) => {
+        Ok(Ok(Some(reply))) => {
             if reply.get("pending").and_then(|pending| pending.as_bool()) == Some(true) {
                 Pending::Held
             } else {
                 Pending::Consumed
             }
         }
-        Ok(Err(code)) if crate::engine::target_gone(&code) => Pending::Gone(code),
+        Ok(Ok(None)) => Pending::Unknown,
+        Ok(Err(refusal)) if crate::engine::target_gone(&refusal) => {
+            Pending::Gone(refusal.recorded().to_owned())
+        }
         Ok(Err(_)) | Err(_) => Pending::Unknown,
     }
 }
@@ -743,10 +746,12 @@ pub(crate) enum Lookup {
 /// is too. A target that is gone is a definite answer, because the pass settles
 /// the record `Stopped`. Any other code does not clear by itself and must not be
 /// retried at the tick rate.
-pub(crate) fn retry_for(answer: &Result<Result<serde_json::Value, String>, String>) -> Lookup {
+pub(crate) fn retry_for(
+    answer: &Result<Result<Option<serde_json::Value>, crate::engine::Refusal>, String>,
+) -> Lookup {
     match answer {
-        Ok(Err(code)) if crate::engine::uncertain(code) => Lookup::NextTick,
-        Ok(Err(code)) if crate::engine::target_gone(code) => Lookup::Settled,
+        Ok(Err(refusal)) if crate::engine::uncertain(refusal) => Lookup::NextTick,
+        Ok(Err(refusal)) if crate::engine::target_gone(refusal) => Lookup::Settled,
         Ok(Err(_)) => Lookup::NextMinute,
         // A reply that never arrived says nothing about the service, so it
         // cannot be a lasting refusal; the pass asks again at the next tick.
@@ -888,26 +893,29 @@ impl Loops {
                 continue;
             }
             let input = json!({
-                "sessionId": record.session_id,
-                "branchId": record.branch_id,
+                "submission_id": submission(&record.loop_id, round),
                 "mode": "queue",
-                "submissionId": submission(&record.loop_id, round),
-                "rawBlocks": [{"text": marker(&record.loop_id, round)}],
-                "content": [{"type": "text", "text": record.prompt}],
+                "blocks": [{"type": "raw", "text": marker(&record.loop_id, round)}],
+                "user": {"content": [{"type": "text", "text": record.prompt}]},
             });
-            match sessions(self.shared.sessions.as_ref(), "input", input).await {
-                Ok(Ok(receipt)) => {
-                    let input_id = receipt
-                        .get("inputId")
-                        .and_then(|id| id.as_str())
-                        .map(str::to_owned);
-                    changes.push(Change::delivered(&record, round, input_id, now));
+            match crate::engine::write_published(
+                self.shared.sessions.as_ref(),
+                &record.session_id,
+                &record.branch_id,
+                input,
+            )
+            .await
+            {
+                Ok(Ok((input_id, _sequence))) => {
+                    changes.push(Change::delivered(&record, round, Some(input_id), now));
                 }
-                Ok(Err(code)) if crate::engine::target_gone(&code) => changes.push(Change::settle(
-                    &record.loop_id,
-                    LoopState::Stopped,
-                    Some(code),
-                )),
+                Ok(Err(refusal)) if crate::engine::target_gone(&refusal) => {
+                    changes.push(Change::settle(
+                        &record.loop_id,
+                        LoopState::Stopped,
+                        Some(refusal.recorded().to_owned()),
+                    ))
+                }
                 // `reloading`, an uncertain reply and any other code leave the
                 // round `delivering`; a later pass settles it by lookup with
                 // the same submission id, which a branch accepts once.
@@ -962,11 +970,7 @@ impl Loops {
             let Some(round) = record.delivering_round else {
                 continue;
             };
-            let request = json!({
-                "sessionId": record.session_id,
-                "branchId": record.branch_id,
-                "submissionId": submission(&record.loop_id, round),
-            });
+            let submission_id = submission(&record.loop_id, round);
             // The flow tests' seam: an armed failure makes this lookup the one
             // that answers nothing.
             #[cfg(feature = "testing")]
@@ -978,21 +982,35 @@ impl Loops {
             {
                 Err("lookup reply lost".to_owned())
             } else {
-                sessions(self.shared.sessions.as_ref(), "lookup", request).await
+                crate::engine::line(
+                    self.shared.sessions.as_ref(),
+                    &record.session_id,
+                    &record.branch_id,
+                    "lookup",
+                    vec![json!(submission_id)],
+                )
+                .await
             };
             #[cfg(not(feature = "testing"))]
-            let answer = sessions(self.shared.sessions.as_ref(), "lookup", request).await;
+            let answer = crate::engine::line(
+                self.shared.sessions.as_ref(),
+                &record.session_id,
+                &record.branch_id,
+                "lookup",
+                vec![json!(submission_id)],
+            )
+            .await;
             let retry = retry_for(&answer);
             if retry != Lookup::Settled {
                 cadence = merge(cadence, retry);
             }
             match answer {
-                Ok(Ok(value)) => {
-                    if value.get("status").and_then(|s| s.as_str()) == Some("accepted") {
+                Ok(Ok(Some(value))) => {
+                    if let Some(event) = value.as_object() {
                         // The lookup names the round's input, so the settled
                         // record keeps the id a later window checks.
-                        let input_id = value
-                            .get("inputId")
+                        let input_id = event
+                            .get("id")
                             .and_then(|id| id.as_str())
                             .map(str::to_owned);
                         changes.push(Change::delivered(record, round, input_id, now));
@@ -1011,12 +1029,15 @@ impl Loops {
                         });
                     }
                 }
-                Ok(Err(code)) if crate::engine::target_gone(&code) => changes.push(Change::settle(
-                    &record.loop_id,
-                    LoopState::Stopped,
-                    Some(code),
-                )),
-                Ok(Err(code)) => {
+                Ok(Err(refusal)) if crate::engine::target_gone(&refusal) => {
+                    changes.push(Change::settle(
+                        &record.loop_id,
+                        LoopState::Stopped,
+                        Some(refusal.recorded().to_owned()),
+                    ))
+                }
+                Ok(Err(refusal)) => {
+                    let code = refusal.recorded();
                     // The record stays `delivering` and a later pass asks again
                     // with the same submission id. A service that is not ready
                     // yet is worth the next tick and is only a debug line; any
@@ -1037,6 +1058,10 @@ impl Loops {
                             "scheduler loop lookup left the round unsettled"
                         );
                     }
+                }
+                Ok(Ok(None)) => {
+                    // A lookup that answered nothing leaves the record
+                    // `delivering`: a later pass asks again.
                 }
                 Err(error) => {
                     // A reply that never arrived is what a restart meets first,

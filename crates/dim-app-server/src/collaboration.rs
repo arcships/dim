@@ -43,6 +43,7 @@ use futures_util::{
 };
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{HostDispatch, host_key, settle};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -171,6 +172,31 @@ pub(crate) struct CollaborationDirectory {
     /// Watched Session ids and their Agents: closure (treated as deletion)
     /// removes their relations and may release an owned Agent.
     watched: Mutex<BTreeMap<String, Arc<WatchedSession>>>,
+    /// Stops a failed request still has to deliver, by member Session id. A
+    /// generation that stops before the member does leaves the entry for the
+    /// next one to finish ([#2027], design rule 8).
+    pending_stops: Mutex<BTreeMap<String, PendingStop>>,
+    /// Members whose stop this generation carries, by member Session id. A
+    /// new request to that member is refused `Busy` while the mark of the
+    /// generation that holds it lives; a mark left by a generation that
+    /// stopped protects nothing (design rule 8, [#2027]).
+    stopping: Mutex<BTreeMap<String, StoppingMark>>,
+    /// Which generation of Collaboration is current.
+    generation: std::sync::atomic::AtomicUsize,
+    /// Stops a generation actually delivered. Feature `testing` only: a test
+    /// reads it to see which generation carried the stop.
+    #[cfg(feature = "testing")]
+    delivered: std::sync::atomic::AtomicUsize,
+}
+
+/// One stop a later generation has to deliver.
+#[derive(Clone)]
+pub(crate) struct PendingStop {
+    pub line: String,
+    pub reason: String,
+    /// The input the request delivered: its fate decides whether the stop
+    /// ends a turn or withdraws an unapplied input ([#2027]).
+    pub input_event_id: String,
 }
 
 impl CollaborationDirectory {
@@ -225,11 +251,21 @@ impl Plugin for CollaborationDirectoryPlugin {
 /// [`SessionRestored`] and [`UnloadedSessionDeleted`].
 pub struct Collaboration {
     index: Arc<AgentIndex>,
+    /// The `sessions` face: provided by the directory, which outlives an
+    /// `Agents` reload, and each call reads the index of the generation that
+    /// holds the Session now. A fixed `index` is the previous one after a
+    /// reload and answers `session_reloading` for good ([ADR 027][027],
+    /// [#2027]).
+    ///
+    /// [027]: ../../../docs/adr/027-cross-scope-access-by-id.md
+    sessions: Arc<dyn HostDispatch>,
     directory: Arc<CollaborationDirectory>,
     /// The subagent model policy's source; local execution only.
     settings: Option<Arc<SettingsService>>,
     tasks: TaskTracker,
     stop: CancellationToken,
+    /// Which generation of the part this is, as the directory counts them.
+    generation: usize,
 }
 struct Peer {
     usage: crate::agents::SessionUse,
@@ -248,6 +284,213 @@ struct Participant {
     status: &'static str,
 }
 impl Collaboration {
+    /// The effect and the wait of one carry-out; `carry_out_stop` holds the
+    /// mark across both and clears the request's flag when either fails.
+    async fn stop_request_input(
+        self: &Arc<Self>,
+        session: &Session,
+        branch: &str,
+        input: &str,
+        reason: &str,
+        stopping: Arc<Stopping>,
+    ) -> dim_agent_runtime::Result<()> {
+        let mut after = 0;
+        let mut open = None;
+        // The delivery's line, held on the request: moving the member's
+        // default branch does not redirect the withdrawal or the stop to a
+        // line that never held the input (design §9, §15).
+        let line = branch.to_owned();
+        // The published head is read before the check and the wait names the
+        // next sequence: whatever the check cannot see happened after that
+        // head, so waiting for it to be passed cannot miss a change
+        // ([#2027](https://github.com/arcships/dim/issues/2027)).
+        match input_fate(
+            self.sessions.as_ref(),
+            session,
+            &line,
+            input,
+            &mut after,
+            &mut open,
+        )
+        .await?
+        {
+            InputFate::Consumed(Some(turn)) => {
+                stop_member_turn(session, &line, &turn, reason)?;
+                return Ok(());
+            }
+            // A consumed input whose turn already ended, and a deleted one
+            // that no turn will consume, leave nothing to stop.
+            InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
+            InputFate::Pending => {}
+        }
+        match session
+            .service::<dim_agent_capabilities::input_queue::InputQueue>(&line)?
+            .withdraw(InputWithdrawData {
+                input_id: input.to_owned(),
+                reason: Some(reason.into()),
+                steer: None,
+            })
+            .await?
+        {
+            // (W): no turn will run for the input; the settle names it.
+            dim_agent_capabilities::input_queue::Withdrawal::Deleted { .. } => return Ok(()),
+            dim_agent_capabilities::input_queue::Withdrawal::NotHeld => {}
+        }
+        // (S): InputQueue handed the input to Loop, so the turn that consumes
+        // it is the one to stop. Waiting for its `input/consumed` names that
+        // turn, the documented `consumed < interrupt` order, instead of
+        // racing its application. The carry-out ends when the stop lands, when
+        // the withdrawal deletes the input, when the member client deletes it
+        // first, when the consuming turn has ended, when the member closes, or
+        // when Collaboration stops: not on the branch's abort and not on the
+        // request's settle, because a branch close settles the request while
+        // the member may not have consumed yet.
+        let stop = self.stop.clone();
+        let tasks = self.tasks.clone();
+        let sessions = self.sessions.clone();
+        let session = session.clone();
+        let line = line.clone();
+        let input = input.to_owned();
+        let reason = reason.to_owned();
+        let wait = async move {
+            // The mark lives until this block ends, and a failure of the loop
+            // below clears the request's flag before it goes.
+            let result: dim_agent_runtime::Result<()> = async {
+                loop {
+                    let head = line_head(sessions.as_ref(), &session, &line).await?;
+                    tokio::select! {
+                        _ = stop.cancelled() => return Ok(()),
+                        _ = session.closed() => {
+                            return Err(AgentError::Closed(session.id().into()));
+                        }
+                        result = line_call(
+                            sessions.as_ref(),
+                            &session,
+                            &line,
+                            "timelineContext",
+                            "waitPublished",
+                            vec![serde_json::json!(head + 1)],
+                        ) => {
+                            // A line that closed ends the wait; the next check
+                            // reads what is there.
+                            if result.is_err() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    match input_fate(
+                        sessions.as_ref(),
+                        &session,
+                        &line,
+                        &input,
+                        &mut after,
+                        &mut open,
+                    )
+                    .await?
+                    {
+                        InputFate::Consumed(Some(turn)) => {
+                            stop_member_turn(&session, &line, &turn, &reason)?;
+                            return Ok(());
+                        }
+                        // The member deleted the input first: no turn will
+                        // consume it, so the wait ends with nothing to stop.
+                        InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
+                        InputFate::Pending => {}
+                    }
+                }
+            }
+            .await;
+            if result.is_err() {
+                stopping.failed(&input);
+            }
+            result
+        };
+        tasks.spawn(wait);
+        Ok(())
+    }
+    /// Whether this generation holds a stopping mark for `member`: a request
+    /// to it is refused until that stop ends.
+    fn stopping(&self, member: &str) -> bool {
+        let generation = self.generation;
+        self.directory
+            .stopping
+            .lock()
+            .unwrap()
+            .get(member)
+            .is_some_and(|mark| mark.generation == generation)
+    }
+
+    /// The stops this process delivered, and the ones still recorded. Feature
+    /// `testing` only: a test tells a stop carried by the next generation from
+    /// one carried by the first, and that a delivered stop leaves no record.
+    #[cfg(feature = "testing")]
+    pub fn delivered_stops(&self) -> usize {
+        self.directory
+            .delivered
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(feature = "testing")]
+    pub fn recorded_stops(&self) -> Vec<String> {
+        self.directory
+            .pending_stops
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Delivers the stop recorded for `member`, if this generation still has
+    /// one: a delivered stop, a Session or line that is gone, and a closing
+    /// Session all end the record; only this generation stopping first leaves
+    /// it ([#2027], design rule 8).
+    async fn deliver_pending_stop(self: &Arc<Self>, member: String) {
+        let Some(pending) = self
+            .directory
+            .pending_stops
+            .lock()
+            .unwrap()
+            .get(&member)
+            .cloned()
+        else {
+            return;
+        };
+        let Some((_, session)) = self.index.session(&member) else {
+            self.directory.pending_stops.lock().unwrap().remove(&member);
+            return;
+        };
+        let stopping = Stopping::cross_generation(&self.directory, &member);
+        match self
+            .stop_request_input(
+                &session,
+                &pending.line,
+                &pending.input_event_id,
+                &pending.reason,
+                Arc::new(stopping),
+            )
+            .await
+        {
+            Ok(()) => {}
+            // The owner is reloading: the stop did not run, so the record
+            // waits for the next attempt ([ADR 027 D2][027]).
+            //
+            // [027]: ../../../docs/adr/027-cross-scope-access-by-id.md
+            Err(AgentError::Reloading(_)) => return,
+            Err(_) => {
+                self.directory.pending_stops.lock().unwrap().remove(&member);
+                return;
+            }
+        }
+        {
+            self.directory.pending_stops.lock().unwrap().remove(&member);
+            #[cfg(feature = "testing")]
+            self.directory
+                .delivered
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     /// Creates a member Session under the target Agent (created first when
     /// temporary) and records the relation. `adopted` is the requesting
     /// branch's model selection, captured when its request was consumed.
@@ -619,26 +862,28 @@ impl Collaboration {
         })
     }
     /// Every participant of the caller's Team; empty outside a Team.
-    fn team(&self, from: &str) -> Vec<Participant> {
-        let relations = self.directory.relations.lock().unwrap();
-        let leader = relations
-            .get(from)
-            .map_or(from, |relation| relation.leader.as_str())
-            .to_owned();
-        let mut members: Vec<(CollaborationRole, String, String)> = relations
-            .iter()
-            .filter(|(member, relation)| {
-                relation.leader == leader && self.index.host_by_session(member).is_some()
-            })
-            .map(|(member, relation)| {
-                (
-                    CollaborationRole::Member,
-                    member.clone(),
-                    relation.member_agent.clone(),
-                )
-            })
-            .collect();
-        drop(relations);
+    async fn team(&self, from: &str) -> Vec<Participant> {
+        let (leader, mut members) = {
+            let relations = self.directory.relations.lock().unwrap();
+            let leader = relations
+                .get(from)
+                .map_or(from, |relation| relation.leader.as_str())
+                .to_owned();
+            let members: Vec<(CollaborationRole, String, String)> = relations
+                .iter()
+                .filter(|(member, relation)| {
+                    relation.leader == leader && self.index.host_by_session(member).is_some()
+                })
+                .map(|(member, relation)| {
+                    (
+                        CollaborationRole::Member,
+                        member.clone(),
+                        relation.member_agent.clone(),
+                    )
+                })
+                .collect();
+            (leader, members)
+        };
         if members.is_empty() {
             return vec![];
         }
@@ -648,45 +893,45 @@ impl Collaboration {
             .map(|host| host.agent_id.clone())
             .unwrap_or_default();
         members.insert(0, (CollaborationRole::Leader, leader, leader_agent));
-        members
-            .into_iter()
-            .map(|(role, session_id, agent_id)| {
-                let (name, status) = match self.index.session(&session_id) {
-                    Some((host, session)) if !session.is_closing() => {
-                        // A member is a Session like any other: its own
-                        // defaults follow its own default branch (design §9,
-                        // §15).
-                        let working = session
-                            .default_branch()
-                            .ok()
-                            .and_then(|line| session.state(&line).ok())
-                            .is_some_and(|state| state.running);
-                        (
-                            host.profile.name.clone(),
-                            if working { "working" } else { "idle" },
-                        )
-                    }
-                    _ => (
-                        self.index
-                            .host(Some(&agent_id))
-                            .map(|host| host.profile.name.clone())
-                            .unwrap_or_default(),
-                        if self.index.session_available(&session_id) {
-                            "idle"
-                        } else {
-                            "closed"
-                        },
-                    ),
-                };
-                Participant {
-                    role,
-                    agent_id,
-                    session_id,
-                    name,
-                    status,
+        let mut listed = Vec::with_capacity(members.len());
+        for (role, session_id, agent_id) in members {
+            let (name, status) = match self.index.session(&session_id) {
+                Some((host, session)) if !session.is_closing() => {
+                    // A member is a Session like any other: its own
+                    // defaults follow its own default branch (design §9,
+                    // §15).
+                    let working = match session.default_branch() {
+                        Ok(line) => line_status(self.sessions.as_ref(), &session, &line)
+                            .await
+                            .is_some_and(|state| state.running),
+                        Err(_) => false,
+                    };
+                    (
+                        host.profile.name.clone(),
+                        if working { "working" } else { "idle" },
+                    )
                 }
-            })
-            .collect()
+                _ => (
+                    self.index
+                        .host(Some(&agent_id))
+                        .map(|host| host.profile.name.clone())
+                        .unwrap_or_default(),
+                    if self.index.session_available(&session_id) {
+                        "idle"
+                    } else {
+                        "closed"
+                    },
+                ),
+            };
+            listed.push(Participant {
+                role,
+                agent_id,
+                session_id,
+                name,
+                status,
+            });
+        }
+        listed
     }
 }
 
@@ -727,6 +972,7 @@ pub(crate) struct CollaborationPlugin {
     /// The subagent model policy's source; local execution only, as Agents.
     settings: Option<Key<SettingsService>>,
     index: Key<AgentIndex>,
+    sessions: Key<dyn HostDispatch>,
     directory: Key<CollaborationDirectory>,
     parts: Key<dim_agent_runtime::PartRegistry>,
 }
@@ -737,6 +983,7 @@ impl CollaborationPlugin {
                 .then(|| names.key::<SettingsService>())
                 .transpose()?,
             index: names.key()?,
+            sessions: host_key("sessions"),
             directory: names.key()?,
             parts: names.key()?,
         })
@@ -750,6 +997,7 @@ impl DynPlugin for CollaborationPlugin {
         let mut injects: Vec<_> = self.settings.iter().map(Key::erase).collect();
         injects.extend([
             self.index.erase(),
+            self.sessions.erase(),
             self.directory.erase(),
             self.parts.erase(),
         ]);
@@ -758,18 +1006,29 @@ impl DynPlugin for CollaborationPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let index = ctx.require_at(&self.index)?;
+            let sessions = ctx.require_at(&self.sessions)?;
             let directory = ctx.require_at(&self.directory)?;
             let parts = ctx.require_at(&self.parts)?;
             let settings = match &self.settings {
                 Some(settings) => Some(ctx.require_at(settings)?),
                 None => None,
             };
+            // A new generation invalidates the stopping marks of the one it
+            // replaced: a stop that crossed the reload is carried by
+            // `pending_stops`, not by a mark nothing would clear.
+            let generation = directory
+                .generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            directory.stopping.lock().unwrap().clear();
             let service = Arc::new(Collaboration {
                 index,
+                sessions,
                 directory,
                 settings,
                 tasks: TaskTracker::new(),
                 stop: CancellationToken::new(),
+                generation,
             });
             let owner = service.clone();
             ctx.effect(move || async move {
@@ -800,6 +1059,22 @@ impl DynPlugin for CollaborationPlugin {
                 service.observe(watched);
             }
             service.reconcile().await;
+            // A stop the previous generation did not finish is delivered by
+            // this one ([#2027], design rule 8).
+            let pending: Vec<String> = service
+                .directory
+                .pending_stops
+                .lock()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            for member in pending {
+                let resumed = service.clone();
+                service.tasks.spawn(async move {
+                    resumed.deliver_pending_stop(member).await;
+                });
+            }
             ctx.provide_as::<Collaboration>(service)?;
             use dim_agent_runtime::PartScope;
             parts.register(ctx, PartScope::Session, "CollaborationSession", |mount| {
@@ -897,20 +1172,23 @@ struct State {
     branches: BTreeMap<String, BranchRecord>,
     /// Keyed by member Session id: one request per member.
     requests: BTreeMap<String, Request>,
-    /// Member Session id -> the cancel or leader interrupt on that member
-    /// that is still being carried out. A request to that member is refused
-    /// `Busy` while a mark is held, so a stop reaches only the turn of the
-    /// request it was decided for; the mark lasts until the carry-out ends:
-    /// the stop lands, the input is deleted, the consuming turn has ended,
-    /// the member closes, or Collaboration stops.
-    stopping: BTreeMap<String, usize>,
+}
+
+/// A member's stopping mark and the generation that holds it.
+#[derive(Clone, Copy)]
+struct StoppingMark {
+    count: usize,
+    generation: usize,
 }
 
 /// Holds a member's stopping mark until the carry-out ends, however it does:
 /// the stop lands, the input is deleted, the consuming turn has ended, the
 /// member closes, or Collaboration stops.
 struct Stopping {
-    owner: Arc<CollaborationSession>,
+    /// The Session whose request the stop was decided for; a stop a later
+    /// generation delivers has none, so it clears no request flag.
+    owner: Option<Arc<CollaborationSession>>,
+    directory: Arc<CollaborationDirectory>,
     member: String,
 }
 impl Stopping {
@@ -918,10 +1196,40 @@ impl Stopping {
     /// section, so the mark and the decision it protects are one step: while
     /// the guard lives, a new request to that member is refused `Busy`, and
     /// the stop reaches only the turn it was decided for.
-    fn mark(owner: &Arc<CollaborationSession>, state: &mut State, member: &str) -> Self {
-        *state.stopping.entry(member.to_owned()).or_insert(0) += 1;
+    fn mark(owner: &Arc<CollaborationSession>, _state: &mut State, member: &str) -> Self {
+        let directory = &owner.collaboration.directory;
+        let generation = directory
+            .generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let mut marks = directory.stopping.lock().unwrap();
+        let mark = marks.entry(member.to_owned()).or_insert(StoppingMark {
+            count: 0,
+            generation,
+        });
+        mark.count += 1;
+        mark.generation = generation;
         Stopping {
-            owner: owner.clone(),
+            owner: Some(owner.clone()),
+            directory: owner.collaboration.directory.clone(),
+            member: member.to_owned(),
+        }
+    }
+    /// Takes the mark for a stop a later generation delivers: it protects the
+    /// same member while that stop runs.
+    fn cross_generation(directory: &Arc<CollaborationDirectory>, member: &str) -> Self {
+        let generation = directory
+            .generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let mut marks = directory.stopping.lock().unwrap();
+        let mark = marks.entry(member.to_owned()).or_insert(StoppingMark {
+            count: 0,
+            generation,
+        });
+        mark.count += 1;
+        mark.generation = generation;
+        Stopping {
+            owner: None,
+            directory: directory.clone(),
             member: member.to_owned(),
         }
     }
@@ -931,7 +1239,10 @@ impl Stopping {
     /// by a newer request keeps its own flag. The mark is still held while
     /// this runs, so no new request can take the member before the mark goes.
     fn failed(&self, input: &str) {
-        let mut state = self.owner.state.lock().unwrap();
+        let Some(owner) = &self.owner else {
+            return;
+        };
+        let mut state = owner.state.lock().unwrap();
         if let Some(request) = state
             .requests
             .get_mut(&self.member)
@@ -943,11 +1254,11 @@ impl Stopping {
 }
 impl Drop for Stopping {
     fn drop(&mut self) {
-        let mut state = self.owner.state.lock().unwrap();
-        if let Some(count) = state.stopping.get_mut(&self.member) {
-            *count -= 1;
-            if *count == 0 {
-                state.stopping.remove(&self.member);
+        let mut marks = self.directory.stopping.lock().unwrap();
+        if let Some(mark) = marks.get_mut(&self.member) {
+            mark.count -= 1;
+            if mark.count == 0 {
+                marks.remove(&self.member);
             }
         }
     }
@@ -1384,6 +1695,7 @@ impl CollaborationSession {
         let participants: Vec<Value> = self
             .collaboration
             .team(&self.session_id)
+            .await
             .into_iter()
             .map(|participant| {
                 json!({"role": participant.role, "agentId": participant.agent_id,
@@ -1919,19 +2231,19 @@ impl CollaborationSession {
                     .session
                     .default_branch()
                     .map_err(|_| Refusal::MemberClosed)?;
-                let input = peer
-                    .session
-                    .input(
-                        self.message_input(
-                            &sender,
-                            self.message_relation(&data.session_id),
-                            data.content.clone(),
-                            mode,
-                        ),
-                        &line,
-                    )
-                    .await
-                    .map_err(|_| Refusal::MemberClosed)?;
+                let input = line_input(
+                    self.collaboration.sessions.as_ref(),
+                    &peer.session,
+                    &line,
+                    self.message_input(
+                        &sender,
+                        self.message_relation(&data.session_id),
+                        data.content.clone(),
+                        mode,
+                    ),
+                )
+                .await
+                .map_err(|_| Refusal::MemberClosed)?;
                 Ok(delivered(&peer, Some(input.id.clone()), None))
             }
             EventKind::CollaborationCancel(data) => {
@@ -1943,7 +2255,15 @@ impl CollaborationSession {
                     .delivered_branch(&data.session_id)
                     .or_else(|| peer.session.default_branch().ok())
                 {
-                    let _ = peer.session.stop(&line, CANCELLED.into()).await;
+                    let _ = line_call(
+                        self.collaboration.sessions.as_ref(),
+                        &peer.session,
+                        &line,
+                        "timelineContext",
+                        "stop",
+                        vec![serde_json::json!(CANCELLED)],
+                    )
+                    .await;
                 }
                 Ok(delivered(&peer, None, Some(cancel)))
             }
@@ -1957,7 +2277,15 @@ impl CollaborationSession {
                     .delivered_branch(&data.session_id)
                     .or_else(|| peer.session.default_branch().ok())
                 {
-                    let _ = peer.session.stop(&line, CANCELLED.into()).await;
+                    let _ = line_call(
+                        self.collaboration.sessions.as_ref(),
+                        &peer.session,
+                        &line,
+                        "timelineContext",
+                        "stop",
+                        vec![serde_json::json!(CANCELLED)],
+                    )
+                    .await;
                 }
                 if let Some(mut done) = working {
                     let abort = self.with_abort(branch_id);
@@ -2086,12 +2414,15 @@ impl CollaborationSession {
             }
             return Err(covered.unwrap_or(Refusal::Closed).into());
         };
+        let working = line_status(self.collaboration.sessions.as_ref(), &peer.session, &line)
+            .await
+            .is_some_and(|state| state.running);
         {
             let mut state = self.state.lock().unwrap();
             if !new
                 && (state.requests.contains_key(&member)
-                    || state.stopping.contains_key(&member)
-                    || peer.session.state(&line).is_ok_and(|state| state.running))
+                    || self.collaboration.stopping(&member)
+                    || working)
             {
                 return Err(Refusal::Busy.into());
             }
@@ -2116,18 +2447,18 @@ impl CollaborationSession {
                 },
             );
         }
-        let input = match peer
-            .session
-            .input(
-                self.message_input(
-                    &sender,
-                    "your team leader, assigned you this work",
-                    data.prompt.clone(),
-                    InputMode::Queue,
-                ),
-                &line,
-            )
-            .await
+        let input = match line_input(
+            self.collaboration.sessions.as_ref(),
+            &peer.session,
+            &line,
+            self.message_input(
+                &sender,
+                "your team leader, assigned you this work",
+                data.prompt.clone(),
+                InputMode::Queue,
+            ),
+        )
+        .await
         {
             Ok(input) => input,
             Err(error) => {
@@ -2238,13 +2569,21 @@ impl CollaborationSession {
         let member = member.clone();
         let abort = branch.abort.clone();
         let this = self.clone();
+        let sessions = self.collaboration.sessions.clone();
         let branch_id = branch_id.to_owned();
         branch.tasks.spawn(async move {
             // The idle wait follows the line the delivery wrote, held on the
             // request rather than re-read: a member move does not redirect it
             // (design §9, §15).
             let idle = tokio::select! {
-                result = session.idle(&line) => result,
+                result = line_read::<u64>(
+                    sessions.as_ref(),
+                    &session,
+                    &line,
+                    "timelineContext",
+                    "idle",
+                    vec![],
+                ) => result,
                 _ = abort.cancelled() => return,
             };
             this.settle(&branch_id, &member, Some(idle)).await;
@@ -2294,8 +2633,14 @@ impl CollaborationSession {
         };
         // The result is read from the line the delivery wrote, not from the
         // member's current default (design §9, §15).
-        let (last_turn_id, text, derived) =
-            outcome(&session, &member_branch, input.as_deref(), through).await;
+        let (last_turn_id, text, derived) = outcome(
+            self.collaboration.sessions.as_ref(),
+            &session,
+            &member_branch,
+            input.as_deref(),
+            through,
+        )
+        .await;
         let settle = self
             .state
             .lock()
@@ -2314,21 +2659,87 @@ impl CollaborationSession {
         };
         let outcome =
             settle.unwrap_or_else(|| cancel_named(derived, cancelled, leader_reason.as_deref()));
-        if let Some(timeline) = timeline {
-            let _ = timeline.append(
-                EventKind::CollaborationResult(CollaborationResultData {
-                    request_event_id: op,
-                    agent_id,
-                    session_id: member.to_owned(),
-                    last_turn_id,
-                    text,
-                    outcome,
-                })
-                .into(),
-            );
-        }
+        // A request that failed leaves nothing that will read the member's
+        // turn: it is stopped with the request instead of running on
+        // unobserved. The stop goes through the `sessions` face, so a stop
+        // issued while Agents reloads lands once the next generation takes
+        // the Session ([#2027]).
+        // The result is written to the branch record that holds the leader's
+        // line now, not to the one this settlement captured: a reload
+        // replaces it, and a write into the replaced Timeline reaches no
+        // client. A write that still fails is reported, never swallowed
+        // (design rule 8).
+        let result_data = CollaborationResultData {
+            request_event_id: op.clone(),
+            agent_id: agent_id.clone(),
+            session_id: member.to_owned(),
+            last_turn_id: last_turn_id.clone(),
+            text: text.clone(),
+            outcome: outcome.clone(),
+        };
+        let result = EventKind::CollaborationResult(result_data.clone());
+        let current = self
+            .state
+            .lock()
+            .unwrap()
+            .branches
+            .get(branch_id)
+            .map(|branch| branch.timeline.clone())
+            .or(timeline);
+        let draft = result.clone().into();
+        match &current {
+            Some(timeline) => match timeline.append(draft) {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        member = %member,
+                        %error,
+                        "a failed request's result was written through the line"
+                    );
+                    false
+                }
+            },
+            None => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    member = %member,
+                    "no branch record holds the leader's line for a failed request's result"
+                );
+                false
+            }
+        };
         if let Some(request) = self.state.lock().unwrap().requests.remove(member) {
             request.done.send_replace(true);
+        }
+        // The result is delivered first; the stop that ends the turn the
+        // request left behind follows it (design rule 8).
+        if matches!(outcome, CollaborationOutcome::Failed { .. }) {
+            // The stop is recorded where a reload cannot lose it, then run by
+            // this generation; one that stops first leaves the record for the
+            // next generation to finish ([#2027], design rule 8).
+            // The record names the turn it was decided for: only that turn is
+            // stopped, and one a member started later is left alone.
+            if let Some(input) = input.clone() {
+                self.collaboration
+                    .directory
+                    .pending_stops
+                    .lock()
+                    .unwrap()
+                    .insert(
+                        member.to_owned(),
+                        PendingStop {
+                            line: member_branch.clone(),
+                            reason: "the request failed".into(),
+                            input_event_id: input,
+                        },
+                    );
+                let this = self.collaboration.clone();
+                let stopping_member = member.to_owned();
+                self.collaboration.tasks.spawn(async move {
+                    this.deliver_pending_stop(stopping_member).await;
+                });
+            }
         }
     }
 
@@ -2357,109 +2768,13 @@ impl CollaborationSession {
     ) -> dim_agent_runtime::Result<()> {
         let stopping = Arc::new(stopping);
         let result = self
+            .collaboration
             .stop_request_input(session, branch, input, reason, Arc::clone(&stopping))
             .await;
         if result.is_err() {
             stopping.failed(input);
         }
         result
-    }
-
-    /// The effect and the wait of one carry-out; `carry_out_stop` holds the
-    /// mark across both and clears the request's flag when either fails.
-    async fn stop_request_input(
-        self: &Arc<Self>,
-        session: &Session,
-        branch: &str,
-        input: &str,
-        reason: &str,
-        stopping: Arc<Stopping>,
-    ) -> dim_agent_runtime::Result<()> {
-        let mut after = 0;
-        let mut open = None;
-        // The delivery's line, held on the request: moving the member's
-        // default branch does not redirect the withdrawal or the stop to a
-        // line that never held the input (design §9, §15).
-        let line = branch.to_owned();
-        // Subscribed before the first check, so a consumption or a deletion
-        // published while it reads, or between it and the withdrawal, still
-        // wakes the wait below: whatever the check cannot see happened after
-        // this subscription, and the wait checks after every change.
-        let mut published = session.publication(&line)?.watch();
-        match input_fate(session, &line, input, &mut after, &mut open).await? {
-            InputFate::Consumed(Some(turn)) => {
-                stop_member_turn(session, &line, &turn, reason)?;
-                return Ok(());
-            }
-            // A consumed input whose turn already ended, and a deleted one
-            // that no turn will consume, leave nothing to stop.
-            InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
-            InputFate::Pending => {}
-        }
-        match session
-            .service::<dim_agent_capabilities::input_queue::InputQueue>(&line)?
-            .withdraw(InputWithdrawData {
-                input_id: input.to_owned(),
-                reason: Some(reason.into()),
-                steer: None,
-            })
-            .await?
-        {
-            // (W): no turn will run for the input; the settle names it.
-            dim_agent_capabilities::input_queue::Withdrawal::Deleted { .. } => return Ok(()),
-            dim_agent_capabilities::input_queue::Withdrawal::NotHeld => {}
-        }
-        // (S): InputQueue handed the input to Loop, so the turn that consumes
-        // it is the one to stop. Waiting for its `input/consumed` names that
-        // turn, the documented `consumed < interrupt` order, instead of
-        // racing its application. The carry-out ends when the stop lands, when
-        // the withdrawal deletes the input, when the member client deletes it
-        // first, when the consuming turn has ended, when the member closes, or
-        // when Collaboration stops: not on the branch's abort and not on the
-        // request's settle, because a branch close settles the request while
-        // the member may not have consumed yet.
-        let stop = self.collaboration.stop.clone();
-        let tasks = self.collaboration.tasks.clone();
-        let session = session.clone();
-        let line = line.clone();
-        let input = input.to_owned();
-        let reason = reason.to_owned();
-        let wait = async move {
-            // The mark lives until this block ends, and a failure of the loop
-            // below clears the request's flag before it goes.
-            let result: dim_agent_runtime::Result<()> = async {
-                loop {
-                    tokio::select! {
-                        _ = stop.cancelled() => return Ok(()),
-                        _ = session.closed() => {
-                            return Err(AgentError::Closed(session.id().into()));
-                        }
-                        result = published.changed() => {
-                            if result.is_err() {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    match input_fate(&session, &line, &input, &mut after, &mut open).await? {
-                        InputFate::Consumed(Some(turn)) => {
-                            stop_member_turn(&session, &line, &turn, &reason)?;
-                            return Ok(());
-                        }
-                        // The member deleted the input first: no turn will
-                        // consume it, so the wait ends with nothing to stop.
-                        InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
-                        InputFate::Pending => {}
-                    }
-                }
-            }
-            .await;
-            if result.is_err() {
-                stopping.failed(&input);
-            }
-            result
-        };
-        tasks.spawn(wait);
-        Ok(())
     }
 
     /// Posts the result input unless a stop covered the request or the
@@ -2668,12 +2983,168 @@ impl CollaborationSession {
                     });
                 }
             } else {
-                let _ = session.interrupt(&branch, INTERRUPTED.into());
+                let _ = line_call(
+                    self.collaboration.sessions.as_ref(),
+                    &session,
+                    &branch,
+                    "timelineContext",
+                    "interrupt",
+                    vec![serde_json::json!(INTERRUPTED)],
+                )
+                .await;
             }
             self.settle(branch_id, &member, None).await;
         }
         self.state.lock().unwrap().branches.remove(branch_id);
     }
+}
+
+/// One input written on a member's line, as the line committed it.
+#[derive(serde::Deserialize)]
+struct LineWrite {
+    event: Arc<dim_agent_types::AgentEvent>,
+}
+
+/// Writes one input on a member's line through the process face.
+async fn line_input(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    data: dim_agent_types::InputMessageData,
+) -> dim_agent_runtime::Result<Arc<dim_agent_types::AgentEvent>> {
+    let args = serde_json::to_value(data)
+        .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))?;
+    Ok(line_read::<LineWrite>(
+        sessions,
+        session,
+        line,
+        "timelineContext",
+        "input",
+        vec![args],
+    )
+    .await?
+    .event)
+}
+
+/// A member line's status, or `None` when it cannot be read now.
+async fn line_status(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+) -> Option<dim_agent_runtime::BranchStatus> {
+    line_read(sessions, session, line, "timelineContext", "state", vec![])
+        .await
+        .ok()
+}
+
+/// A member line's published head.
+async fn line_head(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+) -> dim_agent_runtime::Result<u64> {
+    line_read(sessions, session, line, "timeline", "sequence", vec![]).await
+}
+
+/// One page of a line's own facts.
+async fn line_page(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    query: dim_agent_runtime::TimelineQuery,
+) -> dim_agent_runtime::Result<dim_agent_runtime::TimelineQueryReply> {
+    line_read(
+        sessions,
+        session,
+        line,
+        "timeline",
+        "query",
+        vec![
+            serde_json::to_value(query)
+                .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))?,
+        ],
+    )
+    .await
+}
+
+/// One line operation for a member Session, through the process face: a
+/// collaboration owner is a process plugin, not the Session's holder
+/// ([#2027](https://github.com/arcships/dim/issues/2027)), so it names the line
+/// and the operation as data and reads the line's own answer back.
+async fn line_call(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    service: &str,
+    method: &str,
+    args: Vec<serde_json::Value>,
+) -> dim_agent_runtime::Result<Option<serde_json::Value>> {
+    line_envelope(sessions, session, line, service, method, args)
+        .await
+        .map_err(|(code, message)| match code.as_str() {
+            // The Session or the line is gone: final for this request.
+            "no_session" | "session_closing" => AgentError::Closed(session.id().into()),
+            "no_line" => AgentError::UnknownBranch(line.to_owned()),
+            // The owner is reloading: the operation did not run, so it is
+            // retried by its caller.
+            "session_reloading" => AgentError::Reloading(session.id().into()),
+            _ => AgentError::fault("collaboration.lineCall", message),
+        })
+}
+
+/// One line operation as the `sessions` face answered it: its value, or the
+/// service's own code and message. The code is kept because a stop reads it:
+/// a closing Session is still on its way out, not gone.
+async fn line_envelope(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    service: &str,
+    method: &str,
+    args: Vec<serde_json::Value>,
+) -> std::result::Result<Option<serde_json::Value>, (String, String)> {
+    let request = serde_json::json!({
+        "sessionId": session.id(),
+        "lineId": line,
+        "service": service,
+        "method": method,
+        "args": args,
+    });
+    let call = sessions
+        .invoke("call", serde_json::json!([request]).into())
+        .map_err(|error| (String::from("failed"), error.to_string()))?;
+    let envelope = settle(call)
+        .await
+        .map_err(|error| (String::from("failed"), error.to_string()))?
+        .json()
+        .map_err(|error| (String::from("failed"), error.to_string()))?;
+    if envelope["ok"] == serde_json::json!(true) {
+        return Ok(envelope.get("value").cloned());
+    }
+    let error = &envelope["error"];
+    Err((
+        error["code"].as_str().unwrap_or("failed").to_owned(),
+        error["message"]
+            .as_str()
+            .unwrap_or("the line refused the call")
+            .to_owned(),
+    ))
+}
+
+/// One decoded operation on a member's line.
+async fn line_read<T: serde::de::DeserializeOwned>(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    service: &str,
+    method: &str,
+    args: Vec<serde_json::Value>,
+) -> dim_agent_runtime::Result<T> {
+    let reply = line_call(sessions, session, line, service, method, args)
+        .await?
+        .ok_or_else(|| AgentError::Closed(format!("{service}.{method} answered nothing")))?;
+    serde_json::from_value(reply)
+        .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))
 }
 
 fn close_request(open: &mut BTreeMap<String, BTreeSet<String>>, request: &str) {
@@ -2711,6 +3182,7 @@ enum InputFate {
 /// them yet. The open turn is tracked across pages and checks, so a page
 /// that begins inside a turn still names it.
 async fn input_fate(
+    sessions: &dyn HostDispatch,
     session: &Session,
     branch: &str,
     input: &str,
@@ -2721,9 +3193,10 @@ async fn input_fate(
     // under the reader while it pages: a check answers for the moment it
     // starts, and the caller's next check sees whatever has been published
     // since.
-    let through = Some(session.sequence(branch)?);
+    let through = Some(line_head(sessions, session, branch).await?);
     loop {
         let (next, events) = read_page(
+            sessions,
             session,
             branch,
             *after,
@@ -2757,6 +3230,7 @@ async fn input_fate(
 }
 
 async fn read_page(
+    sessions: &dyn HostDispatch,
     session: &Session,
     branch: &str,
     after: u64,
@@ -2764,54 +3238,49 @@ async fn read_page(
     through: Option<u64>,
     kinds: &[&str],
 ) -> dim_agent_runtime::Result<(u64, Vec<Arc<AgentEvent>>)> {
-    let head = session.sequence(branch)?;
+    let head = line_head(sessions, session, branch).await?;
     let through = through.unwrap_or(head);
     if through > head || after > through {
         return Err(AgentError::InvalidInput("future Timeline cursor".into()));
     }
-    session.batch_end(branch, after).await?;
-    session.batch_end(branch, through).await?;
+    // The face exposes no batch-boundary probe: a page ends on an atomic
+    // batch, so the cut is the published head the caller asked for.
+    let _ = (sessions, after);
     if after == through {
         return Ok((after, Vec::new()));
     }
-    let mut next = through.min(after.saturating_add(limit as u64));
-    while next < through {
-        match session.batch_end(branch, next).await {
-            Ok(()) => break,
-            Err(AgentError::InvalidInput(_)) => next += 1,
-            Err(error) => return Err(error),
-        }
-    }
-    let reply = session
-        .query(
-            branch,
-            TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                include_publishing: false,
-                from: Some(TimelinePosition {
-                    branch_id: branch.into(),
-                    sequence: after + 1,
+    let next = through.min(after.saturating_add(limit as u64));
+    let reply = line_page(
+        sessions,
+        session,
+        branch,
+        TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            include_publishing: false,
+            from: Some(TimelinePosition {
+                branch_id: branch.into(),
+                sequence: after + 1,
+            }),
+            through: Some(next),
+            query: QuerySpec {
+                filter: (!kinds.is_empty()).then(|| QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: kinds.iter().map(|kind| (*kind).into()).collect(),
                 }),
-                through: Some(next),
-                query: QuerySpec {
-                    filter: (!kinds.is_empty()).then(|| QueryFilter::In {
-                        value: QueryOperand::Field {
-                            path: "kind".into(),
-                        },
-                        values: kinds.iter().map(|kind| (*kind).into()).collect(),
-                    }),
-                    select: QuerySelect::Events,
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::new(next - after).expect("a page keeps at least one fact"),
-                    after: None,
-                }),
+                select: QuerySelect::Events,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
             },
-        )
-        .await?;
+            page: Some(QueryPage {
+                limit: NonZeroU64::new(next - after).expect("a page keeps at least one fact"),
+                after: None,
+            }),
+        },
+    )
+    .await?;
     let QueryOutput::Events { events } = reply.result else {
         unreachable!("event selection returns events")
     };
@@ -2821,12 +3290,16 @@ async fn read_page(
 /// Result of a request's work range: from the member's `input/consumed` of
 /// the request input to its idle point; the last `turn/end` decides.
 async fn outcome(
+    sessions: &dyn HostDispatch,
     session: &Session,
     branch: &str,
     input: Option<&str>,
     cutoff: Option<u64>,
 ) -> (Option<String>, String, CollaborationOutcome) {
-    let through = match cutoff.map_or_else(|| session.sequence(branch), Ok) {
+    let through = match match cutoff {
+        Some(cutoff) => Ok(cutoff),
+        None => line_head(sessions, session, branch).await,
+    } {
         Ok(sequence) => sequence,
         Err(error) => {
             return (
@@ -2845,6 +3318,7 @@ async fn outcome(
     let mut last = None;
     while after < through {
         let (next, events) = match read_page(
+            sessions,
             session,
             branch,
             after,
@@ -3542,7 +4016,11 @@ async fn stopped_turn(
 /// names. A recovered request has no stored branch, so the input's own line is
 /// the only evidence of where it was delivered; `None` when the fact names no
 /// input or no open line holds it (timeline branches §20.22).
-async fn delivered_input_line(member: &Session, input: Option<&str>) -> Option<String> {
+async fn delivered_input_line(
+    sessions: &dyn HostDispatch,
+    member: &Session,
+    input: Option<&str>,
+) -> Option<String> {
     let input = input?;
     for branch in member.branches() {
         let query = TimelineQuery {
@@ -3562,7 +4040,7 @@ async fn delivered_input_line(member: &Session, input: Option<&str>) -> Option<S
             },
             page: None,
         };
-        if let Ok(reply) = member.query(&branch.id, query).await
+        if let Ok(reply) = line_page(sessions, member, &branch.id, query).await
             && matches!(reply.result, QueryOutput::Exists { exists: true })
         {
             return Some(branch.id);
@@ -3877,6 +4355,7 @@ async fn restore(
             .flatten()
             .map(|(_, member)| member);
         let (timeline, phase) = (timeline.clone(), phase.clone());
+        let sessions = service.collaboration.sessions.clone();
         tasks.spawn(async move {
             if !phase.activated().await {
                 return;
@@ -3886,13 +4365,23 @@ async fn restore(
             // that evidence the recovery stops nothing, because a stop on the
             // default could end an unrelated turn the member moved to.
             let line = match &member {
-                Some(member) => delivered_input_line(member, input.as_deref()).await,
+                Some(member) => {
+                    delivered_input_line(sessions.as_ref(), member, input.as_deref()).await
+                }
                 None => None,
             };
             match line {
                 Some(line) => {
                     if let Some(member) = &member {
-                        let _ = member.stop(&line, INTERRUPTED.into()).await;
+                        let _ = line_call(
+                            sessions.as_ref(),
+                            member,
+                            &line,
+                            "timelineContext",
+                            "stop",
+                            vec![serde_json::json!(INTERRUPTED)],
+                        )
+                        .await;
                     }
                 }
                 None => tracing::warn!(

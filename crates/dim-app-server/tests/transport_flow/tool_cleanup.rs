@@ -1,5 +1,6 @@
 use super::*;
 use dim_agent_capabilities::{host::HostError, tool_registry::definition};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::chain_events;
 use rutis::host::CtxHost;
 use std::{net::SocketAddr, process::Stdio};

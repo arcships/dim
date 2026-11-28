@@ -5,6 +5,7 @@
 //! the clock (#1536); the rows that wait for a turn or a notice poll with a
 //! hard timeout, because neither is a Scheduler instant.
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{Agent, AgentBuilder, AgentConfig};
 use dim_agent_types::*;
 use dim_app_server::{RunningServer, ServerConfig, serve};
