@@ -525,6 +525,53 @@ async fn an_empty_tool_line_is_dated_by_its_opening_in_both_listings() {
         })
         .await
         .expect("the tool line starts its first turn");
+        drop(client);
+        let mut client = Client::new_version(&server, false, 3).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while session.state("main").unwrap().running {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("main completes while its tool line is running");
+        let summaries = client.rpc("session.summaries", json!({})).await;
+        let summary = &summaries["result"][0];
+        assert_eq!(summary["running"], false);
+        assert_eq!(summary["attachedClients"], 0);
+        let active = client.rpc("session.active", json!({})).await;
+        assert_ok(&active);
+        assert_eq!(active["result"][0]["sessionId"], id);
+        assert_eq!(active["result"][0]["running"], true);
+        assert_ok(
+            &client
+                .rpc(
+                    "session.submit",
+                    json!({"sessionId": id, "branchId": "main", "text": open}),
+                )
+                .await,
+        );
+        let second_child = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(branch) = session.branches().into_iter().find(|b| {
+                    b.parent.as_deref() == Some("main")
+                        && b.id != child
+                        && session.state(&b.id).is_ok_and(|s| s.running)
+                }) {
+                    return branch.id;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("two tool lines are active");
+        let active = client.rpc("session.active", json!({})).await;
+        assert_ok(&active);
+        assert_eq!(active["result"].as_array().unwrap().len(), 1);
+        assert_eq!(active["result"][0]["sessionId"], id);
+        session
+            .stop(&second_child, "finished listing".into())
+            .await
+            .unwrap();
         assert_ok(
             &client
                 .rpc(

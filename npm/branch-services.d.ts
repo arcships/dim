@@ -1219,12 +1219,6 @@ export interface SessionIdentity {
  */
 export interface BranchLifecycle {
   /**
-   * Registers a completion for the current branch opening. Once opening seals,
-   * registration fails. A failed completion fails the opening.
-   * @throws {AgentErrorThrown}
-   */
-  registerOpening(completion: () => void | Promise<void>): Promise<void>
-  /**
    * Waits until the branch leaves `Loading`: true when it became Active,
    * false when it closes without ever starting.
    */

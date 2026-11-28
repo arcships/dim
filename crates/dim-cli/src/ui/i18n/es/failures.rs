@@ -1,6 +1,46 @@
 //! Spanish model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Conversation state could not be read; retry the read before submitting" => {
+            "No se pudo leer el estado de la conversación. Vuelve a cargarla antes de enviar"
+        }
+        "The centre moved before the command ran; the draft was kept" => {
+            "Cambió la sesión o la rama antes del envío. Se conservó el borrador"
+        }
+        "The selected device restarted during file search" => {
+            "El dispositivo seleccionado se reinició durante la búsqueda"
+        }
+        "Target does not support file completion; type the remote path" => {
+            "El destino no admite autocompletar archivos. Escribe la ruta remota"
+        }
+        "Select a regular file to upload" => "Selecciona un archivo normal para subirlo",
+        "Target did not return an image" => "El destino no devolvió ninguna imagen",
+        "File search interrupted" => "Búsqueda de archivos interrumpida",
+        "Target changed during attachment preparation" => {
+            "El destino cambió al preparar los adjuntos"
+        }
+        "Attachment preparation cancelled" => "Preparación de adjuntos cancelada",
+        "The session or line changed during upload; the draft was kept" => {
+            "La sesión o la línea cambió durante la subida. Se conservó el borrador"
+        }
+        "Preparing attachments · Ctrl+C to cancel" => "Preparando adjuntos · Ctrl+C para cancelar",
+        "{reason}; draft retained" => "{reason}. Se conservó el borrador",
+        "The previous attachment submission is pending; draft retained" => {
+            "El envío anterior con adjuntos está pendiente. Se conservó el borrador"
+        }
+        "Submitting attachments" => "Enviando mensaje con adjuntos",
+        "Delivery unconfirmed · Enter on an empty draft to check and retry" => {
+            "Envío sin confirmar · Enter en un borrador vacío para comprobar y reintentar"
+        }
+        "Delivery unconfirmed: {reason}" => "Envío sin confirmar: {reason}",
+        "Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit" => {
+            "Envío sin confirmar: {reason}. Enter para comprobar y reintentar, Ctrl+C para salir"
+        }
+        "The selected device restarted" => "El dispositivo seleccionado se reinició",
+        "The original submission was accepted" => "Se aceptó el envío original",
+        "The current model does not accept clipboard images; draft retained" => {
+            "El modelo actual no admite imágenes del portapapeles. Se conservó el borrador"
+        }
         "Details unavailable; collapse and expand to retry" => {
             "Detalles no disponibles; contrae y expande para reintentar"
         }

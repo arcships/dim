@@ -178,7 +178,7 @@ names. A named tool that no row has registered (its row is absent, Pending or di
 applied yet) is not declared and produces the `tool.attach` diagnostic; once a row registers it,
 the next request declares it without a Session reload. A withdrawn registration's set is withdrawn, and the
 row's next generation registers again under a new version. ToolBinding adopts changes through
-Prompt/BranchLifecycle as for other sources, and each request keeps its selected handlers. A new
+the existing Prompt / BranchOpening path as for other sources, and each request keeps its selected handlers. A new
 generation is not substituted into an old request.
 
 ## Session methods

@@ -88,14 +88,12 @@ impl Plugin for DaemonLink {
 /// connection) and the render thread (`ui::tui::run`). How the interface
 /// ended goes to the composition root through `leave`.
 pub struct Tui {
-    pub root: Ctx,
     pub env: ui::Env,
     pub options: Options,
     /// Taken by the load; the render thread sends the result once.
     pub leave: Mutex<Option<oneshot::Sender<i32>>>,
     /// `Update now`, sent before the interface closes its connection.
     pub update: Mutex<Option<oneshot::Sender<ui::tui::UpdateRequest>>>,
-    pub leaf_end: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl Plugin for Tui {
@@ -110,7 +108,7 @@ impl Plugin for Tui {
             ui::terminal::restore_if_held();
             Ok(())
         })?;
-        let client = connection
+        let mut client = connection
             .take()
             .ok_or_else(|| rutis::Error::from(ErrorKind::PluginFailed(CONNECTION_TAKEN.into())))?;
         let notice = connection.take_notice().map(|notice| {
@@ -125,22 +123,24 @@ impl Plugin for Tui {
                 rutis::Error::from(ErrorKind::PluginFailed("Tui was loaded twice".into()))
             })?;
         let language = ui::i18n::interface_locale(&self.options.home).code();
-        let leaf_end = self
-            .leaf_end
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-            .ok_or_else(|| {
-                rutis::Error::from(ErrorKind::PluginFailed("Tui was loaded twice".into()))
-            })?;
-        let host = SessionHost::start(
-            self.options.clone(),
-            client,
-            language,
-            notice,
-            self.root.clone(),
-            leaf_end,
-        );
+        let mut options = self.options.clone();
+        let mut env = self.env.clone();
+        if options.endpoint.is_some()
+            && options.cwd_explicit
+            && options.resume.is_none()
+            && client.supports(&["workspace.files.directories"])
+        {
+            let path = crate::devices::Directories::read(&mut client, Some(env.workspace.clone()))
+                .await
+                .map_err(ErrorKind::PluginFailed)?
+                .path
+                .ok_or_else(|| ErrorKind::PluginFailed("Choose a directory".into()))?;
+            options.set_workspace_path(path.clone());
+            env.workspace = path;
+        }
+        let devices = crate::devices::Devices::new(options.clone());
+        let target = devices.initial(&client);
+        let host = SessionHost::start(options, client, language, notice);
         let update = self
             .update
             .lock()
@@ -149,11 +149,10 @@ impl Plugin for Tui {
             .ok_or_else(|| {
                 rutis::Error::from(ErrorKind::PluginFailed("Tui was loaded twice".into()))
             })?;
-        let env = self.env.clone();
         let render = std::thread::Builder::new()
             .name("dim-tui".into())
             .spawn(move || {
-                let _ = leave.send(ui::tui::run(Box::new(host), env, update));
+                let _ = leave.send(ui::tui::run(Box::new(host), env, update, devices, target));
             })
             .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
         ctx.effect(|| async move {

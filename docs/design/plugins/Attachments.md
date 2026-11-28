@@ -34,7 +34,7 @@ Session and is released through Session deletion.
 The client imports a local source, receives an image reference, then includes it
 in `session.submit`. Web clients first upload the browser file through the
 [Web HTTP API](../web-workspace.md#session-file-http-api). Rpc validates reference
-shape and ownership. A failed import preserves the client's draft.
+shape and ownership. A failed import preserves the client's draft. For a shared terminal, the native entry receives the keyboard computer's bytes and supplies a target-local staging path to the same Session importer. [Native upload contract](../research/native-session-file-input.md)
 
 The per-request image view — pixels, a reference or a placeholder (A.1) — and the
 final provider encoding are requirements to their owners in A.4. The context flow

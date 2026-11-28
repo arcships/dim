@@ -398,7 +398,9 @@ and retained.
 effort, without changing its saved service tier or writing preferences. Provider
 validates LEVEL against declared capabilities, not a vendor-specific CLI list.
 `--autocompact auto|TOKENS` overrides `DIM_AUTO_COMPACT_WINDOW`; positive counts
-accept `k`/`m` suffixes (1000/1000000). This window is separate from model capacity.
+accept `k`/`m` suffixes (1000/1000000), and a percentage such as `40%` is taken
+of the model's adopted context capacity. This window is separate from model
+capacity.
 
 `DIM_BASE_URL` and `DIM_API_FORMAT` together select a Session-owned direct
 connection, including with an already-running daemon. Formats are `anthropic`,
@@ -1360,18 +1362,30 @@ their last validated cursor. Loading or failed history disables stop-all while
 known individual targets remain usable. A failure reading main history is a visible
 connection failure: submission is disabled and the unsent draft stays in the current UI.
 Recovery requires exiting and resuming the Session.
-Resuming waits for main's complete initial history before drawing the latest
-100 messages and its boundary. Fullscreen tops them with a load-more row: a
-click, or `Tab` up to it and `Enter`, draws the previous 100 above and keeps the
-oldest drawn message at the top of the view. Scrollback reaches earlier messages
-through a `/timeline` jump; a draft typed meanwhile stays editable.
+Resuming draws up to 100 messages from main's initial history window. Both modes
+mark unread history above the oldest message, never below the transcript. In fullscreen a
+click, or `Tab` up to it and `Enter`, shows the preceding page at the join. Scrolling
+up or pressing PageUp at the top does the same. `/earlier` reveals one page in fullscreen.
+In scrollback, `/earlier` reveals one preceding page and redraws the loaded conversation
+in the same terminal, with older messages above newer ones and the draft below.
+**This replaces native scrollback, including terminal output from before Dim started.**
+The hint above the oldest message warns before you page. At the beginning, `/earlier`
+only shows a notice; it does not redraw. See [Loading earlier conversation](../../docs/design/cli-commands.md#loading-earlier-conversation).
+`/timeline` still jumps to a specific message; a draft typed meanwhile stays editable.
 
 ```text
+↑ Earlier messages · /earlier · Clears terminal output from before Dim started
 > paged-message-051
 ...
 > paged-message-150
---- resumed paged · 100 messages · earlier history: /timeline ---
-[ draft typed while history was loading                         ]
+--- resumed paged · 100 messages ---
+[ Ask anything... ]
+
+/earlier (same terminal, after redraw)
+> paged-message-001
+...
+> paged-message-150
+[ Ask anything... ]
 ```
 
 Child-branch failures remain local to the task history and release buffered

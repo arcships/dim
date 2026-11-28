@@ -32,7 +32,7 @@ pub use legacy::{
 pub use models::PreferencesPatch;
 use secrets::StaticCredential;
 pub use secrets::{ProviderSecret, ProviderSecretHost, ResolveProviderSecret};
-pub use startup::{StartupInput, StartupSelection};
+pub use startup::{AutoCompactWindowElevation, StartupInput, StartupSelection};
 pub use view::{
     ManagementInfo, ManagementModelPage, ManagementPage, ManagementPageRequest, ManagementProvider,
     ManagementView, ModelsListed,

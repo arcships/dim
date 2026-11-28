@@ -770,6 +770,57 @@ async fn managed_worktree_ownership_and_tool_workspace_survive_host_restart() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_repository_scope_reads_git_worktrees_on_the_server() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let method = "workspace.files.worktrees";
+    assert!(client.features.as_array().unwrap().contains(&json!(method)));
+
+    let one = client.rpc(method, json!({"cwd": work.repo})).await;
+    assert_eq!(one["result"], json!([work.repo]), "{one}");
+    let sibling = work.tree("linked checkout").join("packages/a");
+    let several = client.rpc(method, json!({"cwd": sibling})).await;
+    assert_eq!(
+        several["result"],
+        json!([sibling, work.repo.join("packages/a")]),
+        "{several}"
+    );
+    let outside = client.rpc(method, json!({"cwd": work.home})).await;
+    assert_eq!(outside["result"], json!([]), "{outside}");
+    let invalid = client.rpc(method, json!({"cwd": "relative"})).await;
+    assert_eq!(
+        invalid["error"]["data"]["appError"], "invalid_params",
+        "{invalid}"
+    );
+
+    let bare = work.home.join("bare");
+    git(
+        &work.home,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            work.repo.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    let checkout = work.home.join("checkout");
+    git(
+        &bare,
+        &["worktree", "add", "--detach", checkout.to_str().unwrap()],
+    );
+    let only_checkout = client.rpc(method, json!({"cwd": checkout})).await;
+    assert_eq!(
+        only_checkout["result"],
+        json!([checkout]),
+        "{only_checkout}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// A home that never created a worktree has no root directory; listing and
 /// pruning there answer an empty set instead of a storage failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

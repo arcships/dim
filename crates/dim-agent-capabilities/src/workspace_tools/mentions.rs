@@ -242,7 +242,7 @@ fn walk(root: &Path) -> Vec<Entry> {
 /// How well `query` matches `candidate`, both lowercased: an exact match, a
 /// prefix, a substring, then the letters in order with few gaps. `None` for
 /// no match; an empty query matches everything equally.
-fn score(query: &str, candidate: &str) -> Option<i64> {
+pub fn score(query: &str, candidate: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(0);
     }

@@ -284,6 +284,8 @@ The daemon does not start the leaf process: the user's shell does, and the
 process keeps the terminal it was started on. This leaves the daemon nothing
 to do with terminals, processes or their exit codes.
 
+For a shared App Server, the terminal first binds its local leaf, then asks the authenticated target's `terminalTransport.prepareLeaf` for a one-use address on the target. The terminal passes that address and its original peer id to `ui.open`. The target daemon dials the address with its one-use token. The transport relays the resulting stream back to the waiting leaf. Both ends keep their normal rutis handshake and close semantics. Dropping the link releases its pending listeners and open streams. [Native terminal target topology](../research/native-terminal-targets.md#posix-连接怎样跨机器)
+
 **Session.** On its first Session attachment, before `ui.open`, the running
 `Tui` binds a private address and mounts `LeafNode` at the client root,
 beside `Tui` and `DaemonLink`, accepting there. `LeafNode` provides the

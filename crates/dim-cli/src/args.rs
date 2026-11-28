@@ -207,6 +207,10 @@ Commands:
                                   Read tasks or request cancellation
   migration retry TASK [--source OLD_HOME]
                                   Resume a task, reconciling imported objects
+  share status|enable|disable|rename NAME|reset|discover
+                                  Manage inbound sharing on this computer
+  share connect ADDRESS [--pair] [--no-remember] [-- CLI_ARGS...]
+                                  Open a native client on a shared computer
   web [--port N] [--no-open]      Hold the Web workspace until Ctrl+C
   web --off                       Turn off the daemon-owned Web switch
   web install                     Install this version's Web workspace
@@ -222,13 +226,14 @@ Options:
   --cwd PATH                      Workspace (default: current directory)
   --no-tui                        Line client instead of the terminal UI
   --fullscreen | --scrollback     Terminal UI mode; append 'default' to save it
+  --target NAME                   Use a saved computer name or sharing address
   --server PATH                   Run a standalone dim-app-server binary;
                                   the default runs this executable's
                                   app-server subcommand
   --model-config PATH             Explicit API-key model configuration
   --model ID [--provider ID]      Temporary model selection (also on resume)
   --effort LEVEL                  Temporary reasoning effort (also on resume)
-  --autocompact auto|TOKENS       Temporary compaction window (k/m suffixes)
+  --autocompact auto|TOKENS|N%    Temporary compaction window (k/m suffixes)
   --permission PRESET             read-only, workspace-write or full-access
                                   for a new session, or for the resumed main
                                   branch
@@ -264,8 +269,9 @@ Model startup:
   DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS declare positive capacities
     up to 9007199254740991; the request output allowance is derived from them.
     For openai-codex, a context window above the model's ceiling fails startup.
-  --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto or a positive count,
-    optionally suffixed k/m (1000/1000000). This is not the model capacity.
+  --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto, a positive count
+    optionally suffixed k/m (1000/1000000), or a percentage such as 40%.
+    This window shapes compaction; it is not the model capacity.
   Effort, autocompact and capacity startup controls require the product Provider
     and cannot be used with --model-config; set API-key generation settings
     in that configuration file instead.
@@ -378,6 +384,7 @@ pub enum Action {
     Tui,
     Exec,
     Update,
+    Share(Vec<String>),
     Migration(crate::migration_command::Command),
     Acp {
         agent_id: Option<String>,
@@ -573,6 +580,10 @@ pub struct Options {
     /// own file system work resolves against. Requests carry [`Self::workspace`]
     /// instead.
     cwd: PathBuf,
+    remote_workspace: Option<String>,
+    pub(crate) endpoint: Option<PathBuf>,
+    pub(crate) named_target: Option<(String, usize)>,
+    pub(crate) cwd_explicit: bool,
     /// The workspace the command names in its requests, resolved once the
     /// options are complete; `None` for a command that names none.
     workspace: Option<Workspace>,
@@ -625,7 +636,12 @@ impl Options {
             home_explicit: false,
             modality: ModalityFlags::default(),
             cwd: std::env::current_dir()?,
+            remote_workspace: crate::sharing::proxy()
+                .and_then(|_| std::env::var("DIMCODE_TERMINAL_WORKSPACE").ok()),
             workspace: None,
+            endpoint: crate::sharing::proxy(),
+            named_target: None,
+            cwd_explicit: false,
             server: None,
             model_config: None,
             provider: None,
@@ -651,7 +667,8 @@ impl Options {
             client_secret: false,
             mcp_source: None,
         };
-        let mut args = args.peekable();
+        let mut args = args.collect::<Vec<_>>().into_iter().peekable();
+        let total = args.len();
         let mut export_format = false;
         let mut autocompact = None;
         let mut source = None;
@@ -906,7 +923,25 @@ impl Options {
                     options.home = PathBuf::from(value(&mut args)?);
                     options.home_explicit = true;
                 }
-                "--cwd" => options.cwd = PathBuf::from(value(&mut args)?),
+                "--target" => {
+                    let index = total - args.len() - 1;
+                    if options
+                        .named_target
+                        .replace((value(&mut args)?, index))
+                        .is_some()
+                    {
+                        return Err("Supply --target only once".into());
+                    }
+                }
+                "--cwd" => {
+                    options.cwd_explicit = true;
+                    let path = value(&mut args)?;
+                    if options.endpoint.is_some() {
+                        options.remote_workspace = Some(path);
+                    } else {
+                        options.cwd = path.into();
+                    }
+                }
                 "--server" => options.server = Some(PathBuf::from(value(&mut args)?)),
                 "--model-config" => options.model_config = Some(PathBuf::from(value(&mut args)?)),
                 "--provider" => options.provider = Some(value(&mut args)?),
@@ -1514,6 +1549,10 @@ impl Options {
                     };
                     options.action = Action::Recording { enabled };
                 }
+                "share" if matches!(options.action, Action::Chat) => {
+                    options.action = Action::Share(args.by_ref().collect());
+                    break;
+                }
                 "web" if matches!(options.action, Action::Chat) => {
                     options.action = Action::Web {
                         port: None,
@@ -1850,6 +1889,10 @@ impl Options {
         {
             return Err("Login options require the login command".into());
         }
+        if options.named_target.is_some() && options.cwd_explicit && options.endpoint.is_none() {
+            let path = std::mem::replace(&mut options.cwd, std::env::current_dir()?);
+            options.remote_workspace = Some(path.to_string_lossy().into_owned());
+        }
         options.cwd = std::fs::canonicalize(options.cwd)?;
         if !options.cwd.is_dir() {
             return Err("--cwd must name a directory".into());
@@ -2012,6 +2055,14 @@ impl Options {
         if let Some(value) = &autocompact {
             startup["autoCompactWindow"] = if value == "auto" {
                 serde_json::json!("auto")
+            } else if let Some(digits) = value.strip_suffix('%') {
+                let percent: f64 = digits.parse().map_err(|_| {
+                    "--autocompact / DIM_AUTO_COMPACT_WINDOW percentage must be a positive number of at most 100"
+                })?;
+                if !percent.is_finite() || percent <= 0.0 || percent > 100.0 {
+                    return Err("--autocompact / DIM_AUTO_COMPACT_WINDOW percentage must be a positive number of at most 100".into());
+                }
+                serde_json::json!(value)
             } else {
                 let (digits, multiplier) = match value.as_bytes().last() {
                     Some(b'k' | b'K') => (&value[..value.len() - 1], 1_000),
@@ -2107,9 +2158,35 @@ impl Options {
     pub fn resolve_workspace(&mut self) -> Result<()> {
         self.workspace = self
             .names_workspace()
-            .then(|| Workspace::resolve(&self.cwd))
+            .then(|| match &self.remote_workspace {
+                Some(path) => Ok(Workspace(path.clone())),
+                None => Workspace::resolve(&self.cwd),
+            })
             .transpose()?;
         Ok(())
+    }
+
+    pub(crate) fn local_workspace(&self) -> String {
+        self.cwd.to_string_lossy().into_owned()
+    }
+    pub(crate) fn select_workspace(&mut self, path: String, endpoint: Option<PathBuf>) {
+        self.endpoint = endpoint;
+        self.set_workspace_path(path);
+        self.resume = None;
+        self.prompt = None;
+        self.images.clear();
+        self.worktree = false;
+        self.worktree_branch = None;
+        self.worktree_base = None;
+        self.startup = None;
+        self.model = None;
+        self.permission = None;
+        self.effort = None;
+    }
+
+    pub(crate) fn set_workspace_path(&mut self, path: String) {
+        self.remote_workspace = self.endpoint.as_ref().map(|_| path.clone());
+        self.workspace = Some(Workspace(path));
     }
 
     /// The workspace every request this command sends names, resolved once
@@ -2173,6 +2250,7 @@ impl Options {
             | Action::Update
             | Action::DaemonStop
             | Action::Web { .. }
+            | Action::Share(_)
             | Action::WebInstall
             | Action::DefaultTerminalMode { .. }
             | Action::Help
@@ -2264,6 +2342,28 @@ pub fn default_home() -> PathBuf {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn named_target_keeps_workspace_validation_on_the_target_in_both_argument_orders() {
+        let home = tempfile::tempdir().unwrap();
+        let target_dir = home.path().join("only-on-target");
+        let target_dir = target_dir.to_str().unwrap();
+        for flags in [
+            ["--cwd", target_dir, "--target", "office"],
+            ["--target", "office", "--cwd", target_dir],
+        ] {
+            let args = ["--home", home.path().to_str().unwrap()]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_owned);
+            let options = Options::parse(args).unwrap();
+            assert_eq!(options.remote_workspace.as_deref(), Some(target_dir));
+            assert_eq!(
+                options.launch_dir(),
+                std::env::current_dir().unwrap().canonicalize().unwrap()
+            );
+        }
+    }
 
     /// Every parse that reaches a request takes the same step the CLI takes:
     /// a piped prompt, when the row has one, then `resolve_workspace`.

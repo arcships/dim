@@ -522,6 +522,7 @@ mod tests {
             "loop",
             "tasks",
             "rename",
+            "devices",
             "web",
             "connect",
             "login",
@@ -582,7 +583,7 @@ mod tests {
             names("/se", SCROLLBACK),
             [
                 "settings", "resume", "new", "models", "effort", "fast", "agent", "fork", "lines",
-                "rename", "mcp", "report"
+                "rename", "devices", "mcp", "report"
             ]
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);

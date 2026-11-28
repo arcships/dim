@@ -3,13 +3,17 @@
 //! unclosed tail and the composer box live at the bottom and repaint by row
 //! diff (2.3). The terminal layer (2.2) guarantees the exit contract.
 
+use super::device_panel::DevicePanel;
+use crate::devices::{Devices, Target};
 use dim_agent_types::ROOT_BRANCH_ID;
 use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::management::{self, editor};
+use crate::model::session::submission::{Delivery, PreparedDraft, SubmissionKey};
 use crate::model::session::{
     Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DeleteOutcome, DeleteReply,
     DraftPart, ManagementAction, ManagementRefusal, ManagementRequest, ManagementResult, Origin,
@@ -27,7 +31,7 @@ use crate::ui::Env;
 use crate::ui::Initial;
 use crate::ui::approvals_panel::{ApprovalsPanel, preset_label};
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
-use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
+use crate::ui::composer::{Composer, Outcome as ComposerOutcome, SavedDraft, Shell, history};
 use crate::ui::i18n::{self, t, tf};
 use crate::ui::language_panel::LanguagePanel;
 use crate::ui::lines_panel::{LinesPanel, short_id};
@@ -140,8 +144,8 @@ enum Jump {
     Pick,
     /// Pick the user message drawn as this block id (`/timeline`).
     Block(usize),
-    /// Scroll so this block id is at the top (after a page loads above it).
-    Show(usize),
+    /// Show the preceding screenful with this block still visible at the join.
+    Before(usize),
     /// Scroll to the top of this block id when it is taller than the viewport,
     /// so a long report opens at its heading instead of scrolled past it
     /// (`/keys`).
@@ -157,7 +161,7 @@ fn apply_jump(full: &mut FullScreen, app: &App, jump: Jump) {
         Jump::Top => full.scroll_to_top(),
         Jump::Pick => full.focus_older(app),
         Jump::Block(id) => full.pick_block(id, app),
-        Jump::Show(id) => full.show_block(id, app),
+        Jump::Before(id) => full.show_before_block(id, app),
         Jump::ShowTall(id) => full.show_tall_block(id, app),
     }
 }
@@ -189,8 +193,10 @@ pub fn run(
     host: Box<dyn SessionPort>,
     surroundings: Env,
     update: tokio::sync::oneshot::Sender<UpdateRequest>,
+    devices: Devices,
+    target: Arc<Target>,
 ) -> i32 {
-    let code = run_terminal(host, surroundings, update);
+    let code = run_terminal(host, surroundings, update, devices, target);
     history::flush();
     code
 }
@@ -245,6 +251,8 @@ fn run_terminal(
     host: Box<dyn SessionPort>,
     surroundings: Env,
     update: tokio::sync::oneshot::Sender<UpdateRequest>,
+    devices: Devices,
+    target: Arc<Target>,
 ) -> i32 {
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
@@ -293,7 +301,8 @@ fn run_terminal(
         None => detected.clone(),
     };
     let cwd_key = surroundings.workspace.clone();
-    let mut app = App::new(
+    let mut app = App::at_target(
+        Some(target),
         host,
         MarkdownRenderer::new(&theme),
         theme.palette.clone(),
@@ -316,6 +325,13 @@ fn run_terminal(
         background,
         active: saved.unwrap_or_else(|| default_id.to_owned()),
     });
+    app.devices = Some(devices);
+    let mut drafts = HashMap::<_, DeviceDraft>::new();
+    if std::env::var_os("DIMCODE_TERMINAL_PICK").is_some()
+        && app.target.as_ref().is_some_and(|t| t.address.is_some())
+    {
+        app.open_devices(true);
+    }
     let mut dirty = true;
     let mut click_scroll = None;
     let mut last_frame: Option<Instant> = None;
@@ -324,6 +340,116 @@ fn run_terminal(
         for update in app.host.drain() {
             app.apply(update);
             dirty = true;
+        }
+        if let Some(Prompt::Devices(panel)) = &mut app.prompt {
+            dirty |= panel.poll();
+            if let Some(view) = panel.take_open() {
+                let old_target = app.target.as_ref().expect("selected target");
+                let previous = (
+                    old_target.id.clone(),
+                    app.session_id.clone(),
+                    if app.session_id.is_empty() {
+                        app.cwd_key.clone()
+                    } else {
+                        String::new()
+                    },
+                );
+                let key = (
+                    view.target.id.clone(),
+                    view.session.clone().unwrap_or_default(),
+                    if view.session.is_none() {
+                        view.cwd.clone()
+                    } else {
+                        String::new()
+                    },
+                );
+                let wanted_line = if previous == key {
+                    app.snapshot.as_ref().map(|s| s.focus.as_str())
+                } else {
+                    drafts.get(&key).and_then(|draft| draft.line.as_deref())
+                };
+                if let Some(line) = wanted_line
+                    && view.snapshot().is_some_and(|shown| shown.focus != line)
+                {
+                    panel.focus(view, line.to_owned());
+                    continue;
+                }
+                let local_return = if old_target.address.is_none() {
+                    Some((
+                        app.cwd_key.clone(),
+                        (!app.session_id.is_empty()).then(|| app.session_id.clone()),
+                    ))
+                } else {
+                    app.local_return.take()
+                };
+                let mut next = App::at_target(
+                    Some(view.target),
+                    Box::new(view.host),
+                    MarkdownRenderer::new(&theme),
+                    app.palette.clone(),
+                    app.home.clone(),
+                    view.cwd,
+                );
+                next.devices = app.devices.take();
+                next.local_return = local_return;
+                next.fullscreen = app.fullscreen;
+                next.terminal_clipboard = app.terminal_clipboard;
+                next.theme_context = app.theme_context.take();
+                std::mem::swap(&mut next.markdown, &mut app.markdown);
+                next.awaiting_window = view.session.is_some();
+                if view.session.is_some() {
+                    next.switches.begin(SwitchKind::Resumed);
+                }
+                next.startup_session = view.session;
+                for update in view.updates {
+                    next.apply(update);
+                }
+                let mut old = std::mem::replace(&mut app, next);
+                old.retain_preparing_draft();
+                let saved = DeviceDraft {
+                    line: old.snapshot.as_ref().map(|s| s.focus.clone()),
+                    opening: old.line_draft.take(),
+                    composer: old.composer.take_draft(),
+                    question: old.question_stash.take(),
+                };
+                if saved.composer.is_some() || saved.opening.is_some() || saved.question.is_some() {
+                    drafts.insert(previous, saved);
+                }
+                if let Some(saved) = drafts.remove(&key) {
+                    if let Some(mut opening) = saved.opening
+                        && let Some(snapshot) = &app.snapshot
+                    {
+                        opening.projection_id = snapshot.projection_id;
+                        app.line_draft = Some(opening);
+                    }
+                    if let Some(draft) = saved.composer {
+                        app.composer.put_draft(draft);
+                    }
+                    if let Some(Prompt::Ask(current)) = &mut app.prompt
+                        && let Some(saved) = saved.question
+                        && current.call == saved.call
+                    {
+                        *current = saved;
+                    }
+                }
+                app.deliveries = std::mem::take(&mut old.deliveries);
+                for pending in app.deliveries.values_mut() {
+                    pending.in_flight = false;
+                }
+                app.retained_uploads = std::mem::take(&mut old.retained_uploads);
+                app.restore_retained_upload();
+                old.host.shutdown();
+                app.host.send(Command::LoginStatus(DIM_OAUTH_ID.into()));
+                app.reflow_requested = true;
+                leader_full = None;
+                if full.is_some() {
+                    full = Some(FullScreen::new(terminal.size(), synchronized));
+                }
+                status.forget();
+                progress.forget();
+                title.forget();
+                dirty = true;
+            }
         }
         if full.is_some() && app.shows_member() != leader_full.is_some() {
             if app.shows_member() {
@@ -605,6 +731,12 @@ fn run_terminal(
                 match full.mouse(event, &app) {
                     MouseOutcome::Ignored => {}
                     MouseOutcome::Redraw => dirty = true,
+                    MouseOutcome::Earlier => {
+                        if app.keyboard_free() && !app.shows_member() {
+                            app.show_earlier();
+                        }
+                        dirty = true;
+                    }
                     MouseOutcome::Overlay(rows) => {
                         app.scroll_overlay(rows * 3);
                         dirty = true;
@@ -1168,9 +1300,16 @@ impl PendingSwitches {
 }
 
 struct App {
+    devices: Option<Devices>,
+    target: Option<Arc<Target>>,
+    local_return: Option<(String, Option<String>)>,
+    preparing_draft: Option<PreparingDraft>,
+    deliveries: HashMap<(String, String, String), PendingDelivery>,
+    retained_uploads: HashMap<(String, String, String), Vec<DraftPart>>,
     host: Box<dyn SessionPort>,
     composer: Composer,
     cwd_key: String,
+    history_key: String,
     /// The workspace shown in the composer's label, with the home written
     /// `~`: the workspace the attached Session reports, or [`Self::cwd_key`]
     /// at Home. Never read from the process's directory, which a frame would
@@ -1313,8 +1452,7 @@ struct App {
     pending_boundary: Option<SwitchKind>,
     /// The line the transcript switched to, until its boundary row is out.
     pending_line: Option<String>,
-    /// `(messages in the window, messages before it)` of the last switch.
-    window_info: (usize, usize),
+    window_messages: usize,
     /// Rows `[start, end)` queued to be drawn as an earlier-history page.
     history_request: Option<(usize, usize)>,
     /// The fullscreen interface is on screen.
@@ -1355,7 +1493,7 @@ struct App {
     runs: Runs,
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
     /// comes back when command entry ends.
-    palette_stash: Option<(String, bool)>,
+    palette_stash: Option<SavedDraft>,
     /// The workspace's git branch for the banner and composer.
     branch: Option<String>,
     git_head: Option<PathBuf>,
@@ -1545,6 +1683,25 @@ impl ForkAsk {
     }
 }
 
+struct PendingDelivery {
+    draft: Arc<PreparedDraft>,
+    in_flight: bool,
+}
+
+struct PreparingDraft {
+    original: Vec<DraftPart>,
+    session: Origin,
+    line: String,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+struct DeviceDraft {
+    line: Option<String>,
+    opening: Option<LineDraft>,
+    composer: Option<SavedDraft>,
+    question: Option<AskUserPrompt>,
+}
+
 struct LineDraft {
     session_id: String,
     projection_id: u64,
@@ -1616,6 +1773,7 @@ struct ImageRead {
 }
 
 enum Prompt {
+    Devices(Box<DevicePanel>),
     Sessions(SessionsPanel),
     Tasks(TasksPanel),
     Lines(Box<LinesPanel>),
@@ -1634,6 +1792,7 @@ enum Prompt {
     Theme(ThemePanel),
     Language(LanguagePanel),
     Settings(SettingsPanel),
+    RemoteAccess(Box<super::remote_access::RemoteAccess>),
     Isolation(Box<crate::ui::isolation_panel::IsolationPanel>),
     Exit(ExitConfirm),
     Upgrade(UpgradeDialog),
@@ -1643,6 +1802,7 @@ enum Prompt {
 }
 
 impl App {
+    #[cfg(test)]
     fn new(
         host: Box<dyn SessionPort>,
         markdown: MarkdownRenderer,
@@ -1650,7 +1810,23 @@ impl App {
         home: PathBuf,
         cwd_key: String,
     ) -> Self {
-        let past = history::load(&home, &cwd_key);
+        Self::at_target(None, host, markdown, palette, home, cwd_key)
+    }
+
+    fn at_target(
+        target: Option<Arc<Target>>,
+        host: Box<dyn SessionPort>,
+        markdown: MarkdownRenderer,
+        palette: Palette,
+        home: PathBuf,
+        cwd_key: String,
+    ) -> Self {
+        let remote = target.as_ref().filter(|target| target.address.is_some());
+        let history_key = remote.map_or_else(
+            || cwd_key.clone(),
+            |target| format!("{}:{cwd_key}", target.id),
+        );
+        let past = history::load(&home, &history_key);
         let mouse = crate::ui::config::read(&home, MOUSE_KEY).is_none_or(|v| v != "off");
         let notify = crate::ui::config::read(&home, crate::ui::notify::NOTIFY_KEY)
             .is_none_or(|v| v != false);
@@ -1658,8 +1834,19 @@ impl App {
         // the local `--cwd` (cli-attachment-input), which an attach does not
         // change; the border's workspace label is the Session's and does.
         let mut composer = Composer::new(past);
-        composer.set_root(PathBuf::from(&cwd_key));
+        if let Some(target) = remote {
+            composer.set_remote(target.clone(), cwd_key.clone());
+        } else {
+            composer.set_root(PathBuf::from(&cwd_key));
+        }
         let mut app = Self {
+            devices: None,
+            target,
+            history_key,
+            local_return: None,
+            preparing_draft: None,
+            deliveries: HashMap::new(),
+            retained_uploads: HashMap::new(),
             host,
             composer,
             workspace: String::new(),
@@ -1746,7 +1933,7 @@ impl App {
             switches: PendingSwitches::default(),
             pending_boundary: None,
             pending_line: None,
-            window_info: (0, 0),
+            window_messages: 0,
             history_request: None,
             fullscreen: false,
             signed_in: false,
@@ -1856,20 +2043,41 @@ impl App {
     fn command_entry_open(&self) -> bool {
         (self.composer.skill_draft
             || (self.composer.shell().is_none() && self.composer.text().starts_with('/')))
-            && matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing)
+            && self.decision_allows_commands()
+    }
+
+    fn decision_allows_commands(&self) -> bool {
+        matches!(self.prompt, Some(Prompt::Permission(_)))
+            || matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing)
     }
 
     /// Opens the command palette on the draft it replaces; the draft comes
     /// back when command entry ends ([`Self::handle`]).
     fn open_palette(&mut self) {
-        if !self.composer.is_empty() || self.composer.skill_draft {
-            self.palette_stash = Some((self.composer.text().to_owned(), self.composer.skill_draft));
+        if let Some(draft) = self.composer.take_draft() {
+            self.palette_stash = Some(draft);
         }
         self.set_draft("/");
     }
 
-    /// Shows `prompt` in the prompt slot, keeping a pending question aside
-    /// so the panel gives the question back with its answers when it closes.
+    /// Opens the target picker, optionally starting at the current computer's sessions.
+    fn open_devices(&mut self, current_sessions: bool) {
+        let (Some(runtime), Some(target)) = (self.devices.clone(), self.target.clone()) else {
+            return;
+        };
+        let reconnect = self.failure.is_some().then(|| {
+            (
+                self.cwd_key.clone(),
+                (!self.session_id.is_empty()).then(|| self.session_id.clone()),
+            )
+        });
+        let mut panel = DevicePanel::new(runtime, target, self.local_return.clone(), reconnect);
+        if current_sessions {
+            panel.current_sessions();
+        }
+        self.open_prompt(Prompt::Devices(Box::new(panel)));
+    }
+
     fn open_prompt(&mut self, prompt: Prompt) {
         if matches!(self.prompt, Some(Prompt::Sessions(_))) {
             self.host.send(Command::CloseSessions);
@@ -2276,6 +2484,8 @@ impl App {
             | Some(Prompt::Approvals(_))
             | Some(Prompt::Theme(_))
             | Some(Prompt::Language(_))
+            | Some(Prompt::RemoteAccess(_))
+            | Some(Prompt::Devices(_))
             | Some(Prompt::Settings(_))
             | Some(Prompt::Isolation(_))
             | Some(Prompt::Lines(_))
@@ -2343,6 +2553,9 @@ impl App {
         self.sync_sessions();
         self.sync_task_details();
         let mut changed = false;
+        if let Some(Prompt::RemoteAccess(panel)) = &mut self.prompt {
+            changed = panel.tick();
+        }
         for excerpt in self.excerpts.values_mut() {
             if excerpt.next != excerpt.text
                 && now.duration_since(excerpt.at) >= Duration::from_millis(500)
@@ -2491,6 +2704,45 @@ impl App {
             .unwrap_or_default()
     }
 
+    fn upload_scope(&self, session: &str, line: &str) -> (String, String, String) {
+        (
+            self.target
+                .as_ref()
+                .map(|t| t.id.clone())
+                .unwrap_or_default(),
+            session.into(),
+            line.into(),
+        )
+    }
+
+    fn retain_upload(&mut self, session: String, line: String, parts: Vec<DraftPart>) {
+        self.retained_uploads
+            .insert(self.upload_scope(&session, &line), parts);
+    }
+
+    fn restore_retained_upload(&mut self) {
+        if self.retained_uploads.is_empty() {
+            return;
+        }
+        let key = self.upload_scope(&self.session_id, &self.target_line());
+        if let Some(parts) = self.retained_uploads.remove(&key) {
+            self.composer.restore_draft(parts);
+        }
+    }
+
+    fn retain_preparing_draft(&mut self) {
+        if let Some(pending) = self.preparing_draft.take() {
+            pending.cancel.cancel();
+            if let Origin::Session(sid) = pending.session
+                && (sid != self.session_id || pending.line != self.target_line())
+            {
+                self.retain_upload(sid, pending.line, pending.original);
+            } else {
+                self.composer.restore_draft(pending.original);
+            }
+        }
+    }
+
     fn apply(&mut self, update: Update) {
         match update {
             Update::Withdrawn(input) => {
@@ -2625,9 +2877,18 @@ impl App {
                     }
                 }
                 self.runs.observe(&snapshot);
+                let earlier = snapshot.earlier;
                 let previous = self.snapshot.replace(*snapshot);
+                self.restore_retained_upload();
                 self.follow_floors(previous.as_ref());
-                self.apply_earlier(previous.as_ref());
+                if self.reveal_pending {
+                    self.reveal_pending = !self.reveal_earlier()
+                        && (earlier == Earlier::Reading
+                            || earlier == Earlier::Unread
+                                && previous
+                                    .as_ref()
+                                    .is_some_and(|s| s.earlier == Earlier::Unread));
+                }
                 self.refresh_compactions();
                 self.refresh_cards();
                 self.refresh_tool_origins();
@@ -2729,9 +2990,11 @@ impl App {
                     panel.page(&id, paged, result);
                 }
             }
-            Update::RepositoryWorkspaces(workspaces) => {
-                if let Some(Prompt::Sessions(panel)) = &mut self.prompt {
-                    panel.repository(workspaces);
+            Update::RepositoryWorkspaces { picker, workspaces } => {
+                if let Some(Prompt::Sessions(panel)) = &mut self.prompt
+                    && panel.id == picker
+                {
+                    panel.repository(&self.cwd_key, workspaces);
                 }
             }
             Update::Toast(text) => self.set_notice(text),
@@ -3377,6 +3640,10 @@ impl App {
                     .remove(&(branch_id.clone(), request_id.clone()));
             }
             Update::Failed(message) => {
+                for pending in self.deliveries.values_mut() {
+                    pending.in_flight = false;
+                }
+                self.retain_preparing_draft();
                 if let Some(Prompt::Report(report)) = &mut self.prompt {
                     report.disconnected(&message);
                 }
@@ -3384,12 +3651,105 @@ impl App {
                 self.restore_unsent();
                 self.failure = Some(message);
                 self.run_started = None;
+                if self.target.as_ref().is_some_and(|t| t.address.is_some())
+                    && !matches!(self.prompt, Some(Prompt::Devices(_)))
+                {
+                    self.open_devices(false);
+                }
+            }
+            Update::RemoteDraftPrepared {
+                session,
+                line,
+                mode,
+                parts,
+                error,
+            } => {
+                let Some(pending) = self.preparing_draft.take() else {
+                    return;
+                };
+                if self.target_session() != Origin::Session(session.clone())
+                    || self.target_line() != line
+                {
+                    self.retain_upload(session, line, parts);
+                    self.set_notice(t(
+                        "The session or line changed during upload; the draft was kept",
+                    ));
+                } else if pending.cancel.is_cancelled() {
+                    self.composer.restore_draft(parts);
+                    self.set_notice(tf(
+                        "{reason}; draft retained",
+                        &[("reason", t("Attachment preparation cancelled"))],
+                    ));
+                } else if let Some(message) = error {
+                    self.composer.restore_draft(parts);
+                    self.set_notice(tf("{reason}; draft retained", &[("reason", t(&message))]));
+                } else {
+                    let text: String = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            DraftPart::Text(text)
+                            | DraftPart::Block(dim_agent_types::ContentBlock::Text { text }) => {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if !text.trim().is_empty() {
+                        history::append(&self.home, &self.history_key, text.trim());
+                        self.composer.push_history(text.trim());
+                    }
+                    let scope = self.upload_scope(&session, &line);
+                    let draft = Arc::new(PreparedDraft {
+                        key: SubmissionKey::new(&session, &line),
+                        parts,
+                        mode,
+                    });
+                    self.deliveries.insert(
+                        scope,
+                        PendingDelivery {
+                            draft: draft.clone(),
+                            in_flight: true,
+                        },
+                    );
+                    self.host.send(Command::DeliverDraft {
+                        draft,
+                        reconcile: false,
+                    });
+                }
+            }
+            Update::DraftDelivery { id, result } => {
+                let Some((scope, pending)) = self
+                    .deliveries
+                    .iter_mut()
+                    .find(|(_, pending)| pending.draft.key.submission_id == id)
+                else {
+                    return;
+                };
+                if let Delivery::Unconfirmed(message) = result {
+                    pending.in_flight = false;
+                    self.set_notice(tf(
+                        "Delivery unconfirmed: {reason}",
+                        &[("reason", t(&message))],
+                    ));
+                } else {
+                    let scope = scope.clone();
+                    if let Some(pending) = self.deliveries.remove(&scope)
+                        && let Delivery::Refused(message) = result
+                    {
+                        self.retained_uploads
+                            .insert(scope, Arc::unwrap_or_clone(pending.draft).parts);
+                        self.restore_retained_upload();
+                        self.set_notice(tf("{reason}; draft retained", &[("reason", t(&message))]));
+                    }
+                }
             }
             Update::DraftNotSent { parts, message } => {
+                self.preparing_draft = None;
                 self.notices.push(message);
                 self.composer.restore_draft(parts);
             }
             Update::SubmitNotSent(message) => {
+                self.retain_preparing_draft();
                 self.notices.push(message);
                 self.restore_unsent();
             }
@@ -3404,7 +3764,9 @@ impl App {
                 // A first message the invocation supplied has no Session
                 // to take it: keep it in the draft and stay, rather than
                 // exiting nonzero with nothing sent.
-                if self.initial.is_some() || self.unsent.is_some() {
+                if self.initial.is_some() || self.unsent.is_some() || self.preparing_draft.is_some()
+                {
+                    self.retain_preparing_draft();
                     self.restore_unsent();
                 } else {
                     self.exit_code = Some(1);
@@ -3424,10 +3786,9 @@ impl App {
         let outcome = self.handle_input(event);
         self.restore_question();
         if self.composer.is_empty()
-            && let Some((draft, skill_draft)) = self.palette_stash.take()
+            && let Some(draft) = self.palette_stash.take()
         {
-            self.set_draft(&draft);
-            self.composer.skill_draft = skill_draft;
+            self.composer.put_draft(draft);
         }
         outcome
     }
@@ -3444,6 +3805,7 @@ impl App {
                     None => self.paste(text),
                     Some(Prompt::Providers(panel)) => panel.paste(&text),
                     Some(Prompt::Login(view)) => view.paste(&text),
+                    Some(Prompt::Devices(panel)) => panel.paste(&text),
                     Some(Prompt::Sessions(panel)) => panel.paste(&text),
                     Some(Prompt::Tasks(panel)) => panel.paste(&text),
                     Some(Prompt::Lines(panel)) => panel.paste(&text),
@@ -3453,6 +3815,7 @@ impl App {
                     }
                     Some(Prompt::Theme(panel)) => panel.paste(&text),
                     Some(Prompt::Language(panel)) => panel.paste(&text),
+                    Some(Prompt::RemoteAccess(panel)) => panel.paste(&text),
                     Some(Prompt::Settings(panel)) => panel.paste(&text),
                     Some(Prompt::Isolation(panel)) => panel.paste(&text),
                     Some(Prompt::Management(panel)) => panel.paste(&text),
@@ -3508,7 +3871,25 @@ impl App {
             }
             return Outcome::Continue;
         }
+        if let Some(Prompt::Devices(panel)) = &mut self.prompt {
+            if ctrl && self.failure.is_some() && matches!(key.code, KeyCode::Char('c' | 'd')) {
+                return Outcome::Exit(0);
+            }
+            if ctrl && key.code == KeyCode::Char('c') {
+                return self.ctrl_c();
+            }
+            if matches!(panel.key(key), Effect::Close) {
+                self.prompt = None;
+                self.sync_prompt();
+            }
+            return Outcome::Continue;
+        }
         if self.failure.is_some() {
+            if key.code == KeyCode::Enter && self.composer.text().trim() == "/devices" {
+                self.composer.clear();
+                self.open_devices(false);
+                return Outcome::Continue;
+            }
             if (ctrl && matches!(key.code, KeyCode::Char('c' | 'd')))
                 || (key.code == KeyCode::Enter && self.composer.text().trim() == "/exit")
             {
@@ -3530,7 +3911,7 @@ impl App {
         if ctrl && key.code == KeyCode::Char('c') {
             return self.ctrl_c();
         }
-        if matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing) {
+        if self.decision_allows_commands() {
             if self.command_entry_open() {
                 if key.code == KeyCode::Esc
                     && !self.composer.palette_open()
@@ -3550,6 +3931,7 @@ impl App {
         }
         if let Some(prompt) = &mut self.prompt {
             let effect = match prompt {
+                Prompt::Devices(p) => p.key(key),
                 Prompt::Sessions(p) => p.handle_key(key),
                 Prompt::Tasks(p) => p.handle_key(key),
                 Prompt::Lines(p) => p.handle_key(key),
@@ -3582,6 +3964,7 @@ impl App {
                 Prompt::Approvals(p) => p.handle_key(key),
                 Prompt::Theme(p) => p.handle_key(key),
                 Prompt::Language(p) => p.handle_key(key),
+                Prompt::RemoteAccess(p) => p.handle_key(key),
                 Prompt::Settings(p) => p.handle_key(key),
                 Prompt::Isolation(p) => p.handle_key(key),
                 Prompt::Exit(p) => p.handle_key(key),
@@ -3748,6 +4131,22 @@ impl App {
                 return Outcome::Continue;
             }
             KeyCode::Enter
+                if key.mods.0 == 0
+                    && self.composer.is_empty()
+                    && let Some(pending) = self
+                        .deliveries
+                        .get_mut(&self.upload_scope(&self.session_id, &self.target_line())) =>
+            {
+                if !pending.in_flight {
+                    pending.in_flight = true;
+                    self.host.send(Command::DeliverDraft {
+                        draft: pending.draft.clone(),
+                        reconcile: true,
+                    });
+                }
+                return Outcome::Continue;
+            }
+            KeyCode::Enter
                 if key.mods.0 == 0 && self.composer.is_empty() && !self.queued().is_empty() =>
             {
                 self.steer();
@@ -3790,15 +4189,10 @@ impl App {
             ComposerOutcome::Submit(text) => {
                 vec![dim_agent_types::ContentBlock::Text { text }]
             }
-            ComposerOutcome::SubmitDraft { parts, .. } => parts
-                .into_iter()
-                .map(|part| match part {
-                    DraftPart::Text(text) | DraftPart::Paste(text) => {
-                        dim_agent_types::ContentBlock::Text { text }
-                    }
-                    DraftPart::Block(block) => block,
-                })
-                .collect(),
+            ComposerOutcome::SubmitDraft { parts, .. } => {
+                self.composer.restore_draft(parts);
+                return;
+            }
             _ => return,
         };
         self.composer
@@ -3819,6 +4213,21 @@ impl App {
         // cannot arrive here while a gesture settles. If one ever does, the
         // draft is put back rather than dropped: a refused submit must never
         // cost the operator their text or attachments.
+        if (self.preparing_draft.is_some()
+            || self
+                .deliveries
+                .contains_key(&self.upload_scope(&self.session_id, &line)))
+            && matches!(
+                outcome,
+                ComposerOutcome::Submit(_) | ComposerOutcome::SubmitDraft { .. }
+            )
+        {
+            self.restore_outcome(outcome);
+            self.set_notice(t(
+                "The previous attachment submission is pending; draft retained",
+            ));
+            return Outcome::Continue;
+        }
         if self.send_now.is_some()
             && self.line_draft.is_none()
             && matches!(
@@ -3839,6 +4248,16 @@ impl App {
                 self.open_line(&text);
             }
             ComposerOutcome::SubmitDraft { text, parts } if self.line_draft.is_some() => {
+                if parts
+                    .iter()
+                    .any(|part| matches!(part, DraftPart::File { .. }))
+                {
+                    self.composer.restore_draft(parts);
+                    self.set_notice(t(
+                        "A line opens from text; images and files were not included",
+                    ));
+                    return Outcome::Continue;
+                }
                 if parts.iter().any(|part| matches!(part, DraftPart::Block(_))) {
                     self.set_notice(t(
                         "A line opens from text; images and files were not included",
@@ -3848,7 +4267,7 @@ impl App {
             }
             ComposerOutcome::Submit(text) => {
                 let text = text.trim().to_owned();
-                history::append(&self.home, &self.cwd_key, &text);
+                history::append(&self.home, &self.history_key, &text);
                 self.composer.push_history(&text);
                 self.jump = Some(Jump::Bottom);
                 if mode == SubmitMode::Queue && self.running() {
@@ -3857,14 +4276,26 @@ impl App {
                 self.host.submit(text, mode, line, session);
             }
             ComposerOutcome::SubmitDraft { text, parts } => {
-                let text = text.trim().to_owned();
-                history::append(&self.home, &self.cwd_key, &text);
-                self.composer.push_history(&text);
+                if self.target.as_ref().is_some_and(|t| t.address.is_some()) {
+                    self.preparing_draft = Some(PreparingDraft {
+                        original: parts.clone(),
+                        cancel: tokio_util::sync::CancellationToken::new(),
+                        session: session.clone(),
+                        line: line.clone(),
+                    });
+                } else {
+                    history::append(&self.home, &self.history_key, text.trim());
+                    self.composer.push_history(text.trim());
+                }
                 self.jump = Some(Jump::Bottom);
                 if mode == SubmitMode::Queue && self.running() {
                     self.set_notice(t("Message queued"));
                 }
                 self.host.send(Command::SubmitDraft {
+                    preparation: self
+                        .preparing_draft
+                        .as_ref()
+                        .map(|pending| pending.cancel.clone()),
                     parts,
                     mode,
                     line,
@@ -3873,7 +4304,7 @@ impl App {
             }
             ComposerOutcome::Shell { command, shell } => {
                 let entry = format!("{}{command}", shell.prefix());
-                history::append(&self.home, &self.cwd_key, &entry);
+                history::append(&self.home, &self.history_key, &entry);
                 self.composer.push_history(&entry);
                 self.jump = Some(Jump::Bottom);
                 let running = crate::ui::shell::Running::new(command, shell == Shell::Private);
@@ -3958,7 +4389,13 @@ impl App {
     /// as `[name]` tokens, except into a shell command.
     fn paste(&mut self, text: String) {
         self.dismiss_suggestion();
-        let base = std::path::Path::new(&self.cwd_key);
+        let base = self
+            .target
+            .as_ref()
+            .filter(|target| target.address.is_some())
+            .map_or(std::path::Path::new(&self.cwd_key), |target| {
+                target.keyboard_dir()
+            });
         let paths = match self.composer.shell() {
             Some(_) => None,
             None => crate::attachments::pasted_entries(&text, base),
@@ -4125,6 +4562,10 @@ impl App {
     /// session in fullscreen (where Esc interrupts), clears the draft, then
     /// warns, then exits — through the confirmation while busy.
     fn ctrl_c(&mut self) -> Outcome {
+        if let Some(pending) = &self.preparing_draft {
+            pending.cancel.cancel();
+            return Outcome::Continue;
+        }
         if self.shell.is_some() && !matches!(self.prompt, Some(Prompt::Ask(_))) {
             self.stop_shell();
             return Outcome::Continue;
@@ -4193,6 +4634,18 @@ impl App {
     /// `cells`, so a shown line is never displaced by a shortened path;
     /// [`workspace_label`] never returns one, so the form only appears here.
     fn place_label(&self, cells: usize) -> String {
+        let prefix = self
+            .target
+            .as_ref()
+            .filter(|target| target.address.is_some())
+            .map(|target| format!("{}:", target.name))
+            .unwrap_or_default();
+        let width = cells.saturating_sub(width_of(&prefix));
+        let place = self.workspace_place(width);
+        format!("{}{place}", truncate_cells(&prefix, cells))
+    }
+
+    fn workspace_place(&self, cells: usize) -> String {
         if let Some(draft) = &self.line_draft {
             let lines = self.snapshot.as_ref().map_or(&[][..], |s| &s.lines[..]);
             return tf(
@@ -4228,7 +4681,7 @@ impl App {
             return;
         };
         let text = text.trim().to_owned();
-        history::append(&self.home, &self.cwd_key, &text);
+        history::append(&self.home, &self.history_key, &text);
         self.composer.push_history(&text);
         self.host.send(Command::OpenLine {
             session_id: draft.session_id,
@@ -5247,6 +5700,9 @@ impl App {
     fn setting(&mut self, setting: Setting) {
         self.settings_return = Some(setting);
         match setting {
+            Setting::RemoteAccess => self.open_prompt(Prompt::RemoteAccess(Box::new(
+                super::remote_access::RemoteAccess::new(self.home.clone()),
+            ))),
             Setting::Theme => {
                 self.settings_return = None;
                 self.run_command("theme", "");
@@ -5795,14 +6251,7 @@ impl App {
                 Outcome::Continue
             }
             "earlier" => {
-                if self.fullscreen {
-                    self.show_earlier();
-                } else {
-                    self.host.send(Command::Earlier {
-                        line: self.target_line(),
-                        session: self.target_session(),
-                    });
-                }
+                self.show_earlier();
                 Outcome::Continue
             }
             "export" => {
@@ -5929,12 +6378,16 @@ impl App {
                 self.host.send(Command::NewSession);
                 Outcome::Continue
             }
+            "devices" => {
+                self.open_devices(false);
+                Outcome::Continue
+            }
             "web" => Outcome::Web,
             "resume" => {
-                self.open_prompt(Prompt::Sessions(SessionsPanel::new(
-                    crate::ui::config::saved_show_acp(&self.home),
-                )));
-                self.host.send(Command::FindRepository);
+                let panel = SessionsPanel::new(crate::ui::config::saved_show_acp(&self.home));
+                let picker = panel.id;
+                self.open_prompt(Prompt::Sessions(panel));
+                self.host.send(Command::FindRepository { picker });
                 self.sync_sessions();
                 Outcome::Continue
             }
@@ -6160,6 +6613,7 @@ impl App {
             let text = banner(
                 cols,
                 &self.palette,
+                &self.workspace,
                 self.branch.as_deref().unwrap_or(t("Not available")),
             );
             self.record(Block::Banner);
@@ -6178,14 +6632,14 @@ impl App {
             self.record(Block::Boundary(label));
             frame.commits.push(text);
         }
-        if ready && std::mem::take(&mut self.load_more) && self.fullscreen {
-            let hidden = self.snapshot.as_ref().map_or(0, |snapshot| {
-                snapshot.rows[..self.window_floor.min(snapshot.rows.len())]
-                    .iter()
-                    .filter(|row| row.kind.is_message())
-                    .count()
-            });
-            if hidden > 0 {
+        if ready && std::mem::take(&mut self.load_more) {
+            let hidden = self.hidden_messages();
+            if hidden > 0
+                || self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.earlier != Earlier::AtStart)
+            {
                 let block = Block::LoadMore(hidden);
                 let text = chunk(&render_block(
                     &block,
@@ -6250,20 +6704,15 @@ impl App {
                     let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
                     tf(
                         "forked {id} · {count} messages",
-                        &[("id", sid), ("count", &self.window_info.0.to_string())],
+                        &[("id", sid), ("count", &self.window_messages.to_string())],
                     )
                 }
                 SwitchKind::Resumed => {
-                    let (count, hidden) = self.window_info;
                     let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
-                    let mut label = tf(
+                    tf(
                         "resumed {id} · {count} messages",
-                        &[("id", sid), ("count", &count.to_string())],
-                    );
-                    if hidden > 0 {
-                        label.push_str(t(" · earlier history: /timeline"));
-                    }
-                    label
+                        &[("id", sid), ("count", &self.window_messages.to_string())],
+                    )
                 }
             };
             let line = boundary_line(&label, width);
@@ -6280,7 +6729,7 @@ impl App {
                 self.jump = Some(if pick {
                     Jump::Block(id)
                 } else {
-                    Jump::Show(id)
+                    Jump::Before(id)
                 });
             }
         }
@@ -6794,7 +7243,7 @@ impl App {
             Some(Prompt::Models(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Providers(prompt)) => Some(prompt.cursor(width, height)),
             Some(Prompt::Login(prompt)) => Some(prompt.cursor(width, height)),
-            Some(Prompt::Ask(_)) if command_entry => None,
+            _ if command_entry => None,
             Some(Prompt::Ask(prompt)) => Some(prompt.cursor(width, panel_rows)),
             Some(_) => Some(None),
             None => None,
@@ -6822,6 +7271,7 @@ impl App {
                 }
                 prompt => {
                     let rows = match prompt {
+                        Some(Prompt::Devices(panel)) => Some(panel.render(list_width, budget, p)),
                         Some(Prompt::Sessions(prompt)) => {
                             Some(prompt.render(list_width, budget, p))
                         }
@@ -6855,6 +7305,9 @@ impl App {
                         Some(Prompt::Language(prompt)) => {
                             Some(prompt.render(list_width, budget, p))
                         }
+                        Some(Prompt::RemoteAccess(prompt)) => {
+                            Some(prompt.render(list_width, budget, p))
+                        }
                         Some(Prompt::Settings(prompt)) => {
                             Some(prompt.render(list_width, budget, p))
                         }
@@ -6875,9 +7328,8 @@ impl App {
         let panel = match &self.prompt {
             _ if self.shows_member() => None,
             _ if frame.overlay.is_some() => None,
-            Some(Prompt::Ask(_)) if command_entry => {
-                self.composer.palette_panel(outer, panel_rows, p)
-            }
+            _ if command_entry => self.composer.palette_panel(outer, panel_rows, p),
+            Some(Prompt::Devices(panel)) => Some(panel.render(outer, panel_rows, p)),
             Some(Prompt::Sessions(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Tasks(prompt)) => {
                 Some(prompt.render(outer, panel_rows, p, &self.markdown))
@@ -6899,6 +7351,7 @@ impl App {
             Some(Prompt::Approvals(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Theme(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Language(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::RemoteAccess(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Settings(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Isolation(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Exit(prompt)) => Some(prompt.render(outer, p)),
@@ -7162,7 +7615,7 @@ impl App {
         self.window_floor = if hidden > 0 { messages[hidden] } else { 0 };
         self.history_floor = self.window_floor;
         self.load_more = true;
-        self.window_info = (messages.len() - hidden, hidden);
+        self.window_messages = messages.len() - hidden;
         true
     }
 
@@ -7652,7 +8105,7 @@ impl App {
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
-        self.window_info = (0, 0);
+        self.window_messages = 0;
         self.history_request = None;
         self.awaiting_window = true;
     }
@@ -7669,7 +8122,7 @@ impl App {
         self.load_more = false;
         self.reveal_pending = false;
         self.landing = None;
-        self.window_info = (0, 0);
+        self.window_messages = 0;
         self.history_request = None;
         self.awaiting_window = true;
         self.pending_line = Some(line);
@@ -7701,6 +8154,13 @@ impl App {
     /// screen still says which files a mention reads.
     fn show_workspace(&mut self, cwd: Option<&str>) {
         let cwd = cwd.unwrap_or(&self.cwd_key);
+        if self.target.as_ref().is_some_and(|t| t.address.is_some()) {
+            self.composer.set_remote_cwd(cwd);
+            self.workspace = crate::sanitize::safe_line(cwd);
+            self.git_head = None;
+            self.branch = None;
+            return;
+        }
         self.workspace = crate::ui::tilde(cwd);
         // Paths compare by component, so `A/` is `A`; not canonicalized: I/O
         // per switch, and a resolved symlink is a display question.
@@ -7762,7 +8222,7 @@ impl App {
         self.load_more = false;
         self.reveal_pending = false;
         self.landing = None;
-        self.window_info = (0, 0);
+        self.window_messages = 0;
         self.history_request = None;
         // Home has no window to wait for.
         self.awaiting_window = !self.session_id.is_empty();
@@ -7842,41 +8302,46 @@ impl App {
         } else if index < self.history_floor {
             self.history_request = Some((index, self.history_floor));
             self.history_floor = index;
+            self.load_more = true;
         } else {
             self.set_notice(t("Already on screen above; /tui jumps to it"));
         }
     }
 
-    /// Fullscreen's load-more row: draws the previous page above the drawn
-    /// messages and keeps the oldest drawn message at the top of the view.
-    fn load_earlier(&mut self) {
+    fn reveal_earlier(&mut self) -> bool {
         let Some(snapshot) = &self.snapshot else {
-            return;
+            return false;
         };
-        let floor = self.window_floor.min(snapshot.rows.len());
-        let messages: Vec<usize> = snapshot.rows[..floor]
+        let floor = self.history_floor.min(snapshot.rows.len());
+        if floor == 0 {
+            return false;
+        }
+        let start = snapshot.rows[..floor]
             .iter()
             .enumerate()
+            .rev()
             .filter(|(_, row)| row.kind.is_message())
-            .map(|(i, _)| i)
-            .collect();
-        if messages.is_empty() {
-            return;
+            .nth(HISTORY_WINDOW - 1)
+            .map_or(0, |(i, _)| i);
+        if !self.fullscreen {
+            self.rebuild_window(start);
+            self.banner_committed = false;
+            self.request_reflow();
+            return true;
         }
-        let start = messages[messages.len().saturating_sub(HISTORY_WINDOW)];
         self.landing = snapshot.rows[floor..]
             .iter()
             .find(|row| row.kind == RowKind::UserMessage && row.line.is_none())
             .map(|row| (row.row_id.clone(), false));
+        if self.landing.is_none() {
+            self.jump = Some(Jump::Top);
+        }
         self.rebuild_window(start);
+        true
     }
 
-    /// Shows what comes before the drawn top, for PageUp at that top, the
-    /// load-more row and fullscreen `/earlier`: loaded rows first, a read from
-    /// the daemon when none are loaded, and nothing at the branch start.
     fn show_earlier(&mut self) {
-        if self.hidden_messages() > 0 {
-            self.load_earlier();
+        if self.history_request.is_some() || self.reveal_earlier() {
             return;
         }
         let Some(snapshot) = &self.snapshot else {
@@ -7891,57 +8356,18 @@ impl App {
                 self.reveal_pending = true;
             }
             Earlier::Reading => self.reveal_pending = true,
-            Earlier::AtStart => {}
+            Earlier::AtStart => self.set_notice(t("Beginning of conversation")),
         }
     }
 
-    /// Message rows loaded above `window_floor`, which the drawn window hides.
     fn hidden_messages(&self) -> usize {
         let Some(snapshot) = &self.snapshot else {
             return 0;
         };
-        snapshot.rows[..self.window_floor.min(snapshot.rows.len())]
+        snapshot.rows[..self.history_floor.min(snapshot.rows.len())]
             .iter()
             .filter(|row| row.kind.is_message())
             .count()
-    }
-
-    /// Reveals the page an earlier read just prepended, keeping the oldest
-    /// drawn message at the top of the view.
-    fn reveal_prepended(&mut self) {
-        if self.hidden_messages() > 0 {
-            self.load_earlier();
-        }
-        self.reveal_pending = false;
-    }
-
-    /// The pending reveal, once a snapshot arrived. A prepended page is shown;
-    /// a read that ended without one drops the request, so a later unrelated
-    /// prepend is not revealed by it. A live-turn snapshot during the read
-    /// changes nothing, which is why `Earlier::Reading` keeps it.
-    fn apply_earlier(&mut self, previous: Option<&ViewSnapshot>) {
-        if !self.reveal_pending {
-            return;
-        }
-        let Some(snapshot) = &self.snapshot else {
-            return;
-        };
-        // Rows were prepended when the old first row now sits below the top: a
-        // front trim changes the first row too and must not count.
-        let prepended = previous.is_some_and(|previous| {
-            previous.rows.first().is_some_and(|first| {
-                snapshot
-                    .rows
-                    .iter()
-                    .position(|row| row.row_id == first.row_id)
-                    .is_some_and(|index| index > 0)
-            })
-        });
-        if prepended {
-            self.reveal_prepended();
-        } else if snapshot.earlier != Earlier::Reading {
-            self.reveal_pending = false;
-        }
     }
 
     /// Entering fullscreen: the shown line is drawn again from its window,
@@ -7954,8 +8380,7 @@ impl App {
         }
     }
 
-    /// Draws the fullscreen transcript again from row `floor`, the way a
-    /// line switch draws a line's.
+    /// Draws the shown line's transcript again from row `floor`.
     fn rebuild_window(&mut self, floor: usize) {
         self.planner.reset();
         self.thoughts.clear();
@@ -7991,7 +8416,12 @@ impl App {
         let (Some(previous), Some(snapshot)) = (previous, &self.snapshot) else {
             return;
         };
-        let index_of = |id: &str| snapshot.rows.iter().position(|row| row.row_id == id);
+        let index_of = |id: &str| {
+            snapshot
+                .rows
+                .iter()
+                .position(|row| row.row_id == id || row.provisional_id.as_deref() == Some(id))
+        };
         let moved = |floor: usize| -> usize {
             let Some(rows) = previous.rows.get(floor..).filter(|rows| !rows.is_empty()) else {
                 return floor.min(snapshot.rows.len());
@@ -8002,7 +8432,9 @@ impl App {
             let present: std::collections::HashSet<&str> = snapshot
                 .rows
                 .iter()
-                .map(|row| row.row_id.as_str())
+                .flat_map(|row| {
+                    std::iter::once(row.row_id.as_str()).chain(row.provisional_id.as_deref())
+                })
                 .collect();
             rows.iter()
                 .find(|row| present.contains(row.row_id.as_str()))
@@ -8356,6 +8788,7 @@ impl App {
     }
 
     fn set_fullscreen(&mut self, on: bool) {
+        self.reveal_pending = false;
         self.fullscreen = on;
         if on {
             self.redraw_window();
@@ -8608,6 +9041,7 @@ impl App {
             Block::Banner => banner(
                 cols,
                 &self.palette,
+                &self.workspace,
                 self.branch.as_deref().unwrap_or(t("Not available")),
             ),
             Block::ToolGroup(group) if self.fullscreen => chunk(&render_group(
@@ -8676,6 +9110,22 @@ impl App {
             None => match &self.snapshot {
                 Some(s) if !s.questions.is_empty() => Some(t("answer required").to_owned()),
                 Some(s) if !s.approvals.is_empty() => Some(t("permission required").to_owned()),
+                _ if let Some(pending) = self
+                    .deliveries
+                    .get(&self.upload_scope(&self.session_id, &self.target_line())) =>
+                {
+                    Some(
+                        t(if pending.in_flight {
+                            "Submitting attachments"
+                        } else {
+                            "Delivery unconfirmed · Enter on an empty draft to check and retry"
+                        })
+                        .to_owned(),
+                    )
+                }
+                _ if self.preparing_draft.is_some() => {
+                    Some(t("Preparing attachments · Ctrl+C to cancel").to_owned())
+                }
                 Some(s) if s.running => Some(t("esc interrupt").to_owned()),
                 _ => None,
             },
@@ -9449,12 +9899,8 @@ fn fullscreen_home(cols: usize, p: &Palette) -> Vec<String> {
     )
 }
 
-fn banner(cols: usize, p: &Palette, branch: &str) -> String {
+fn banner(cols: usize, p: &Palette, cwd: &str, branch: &str) -> String {
     let version = dim_agent_capabilities::build::current();
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| t("Not available").into());
-    let branch = branch.to_owned();
     let body_width = cols.saturating_sub(2 + MARGIN).max(4) - 4;
     let greeting = [
         tf(
@@ -9466,7 +9912,7 @@ fn banner(cols: usize, p: &Palette, branch: &str) -> String {
     let header = startup_header(&greeting, body_width);
     let mut info = vec![String::new()];
     info.extend(labeled_rows(
-        &[(t("Workspace"), &cwd), (t("Git branch"), &branch)],
+        &[(t("Workspace"), cwd), (t("Git branch"), branch)],
         body_width,
     ));
     let rows: Vec<String> = header.iter().chain(info.iter()).cloned().collect();
@@ -16065,9 +16511,8 @@ mod tests {
             "the retried page starts at the same floor"
         );
         assert_eq!(
-            drawn.app.window_info,
-            (HISTORY_WINDOW, 30),
-            "the window names the older messages it hides"
+            drawn.app.window_messages, HISTORY_WINDOW,
+            "the window counts its visible messages"
         );
         assert!(
             drawn
@@ -18826,7 +19271,10 @@ mod tests {
             !text.contains("ask 19\n") && text.contains("ask 20"),
             "{text}"
         );
-        assert!(text.contains("earlier history: /timeline"), "{text}");
+        assert!(
+            text.find("/earlier").unwrap() < text.find("ask 20").unwrap(),
+            "{text}"
+        );
         drawn.app.run_command("timeline", "");
         assert!(matches!(drawn.app.prompt, Some(Prompt::Timeline(_))));
         drawn.key(KeyCode::Home);
@@ -18894,7 +19342,7 @@ mod tests {
             .iter()
             .position(|block| matches!(block, Block::User { text, .. } if text == "ask 130"))
             .expect("the old top is drawn again");
-        assert_eq!(drawn.app.jump, Some(Jump::Show(drawn.app.dropped + kept)));
+        assert_eq!(drawn.app.jump, Some(Jump::Before(drawn.app.dropped + kept)));
         drawn.app.jump = None;
         drawn.app.open_card(LOAD_MORE);
         drawn.draw();
@@ -19330,7 +19778,7 @@ mod tests {
             session_id: None,
         };
         for cols in [120, 31, 30, 29, 24, 15] {
-            let welcome = banner(cols, &theme.palette, "main");
+            let welcome = banner(cols, &theme.palette, "/work", "main");
             let web = web_panel(cols, &theme.palette, &opened);
             for panel in [&welcome, &web] {
                 for row in panel.lines() {
@@ -20980,6 +21428,122 @@ mod tests {
             }],
         }));
         assert_eq!(app.composer.text(), "second");
+    }
+
+    #[test]
+    fn an_upload_finished_after_a_handoff_or_cancel_cannot_submit() {
+        for moved in [false, true] {
+            let (mut app, sent, _home) = session_with_queue(true, &[]);
+            app.session_id = "s1".into();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let original = vec![DraftPart::Text("original input".into())];
+            let line = app.target_line();
+            let session = if moved {
+                "previous session".to_owned()
+            } else {
+                cancel.cancel();
+                app.session_id.clone()
+            };
+            app.preparing_draft = Some(PreparingDraft {
+                original,
+                cancel,
+                session: Origin::Session(session.clone()),
+                line: line.clone(),
+            });
+            let committed = "confirmed file on the original target";
+            app.apply(Update::RemoteDraftPrepared {
+                session: session.clone(),
+                line,
+                mode: SubmitMode::Queue,
+                parts: vec![DraftPart::Text(committed.into())],
+                error: None,
+            });
+            assert!(sent.borrow().is_empty());
+            if moved {
+                assert!(app.composer.is_empty());
+                app.session_id = session;
+                let snapshot = app.snapshot.clone().unwrap();
+                app.apply(Update::Snapshot(Box::new(snapshot)));
+            }
+            assert_eq!(app.composer.text(), committed);
+        }
+    }
+
+    #[test]
+    fn a_final_refusal_keeps_the_confirmed_attachment_on_its_original_line() {
+        let (mut app, sent, _home) = session_with_queue(false, &[]);
+        app.session_id = "s1".into();
+        let line = app.target_line();
+        let session = app.session_id.clone();
+        let parts = vec![
+            DraftPart::Text("before ".into()),
+            DraftPart::Block(dim_agent_types::ContentBlock::Text {
+                text: "[note](/stored/note)".into(),
+            }),
+            DraftPart::Block(dim_agent_types::ContentBlock::Image {
+                source: dim_agent_types::ImageSource {
+                    file_id: Some("s1-image".into()),
+                    source_type: dim_agent_types::ImageSourceType::File,
+                    media_type: "image/png".into(),
+                    data: None,
+                    url: None,
+                },
+            }),
+            DraftPart::Text(" after".into()),
+        ];
+        app.preparing_draft = Some(PreparingDraft {
+            original: parts.clone(),
+            line: line.clone(),
+            session: Origin::Session(session.clone()),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        });
+        app.apply(Update::RemoteDraftPrepared {
+            session,
+            line: line.clone(),
+            parts: parts.clone(),
+            mode: SubmitMode::Queue,
+            error: None,
+        });
+        let Some(Command::DeliverDraft {
+            draft,
+            reconcile: false,
+        }) = sent.borrow_mut().pop()
+        else {
+            panic!("the prepared attachment should be sent once");
+        };
+        let mut snapshot = app.snapshot.clone().unwrap();
+        app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        snapshot.session_id = "s2".into();
+        app.apply(Update::Snapshot(Box::new(snapshot.clone())));
+        app.apply(Update::DraftDelivery {
+            id: draft.key.submission_id.clone(),
+            result: Delivery::Refused("unreadable line".into()),
+        });
+        assert!(app.composer.is_empty());
+        app.apply(Update::Switched {
+            session_id: "s1".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        snapshot.session_id = "s1".into();
+        snapshot.focus = "other".into();
+        app.apply(Update::Snapshot(Box::new(snapshot.clone())));
+        assert!(app.composer.is_empty());
+        snapshot.focus = line;
+        app.apply(Update::Snapshot(Box::new(snapshot)));
+        assert_eq!(
+            app.composer.expanded_text(),
+            "before [note](/stored/note) after"
+        );
+        app.composer.set_accepts_images(true);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(sent.borrow().last(), Some(Command::SubmitDraft { parts: retry, .. }) if retry == &parts)
+        );
     }
 
     #[test]
@@ -23049,10 +23613,23 @@ mod tests {
             picked.expect("Enter resumes the selected row")
         };
 
-        let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
-        for open in 1..=2 {
+        let open_picker = |drawn: &mut Drawn| {
+            sent.borrow_mut().clear();
             typed(&mut drawn.app, "/resume");
             drawn.key(KeyCode::Enter);
+            sent.borrow()
+                .iter()
+                .find_map(|command| match command {
+                    Command::FindRepository { picker } => Some(*picker),
+                    _ => None,
+                })
+                .expect("opening /resume starts repository discovery")
+        };
+        let closed = open_picker(&mut drawn);
+        drawn.key(KeyCode::Esc);
+        let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
+        for open in 1..=2 {
+            let picker = open_picker(&mut drawn);
             sequence.push(("opened", states(&mut drawn)));
 
             let asked = reads(&sent);
@@ -23065,6 +23642,21 @@ mod tests {
                 matches!(asked[0].1, SessionsScope::Local(None)),
                 "open {open}: the opening read lists the exact launch workspace: {asked:?}"
             );
+            if open == 1 {
+                drawn.app.apply(Update::RepositoryWorkspaces {
+                    picker: closed,
+                    workspaces: set.clone(),
+                });
+                drawn.app.tick();
+                assert_eq!(
+                    states(&mut drawn),
+                    ["Sessions · This workspace", "Loading sessions..."]
+                );
+                assert!(
+                    reads(&sent).is_empty(),
+                    "late Git results must not replace the reopened picker's page"
+                );
+            }
             drawn.app.apply(Update::Sessions {
                 id: asked[0].0.clone(),
                 paged: true,
@@ -23076,7 +23668,10 @@ mod tests {
             // wider page lists that row third: the selection must stay on it,
             // not on the same index.
             drawn.key(KeyCode::Down);
-            drawn.app.apply(Update::RepositoryWorkspaces(set.clone()));
+            drawn.app.apply(Update::RepositoryWorkspaces {
+                picker,
+                workspaces: set.clone(),
+            });
             let answered = states(&mut drawn);
             assert!(
                 !answered.contains(&"Loading sessions..."),
@@ -23343,7 +23938,7 @@ mod tests {
 
     /// `/earlier` at the drawn top asks for the page and draws it when it lands.
     #[test]
-    fn show_earlier_requests_unread_history_and_does_nothing_at_the_start() {
+    fn show_earlier_requests_unread_history_and_reports_the_start() {
         let mut drawn = Drawn::new((80, 40), None, true);
         drawn.app.fullscreen = true;
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -23364,6 +23959,8 @@ mod tests {
         assert!(matches!(sent.borrow()[0], Command::Earlier { .. }));
         drawn.draw();
         assert_eq!(drawn.transcript(), before, "the request draws nothing");
+        let queued = drawn.app.snapshot.as_ref().unwrap().clone();
+        drawn.app.apply(Update::Snapshot(Box::new(queued)));
         let mut rows = window_rows(HISTORY_WINDOW);
         let mut live = (*window_rows(1)[0]).clone();
         live.row_id = "live".into();
@@ -23406,65 +24003,31 @@ mod tests {
             "the page is drawn, nothing left hidden"
         );
         assert_eq!(drawn_top(&drawn.app), "older 0");
+        let join = drawn.app.block_of(&window_rows(1)[0]).unwrap();
+        assert_eq!(drawn.app.jump, Some(Jump::Before(join)));
         sent.borrow_mut().clear();
         drawn.app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
         drawn.app.show_earlier();
         assert!(sent.borrow().is_empty(), "a read in flight is not repeated");
 
-        // At the start nothing earlier exists and no read is in flight: a
-        // window opened on a short Session whose page it has not drawn yet.
-        // The call's frame is the window's first, so a floor it moved still
-        // changes the page; the twin draws without the call.
-        let at_start = || {
-            let mut drawn = Drawn::new((80, 40), None, true);
-            drawn.app.fullscreen = true;
-            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            drawn.app.host = Box::new(Recorder(sent.clone()));
-            drawn.app.snapshot = Some(ViewSnapshot {
-                session_id: "s1".into(),
-                rows: window_rows(HISTORY_WINDOW),
-                focus: "main".into(),
-                history_complete: true,
-                earlier: Earlier::AtStart,
-                ..ViewSnapshot::default()
-            });
-            (drawn, sent)
-        };
-        let (mut untouched, _) = at_start();
-        untouched.draw();
-        let page = untouched.transcript();
-        assert!(page.contains("ask 0"), "the window draws its page: {page}");
-        let (mut no_op, sent) = at_start();
-        no_op.app.show_earlier();
+        let mut drawn = Drawn::new((80, 40), None, true);
+        let (app, sent) = fullscreen_app();
+        drawn.app = app;
+        drawn.app.show_earlier();
         assert!(sent.borrow().is_empty(), "AtStart sends nothing");
-        no_op.draw();
-        assert_eq!(no_op.transcript(), page, "AtStart draws nothing");
+        drawn.draw();
+        assert!(drawn.transcript().contains("Beginning of conversation"));
 
         // A page that lands afterwards draws what it draws without the call:
         // the no-op armed no reveal.
         let mut rows = older_rows(HISTORY_WINDOW);
         rows.extend(window_rows(HISTORY_WINDOW));
-        let later = |drawn: &mut Drawn| {
-            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
-                session_id: "s1".into(),
-                rows: rows.clone(),
-                focus: "main".into(),
-                history_complete: true,
-                earlier: Earlier::AtStart,
-                ..ViewSnapshot::default()
-            })));
-            drawn.draw();
-            drawn.transcript()
-        };
-        let text = later(&mut no_op);
+        show_window(&mut drawn, rows);
+        drawn.draw();
+        let text = drawn.transcript();
         assert!(
             !text.contains("older ") && text.contains("ask 0"),
             "the no-op armed no reveal: {text}"
-        );
-        assert_eq!(
-            text,
-            later(&mut untouched),
-            "a page landing after the no-op draws what it draws without it"
         );
     }
 

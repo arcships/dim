@@ -1109,13 +1109,25 @@ fn a_daemon_of_another_version_is_stopped_and_replaced() {
         wire.0.get_mut().shutdown(std::net::Shutdown::Write).unwrap();
         let deadline = Instant::now() + HANG_GUARD;
         loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "the CLI never reconnected");
+            let mut descriptor = libc::pollfd {
+                fd: successor.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe {
+                libc::poll(&mut descriptor, 1, remaining.as_millis() as libc::c_int)
+            };
+            assert!(
+                ready >= 0,
+                "poll failed: {}",
+                std::io::Error::last_os_error()
+            );
+            assert!(ready > 0, "the CLI never reconnected");
             let stream = match successor.accept() {
                 Ok((stream, _)) => stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "the CLI never reconnected");
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(error) => panic!("{error}"),
             };
             stream.set_nonblocking(false).unwrap();

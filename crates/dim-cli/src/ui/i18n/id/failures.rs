@@ -1,6 +1,46 @@
 //! Indonesian model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Conversation state could not be read; retry the read before submitting" => {
+            "Status percakapan tidak dapat dibaca. Muat ulang sebelum mengirim"
+        }
+        "The centre moved before the command ran; the draft was kept" => {
+            "Sesi atau cabang berubah sebelum pengiriman. Draf tetap tersimpan"
+        }
+        "The selected device restarted during file search" => {
+            "Perangkat yang dipilih memulai ulang saat mencari berkas"
+        }
+        "Target does not support file completion; type the remote path" => {
+            "Tujuan tidak mendukung pelengkapan berkas. Masukkan jalur jarak jauh"
+        }
+        "Select a regular file to upload" => "Pilih berkas biasa untuk diunggah",
+        "Target did not return an image" => "Tujuan tidak mengembalikan gambar",
+        "File search interrupted" => "Pencarian berkas terputus",
+        "Target changed during attachment preparation" => "Tujuan berubah saat menyiapkan lampiran",
+        "Attachment preparation cancelled" => "Penyiapan lampiran dibatalkan",
+        "The session or line changed during upload; the draft was kept" => {
+            "Sesi atau alur berubah saat mengunggah. Draf disimpan"
+        }
+        "Preparing attachments · Ctrl+C to cancel" => {
+            "Menyiapkan lampiran · Ctrl+C untuk membatalkan"
+        }
+        "{reason}; draft retained" => "{reason}. Draf disimpan",
+        "The previous attachment submission is pending; draft retained" => {
+            "Pengiriman lampiran sebelumnya masih tertunda. Draf disimpan"
+        }
+        "Submitting attachments" => "Mengirim pesan dengan lampiran",
+        "Delivery unconfirmed · Enter on an empty draft to check and retry" => {
+            "Pengiriman belum pasti · Enter pada draf kosong untuk memeriksa dan mencoba lagi"
+        }
+        "Delivery unconfirmed: {reason}" => "Pengiriman belum dikonfirmasi: {reason}",
+        "Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit" => {
+            "Pengiriman belum dikonfirmasi: {reason}. Enter untuk memeriksa dan mencoba lagi, Ctrl+C untuk keluar"
+        }
+        "The selected device restarted" => "Perangkat yang dipilih memulai ulang",
+        "The original submission was accepted" => "Pengiriman awal telah diterima",
+        "The current model does not accept clipboard images; draft retained" => {
+            "Model saat ini tidak menerima gambar papan klip. Draf disimpan"
+        }
         "Details unavailable; collapse and expand to retry" => {
             "Detail tidak tersedia; tutup lalu buka untuk mencoba lagi"
         }

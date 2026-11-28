@@ -24,13 +24,30 @@ Session part injects. The App Server's `WorkspaceFiles` row injects the same
 service and registers the management namespace `workspace.files`
 ([management methods](../../../design/appserver/management-methods.md)); the
 row is assembled only where the profile requires the WorkspaceTools part. Its
-one method takes no Session:
+methods take no Session:
 
 ```text
 workspace.files.search {cwd, query, limit?} -> {candidates: [{relativePath, absolutePath, dir}]}
+workspace.files.directories {path?} -> {path, parent, directories: [{name, path}]}
+workspace.files.worktrees {cwd} -> [workspacePath, ...]
 ```
 
-The method follows `session.files.search` exactly: the same candidate shape and
+The worktrees method resolves an absolute directory on the App Server. It returns
+the canonical launch directory first, then the same relative directory under
+each other non-bare Git worktree, including worktrees created outside Dim.
+An invalid directory returns `invalid_params`. Outside Git, or when discovery
+fails or exceeds two seconds, the result is an empty array.
+
+The directory picker starts at `/` on POSIX or a list of drives on Windows
+when the request omits `path`. Each read resolves the supplied absolute
+directory on the server and lists its immediate visible subdirectories in
+name order. Dot-prefixed and platform-hidden entries are skipped. The reply
+includes the canonical path and its parent. At the Windows drive list both
+are null, and a drive root has an empty parent path leading back to the list.
+A missing or invalid path returns `invalid_params`. A directory read failure
+returns `directory_failed`. Listing requires no Session or index walk.
+
+The search method follows `session.files.search` exactly: the same candidate shape and
 ranking over the workspace tree, `limit` defaulting to 20 and clamped to
 `1..=50` so `0` answers one candidate, a negative value refused with
 `invalid_params`, and a walk failure answered with `session_files_failed`.

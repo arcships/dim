@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.groups.outputs.rust }}
+      sharing: ${{ steps.groups.outputs.sharing }}
       windows: ${{ steps.groups.outputs.windows }}
       windows_native: ${{ steps.groups.outputs.windows_native }}
       static: ${{ steps.groups.outputs.static }}
@@ -103,7 +104,7 @@ jobs:
           cargo run --locked -p xtask-check
   windows-cli:
     needs: changes
-    if: needs.changes.outputs.windows == 'true' || needs.changes.outputs.windows_native == 'true'
+    if: needs.changes.outputs.windows == 'true' || needs.changes.outputs.windows_native == 'true' || needs.changes.outputs.sharing == 'true'
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -125,8 +126,11 @@ jobs:
         run: '& "$env:GITHUB_WORKSPACE\scripts\ci-windows-target.ps1"'
       - name: Verify native Windows CLI boundaries
         run: cargo test --locked -p dim-cli --lib
+      - name: Verify independent shared RPC streams on native Windows pipes
+        if: needs.changes.outputs.sharing == 'true'
+        run: cargo test --locked -p dim-terminal-transport --test windows_pipe_flow
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        if: needs.changes.outputs.windows_native == 'true'
+        if: needs.changes.outputs.windows_native == 'true' || needs.changes.outputs.sharing == 'true'
         with:
           node-version-file: .node-version
           package-manager-cache: false
@@ -134,7 +138,7 @@ jobs:
         # aws-lc-sys builds C sources on Windows x64 and needs NASM and CMake.
         # The self-hosted runner has no installer rights, so unpack pinned
         # portable archives under RUNNER_TEMP and expose them to this job only.
-        if: needs.changes.outputs.windows_native == 'true'
+        if: needs.changes.outputs.windows_native == 'true' || needs.changes.outputs.sharing == 'true'
         shell: powershell
         env:
           CMAKE_VERSION: '3.31.6'
@@ -147,6 +151,27 @@ jobs:
         if: needs.changes.outputs.windows_native == 'true'
         shell: powershell
         run: node scripts/test-windows-native.mjs
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: needs.changes.outputs.sharing == 'true'
+        with:
+          go-version-file: runtime/native-sharing/go.mod
+          cache: false
+      - name: Verify shared daemon shutdown from the Windows CLI
+        if: needs.changes.outputs.sharing == 'true'
+        shell: powershell
+        run: |
+          cargo build --locked -p dimcode -p dim-terminal-transport -p dim-app-server --bin dimcode --bin dim-terminal-transport --example sharing-shutdown-fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bin = New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))
+          try {
+            Copy-Item "$env:CARGO_TARGET_DIR/debug/dimcode.exe", "$env:CARGO_TARGET_DIR/debug/dim-terminal-transport.exe" $bin.FullName
+            node scripts/build-sharing.mjs $bin.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $env:DIM_SHARING_TEST_CLI = Join-Path $bin.FullName 'dimcode.exe'
+            node --test scripts/native-sharing-flow.mjs
+          } finally {
+            Remove-Item -Recurse -Force $bin.FullName
+          }
   web:
     needs: changes
     if: needs.changes.outputs.web == 'true'
@@ -374,6 +399,23 @@ jobs:
       - name: Verify downloaded Node runtime
         if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: needs.changes.outputs.sharing == 'true'
+        with:
+          go-version-file: runtime/native-sharing/go.mod
+          cache: false
+      - name: Verify native sharing and App Server protocol parity
+        if: needs.changes.outputs.sharing == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd runtime/native-sharing && go test -mod=readonly -race ./...)
+          bin=$(mktemp -d)
+          trap 'rm -rf "$bin"' EXIT
+          cp target/debug/{dimcode,dim-terminal-transport} "$bin/"
+          node scripts/build-sharing.mjs "$bin"
+          cargo build --locked -p dim-app-server --example sharing-shutdown-fixture
+          DIM_SHARING_TEST_CLI="$bin/dimcode" node --test scripts/native-sharing-flow.mjs
   macos-native:
     needs: changes
     if: (github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true') || needs.changes.outputs.macos_scripts == 'true'

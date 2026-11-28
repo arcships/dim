@@ -8,6 +8,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [审批交接分析](design/examples/approval-handoff-analysis.md)（中文）：Permission、Approval 与 ToolExecutor 的准入边界和有限模型
 - [已知 Capability 与 Timeline 事件表](architecture/rust-agent/capability-event-inventory.md)（中文）：候选部件与事件导航，含作用域、职责、事件 key 和已知读写路径
 - [CLI feature list](feature-list.md)
+- [在两台电脑之间切换 Dim Alpha](design/research/native-terminal-targets.md)（中文，#2269）
 - [Model preferences and Agent configuration](design/model-configuration.md)
 - [Model startup](design/model-startup.md): temporary model, effort and multi-protocol connections with branch/member/compaction inheritance
 - [Agent tool modes](design/agent-tool-modes.md) (#2135): normal, codemode and shell as one choice per Session, the visible and delegated tool surfaces, and the shell tool's place in the product assembly

@@ -740,7 +740,7 @@ fn interactive_paste_cancellation_drains_the_put_and_reuses_its_confirmed_path()
     terminal.signal(libc::SIGINT);
     terminal.until("Still waiting for the text attachment to settle");
     release.send(()).unwrap();
-    terminal.until("Preparation cancelled");
+    terminal.until("Attachment preparation cancelled; draft retained");
     terminal.write(b"\n");
     terminal.until("\n> ");
     terminal.write(b"/exit\n");
@@ -2680,11 +2680,11 @@ fn tui_pasted_images_and_long_text_submit_as_user_content() {
         wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
+        let (source, imported) = import_image(wire, "image/png");
+        assert_eq!(imported, bytes);
         let put = wire.read("attachment.put");
         assert_eq!(put["params"], json!({"sessionId":"session","text":expected_long}));
         wire.reply(&put, json!({"attachmentId":"stored","path":"/files/paste.txt","bytes":16*1024+1}));
-        let (source, imported) = import_image(wire, "image/png");
-        assert_eq!(imported, bytes);
         let submit = wire.read("session.submit");
         assert!(submit["params"].get("text").is_none());
         assert_eq!(submit["params"]["user"]["content"], json!([
@@ -7980,6 +7980,11 @@ fn member_tool_approval_requires_trusted_details_in_both_terminal_modes() {
         assert!(terminal.transcript.contains("Leader branch: review"));
         assert!(!terminal.transcript.contains("Full access"));
         assert!(!terminal.transcript.contains("Allow always"));
+        terminal.write(b"\x0f");
+        terminal.write(b"devices\r");
+        terminal.until_visible("This computer");
+        terminal.write(b"\x1b");
+        terminal.until_visible("cargo test trusted action");
         terminal.write(b"y");
         terminal.until_visible("member approvals finished");
         home.kill(&terminal);

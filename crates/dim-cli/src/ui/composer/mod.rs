@@ -51,6 +51,7 @@ struct Token {
     /// sent as a link to its path, or an image the model accepts as the
     /// image itself.
     file: Option<std::path::PathBuf>,
+    target_image: Option<bool>,
     /// What an image's sent form changed, after its marker's index.
     details: String,
 }
@@ -112,6 +113,17 @@ pub enum Outcome {
     Pass,
 }
 
+pub(super) struct SavedDraft {
+    area: TextArea,
+    state: TextAreaState,
+    tokens: Vec<Token>,
+    shell: Option<Shell>,
+    skill_draft: bool,
+    recalled: Option<String>,
+    saved_draft: String,
+    saved_shell: Option<Shell>,
+}
+
 pub struct Composer {
     area: TextArea,
     state: TextAreaState,
@@ -129,6 +141,7 @@ pub struct Composer {
     accepts_images: bool,
     /// The files `@` searches, once the working directory is known.
     mentions: Option<mentions::Mentions>,
+    remote: Option<mentions::Remote>,
     /// Whether the picker names its root in the title, for a screen that
     /// shows no other directory the files come from.
     names_root: bool,
@@ -152,8 +165,18 @@ impl Composer {
             skills: Vec::new(),
             accepts_images: true,
             mentions: None,
+            remote: None,
             names_root: false,
             picker: mentions::Picker::default(),
+        }
+    }
+
+    pub fn set_remote(&mut self, target: std::sync::Arc<crate::devices::Target>, cwd: String) {
+        self.remote = Some(mentions::Remote::new(target, cwd));
+    }
+    pub fn set_remote_cwd(&mut self, cwd: &str) {
+        if let Some(remote) = &mut self.remote {
+            remote.set_cwd(cwd)
         }
     }
 
@@ -184,6 +207,48 @@ impl Composer {
     /// What the palette weighs availability against.
     pub fn set_context(&mut self, context: crate::ui::commands::Context) {
         self.context = context;
+    }
+
+    pub(super) fn take_draft(&mut self) -> Option<SavedDraft> {
+        if self.is_empty()
+            && self.shell.is_none()
+            && !self.skill_draft
+            && self.history_index.is_none()
+        {
+            return None;
+        }
+        Some(SavedDraft {
+            recalled: self.history_index.take().map(|i| {
+                self.history.get(i).cloned().unwrap_or_else(|| {
+                    format!("{}{}", self.shell.map_or("", Shell::prefix), self.text())
+                })
+            }),
+            area: std::mem::replace(&mut self.area, TextArea::new()),
+            saved_draft: std::mem::take(&mut self.saved_draft),
+            saved_shell: self.saved_shell.take(),
+            state: std::mem::take(&mut self.state),
+            tokens: std::mem::take(&mut self.tokens),
+            shell: self.shell.take(),
+            skill_draft: std::mem::take(&mut self.skill_draft),
+        })
+    }
+
+    pub(super) fn put_draft(&mut self, draft: SavedDraft) {
+        self.history_index = draft.recalled.map(|entry| {
+            self.history
+                .iter()
+                .position(|h| h == &entry)
+                .unwrap_or(self.history.len())
+        });
+        self.saved_draft = draft.saved_draft;
+        self.saved_shell = draft.saved_shell;
+        self.area = draft.area;
+        self.area.set_cursor(self.area.text().len());
+        self.state = draft.state;
+        self.tokens = draft.tokens;
+        self.shell = draft.shell;
+        self.skill_draft = draft.skill_draft;
+        self.renumber();
     }
 
     /// Replaces the draft (for example with a message taken back from the
@@ -229,6 +294,7 @@ impl Composer {
                         content: String::new(),
                         block: Some(block),
                         file: None,
+                        target_image: None,
                         details: String::new(),
                     });
                 }
@@ -245,6 +311,17 @@ impl Composer {
         }
         for part in parts {
             let (buffer, content, block) = match part {
+                DraftPart::File {
+                    path,
+                    label,
+                    target_image,
+                } => {
+                    let content = file_link(&label, &path);
+                    self.insert_token(label, content, None, Some(path), String::new());
+                    self.tokens.last_mut().expect("inserted token").target_image =
+                        target_image.then_some(true);
+                    continue;
+                }
                 DraftPart::Text(text) => {
                     self.area.insert_str(&text);
                     continue;
@@ -256,6 +333,11 @@ impl Composer {
                     ),
                     text,
                     None,
+                ),
+                DraftPart::Block(dim_agent_types::ContentBlock::Text { text }) => (
+                    text.clone(),
+                    text.clone(),
+                    Some(dim_agent_types::ContentBlock::Text { text }),
                 ),
                 DraftPart::Block(block) => ("[Image]".to_owned(), String::new(), Some(block)),
             };
@@ -269,6 +351,7 @@ impl Composer {
                 content,
                 block,
                 file: None,
+                target_image: None,
                 details: String::new(),
             });
         }
@@ -325,6 +408,7 @@ impl Composer {
                         content: String::new(),
                         block: Some(block),
                         file: None,
+                        target_image: None,
                         details: String::new(),
                     });
                 }
@@ -636,7 +720,10 @@ impl Composer {
 
     /// The `@` mention being typed, unless Esc closed it.
     fn mention(&self) -> Option<mentions::Trigger> {
-        if self.shell.is_some() || self.palette_open() || self.mentions.is_none() {
+        if self.shell.is_some()
+            || self.palette_open()
+            || (self.mentions.is_none() && self.remote.is_none())
+        {
             return None;
         }
         let trigger = mentions::trigger(self.area.text(), self.area.cursor())?;
@@ -650,17 +737,23 @@ impl Composer {
 
     /// True when the picker needs a frame: more files were found.
     pub fn mention_tick(&mut self) -> bool {
-        self.mention_open() && self.mentions.as_mut().is_some_and(|m| m.changed())
+        self.mention_open()
+            && (self.remote.as_mut().is_some_and(|m| m.changed())
+                || self.mentions.as_mut().is_some_and(|m| m.changed()))
     }
 
     /// Whether the `@` index still owes a walk: true before the first draft
     /// starts one, while it runs, and false once one has finished.
     pub fn mention_searching(&self) -> bool {
-        self.mentions.as_ref().is_some_and(|m| m.searching())
+        self.remote.as_ref().is_some_and(|m| m.searching())
+            || self.mentions.as_ref().is_some_and(|m| m.searching())
     }
 
     fn mention_candidates(&mut self, query: &str) -> Vec<mentions::Candidate> {
         self.picker.follow(query);
+        if let Some(remote) = &mut self.remote {
+            return remote.candidates(query);
+        }
         self.mentions
             .as_mut()
             .map(|m| m.candidates(query))
@@ -686,10 +779,22 @@ impl Composer {
             KeyCode::Enter | KeyCode::Tab => {
                 let mut candidates = self.mention_candidates(&trigger.query);
                 if candidates.is_empty() {
-                    return None;
+                    return self
+                        .remote
+                        .as_ref()
+                        .is_some_and(mentions::Remote::searching)
+                        .then_some(Outcome::Handled);
                 }
                 let candidate =
                     candidates.swap_remove(self.picker.selected.min(candidates.len() - 1));
+                if candidate.target_image == Some(true)
+                    && self.accepts_images
+                    && self.image_count() >= MAX_IMAGES
+                {
+                    return Some(Outcome::Rejected(
+                        t("A submission accepts at most 20 images").to_owned(),
+                    ));
+                }
                 self.accept_mention(&trigger, candidate);
                 Some(Outcome::Handled)
             }
@@ -707,7 +812,12 @@ impl Composer {
             self.area.set_cursor(range.start + label.len());
             return;
         }
-        let path = std::path::absolute(&candidate.path).unwrap_or(candidate.path);
+        let target_image = candidate.target_image;
+        let path = if target_image.is_some() {
+            candidate.path
+        } else {
+            std::path::absolute(&candidate.path).unwrap_or(candidate.path)
+        };
         let display = Line::from(Span::styled(
             label.clone(),
             Style::default().add_modifier(Modifier::BOLD),
@@ -728,6 +838,7 @@ impl Composer {
             label,
             block: None,
             file: Some(path),
+            target_image,
             details: String::new(),
         });
         self.renumber();
@@ -738,6 +849,9 @@ impl Composer {
         let trigger = self.mention()?;
         let candidates = self.mention_candidates(&trigger.query);
         let searching = self.mention_searching();
+        if let Some(reason) = self.remote.as_ref().and_then(|m| m.result.as_ref().err()) {
+            return Some(vec![crate::sanitize::safe_line(t(reason))]);
+        }
         let root = self
             .mentions
             .as_ref()
@@ -834,7 +948,12 @@ impl Composer {
                     ));
                 }
                 if command.argument.is_some()
-                    && let Some(image) = self.tokens.iter().find(|token| token.block.is_some())
+                    && let Some(image) = self.tokens.iter().find(|token| {
+                        token.block.is_some()
+                            || (self.remote.is_some()
+                                && token.file.is_some()
+                                && token.target_image.is_none())
+                    })
                 {
                     return Outcome::Rejected(tf(
                         "/{name} takes text only; remove {label} to send",
@@ -854,10 +973,7 @@ impl Composer {
             Err(reason) => return Outcome::Rejected(reason),
         };
         self.clear();
-        if parts
-            .iter()
-            .any(|part| matches!(part, DraftPart::Block(_) | DraftPart::Paste(_)))
-        {
+        if parts.iter().any(|part| !matches!(part, DraftPart::Text(_))) {
             return Outcome::SubmitDraft {
                 text: expanded,
                 parts,
@@ -883,6 +999,38 @@ impl Composer {
             match self.tokens.iter().find(|t| t.id == element.id) {
                 Some(token) => {
                     let part = match (&token.block, &token.file) {
+                        (_, Some(_))
+                            if token.target_image == Some(false)
+                                || (token.target_image.is_some() && !self.accepts_images) =>
+                        {
+                            typed.push_str(&token.content);
+                            at = element.range.end;
+                            continue;
+                        }
+                        (_, Some(path)) if token.target_image == Some(true) => DraftPart::File {
+                            path: path.clone(),
+                            label: token.buffer.clone(),
+                            target_image: true,
+                        },
+                        (_, Some(path))
+                            if self.remote.is_some()
+                                && (!self.accepts_images
+                                    || (token.block.is_none()
+                                        && !crate::images::is_image(path))) =>
+                        {
+                            DraftPart::File {
+                                path: path.clone(),
+                                label: path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned(),
+                                target_image: false,
+                            }
+                        }
+                        (Some(block @ dim_agent_types::ContentBlock::Text { .. }), None) => {
+                            DraftPart::Block(block.clone())
+                        }
                         (Some(_), None) if !self.accepts_images => {
                             return Err(tf(
                                 "The current model does not accept images; remove {label} to send",
@@ -940,6 +1088,11 @@ impl Composer {
         let mut images = self.image_count();
         let mut plan = Vec::new();
         for path in paths {
+            if self.remote.is_some() && path.is_dir() {
+                return Err(
+                    "Select a file to upload; use @ to reference a target directory".into(),
+                );
+            }
             let path = std::path::absolute(path).map_err(|error| error.to_string())?;
             let name = path
                 .file_name()
@@ -1001,7 +1154,8 @@ impl Composer {
             .iter()
             .filter(|t| {
                 matches!(t.block, Some(dim_agent_types::ContentBlock::Image { .. }))
-                    || t.file.as_deref().is_some_and(crate::images::is_image)
+                    || t.target_image
+                        .unwrap_or_else(|| t.file.as_deref().is_some_and(crate::images::is_image))
             })
             .count()
     }
@@ -1053,13 +1207,13 @@ impl Composer {
     /// at the end (or at the start of a single line) walks back toward the
     /// saved draft.
     fn browse_history(&mut self, up: bool) -> bool {
-        if self.history.is_empty() {
+        if self.history.is_empty() && (up || self.history_index.is_none()) {
             return false;
         }
         let cursor = self.area.cursor();
         let len = self.area.text().len();
         let single_line = !self.area.text().contains('\n');
-        let browsing = self.history_index.is_some_and(|i| i < self.history.len());
+        let browsing = self.history_index.is_some();
         if up {
             if cursor != 0 {
                 return false;
@@ -1176,6 +1330,7 @@ impl Composer {
             content,
             block,
             file,
+            target_image: None,
             details,
         });
         self.renumber();
@@ -1184,7 +1339,11 @@ impl Composer {
     /// Whether the token is sent as an image block: the decision `parts`
     /// makes when the draft goes.
     fn is_image(&self, token: &Token) -> bool {
+        if let Some(image) = token.target_image {
+            return self.accepts_images && image;
+        }
         match (&token.block, &token.file) {
+            (Some(dim_agent_types::ContentBlock::Text { .. }), None) => false,
             (Some(_), None) => true,
             (Some(_), Some(_)) => self.accepts_images,
             (None, Some(path)) => self.accepts_images && crate::images::is_image(path),
@@ -1547,6 +1706,7 @@ mod tests {
             content: parts
                 .iter()
                 .map(|part| match part {
+                    DraftPart::File { .. } => panic!("local image was not materialized"),
                     DraftPart::Text(text) => {
                         dim_agent_types::ContentBlock::Text { text: text.clone() }
                     }
@@ -1592,6 +1752,7 @@ mod tests {
         let content: Vec<serde_json::Value> = parts
             .iter()
             .map(|part| match part {
+                DraftPart::File { .. } => panic!("expected a prepared transcript"),
                 DraftPart::Text(text) | DraftPart::Paste(text) => {
                     serde_json::json!({"type": "text", "text": text})
                 }

@@ -4,75 +4,6 @@ use dim_agent_capabilities::{host::SessionFiles, methods::SessionMethods};
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 
-pub(super) struct Staging {
-    path: PathBuf,
-    _lock: std::fs::File,
-    _temporary: Option<tempfile::TempDir>,
-}
-impl Staging {
-    pub(super) fn open(database: Option<PathBuf>) -> Result<Self, RpcError> {
-        let temporary = if database.is_none() {
-            Some(tempfile::tempdir().map_err(|e| RpcError::invalid(e.to_string()))?)
-        } else {
-            None
-        };
-        let path = match database {
-            Some(database) => {
-                let mut path = database.into_os_string();
-                path.push(".web-uploads");
-                PathBuf::from(path)
-            }
-            None => temporary
-                .as_ref()
-                .expect("temporary staging")
-                .path()
-                .to_owned(),
-        };
-        let open = || -> std::io::Result<std::fs::File> {
-            let mut builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            match builder.create(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-            if !std::fs::symlink_metadata(&path)?.is_dir() {
-                return Err(std::io::Error::other("Upload staging is not a directory"));
-            }
-            let mut options = std::fs::OpenOptions::new();
-            options.read(true).write(true).create(true).truncate(false);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-            }
-            let lock = options.open(path.join("lock"))?;
-            lock.try_lock().map_err(std::io::Error::other)?;
-            for entry in std::fs::read_dir(&path)? {
-                let entry = entry?;
-                if entry.file_name().to_string_lossy().starts_with("upload-") {
-                    if entry.file_type()?.is_dir() {
-                        std::fs::remove_dir_all(entry.path())?;
-                    } else {
-                        std::fs::remove_file(entry.path())?;
-                    }
-                }
-            }
-            Ok(lock)
-        };
-        let lock = open().map_err(|e| RpcError::invalid(e.to_string()))?;
-        Ok(Self {
-            path,
-            _lock: lock,
-            _temporary: temporary,
-        })
-    }
-}
-
 #[derive(serde::Deserialize)]
 pub(super) struct UploadOptions {
     #[serde(default)]
@@ -100,7 +31,7 @@ pub(super) async fn upload(
             "Origin is not allowed",
         );
     }
-    let Ok(_permit) = site.uploads.try_acquire() else {
+    let Ok(_permit) = site.hub.uploads.try_acquire() else {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "uploads_busy",
@@ -156,7 +87,7 @@ async fn receive(
         .map_err(|e| RpcError::invalid(e.to_string()))?
     {
         length += chunk.len();
-        if length > 16 * 1024 * 1024 {
+        if length > crate::storage::MAX_SESSION_FILE_BYTES {
             return Err(RpcError::invalid("Upload exceeds 16 MiB"));
         }
         target
@@ -313,7 +244,7 @@ pub(super) async fn modality(
             "Origin is not allowed",
         );
     }
-    let Ok(_permit) = site.uploads.try_acquire() else {
+    let Ok(_permit) = site.hub.uploads.try_acquire() else {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "uploads_busy",
@@ -441,7 +372,7 @@ pub(super) async fn attach_result(
             "Origin is not allowed",
         );
     }
-    let Ok(_permit) = site.uploads.try_acquire() else {
+    let Ok(_permit) = site.hub.uploads.try_acquire() else {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "uploads_busy",

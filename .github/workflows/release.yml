@@ -179,6 +179,11 @@ jobs:
           node-version-file: .node-version
           architecture: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
           package-manager-cache: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: hashFiles('runtime/native-sharing/go.mod') != ''
+        with:
+          go-version-file: runtime/native-sharing/go.mod
+          cache-dependency-path: runtime/native-sharing/go.sum
       - name: Check native build host and disk space
         shell: bash
         run: |
@@ -259,10 +264,16 @@ jobs:
                 else
                   cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dimcode
                 fi
+                if [[ -f runtime/native-sharing/go.mod ]]; then
+                  cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dim-terminal-transport
+                fi
                 "$BIN_DIR/dimcode" --version
               '
           else
             DIM_RELEASE_BUILD=1 cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dimcode
+            if [[ -f runtime/native-sharing/go.mod ]]; then
+              cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dim-terminal-transport
+            fi
           fi
           echo "DIM_BIN_DIR=$PWD/$bin_dir" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -279,7 +290,13 @@ jobs:
           set -euo pipefail
           if [[ "$RUNNER_OS" == Windows ]]; then export PATH="$(cygpath -u "$WINDIR")/System32:$PATH"; fi
           node scripts/stage-plugins.mjs "staging/plugins-$DIM_BUILD_PLATFORM"
-          node scripts/stage-release.mjs "$DIM_BIN_DIR" "staging/$DIM_BUILD_PLATFORM" "$RELEASE_VERSION" "$SOURCE_SHA" --account --plugins "staging/plugins-$DIM_BUILD_PLATFORM" --rust-notices staging/rust-notices.txt
+          sharing=()
+          if [[ -f runtime/native-sharing/go.mod ]]; then
+            sharing_dir="target/$DIM_BUILD_TARGET/release"
+            node scripts/build-sharing.mjs "$sharing_dir"
+            sharing=(--sharing "$sharing_dir")
+          fi
+          node scripts/stage-release.mjs "$DIM_BIN_DIR" "staging/$DIM_BUILD_PLATFORM" "$RELEASE_VERSION" "$SOURCE_SHA" --account --plugins "staging/plugins-$DIM_BUILD_PLATFORM" --rust-notices staging/rust-notices.txt "${sharing[@]}"
           node scripts/pack-release.mjs "staging/$DIM_BUILD_PLATFORM" "release/$DIM_BUILD_PLATFORM"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

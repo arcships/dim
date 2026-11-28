@@ -1,3 +1,5 @@
+use crate::model::session::submission;
+use crate::ui::i18n::{t, tf};
 use crate::wire::{Attached, Created, DisplayNotice, EventNotice, Progress, resume_cursor};
 use crate::{
     Result,
@@ -171,6 +173,26 @@ fn shell_result(value: Value, run_id: &str, display: &mut Display) -> Result<()>
     Ok(())
 }
 
+async fn attach(client: &mut Client, session_id: &str, json: bool) -> Result<Attached> {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Attach<'a> {
+        session_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        display: Option<bool>,
+    }
+    let display = !json
+        && client.offers("session.history.display")
+        && client.offers("session.history.detail");
+    let request = Attach {
+        session_id,
+        display: display.then_some(true),
+    };
+    client
+        .typed("session.attach", serde_json::to_value(request)?)
+        .await
+}
+
 fn decode<T: serde::de::DeserializeOwned>(value: Value, method: &str) -> Result<T> {
     serde_json::from_value(value).map_err(|_| format!("Invalid {method} notification").into())
 }
@@ -268,6 +290,11 @@ pub async fn chat(
                 crate::sanitize::safe(&worktree.root)
             ))?;
         }
+        if let Some(elevation) = &created.auto_compact_window_elevation
+            && !display.json
+        {
+            display.record(&elevation.notice())?;
+        }
         created.session_id
     };
     let listed = conversation(client, &session_id).await?;
@@ -289,14 +316,7 @@ pub async fn chat(
         options.launch_dir().display(),
         session_id
     ))?;
-    let mut params = json!({"sessionId":session_id});
-    if !display.json
-        && client.offers("session.history.display")
-        && client.offers("session.history.detail")
-    {
-        params["display"] = json!(true);
-    }
-    let attached: Attached = client.typed("session.attach", params).await?;
+    let attached = attach(client, &session_id, display.json).await?;
     let session_cwd = attached.cwd.clone();
     // The attach reply names the line the conversation is on, beside the
     // root's `sequence`; a server that predates the field leaves the directory
@@ -338,8 +358,12 @@ pub async fn chat(
         Some(Err(error)) => display.record(&format!("permission: unavailable ({error})"))?,
         None => {}
     }
-    if options.resume.is_some() {
-        crate::session_host::adopt_startup(client, options, &session_id, &conversation).await?;
+    if options.resume.is_some()
+        && let Some(elevation) =
+            crate::session_host::adopt_startup(client, options, &session_id, &conversation).await?
+        && !display.json
+    {
+        display.record(&elevation.notice())?;
     }
     let mut questions = Questions::default();
     let result = async {
@@ -433,12 +457,46 @@ pub async fn chat(
                 reader,
                 &mut draft,
                 notice.take(),
-                options.workspace().path(),
+                if options.endpoint.is_some() {
+                    options.launch_dir()
+                } else {
+                    options.workspace().path()
+                },
+                options.endpoint.as_ref().map(|_| (
+                    client.connection_config(),
+                    client.instance_id(),
+                    session_cwd.as_deref().unwrap_or_else(|| options.workspace().as_str()),
+                )),
                 &mut interrupts,
             )
             .await?
             {
                 break;
+            }
+            if let Some((key, _)) = &draft.pending {
+                let reconciliation: Result<bool> = async {
+                    let mut fresh = Client::connect(client.connection_config()).await?;
+                    if fresh.instance_id() != client.instance_id() {
+                        return Err(t("The selected device restarted").into());
+                    }
+                    attach(&mut fresh, &key.session_id, display.json).await?;
+                    let accepted = key.accepted(&mut fresh).await?;
+                    *client = fresh;
+                    Ok(accepted)
+                }.await;
+                match reconciliation {
+                    Ok(true) => {
+                        draft.clear();
+                        notice = Some(t("The original submission was accepted").to_owned());
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        notice = Some(tf("Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit",
+                            &[("reason", &error.to_string())]));
+                        continue;
+                    }
+                }
             }
             let text = draft.plain().map(str::to_owned);
             if text.is_none() && draft.command().is_some() {
@@ -614,10 +672,15 @@ pub async fn chat(
                 }
                 _ => {}
             }
-            let submission = if let Some(text) = text.filter(|text| text.starts_with('!')) {
+            let submission = if let Some((_, user)) = &draft.pending {
+                Submission::Message(user.clone())
+            } else if let Some(text) = text.filter(|text| text.starts_with('!')) {
                 Submission::Shell(text)
             } else {
-                match draft.prepare(client, &session_id, &mut interrupts, &mut notice).await? {
+                match draft
+                    .prepare(client, &session_id, &conversation, &mut interrupts, &mut notice)
+                    .await?
+                {
                     Some(user) => Submission::Message(user),
                     None => continue,
                 }
@@ -637,6 +700,15 @@ pub async fn chat(
             .await
             {
                 Ok(code) => code,
+                Err(error) if draft.pending.is_some() => {
+                    notice = Some(if submission::refused(error.as_ref()) {
+                        draft.pending = None;
+                        tf("{reason}; draft retained", &[("reason", &error.to_string())])
+                    } else {
+                        tf("Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit", &[("reason", &error.to_string())])
+                    });
+                    continue;
+                }
                 Err(error) if error.is::<RequestTooLarge>() => {
                     notice = Some(format!("{error}. Draft retained"));
                     continue;
@@ -806,14 +878,29 @@ async fn wait_turn(
             None
         }
         Some(Submission::Message(mut user)) => {
-            crate::images::import(client, session_id, &mut user.content).await?;
-            let submission_id = uuid::Uuid::new_v4().to_string();
-            let mut params = json!({"sessionId":session_id,"branchId":conversation,"submissionId":submission_id.clone(),"mode":"queue"});
-            match user.content.as_slice() {
-                [ContentBlock::Text { text }] => params["text"] = json!(text),
-                _ => params["user"] = json!(user),
-            }
-            display.submitting(submission_id);
+            crate::images::import(
+                client,
+                session_id,
+                &mut user.content,
+                crate::sharing::proxy().is_some(),
+            )
+            .await?;
+            let key = match draft.as_deref_mut() {
+                Some(draft) if crate::sharing::proxy().is_some() && draft.has_attachments() => {
+                    &draft
+                        .pending
+                        .get_or_insert_with(|| {
+                            (
+                                submission::SubmissionKey::new(session_id, conversation),
+                                user.clone(),
+                            )
+                        })
+                        .0
+                }
+                _ => &submission::SubmissionKey::new(session_id, conversation),
+            };
+            let params = key.params(&user, "queue")?;
+            display.submitting(key.submission_id.clone());
             Some(client.send("session.submit", params).await?)
         }
         None => None,
@@ -1196,10 +1283,11 @@ async fn wait_turn(
                 let written: crate::wire::SubmissionReceipt = match result {
                     Ok(written) => serde_json::from_value(written)
                         .map_err(|error| format!("Invalid submission receipt: {error}"))?,
-                    Err(error) => match error.data.as_ref().and_then(|data| data.get("appError")).and_then(Value::as_str) {
-                        Some("invalid_params" | "session_invalid_input" | "session_closed" | "session_build_failed" | "service_reloading" | "unknown_method" | "input_blocked") => return Err(error.into()),
-                        _ => return Err(format!("Submission outcome could not be confirmed: {error}. The input may already be queued; resume the session instead of sending it again").into()),
-                    },
+                    Err(error) if submission::refused(&error) ||
+                        draft.as_ref().is_some_and(|draft| draft.pending.is_some()) => {
+                        return Err(error.into());
+                    }
+                    Err(error) => return Err(format!("Submission outcome could not be confirmed: {error}. The input may already be queued; resume the session instead of sending it again").into()),
                 };
                 if !written.event.id.is_empty() {
                     display.accepted(written.event.id)?;

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is Dim: a Rust coding agent (Agent v4), its App Server and the native `dimcode` CLI. See [README](README.md) and the [documentation index](docs/INDEX.md). For product-level review of Issues and PRs, see [Product Architect Guidance](PRODUCT.md).
+This repository is Dim: a Rust coding agent (Agent v4), its App Server and the native `dimcode` CLI. See [README](README.md) and the [documentation index](docs/INDEX.md).
 
 ## Working conventions
 
@@ -18,7 +18,7 @@ This repository is Dim: a Rust coding agent (Agent v4), its App Server and the n
 
 ## Issues and pull requests
 
-- Prefer a linked primary issue on every pull request: `Fixes #N` when it completes the issue, `Refs #N` when it only advances it. Open the issue first when the change's scope, design, or acceptance needs agreement; small mechanical changes — routine dependency updates, typo or formatting fixes — may skip it. When in doubt, open the issue; it is cheap.
+- Every pull request needs a linked primary issue: `Fixes #N` when it completes the issue, `Refs #N` when it only advances it. Open the issue first when the change's scope, design, or acceptance needs agreement; routine dependency updates, typo and formatting fixes also need a lightweight issue, because the merge gate reads the linked accepted issue. When in doubt, open the issue; it is cheap.
 - Before starting, search open issues and pull requests for the same change and read the assignee and comments. If someone already owns it, coordinate in that issue instead of opening a parallel branch or pull request.
 - When the change has an issue, assign it to yourself before opening the pull request; if you cannot assign it, ask a maintainer in the issue. If you stop working on it, unassign yourself and leave a status comment.
 

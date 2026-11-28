@@ -797,10 +797,10 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
             "session.branch.get",
             "session.catalog",
         ]);
-        fn page(through: u64, before: u64, events: Vec<Value>) -> Value {
-            json!({"events":events,"through":through,"nextAfter":through,
-                "nextBefore":before,"done":true})
-        }
+        let events = [
+            said(1, "older page"), applied(2, "input-1"), consumed(3, "input-1"),
+            said(4, "resumed line"), applied(5, "input-4"), consumed(6, "input-4"),
+        ];
         // Answers the inventory reads that follow a window, through the line's
         // turn read that finishes it.
         fn inventory(wire: &mut Wire) {
@@ -865,42 +865,21 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
                 "session.history" if branch != "line-1" => {
                     wire.reply(&request, history(8, vec![]));
                 }
+                "session.history" if request["params"].get("before").is_some() => {
+                    assert_eq!(request["params"], json!({"sessionId":"on-the-line","branchId":"line-1","before":4,"through":6,"limit":256}));
+                    wire.reply(&request, json!({"events":events[..3],"through":6,"nextAfter":3,"nextBefore":1,"done":true}));
+                    asked.send(()).unwrap();
+                    break;
+                }
                 "session.history" => {
-                    let before = request["params"]
-                        .get("before")
-                        .and_then(serde_json::Value::as_u64);
-                    match before {
-                        // The resumed window, and later the line opened for
-                        // view: one page that leaves older content unread.
-                        None => {
-                            wire.reply(
-                                &request,
-                                page(
-                                    6,
-                                    3,
-                                    vec![
-                                        said(4, "resumed line"),
-                                        applied(5, "input-4"),
-                                        consumed(6, "input-4"),
-                                    ],
-                                ),
-                            );
-                            inventory(wire);
-                            windows += 1;
-                            if windows == 1 {
-                                window.send(()).unwrap();
-                            }
-                        }
-                        // `/earlier`: the page that reaches the branch start.
-                        Some(3) => {
-                            wire.reply(
-                                &request,
-                                page(6, 1, vec![said(1, "older page"), applied(2, "input-1")]),
-                            );
-                            asked.send(()).unwrap();
-                            break;
-                        }
-                        other => panic!("unexpected earlier cursor {other:?}: {request}"),
+                    assert!(request["params"].get("after").is_none(), "{request}");
+                    let mut window_page = history(6, events[3..].to_vec());
+                    window_page["nextBefore"] = json!(4);
+                    wire.reply(&request, window_page);
+                    inventory(wire);
+                    windows += 1;
+                    if windows == 1 {
+                        window.send(()).unwrap();
                     }
                 }
                 "session.catalog" => wire.reply(
@@ -928,7 +907,7 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
     terminal.until("on the line");
     terminal.write(b"\r");
     switch_seen.recv_timeout(PATIENCE).unwrap();
-    terminal.until("Earlier content not loaded");
+    terminal.until("Earlier messages · /earlier");
     // A composer echo proves the interface applied what the reply queued
     // before it, the limitation notice among it.
     terminal.write(b"probe");
@@ -968,8 +947,11 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
         assert!(attempts < 25, "the earlier read never started");
         terminal.write(b"/earlier\r");
     }
+    terminal.until("older page");
+    terminal.until("resumed line");
     terminal.write(b"/timeline\r");
-    terminal.until("#1  older page");
+    terminal.until("#2  resumed line");
+    terminal.until_anywhere("#1  older page");
     assert_eq!(
         reported(&terminal),
         1,
@@ -1944,7 +1926,9 @@ fn tui_earlier_typed_before_a_queued_move_loads_no_new_centre() {
                     "session.branch.get" => wire.reply(&request, entry("line-1", "main")),
                     "session.history" => {
                         let through = if branch == "line-1" { 3 } else { 8 };
-                        if request["params"].get("before").is_some() {
+                        if request["params"].get("before").is_some()
+                            || request["params"].get("after").is_some()
+                        {
                             earlier.send(request["params"].clone()).unwrap();
                         }
                         wire.reply(&request, history(through, vec![]));

@@ -108,7 +108,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | `agentConfig` | `session` | SessionScope | 是 | `get()`：Agent 的身份与默认模型 |
 | `timeline` | `branch` | BranchScope | 是，`before` 除外 | `append`、已发布序号与事件查询（§5.4）；查询随其声明到达其他语言 |
 | `dispatcher` | `branch` | BranchScope | 是，`consume`、`listen` 和读取；它们的 Rust 形式就是同一个 `consume`，以及仅限 Rust 的 `subscribe` | 有序消费（§5.2） |
-| `branchLifecycle` | `branch` | BranchScope | 是 | `activated`、`closing`；`registerOpening` 登记分支打开时等待的工作 |
+| `branchLifecycle` | `branch` | BranchScope | 是 | `activated`、`closing`。开场回执仅限 Rust：分支私有的 `BranchOpening` 键不是服务名。 |
 | `timelineIdentity` | `branch` | BranchScope | 是 | `{sessionId, branchId}` |
 
 Rust 宿主端口和注册表在阶段 2 获得名称和组。

@@ -28,7 +28,9 @@ Search [open issues](https://github.com/arcships/dim/issues) and
 If an issue is already assigned, coordinate there before starting parallel work.
 Use the [issue forms](https://github.com/arcships/dim/issues/new/choose) for bug
 reports and proposals. Open an issue first when the scope, design or acceptance
-criteria need agreement.
+criteria need agreement. Every pull request links a primary issue; routine
+dependency, typo and formatting changes also need a lightweight issue, because
+`issue-gate` reads the linked accepted issue.
 
 Keep the PR focused. Use the [PR template](.github/pull_request_template.md) to
 explain what changed, link the affected design, and show how you verified the

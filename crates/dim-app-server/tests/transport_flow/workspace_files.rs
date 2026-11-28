@@ -126,6 +126,27 @@ async fn workspace_search_matches_the_session_search_and_shares_its_index() {
     assert_ok(&created);
     let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
 
+    for prefix in ["missing", "notes.txt"] {
+        let query = root.join(prefix).join("note");
+        let completion = client
+            .rpc(
+                "workspace.files.complete",
+                json!({"cwd": root, "query": query}),
+            )
+            .await;
+        assert_ok(&completion);
+        assert!(candidates(&completion).is_empty(), "{completion}");
+    }
+
+    std::os::unix::fs::symlink("loop", root.join("loop")).unwrap();
+    let failed = client
+        .rpc(
+            "workspace.files.complete",
+            json!({"cwd": root, "query": root.join("loop/note")}),
+        )
+        .await;
+    assert!(failed.get("error").is_some(), "{failed}");
+
     let session_search = client
         .rpc(
             "session.files.search",
@@ -322,6 +343,16 @@ async fn workspace_search_is_local_only() {
         local.features
     );
 
+    assert!(
+        !local
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("native.uploadSessionFile"))
+    );
+    let rejected = local.rpc("native.uploadSessionFile", json!({})).await;
+    assert!(rejected.get("error").is_some(), "{rejected}");
+
     let opened = local.rpc("web.open", json!({"port":0})).await["result"].clone();
     let address = opened["address"].as_str().unwrap().to_owned();
     let bootstrap = opened["url"]
@@ -360,6 +391,15 @@ async fn workspace_search_is_local_only() {
         "{}",
         web.features
     );
+    for method in [
+        "workspace.files.complete",
+        "workspace.files.worktrees",
+        "native.uploadSessionFile",
+    ] {
+        assert!(!web.features.as_array().unwrap().contains(&json!(method)));
+        let rejected = web.rpc(method, json!({})).await;
+        assert!(rejected.get("error").is_some(), "{rejected}");
+    }
     let refused = web
         .rpc("workspace.files.search", json!({"cwd": home, "query": "x"}))
         .await;

@@ -358,7 +358,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
- "sha1",
+ "sha1 0.10.7",
  "sync_wrapper",
  "tokio",
  "tokio-tungstenite 0.29.0",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "dim-acp"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-aimux"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "aimux-core",
  "aimux-provider-utils",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-attachments"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-capabilities"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "base64 0.23.1",
  "dim-agent-capabilities",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-integration-tests"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-questions"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-runtime"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-runtime",
  "dim-agent-types",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-scheduler"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "croner",
  "dim-agent-capabilities",
@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "dim-app-server"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "async-trait",
  "axum",
@@ -1207,6 +1207,7 @@ dependencies = [
  "dim-agent-runtime",
  "dim-agent-types",
  "dim-app-server",
+ "dim-client",
  "dim-codemode",
  "dim-modality",
  "encoding_rs",
@@ -1257,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "dim-cli"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "anstyle",
  "base64 0.22.1",
@@ -1299,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "dim-client"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-types",
  "libc",
@@ -1308,11 +1309,12 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "dim-codemode"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-questions",
@@ -1331,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "dim-event-hub"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1358,7 +1360,7 @@ dependencies = [
 
 [[package]]
 name = "dim-goal"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-aimux",
  "dim-agent-capabilities",
@@ -1381,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "dim-image-understanding"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1400,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "dim-migration"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "base64 0.23.1",
  "crossterm",
@@ -1429,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "dim-modality"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1455,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "dim-modality-aimux"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "aimux-core",
  "aimux-provider-utils",
@@ -1487,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "dim-oauth"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1515,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "dim-ocr"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "libc",
  "objc2",
@@ -1532,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "dim-report"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1557,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "dim-session-title"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "axum",
  "dim-agent-aimux",
@@ -1581,8 +1583,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dim-terminal-transport"
+version = "0.1.0-alpha.30"
+dependencies = [
+ "base64 0.22.1",
+ "dim-client",
+ "libc",
+ "rutis",
+ "rutis-bridge",
+ "rutis-host",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "dimcode"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "agent-client-protocol-schema",
  "base64 0.22.1",
@@ -4210,17 +4230,42 @@ version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc5b5671633d5054a4b4a1ba34d1560b98fd9e2b871383db314386824c811f0d"
 dependencies = [
+ "futures-util",
  "getrandom 0.2.17",
  "libc",
+ "rustls",
+ "rustls-native-certs",
  "rutis",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "shuttle",
+ "socket2",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rutis-host"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "574e0ab16bbe8504a6d8a9638695e58a8cbdb901f07d09b91dc05dfae003502d"
+dependencies = [
+ "libc",
+ "rustls-pki-types",
+ "rutis",
+ "rutis-bridge",
+ "rutis-loader",
+ "rutis-types",
+ "serde",
+ "serde_json",
+ "shuttle",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -4523,6 +4568,17 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -4971,7 +5027,7 @@ dependencies = [
 
 [[package]]
 name = "test-extension-a"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-runtime",
  "rutis",
@@ -4979,7 +5035,7 @@ dependencies = [
 
 [[package]]
 name = "test-extension-b"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "dim-agent-runtime",
  "rutis",
@@ -5194,6 +5250,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite 0.30.0",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5384,7 +5452,7 @@ dependencies = [
  "rand 0.8.8",
  "rustls",
  "rustls-pki-types",
- "sha1",
+ "sha1 0.10.7",
  "thiserror 1.0.69",
  "utf-8",
 ]
@@ -5401,7 +5469,23 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
- "sha1",
+ "sha1 0.10.7",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.10.2",
+ "sha1 0.11.0",
  "thiserror 2.0.20",
 ]
 
@@ -6076,7 +6160,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "axum",
  "dim-agent-aimux",
@@ -6109,7 +6193,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-check"
-version = "0.1.0-alpha.29"
+version = "0.1.0-alpha.30"
 dependencies = [
  "proc-macro2",
  "rutis-types",

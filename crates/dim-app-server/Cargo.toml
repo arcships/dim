@@ -79,6 +79,7 @@ webpki-roots = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemServices", "Win32_System_Threading"] }
+dim-client.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.189"
@@ -111,3 +112,7 @@ flate2 = "1.1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "sharing-shutdown-fixture"
+path = "tests/fixtures/sharing_shutdown.rs"

@@ -795,3 +795,69 @@ async fn a_merged_pin_over_the_share_keeps_each_inputs_handle() {
     );
     agent.close().await.unwrap();
 }
+
+/// Under a narrowed compaction window an automatic compaction truncates the
+/// running turn's pin at the compaction budget's share, not the physical
+/// budget's (ContextCompaction §5.9, #2235).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pinned_share_scales_with_the_compaction_budget() {
+    let model = Arc::new(WaitCycles {
+        cycles: 4,
+        calls: AtomicUsize::new(0),
+        text: "t".repeat(700),
+    });
+    let agent = MinimalHost::start(&builder_with_context(
+        model,
+        HistoryRenderer::default(),
+        Context {
+            threshold: Some(500.),
+            compaction: 2_500.,
+            ..Context::default()
+        },
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(
+            SessionConfig {
+                tools: Some(vec!["wait".into()]),
+                permission_policy: dim_agent_runtime::PermissionPolicy {
+                    preset: dim_agent_runtime::PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    // The input fits the physical budget's share (403 bytes) but not the
+    // narrowed compaction budget's (250), so a physical share would pin it
+    // verbatim and the compaction budget's share truncates it with a handle.
+    let input = format!("PINHEAD{}", "q".repeat(340));
+    session
+        .submit(input.clone(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let first = replacements(&events)
+        .first()
+        .cloned()
+        .expect("at least one compaction");
+    let pin = first
+        .iter()
+        .find(|message| serde_json::to_string(message).unwrap().contains("PINHEAD"))
+        .expect("the running turn's input is pinned");
+    assert_ne!(
+        *pin,
+        Message::text(Role::User, &input),
+        "the pin is truncated at the compaction budget's share"
+    );
+    let rendered = serde_json::to_string(pin).unwrap();
+    assert!(
+        rendered.contains("[input "),
+        "the truncated pin keeps a handle to its input: {rendered}"
+    );
+    agent.close().await.unwrap();
+}

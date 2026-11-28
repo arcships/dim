@@ -1,6 +1,46 @@
 //! Korean model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Conversation state could not be read; retry the read before submitting" => {
+            "대화 상태를 읽을 수 없습니다. 보내기 전에 다시 불러오세요"
+        }
+        "The centre moved before the command ran; the draft was kept" => {
+            "보내기 전에 세션이나 대화 분기가 바뀌었습니다. 초안을 보관했습니다"
+        }
+        "The selected device restarted during file search" => {
+            "파일 검색 중 선택한 장치가 다시 시작되었습니다"
+        }
+        "Target does not support file completion; type the remote path" => {
+            "대상 장치가 파일 완성을 지원하지 않습니다. 원격 경로를 입력하세요"
+        }
+        "Select a regular file to upload" => "업로드할 일반 파일을 선택하세요",
+        "Target did not return an image" => "대상 장치가 이미지를 반환하지 않았습니다",
+        "File search interrupted" => "파일 검색이 중단되었습니다",
+        "Target changed during attachment preparation" => {
+            "첨부 파일 준비 중 대상 장치가 변경되었습니다"
+        }
+        "Attachment preparation cancelled" => "첨부 파일 준비가 취소되었습니다",
+        "The session or line changed during upload; the draft was kept" => {
+            "업로드 중 세션이나 대화 라인이 바뀌어 초안을 보관했습니다"
+        }
+        "Preparing attachments · Ctrl+C to cancel" => "첨부 파일 준비 중 · Ctrl+C로 취소",
+        "{reason}; draft retained" => "{reason}. 초안을 보관했습니다",
+        "The previous attachment submission is pending; draft retained" => {
+            "이전 첨부 메시지를 처리 중입니다. 초안을 보관했습니다"
+        }
+        "Submitting attachments" => "첨부 메시지 제출 중",
+        "Delivery unconfirmed · Enter on an empty draft to check and retry" => {
+            "전송 미확인 · 빈 초안에서 Enter를 눌러 확인 후 재시도"
+        }
+        "Delivery unconfirmed: {reason}" => "전송 미확인: {reason}",
+        "Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit" => {
+            "전송 미확인: {reason}. Enter로 확인 후 재시도, Ctrl+C로 종료"
+        }
+        "The selected device restarted" => "선택한 장치가 다시 시작되었습니다",
+        "The original submission was accepted" => "원래 메시지가 접수되었습니다",
+        "The current model does not accept clipboard images; draft retained" => {
+            "현재 모델이 클립보드 이미지를 지원하지 않아 초안을 보관했습니다"
+        }
         "Details unavailable; collapse and expand to retry" => {
             "세부 정보를 불러올 수 없습니다. 접었다 펼쳐 다시 시도하세요"
         }

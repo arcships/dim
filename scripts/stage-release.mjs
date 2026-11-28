@@ -8,14 +8,16 @@ import { buildPlatform, checkArchitecture } from './native-binary.mjs';
 import { readStoreFormats } from './store-formats.mjs';
 
 const [binaryDirectory, destination, version, sourceCommit, ...rest] = process.argv.slice(2);
-const usage = 'Usage: node scripts/stage-release.mjs BIN_DIR DESTINATION VERSION SOURCE_COMMIT --plugins DIR --rust-notices FILE [--account]';
+const usage = 'Usage: node scripts/stage-release.mjs BIN_DIR DESTINATION VERSION SOURCE_COMMIT --plugins DIR --rust-notices FILE [--account] [--sharing DIR]';
 assert(binaryDirectory && destination && version && sourceCommit, usage);
 let account = false;
 let plugins;
 let rustNotices;
+let sharing;
 for (let index = 0; index < rest.length; index += 1) {
   if (rest[index] === '--account' && !account) account = true;
   else if (rest[index] === '--plugins' && plugins === undefined && rest[index + 1]) plugins = path.resolve(rest[++index]);
+  else if (rest[index] === '--sharing' && !sharing && rest[index + 1]) sharing = path.resolve(rest[++index]);
   else if (rest[index] === '--rust-notices' && rustNotices === undefined && rest[index + 1]) rustNotices = path.resolve(rest[++index]);
   else assert.fail(usage);
 }
@@ -52,6 +54,17 @@ try {
   chmodSync(path.join(output, 'bin', `dimcode${suffix}`), 0o755);
   copyFileSync(path.join(repo, 'LICENSE'), path.join(output, 'LICENSE'));
   cpSync(plugins, output, { recursive: true });
+  if (sharing) {
+    for (const name of ['dim-terminal-transport', 'dim-sharing']) {
+      const file = name + suffix;
+      const source = path.join(sharing, file);
+      checkArchitecture(source, osName, cpu);
+      copyFileSync(source, path.join(output, 'bin', file));
+      chmodSync(path.join(output, 'bin', file), 0o755);
+    }
+    mkdirSync(path.join(output, 'licenses'), { recursive: true });
+    copyFileSync(path.join(sharing, 'GO-THIRD-PARTY-NOTICES.txt'), path.join(output, 'licenses/GO-THIRD-PARTY-NOTICES.txt'));
+  }
   const notices = ['LICENSE', 'NOTICE', 'xai-ratatui-inline/NOTICE', 'xai-ratatui-textarea/NOTICE'];
   for (const file of notices) {
     const destination = path.join(output, 'licenses/grok-build', file);

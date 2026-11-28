@@ -1903,7 +1903,7 @@ fn opening_a_call_shows_the_effects_it_declared() {
 // §3.4, §3.6: a block's body is what lies between its own opening and
 // closing tags; a tag inside the body stays, an empty body leaves the
 // blocks alone, and a block with no tag is told by its text.
-fn a_blocks_line_keeps_its_body_and_drops_only_its_own_closing_tag() {
+fn a_blocks_line_keeps_its_body_as_one_line_and_drops_only_its_own_closing_tag() {
     let mut recorded = Recorded::new();
     recorded.at(10, 0);
     let mut turns = Vec::new();
@@ -1913,6 +1913,7 @@ fn a_blocks_line_keeps_its_body_and_drops_only_its_own_closing_tag() {
         "<note><b></b></note>",
         "<note></note>",
         "plain first line\nsecond line",
+        "<note>\n  1 client attached:\n\n  tui\tpid=4123  \r\n</note>",
     ]
     .into_iter()
     .enumerate()
@@ -1935,7 +1936,8 @@ fn a_blocks_line_keeps_its_body_and_drops_only_its_own_closing_tag() {
         "note: Close it with </note>",
         "note: <b></b>",
         "note",
-        "block: plain first line",
+        "block: plain first line second line",
+        "note: 1 client attached: tui pid=4123",
     ]) {
         assert_eq!(
             line_of(&index, started),

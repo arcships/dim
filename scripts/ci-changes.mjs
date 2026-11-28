@@ -1,7 +1,7 @@
 import {execFileSync,spawnSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','windows_native','static','xtask','node','eval','execution','debug','web','scripts','macos_scripts','dependencies'];
+export const groups=['rust','windows','windows_native','static','xtask','node','eval','execution','debug','web','scripts','macos_scripts','dependencies','sharing'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 const documentation=/^docs\/|^[^/]+\.md$/;
 const cargoManifest=/(?:^|\/)Cargo\.toml$/;
@@ -43,6 +43,9 @@ const rules=[
   [/^web\/src\/features\/chat\/quote-cases\.json$/,['web','rust','windows']],
   [/^web\/src\/.*\.(ts|vue|mjs|js)$/,['web','static']],
   [/^web\//,['web']],
+  [/^runtime\/native-sharing\/|^crates\/dim-terminal-transport\//,['rust','sharing']],
+  [/^crates\/dim-cli\/src\/(?:sharing|ui\/remote_access)\.rs$/,['rust','windows','sharing']],
+  [/^scripts\/(?:build-sharing|native-sharing-flow)\.mjs$/,['rust','scripts','sharing']],
   [/^scripts\/run-rust-test\.mjs$/,groups],
   [/^scripts\/test-macos-native(?:\.test)?\.mjs$/,['rust','scripts']],
   [/^scripts\/stage-web\.mjs$/,['scripts','web']],

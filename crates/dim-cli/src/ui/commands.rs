@@ -234,6 +234,12 @@ pub const COMMANDS: &[Command] = &[
         ..slash("rename", "rename this session", &[], Needs::Session)
     },
     slash(
+        "devices",
+        "choose a computer and session",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
         "web",
         "turn the web interface on or off",
         &[],

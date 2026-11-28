@@ -1,6 +1,115 @@
 use crate::wire::{Event, EventContent, HistoryWindow};
 use serde_json::{Value, json};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+#[derive(Default)]
+struct ThoughtBoundary {
+    turn_end: Option<u64>,
+    requests: HashMap<String, ClosedThought>,
+}
+
+struct ClosedThought {
+    closed_at: u64,
+    first: Option<Event>,
+    suffix: Vec<String>,
+}
+
+impl ClosedThought {
+    fn ending(at: u64) -> Self {
+        Self {
+            closed_at: at,
+            first: None,
+            suffix: Vec::new(),
+        }
+    }
+
+    fn prepend(&mut self, event: Event) {
+        if let Some(previous) = self.first.replace(event) {
+            let EventContent::Thinking(data) = previous.content else {
+                unreachable!()
+            };
+            self.suffix.push(data.delta);
+        }
+    }
+
+    fn emit(self, rows: &mut Vec<Event>) {
+        let Some(mut first) = self.first else { return };
+        let EventContent::Thinking(mut data) = first.content else {
+            unreachable!()
+        };
+        for delta in self.suffix.into_iter().rev() {
+            data.delta.push_str(&delta);
+        }
+        first.content = EventContent::SettledThinking(data, self.closed_at);
+        rows.push(first);
+    }
+}
+
+impl ThoughtBoundary {
+    fn finish(&mut self, rows: &mut Vec<Event>) {
+        for (_, thought) in self.requests.drain() {
+            thought.emit(rows);
+        }
+        self.turn_end = None;
+    }
+
+    fn page(&mut self, events: Vec<Event>, at_start: bool) -> Vec<Event> {
+        let mut rows = Vec::with_capacity(events.len());
+        for event in events.into_iter().rev() {
+            let request = match &event.content {
+                EventContent::Text(data) => Some(&data.request_id),
+                EventContent::ToolUseStart(data) => Some(&data.request_id),
+                EventContent::ToolUse(data) => Some(&data.request_id),
+                EventContent::ModelEnd(data) => Some(&data.request_id),
+                EventContent::ModelStart(data) => Some(&data.request_id),
+                EventContent::ToolResult(data) if data.call_event_id.is_some() => {
+                    self.finish(&mut rows);
+                    None
+                }
+                EventContent::InputConsumed(_)
+                | EventContent::TurnStart(_)
+                | EventContent::TurnEnd(_) => {
+                    self.finish(&mut rows);
+                    if matches!(event.content, EventContent::TurnEnd(_)) {
+                        self.turn_end = Some(event.create_at);
+                    }
+                    None
+                }
+                EventContent::Thinking(data) => {
+                    let thought = match self.turn_end {
+                        Some(at) => Some(
+                            self.requests
+                                .entry(data.request_id.clone())
+                                .or_insert_with(|| ClosedThought::ending(at)),
+                        ),
+                        None => self.requests.get_mut(&data.request_id),
+                    };
+                    if let Some(thought) = thought {
+                        thought.prepend(event);
+                        continue;
+                    }
+                    None
+                }
+                _ => None,
+            };
+            if let Some(request) = request {
+                if let Some(thought) = self.requests.remove(request) {
+                    thought.emit(&mut rows);
+                }
+                if !matches!(event.content, EventContent::ModelStart(_)) {
+                    self.requests
+                        .insert(request.clone(), ClosedThought::ending(event.create_at));
+                }
+            }
+            rows.push(event);
+        }
+        if at_start {
+            self.finish(&mut rows);
+        }
+        rows.sort_unstable_by_key(|event| event.sequence);
+        rows
+    }
+}
 
 /// One bounded transcript load. The consumer takes and releases its raw pages
 /// after projecting them; this object is not a history cache.
@@ -8,6 +117,8 @@ pub struct Window {
     pub before: Option<u64>,
     pub through: Option<u64>,
     pages: VecDeque<(Option<u64>, Vec<Event>)>,
+    input_continuations: Vec<Event>,
+    thoughts: ThoughtBoundary,
     initial: bool,
     dropped: bool,
 }
@@ -18,6 +129,8 @@ impl Default for Window {
             before: None,
             through: None,
             pages: VecDeque::new(),
+            input_continuations: Vec::new(),
+            thoughts: ThoughtBoundary::default(),
             initial: true,
             dropped: false,
         }
@@ -131,6 +244,33 @@ impl Window {
             .into_iter()
             .flat_map(|(_, events)| events)
             .collect()
+    }
+
+    /// Events for a separately projected page. Apply and consume facts whose
+    /// input was written before the page travel back with the cursor until
+    /// the page containing that input can draw it. A settled thought travels
+    /// with its close time until its first delta is known. `at_start` is the
+    /// indexed transcript's explicit end of history. No extra page is read.
+    pub fn take_transcript(&mut self, at_start: bool) -> Vec<Event> {
+        let events = self.take();
+        let mut events = self
+            .thoughts
+            .page(events, self.before.is_none() || at_start && !self.dropped);
+        events.append(&mut self.input_continuations);
+        if self.before.is_some() {
+            let written: HashSet<_> = events
+                .iter()
+                .filter(|event| matches!(event.content, EventContent::Input(_)))
+                .map(|event| event.id.clone())
+                .collect();
+            self.input_continuations
+                .extend(events.extract_if(.., |event| match &event.content {
+                    EventContent::InputApplied(data) => !written.contains(&data.input_id),
+                    EventContent::InputConsumed(data) => !written.contains(&data.input_id),
+                    _ => false,
+                }));
+        }
+        events
     }
 
     /// Whether the last [`Window::take`] dropped the oldest page under the

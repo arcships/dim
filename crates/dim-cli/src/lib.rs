@@ -5,6 +5,7 @@ mod client;
 mod clipboard;
 mod composer;
 mod configure;
+mod devices;
 mod display;
 mod export;
 mod goal;
@@ -39,6 +40,7 @@ mod sanitize;
 mod session;
 mod session_command;
 mod session_host;
+mod sharing;
 mod ui;
 mod update;
 mod usage;
@@ -155,15 +157,12 @@ async fn open_tui(
         resume: options.resume.clone(),
     };
     let (leave, mut left) = tokio::sync::oneshot::channel();
-    let (leaf_end, mut leaf_ended) = tokio::sync::oneshot::channel();
     let (update, mut updated) = tokio::sync::oneshot::channel();
     let tui = root.plugin(plugins::Tui {
-        root: root.clone(),
         env,
         options: options.clone(),
         leave: std::sync::Mutex::new(Some(leave)),
         update: std::sync::Mutex::new(Some(update)),
-        leaf_end: std::sync::Mutex::new(Some(leaf_end)),
     });
     (&tui).await.map_err(plugin_error)?;
     // `Err` is `Update now`. It arrives before the interface closes its
@@ -173,7 +172,6 @@ async fn open_tui(
         biased;
         Ok(request) = &mut updated => Err(request),
         code = &mut left => Ok(code.map_err(|_| "the terminal interface ended without a result")?),
-        Ok(()) = &mut leaf_ended => Ok(0),
     }
     .and_then(|code| updated.try_recv().map_or(Ok(code), Err));
     tui.dispose().await?;
@@ -703,6 +701,38 @@ fn prepare() -> Result<Option<Options>> {
         println!("dimcode {}", dim_agent_capabilities::build::current());
         return Ok(None);
     }
+    if let Some((name, index)) = options.named_target.take() {
+        let mut native: Vec<_> = std::env::args().skip(1).collect();
+        native.drain(index..index + 2);
+        let mut args = vec!["connect".into(), name];
+        if matches!(options.action, Action::Chat | Action::Tui)
+            && !options.cwd_explicit
+            && options.resume.is_none()
+            && options.prompt.is_none()
+            && std::io::stdin().is_terminal()
+        {
+            args.push("--pick-sessions".into());
+        }
+        args.push("--".into());
+        args.extend(native);
+        options.action = Action::Share(args);
+    }
+    if sharing::proxy().is_some() {
+        let local_command = match &options.action {
+            Action::DaemonVacuum { .. } => Some("daemon vacuum"),
+            Action::Timeline { .. } => Some("export (offline Timeline)"),
+            Action::Migration(_) => Some("migration"),
+            Action::Update => Some("update"),
+            Action::WebInstall => Some("web install"),
+            Action::Web { off: false, .. } => Some("web"),
+            Action::Share(_) => Some("share"),
+            Action::DefaultTerminalMode { .. } => Some("setting the default terminal mode"),
+            _ => None,
+        };
+        if let Some(command) = local_command {
+            return Err(sharing::unavailable(command).into());
+        }
+    }
     if matches!(options.action, Action::McpLogin(_)) && !std::io::stdin().is_terminal() {
         return Err(
             "MCP sign-in requires a terminal; run dimcode mcp login ID interactively".into(),
@@ -835,6 +865,22 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
     // same language as a value.
     let locale = crate::ui::i18n::interface_locale(&options.home);
     crate::ui::i18n::set(locale);
+    if let Action::Share(arguments) = &options.action {
+        if matches!(
+            arguments.first().map(String::as_str),
+            Some("enable" | "reset" | "rename")
+        ) {
+            let mut local = options.clone();
+            local.action = Action::Chat;
+            if client::connect_local(&local, false, locale)
+                .await?
+                .is_none()
+            {
+                client::connect_local(&local, true, locale).await?;
+            }
+        }
+        return sharing::run(&options.home, arguments);
+    }
     if let Action::Migration(command) = &options.action {
         return migration_command::run(root, &options, command, locale).await;
     }
@@ -1198,6 +1244,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             worktree_command::run(&mut client, command, options.json).await
         }
         Action::Acp { .. }
+        | Action::Share(_)
         | Action::Migration(_)
         | Action::Help
         | Action::Version

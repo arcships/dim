@@ -101,6 +101,7 @@ pub enum Call {
     Create(Box<Create>),
     ModelPreview(ModelPreview),
     Summaries(Summaries),
+    ActiveSessions,
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
     Attach(Attach),
@@ -429,9 +430,14 @@ pub struct ConfigurationResult {
     pub outcome: &'static str,
 }
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelUpdateResult {
     pub model: ModelId,
     pub outcome: &'static str,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when this update applied one (#2235).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_window_elevation: Option<crate::provider::AutoCompactWindowElevation>,
 }
 /// One line's adopted configuration as `session.model.get` answers it: the
 /// same values its `context/configured` event carries, at the requested
@@ -856,7 +862,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 42] = [
+const BUILTIN_METHODS: [&str; 43] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -874,6 +880,7 @@ const BUILTIN_METHODS: [&str; 42] = [
     "session.model.preview",
     "session.model.get",
     "session.summaries",
+    "session.active",
     "session.catalog",
     "session.catalog.cancel",
     "session.attach",
@@ -955,6 +962,10 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "session.model.preview" => Call::ModelPreview(params(raw_params)?),
             "session.model.get" => Call::ModelGet(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
+            "session.active" => {
+                let _: Empty = params(raw_params)?;
+                Call::ActiveSessions
+            }
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
             "session.attach" => Call::Attach(params(raw_params)?),
@@ -1220,6 +1231,10 @@ pub struct ModelPreviewResult {
     pub model: ModelId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<dim_agent_types::ModelPreferences>,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when the previewed startup would apply one (#2235).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_window_elevation: Option<crate::provider::AutoCompactWindowElevation>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1235,6 +1250,10 @@ pub struct CreateResult {
     /// The managed worktree this creation made, when the request asked for one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::worktrees::CreatedWorktreeReply>,
+    /// The shaping floor's raise of the startup's auto-compaction window,
+    /// when this creation's startup applied one (#2235).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_window_elevation: Option<crate::provider::AutoCompactWindowElevation>,
 }
 /// The fork's id and its `main` head once it is published.
 #[derive(Debug, Serialize)]
@@ -1360,6 +1379,15 @@ pub struct SessionSummary {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ActiveSession {
+    pub session_id: String,
+    pub cwd: String,
+    pub title: Option<String>,
+    pub running: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentCreated {
     pub agent_id: String,
 }
@@ -1404,6 +1432,7 @@ pub enum Reply {
     /// until #795.
     Attach(AttachResult),
     Summaries(Vec<SessionSummary>),
+    ActiveSessions(Vec<ActiveSession>),
     Catalog(CatalogResult),
     Submit(SubmitResult),
     InputLookup(InputLookupResult),

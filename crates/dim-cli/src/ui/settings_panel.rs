@@ -78,9 +78,10 @@ pub enum Setting {
     Permission,
     Isolation,
     ToolMode,
+    RemoteAccess,
 }
 
-const ROWS: [(Setting, &str); 16] = [
+const ROWS: [(Setting, &str); 17] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
@@ -97,6 +98,7 @@ const ROWS: [(Setting, &str); 16] = [
     (Setting::Permission, "permission"),
     (Setting::Isolation, "isolation"),
     (Setting::ToolMode, "tool-mode"),
+    (Setting::RemoteAccess, "remote-access"),
 ];
 
 impl Setting {
@@ -257,6 +259,10 @@ impl SettingsPanel {
         ]);
         items.push(Item::heading(t("Tools")));
         items.push(row(Setting::ToolMode, "Tool mode", link(&values.tool_mode)));
+        if crate::sharing::installed() {
+            items.push(Item::heading(t("This computer")));
+            items.push(row(Setting::RemoteAccess, "Remote access", link("")));
+        }
         let mut list = ListPanel::new("Settings", HINT, "", "", "", false).without_filter();
         list.set_items(Ok(items), Some(select.id()));
         list.set_hint(t(hint_for(select)).to_owned());

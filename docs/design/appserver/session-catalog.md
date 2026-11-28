@@ -30,6 +30,13 @@ boundary. `session.summaries` keeps its contract and reads the same projection, 
 - **Lease-free.** A listing loads no Session, restores none, and starts no model, tool or MCP server (§3.4).
 - **Clients.** The picker pages, searches on the server and drops a pending read (§6).
 
+For a computer's active-session picker, `session.active {}` returns an array of
+`{sessionId, cwd, title, running}` across its workspaces. The title can be null.
+A visible open Session appears once while any branch is running or any client
+is attached. The server reads loaded Sessions and their current state. An idle
+Session with its last client detached disappears on the next read. The
+`running` field in the existing catalog continues to describe the default branch.
+
 ## 2. Scope and non-goals
 
 This page owns the reply contract of `session.catalog`, the catalog read of `session.summaries`, the order, cursor

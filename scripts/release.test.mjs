@@ -1106,3 +1106,26 @@ test('collects exact platform packages, installs wrapper offline and rejects inc
   assert.notEqual(run('collect-release.mjs',[temporary,path.join(temporary,'inconsistent')]).status,0);
   assert.equal(existsSync(path.join(temporary,'inconsistent')),false);
 });
+
+test('the Alpha platform archive includes both sharing processes and their notices', { skip: process.platform === 'win32' }, (t) => {
+  const temporary = fixture(t);
+  const bin = path.join(temporary, 'bin');
+  const stage = path.join(temporary, 'stage');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'dimcode'), `#!/bin/sh\nprintf "dimcode ${version}\\n"\n`, { mode: 0o755 });
+  const sharing = path.join(temporary, 'sharing');
+  mkdirSync(sharing);
+  for (const name of ['dim-terminal-transport', 'dim-sharing']) {
+    const bytes = readFileSync(process.execPath).subarray(0, 4096);
+    writeFileSync(path.join(sharing, name), bytes);
+  }
+  writeFileSync(path.join(sharing, 'GO-THIRD-PARTY-NOTICES.txt'), 'Go license fixture');
+  const args = [bin, stage, version, commit, '--plugins', stubPlugins(temporary),
+    '--rust-notices', stubRustNotices(temporary), '--sharing', sharing];
+  const result = run('stage-release.mjs', args);
+  assert.equal(result.status, 0, result.stderr);
+  const files = JSON.parse(readFileSync(path.join(stage, 'release-manifest.json'))).files;
+  for (const file of ['bin/dim-terminal-transport', 'bin/dim-sharing', 'licenses/GO-THIRD-PARTY-NOTICES.txt']) {
+    assert.equal(files[file], createHash('sha256').update(readFileSync(path.join(stage, file))).digest('hex'));
+  }
+});

@@ -1501,10 +1501,15 @@ fn write_line(write: &LineWrite<'_>, working: bool, person: Person) -> String {
     }
 }
 
-/// The first line of a block's body: after its opening tag and without its
-/// closing tag, or of its text when it opens with no tag (§3.4).
+/// The first line of a block's body (§3.4).
 fn body_line(text: &str) -> &str {
-    let body = match tag(text) {
+    body(text).lines().next().unwrap_or_default()
+}
+
+/// A block's body: after its opening tag and without its own closing tag, or
+/// its text when it opens with no tag (§3.4).
+fn body(text: &str) -> &str {
+    match tag(text) {
         Some(head) => {
             let name = head.split(' ').next().unwrap_or_default();
             let (_, rest) = text.split_once('>').unwrap_or_default();
@@ -1514,8 +1519,13 @@ fn body_line(text: &str) -> &str {
                 .trim()
         }
         None => text,
-    };
-    body.lines().next().unwrap_or_default()
+    }
+}
+
+/// A block's body as one line: each run of whitespace, line breaks included,
+/// becomes one space, and nothing else is added (§3.4).
+fn flat_body(text: &str) -> String {
+    body(text).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The value of one attribute of an opening tag, when it has one.
@@ -1535,16 +1545,17 @@ fn tag(text: &str) -> Option<&str> {
     (!head.is_empty() && !head.starts_with('/')).then_some(head)
 }
 
-/// An input with blocks only, told by its blocks and the first line of the
-/// first block's body, or by its blocks alone when that body is empty (§3.4);
-/// a turn it opens is titled the same (§3.6).
+/// An input with blocks only, told by its blocks and the first block's body
+/// as one line, or by its blocks alone when that body is empty (§3.4); a turn
+/// it opens is titled the same (§3.6).
 fn blocks_line(blocks: &[InputBlock], live: &[bool]) -> String {
     let names = part(&blocks_name(blocks, live));
-    match blocks.first() {
-        Some(InputBlock::Raw { text, .. }) if !body_line(text).is_empty() => {
-            format!("{names}: {}", part(body_line(text)))
-        }
-        _ => names,
+    let Some(InputBlock::Raw { text, .. }) = blocks.first() else {
+        return names;
+    };
+    match flat_body(text) {
+        body if body.is_empty() => names,
+        body => format!("{names}: {}", part(&body)),
     }
 }
 

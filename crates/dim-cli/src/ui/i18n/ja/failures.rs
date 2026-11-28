@@ -1,6 +1,46 @@
 //! Japanese model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Conversation state could not be read; retry the read before submitting" => {
+            "会話の状態を読み取れませんでした。送信する前に再度読み込んでください"
+        }
+        "The centre moved before the command ran; the draft was kept" => {
+            "送信前にセッションまたは会話の分岐が切り替わりました。下書きは保持されています"
+        }
+        "The selected device restarted during file search" => {
+            "ファイル検索中に選択したデバイスが再起動しました"
+        }
+        "Target does not support file completion; type the remote path" => {
+            "このデバイスはファイル補完に未対応です。リモートパスを入力してください"
+        }
+        "Select a regular file to upload" => "アップロードする通常ファイルを選択してください",
+        "Target did not return an image" => "デバイスから画像が返されませんでした",
+        "File search interrupted" => "ファイル検索が中断されました",
+        "Target changed during attachment preparation" => {
+            "添付ファイルの準備中に対象デバイスが変更されました"
+        }
+        "Attachment preparation cancelled" => "添付ファイルの準備をキャンセルしました",
+        "The session or line changed during upload; the draft was kept" => {
+            "アップロード中にセッションまたはラインが変わりました。下書きは保持されています"
+        }
+        "Preparing attachments · Ctrl+C to cancel" => "添付を準備中 · Ctrl+C でキャンセル",
+        "{reason}; draft retained" => "{reason}。下書きは保持されています",
+        "The previous attachment submission is pending; draft retained" => {
+            "前の添付メッセージを処理中です。下書きは保持されています"
+        }
+        "Submitting attachments" => "添付メッセージを送信中",
+        "Delivery unconfirmed · Enter on an empty draft to check and retry" => {
+            "送信結果は未確認です · 空の下書きで Enter を押して確認・再試行"
+        }
+        "Delivery unconfirmed: {reason}" => "送信結果は未確認です：{reason}",
+        "Delivery unconfirmed: {reason}. Enter to check and retry, Ctrl+C to exit" => {
+            "送信結果は未確認です：{reason}。Enter で確認・再試行、Ctrl+C で終了"
+        }
+        "The selected device restarted" => "選択したデバイスが再起動しました",
+        "The original submission was accepted" => "元のメッセージは受理されています",
+        "The current model does not accept clipboard images; draft retained" => {
+            "現在のモデルはクリップボードの画像に対応していません。下書きは保持されています"
+        }
         "Details unavailable; collapse and expand to retry" => {
             "詳細を取得できません。閉じてから開き直してください"
         }

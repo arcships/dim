@@ -191,7 +191,7 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
                     " turn: note: <note>Ready</note> — ",
                     " turn: note: <b></b> — ",
                     " turn: note — ",
-                    " turn: block: plain first line — ",
+                    " turn: block: plain first line second line — ",
                 ] {
                     assert!(index.contains(title), "{title} in {index}");
                 }

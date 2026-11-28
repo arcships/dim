@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import {rpc} from './native-rpc.mjs';
+import {draftDelivery} from './draft-delivery.mjs';
 
 const ANSWER = 'The fixture answer is deterministic.';
 
@@ -180,7 +183,160 @@ async function unverifiedBuildNotice(tui) {
   await exitWith(terminal);
 }
 
+async function checkDeviceDraftDestination(terminal, devicesOverDraft) {
+  const switchBack = async () => {
+    await devicesOverDraft();
+    terminal.key('Home', 'Down', 'Enter');
+    await terminal.waitFor('OfficeFixture · Active sessions');
+    terminal.key('Home', 'Enter');
+    await terminal.waitFor('OfficeFixture:');
+    await devicesOverDraft();
+    terminal.key('Home', 'Enter');
+    await terminal.waitForAbsent('OfficeFixture:');
+  };
+  terminal.send('request fixture approval');
+  terminal.key('Enter');
+  await terminal.waitFor('Permission required');
+  await switchBack();
+  await terminal.waitFor('Permission required');
+  await terminal.waitFor('echo decision-fixture');
+  terminal.key('y');
+  await terminal.waitFor('Ran 1 command');
+
+  terminal.send('/branch Side task');
+  terminal.key('Enter');
+  await terminal.waitFor('Side task');
+  terminal.send('/lines');
+  terminal.key('Enter');
+  await terminal.waitFor('Enter show');
+  await terminal.waitFor('Side task');
+  terminal.key('Home', 'Down', 'Enter');
+  await terminal.waitFor(/⑂.*Side task/);
+  terminal.send('Draft for the side task');
+  await switchBack();
+  await terminal.waitFor(/⑂.*Side task/);
+  await terminal.waitFor('Draft for the side task');
+  terminal.key('Enter');
+  await terminal.waitFor('Side draft delivered');
+
+  terminal.send('Typed before history');
+  terminal.key('Home', 'Up');
+  await terminal.waitFor('Draft for the side task');
+  await switchBack();
+  terminal.key('Down');
+  await terminal.waitFor('Typed before history');
+  terminal.key('C-c');
+  await terminal.waitForAbsent('Typed before history');
+
+  terminal.send('/timeline');
+  terminal.key('Enter');
+  await terminal.waitFor('Timeline');
+  terminal.key('b');
+  await terminal.waitFor(/new line from .*Side task/);
+  terminal.key('C-u');
+  terminal.send('Nested task draft');
+  await switchBack();
+  await terminal.waitFor(/new line from .*Side task/);
+  await terminal.waitFor('Nested task draft');
+  terminal.key('Enter');
+  await terminal.waitForAbsent('new line from');
+  terminal.send('/lines');
+  terminal.key('Enter');
+  await terminal.waitFor('Enter show');
+  await terminal.waitFor(/Nested task draft.*[0-9a-f]{8}/);
+  terminal.key('Escape');
+  await terminal.waitForAbsent('Enter show');
+}
+
 const scenarios = [
+  {
+    name: 'earlier_reveals_resumed_history_in_both_modes',
+    area: 'terminal-modes',
+    title: 'Redraw native scrollback oldest first and reveal the preceding page at the fullscreen join',
+    async run(tui) {
+      const thought = 'Check the first turn.';
+      await tui.setup({respond: (request) => userText(request).includes('history-turn-01')
+        ? {thinking: thought, text: ANSWER} : {text: ANSWER}});
+      let session;
+      for (let turn = 1; turn <= 16; turn++) {
+        const output = await tui.runCommandAsync([
+          '--home', tui.home, '--model-config', tui.modelFile, 'exec', ...(session ? ['resume', session] : []),
+          '--json', '-p', `history-turn-${String(turn).padStart(2, '0')}`,
+        ]);
+        session ??= output.trim().split('\n').map((line) => JSON.parse(line).params?.sessionId).find(Boolean);
+        assert(session, 'all turns belong to one Session');
+      }
+      const sentinel = 'pre-Dim shell output';
+      const warning = 'Clears terminal output from before Dim started';
+      for (const fullscreen of [true, false]) {
+        const terminal = await tui.launch(['--resume', session, ...(fullscreen ? ['--fullscreen'] : [])], {
+          rows: 40,
+          command: fullscreen ? undefined : ['/bin/sh', '-c', 'printf "%s" "$0"; exec "$@"',
+            sentinel + '\n'.repeat(41), tui.binary, '--home', tui.home, '--model-config', tui.modelFile],
+        });
+        const initial = await terminal.waitFor(/resumed .* messages/, {history: true});
+        assert(initial.includes('history-turn-16') && !initial.includes('history-turn-10'), initial);
+        const hint = 'Earlier messages · /earlier';
+        assert(initial.includes(hint) && initial.indexOf(hint) < initial.search(/┃ history-turn-/), initial);
+        assert.equal(initial.includes(warning), !fullscreen, initial);
+        if (!fullscreen) assert(initial.includes(sentinel), initial);
+        assert(!/earlier|\/timeline/i.test(initial.slice(initial.indexOf('resumed '))), initial);
+        if (fullscreen) {
+          terminal.send('/earlier');
+        } else {
+          terminal.send('draft stays here');
+          terminal.key('C-o');
+          await terminal.waitFor('Suggestions');
+          terminal.send('earlier');
+        }
+        terminal.key('Enter');
+        if (!fullscreen) {
+          const turns = (text) => [...text.matchAll(/┃ history-turn-(\d+)/g)].map((m) => Number(m[1]));
+          let oldest = turns(initial)[0];
+          while (oldest > 1) {
+            const last = String(oldest - 1).padStart(2, '0');
+            const page = await terminal.waitFor(new RegExp(`┃ history-turn-${last}[\\s\\S]*┃ history-turn-16[\\s\\S]*draft stays here`), {history: true});
+            const first = turns(page)[0];
+            assert(!page.includes(sentinel), page);
+            assert(first >= 1 && first < oldest, page);
+            assert.deepEqual(page.match(/┃ history-turn-\d+|The fixture answer is deterministic\./g),
+              Array.from({length: 17 - first}, (_, i) => [`┃ history-turn-${String(first + i).padStart(2, '0')}`, ANSWER]).flat());
+            assert.equal(page.includes(hint), first > 1);
+            oldest = first;
+            terminal.key('C-o');
+            await terminal.waitFor('Suggestions');
+            terminal.send('earlier');
+            terminal.key('Enter');
+          }
+          const beginning = await terminal.waitFor('Beginning of conversation', {history: true});
+          assert.equal(beginning.split(thought).length, 2, beginning);
+          assert(!/\x1b\[\?(?:47|1047|1049)h/.test(terminal.raw()), 'no alternate screen');
+          terminal.key('Enter');
+          const live = await terminal.waitFor(/┃ draft stays here[\s\S]*The fixture answer is deterministic\./, {history: true});
+          assert.deepEqual(turns(live), Array.from({length: 16}, (_, i) => i + 1));
+          assert.equal(live.split('┃ draft stays here').length, 2);
+          await exitWith(terminal);
+          continue;
+        }
+        const join = await terminal.waitFor('history-turn-10');
+        assert(!join.includes('history-turn-01'), `the viewport lands at the join: ${join}`);
+        terminal.key('Home');
+        const oldest = await terminal.waitFor('history-turn-01');
+        assert(oldest.includes('Thought for ') && oldest.includes(thought), oldest);
+        terminal.key('End');
+        const newest = await terminal.waitFor('history-turn-16');
+        for (const page of [oldest, join, newest]) {
+          const turns = [...page.matchAll(/┃ history-turn-(\d+)/g)].map((m) => Number(m[1]));
+          assert(turns.length >= 2 && turns.every((n, i) => !i || n === turns[i - 1] + 1), page);
+        }
+        terminal.key('Home');
+        await terminal.waitFor('history-turn-01');
+        terminal.key('PPage');
+        await terminal.waitFor('Beginning of conversation');
+        await exitWith(terminal);
+      }
+    },
+  },
   {
     name: 'scrollback_streams_and_exits_cleanly',
     area: 'terminal-modes',
@@ -695,6 +851,130 @@ const scenarios = [
     },
   },
   {
+    name: 'remote_attachment_draft_survives_refusal_and_uncertain_delivery',
+    area: 'composer',
+    title: 'Recover confirmed attachments and reconcile a lost submission receipt on the original line',
+    run: draftDelivery,
+  },
+  {
+    name: 'remote_draft_uploads_local_bytes_and_mentions_target_files',
+    requiresSharing: true,
+    area: 'composer',
+    title: 'Both terminal layouts send dragged bytes and choose mentions on the selected computer',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const env = tui.environment({DIMCODE_SHARING_LISTEN: '127.0.0.1:0'});
+      const targetHome = path.join(tui.root, 'receiver');
+      const project = fs.realpathSync(path.join(tui.root, 'workspace'));
+      const name = 'notes.txt';
+      const source = path.join(tui.root, name);
+      fs.writeFileSync(source, 'keyboard-side notes');
+      fs.writeFileSync(path.join(project, name), 'workspace-side notes');
+      const server = (...args) => execFileSync(tui.binary, ['--home', targetHome, ...args],
+        {env, cwd: project, encoding: 'utf8', timeout: 20000});
+      const {addresses: [address], token} = JSON.parse(server('share', 'enable'));
+      try {
+        server('share', 'rename', 'ReviewOffice');
+        const owner = await rpc(path.join(targetHome, 'rust', 'daemon.sock'));
+        const providerId = '018ec73f-4d19-7f61-bc79-7130618bb455', modelId = 'fixture-model';
+        try {
+          const created = await owner.call('provider.create', {
+            providerId, displayName: 'Fixture', enabled: true,
+            connection: {driverKind: 'openai-compatible', auth: {type: 'anonymous'}, baseUrl: tui.model.url},
+            models: [modelId, 'fixture-text'].map(id => ({
+              modelId: id, displayName: id, status: 'active', capabilities: {
+                modalities: id === modelId ? ['text', 'image'] : ['text'], vision: id === modelId,
+                audio: false, toolCalling: true, streaming: true, structuredOutput: true, reasoning: false,
+                contextWindow: 128000, maxOutputTokens: 4096,
+              },
+            })),
+          });
+          assert.ok(created.result, JSON.stringify(created.error));
+          const selected = await owner.call('provider.select', {providerId,modelId});
+          assert.ok(selected.result, JSON.stringify(selected.error));
+        } finally {
+          owner.stream.destroy();
+        }
+        const localPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', targetPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC';
+        const photo = path.join(tui.root, 'photo.png');
+        fs.writeFileSync(photo, Buffer.from(localPng, 'base64'));
+        fs.writeFileSync(path.join(project, 'photo.png'), Buffer.from(targetPng, 'base64'));
+        const command = [tui.binary, '--home', tui.home, 'share', 'connect', address, '--'];
+        execFileSync(command[0], [...command.slice(1), 'mcp', 'list'], {input: token + '\n', env, cwd: project, timeout: 20000, stdio: ['pipe','pipe','pipe']});
+        for (const args of [[], ['--fullscreen']]) {
+          const terminal = await tui.launch([...args, '--cwd', project], {command, env, cols: 110, rows: 32, waitForComposer: true});
+          terminal.send('Compare ');
+          terminal.paste(source);
+          await terminal.waitFor('[notes.txt]');
+          terminal.send(' to @notes');
+          await terminal.waitFor('@notes.txt');
+          terminal.key('Tab', 'Enter');
+          await terminal.waitFor(ANSWER);
+          const sent = lastTurnText(tui.model);
+          assert.ok(sent.includes('[@notes.txt](' + path.join(project, name) + ')'), sent);
+          const ref = /\[notes\.txt\]\(<?([^)>]+)>?\)/.exec(sent);
+          assert.ok(ref, sent);
+          assert.ok(ref[1].startsWith(fs.realpathSync(targetHome) + path.sep), ref[1]);
+          assert.equal(fs.readFileSync(ref[1], 'utf8'), 'keyboard-side notes');
+          const prompt = 'Compare pictures ' + (args.length ? 'fullscreen' : 'scrollback');
+          terminal.send(prompt + ' ');
+          terminal.paste(photo);
+          await terminal.waitFor('[Image #1]');
+          terminal.send(' and @photo');
+          await terminal.waitFor('@photo.png');
+          terminal.key('Tab', 'Enter');
+          const pictures = await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes(prompt) &&
+            (lastMessage(request).content ?? []).some?.(part => part.type === 'image_url'));
+          const urls = lastMessage(pictures.body).content.filter(part => part.type === 'image_url').map(part => part.image_url.url);
+          assert.deepEqual(urls, [localPng,targetPng].map(bytes => 'data:image/png;base64,' + bytes));
+          await terminal.waitFor(ANSWER);
+          await exitWith(terminal);
+        }
+        const line = await tui.launch(['--no-tui', '--cwd', project], {command, env, cols: 120, rows: 30});
+        await line.waitFor('Enter: send');
+        line.send('Line comparison ');
+        line.paste(source);
+        line.send(' and @photo');
+        await line.waitFor('* photo.png');
+        line.key('Tab', 'Enter');
+        const lineRequest = await waitForRequest(tui.model, request =>
+          request.tools?.length && userText(request).includes('Line comparison'));
+        const content = lastMessage(lineRequest.body).content;
+        assert.equal(content.find(part => part.type === 'image_url')?.image_url.url, 'data:image/png;base64,' + targetPng);
+        const uploaded = /\[notes\.txt\]\(<?([^)>]+)>?\)/.exec(content.filter(part => part.type === 'text').map(part => part.text).join(''));
+        assert.ok(uploaded);
+        assert.equal(fs.readFileSync(uploaded[1], 'utf8'), 'keyboard-side notes');
+        await line.waitFor('Enter: send');
+        line.send('/exit');
+        line.key('Enter');
+        assert.equal((await line.waitForExit()).status, 0);
+        await tui.runCommandAsync([...command.slice(1), '--cwd', project, 'exec', '-p', 'Inspect headless photo', '--image', photo], {env});
+        const headless = await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes('Inspect headless photo'));
+        assert.ok(userText(headless.body).includes(localPng));
+        const plain = await tui.launch(['--no-tui', '--cwd', project, '--provider', providerId, '--model', 'fixture-text'], {command, env});
+        await plain.waitFor('Enter: send');
+        plain.send('Text model file ');
+        plain.paste(photo);
+        plain.send(' and @photo');
+        await plain.waitFor('* photo.png');
+        plain.key('Tab', 'Enter');
+        const textOnly = await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes('Text model file'));
+        const text = userText(textOnly.body);
+        assert.ok(text.includes(path.join(project, 'photo.png')), text);
+        assert.ok(!text.includes('image_url'), text);
+        const storedPhoto = /\[photo\.png\]\(<?([^)>]+)>?\)/.exec(text);
+        assert.ok(storedPhoto, text);
+        assert.equal(fs.readFileSync(storedPhoto[1]).toString('base64'), localPng);
+        await plain.waitFor('Enter: send');
+        plain.send('/exit');
+        plain.key('Enter');
+        assert.equal((await plain.waitForExit()).status, 0);
+      } finally {
+        server('daemon', 'stop');
+      }
+    },
+  },
+  {
     name: 'file_mention_inserts_a_workspace_link',
     area: 'composer',
     title: 'The @ picker lists the workspace and inserts the chosen file into the draft',
@@ -866,6 +1146,294 @@ const scenarios = [
       assert(!terminal.capture().includes('SEARCH-MEMORY-FIRST'), 'the row closes again');
 
       await exitWith(terminal);
+    },
+  },
+  {
+    name: 'remote_resume_lists_sibling_worktree_sessions',
+    area: 'commands',
+    title: 'List sessions in sibling worktrees of the selected App Server',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const repo = fs.realpathSync(path.join(tui.root, 'workspace'));
+      const sibling = path.join(tui.root, 'linked checkout');
+      const single = path.join(tui.root, 'single checkout');
+      const targetHome = path.join(tui.root, 'receiver');
+      const target = ['--home', targetHome, '--model-config', tui.modelFile];
+      const git = (...args) => execFileSync('git', ['-C', repo, ...args], {env: tui.environment({}), stdio: 'pipe'});
+      git('init', '-q');
+      fs.mkdirSync(path.join(repo, 'sub'));
+      fs.writeFileSync(path.join(repo, 'sub', 'seed'), 'fixture');
+      git('add', 'sub/seed');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial');
+      git('worktree', 'add', '--detach', sibling);
+      git('clone', '-q', repo, single);
+      const bin = path.join(tui.root, 'keyboard-bin');
+      fs.mkdirSync(bin);
+      const marker = path.join(bin, 'called');
+      fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\n: > ${quote(marker)}\nexit 1\n`, {mode: 0o700});
+      try {
+        for (const [cwd, title] of [[path.join(sibling, 'sub'), 'linked checkout session'], [path.join(single, 'sub'), 'single checkout session']]) {
+          const output = await tui.runCommandAsync([...target, '--cwd', cwd, 'exec', '--json', '-p', title]);
+          const id = output.trim().split('\n').map(line => JSON.parse(line).params?.sessionId).find(Boolean);
+          assert(id, 'the target created a session');
+          tui.runCommand([...target, 'session', 'rename', id, title]);
+        }
+        const env = {
+          DIMCODE_TERMINAL_PROXY: path.join(targetHome, 'rust', 'daemon.sock'),
+          DIMCODE_TERMINAL_NAME: 'Build host', DIMCODE_TERMINAL_ID: 'fixture', DIMCODE_TERMINAL_ADDRESS: '127.0.0.1:1',
+          PATH: bin + path.delimiter + process.env.PATH,
+        };
+        for (const mode of [[], ['--fullscreen']]) {
+          for (const [cwd, included, excluded] of [
+            [path.join(repo, 'sub'), 'linked checkout session', 'single checkout session'],
+            [path.join(single, 'sub') + '/', 'single checkout session', 'linked checkout session'],
+          ]) {
+            const terminal = await tui.launch(mode, {
+              command: [tui.binary, '--home', tui.home], env: {...env, DIMCODE_TERMINAL_WORKSPACE: cwd}, cols: 112, rows: 30,
+            });
+            await terminal.untilComposer();
+            terminal.send('/resume');
+            terminal.key('Enter');
+            await terminal.waitFor('Sessions · This repository');
+            const screen = await terminal.waitFor(included);
+            assert(!screen.includes(excluded));
+            terminal.key('C-s');
+            await terminal.waitFor(excluded);
+            terminal.key('Escape');
+            await terminal.waitForAbsent('Sessions · All workspaces');
+            await exitWith(terminal);
+          }
+        }
+        assert(!fs.existsSync(marker), 'the terminal must never run Git against target paths');
+      } finally {
+        tui.runCommand([...target, 'daemon', 'stop']);
+      }
+    },
+  },
+  {
+    name: 'devices_open_remote_directory_and_return_to_local',
+    area: 'commands',
+    title: 'Switch targets from Home, pair once, browse the target and return in both layouts',
+    async run(tui) {
+      let complete, waitingFor;
+      const includesInput = (request, text) => request.tools?.length && request.messages.some(message =>
+        message.role === 'user' && typeof message.content === 'string' && message.content.includes(text));
+      await tui.setup({respond: async request => {
+        if (waitingFor && includesInput(request, waitingFor)) {
+          waitingFor = undefined;
+          await new Promise(resolve => { complete = resolve; });
+          return {text: 'Remote work finished'};
+        }
+        if (request.tools?.length && userText(request).includes('request fixture approval') && lastMessage(request).role !== 'tool') {
+          return {toolCalls: [{name: 'exec', arguments: {command: 'echo decision-fixture'}}]};
+        }
+        if (userText(request).includes('Draft for the side task')) return {text: 'Side draft delivered'};
+        return {text: ANSWER};
+      }});
+      const env = tui.environment({DIMCODE_SHARING_LISTEN: '127.0.0.1:0'});
+      if (!fs.existsSync(path.join(path.dirname(tui.binary), 'dim-sharing'))) {
+        const terminal = await tui.launch([], {env, waitForComposer: true});
+        terminal.send('/devices');
+        terminal.key('Enter');
+        await terminal.waitFor('This computer');
+        terminal.key('Home', 'Enter');
+        await terminal.waitFor('This computer · Active sessions');
+        await terminal.waitFor('New session…');
+        return;
+      }
+      const remoteHome = path.join(tui.root, 'other');
+      const project = path.join(tui.root, 'remote-project');
+      fs.mkdirSync(project);
+      fs.mkdirSync(path.join(project, 'vendor'));
+      fs.mkdirSync(path.join(project, '.fixture-hidden'));
+      const remote = (...args) => execFileSync(tui.binary, ['--home', remoteHome, '--model-config', tui.modelFile, ...args],
+        {encoding: 'utf8', env, cwd: project, timeout: 20000});
+      const shared = JSON.parse(remote('share', 'enable'));
+      try {
+        remote('share', 'rename', 'OfficeFixture');
+        for (const [index, args] of [[], ['--fullscreen']].entries()) {
+          const terminal = await tui.launch([...args, '--cwd', project], {env, waitForComposer: true, cols: 120, rows: 36});
+          terminal.send('/devices');
+          terminal.key('Enter');
+          await terminal.waitFor('This computer');
+          terminal.key('Escape');
+          await terminal.waitForAbsent('Computers');
+          terminal.send('/devices');
+          terminal.key('Enter');
+          await terminal.waitFor('Add by address');
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Computer address');
+          terminal.send(shared.addresses[0]);
+          terminal.key('Enter');
+          if (!index) {
+            await terminal.waitFor('Sharing token');
+            terminal.send(shared.token);
+            assert(!terminal.capture().includes(shared.token));
+            terminal.key('Enter');
+          }
+          await terminal.waitFor('OfficeFixture · Active sessions');
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Enter a path');
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Directory path');
+          terminal.send(project);
+          terminal.key('Enter');
+          await terminal.waitFor('vendor');
+          assert(!terminal.capture().includes('.fixture-hidden'));
+          terminal.key('End', 'Up', 'Enter');
+          await terminal.waitFor('OfficeFixture:');
+          terminal.send('/devices');
+          terminal.key('Enter');
+          await terminal.waitFor('This computer');
+          terminal.key('Home', 'Enter');
+          await terminal.waitForAbsent('OfficeFixture:');
+          await terminal.waitFor('Ask anything');
+          const owner = await tui.launch(['--cwd', project], {
+            command: [tui.binary, '--home', remoteHome, '--model-config', tui.modelFile],
+            env, waitForComposer: true,
+          });
+          const topic = `Work on remote fixture ${index}`;
+          await owner.sendPrompt(topic);
+          await owner.waitFor(ANSWER);
+          const devicesOverDraft = async () => {
+            terminal.key('C-o');
+            await terminal.waitFor(/Commands|Command Palette/);
+            terminal.send('devices');
+            terminal.key('Enter');
+            await terminal.waitFor('Remembered');
+          };
+          terminal.send('local draft ');
+          terminal.paste(['one', 'two', 'three', 'four', 'five'].join('\n'));
+          await terminal.waitFor('[... 5 lines]');
+          await devicesOverDraft();
+          terminal.key('Home', 'Down', 'Enter');
+          await terminal.waitFor('OfficeFixture · Active sessions');
+          terminal.key('Home', 'Enter');
+          await terminal.waitFor('OfficeFixture:');
+          await terminal.waitFor(topic);
+          assert(!terminal.capture().includes('local draft'));
+          terminal.send('remote draft');
+          await devicesOverDraft();
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Computer address');
+          terminal.send('127.0.0.1:1');
+          terminal.key('Enter');
+          await terminal.waitFor(/refused/i);
+          terminal.key('Escape');
+          await terminal.waitForAbsent('Computers');
+          await terminal.waitFor('remote draft');
+          const calls = turnRequests(tui.model).length;
+          const reset = JSON.parse(remote('share', 'reset'));
+          await terminal.waitFor('Reconnect OfficeFixture');
+          terminal.key('Home', 'Enter');
+          await terminal.waitFor('Sharing token');
+          terminal.send(reset.token);
+          terminal.key('Enter');
+          await terminal.waitForAbsent('Computers');
+          await terminal.waitFor(topic);
+          await terminal.waitFor('remote draft');
+          assert.equal(turnRequests(tui.model).length, calls, 'reconnecting preserves unsent input');
+          const working = `keep working after switch ${index}`;
+          waitingFor = working;
+          await owner.sendPrompt(working);
+          await waitForRequest(tui.model, request => includesInput(request, working));
+          await terminal.waitFor(working);
+          await devicesOverDraft();
+          terminal.key('Home', 'Enter');
+          await terminal.waitForAbsent('OfficeFixture:');
+          await terminal.waitFor('local draft');
+          complete();
+          await owner.waitFor('Remote work finished');
+          complete = undefined;
+          terminal.key('Enter');
+          const local = await waitForRequest(tui.model, request => request.tools?.length
+            && userText(request).includes('local draft') && userText(request).includes('[Pasted text:'));
+          assert(!userText(local.body).includes('[... 5 lines]'), 'the draft retained its paste content');
+          await terminal.waitFor(ANSWER);
+          await checkDeviceDraftDestination(terminal, devicesOverDraft);
+          await exitWith(terminal);
+          await exitWith(owner);
+        }
+        const named = await tui.launch(['--target', 'OfficeFixture'], {env});
+        await named.waitFor('OfficeFixture · Active sessions');
+        named.key('Escape');
+        await named.waitFor('Computers');
+        named.key('Escape');
+        await named.waitForAbsent('Computers');
+        named.send('/devices');
+        named.key('Enter');
+        await named.waitFor('This computer');
+        named.key('C-c');
+        await named.waitFor('Press Ctrl+C again to exit');
+        named.key('C-c');
+        assert.equal((await named.waitForExit()).status, 130);
+        const disconnected = await tui.launch(['--target', 'OfficeFixture'], {env});
+        await disconnected.waitFor('OfficeFixture · Active sessions');
+        disconnected.key('End', 'Enter');
+        await disconnected.waitFor('Start a session here');
+        remote('share', 'disable');
+        await disconnected.waitFor('Disconnected · draft kept');
+        disconnected.key('C-d');
+        assert.equal((await disconnected.waitForExit()).status, 0);
+      } finally {
+        complete?.();
+        remote('daemon', 'stop');
+      }
+    },
+  },
+  {
+    name: 'settings_manage_inbound_sharing',
+    area: 'commands',
+    title: 'Settings controls inbound access, displays the complete token and revokes it on reset',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const terminal = await tui.launch(['--fullscreen'], {
+        env: {DIMCODE_SHARING_LISTEN: '127.0.0.1:0'}, waitForComposer: true, cols: 90, rows: 36,
+      });
+      terminal.send('/settings');
+      terminal.key('Enter');
+      await terminal.waitFor('Language');
+      terminal.key('End');
+      if (!fs.existsSync(path.join(path.dirname(tui.binary), 'dim-sharing'))) {
+        assert(!terminal.capture().includes('Remote access'));
+        return;
+      }
+      const status = () => JSON.parse(execFileSync(tui.binary, ['--home', tui.home, 'share', 'status'], {
+        env: tui.environment({}), encoding: 'utf8',
+      }));
+      assert.equal(status().enabled, false);
+      await terminal.waitFor('Remote access');
+      terminal.key('Enter');
+      await terminal.waitFor('Allow connections to this computer');
+      terminal.key('Enter');
+      await terminal.waitFor('DIM1-');
+      const token = status().token;
+      terminal.key('Down', 'Enter');
+      await terminal.waitFor('Enter save');
+      terminal.send('-fixture');
+      terminal.key('Enter');
+      await terminal.waitFor('-fixture');
+      terminal.key('Down', 'Enter');
+      await terminal.waitFor('Esc back');
+      assert(terminal.capture().includes(token), 'the complete sharing token is readable');
+      terminal.key('Escape', 'Down', 'Enter');
+      await terminal.waitFor('Disconnect all shared terminals');
+      terminal.key('y');
+      await terminal.waitFor('Allow connections to this computer');
+      for (let i = 0; i < 30 && status().token === token; i++) await sleep(100);
+      assert(status().token !== token, 'confirming reset must rotate the token');
+      const previousToken = status().token;
+      terminal.key('Home', 'Enter');
+      await terminal.waitFor('off');
+      assert.equal(status().enabled, false);
+      terminal.key('End', 'Enter');
+      await terminal.waitFor('Disconnect all shared terminals');
+      terminal.key('y');
+      await terminal.waitFor('Allow connections to this computer');
+      assert.equal(status().enabled, false);
+      terminal.key('Home', 'Enter');
+      await terminal.waitFor('DIM1-');
+      assert(status().token && status().token !== previousToken, 'rotation while off replaces the token on next enable');
     },
   },
   {

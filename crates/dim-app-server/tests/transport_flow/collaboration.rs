@@ -3623,8 +3623,10 @@ async fn member_work(mut config: ServerConfig) {
         "the latest turns come first and name their calls: {turns}"
     );
     assert!(
-        turns.contains(": Agent default, your team leader, assigned you this work: — called hold"),
-        "a turn a message opened is titled by its first line: {turns}"
+        turns.contains(
+            ": Agent default, your team leader, assigned you this work: tool:hold {} — called hold"
+        ),
+        "a turn a message opened is titled by its body as one line: {turns}"
     );
     assert!(
         turns

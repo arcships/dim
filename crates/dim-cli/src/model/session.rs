@@ -7,6 +7,8 @@
 //! read-only views. Optional methods missing from a daemon produce an
 //! unavailable diagnostic.
 
+pub(crate) mod submission;
+
 use crate::model::shell::ShellResult;
 use crate::model::view::{MemberConversationState, TaskOutputState, TaskTarget, ViewSnapshot};
 use crate::wire::Configuration;
@@ -22,12 +24,29 @@ pub const ACCOUNT_NAMESPACE: &str = "account";
 /// One piece of a draft sent with [`Command::SubmitDraft`], in order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DraftPart {
+    File {
+        path: std::path::PathBuf,
+        label: String,
+        target_image: bool,
+    },
     Text(String),
     /// Pasted text; a long one is stored as a session attachment.
     Paste(String),
     /// An image or other content block inserted from a file or the
     /// clipboard.
     Block(dim_agent_types::ContentBlock),
+}
+
+impl DraftPart {
+    pub(crate) fn needs_preparation(&self) -> bool {
+        match self {
+            Self::Paste(_) | Self::File { .. } => true,
+            Self::Block(dim_agent_types::ContentBlock::Image { source }) => {
+                source.source_type == dim_agent_types::ImageSourceType::Base64
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,8 +216,13 @@ pub enum Command {
         line: String,
         session: Origin,
     },
+    DeliverDraft {
+        draft: std::sync::Arc<crate::model::session::submission::PreparedDraft>,
+        reconcile: bool,
+    },
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft {
+        preparation: Option<tokio_util::sync::CancellationToken>,
         parts: Vec<DraftPart>,
         mode: SubmitMode,
         line: String,
@@ -334,7 +358,9 @@ pub enum Command {
     /// Switch to a stored session.
     Resume(String),
     /// Find the launch workspace's repository worktrees, once per picker open.
-    FindRepository,
+    FindRepository {
+        picker: uuid::Uuid,
+    },
     /// List stored sessions (newest first), in `scope`.
     ListSessions {
         id: String,
@@ -1334,6 +1360,17 @@ impl DeleteOutcome {
 }
 
 pub enum Update {
+    DraftDelivery {
+        id: String,
+        result: crate::model::session::submission::Delivery,
+    },
+    RemoteDraftPrepared {
+        session: String,
+        line: String,
+        mode: SubmitMode,
+        parts: Vec<DraftPart>,
+        error: Option<String>,
+    },
     Reportable {
         error: crate::report::Captured,
         show_error: bool,
@@ -1433,7 +1470,10 @@ pub enum Update {
     /// The workspaces the picker's local scope may list: the launch
     /// workspace and the same relative directory in every worktree of its git
     /// repository, found once per picker open. The set may hold one entry.
-    RepositoryWorkspaces(Vec<String>),
+    RepositoryWorkspaces {
+        picker: uuid::Uuid,
+        workspaces: Vec<String>,
+    },
     /// The default a `/models` selection wrote: the folder whose workspace
     /// scope it wrote, or `None` when it wrote the global one, and the row's
     /// own label. The interface names the scope; it owns the display form.

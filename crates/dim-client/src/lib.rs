@@ -3,11 +3,15 @@
 pub mod callback;
 pub mod configuration;
 pub mod question;
+pub mod upload;
 pub mod window;
 pub mod wire;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
+#[cfg(windows)]
+pub mod pipe;
+
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 #[cfg(windows)]
@@ -233,18 +237,25 @@ impl Client {
     }
 
     async fn receive(&mut self) -> Result<Message> {
+        Self::read_message(&mut self.read, &mut self.frame).await
+    }
+
+    async fn read_message(
+        read: &mut (impl tokio::io::AsyncBufRead + Unpin),
+        frame: &mut Vec<u8>,
+    ) -> Result<Message> {
         loop {
-            let buffer = self.read.fill_buf().await?;
+            let buffer = read.fill_buf().await?;
             if buffer.is_empty() {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof,"App Server connection closed; the submitted input may have been accepted. Resume the session instead of resending automatically").into());
             }
             let end = buffer.iter().position(|byte| *byte == b'\n');
             let size = end.map_or(buffer.len(), |index| index + 1);
-            if self.frame.len() + size > FRAME_LIMIT {
+            if frame.len() + size > FRAME_LIMIT {
                 return Err("App Server frame exceeds 16 MiB".into());
             }
-            self.frame.extend_from_slice(&buffer[..size]);
-            self.read.consume(size);
+            frame.extend_from_slice(&buffer[..size]);
+            read.consume(size);
             if end.is_some() {
                 break;
             }
@@ -264,7 +275,7 @@ impl Client {
             method: Option<String>,
             params: Option<Value>,
         }
-        let message: Envelope = serde_json::from_slice(&std::mem::take(&mut self.frame))
+        let message: Envelope = serde_json::from_slice(&std::mem::take(frame))
             .map_err(|_| "Invalid App Server JSON-RPC frame")?;
         if message.jsonrpc != "2.0" {
             return Err("Unsupported App Server envelope".into());

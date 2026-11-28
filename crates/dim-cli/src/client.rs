@@ -1020,6 +1020,34 @@ fn protocol_refused(error: &crate::Error) -> bool {
         && app_error(error) == Some("protocol_version")
 }
 
+fn connection_config(
+    options: &Options,
+    endpoint: PathBuf,
+    server: Server,
+    profile: Option<DaemonProfile>,
+) -> ConnectionConfig {
+    ConnectionConfig {
+        endpoint,
+        server,
+        profile,
+        client_kind: if matches!(options.action, crate::args::Action::Acp { .. }) {
+            "other"
+        } else {
+            "cli"
+        },
+        client_name: if matches!(options.action, crate::args::Action::Acp { .. }) {
+            "AcpGateway"
+        } else {
+            "dimcode"
+        },
+        protocol_version: if matches!(options.action, crate::args::Action::Acp { .. }) {
+            3
+        } else {
+            4
+        },
+    }
+}
+
 /// The connection to the daemon of `options.home` after `hello`. Without a
 /// daemon, starts one when `start` and waits for it; else `None`. With
 /// `start`, one client at a time decides under `<native_home>/daemon.start.lock`
@@ -1028,6 +1056,22 @@ fn protocol_refused(error: &crate::Error) -> bool {
 /// printed once in `locale`; every wait is bounded by inactivity, not by
 /// total time.
 pub async fn connect_inner(
+    options: &Options,
+    start: bool,
+    locale: crate::locale::Locale,
+) -> Result<Option<Link>> {
+    if let Some(endpoint) = &options.endpoint {
+        let config = connection_config(options, endpoint.clone(), server(options)?, None);
+        let client = tokio::time::timeout(DAEMON_START_TIMEOUT, Client::connect(&config)).await??;
+        return Ok(Some(Link {
+            client,
+            notice: None,
+        }));
+    }
+    connect_local(options, start, locale).await
+}
+
+pub(crate) async fn connect_local(
     options: &Options,
     start: bool,
     locale: crate::locale::Locale,
@@ -1080,26 +1124,7 @@ pub async fn connect_inner(
     };
     let server = server(options)?;
     let binary = &server.program;
-    let connection = ConnectionConfig {
-        endpoint: endpoint.clone(),
-        server: server.clone(),
-        profile,
-        client_kind: if matches!(options.action, crate::args::Action::Acp { .. }) {
-            "other"
-        } else {
-            "cli"
-        },
-        client_name: if matches!(options.action, crate::args::Action::Acp { .. }) {
-            "AcpGateway"
-        } else {
-            "dimcode"
-        },
-        protocol_version: if matches!(options.action, crate::args::Action::Acp { .. }) {
-            3
-        } else {
-            4
-        },
-    };
+    let connection = connection_config(options, endpoint.clone(), server.clone(), profile);
     // `daemon stop` addresses the home's daemon whatever binary runs it, and a
     // start reuses a `--server` daemon as it is and never replaces it, so it
     // greets that daemon once.
@@ -1180,6 +1205,12 @@ pub async fn connect_inner(
     };
     let mut command = Command::new(&program);
     command.args(server.subcommand());
+    if server.embedded {
+        let helper = binary.with_file_name(format!("dim-sharing{}", std::env::consts::EXE_SUFFIX));
+        if helper.is_file() {
+            command.arg("--sharing-helper").arg(helper);
+        }
+    }
     for name in [
         "DIM_MODEL",
         "DIM_EFFORT_LEVEL",

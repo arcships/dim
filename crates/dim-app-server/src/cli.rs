@@ -361,6 +361,7 @@ pub fn run_with(
     {
         config.startup_timeout = std::time::Duration::from_millis(timeout);
     }
+    let mut sharing_helper = None;
     let mut threads = 2usize;
     let mut model_config = None;
     let mut mock_model = false;
@@ -383,6 +384,11 @@ pub fn run_with(
                 )
             }
             "--no-ws" => config.websocket_address = None,
+            "--sharing-helper" => {
+                sharing_helper = Some(PathBuf::from(
+                    args.next().ok_or("--sharing-helper needs a path")?,
+                ))
+            }
             "--database" => {
                 config.database_path = Some(PathBuf::from(
                     args.next().ok_or("--database requires a path")?,
@@ -637,25 +643,97 @@ pub fn run_with(
             defaults::tool_host(&mut builder, Arc::new(MockTools));
             collaboration::install(&mut builder);
         }
+        let sharing_home = config.target_home.clone();
         let server = serve(builder, config).await?;
+        let endpoint = server
+            .unix_path
+            .clone()
+            .or_else(|| server.pipe_name.as_ref().map(PathBuf::from));
+        let shutdown = server.shutdown_signal();
+        let sharing_stop = tokio_util::sync::CancellationToken::new();
+        let helper = sharing_helper.or_else(|| {
+            std::env::current_exe().ok().map(|exe| {
+                exe.with_file_name(format!("dim-sharing{}", std::env::consts::EXE_SUFFIX))
+            })
+        });
+        let sharing = helper
+            .filter(|path| path.is_file())
+            .zip(sharing_home.zip(endpoint))
+            .map(|(helper, (home, endpoint))| {
+                tokio::spawn(supervise_sharing(
+                    helper,
+                    home,
+                    endpoint,
+                    sharing_stop.clone(),
+                ))
+            });
         println!(
             "{}",
             serde_json::json!({"unixPath": server.unix_path, "pipeName": server.pipe_name, "websocketAddress": server.websocket_address.map(|a| a.to_string())})
         );
-        let shutdown = server.shutdown_signal();
         let join = server.join();
         tokio::pin!(join);
-        tokio::select! {
+        let result = tokio::select! {
             result = &mut join => result,
             signal = tokio::signal::ctrl_c() => { signal?; shutdown.cancel(); join.await },
             signal = terminate_signal() => { signal?; shutdown.cancel(); join.await }
+        };
+        sharing_stop.cancel();
+        if let Some(task) = sharing {
+            let _ = task.await;
         }
+        result
     };
     let reason = runtime.block_on(operation)?;
     if reason == ShutdownReason::Forced {
         std::process::exit(0);
     }
     Ok(())
+}
+
+async fn supervise_sharing(
+    helper: PathBuf,
+    home: PathBuf,
+    endpoint: PathBuf,
+    stop: tokio_util::sync::CancellationToken,
+) {
+    use std::{process::Stdio, time::Duration};
+    let mut command = tokio::process::Command::new(helper);
+    command
+        .arg("--home")
+        .arg(home)
+        .arg("serve")
+        .arg(endpoint)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true);
+    let mut delay = Duration::from_secs(1);
+    while !stop.is_cancelled() {
+        match command.spawn() {
+            Ok(mut child) => {
+                let lifetime = child.stdin.take();
+                tokio::select! {
+                    status = child.wait() => eprintln!("Remote sharing stopped: {status:?}"),
+                    () = stop.cancelled() => {
+                        drop(lifetime);
+                        if tokio::time::timeout(Duration::from_secs(15), child.wait())
+                            .await
+                            .is_err()
+                        {
+                            let _ = child.kill().await;
+                        }
+                        return;
+                    }
+                }
+            }
+            Err(error) => eprintln!("Remote sharing could not start: {error}"),
+        }
+        tokio::select! {
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(delay) => {}
+        }
+        delay = (delay * 2).min(Duration::from_secs(60));
+    }
 }
 
 async fn terminate_signal() -> std::io::Result<()> {

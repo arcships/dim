@@ -34,6 +34,12 @@ it. Headless `--image` arguments use the invoking process's current directory, l
 command-line file arguments. Paths returned by `attachment.put` are already paths on the
 Session's resource node; the CLI uses them directly without local path resolution.
 
+For a shared target, a dropped file, clipboard item or `--image` argument belongs to the
+keyboard computer. On submit the target imports those bytes into the selected Session.
+An `@` selection comes from that target's workspace and keeps its target path. The composer
+keeps the original filename as the link label. With a text-only model a dropped image file
+can be uploaded as a file link. [Shared terminal file input](research/native-session-file-input.md)
+
 ## Scrollback layout
 
 ```text
