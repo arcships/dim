@@ -1308,6 +1308,7 @@ impl Connection {
                     };
                     record.attached_clients = self.hub.attached_clients(&record.session_id);
                     summaries.push(SessionSummary {
+                        attention: Some(crate::protocol::SessionAttention::read(&session)),
                         closed: rpc.index.closed(&record.session_id),
                         session: record,
                         preview,

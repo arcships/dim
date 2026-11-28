@@ -136,7 +136,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | 名字 | 数据面 | 所有者保留的状态 |
 | --- | --- | --- |
 | `toolHost` | `execute(call, caller, cancelled)` | ToolDriver、工具声明 |
-| `approval` | `pending()`、`decide(requestId, decision)` | 待处理请求、批次准入 |
+| `approval` | `pending()`、`pendingSummary()`、`decide(requestId, decision)` | 待处理请求、批次准入 |
 | `permission` | `check(call, risk, cancelled)` | 预设、权限状态、advisor |
 | `inputQueue` | `submit(input)`、`withdraw(command)` | 排序、恢复、InputSnapshot |
 | `wait` | `wait(taskId, timeoutMs, cancelled)` | 到达记录、单次等待槽 |

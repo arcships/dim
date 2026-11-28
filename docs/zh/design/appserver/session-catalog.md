@@ -71,6 +71,10 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 
 目录读取从不装载、恢复或启动 Session：存储的字段由投影回答，因此列目录不花任何模型、工具或 MCP 启动。`running` 与 `attachedClients` 取自进程的内存状态，与 `session.summaries` 相同：已卸载的 Session 读作未运行，两个字段都不落盘，因此读取它们不取租约、也不装载任何东西。
 
+当 `hello.features` 包含 `session.summaries.attention` 时，`session.summaries` 和 `session.catalog` 的每一行都汇总该 Session 所有分支的待处理请求。`pendingApprovalCount` 是待审批请求数，`pendingQuestionCount` 是等待回答的 `ask_user` 调用数。一次调用可以包含多道题，只需提交一次回答。`lastAttentionAt` 是当前最早待处理请求的开始时间，单位为 Unix 毫秒。没有待处理请求时，两项计数均为零，省略时间字段。已卸载的 Session 也遵循这个规则。
+
+客户端可以直接读取这些数据，无需先连接 Session。每次分页读取都取该页各行的实时状态。计数变化不影响活动时间、行顺序或分页游标。查看内容时再打开相应的 Session，通过审批重放或待回答问题查询取得详情。
+
 ### 3.5 目录过滤（#557）
 
 层级与来源过滤是同一条目录查询的条件，在页边界之前应用，因此后面页上的匹配不会被已取的页挡住。[#557](https://github.com/arcships/dim/issues/557) 定义它们的字段与缺省值。本合同保留它们生效的位置，并要求有过滤时行的位置、游标与任何计数在多次刷新之间保持一致。
@@ -94,8 +98,7 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 | `hello.features`（App Server） | 客户端发现目录所用的方法清单：目录在列出 `session.summaries` 的条件下列出，再加上 `session.fork` 同样要求的原生存储条件 |
 | Agents 的目录 | Agent 过滤，以及协议版本上界：Session 的记录版本不超过连接的版本时才会列出，与 `session.summaries` 相同 |
 | Agents 的索引与连接 hub | 列出 Session 的实时 `running` 与 `attachedClients`，从进程状态读取、不取租约，与 `session.summaries` 相同 |
-
-不调用 Session 门面、不取租约、不使用其他插件服务。
+| [Approval](../../../architecture/rust-agent/plugins/Permission.md#approval-data-face) 和 [Questions](../plugins/Questions.md#2-数据与状态) | Agents 从已加载 Session 的所有者读取待处理数量与最早开始时间。 |
 
 ## 6. 客户端
 

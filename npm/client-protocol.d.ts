@@ -37,6 +37,11 @@ export type SessionSummary = SessionTitle & {
   running: boolean
   sequence: number
   preview?: string
+  /** Live counts when the server advertises session.summaries.attention. */
+  pendingApprovalCount?: number
+  pendingQuestionCount?: number
+  /** Unix milliseconds when the oldest currently pending request started. */
+  lastAttentionAt?: number
   origin?: "client" | "acp" | "internal" | "unknown" | "automation"
   parentSessionId?: string
   /** Unix milliseconds of the last main-branch event. */

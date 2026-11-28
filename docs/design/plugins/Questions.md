@@ -66,6 +66,12 @@ Contracts defined here: the `ask_user` tool (declaration, input schema, result t
 
 ## 2. Data and state
 
+The Session data face `questions.pendingSummary()` returns the number of live
+`ask_user` calls accepting an answer across all its branches (`count`), and the
+oldest registration time in Unix milliseconds (`oldestAt`, absent when empty).
+Each registered call takes one response, independent of its number of questions.
+Answering, declining or releasing its claim removes it from this read immediately.
+
 ```mermaid
 stateDiagram-v2
   [*] --> claimed: Loop calls claim, before step/tool-call is appended

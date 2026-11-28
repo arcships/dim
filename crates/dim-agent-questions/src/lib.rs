@@ -23,7 +23,7 @@ use dim_agent_capabilities::{
     },
 };
 use dim_agent_runtime::{AgentBuilder, CAPABILITY_RELOADING, Names, SessionConfig};
-use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
+use dim_agent_types::{PendingRequestSummary, ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,10 @@ const CANCELLED: &str = "The question was cancelled before the user answered.";
 /// `ask_user` tool and the `session.question` namespace; installation never
 /// reads `interactive`.
 pub fn install(builder: &mut AgentBuilder) {
+    builder.catalog_mut().register_shared_instance(
+        dim_agent_runtime::names::name_of::<Questions>(),
+        dim_agent_runtime::SESSION_GROUP,
+    );
     builder.require_feature(
         dim_agent_runtime::Feature::new("Questions").session("Questions", |names| {
             Ok(Box::new(QuestionsPlugin::new(names)?))
@@ -264,6 +268,7 @@ fn result(questions: &[Question], answered: Answered) -> ToolResult {
 }
 
 struct Waiter {
+    started_at: u64,
     questions: Arc<[Question]>,
     sender: oneshot::Sender<Answered>,
 }
@@ -327,9 +332,22 @@ impl Drop for Claim {
     }
 }
 
-struct Questions {
+pub struct Questions {
     config: Arc<SessionConfig>,
     waiters: Arc<Mutex<Waiters>>,
+}
+
+impl dim_agent_runtime::PublicService for Questions {}
+
+#[rutis::service]
+impl Questions {
+    /// Counts answerable `ask_user` calls across the Session, with the oldest registration time.
+    pub fn pending_summary(&self) -> PendingRequestSummary {
+        let waiters = self.waiters.lock().unwrap();
+        PendingRequestSummary::from_start_times(
+            waiters.table.values().map(|waiter| waiter.started_at),
+        )
+    }
 }
 
 impl Questions {
@@ -361,6 +379,7 @@ impl Questions {
         waiters.table.insert(
             key.clone(),
             Waiter {
+                started_at: dim_agent_runtime::core::unix_millis(),
                 questions: questions.clone(),
                 sender,
             },
@@ -509,6 +528,7 @@ fn ask_user_definition() -> ToolDefinition {
 /// The Questions Session part: `ask_user` registered with `toolRegistry` and
 /// `session.question` with `sessionMethods`.
 pub struct QuestionsPlugin {
+    questions: Key<Questions>,
     config: Key<SessionConfig>,
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
@@ -517,6 +537,7 @@ pub struct QuestionsPlugin {
 impl QuestionsPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            questions: names.key()?,
             config: names.key()?,
             tools: names.key()?,
             methods: names.key()?,
@@ -553,6 +574,7 @@ impl DynPlugin for QuestionsPlugin {
                 waiters.table.clear();
                 Ok(())
             })?;
+            ctx.provide_at(self.questions.clone(), questions.clone())?;
             tools.register(
                 ctx,
                 ToolContribution {

@@ -19,7 +19,7 @@ use dim_agent_runtime::{
 };
 use dim_agent_types::{
     AgentEvent, ApprovalCallData, ApprovalCancelledData, ApprovalDecision, ApprovalRequestData,
-    ApprovalRespondData, BranchSource, EventKind,
+    ApprovalRespondData, BranchSource, EventKind, PendingRequestSummary,
 };
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -49,6 +49,7 @@ pub enum ApprovalRespondError {
 }
 
 struct Pending {
+    started_at: u64,
     request: ApprovalRequestData,
     cancel: CancellationToken,
     /// `None`: a response arrived after the caller's batch was cancelled.
@@ -84,6 +85,13 @@ impl Approval {
             .iter()
             .map(|item| item.request.clone())
             .collect()
+    }
+    /// Counts unanswered requests on this branch, with the oldest request's creation time.
+    pub fn pending_summary(&self) -> PendingRequestSummary {
+        let inner = self.inner.lock().unwrap();
+        PendingRequestSummary::from_start_times(
+            inner.pending.iter().map(|request| request.started_at),
+        )
     }
     /// Answers request `request_id` with `decision`: what the `approval`
     /// face's `decide` calls, and answered once the branch dispatched the
@@ -152,6 +160,7 @@ impl Approval {
                     return Err(AgentError::Closed("Approval".into()));
                 }
                 inner.pending.push(Pending {
+                    started_at: event.create_at,
                     request: data.clone(),
                     cancel: registered,
                     response,

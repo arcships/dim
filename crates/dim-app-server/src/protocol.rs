@@ -1365,9 +1365,20 @@ pub struct AttachResult {
     #[serde(rename = "modelPreferences", skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<dim_agent_types::ModelPreferences>,
 }
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAttention {
+    pub pending_approval_count: usize,
+    pub pending_question_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attention_at: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
+    #[serde(flatten)]
+    pub attention: Option<SessionAttention>,
     #[serde(flatten)]
     pub session: SessionInfo,
     #[serde(skip_serializing_if = "Option::is_none")]

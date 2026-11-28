@@ -5,8 +5,8 @@ use dim_agent_capabilities::tool_executor::ToolExecutor;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::{Dispatcher, Session, Timeline, TimelineKey, TimelineStore};
 use dim_agent_types::{
-    ApprovalDecision, ContentBlock, EventKind, InputMode, InterruptScope, StopInterruptData,
-    TurnOutcome,
+    AgentEvent, ApprovalDecision, ContentBlock, EventKind, InputMode, InterruptScope,
+    StopInterruptData, TurnOutcome,
 };
 use rutis::host::CtxHost;
 use std::sync::{Mutex as StdMutex, atomic::AtomicBool};
@@ -1131,6 +1131,22 @@ async fn responses_and_interrupts_follow_the_owning_branch_on_both_transports() 
             .unwrap();
         let child_request = client.notice("approval.request").await["params"]["requestId"].clone();
         assert_ne!(main_request, child_request);
+        let mut observer = Client::new_version(&server, ws, 3).await;
+        let summaries = observer.rpc("session.summaries", json!({})).await;
+        let row = &summaries["result"][0];
+        assert_eq!(row["sessionId"], session.id());
+        assert_eq!(row["pendingApprovalCount"], 2);
+        assert_eq!(row["pendingQuestionCount"], 0);
+        let request_time = |events: Vec<Arc<AgentEvent>>| {
+            events
+                .into_iter()
+                .find(|e| matches!(e.kind, EventKind::ApprovalRequest(_)))
+                .unwrap()
+                .create_at
+        };
+        let main_time = request_time(branch_events(&session, "main", ..).await.unwrap());
+        let child_time = request_time(branch_events(&session, &child, ..).await.unwrap());
+        assert_eq!(row["lastAttentionAt"], main_time.min(child_time));
         assert_ok(
             &client
                 .rpc(
@@ -1143,6 +1159,9 @@ async fn responses_and_interrupts_follow_the_owning_branch_on_both_transports() 
             client.notice("approval.cancelled").await["params"]["requestId"],
             main_request
         );
+        let summaries = observer.rpc("session.summaries", json!({})).await;
+        assert_eq!(summaries["result"][0]["pendingApprovalCount"], 1);
+        assert_eq!(summaries["result"][0]["lastAttentionAt"], child_time);
         assert_eq!(
             client
                 .rpc(
@@ -1161,6 +1180,9 @@ async fn responses_and_interrupts_follow_the_owning_branch_on_both_transports() 
                 .await,
         );
         session.idle(&child).await.unwrap();
+        let summaries = observer.rpc("session.summaries", json!({})).await;
+        assert_eq!(summaries["result"][0]["pendingApprovalCount"], 0);
+        assert!(summaries["result"][0].get("lastAttentionAt").is_none());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let child_events = branch_events(&session, &child, ..).await.unwrap();
         assert!(child_events.iter().any(|e| matches!(&e.kind, EventKind::ApprovalRequest(data) if data.approval_id == child_request.as_str().unwrap())));

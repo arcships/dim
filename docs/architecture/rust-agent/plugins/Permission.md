@@ -332,12 +332,15 @@ re-evaluate every waiting call on that branch, without a new client response.
 
 ```text
 approval.pending() -> ApprovalRequestData[]
+approval.pendingSummary() -> {count, oldestAt?}
 approval.decide(requestId: string, decision: "allow" | "deny") -> {}
   -> error {code: "Unknown" | "Cancelled" | "Closed", message}
 ```
 
 `pending` lists the committed requests no answer or cancellation ended, in
-request order, as their `approval/request` payloads. `decide` is
+request order, as their `approval/request` payloads. `pendingSummary` counts those
+requests and gives the earliest request creation time in Unix milliseconds while
+any remain. `decide` is
 [`Approval::respond`](../../../../crates/dim-agent-capabilities/src/approval.rs):
 it commits `approval/respond` and answers once the branch dispatched it, so an
 `Unknown` refusal means the request is absent or already resolved. `admit`

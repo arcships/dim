@@ -383,6 +383,7 @@ impl SessionStore {
                 }
                 let parsed = (|| -> Result<SessionSummary> {
                     Ok(SessionSummary {
+                        attention: None,
                         session: SessionInfo {
                             session_id: id.clone(),
                             cwd: row.get(1).map_err(error)?,

@@ -184,6 +184,19 @@ no model, tool or MCP startup. `running` and `attachedClients` come from the pro
 `session.summaries` reads them: an unloaded Session reads as not running, and neither field is stored, so reading them
 takes no lease and loads nothing.
 
+When `hello.features` includes `session.summaries.attention`, each row of
+`session.summaries` and `session.catalog` includes two live counts across all
+branches. `pendingApprovalCount` counts unanswered approval requests and
+`pendingQuestionCount` counts answerable `ask_user` calls. One call can ask
+several questions and takes one response. `lastAttentionAt` is the oldest
+start time among those requests, in Unix milliseconds. With no pending requests
+both counts are zero and the timestamp is absent. This includes unloaded Sessions.
+
+A fresh read samples the live owners even if the client has never attached.
+Each page samples its own rows. Changes to the counts do not move a row, change
+its activity timestamp, or invalidate its pagination cursor. To inspect a
+request, open the Session and use the existing approval replay or question read.
+
 ### 3.5 Catalog filters (#557)
 
 Visibility filters are conditions of the same catalog query and apply before the page boundary, so a match on a later
@@ -223,8 +236,7 @@ Timeline: the catalog is display data for a picker, which
 | `hello.features` (App Server) | The method list a client discovers the catalog through: the catalog is listed under the conditions that list `session.summaries`, plus the native-store condition `session.fork` also requires |
 | Agents' catalog read | The agent filtering, and the protocol-version bound: a Session is listed when its recorded version does not exceed the connection's, as `session.summaries` applies it |
 | Agents' index and the connection hub | The live `running` and `attachedClients` of the listed Sessions, read from the process's state without a lease, as `session.summaries` reads them |
-
-No Session facade call, no lease and no other plugin service is used.
+| [Approval](../../architecture/rust-agent/plugins/Permission.md#approval-data-face) and [Questions](../plugins/Questions.md#2-data-and-state) | Agents reads each live owner's pending summary through the loaded Session to count requests and select the oldest start. |
 
 ## 6. Clients
 

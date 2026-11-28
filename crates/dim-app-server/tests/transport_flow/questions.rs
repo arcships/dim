@@ -82,6 +82,66 @@ async fn waiting(client: &mut Client, sid: &str, request: &str, call: &str) {
     panic!("{call} never waited");
 }
 
+#[tokio::test]
+async fn an_unattached_client_discovers_and_clears_question_attention() {
+    let store = Store::new();
+    let server = launch_questions(&store).await;
+    let mut worker = Client::new_version(&server, false, 3).await;
+    let sid = session(&mut worker, true).await;
+    submit(&mut worker, &sid, ASK).await;
+    let asked = step(&mut worker, "tool-call").await;
+    let request_id = request(&asked);
+    let call_id = asked["event"]["data"]["calls"][0]["id"].as_str().unwrap();
+    assert_ok(&worker.rpc("session.detach", json!({"sessionId":sid})).await);
+    drop(worker);
+
+    let mut observer = Client::new_version(&server, false, 3).await;
+    assert!(
+        observer
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.summaries.attention"))
+    );
+    let summaries = observer.rpc("session.summaries", json!({})).await;
+    let page = observer.rpc("session.catalog", json!({"limit":1})).await;
+    let row = &page["result"]["sessions"][0];
+    assert_eq!(row, &summaries["result"][0]);
+    assert_eq!(row["sessionId"], sid);
+    assert_eq!(row["attachedClients"], 0);
+    assert_eq!(row["pendingQuestionCount"], 1);
+    assert_eq!(row["pendingApprovalCount"], 0);
+    let oldest = row["lastAttentionAt"].as_u64().unwrap();
+    let routed = server.agent().unwrap().routed_session(&sid).unwrap();
+    assert_eq!(
+        routed
+            .scope()
+            .call(dim_agent_runtime::SessionCall::new(
+                "questions",
+                "pendingSummary",
+                vec![]
+            ))
+            .await
+            .unwrap(),
+        Some(json!({"count": 1, "oldestAt": oldest}))
+    );
+
+    assert_ok(
+        &observer
+            .rpc("session.attach", json!({"sessionId":sid}))
+            .await,
+    );
+    assert_ok(&observer.rpc("session.question.respond", json!({
+        "sessionId":sid,"branchId":"main","requestId":request_id,"callId":call_id,"declined":true
+    })).await);
+    let page = observer.rpc("session.catalog", json!({})).await;
+    let row = &page["result"]["sessions"][0];
+    assert_eq!(row["pendingQuestionCount"], 0);
+    assert!(row.get("lastAttentionAt").is_none());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// Acceptance 1, 4 and 8 on the wire: the method is listed for the Session,
 /// rejected answers keep the call waiting, the first answer is the call's
 /// result and a second finds nothing; the batch's `step/tool-result` carries

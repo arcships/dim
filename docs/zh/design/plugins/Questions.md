@@ -66,6 +66,8 @@ flowchart LR
 
 ## 2. 数据与状态
 
+Session 数据面 `questions.pendingSummary()` 返回所有分支中仍可回答的 `ask_user` 调用数（`count`），以及最早一次登记的 Unix 毫秒时间（`oldestAt`，没有待回答调用时省略）。一次调用无论有几道题都只计一次。提交回答、拒答或释放该调用的登记后，它立即从摘要中移除。
+
 ```mermaid
 stateDiagram-v2
   [*] --> claimed: Loop 调用 claim，在追加 step/tool-call 之前
