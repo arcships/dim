@@ -370,9 +370,9 @@ test("explicitly disabled attachments leave the clipboard's native paste behavio
   assert(!all(root).some((element) => element.type === "img"))
 })
 
-test("schedule commands navigate only when admitted and not escaped", async t => {
+test("schedule commands navigate only when admitted and not escaped as literal", async t => {
   for (const command of ["/schedule", "/scheduled"]) {
-    for (const [admitted, escaped] of [[true, false], [true, true], [false, false]]) {
+    for (const [admitted, escaped] of [[true, false], [false, false], [false, true]]) {
       const { root, submissions } = mount(t, "main", [], undefined, { connection: { supports: method => admitted && method === "schedule.list" } })
       const field = all(root).find(element => element.type === "textarea")
       field.props.onFocus()
