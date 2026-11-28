@@ -9,8 +9,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, Names, QueryComparison, QueryFilter,
     QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Timeline,
-    TimelineContext, TimelineQuery, TimelineQueryScope,
-};
+    TimelineContext, TimelineQuery, TimelineQueryScope, BranchLifecycle};
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -250,7 +249,7 @@ pub struct ToolExecutorPlugin {
     dispatcher: Key<Dispatcher>,
     binding: Key<ToolBinding>,
     approval: Key<Approval>,
-    identity: Key<TimelineContext>,
+    lifecycle: Key<BranchLifecycle>,
 }
 impl ToolExecutorPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
@@ -261,7 +260,7 @@ impl ToolExecutorPlugin {
             dispatcher: names.key()?,
             binding: names.key()?,
             approval: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
         })
     }
 }
@@ -283,9 +282,7 @@ impl DynPlugin for ToolExecutorPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let binding = ctx.require_at(&self.binding)?;
             let approval = ctx.require_at(&self.approval)?;
-            let identity = ctx
-                .get_at::<TimelineContext>(&self.identity)
-                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let emit_progress = self.emit_progress;
             let service = Arc::new(ToolExecutor {
                 state: Mutex::new(ToolState::default()),
@@ -394,7 +391,7 @@ impl DynPlugin for ToolExecutorPlugin {
                         state.current_context = Some(ToolExecutionContext {
                             turn_id: batch.turn_id.clone(),
                             request_id: batch.request_id.clone(),
-                            branch_id: identity.branch_id().clone(),
+                            branch_id: lifecycle.branch_id().clone(),
                         });
                         let batch = batch.clone();
                         let call_event_id = event.id.clone();
@@ -428,7 +425,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                     let timeline = timeline.clone();
                                     let cancel = cancel.clone();
                                     let event_id = call_event_id.clone();
-                                    let session_id = identity.session_id().clone();
+                                    let session_id = lifecycle.session_id().clone();
                                     let segment = segment_of[index];
                                     let turn = turn.clone();
                                     let mut barrier = std::mem::replace(
@@ -438,7 +435,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                     let context = ToolExecutionContext {
                                         turn_id: batch.turn_id.clone(),
                                         request_id: batch.request_id.clone(),
-                                        branch_id: identity.branch_id().clone(),
+                                        branch_id: lifecycle.branch_id().clone(),
                                     };
                                     async move {
                                         // Releases this call's step on every exit:

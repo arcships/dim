@@ -13,8 +13,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, ModelProgress, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, StateCell, Timeline, TimelineContext, TimelineQuery, TimelineQueryScope,
-};
+    QueryValue, StateCell, Timeline, TimelineContext, TimelineQuery, TimelineQueryScope, BranchLifecycle};
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::Ctx;
@@ -134,8 +133,8 @@ impl ModelProvider {
                     Box::new(facts)
                 });
                 tracing::error!(
-                    session_id = %self.identity.session_id(),
-                    branch_id = %self.identity.branch_id(),
+                    session_id = %self.lifecycle.session_id(),
+                    branch_id = %self.lifecycle.branch_id(),
                     turn_id = %turn_id,
                     request_id = %request_id,
                     provider_id = %provider_id,
@@ -487,8 +486,8 @@ impl ModelProvider {
     ) -> dim_agent_runtime::Result<()> {
         let span = tracing::info_span!(
             "model.invoke",
-            session_id = %self.identity.session_id(),
-            branch_id = %self.identity.branch_id(),
+            session_id = %self.lifecycle.session_id(),
+            branch_id = %self.lifecycle.branch_id(),
             turn_id = %call.turn_id,
             request_id = %call.request_id,
             outcome = tracing::field::Empty,
@@ -631,7 +630,7 @@ pub struct ModelProviderPlugin {
     resolver: Option<Key<ProviderConnectionResolver>>,
     /// Optional process service, read at load without gating standalone hosts.
     files: Option<Key<SessionFiles>>,
-    identity: Key<TimelineContext>,
+    lifecycle: Key<BranchLifecycle>,
 }
 impl ModelProviderPlugin {
     /// Requests run on the local connection.
@@ -655,7 +654,7 @@ impl ModelProviderPlugin {
                 .registered::<SessionFiles>()
                 .then(|| names.key())
                 .transpose()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
         })
     }
 }
@@ -684,9 +683,7 @@ impl DynPlugin for ModelProviderPlugin {
                 None => None,
             };
             let files = self.files.as_ref().and_then(|key| ctx.get_at(key));
-            let identity = ctx
-                .get_at::<TimelineContext>(&self.identity)
-                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let service = Arc::new(ModelProvider {
                 state: Mutex::new(ModelState::default()),
                 tasks: TaskTracker::new(),

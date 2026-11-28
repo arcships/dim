@@ -342,6 +342,8 @@ pub enum OpeningKind {
 #[derive(Clone)]
 pub struct BranchLifecycle {
     phases: Phases<BranchPhase>,
+    session_id: String,
+    branch_id: String,
 }
 
 /// One branch opening's receipt collection and budget, a private key of the
@@ -412,10 +414,24 @@ impl BranchOpening {
 
 #[service]
 impl BranchLifecycle {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(session_id: String, branch_id: String) -> Self {
         Self {
             phases: Phases::new(),
+            session_id,
+            branch_id,
         }
+    }
+    /// The Session this branch belongs to. Rust-only: a part that needs the
+    /// ids reads them here instead of taking a `TimelineContext`, which the
+    /// branch's own timeline row provides only after the parts are assembled.
+    #[service(skip)]
+    pub fn session_id(&self) -> String {
+        self.session_id.clone()
+    }
+    /// This branch's id, which is its line id.
+    #[service(skip)]
+    pub fn branch_id(&self) -> String {
+        self.branch_id.clone()
     }
     #[service(skip)]
     pub fn phase(&self) -> BranchPhase {

@@ -979,6 +979,13 @@ pub struct InputWrite {
 // (arcships/rutis#463).
 #[rutis::service]
 impl TimelineContext {
+    /// This line's identity as data, for parts in other languages.
+    pub fn identity(&self) -> TimelineIdentity {
+        TimelineIdentity {
+            session_id: self.session_id(),
+            branch_id: self.branch_id(),
+        }
+    }
     /// The Session this line belongs to.
     pub fn session_id(&self) -> String {
         self.line.timeline.key().session_id.clone()

@@ -1413,17 +1413,11 @@ impl DynPlugin for BranchScopePlugin {
             let dispatcher = Dispatcher::new(scope.instance, owner.sequence, timeline.clone());
             ctx.provide_at(scope.key::<Timeline>(), Arc::new(timeline.clone()))?;
             ctx.provide_at(scope.key::<Dispatcher>(), Arc::new(dispatcher.clone()))?;
-            let lifecycle = BranchLifecycle::new();
+            let lifecycle =
+                BranchLifecycle::new(session.id.clone(), owner.id.clone());
             ctx.provide_at(scope.key::<BranchLifecycle>(), Arc::new(lifecycle.clone()))?;
             let opening = BranchOpening::new(session.assembly.startup_timeout);
             ctx.provide_at(scope.key::<BranchOpening>(), Arc::new(opening.clone()))?;
-            ctx.provide_at(
-                scope.key::<TimelineIdentity>(),
-                Arc::new(TimelineIdentity {
-                    session_id: session.id.clone(),
-                    branch_id: owner.id.clone(),
-                }),
-            )?;
             *owner.loaded.lock().unwrap() = Some(Arc::new(LoadedBranch {
                 scope: Loaded {
                     ctx: ctx.clone(),
