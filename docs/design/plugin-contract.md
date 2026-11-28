@@ -117,7 +117,7 @@ Dim service names follow the identity and shape rules in [rutis usage §3](rutis
 | `agentConfig` | `session` | SessionScope | yes | `get()`: the Agent's identity and default model |
 | `timeline` | `branch` | BranchScope | yes, except `before` | `append`, the published sequence and the event query (§5.4); the query reaches other languages with its declaration |
 | `dispatcher` | `branch` | BranchScope | yes, `consume`, `listen` and reads; their Rust forms are the same `consume` and `subscribe`, which is Rust-only | Ordered consumption (§5.2) |
-| `branchLifecycle` | `branch` | BranchScope | yes | `activated`, `closing`. `registerOpening` registers work that branch opening waits for. |
+| `branchLifecycle` | `branch` | BranchScope | yes | `activated`, `closing`. Opening receipts are Rust-only: the branch-private `BranchOpening` key is not a service name. |
 | `timelineIdentity` | `branch` | BranchScope | yes | `{sessionId, branchId}` |
 
 Rust host ports and registries get names and scopes in phase 2. Their public contract follows

@@ -140,6 +140,17 @@ transfer limit fails the call and rejects the promise. The
 states the callback's delivery and rejection behaviour. There is no App Server
 protocol, event or persistence-format change.
 
+## Branch opening hook compatibility
+
+`BranchLifecycle.registerOpening` is removed from the `dimcode/plugin`
+declarations and the runtime's dispatch surface, without a cross-language
+replacement. A TypeScript plugin that registered an opening receipt fails
+with TS2339; remove the call. `activated()` is not a replacement: it resolves
+after the branch is published, too late to delay or refuse the opening.
+Pre-publication opening receipts are Rust-only: an in-process Rust part
+injects the branch-private `BranchOpening` key. The client protocol, events
+and persistence format are unchanged.
+
 ## File access
 
 Under `read-only` and `workspace-write`, a file tool read (`read`, `grep` or `glob`) whose

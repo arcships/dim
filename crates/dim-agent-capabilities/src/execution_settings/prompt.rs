@@ -12,7 +12,8 @@ use crate::{
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{
-    BranchLifecycle, BranchPhase, Dispatcher, Names, OpeningKind, PartRegistry, PartScope, Timeline,
+    BRANCH_GROUP, BranchLifecycle, BranchOpening, BranchPhase, Dispatcher, Names, OpeningKind,
+    PartRegistry, PartScope, Timeline,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -221,6 +222,7 @@ struct SettingsSnapshotBranch {
     host: Key<ExecutionSettingsHost>,
     timeline: Key<Timeline>,
     phase: Key<BranchLifecycle>,
+    opening: Key<BranchOpening>,
     dispatcher: Key<Dispatcher>,
 }
 impl SettingsSnapshotBranch {
@@ -229,6 +231,7 @@ impl SettingsSnapshotBranch {
             host: names.key()?,
             timeline: names.key()?,
             phase: names.key()?,
+            opening: Key::of().instance(names.instance(BRANCH_GROUP)?),
             dispatcher: names.key()?,
         })
     }
@@ -242,6 +245,7 @@ impl DynPlugin for SettingsSnapshotBranch {
             self.host.erase(),
             self.timeline.erase(),
             self.phase.erase(),
+            self.opening.erase(),
             self.dispatcher.erase(),
         ]
     }
@@ -250,6 +254,7 @@ impl DynPlugin for SettingsSnapshotBranch {
             let host = ctx.require_at(&self.host)?;
             let timeline = ctx.require_at(&self.timeline)?;
             let phase = ctx.require_at(&self.phase)?;
+            let opening = ctx.require_at(&self.opening)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let wake = Arc::new(Notify::new());
             let listener_wake = wake.clone();
@@ -263,19 +268,19 @@ impl DynPlugin for SettingsSnapshotBranch {
             let lifecycle = ctx.cancellation_token();
             let tasks = TaskTracker::new();
             let shared = Arc::new(std::sync::Mutex::new((None, true)));
-            let opening_budget = phase.opening_budget();
+            let opening_budget = opening.budget();
             if phase.phase() == BranchPhase::Loading {
                 let host = host.clone();
                 let timeline = timeline.clone();
                 let dispatcher = dispatcher.clone();
                 let lifecycle = lifecycle.clone();
                 let shared = shared.clone();
-                let registered = phase.admit_opening_with(Box::new(move |opening| {
+                let registered = opening.admit_with(Box::new(move |kind| {
                     Box::pin(async move {
                         // A child line's identity input is written after the
                         // opening seals, so this receipt leaves the snapshot to
                         // the published line instead of appending ahead of it.
-                        if opening == OpeningKind::Child {
+                        if kind == OpeningKind::Child {
                             return Ok(());
                         }
                         // A retired part's receipt stays registered while the

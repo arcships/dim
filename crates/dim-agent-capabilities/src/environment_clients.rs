@@ -8,8 +8,8 @@ use crate::{
     context_block,
 };
 use dim_agent_runtime::{
-    BranchLifecycle, BranchPhase, Dispatcher, Names, OpeningKind, PartRegistry, PartScope,
-    SessionIdentity, Timeline,
+    BRANCH_GROUP, BranchLifecycle, BranchOpening, BranchPhase, Dispatcher, Names, OpeningKind,
+    PartRegistry, PartScope, SessionIdentity, Timeline,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -214,6 +214,7 @@ struct ClientsBranchPlugin {
     identity: Key<SessionIdentity>,
     timeline: Key<Timeline>,
     phase: Key<BranchLifecycle>,
+    opening: Key<BranchOpening>,
     dispatcher: Key<Dispatcher>,
 }
 impl ClientsBranchPlugin {
@@ -223,6 +224,7 @@ impl ClientsBranchPlugin {
             identity: names.key()?,
             timeline: names.key()?,
             phase: names.key()?,
+            opening: Key::of().instance(names.instance(BRANCH_GROUP)?),
             dispatcher: names.key()?,
         })
     }
@@ -237,6 +239,7 @@ impl DynPlugin for ClientsBranchPlugin {
             self.identity.erase(),
             self.timeline.erase(),
             self.phase.erase(),
+            self.opening.erase(),
             self.dispatcher.erase(),
         ]
     }
@@ -246,6 +249,7 @@ impl DynPlugin for ClientsBranchPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let timeline = ctx.require_at(&self.timeline)?;
             let phase = ctx.require_at(&self.phase)?;
+            let opening = ctx.require_at(&self.opening)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let wake = Arc::new(Notify::new());
             let listener_wake = wake.clone();
@@ -267,12 +271,12 @@ impl DynPlugin for ClientsBranchPlugin {
                 let session = session.clone();
                 let lifecycle = lifecycle.clone();
                 let last = last.clone();
-                let registered = phase.admit_opening_with(Box::new(move |opening| {
+                let registered = opening.admit_with(Box::new(move |kind| {
                     Box::pin(async move {
                         // A child line's identity input is written after the
                         // opening seals, so this receipt leaves the snapshot to
                         // the published line instead of appending ahead of it.
-                        if opening == OpeningKind::Child {
+                        if kind == OpeningKind::Child {
                             return Ok(());
                         }
                         let current = snapshot(

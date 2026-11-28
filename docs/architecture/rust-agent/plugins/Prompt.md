@@ -21,6 +21,7 @@ The publisher receives explicit adopted state instead of rebuilding history.
 | `S:PromptHost` | Load named prompt sources. |
 | `S:InitialPromptConfiguration` | Initial source/model selection. |
 | `B:BranchLifecycle` | Coordinate opening and closing. |
+| `B:BranchOpening` | Queue the initial adoption receipt the opening waits for. |
 | `B:TimelineIdentity` | Session and branch ids of the `prompt.load` span. |
 | `B:Dispatcher` | Order configuration adoption and state projection. |
 | `B:Timeline` | Write controls and query adopted prompt/configuration properties. |

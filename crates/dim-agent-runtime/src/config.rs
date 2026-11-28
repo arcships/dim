@@ -330,47 +330,84 @@ pub enum OpeningKind {
 #[derive(Clone)]
 pub struct BranchLifecycle {
     phases: Phases<BranchPhase>,
+}
+
+/// One branch opening's receipt collection and budget, a private key of the
+/// branch instance: assembly provides it and only in-process Rust parts
+/// register completions with it, so it is not a service name. The branch's
+/// [`crate::TimelineContext`] seals it once the opening event is in place and
+/// hands every receipt the [`OpeningKind`] the branch's owner wrote.
+#[derive(Clone)]
+pub struct BranchOpening {
     opening: Arc<Mutex<Option<Vec<OpeningCompletion>>>>,
     /// The inactivity budget this branch's opening is given.
     opening_budget: std::time::Duration,
 }
-type OpeningReceipt = rutis::host::BoxFuture<'static, crate::Result<()>>;
+/// A receipt the opening waits for, answering with the typed failure.
+pub type OpeningReceipt = rutis::host::BoxFuture<'static, crate::Result<()>>;
 /// A registered receipt, which the opening calls with the kind its owner wrote
 /// once the opening event is in place.
-type OpeningCompletion = Box<dyn FnOnce(OpeningKind) -> OpeningReceipt + Send>;
+pub type OpeningCompletion = Box<dyn FnOnce(OpeningKind) -> OpeningReceipt + Send>;
 
-#[service]
-impl BranchLifecycle {
+impl BranchOpening {
     pub(crate) fn new(opening_budget: std::time::Duration) -> Self {
         Self {
-            phases: Phases::new(),
             opening: Arc::new(Mutex::new(Some(Vec::new()))),
             opening_budget,
         }
     }
-    /// Registers a completion for the current branch opening. Once opening seals,
-    /// registration fails. A failed completion fails the opening.
-    pub fn register_opening(
-        &self,
-        completion: Arc<
-            dyn Fn() -> rutis::host::BoxFuture<'static, std::result::Result<(), rutis::Error>>
-                + Send
-                + Sync,
-        >,
-    ) -> std::result::Result<(), crate::AgentError> {
-        self.admit_opening(Box::pin(async move { Ok(completion().await?) }))
-    }
-
-    #[service(skip)]
-    pub fn phase(&self) -> BranchPhase {
-        self.phases.get()
-    }
     /// The inactivity budget of this branch's opening: a receipt that waits
     /// for an outside source bounds that wait inside it, so the wait cannot
     /// outlast the opening.
-    #[service(skip)]
-    pub fn opening_budget(&self) -> std::time::Duration {
+    pub fn budget(&self) -> std::time::Duration {
         self.opening_budget
+    }
+    /// Registers a receipt that [`OpeningKind`] is handed to, so it decides
+    /// from the kind the branch's owner wrote rather than from a read of the
+    /// line's Timeline. Once opening seals, registration fails. A failed
+    /// receipt fails the opening.
+    pub fn admit_with(&self, completion: OpeningCompletion) -> crate::Result<()> {
+        let mut receipts = self.opening.lock().unwrap();
+        receipts
+            .as_mut()
+            .ok_or_else(|| crate::AgentError::Closed("branch opening".into()))?
+            .push(completion);
+        Ok(())
+    }
+    /// [`Self::admit_with`] for a receipt that does not decide from the kind.
+    pub fn admit(&self, receipt: OpeningReceipt) -> crate::Result<()> {
+        self.admit_with(Box::new(|_| receipt))
+    }
+    pub(crate) async fn finish(
+        &self,
+        ctx: &rutis::Ctx,
+        scope: rutis::host::PluginId,
+        opening: OpeningKind,
+    ) -> crate::Result<()> {
+        use futures_util::{StreamExt, stream::FuturesUnordered};
+        let receipts = self.opening.lock().unwrap().take().unwrap_or_default();
+        let mut pending: FuturesUnordered<_> = receipts
+            .into_iter()
+            .map(|receipt| receipt(opening))
+            .collect();
+        while let Some(result) = pending.next().await {
+            result?;
+            ctx.emit(crate::assembly::OpeningAdvanced::Plugin(scope))?;
+        }
+        Ok(())
+    }
+}
+
+#[service]
+impl BranchLifecycle {
+    pub(crate) fn new() -> Self {
+        Self {
+            phases: Phases::new(),
+        }
+    }
+    #[service(skip)]
+    pub fn phase(&self) -> BranchPhase {
+        self.phases.get()
     }
     #[service(skip)]
     pub fn watch(&self) -> tokio::sync::watch::Receiver<BranchPhase> {
@@ -393,41 +430,6 @@ impl BranchLifecycle {
     }
     pub(crate) fn advance(&self, next: BranchPhase) {
         self.phases.advance(next);
-    }
-}
-
-impl BranchLifecycle {
-    /// Registers a receipt that [`OpeningKind`] is handed to, so it decides
-    /// from the kind the branch's owner wrote rather than from a read of the
-    /// line's Timeline.
-    pub fn admit_opening_with(&self, completion: OpeningCompletion) -> crate::Result<()> {
-        let mut receipts = self.opening.lock().unwrap();
-        receipts
-            .as_mut()
-            .ok_or_else(|| crate::AgentError::Closed("branch opening".into()))?
-            .push(completion);
-        Ok(())
-    }
-    pub fn admit_opening(&self, receipt: OpeningReceipt) -> crate::Result<()> {
-        self.admit_opening_with(Box::new(|_| receipt))
-    }
-    pub(crate) async fn finish_opening(
-        &self,
-        ctx: &rutis::Ctx,
-        scope: rutis::host::PluginId,
-        opening: OpeningKind,
-    ) -> crate::Result<()> {
-        use futures_util::{StreamExt, stream::FuturesUnordered};
-        let receipts = self.opening.lock().unwrap().take().unwrap_or_default();
-        let mut pending: FuturesUnordered<_> = receipts
-            .into_iter()
-            .map(|receipt| receipt(opening))
-            .collect();
-        while let Some(result) = pending.next().await {
-            result?;
-            ctx.emit(crate::assembly::OpeningAdvanced::Plugin(scope))?;
-        }
-        Ok(())
     }
 }
 
