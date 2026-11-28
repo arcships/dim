@@ -57,6 +57,8 @@ struct Fixture {
     observe_entered: Notify,
     observe_resume: Notify,
     empty_catalog: AtomicBool,
+    /// The service tier the fixture's catalog states for its model.
+    service_tier: Mutex<Option<dim_app_server::model_catalog::ModelServiceTier>>,
     /// The account transitions this provider reports, when it reports them.
     watch: Mutex<Option<watch::Sender<Option<bool>>>>,
     /// Account reads, which an installed watch must make unnecessary.
@@ -230,15 +232,18 @@ impl ManagedProvider for Provider {
     }
     fn catalog(&self, _: &str, _: CancellationToken) -> ManagedFuture<ManagedCatalog> {
         let empty = self.0.empty_catalog.load(Ordering::SeqCst);
+        let service_tier = self.0.service_tier.lock().unwrap().clone();
         Box::pin(async move {
             let models = if empty {
                 vec![]
             } else {
+                let mut entry = dim_app_server::model_catalog::BundledCatalog::load()
+                    .unwrap()
+                    .model("deepseek", "deepseek-v4-flash")
+                    .unwrap();
+                entry.metadata.get_or_insert_default().service_tier = service_tier;
                 vec![dim_app_server::managed_provider::ManagedModel {
-                    entry: dim_app_server::model_catalog::BundledCatalog::load()
-                        .unwrap()
-                        .model("deepseek", "deepseek-v4-flash")
-                        .unwrap(),
+                    entry,
                     protocol: ModelProtocol::OpenaiCompatible,
                     unavailable_reason: None,
                     zdr: false,
@@ -1017,4 +1022,112 @@ async fn model_pages_survive_refresh_removal_and_an_unbound_empty_account() {
     })
     .await
     .expect("model page operations settle across refresh and unbind");
+}
+
+/// An account catalog's service-tier declaration is a capability too: a
+/// supported declaration with no options reads as unavailable, and the
+/// preference write refuses every tier of it (#2248).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_account_catalogs_service_tier_states_only_a_usable_set() {
+    use dim_app_server::model_catalog::ModelServiceTier;
+    use dim_app_server::provider::{ProviderError, ProviderPlugin, ProviderService};
+
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().canonicalize().unwrap();
+        let (root, fixture, _, _) = setup().await;
+        let catalog = dim_app_server::catalog();
+        let build = rutis_loader::resolve::Build::default();
+        let names = dim_agent_runtime::Names::copy(&catalog, &build);
+        let dependencies = [
+            root.plugin(
+                dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![home.clone()]),
+            ),
+            root.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
+                home.join("native.sqlite"),
+            )),
+            root.plugin(
+                dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names, 0).unwrap(),
+            ),
+            root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, 0).unwrap()),
+            root.plugin(dim_agent_aimux::AimuxPlugin::default()),
+        ];
+        for dependency in &dependencies {
+            active(dependency).await;
+        }
+        active(&root.plugin(ProviderPlugin::new(&names).unwrap())).await;
+        let provider = root.get::<ProviderService>().unwrap();
+        let cancel = CancellationToken::new();
+        let tier = |provider: &Arc<ProviderService>, id: &str, cancel: &CancellationToken| {
+            let model = provider.clone();
+            let id = id.to_owned();
+            let cancel = cancel.clone();
+            async move {
+                let management = model
+                    .management("fixture".into(), Some(id.clone()), &cancel)
+                    .await
+                    .unwrap();
+                let entry = &management.providers[0].models.as_ref().unwrap()[0];
+                serde_json::to_value(entry.model.metadata.as_ref().unwrap().service_tier.as_ref())
+                    .unwrap()
+            }
+        };
+
+        *fixture.service_tier.lock().unwrap() = Some(ModelServiceTier {
+            supported: true,
+            default: None,
+            options: Vec::new(),
+        });
+        let catalog = provider.refresh("fixture".into(), &cancel).await.unwrap();
+        let id = catalog.models[0].id.clone();
+        assert_eq!(
+            tier(&provider, &id, &cancel).await,
+            json!({"supported": false}),
+            "an account declaration with no options states no capability"
+        );
+        let refused = provider
+            .update_preferences(
+                "fixture".into(),
+                catalog.version,
+                id.clone(),
+                serde_json::from_value(json!({"serviceTier":{"action":"set","value":"default"}}))
+                    .unwrap(),
+                &cancel,
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(ProviderError::InvalidConfig(_))),
+            "no tier is offered: {refused:?}"
+        );
+
+        *fixture.service_tier.lock().unwrap() = Some(ModelServiceTier {
+            supported: true,
+            default: Some("flex".into()),
+            options: vec!["priority".into(), "flex".into()],
+        });
+        let catalog = provider.refresh("fixture".into(), &cancel).await.unwrap();
+        assert_eq!(
+            tier(&provider, &id, &cancel).await,
+            json!({"supported": true, "default": "flex", "options": ["priority", "flex"]}),
+            "the declared default is kept because it is one of the options"
+        );
+        let accepted = provider
+            .update_preferences(
+                "fixture".into(),
+                catalog.version,
+                id.clone(),
+                serde_json::from_value(json!({"serviceTier":{"action":"set","value":"priority"}}))
+                    .unwrap(),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted.preferences[&id].service_tier.as_deref(),
+            Some("priority")
+        );
+        root.shutdown().await.unwrap();
+    })
+    .await
+    .expect("the account catalog's service tier settles");
 }

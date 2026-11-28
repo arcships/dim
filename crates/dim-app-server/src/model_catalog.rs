@@ -99,7 +99,7 @@ impl ModelEntry {
     /// The entry as a catalog read serves it: its service-tier declaration
     /// states a usable set or no capability at all. Identification fills a
     /// declaration that lists no options first, so this runs after a merge.
-    fn resolve_service_tier(&mut self) {
+    pub(crate) fn resolve_service_tier(&mut self) {
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.service_tier = metadata.service_tier.take().map(ModelServiceTier::usable);
         }
