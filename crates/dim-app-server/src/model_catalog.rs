@@ -586,13 +586,12 @@ impl BundledCatalog {
             let strategy = found_lookup.strategy;
             let score = found_lookup.score;
             entry = merge_entry(entry, &found, &explicit);
+            entry.capabilities.modalities = effective_modalities(
+                declared_modalities(input),
+                &found.capabilities.modalities,
+                input.get("vision").and_then(Value::as_bool),
+            );
             let declared = input.get("capabilities").and_then(Value::as_object);
-            if input.get("modalities").is_none()
-                && input.get("vision") != Some(&Value::Bool(true))
-                && declared.is_none_or(|value| !value.contains_key("modalities"))
-            {
-                entry.capabilities.modalities = found.capabilities.modalities.clone();
-            }
             macro_rules! inherit_capability {
                 ($json:literal, $field:ident) => {
                     if input.get($json).is_none()
@@ -1062,20 +1061,17 @@ fn descriptor_entry(
     if let Some(v) = capabilities {
         apply_capabilities(&mut caps, v);
     }
-    if let Some(values) = input.get("modalities").and_then(Value::as_array) {
-        caps.modalities = strings(values);
-    }
     if let Some(v) = input.get("toolCalling").and_then(Value::as_bool) {
         caps.tool_calling = v;
     }
     if let Some(v) = input.get("vision").and_then(Value::as_bool) {
         caps.vision = v;
-        if v && input.get("modalities").is_none()
-            && capabilities.is_none_or(|c| !c.contains_key("modalities"))
-        {
-            caps.modalities = vec!["text".into(), "image".into()];
-        }
     }
+    caps.modalities = effective_modalities(
+        declared_modalities(input),
+        &[],
+        input.get("vision").and_then(Value::as_bool),
+    );
     if let Some(r) = &reasoning {
         caps.reasoning = r.supported;
     }
@@ -1309,6 +1305,48 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
         context.into_iter().find_map(|value| positive(Some(value))),
         output.into_iter().find_map(|value| positive(Some(value))),
     )
+}
+
+/// The input modalities a model descriptor declares, or `None` when it
+/// declares none. A listing that writes `modalities: []` has not said the model
+/// reads nothing: the empty array is the undeclared value, so the identified
+/// row and the descriptor's `vision` flag decide instead (#1980). The
+/// descriptor's own array wins over the nested `capabilities` one.
+pub fn declared_modalities(input: &Map<String, Value>) -> Option<Vec<String>> {
+    let declared = input
+        .get("modalities")
+        .and_then(Value::as_array)
+        .or_else(|| {
+            input
+                .get("capabilities")
+                .and_then(|capabilities| capabilities.get("modalities"))
+                .and_then(Value::as_array)
+        })?;
+    let modalities = strings(declared);
+    (!modalities.is_empty()).then_some(modalities)
+}
+
+/// The input modalities an entry ends up declaring (#1980). A descriptor's
+/// non-empty array is its own statement and stays. Otherwise the identified
+/// row's set applies, and only a model no row declares takes the set its
+/// `vision` flag implies: `["text", "image"]` when it accepts images and
+/// `["text"]` otherwise.
+pub fn effective_modalities(
+    declared: Option<Vec<String>>,
+    bundled: &[String],
+    vision: Option<bool>,
+) -> Vec<String> {
+    if let Some(declared) = declared {
+        return declared;
+    }
+    if !bundled.is_empty() {
+        return bundled.to_vec();
+    }
+    if vision == Some(true) {
+        vec!["text".into(), "image".into()]
+    } else {
+        vec!["text".into()]
+    }
 }
 
 /// Marks the capability edits a legacy stored override cannot help but
@@ -1777,9 +1815,6 @@ fn pricing(raw: &Map<String, Value>) -> Option<ModelPricing> {
     })
 }
 fn apply_capabilities(c: &mut CatalogCapabilities, m: &Map<String, Value>) {
-    if let Some(a) = m.get("modalities").and_then(Value::as_array) {
-        c.modalities = strings(a)
-    }
     macro_rules! b {
         ($j:literal,$f:ident) => {
             if let Some(v) = m.get($j).and_then(Value::as_bool) {

@@ -330,15 +330,17 @@ fn project(
     if let Some(value) = output.first() {
         descriptor.insert("maxOutputTokens".into(), (*value).clone());
     }
-    if let Some(modalities) = item.get("modalities").and_then(|value| value.get("input")) {
-        descriptor.insert("modalities".into(), modalities.clone());
+    // An empty `modalities.input` states nothing about the model's input, the
+    // same way an empty descriptor `modalities` array does (#1980), so the
+    // listing writes neither the set nor a `vision` flag it would infer.
+    if let Some(Value::Array(modalities)) =
+        item.get("modalities").and_then(|value| value.get("input"))
+        && !modalities.is_empty()
+    {
+        descriptor.insert("modalities".into(), Value::Array(modalities.clone()));
         descriptor.insert(
             "vision".into(),
-            Value::Bool(
-                modalities
-                    .as_array()
-                    .is_some_and(|values| values.iter().any(|v| v == "image")),
-            ),
+            Value::Bool(modalities.iter().any(|v| v == "image")),
         );
     }
     bundled

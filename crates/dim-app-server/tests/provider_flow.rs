@@ -1557,6 +1557,36 @@ async fn a_listings_reasoning_levels_become_the_models_efforts() {
     listing.close().await;
 }
 
+/// A listing that writes an empty `modalities.input` states nothing about the
+/// model's input, so the row the id identifies keeps its declaration instead
+/// of the empty array overwriting it (#1980).
+#[tokio::test]
+async fn an_empty_listing_modalities_input_keeps_the_identified_rows_declaration() {
+    let listing = ServedListing::refreshed(json!([
+        {"id":"gpt-5.5","modalities":{"input":[]}},
+        {"id":"zzzz-unlisted","modalities":{"input":[]}},
+        {"id":"zzzz-listed-text","modalities":{"input":["text"]}}
+    ]))
+    .await;
+    let model = |id: &str| {
+        listing
+            .catalog
+            .models
+            .iter()
+            .find(|model| model.id == id)
+            .unwrap()
+    };
+    assert!(model("gpt-5.5").capabilities.vision);
+    assert_eq!(model("gpt-5.5").capabilities.modalities, ["text", "image"]);
+    // No row declares this one, so it reads as the text-only model it is.
+    assert_eq!(model("zzzz-unlisted").capabilities.modalities, ["text"]);
+    assert!(!model("zzzz-unlisted").capabilities.vision);
+    // An explicit non-empty array stays authoritative.
+    assert_eq!(model("zzzz-listed-text").capabilities.modalities, ["text"]);
+    assert!(!model("zzzz-listed-text").capabilities.vision);
+    listing.close().await;
+}
+
 /// A listing's `supported_reasoning_levels` is the model's effort list the
 /// same way, from each item's `effort`.
 #[tokio::test]

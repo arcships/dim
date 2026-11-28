@@ -994,6 +994,16 @@ declare the limit itself. Probe, refresh and creation store only declared values
 and `models.reset` returns a model to its discovery result; when that result
 declares nothing, the model is undeclared again.
 
+A model's input modalities are resolved by one rule, whichever source the
+descriptor comes from: a listing, a user's descriptor, or the managed account
+catalog's own listing. An empty `modalities` array states nothing, so the
+identified row's non-empty set applies and the array never narrows a declaration
+the row makes. A descriptor that states no modalities and identifies no row takes
+`["text", "image"]` when it states `vision: true` and `["text"]` otherwise. An
+explicit non-empty array is the descriptor's own statement and stays. The rule
+covers the nested `capabilities.modalities` array, and a listing's
+`modalities.input` array states no `vision` flag either when it is empty (#1980).
+
 Format v24 stored what a client supplied without a mark, and its probe filled
 each missing field with the assumed pair (128000 context, 16384 output). The
 format upgrade and both legacy importers therefore decide each field of a user
