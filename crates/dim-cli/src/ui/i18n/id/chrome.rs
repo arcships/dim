@@ -327,8 +327,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "File",
         "Searching…" => "Mencari…",
-        "type filter · enter select · esc clear/close" => {
-            "ketik filter · enter pilih · esc hapus/tutup"
+        "type filter · enter select · esc back · closes at /" => {
+            "ketik filter · enter pilih · esc kembali · tutup di /"
         }
         "↑↓ select · enter/tab insert · esc close" => {
             "↑↓ pilih · enter/tab sisip · esc tutup"

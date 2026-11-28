@@ -305,8 +305,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "파일",
         "Searching…" => "검색 중…",
-        "type filter · enter select · esc clear/close" => {
-            "필터 입력 · enter 선택 · esc 지우기/닫기"
+        "type filter · enter select · esc back · closes at /" => {
+            "필터 입력 · enter 선택 · esc 뒤로 · / 에서 닫기"
         }
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 선택 · enter/tab 삽입 · esc 닫기",
         "not sent to the model" => "모델에 전송 안 됨",

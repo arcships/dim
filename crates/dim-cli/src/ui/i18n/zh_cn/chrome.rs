@@ -317,7 +317,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "文件",
         "Searching…" => "正在搜索…",
-        "type filter · enter select · esc clear/close" => "输入筛选 · Enter 选择 · Esc 清除/关闭",
+        "type filter · enter select · esc back · closes at /" => {
+            "输入筛选 · Enter 选择 · Esc 返回 · 在 / 关闭"
+        }
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 选择 · enter/tab 插入 · esc 关闭",
         "not sent to the model" => "未发送给模型",
         "… {count} more lines" => "… 还有 {count} 行",
