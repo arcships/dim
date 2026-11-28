@@ -3325,7 +3325,7 @@ impl DynPlugin for TreeTimelinePlugin {
             let commands = ctx.require_at(&self.commands)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let cleanup = commands.clone();
-            let parent = identity.branch_id.clone();
+            let parent = lifecycle.branch_id();
             ctx.effect(move || async move {
                 if let Some(tree) = cleanup.tree.upgrade() {
                     let cancelled = TimelineTree::cancel_pending(
@@ -3341,7 +3341,7 @@ impl DynPlugin for TreeTimelinePlugin {
                 "TreeTimeline",
                 &["branch/create", "branch/end", "turn/end"],
                 move |event| {
-                    let branch = &identity.branch_id;
+                    let branch = &lifecycle.branch_id();
                     let result = match &event.kind {
                         EventKind::BranchCreate(_) => commands
                             .tree
@@ -3673,7 +3673,6 @@ pub struct BranchLinePlugin {
     line: Key<BranchLine>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    lifecycle: Key<BranchLifecycle>,
     lifecycle: Key<BranchLifecycle>,
     session: Key<dim_agent_runtime::SessionLifecycle>,
     tree: Key<TreeCommands>,

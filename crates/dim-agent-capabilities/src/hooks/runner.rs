@@ -2236,7 +2236,6 @@ pub struct HooksBranchPlugin {
     approval: Key<Approval>,
     permission: Key<Permission>,
     lifecycle: Key<BranchLifecycle>,
-    lifecycle: Key<BranchLifecycle>,
     registry: Key<ToolRegistry>,
 }
 impl HooksBranchPlugin {
@@ -2247,7 +2246,6 @@ impl HooksBranchPlugin {
             dispatcher: names.key()?,
             approval: names.key()?,
             permission: names.key()?,
-            lifecycle: names.key()?,
             lifecycle: names.key()?,
             registry: names.key()?,
         })

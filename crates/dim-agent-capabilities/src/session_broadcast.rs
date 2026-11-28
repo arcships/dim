@@ -1,6 +1,6 @@
 //! Broadcasts every dispatched event of one branch on its Session channel,
 //! which also carries owners' notices about the Session's process-level state.
-use dim_agent_runtime::{Dispatcher, Names, SessionLifecycle, SessionScope, TimelineContext};
+use dim_agent_runtime::{BranchLifecycle, Dispatcher, Names, SessionLifecycle, SessionScope};
 use dim_agent_types::AgentEvent;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Event};

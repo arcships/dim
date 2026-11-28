@@ -1142,9 +1142,8 @@ pub struct ShellSessionPlugin {
     facts: Key<crate::file_access::FileAccessFacts>,
     session: Key<ShellSession>,
     host: Key<HostPlatform>,
-    lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     session_config: Key<dim_agent_runtime::SessionConfig>,
-    lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
+    branch_lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     config: Option<ShellSessionConfig>,
 }
 
@@ -1165,7 +1164,7 @@ impl ShellSessionPlugin {
             host: names.key()?,
             lifecycle: names.key()?,
             session_config: names.key()?,
-            lifecycle: names.key()?,
+            branch_lifecycle: names.key()?,
             config: None,
         })
     }
@@ -1189,7 +1188,7 @@ impl DynPlugin for ShellSessionPlugin {
             let host = ctx.require_at(&self.host)?;
             let background = ctx.require_at(&self.background)?;
             let config = ctx.require_at(&self.session_config)?;
-            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let branch_lifecycle = ctx.require_at(&self.branch_lifecycle)?;
             let owner = ctx.get::<SessionFiles>();
             let mut session = ShellSession::new(
                 self.config.clone().unwrap_or_else(|| ShellSessionConfig {
@@ -1199,12 +1198,12 @@ impl DynPlugin for ShellSessionPlugin {
                     output_dir: host
                         .home
                         .join(".dim/exec")
-                        .join(&identity.session_id)
-                        .join(&identity.branch_id),
+                        .join(&branch_lifecycle.session_id)
+                        .join(&branch_lifecycle.branch_id),
                 }),
                 host,
                 owner,
-                identity.session_id.clone(),
+                branch_lifecycle.session_id.clone(),
                 background,
             );
             session.facts = Some((ctx.clone(), self.facts.clone()));
