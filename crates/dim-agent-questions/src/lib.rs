@@ -22,7 +22,7 @@ use dim_agent_capabilities::{
         ToolClaim, ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition,
     },
 };
-use dim_agent_runtime::{AgentBuilder, CAPABILITY_RELOADING, Names, SessionConfig};
+use dim_agent_runtime::{AgentBuilder, CAPABILITY_RELOADING, Names, SessionConfig, SessionScope};
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -538,7 +538,15 @@ impl DynPlugin for QuestionsPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let config = ctx.require_at(&self.config)?;
+            let scope = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                scope
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let tools = ctx.require_at(&self.tools)?;
             let methods = ctx.require_at(&self.methods)?;
             let tree = ctx.require_at(&self.tree)?;

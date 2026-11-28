@@ -3,7 +3,7 @@ use dim_agent_capabilities::file_access::{
 };
 use dim_agent_capabilities::prompt_sources::{SessionLanguage, SessionLanguageReply};
 use dim_agent_capabilities::skills::{SkillsConfig, SkillsConfigReply};
-use dim_agent_runtime::{AgentConfig, ReplyLanguage};
+use dim_agent_runtime::{AgentConfig, ReplyLanguage, SessionScope};
 use rutis::Ctx;
 use rutis::host::CtxHost;
 use rutis_bridge::session::call_service;
@@ -169,7 +169,19 @@ impl rutis::host::DynPlugin for AgentConfigReader {
                 .unwrap()
                 .json()
                 .unwrap();
-            assert_eq!(reply, serde_json::to_value(binding.get()).unwrap());
+            // The scope answers the same data the three faces used to.
+            let description = binding.describe().expect("the Session is live");
+            assert_eq!(
+                reply,
+                serde_json::to_value(serde_json::json!({
+                    "sessionId": description.session_id,
+                    "restored": description.restored,
+                    "config": description.config,
+                    "agent": description.agent,
+                }))
+                .unwrap(),
+                "the agent config is the owner's own value"
+            );
             self.reads.fetch_add(1, Ordering::SeqCst);
             Ok(rutis::host::Effect::Done)
         })
