@@ -2001,7 +2001,8 @@ async fn the_dim_account_relay_splits_video_from_image_by_family() {
 async fn a_compatible_family_image_forwards_the_output_format_to_the_wire() {
     // The family binding builds the openai-compatible package, which forwards
     // the caller's provider options to the endpoint under the binding's own
-    // namespace: the format a job asks for reaches the request body.
+    // namespace: the format a job asks for reaches the request body under the
+    // documented wire spelling, because the package never rewrites the key.
     let dir = work_dir("family-image-format");
     let png = [PNG_HEADER, b"format-bytes"].concat();
     let reply = png.clone();
@@ -2033,8 +2034,12 @@ async fn a_compatible_family_image_forwards_the_output_format_to_the_wire() {
     );
     let body: Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(
-        body["outputFormat"], "webp",
-        "the output format the job asked for reaches the request body: {body}"
+        body["output_format"], "webp",
+        "the output format the job asked for reaches the request body under the wire spelling: {body}"
+    );
+    assert!(
+        body.get("outputFormat").is_none(),
+        "the compatible package forwards keys verbatim, so the camelCase spelling never appears: {body}"
     );
     assert_eq!(output.files.len(), 1);
     assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
@@ -2175,10 +2180,11 @@ async fn a_callers_response_format_wins_over_the_compatible_default() {
 
 #[tokio::test]
 async fn an_explicit_inline_response_format_reads_the_url_answering_gateway() {
-    // The one explicit value the binding accepts: the caller asks for inline
-    // bytes itself, and the mock is the gateway that answers URLs by default
-    // but honors the field — the default the binding would have sent anyway
-    // is the caller's own on the wire, and the image reads back.
+    // The one explicit value the binding accepts on a plain compatible
+    // route: the caller asks for inline bytes itself, and the mock is the
+    // gateway that answers URLs by default but honors the field — the
+    // default the binding would have sent anyway is the caller's own on the
+    // wire, and the image reads back.
     let dir = work_dir("family-image-caller-inline");
     let png = [PNG_HEADER, b"caller-inline-bytes"].concat();
     let reply = png.clone();
@@ -2200,7 +2206,7 @@ async fn an_explicit_inline_response_format_reads_the_url_answering_gateway() {
             &adapter,
             job(
                 created,
-                "gpt-image-2",
+                "custom-image",
                 "image",
                 "generate",
                 json!({"prompt": "a cat", "providerOptions": provider_options}),
@@ -2208,7 +2214,7 @@ async fn an_explicit_inline_response_format_reads_the_url_answering_gateway() {
                 &dir,
             ),
             "https://router.example.test/v1",
-            "gpt-image-2",
+            "custom-image",
         )
         .await
         .unwrap();
@@ -2279,6 +2285,75 @@ async fn an_inline_answering_model_id_sends_no_response_format_through_the_famil
                 "{model_id} sends no response_format: {body}"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn a_strict_gpt_image_endpoint_never_sees_response_format() {
+    // The strict GPT Image request contract: the endpoint rejects a request
+    // carrying `response_format` at all, because the prefixed models answer
+    // inline bytes without being asked. Every one of the inline-answering
+    // ids — bare or behind the vendor namespace a gateway adds — omits the
+    // field, whether the job asks for nothing or names the inline format
+    // itself in either spelling: the explicit value is redundant, so it is
+    // dropped with the default rather than forwarded into a 400.
+    let dir = work_dir("family-image-strict-gpt");
+    let png = [PNG_HEADER, b"strict-gpt-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) = scripted(move |request: &Recorded| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if body.get("response_format").is_some() {
+            return Reply {
+                status: StatusCode::BAD_REQUEST,
+                body: br#"{"error":{"message":"Unrecognized request argument: response_format"}}"#
+                    .to_vec(),
+            };
+        }
+        ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
+    });
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    let mut combinations = Vec::new();
+    for model_id in ["gpt-image-2", "chatgpt-image-1", "openai/gpt-image-2"] {
+        combinations.push((model_id, json!({})));
+        combinations.push((model_id, json!({"response_format": "b64_json"})));
+        combinations.push((
+            model_id,
+            json!({"openaiCompatible": {"response_format": "b64_json"}}),
+        ));
+    }
+    for (model_id, provider_options) in &combinations {
+        let output = run(
+            &adapter,
+            job(
+                created,
+                model_id,
+                "image",
+                "generate",
+                json!({"prompt": "a cat", "outputFormat": "webp", "providerOptions": provider_options}),
+                Vec::new(),
+                &dir,
+            ),
+            "https://router.example.test/v1",
+            model_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.files.len(), 1, "{model_id} with {provider_options}");
+        assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), combinations.len());
+    for (index, (model_id, provider_options)) in combinations.iter().enumerate() {
+        let body: Value = serde_json::from_slice(&requests[index].body).unwrap();
+        assert!(
+            body.get("response_format").is_none(),
+            "{model_id} with {provider_options} sends no response_format: {body}"
+        );
+        assert_eq!(
+            body["output_format"], "webp",
+            "the output format reaches the wire under the documented spelling: {body}"
+        );
     }
 }
 
