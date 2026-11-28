@@ -82,83 +82,104 @@ fn drive_letter(root: &Path) -> char {
 /// One stored legacy id, refused or admitted on both the creation and the
 /// fork entry. `stored` derives from the test's own output root: the drive
 /// layout and the root's real components only exist on the machine the test
-/// runs on, so nothing in the id is hardcoded.
+/// runs on, so nothing in the id is hardcoded. Creation and the fork
+/// admission each run in a fresh store, since the admitted id is written by
+/// then.
 async fn assert_shape(
     stored: impl Fn(&Path) -> String,
     candidate: &str,
     admitted_control: bool,
     why: &str,
 ) {
-    let database = Database::new();
-    let output_root = database
-        .0
-        .parent()
-        .unwrap()
-        .canonicalize()
-        .unwrap()
-        .join("command-output");
-    let stored = stored(&output_root);
-    let directory = database.0.parent().unwrap().canonicalize().unwrap();
-    let root = rutis::Ctx::root().unwrap();
-    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
-        .await
-        .unwrap();
-    let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
-    let store = SqliteTimelineStore::new(db.clone());
-    // The fork source needs no rows of its own: the refusal must precede the
-    // copy's first write, and an empty copy still exercises both chunk
-    // transactions the check rides on.
-    store
-        .create_session("source", &SessionConfig::default())
-        .await
-        .unwrap();
-    let connection = Connection::open(&database.0).unwrap();
-    let config = sessions
-        .session_config_text("source")
-        .await
-        .unwrap()
-        .unwrap();
-    seed_stored_session(&connection, &stored);
+    for fork_only in [false, true] {
+        let database = Database::new();
+        let output_root = database
+            .0
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join("command-output");
+        let stored = stored(&output_root);
+        let directory = database.0.parent().unwrap().canonicalize().unwrap();
+        let root = rutis::Ctx::root().unwrap();
+        (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+            .await
+            .unwrap();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+        let store = SqliteTimelineStore::new(db.clone());
+        // The fork source needs no rows of its own: the refusal must precede
+        // the copy's first write, and an empty copy still exercises both
+        // chunk transactions the check rides on.
+        store
+            .create_session("source", &SessionConfig::default())
+            .await
+            .unwrap();
+        let connection = Connection::open(&database.0).unwrap();
+        let config = sessions
+            .session_config_text("source")
+            .await
+            .unwrap()
+            .unwrap();
+        seed_stored_session(&connection, &stored);
 
-    let created = sessions
-        .create_owned_session(
-            candidate,
-            &SessionConfig::default(),
-            "owner",
-            2,
-            None,
-            SessionOrigin::Client,
-            None,
-        )
-        .await;
-    let forked = sessions.fork_session("source", candidate, 1, &config).await;
-    if admitted_control {
-        assert!(
-            created.is_ok() && forked.is_ok(),
-            "{why}: {stored:?} shares nothing with {candidate:?}, got create {created:?} fork {forked:?}"
-        );
-    } else {
-        assert!(
-            matches!(created, Err(AgentError::InvalidInput(_))),
-            "{why}: creating {candidate:?} while {stored:?} is stored must be InvalidInput, got {created:?}"
-        );
-        assert!(
-            matches!(forked, Err(AgentError::InvalidInput(_))),
-            "{why}: forking into {candidate:?} while {stored:?} is stored must be InvalidInput, got {forked:?}"
-        );
-        assert_eq!(
-            stored_rows(&connection, candidate),
-            0,
-            "{why}: the refused candidate {candidate:?} writes nothing"
-        );
+        if fork_only {
+            let forked = sessions.fork_session("source", candidate, 1, &config).await;
+            if admitted_control {
+                assert!(
+                    forked.is_ok(),
+                    "{why}: forking into {candidate:?} while {stored:?} is stored must succeed, got {forked:?}"
+                );
+            } else {
+                assert!(
+                    matches!(forked, Err(AgentError::InvalidInput(_))),
+                    "{why}: forking into {candidate:?} while {stored:?} is stored must be InvalidInput, got {forked:?}"
+                );
+            }
+        } else {
+            let created = sessions
+                .create_owned_session(
+                    candidate,
+                    &SessionConfig::default(),
+                    "owner",
+                    2,
+                    None,
+                    SessionOrigin::Client,
+                    None,
+                )
+                .await;
+            if admitted_control {
+                assert!(
+                    created.is_ok(),
+                    "{why}: creating {candidate:?} while {stored:?} is stored must succeed, got {created:?}"
+                );
+            } else {
+                assert!(
+                    matches!(created, Err(AgentError::InvalidInput(_))),
+                    "{why}: creating {candidate:?} while {stored:?} is stored must be InvalidInput, got {created:?}"
+                );
+            }
+        }
+        if admitted_control {
+            assert!(
+                stored_rows(&connection, candidate) > 0,
+                "{why}: the admitted candidate {candidate:?} is written"
+            );
+        } else {
+            assert_eq!(
+                stored_rows(&connection, candidate),
+                0,
+                "{why}: the refused candidate {candidate:?} writes nothing"
+            );
+        }
+
+        drop(connection);
+        drop(sessions);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+        root.shutdown().await.unwrap();
     }
-
-    drop(connection);
-    drop(sessions);
-    store.close().await.unwrap();
-    db.close().await.unwrap();
-    root.shutdown().await.unwrap();
 }
 
 /// A drive-absolute legacy id resolving back inside the output root —
