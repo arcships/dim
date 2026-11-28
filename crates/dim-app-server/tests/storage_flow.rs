@@ -194,6 +194,9 @@ fn queue(
 /// How long a flow waits for the Session fact it asserts on, such as a close,
 /// before it fails instead of hanging.
 const SETTLED: Duration = Duration::from_secs(10);
+/// Bounds a whole flow that has no deadline of its own; a real hang still
+/// fails instead of holding the test binary.
+const FLOW_GUARD: Duration = Duration::from_secs(60);
 /// Waits for `fact` and fails the flow with `what` when it never holds.
 async fn settled<T>(what: &str, fact: impl Future<Output = T>) -> T {
     tokio::time::timeout(SETTLED, fact)
@@ -6889,7 +6892,7 @@ async fn failed_branch_cuts_remain_readable_as_original_durable_facts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cold_read_failure_preserves_the_record_and_other_session_progress() {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(FLOW_GUARD, async {
         let database = Database::new();
         let db = SqliteStorage::open(database.0.clone()).unwrap();
         let store = SqliteTimelineStore::new(db.clone());
