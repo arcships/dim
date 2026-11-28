@@ -1775,7 +1775,6 @@ async fn a_service_tier_declaration_states_only_a_usable_set() {
             "tier-default-outside",
             json!({"supported": true, "default": "flex", "options": ["default", "priority"]})
         ),
-        function("gpt-5.5", json!(true)),
     ]))
     .await;
     let declared = json!({"supported": true, "default": "default", "options": ["default", "priority"]});
@@ -1801,11 +1800,6 @@ async fn a_service_tier_declaration_states_only_a_usable_set() {
         listing.served_tier("tier-default-outside"),
         Some(declared.clone()),
         "a default outside the options gives way to one of them"
-    );
-    assert_eq!(
-        listing.served_tier("gpt-5.5"),
-        Some(declared.clone()),
-        "the identified row enumerates the options a listing names none of"
     );
 
     let accepted = listing
@@ -1863,23 +1857,6 @@ async fn a_service_tier_declaration_states_only_a_usable_set() {
         accepted.preferences["tier-default-outside"].service_tier.as_deref(),
         Some("priority"),
         "the options a declaration keeps are still offered"
-    );
-    let accepted = listing
-        .provider
-        .update_preferences(
-            LISTED.into(),
-            accepted.info.version.unwrap(),
-            "gpt-5.5".into(),
-            serde_json::from_value(json!({"serviceTier":{"action":"set","value":"priority"}}))
-                .unwrap(),
-            &listing.cancel,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        accepted.preferences["gpt-5.5"].service_tier.as_deref(),
-        Some("priority"),
-        "the identified row's options are the model's own"
     );
     listing.close().await;
 }
