@@ -4,7 +4,7 @@ use super::*;
 use dim_agent_capabilities::session_broadcast::{
     SessionBroadcast, SessionBroadcastEvent, SessionNotice, notify, session_channel,
 };
-use dim_agent_runtime::SessionIdentity;
+use dim_agent_runtime::SessionScope;
 use rutis::Ctx;
 use rutis::host::CtxHost;
 
@@ -60,10 +60,10 @@ impl rutis::host::DynPlugin for OwnerPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let owner = Owner {
                 ctx: ctx.clone(),
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id(),
             };
             ctx.listen::<SessionBroadcast>()
-                .name(session_channel(&identity.session_id))
+                .name(session_channel(&identity.session_id()))
                 .on(move |event, _| {
                     owner.on_record(&event.record);
                     async { Ok(None) }

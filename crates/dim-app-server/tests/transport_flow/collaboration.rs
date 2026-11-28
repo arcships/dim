@@ -2997,12 +2997,12 @@ impl DynPlugin for HeldRestorePart {
         Box::pin(async move {
             let identity = ctx.require_at(&self.identity)?;
             let state = &self.held.0;
-            let held = identity.restored
+            let held = identity.describe().expect("the Session is live").restored
                 && state
                     .held
                     .lock()
                     .unwrap()
-                    .take_if(|id| *id == identity.session_id)
+                    .take_if(|id| *id == identity.session_id())
                     .is_some();
             if held {
                 state.entered.notify_one();

@@ -393,7 +393,7 @@ impl DynPlugin for ToolExecutorPlugin {
                         state.current_context = Some(ToolExecutionContext {
                             turn_id: batch.turn_id.clone(),
                             request_id: batch.request_id.clone(),
-                            branch_id: identity.branch_id.clone(),
+                            branch_id: identity.branch_id().clone(),
                         });
                         let batch = batch.clone();
                         let call_event_id = event.id.clone();
@@ -427,7 +427,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                     let timeline = timeline.clone();
                                     let cancel = cancel.clone();
                                     let event_id = call_event_id.clone();
-                                    let session_id = identity.session_id.clone();
+                                    let session_id = identity.session_id().clone();
                                     let segment = segment_of[index];
                                     let turn = turn.clone();
                                     let mut barrier = std::mem::replace(
@@ -437,7 +437,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                     let context = ToolExecutionContext {
                                         turn_id: batch.turn_id.clone(),
                                         request_id: batch.request_id.clone(),
-                                        branch_id: identity.branch_id.clone(),
+                                        branch_id: identity.branch_id().clone(),
                                     };
                                     async move {
                                         // Releases this call's step on every exit:

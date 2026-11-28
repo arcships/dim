@@ -35,7 +35,7 @@ pub(crate) struct ToolSetAdoption {
 /// ContextPreparation for Prompt.
 pub struct ConfigurationPublisher {
     timeline: Arc<Timeline>,
-    identity: TimelineContext,
+    identity: Arc<TimelineContext>,
     /// The Session's guide entries: the System it publishes carries the
     /// composition over the entries in force at that adoption.
     guide: Arc<GuideEntries>,
@@ -98,7 +98,7 @@ impl ConfigurationPublisher {
                 PromptChange::Set { entry } => &entry.scope,
                 PromptChange::Revoke { scope, .. } => scope,
             };
-            if !scope_is_visible(scope, &self.identity.branch_id, &ancestry) {
+            if !scope_is_visible(scope, &self.identity.branch_id(), &ancestry) {
                 return Err(AgentError::InvalidInput(
                     "prompt scope is outside branch ancestry".into(),
                 ));
@@ -191,7 +191,7 @@ impl ConfigurationPublisher {
                 })
                 .collect();
             let data = PromptChangedData {
-                timeline: self.identity.branch_id.clone(),
+                timeline: self.identity.branch_id().clone(),
                 revision: revision.clone(),
                 previous: before.revision.clone(),
                 reason: if before.revision.is_some() {
@@ -214,19 +214,19 @@ impl ConfigurationPublisher {
                 })?;
                 drafts.push(
                     EventKind::ContextConfigured(ContextConfiguredData {
-                        timeline: self.identity.branch_id.clone(),
+                        timeline: self.identity.branch_id().clone(),
                         revision: Uuid::new_v4().to_string(),
                         previous: previous_configuration.map(|data| PromptReference {
                             timeline: data.timeline.clone(),
                             revision: data.revision.clone(),
                         }),
                         prompt: Some(PromptReference {
-                            timeline: self.identity.branch_id.clone(),
+                            timeline: self.identity.branch_id().clone(),
                             revision,
                         }),
                         settings: Box::new(settings),
                         system: Some(self.guide.compose_system(
-                            &self.identity.branch_id,
+                            &self.identity.branch_id(),
                             Some(SystemPrompt::Text(system.clone())),
                         )),
                         system_source: Some(system),
@@ -319,7 +319,7 @@ impl ConfigurationPublisher {
     ) -> ContextConfiguredData {
         let (system, system_source) = self.rerendered(before, previous);
         ContextConfiguredData {
-            timeline: self.identity.branch_id.clone(),
+            timeline: self.identity.branch_id().clone(),
             revision: Uuid::new_v4().to_string(),
             previous: previous.map(|data| PromptReference {
                 timeline: data.timeline.clone(),
@@ -366,7 +366,7 @@ impl ConfigurationPublisher {
             None => before.system.clone(),
         };
         let system = Some(self.guide.compose_system(
-            &self.identity.branch_id,
+            &self.identity.branch_id(),
             Some(SystemPrompt::Text(source.clone())),
         ));
         (system, Some(source))
@@ -782,8 +782,8 @@ impl ContextPreparation {
     ) -> dim_agent_runtime::Result<()> {
         let span = tracing::info_span!(
             "context.prepare",
-            session_id = %self.identity.session_id,
-            branch_id = %self.identity.branch_id,
+            session_id = %self.identity.session_id(),
+            branch_id = %self.identity.branch_id(),
             turn_id = %source.turn_id,
             request_id = %source.request_id,
             outcome = tracing::field::Empty,
@@ -1033,7 +1033,7 @@ impl DynPlugin for ContextPreparationPlugin {
             if strategy.0.is_some() {
                 guide.register(
                     ctx,
-                    GuideScope::Branch(identity.branch_id.clone()),
+                    GuideScope::Branch(identity.branch_id().clone()),
                     GuideEntry {
                         markers: vec!["dim-digest".into()],
                         order: 90,
@@ -1043,7 +1043,7 @@ impl DynPlugin for ContextPreparationPlugin {
             }
             let publisher = Arc::new(ConfigurationPublisher {
                 timeline: timeline.clone(),
-                identity: (*identity).clone(),
+                identity: Arc::clone(&identity),
                 guide: guide.clone(),
                 branch_phase,
             });

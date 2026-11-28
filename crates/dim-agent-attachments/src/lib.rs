@@ -143,7 +143,7 @@ impl DynPlugin for AttachmentsPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let files = ctx.require_at(&self.files)?;
             let methods = ctx.require_at(&self.methods)?;
-            let session_id = identity.session_id.clone();
+            let session_id = identity.session_id().clone();
             methods.register(
                 ctx,
                 NAMESPACE,

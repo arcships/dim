@@ -108,7 +108,7 @@ pub struct HooksRuntime {
     sources: Arc<HookSourcesHost>,
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
-    identity: Arc<SessionScope>,
+    session_id: String,
     cancel: CancellationToken,
     tasks: TaskTracker,
 }
@@ -139,7 +139,7 @@ impl HooksRuntime {
         };
         json!({
             "hook_event_name": event.name(),
-            "session_id": self.identity.session_id,
+            "session_id": self.session_id,
             "cwd": self.config.cwd,
             "permission_mode": preset,
             "branch_id": branch,
@@ -506,7 +506,7 @@ impl HooksRuntime {
         for (key, value) in [
             ("DIM_PROJECT_DIR", Some(self.config.cwd.clone())),
             ("DIM_HOOK_EVENT", Some(handler.event.name().to_owned())),
-            ("DIM_SESSION_ID", Some(self.identity.session_id.clone())),
+            ("DIM_SESSION_ID", Some(self.session_id.clone())),
             ("DIMCODE_HOME", home),
             ("DIM_PLUGIN_ROOT", plugin_root),
         ] {
@@ -1029,7 +1029,7 @@ impl DynPlugin for HooksSessionPlugin {
                 sources,
                 platform,
                 config,
-                identity,
+                session_id: identity.session_id(),
                 cancel: ctx.cancellation_token(),
                 tasks: TaskTracker::new(),
             });
@@ -2289,7 +2289,7 @@ impl DynPlugin for HooksBranchPlugin {
                 registry,
                 dispatcher: dispatcher.clone(),
                 lifecycle: lifecycle.clone(),
-                branch_id: identity.branch_id.clone(),
+                branch_id: identity.branch_id().clone(),
                 view: Mutex::new(View::default()),
                 jobs: sender,
                 pending: Pending::default(),
@@ -2841,11 +2841,7 @@ mod tests {
                 cwd: dir.to_string_lossy().into_owned(),
                 ..SessionConfig::default()
             }),
-            identity: Arc::new(SessionIdentity {
-                unloading: CancellationToken::new(),
-                session_id: "session".into(),
-                restored: false,
-            }),
+            session_id: "session".into(),
             cancel: CancellationToken::new(),
             tasks: TaskTracker::new(),
         })

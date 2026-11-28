@@ -6,8 +6,7 @@
 //! unloads ([rutis usage R6](../../../docs/design/rutis-usage.md#r6-contributions-register-with-their-owner)).
 use crate::host::*;
 use dim_agent_runtime::{
-    AgentError, Names, Registration, Registrations, SessionConfig, SessionScope,
-    SessionLifecycle,
+    AgentError, Names, Registration, Registrations, SessionConfig, SessionLifecycle, SessionScope,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
@@ -1029,7 +1028,7 @@ impl DynPlugin for ToolRegistryPlugin {
                 missing: Mutex::default(),
                 mode: Mutex::new(config.tool_mode),
                 mode_update: tokio::sync::Mutex::new(()),
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 config: config.clone(),
                 refreshing: Mutex::default(),
                 sources: Mutex::default(),

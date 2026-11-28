@@ -235,17 +235,17 @@ impl DynPlugin for ProbeBranch {
                 },
             )?;
             let mut timelines = self.probe.timelines.lock().unwrap();
-            timelines.insert(identity.branch_id.clone(), timeline);
+            timelines.insert(identity.branch_id().clone(), timeline);
             self.probe
                 .commands
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), commands);
+                .insert(identity.branch_id().clone(), commands);
             self.probe
                 .dispatchers
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), dispatcher);
+                .insert(identity.branch_id().clone(), dispatcher);
             Ok(Effect::Done)
         })
     }
@@ -339,7 +339,7 @@ impl DynPlugin for ControllableLoopStub {
                 .loops
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), self.watch.clone());
+                .insert(identity.branch_id().clone(), self.watch.clone());
             ctx.provide_at(
                 self.key.clone(),
                 Arc::new(ControllableLoop(self.watch.clone())) as Arc<dyn LoopState>,

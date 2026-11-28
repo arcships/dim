@@ -57,7 +57,8 @@ impl DynPlugin for CodeModeBranchPlugin {
                 config: self.config.clone(),
                 runs: runs.clone(),
             });
-            let key = CodeModeRunKey::new(identity.session_id.clone(), identity.branch_id.clone());
+            let key =
+                CodeModeRunKey::new(identity.session_id().clone(), identity.branch_id().clone());
             runs.insert(key.clone(), branch);
             let cleanup = runs.clone();
             ctx.effect(move || async move {

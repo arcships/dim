@@ -64,7 +64,7 @@ impl DynPlugin for CodeModeSessionPlugin {
                     definition: codemode_definition(),
                     handler: Arc::new(CodeModeTool {
                         runs,
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                     }),
                 },
             )?;

@@ -1127,7 +1127,7 @@ impl DynPlugin for OpeningReads {
                 .await?;
                 return Ok(Effect::Done);
             }
-            if identity.branch_id != "main" {
+            if identity.branch_id() != "main" {
                 timeline_events(&timeline, TimelineQueryScope::Chain, ..=0).await?;
                 let (context, reads) = TASK_READS
                     .scope(Default::default(), async {

@@ -120,7 +120,7 @@ impl DynPlugin for GoalSession {
                                     match owner.tree.get(&id) {
                                         Ok(_) => {
                                             let key = TimelineKey {
-                                                session_id: owner.identity.session_id.clone(),
+                                                session_id: owner.identity.session_id().clone(),
                                                 branch_id: id,
                                             };
                                             owner.changes.current(&key).await
@@ -210,7 +210,7 @@ impl Owner {
             .changes
             .change(
                 &TimelineKey {
-                    session_id: self.identity.session_id.clone(),
+                    session_id: self.identity.session_id().clone(),
                     branch_id: branch,
                 },
                 change,
@@ -270,7 +270,7 @@ impl ToolHandler for GoalUpdate {
                 .changes
                 .change(
                     &TimelineKey {
-                        session_id: self.identity.session_id.clone(),
+                        session_id: self.identity.session_id().clone(),
                         branch_id: context.branch_id,
                     },
                     change,

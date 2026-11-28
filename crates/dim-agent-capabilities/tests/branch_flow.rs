@@ -235,7 +235,7 @@ impl DynPlugin for ProbePlugin {
             let probe = self.probe.clone();
             *probe.commands.lock().unwrap() = Some(commands);
             *probe.tool_registry.lock().unwrap() = Some(registry);
-            if identity.branch_id == "main" {
+            if identity.branch_id() == "main" {
                 *probe.main_timeline.lock().unwrap() = Some(timeline.clone());
                 if probe.read_while_opening.load(Ordering::SeqCst) {
                     timeline_events(
@@ -277,7 +277,7 @@ impl DynPlugin for ProbePlugin {
                     )));
                 }
                 let observer = probe.clone();
-                let branch = identity.branch_id.clone();
+                let branch = identity.branch_id().clone();
                 timeline.before(
                     ctx,
                     "observe publication",
@@ -364,7 +364,7 @@ impl DynPlugin for CleanupWriter {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
             let identity = ctx.require_at(&self.identity)?;
-            if identity.branch_id == "main" || !self.probe.fail_child.load(Ordering::SeqCst) {
+            if identity.branch_id() == "main" || !self.probe.fail_child.load(Ordering::SeqCst) {
                 return Ok(Effect::Done);
             }
             let probe = self.probe.clone();
@@ -1831,7 +1831,7 @@ impl DynPlugin for SettleOnActivation {
             let session = ctx.require_at(&self.session)?;
             let identity = ctx.require_at(&self.identity)?;
             let child = self.child.clone();
-            if identity.branch_id != "main" {
+            if identity.branch_id() != "main" {
                 return Ok(Effect::Done);
             }
             let source = self.source.clone();
@@ -8744,7 +8744,7 @@ impl DynPlugin for CaptureTreeDispatch {
             let tree = ctx.require_at(&self.tree)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let identity = ctx.require_at(&self.identity)?;
-            if identity.branch_id == "main" {
+            if identity.branch_id() == "main" {
                 *self.ports.lock().unwrap() = Some((tree, dispatcher, ctx.clone()));
             }
             Ok(Effect::Done)
@@ -8888,7 +8888,7 @@ impl DynPlugin for GatePlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let identity = ctx.require_at(&self.identity)?;
             let gate = self.gate.clone();
-            let branch = identity.branch_id.clone();
+            let branch = identity.branch_id().clone();
             dispatcher.subscribe(ctx, "gate", &["branch/end"], move |_event| {
                 let gate = gate.clone();
                 let branch = branch.clone();

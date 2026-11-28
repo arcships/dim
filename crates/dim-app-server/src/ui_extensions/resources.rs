@@ -3,7 +3,7 @@ use dim_agent_capabilities::{
     file_storage::{FileReader, FileStorage, FileStorageError},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
 };
-use dim_agent_runtime::{Names, PublicService, SessionScope, SessionLifecycle, SessionPhase};
+use dim_agent_runtime::{Names, PublicService, SessionLifecycle, SessionPhase, SessionScope};
 use rutis::{
     Ctx,
     host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey},
@@ -402,7 +402,7 @@ impl DynPlugin for UiResourcesPlugin {
         Box::pin(async move {
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let service = Arc::new(UiResources {
-                session_id: ctx.require_at(&self.identity)?.session_id.clone(),
+                session_id: ctx.require_at(&self.identity)?.session_id().clone(),
                 lifecycle: lifecycle.clone(),
                 files: ctx.require_at(&self.files)?,
                 resources: Arc::default(),

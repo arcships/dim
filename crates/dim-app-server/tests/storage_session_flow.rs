@@ -49,7 +49,7 @@ impl DynPlugin for CaptureTimeline {
             self.timelines
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), timeline.as_ref().clone());
+                .insert(identity.branch_id().clone(), timeline.as_ref().clone());
             Ok(Effect::Done)
         })
     }
@@ -91,7 +91,7 @@ impl DynPlugin for GenericCleanupFault {
             let identity = ctx.require_at(&self.identity)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let tree = ctx.require_at(&self.commands)?;
-            if identity.branch_id != "main" {
+            if identity.branch_id() != "main" {
                 return Ok(Effect::Done);
             }
             *self.tree.lock().unwrap() = Some(tree);

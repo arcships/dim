@@ -253,7 +253,7 @@ impl DynPlugin for ClientsBranchPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let wake = Arc::new(Notify::new());
             let listener_wake = wake.clone();
-            let session = identity.session_id.clone();
+            let session = identity.session_id().clone();
             ctx.listen::<ClientsChanged>()
                 .name(clients_changes(&session))
                 .on(move |_, _| {

@@ -228,9 +228,9 @@ impl DynPlugin for GoalBranch {
             let (ready, _) = watch::channel(false);
             let (write_status, _) = watch::channel(Ok(()));
             let owner = Arc::new(Owner {
-                branch_id: identity.branch_id.clone(),
+                branch_id: identity.branch_id().clone(),
                 #[cfg(feature = "testing")]
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 timeline,
                 dispatcher: dispatcher.clone(),
                 tree,
@@ -249,8 +249,8 @@ impl DynPlugin for GoalBranch {
                 write: tokio::sync::Mutex::new(()),
             });
             let key = TimelineKey {
-                session_id: identity.session_id.clone(),
-                branch_id: identity.branch_id.clone(),
+                session_id: identity.session_id().clone(),
+                branch_id: identity.branch_id().clone(),
             };
             let registered = self.changes.register(key.clone(), &owner);
             let cleanup = owner.clone();

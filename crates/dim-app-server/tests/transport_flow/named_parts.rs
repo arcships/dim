@@ -43,7 +43,7 @@ impl rutis::host::DynPlugin for GreeterPart {
             let identity = ctx.require_at(&self.1)?;
             ctx.provide_at::<dyn HostDispatch>(
                 self.0.clone(),
-                Arc::new(Greeter(identity.session_id.clone())),
+                Arc::new(Greeter(identity.session_id().clone())),
             )?;
             Ok(rutis::host::Effect::Done)
         })
@@ -84,7 +84,7 @@ impl rutis::host::DynPlugin for MethodsReader {
                 "{} {} for {}",
                 methods.provider().unwrap_or_default(),
                 methods.methods().unwrap_or_default(),
-                branch.session_id
+                branch.session_id()
             ));
             Ok(rutis::host::Effect::Done)
         })

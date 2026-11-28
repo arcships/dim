@@ -232,8 +232,8 @@ impl Prompt {
             }
             let span = tracing::info_span!(
                 "prompt.load",
-                session_id = %self.identity.session_id,
-                branch_id = %self.identity.branch_id,
+                session_id = %self.identity.session_id(),
+                branch_id = %self.identity.branch_id(),
                 prompt_source = %target.source,
                 prompt_scope = match target.scope {
                     PromptScope::Branch { .. } => "branch",
@@ -447,7 +447,7 @@ impl Prompt {
     fn guide_watch(&self) -> (watch::Receiver<u64>, String) {
         (
             self.guide.changes(),
-            self.guide.compose(&self.identity.branch_id),
+            self.guide.compose(&self.identity.branch_id()),
         )
     }
 
@@ -462,7 +462,7 @@ impl Prompt {
     /// that withdraws only because the branch is shutting down must not
     /// move its System.
     fn listen_guide(self: &Arc<Self>, mut changes: watch::Receiver<u64>, mut composed: String) {
-        let branch_id = self.identity.branch_id.clone();
+        let branch_id = self.identity.branch_id().clone();
         let branch_phase = self.branch_phase.clone();
         let owner = self.clone();
         self.tasks.spawn(async move {
@@ -893,7 +893,7 @@ impl DynPlugin for PromptPlugin {
                             EventKind::PromptChanged(data) => {
                                 recovery::delivered(
                                     &prompt.timeline,
-                                    &prompt.identity.branch_id,
+                                    &prompt.identity.branch_id(),
                                     data,
                                     event.sequence,
                                 )
@@ -1080,12 +1080,12 @@ impl Prompt {
     pub async fn adopted_configuration(&self) -> Result<(Option<ModelConfiguration>, u64)> {
         let captured = self.timeline.committed();
         #[cfg(feature = "testing")]
-        testing::read_captured(&self.identity.session_id, &self.identity.branch_id).await;
+        testing::read_captured(&self.identity.session_id(), &self.identity.branch_id()).await;
         if self.branch_phase.phase() >= BranchPhase::Closing {
             return Err(AgentError::Cancelled("prompt adoption".into()));
         }
         #[cfg(feature = "testing")]
-        testing::read_checked(&self.identity.session_id, &self.identity.branch_id).await;
+        testing::read_checked(&self.identity.session_id(), &self.identity.branch_id()).await;
         let through = self.advance_active(captured).await?;
         let projection = self.projection.lock().unwrap();
         let configuration = projection

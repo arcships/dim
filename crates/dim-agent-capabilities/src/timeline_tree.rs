@@ -9,8 +9,8 @@ use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
     BranchRefusal, BranchRuntime, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Result, SessionScope, StoredBranch, StoredEvent, Timeline, TimelineFactory,
-    TimelineContext, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
+    QueryValue, Result, SessionScope, StoredBranch, StoredEvent, Timeline, TimelineContext,
+    TimelineFactory, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
     TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
@@ -3425,7 +3425,8 @@ impl DynPlugin for TimelineTreePlugin {
                     text: PARENT_ENTRY.into(),
                 },
             )?;
-            let tree = TimelineTree::new(factory, store, identity.session_id.clone(), ctx.clone());
+            let tree =
+                TimelineTree::new(factory, store, identity.session_id().clone(), ctx.clone());
             let owner = tree.clone();
             ctx.effect(move || async move { owner.close().await.map_err(Into::into) })?;
             let commands = Arc::new(TreeCommands {
@@ -3723,7 +3724,7 @@ impl DynPlugin for BranchLinePlugin {
             let session = ctx.require_at(&self.session)?;
             let tree = ctx.require_at(&self.tree)?;
             let guide = ctx.require_at(&self.guide)?;
-            let scope = GuideScope::Branch(identity.branch_id.clone());
+            let scope = GuideScope::Branch(identity.branch_id().clone());
             for (markers, order, text) in [
                 (vec!["dim-branch-lines"], 40, ROSTER_ENTRY),
                 (
@@ -3743,7 +3744,7 @@ impl DynPlugin for BranchLinePlugin {
                 )?;
             }
             let line = Arc::new(BranchLine {
-                own: identity.branch_id.clone(),
+                own: identity.branch_id().clone(),
                 tree,
                 timeline: timeline.clone(),
                 config: self.config.clone(),
@@ -3803,7 +3804,7 @@ impl DynPlugin for BranchLinePlugin {
                     return;
                 }
                 #[cfg(feature = "testing")]
-                testing::writers(&identity.session_id, &identity.branch_id).await;
+                testing::writers(&identity.session_id(), &identity.branch_id()).await;
                 writer.run().await;
             });
             let stop = line.stop.clone();

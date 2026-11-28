@@ -175,19 +175,19 @@ impl rutis::host::DynPlugin for SessionProbe {
             let closed = Arc::new(AtomicUsize::new(0));
             ctx.provide_at::<dyn HostDispatch>(
                 host_key_in("c4Session", self.0),
-                Arc::new(SessionHost(identity.session_id.clone(), closed.clone())),
+                Arc::new(SessionHost(identity.session_id().clone(), closed.clone())),
             )?;
             let session = self.0;
             let probe = Arc::new(BroadcastProbe(session));
             ctx.listen::<SessionBroadcast>()
-                .name(session_channel(&identity.session_id))
+                .name(session_channel(&identity.session_id()))
                 .on(move |event, call| {
                     let probe = probe.clone();
                     async move { probe.on_record(call.ctx(), &event.record).await }
                 })?;
             self.1
                 .send(Loaded {
-                    session_id: identity.session_id.clone(),
+                    session_id: identity.session_id().clone(),
                     session,
                     ctx: ctx.clone(),
                     closed,

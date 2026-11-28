@@ -2,8 +2,8 @@ use super::*;
 use dim_agent_capabilities::session_broadcast::{
     SessionBroadcast, SessionBroadcastEvent, session_channel,
 };
-use dim_agent_runtime::SessionIdentity;
 use dim_agent_runtime::SessionLines;
+use dim_agent_runtime::SessionScope;
 use rutis::host::CtxHost;
 use std::collections::HashMap;
 use tokio::sync::Notify;
@@ -71,7 +71,7 @@ impl rutis::host::DynPlugin for DelayPlugin {
             let delay = Delay(self.gate.clone());
             let listener = ctx
                 .listen::<SessionBroadcast>()
-                .name(session_channel(&identity.session_id))
+                .name(session_channel(&identity.session_id()))
                 .on(move |event, _| {
                     delay.hold(&event.record);
                     async { Ok(None) }

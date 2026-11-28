@@ -178,7 +178,7 @@ impl DynPlugin for EventHubSession {
                     definition: declaration(&self.texts.tool),
                     handler: Arc::new(EventsTool {
                         subscriptions: ctx.require_at(&self.subscriptions)?,
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                         closing: ctx.cancellation_token(),
                     }),
                 },

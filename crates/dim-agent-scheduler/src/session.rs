@@ -222,7 +222,7 @@ impl DynPlugin for SchedulerSession {
                     handler: Arc::new(ScheduleTool {
                         jobs,
                         config: config.clone(),
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                         closing: closing.clone(),
                     }),
                 },
@@ -234,7 +234,7 @@ impl DynPlugin for SchedulerSession {
                     handler: Arc::new(WakeupTool {
                         wakeups: wakeups.clone(),
                         config: config.clone(),
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                         closing: closing.clone(),
                     }),
                 },
@@ -246,7 +246,7 @@ impl DynPlugin for SchedulerSession {
                     handler: Arc::new(LoopTool {
                         loops: loops.clone(),
                         config: config.clone(),
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                         closing: closing.clone(),
                     }),
                 },

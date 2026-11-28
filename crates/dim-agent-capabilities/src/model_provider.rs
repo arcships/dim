@@ -134,8 +134,8 @@ impl ModelProvider {
                     Box::new(facts)
                 });
                 tracing::error!(
-                    session_id = %self.identity.session_id,
-                    branch_id = %self.identity.branch_id,
+                    session_id = %self.identity.session_id(),
+                    branch_id = %self.identity.branch_id(),
                     turn_id = %turn_id,
                     request_id = %request_id,
                     provider_id = %provider_id,
@@ -487,8 +487,8 @@ impl ModelProvider {
     ) -> dim_agent_runtime::Result<()> {
         let span = tracing::info_span!(
             "model.invoke",
-            session_id = %self.identity.session_id,
-            branch_id = %self.identity.branch_id,
+            session_id = %self.identity.session_id(),
+            branch_id = %self.identity.branch_id(),
             turn_id = %call.turn_id,
             request_id = %call.request_id,
             outcome = tracing::field::Empty,

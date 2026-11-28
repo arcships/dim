@@ -444,6 +444,10 @@ impl Line {
 
 #[rutis::service]
 impl SessionScope {
+    /// This Session's id.
+    pub fn session_id(&self) -> String {
+        self.session_id.clone()
+    }
     /// This Session as its own scope describes it: identity, whether it was
     /// restored, the configuration it was created with, and the Agent that owns
     /// it. The values are the ones the Session was assembled from, so a part

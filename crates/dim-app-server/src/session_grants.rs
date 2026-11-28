@@ -75,7 +75,7 @@ impl DynPlugin for SessionGrantsPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let config = ctx.require_at(&self.config)?;
             let methods = ctx.require_at(&self.methods)?;
-            let session_id = identity.session_id.clone();
+            let session_id = identity.session_id().clone();
             let cwd = PathBuf::from(&config.cwd);
             ctx.provide_at(
                 self.host.clone(),

@@ -90,7 +90,7 @@ impl DynPlugin for ProbePart {
                 .timelines
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), timeline);
+                .insert(identity.branch_id().clone(), timeline);
             Ok(Effect::Done)
         })
     }

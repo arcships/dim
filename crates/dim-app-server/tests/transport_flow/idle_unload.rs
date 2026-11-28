@@ -172,17 +172,20 @@ impl rutis::host::DynPlugin for LoadsPart {
             let tree = ctx.require_at(&self.2)?;
             let state = self.0.0.clone();
             state.loads.lock().unwrap().push((
-                identity.session_id.clone(),
-                identity.restored,
+                identity.session_id(),
+                identity.describe().expect("the Session is live").restored,
                 Arc::downgrade(&tree),
             ));
             ctx.effect(move || async move {
-                let held = identity.unloading.is_cancelled()
+                let held = identity
+                    .describe()
+                    .map(|description| description.restored)
+                    .unwrap_or(false)
                     && state
                         .held
                         .lock()
                         .unwrap()
-                        .take_if(|id| *id == identity.session_id)
+                        .take_if(|id| *id == identity.session_id())
                         .is_some();
                 if held {
                     state.entered.notify_one();

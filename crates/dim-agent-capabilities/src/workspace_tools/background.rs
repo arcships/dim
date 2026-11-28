@@ -1218,7 +1218,7 @@ impl DynPlugin for BackgroundExecPlugin {
             let identity = ctx.require_at(&self.identity)?;
             guide.register(
                 ctx,
-                GuideScope::Branch(identity.branch_id.clone()),
+                GuideScope::Branch(identity.branch_id().clone()),
                 GuideEntry {
                     markers: vec!["dim-notification".into()],
                     order: 10,

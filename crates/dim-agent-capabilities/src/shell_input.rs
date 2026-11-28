@@ -23,8 +23,7 @@ use crate::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    AgentBuilder, Names, SessionConfig, SessionHold, SessionScope, SessionLifecycle,
-    SessionPhase,
+    AgentBuilder, Names, SessionConfig, SessionHold, SessionLifecycle, SessionPhase, SessionScope,
 };
 use dim_agent_types::{InputMessageData, InputMode};
 use rutis::Ctx;
@@ -308,7 +307,7 @@ impl ShellInput {
     ) {
         let span = tracing::info_span!(
             "shell.run",
-            session_id = %self.identity.session_id,
+            session_id = %self.identity.session_id(),
             branch_id = %run.branch_id,
             run_id = %run.run_id,
             outcome = tracing::field::Empty,

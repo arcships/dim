@@ -33,7 +33,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{
     AgentBuilder, AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryFilter,
     QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, Session,
-    SessionConfig, SessionHold, SessionScope, SessionLifecycle, Timeline, TimelineContext,
+    SessionConfig, SessionHold, SessionLifecycle, SessionScope, Timeline, TimelineContext,
     TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
@@ -3772,7 +3772,7 @@ impl DynPlugin for CollaborationSessionPlugin {
             }
             let service = Arc::new(CollaborationSession {
                 collaboration,
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 role: config.collaboration_role,
                 tree,
                 lifecycle,
@@ -3855,7 +3855,7 @@ impl DynPlugin for CollaborationTimelinePlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let identity = ctx.require_at(&self.identity)?;
             let phase = ctx.require_at(&self.phase)?;
-            let branch_id = identity.branch_id.clone();
+            let branch_id = identity.branch_id().clone();
             let owner = service.clone();
             let unloading = branch_id.clone();
             ctx.effect(move || async move {

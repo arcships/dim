@@ -371,7 +371,7 @@ impl PrepareModel for Prepare {
             .then(|| SystemPrompt::Text(self.config.system_prompt.clone()));
         settings.tools = Some(available_tools.to_vec());
         let mut metadata = self.config.model.metadata.clone().unwrap_or_default();
-        metadata.session_id = Some(self.identity.session_id.clone());
+        metadata.session_id = Some(self.identity.session_id().clone());
         metadata.turn_id = Some(turn_id.into());
         metadata
             .extensions

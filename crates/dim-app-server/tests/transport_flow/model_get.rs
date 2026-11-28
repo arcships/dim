@@ -286,7 +286,7 @@ impl DynPlugin for TimelineProbePart {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
-            let branch = ctx.require_at(&self.identity)?.branch_id.clone();
+            let branch = ctx.require_at(&self.identity)?.branch_id().clone();
             self.probe.lock().unwrap().insert(branch, timeline);
             Ok(Effect::Done)
         })

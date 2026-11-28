@@ -853,7 +853,7 @@ impl Projection {
             },
             EventKind::BranchStart(_) => {
                 self.reset = Some(TimelinePosition {
-                    branch_id: owner.identity.branch_id.clone(),
+                    branch_id: owner.identity.branch_id().clone(),
                     sequence,
                 });
                 for (scope, changed) in &mut self.scope_reads {
@@ -879,7 +879,7 @@ impl Projection {
                     id,
                     kind,
                     TimelinePosition {
-                        branch_id: owner.identity.branch_id.clone(),
+                        branch_id: owner.identity.branch_id().clone(),
                         sequence,
                     },
                     true,
@@ -892,7 +892,7 @@ impl Projection {
                 id,
                 kind,
                 TimelinePosition {
-                    branch_id: owner.identity.branch_id.clone(),
+                    branch_id: owner.identity.branch_id().clone(),
                     sequence,
                 },
                 delivered,
@@ -916,7 +916,7 @@ impl Projection {
             return Ok(());
         }
         let scope = PromptScope::Turn {
-            timeline: owner.identity.branch_id.clone(),
+            timeline: owner.identity.branch_id().clone(),
             id: turn_id.into(),
         };
         if let Some(changed) = self.scope_reads.get_mut(&scope) {
@@ -935,7 +935,7 @@ impl Projection {
         } else {
             self.snapshot.turns.remove(turn_id);
             self.expire(&PromptScope::Turn {
-                timeline: owner.identity.branch_id.clone(),
+                timeline: owner.identity.branch_id().clone(),
                 id: turn_id.into(),
             })
         };
@@ -1429,7 +1429,7 @@ impl Prompt {
         let mut progress = self.dispatcher.watch();
         while self.dispatcher.sequence() < through {
             #[cfg(feature = "testing")]
-            super::testing::read_waiting(&self.identity.session_id, &self.identity.branch_id);
+            super::testing::read_waiting(&self.identity.session_id(), &self.identity.branch_id());
             if let Some(error) = self.dispatcher.failure() {
                 return Err(error);
             }
@@ -1451,7 +1451,7 @@ impl Prompt {
         }
         let written = self.projection.lock().unwrap().written_result;
         #[cfg(feature = "testing")]
-        super::testing::read_publishing(&self.identity.session_id, &self.identity.branch_id);
+        super::testing::read_publishing(&self.identity.session_id(), &self.identity.branch_id());
         self.await_written(written).await?;
         self.projection.lock().unwrap().publish(self, written);
         Ok(through)
@@ -1519,7 +1519,7 @@ impl Prompt {
                     .await?;
                     let delivered = match &kind {
                         EventKind::PromptChanged(data) => {
-                            delivered(&self.timeline, &self.identity.branch_id, data, through)
+                            delivered(&self.timeline, &self.identity.branch_id(), data, through)
                                 .await?
                         }
                         _ => true,
@@ -1540,7 +1540,7 @@ impl Prompt {
         }
         let written = self.projection.lock().unwrap().written_result;
         #[cfg(feature = "testing")]
-        super::testing::read_publishing(&self.identity.session_id, &self.identity.branch_id);
+        super::testing::read_publishing(&self.identity.session_id(), &self.identity.branch_id());
         self.await_written(written).await?;
         self.projection.lock().unwrap().publish(self, written);
         Ok(())

@@ -385,7 +385,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
             let tree = ctx.require_at(&self.tree)?;
             let methods = ctx.require_at(&self.methods)?;
             let cwd = PathBuf::from(&config.cwd);
-            let output_dir = self.config.output_root.join(&identity.session_id);
+            let output_dir = self.config.output_root.join(&identity.session_id());
             // A configured boundary is the file tools' home too: `~`
             // resolves against it, never against the platform home.
             let home = self
@@ -405,7 +405,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 ),
                 output_dir,
                 owner: ctx.get::<SessionFiles>(),
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 member: config.collaboration_role == CollaborationRole::Member,
                 cwd,
                 platform,

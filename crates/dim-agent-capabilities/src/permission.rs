@@ -888,7 +888,7 @@ impl DynPlugin for PermissionPlugin {
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
                 platform: self.platform.clone(),
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 cwd: PathBuf::from(&config.cwd),
                 inner: Mutex::new(Inner::default()),
                 advisors: Arc::new(Registrations::default()),

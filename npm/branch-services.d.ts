@@ -1431,6 +1431,8 @@ export type RouteError =
  * Session's lines only. `describe` joins it with base-3.
  */
 export interface SessionScope {
+  /** This Session's id. */
+  sessionId(): Promise<string>
   /**
    * This Session as its own scope describes it: identity, whether it was
    * restored, the configuration it was created with, and the Agent that owns
@@ -1501,6 +1503,10 @@ export type BranchStatus = {
  * part (`sessionScope.lineCall`) and a process caller (`sessions.call`).
  */
 export interface TimelineContext {
+  /** The Session this line belongs to. */
+  sessionId(): Promise<string>
+  /** This line's id, which is its branch id. */
+  branchId(): Promise<string>
   /**
    * Commits validated input ([`Timeline::input_checked`]), and says whether
    * this call wrote it. Whether it starts a turn is Loop's decision when
