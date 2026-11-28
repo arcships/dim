@@ -284,10 +284,14 @@ presented as a successful empty list.
 Each editable composer opens a command menu for a leading `/` followed by an optional
 command-name prefix, not for a slash inside ordinary prose. Search filters the
 available commands; categories and canonical English command names follow the
-repository menu ordering convention. Arrow keys move selection, Enter executes,
-and Escape dismisses without sending or deleting the draft. Mouse selection has
-the same behavior. Command handling does not run during IME composition. Known
-commands are handled locally rather than submitted as model input.
+repository menu ordering convention. Arrow keys move selection and Enter
+executes. Escape steps back one level, as the native menu does
+([CLI command menu](cli-commands.md#command-menu)): it clears a narrowed command
+filter, returns from a picker the menu opened (the model picker's search clears
+before the picker closes), and dismisses the menu only at its unfiltered root,
+without sending or deleting the draft. Mouse selection has the same behavior.
+Command handling does not run during IME composition. Known commands are
+handled locally rather than submitted as model input.
 
 The menu lists Skills after the commands, by the same rule as the TUI: only an enabled,
 unshadowed, user-invocable Skill whose name the `/skill:` token can carry. A Skill row reads

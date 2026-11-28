@@ -21933,6 +21933,101 @@ mod tests {
         );
     }
 
+    /// Esc clears the command filter before it closes the bar; only the
+    /// unfiltered list closes it and gives the replaced draft back.
+    #[test]
+    fn escape_clears_the_command_filter_then_closes_at_the_root() {
+        for fullscreen in [false, true] {
+            let (mut app, sent, _home) = session_with_queue(false, &[]);
+            app.fullscreen = fullscreen;
+            typed(&mut app, "keep");
+            let ctrl_o = crate::ui::terminal::KeyEvent::new(KeyCode::Char('o'), Modifiers::CTRL);
+            app.handle(InputEvent::Key(ctrl_o));
+            typed(&mut app, "mod");
+            assert_eq!(app.composer.text(), "/mod");
+
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.composer.text(), "/", "the filter is cleared");
+            assert!(app.composer.palette_open(), "the command list stays open");
+
+            press(&mut app, KeyCode::Esc);
+            assert!(!app.composer.palette_open(), "the root closes the bar");
+            assert_eq!(app.composer.text(), "keep", "the replaced draft returns");
+            assert!(sent.borrow().is_empty(), "Esc sent nothing");
+        }
+    }
+
+    /// A panel opened from the command list returns to that list, with the
+    /// query and selected row it had, before its root Esc closes anything.
+    #[test]
+    fn escape_returns_from_a_panel_root_to_the_command_list() {
+        for fullscreen in [false, true] {
+            let (mut app, sent, _home) = session_with_queue(false, &[]);
+            app.fullscreen = fullscreen;
+            typed(&mut app, "/mod");
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(app.prompt, Some(Prompt::Models(_))));
+            assert!(matches!(sent.borrow().last(), Some(Command::ListModels)));
+
+            press(&mut app, KeyCode::Esc);
+            assert!(app.prompt.is_none(), "the panel root closes at Esc");
+            assert!(
+                app.composer.palette_open(),
+                "the command list stays open at the panel's root"
+            );
+            assert_eq!(app.composer.text(), "/mod", "the list query is restored");
+
+            let before = sent.borrow().len();
+            press(&mut app, KeyCode::Enter);
+            assert!(
+                matches!(app.prompt, Some(Prompt::Models(_))),
+                "the selected row is restored"
+            );
+            assert_eq!(
+                sent.borrow().len(),
+                before + 1,
+                "the restored row runs the command it names"
+            );
+        }
+    }
+
+    /// A child page returns to its panel root first; the next Esc returns to
+    /// the command list, so one Esc never unwinds two levels.
+    #[test]
+    fn escape_steps_back_from_a_panel_child_to_its_root_before_the_list() {
+        use crate::model::session::{ModelPolicyUpdate, SubagentModelPolicy};
+
+        for fullscreen in [false, true] {
+            let (mut app, _sent, _home) = session_with_queue(false, &[]);
+            app.fullscreen = fullscreen;
+            typed(&mut app, "/models");
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(app.prompt, Some(Prompt::Models(_))));
+            app.apply(Update::ModelPolicy(ModelPolicyUpdate::Read {
+                revision: "1".into(),
+                policy: SubagentModelPolicy::Inherit,
+                saved: false,
+            }));
+
+            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Enter);
+            press(&mut app, KeyCode::Esc);
+            assert!(
+                matches!(app.prompt, Some(Prompt::Models(_))),
+                "the child page returns to the panel root"
+            );
+            assert!(
+                !app.composer.palette_open(),
+                "the command list does not open from the panel root's parent"
+            );
+
+            press(&mut app, KeyCode::Esc);
+            assert!(app.prompt.is_none(), "the panel root closes at Esc");
+            assert!(app.composer.palette_open());
+            assert_eq!(app.composer.text(), "/models");
+        }
+    }
+
     fn open_test_report(app: &mut App) -> u64 {
         press(app, KeyCode::Char('/'));
         typed(app, "report");

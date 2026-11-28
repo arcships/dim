@@ -201,6 +201,16 @@ picking an earlier message and scrolling to the top or bottom are also omitted;
 `Tab`, `Home` and `End` keep their fullscreen message-picker and scroll bindings
 outside the menu.
 
+`Esc` steps back one level. On a filtered list it clears the filter and shows
+the unfiltered list. On the root of a panel opened from the list it closes the
+panel and returns to the list, restoring that list's query and selected row
+without closing the bar. On a child page inside such a panel it returns to the
+panel's previous page with that page's query, selection and list position. Only
+`Esc` on the unfiltered list closes the bar and gives back the draft it
+replaced; `Esc` during a run interrupts, and an overlay the list did not open
+keeps its own `Esc` behavior. The Web composer follows the same levels
+([Web workspace §4.2](web-workspace.md#42-model-discovery-and-slash-commands)).
+
 A Skill row reads `/skill:<name>` with its description. Only an enabled, unshadowed,
 user-invocable Skill whose name the token can carry is listed: a name holding a character outside
 `A-Z`, `a-z`, `0-9`, `_`, `-` and `.`, or ending with a full stop, cannot be referenced, so it is
