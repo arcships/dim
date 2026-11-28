@@ -298,7 +298,10 @@ Cuts fall only on event boundaries.
 - **Mapping at projection time.** ContextPolicy and `history.rs` map `retain_from` to a position
   in the current rendering: the first rendered entry whose source event is at or after
   `retain_from` in sequence order. For this, `HistoryEntry` carries the id of the event that
-  placed it (`source`), so the id scheme of entries no longer matters.
+  placed it (`source`), so the id scheme of entries no longer matters. A cut can name an event
+  with both context flags clear. Replay locates that event in the fixed branch chain, even
+  without a snapshot. When it ends the prefix, a checkpoint includes all projection state
+  accumulated before it.
 
 **Replay rule (every strategy):**
 

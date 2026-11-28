@@ -1429,6 +1429,16 @@ async fn a_cut_after_the_read_window_fails_the_stream() {
             .contains("Compaction cut is outside the stream"),
         "{error}"
     );
+    let error = HistoryRenderer::default()
+        .rendered_context(&timeline, 2)
+        .await
+        .expect_err("the stored cut is outside the fixed history");
+    assert!(
+        error
+            .to_string()
+            .contains("outside the fixed context history"),
+        "{error}"
+    );
     db.close().await.unwrap();
 }
 
@@ -1766,7 +1776,9 @@ async fn a_cut_that_precedes_the_cut_in_effect_fails_the_stream() {
 }
 
 #[tokio::test]
-async fn a_cut_on_an_unflagged_event_still_streams_and_saves_its_checkpoint() {
+async fn a_cut_on_an_unflagged_event_replays_with_and_without_its_checkpoint() {
+    use dim_agent_capabilities::history::{context_messages, summary_message};
+
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     let store = SqliteTimelineStore::new(db.clone());
@@ -1775,10 +1787,30 @@ async fn a_cut_on_an_unflagged_event_still_streams_and_saves_its_checkpoint() {
         .await
         .unwrap();
     for entry in [
-        record(1, EventKind::ContextCompact(ContextCompactData {})),
+        record(
+            1,
+            EventKind::InputMessage(InputMessageData::text("old", None)),
+        ),
         record(
             2,
-            EventKind::ContextCompaction(completed("event-1", "short", 2)),
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: "event-1".into(),
+            }),
+        ),
+        record(
+            3,
+            EventKind::InputMessage(InputMessageData::text("kept", None)),
+        ),
+        record(4, EventKind::ContextCompact(ContextCompactData {})),
+        record(
+            5,
+            EventKind::ContextCompaction(completed("event-4", "short", 4)),
+        ),
+        record(
+            6,
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: "event-3".into(),
+            }),
         ),
     ] {
         append(&store, key("session", "main"), vec![entry])
@@ -1798,19 +1830,49 @@ async fn a_cut_on_an_unflagged_event_still_streams_and_saves_its_checkpoint() {
         (false, false)
     );
     let renderer = HistoryRenderer::default();
-    renderer.rendered_stream(&timeline, 2, 256).await.unwrap();
+    let (context, history) = renderer.rendered_context(&timeline, 6).await.unwrap();
+    assert!(context.checkpoint.is_none());
+    assert_eq!(
+        context_messages(&context, &history),
+        vec![
+            Arc::new(summary_message("short")),
+            Arc::new(Message::text(Role::User, "kept"))
+        ]
+    );
+    assert_eq!(
+        renderer
+            .rendered_stream(&timeline, 6, 1)
+            .await
+            .unwrap()
+            .history,
+        history
+    );
     let checkpoint = renderer
-        .stream_checkpoint(&timeline, 2, "event-1", 256)
+        .stream_checkpoint(&timeline, 4, "event-4", 1)
         .await
         .unwrap();
+    assert_eq!(checkpoint.resume.sequence, 4);
+    assert_eq!(checkpoint.resume.branch_id, "main");
+    assert_eq!(checkpoint.state.retain_from, "event-4");
+    let anchor = context
+        .events
+        .iter()
+        .find(|event| event.id == "event-5")
+        .unwrap();
+    timeline
+        .save_snapshot(
+            renderer
+                .snapshot_from_checkpoint(&checkpoint, anchor)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (resumed, resumed_history) = renderer.rendered_context(&timeline, 6).await.unwrap();
+    assert!(resumed.checkpoint.is_some());
     assert_eq!(
-        (
-            checkpoint.resume.branch_id.as_str(),
-            checkpoint.resume.sequence
-        ),
-        ("main", 1)
+        context_messages(&resumed, &resumed_history),
+        context_messages(&context, &history)
     );
-    assert_eq!(checkpoint.state.retain_from, "event-1");
     db.close().await.unwrap();
 }
 

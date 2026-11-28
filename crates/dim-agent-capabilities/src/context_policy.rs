@@ -1710,18 +1710,19 @@ impl ContextPolicy {
         if request.is_ok() {
             let saved = async {
                 let snapshot = match view.context.full() {
-                    Some(context) => Some(self.history.snapshot(context, retain_from, &fact)?),
+                    Some(context) => {
+                        self.history
+                            .snapshot_at(&self.timeline, context, view.through, retain_from, &fact)
+                            .await?
+                    }
                     None => {
                         let checkpoint = self
                             .history
                             .stream_checkpoint(&self.timeline, view.through, retain_from, 256)
                             .await
                             .map_err(|error| error.to_string())?;
-                        Some(self.history.snapshot_from_checkpoint(&checkpoint, &fact)?)
+                        self.history.snapshot_from_checkpoint(&checkpoint, &fact)?
                     }
-                };
-                let Some(snapshot) = snapshot else {
-                    return Ok(());
                 };
                 self.timeline
                     .save_snapshot(snapshot)
