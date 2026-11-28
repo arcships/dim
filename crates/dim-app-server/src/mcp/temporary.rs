@@ -91,7 +91,7 @@ fn missing() -> RpcError {
 }
 
 pub(super) struct TemporaryMcp {
-    identity: Key<dim_agent_runtime::SessionIdentity>,
+    identity: Key<dim_agent_runtime::SessionScope>,
     files: Key<dim_agent_capabilities::host::SessionFiles>,
     session: InstanceId,
     methods: Key<SessionMethods>,
@@ -203,7 +203,12 @@ impl DynPlugin for TemporaryMcp {
                     }
                 }
             });
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .require_at(&self.identity)?
+                .describe()
+                .map_err(|error| {
+                    rutis::Error::msg(format!("Session description unavailable: {error}"))
+                })?;
             let files = ctx.get_at(&self.files);
             let context = ctx.clone();
             let (session, tools, lifecycle) =

@@ -963,7 +963,7 @@ pub struct ToolRegistryPlugin {
     registry: Key<ToolRegistry>,
     view: Key<ToolSourcesView>,
     host: Key<ToolHost>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     identity: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
 }
@@ -995,7 +995,14 @@ impl DynPlugin for ToolRegistryPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let host = ctx.require_at(&self.host)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let identity = ctx.require_at(&self.identity)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let host_tools = host

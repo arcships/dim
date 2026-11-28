@@ -10,8 +10,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     BRANCH_GROUP, BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget,
-    SESSION_GROUP, SessionConfig, SessionLifecycle, SessionLoader,
-};
+    SESSION_GROUP, SessionConfig, SessionLifecycle, SessionLoader, SessionScope};
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -129,7 +128,7 @@ pub struct SkillsPlugin {
     /// The Session instance its content services are keyed in.
     session: InstanceId,
     catalog: Key<SkillsCatalog>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     loader: Key<SessionLoader>,
     lifecycle: Key<SessionLifecycle>,
     prompts: Key<PromptRegistry>,
@@ -190,7 +189,14 @@ impl DynPlugin for SkillsPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let catalog = ctx.require_at(&self.catalog)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let loader = ctx.require_at(&self.loader)?;
             let session = ctx.require_at(&self.lifecycle)?;
             let prompts = ctx.require_at(&self.prompts)?;

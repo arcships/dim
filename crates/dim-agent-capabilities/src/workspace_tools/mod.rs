@@ -325,7 +325,7 @@ struct WorkspaceToolsPlugin {
     facts: Key<crate::file_access::FileAccessFacts>,
     host: Key<ToolHost>,
     platform: Key<HostPlatform>,
-    session_config: Key<SessionConfig>,
+    session_config: Key<SessionScope>,
     identity: Key<SessionScope>,
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
@@ -380,7 +380,14 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 )));
             }
             let platform = ctx.require_at(&self.platform)?;
-            let config = ctx.require_at(&self.session_config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.session_config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let identity = ctx.require_at(&self.identity)?;
             let tree = ctx.require_at(&self.tree)?;
             let methods = ctx.require_at(&self.methods)?;
