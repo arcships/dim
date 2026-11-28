@@ -677,7 +677,6 @@ pub async fn chat(
                 }
             };
             display.failed = false;
-            let was_uncertain = draft.pending.is_some();
             code = match wait_turn(
                 client,
                 &session_id,
@@ -693,7 +692,7 @@ pub async fn chat(
             {
                 Ok(code) => code,
                 Err(error) if draft.pending.is_some() => {
-                    notice = Some(if !was_uncertain && submission::refused(error.as_ref()) {
+                    notice = Some(if submission::refused(error.as_ref()) {
                         draft.pending = None;
                         tf("{reason}; draft retained", &[("reason", &error.to_string())])
                     } else {

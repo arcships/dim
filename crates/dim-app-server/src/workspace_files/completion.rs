@@ -4,6 +4,7 @@ use dim_agent_capabilities::{
     workspace_tools::mentions::{self, MentionIndex},
 };
 use dim_agent_types::native_files::{Complete, Completions, FileCandidate};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 pub(super) fn complete(index: &MentionIndex, request: Complete) -> Result<Completions, RpcError> {
@@ -33,12 +34,19 @@ pub(super) fn complete(index: &MentionIndex, request: Complete) -> Result<Comple
         };
         let mut entries = Vec::new();
         let needle = needle.to_lowercase();
-        let Ok(children) = std::fs::read_dir(dir) else {
-            return Ok(Completions {
-                candidates: Vec::new(),
-            });
+        let children = match std::fs::read_dir(dir) {
+            Ok(children) => children,
+            Err(error)
+                if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
+            {
+                return Ok(Completions {
+                    candidates: Vec::new(),
+                });
+            }
+            Err(error) => return Err(RpcError::invalid(error.to_string())),
         };
-        for entry in children.take(2000).flatten() {
+        for entry in children.take(2000) {
+            let entry = entry.map_err(|error| RpcError::invalid(error.to_string()))?;
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };

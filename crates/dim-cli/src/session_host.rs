@@ -1608,21 +1608,12 @@ impl Worker {
             .get(&self.focus)
             .is_some_and(|h| h.error.is_some())
         {
-            let message =
-                "Conversation state could not be read; retry the read before submitting".to_owned();
-            return if reconcile {
-                Delivery::Unconfirmed(message)
-            } else {
-                Delivery::Refused(message)
-            };
+            return Delivery::Refused(
+                "Conversation state could not be read; retry the read before submitting".into(),
+            );
         }
-        match self
-            .send_prepared(key, &draft.parts, draft.mode.as_str())
+        self.send_prepared(key, &draft.parts, draft.mode.as_str())
             .await
-        {
-            Delivery::Refused(reason) if reconcile => Delivery::Unconfirmed(reason),
-            result => result,
-        }
     }
 
     /// A command typed for a Session and line only runs while it still names

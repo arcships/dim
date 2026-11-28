@@ -179,6 +179,7 @@ impl Remote {
                 limit: Some(RESULTS),
             };
             self.job = Some(self.target.runtime.spawn(async move {
+                tokio::time::sleep(crate::attachments::COMPLETION_DEBOUNCE).await;
                 let result =
                     crate::attachments::complete(&target.config, &target.instance, request).await;
                 let _ = tx.send(result.map_err(|e| e.to_string()));

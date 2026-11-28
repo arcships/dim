@@ -89,10 +89,7 @@ pub fn run_cli() -> i32 {
     match result {
         Ok(code) => code,
         Err(error) => {
-            eprintln!(
-                "Error: {}",
-                crate::sanitize::safe(ui::i18n::t(&error.to_string()))
-            );
+            eprintln!("Error: {}", crate::sanitize::safe(&error.to_string()));
             1
         }
     }

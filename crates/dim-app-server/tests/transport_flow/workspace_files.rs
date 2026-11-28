@@ -138,6 +138,15 @@ async fn workspace_search_matches_the_session_search_and_shares_its_index() {
         assert!(candidates(&completion).is_empty(), "{completion}");
     }
 
+    std::os::unix::fs::symlink("loop", root.join("loop")).unwrap();
+    let failed = client
+        .rpc(
+            "workspace.files.complete",
+            json!({"cwd": root, "query": root.join("loop/note")}),
+        )
+        .await;
+    assert!(failed.get("error").is_some(), "{failed}");
+
     let session_search = client
         .rpc(
             "session.files.search",

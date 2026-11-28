@@ -1307,7 +1307,10 @@ pub async fn edit(
             if let Some((range, query)) = query {
                 let found = Draft::completion(base, range, query, remote);
                 if remote.is_some() {
-                    search = Some(Box::pin(found));
+                    search = Some(Box::pin(async move {
+                        tokio::time::sleep(crate::attachments::COMPLETION_DEBOUNCE).await;
+                        found.await
+                    }));
                 } else {
                     match found.await {
                         Ok(value) => completion = Some(value),

@@ -3,12 +3,13 @@
 
 use std::path::{Path, PathBuf};
 
+pub const COMPLETION_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(60);
+
 pub async fn complete(
     config: &dim_client::ConnectionConfig,
     instance: &str,
     request: dim_agent_types::native_files::Complete,
 ) -> crate::Result<Vec<dim_agent_types::native_files::FileCandidate>> {
-    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
     let mut client = dim_client::Client::connect(config).await?;
     if client.instance_id() != instance {
         return Err("The selected device restarted during file search".into());

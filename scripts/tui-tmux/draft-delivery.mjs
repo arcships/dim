@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {once} from 'node:events';
+import {EventEmitter, once} from 'node:events';
 import {rpc} from './native-rpc.mjs';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -8,7 +8,10 @@ import {createInterface} from 'node:readline';
 import {setTimeout as delay} from 'node:timers/promises';
 
 export async function draftDelivery(tui) {
-  await tui.setup({respond: () => ({text: 'Receipt test answered.'})});
+  await tui.setup({respond: request => ({
+    text: request.messages.some(m => m.role === 'user' && JSON.stringify(m.content).includes('edited after refusal'))
+      ? 'Edited draft accepted.' : 'Receipt test answered.',
+  })});
   const receiver = path.join(tui.root, 'receiver');
   const target = path.join(receiver, 'rust', 'daemon.sock');
   const socket = path.join(tui.root, 'receipt.sock');
@@ -20,8 +23,10 @@ export async function draftDelivery(tui) {
     DIMCODE_TERMINAL_NAME: 'Receipt fixture', DIMCODE_TERMINAL_ADDRESS: '127.0.0.1:1'};
   const command = [tui.binary, '--home', tui.home];
   const calls = [], sockets = new Set();
-  let faults = [], refuseModel = false;
+  const observed = new EventEmitter();
+  let faults = [], refuseModel = false, connections = 0;
   const proxy = net.createServer(front => {
+    connections++;
     const back = net.connect(target);
     const lost = new Map();
     for (const stream of [front, back]) {
@@ -39,6 +44,7 @@ export async function draftDelivery(tui) {
     createInterface({input: front}).on('line', line => {
       const request = JSON.parse(line);
       calls.push(request);
+      if (request.method === 'session.input_lookup') observed.emit('lookup', request);
       if (request.method === 'session.model.get' && refuseModel) {
         refuseModel = false;
         return reply(request.id, 'service_reloading', 'model temporarily unavailable');
@@ -46,6 +52,8 @@ export async function draftDelivery(tui) {
       if (request.method === 'session.submit') {
         const fault = faults.shift();
         if (fault === 'refuse') return reply(request.id, 'input_blocked', 'fixture refusal');
+        if (fault === 'before-edit') return reply(request.id, 'submission_unknown', 'edit receipt missing');
+        if (fault === 'reject-edit') return reply(request.id, 'input_blocked', 'retry refused at target');
         if (fault === 'before') return reply(request.id, 'submission_unknown', 'receipt missing');
         if (fault) lost.set(request.id, fault);
       }
@@ -79,12 +87,17 @@ export async function draftDelivery(tui) {
       await terminal.waitFor(mode === 'line' ? 'Enter: send' : 'Ask anything');
       if (mode === 'line') {
         const start = calls.length;
-        terminal.send('@note');
+        const opened = connections;
+        for (const key of '@note') {
+          terminal.send(key);
+          await delay(5);
+        }
         await terminal.waitFor('* notes.txt');
         terminal.key('Down', 'Up', 'End');
         await delay(200);
         assert.deepEqual(calls.slice(start).filter(r => r.method === 'workspace.files.complete')
           .map(r => r.params.query), ['note']);
+        assert.equal(connections - opened, 1, 'one connection for the completed query');
         terminal.key('C-c');
         const image = path.join(tui.root, 'pixel.png');
         fs.writeFileSync(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64'));
@@ -106,7 +119,9 @@ export async function draftDelivery(tui) {
         terminal.key('Enter');
       }
       await terminal.waitFor('Delivery unconfirmed');
+      const checked = once(observed, 'lookup');
       terminal.key('Enter');
+      await checked;
       await terminal.waitFor(mode === 'line' ? 'The original submission was accepted' : 'Receipt test answered.');
       if (mode !== 'line') await terminal.waitForAbsent('Enter on an empty draft to check and retry');
       const relevant = calls.slice(start);
@@ -120,6 +135,30 @@ export async function draftDelivery(tui) {
       if (mode === 'fullscreen') assert.deepEqual(attempts[2], expected);
       assert.equal(relevant.filter(r => r.method === 'attachment.put').length, 1);
       assert.ok(expected.text.startsWith(mode + ' [Pasted text:'), expected.text);
+      if (mode !== 'scrollback') {
+        const mark = calls.length;
+        faults = ['before-edit', 'reject-edit'];
+        terminal.send('editable ');
+        terminal.paste('y'.repeat(16 * 1024 + 1));
+        await terminal.waitFor(mode === 'line' ? '[Paste 1:' : 'chars');
+        terminal.key('Enter');
+        await terminal.waitFor('edit receipt missing');
+        terminal.key('Enter');
+        await terminal.waitFor('retry refused at target');
+        terminal.key('End');
+        terminal.send(' edited after refusal');
+        terminal.key('Enter');
+        await terminal.waitFor('Edited draft accepted.');
+        const history = calls.slice(mark);
+        const deliveries = history.filter(r => r.method === 'session.submit' || r.method === 'session.input_lookup');
+        assert.deepEqual(deliveries.map(r => r.method), ['session.submit', 'session.input_lookup', 'session.submit', 'session.submit']);
+        const [first, check, retry, edited] = deliveries;
+        assert.equal(check.params.submissionId, first.params.submissionId);
+        assert.deepEqual(retry.params, first.params);
+        assert.notEqual(edited.params.submissionId, first.params.submissionId);
+        assert.equal(edited.params.text, first.params.text + ' edited after refusal');
+        assert.equal(history.filter(r => r.method === 'attachment.put').length, 1);
+      }
       terminal.send('/exit');
       terminal.key('Enter');
       assert.equal((await terminal.waitForExit()).status, 0);
