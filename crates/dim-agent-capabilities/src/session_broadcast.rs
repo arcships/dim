@@ -166,13 +166,13 @@ impl DynPlugin for SessionBroadcastPlugin {
         "SessionBroadcast"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.dispatcher.erase(), self.identity.erase()]
+        vec![self.dispatcher.erase(), self.lifecycle.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
-            let session_id = lifecycle.session_id().clone();
+            let session_id = lifecycle.session_id();
             let branch_id = lifecycle.branch_id().clone();
             let emitter = ctx.clone();
             dispatcher.subscribe_all(ctx, "SessionBroadcast", move |event| {
@@ -196,7 +196,7 @@ pub struct SessionBroadcastEndPlugin {
 impl SessionBroadcastEndPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            lifecycle: names.key()?,
+            identity: names.key()?,
             lifecycle: names.key()?,
         })
     }
@@ -210,13 +210,13 @@ impl DynPlugin for SessionBroadcastEndPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let identity = ctx.require_at(&self.identity)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let emitter = ctx.clone();
             ctx.effect(move || async move {
                 if !lifecycle.unloading() {
                     let record = SessionBroadcastEvent::Closed;
-                    let _ = emitter.emit(SessionBroadcast::new(&lifecycle.session_id(), record));
+                    let _ = emitter.emit(SessionBroadcast::new(&identity.session_id(), record));
                 }
                 Ok(())
             })?;
