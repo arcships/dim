@@ -785,3 +785,199 @@ async fn an_empty_submission_id_is_refused_and_an_absent_one_writes() {
     }
     rig.host.close().await.unwrap();
 }
+
+/// `inputIfHead` writes only while the line's last sequence is still the head
+/// the caller read, and answers `null` without writing once a fact committed
+/// behind it ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn input_if_head_writes_only_at_the_head_it_read() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let call = |method: &str, args: Vec<serde_json::Value>| {
+        scope.line_call(LineCall::new("main", "timelineContext", method, args))
+    };
+    let message = |id: &str| {
+        let mut data = InputMessageData::text("conditional input", Some(InputMode::Append));
+        data.submission_id = Some(id.into());
+        serde_json::to_value(data).unwrap()
+    };
+    let head = || async {
+        scope
+            .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
+            .await
+            .unwrap()
+            .and_then(|value| value.as_u64())
+            .expect("the line answers its head")
+    };
+
+    let at = head().await;
+    let written = call(
+        "inputIfHead",
+        vec![message("head:first"), serde_json::json!(at)],
+    )
+    .await
+    .unwrap()
+    .expect("inputIfHead answers");
+    assert_eq!(written["data"]["submission_id"], "head:first", "{written}");
+    let stale = call(
+        "inputIfHead",
+        vec![message("head:stale"), serde_json::json!(at)],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stale,
+        Some(serde_json::Value::Null),
+        "a fact behind the head writes nothing"
+    );
+    let found = call("lookup", vec![serde_json::json!("head:stale")])
+        .await
+        .unwrap();
+    assert_eq!(found, Some(serde_json::Value::Null), "nothing was written");
+    rig.host.close().await.unwrap();
+}
+
+/// `inputs` commits a batch at once and answers a resubmission of the whole
+/// batch with the first inputs; a batch that only partly repeats writes
+/// nothing ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inputs_commit_a_batch_once_and_refuse_a_partial_repeat() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let call = |args: Vec<serde_json::Value>| {
+        scope.line_call(LineCall::new("main", "timelineContext", "inputs", args))
+    };
+    let message = |id: &str| {
+        let mut data = InputMessageData::text("batch input", Some(InputMode::Append));
+        data.submission_id = Some(id.into());
+        serde_json::to_value(data).unwrap()
+    };
+
+    let batch = serde_json::json!([message("batch:a"), message("batch:b")]);
+    let first = call(vec![batch.clone()])
+        .await
+        .unwrap()
+        .expect("inputs answers its events");
+    let events = first.as_array().expect("one event per input");
+    assert_eq!(events.len(), 2, "{first}");
+    assert_eq!(
+        events[1]["sequence"].as_u64(),
+        events[0]["sequence"].as_u64().map(|sequence| sequence + 1),
+        "one commit, in order: {first}"
+    );
+    let again = call(vec![batch]).await.unwrap();
+    assert_eq!(
+        again,
+        Some(first.clone()),
+        "a repeated batch answers the first"
+    );
+    let partial = call(vec![serde_json::json!([
+        message("batch:a"),
+        message("batch:c")
+    ])])
+    .await;
+    assert!(partial.is_err(), "a partial repeat is refused: {partial:?}");
+    let found = scope
+        .line_call(LineCall::new(
+            "main",
+            "timelineContext",
+            "lookup",
+            vec![serde_json::json!("batch:c")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(found, Some(serde_json::Value::Null), "nothing was written");
+    rig.host.close().await.unwrap();
+}
+
+/// `interrupt` commits a turn interrupt and answers its sequence without
+/// waiting for a turn to settle ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_answers_the_sequence_it_committed() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let before = scope
+        .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
+        .await
+        .unwrap()
+        .and_then(|value| value.as_u64())
+        .unwrap();
+    let interrupt = scope
+        .line_call(LineCall::new(
+            "main",
+            "timelineContext",
+            "interrupt",
+            vec![serde_json::json!("routing interrupt")],
+        ))
+        .await
+        .unwrap()
+        .and_then(|value| value.as_u64())
+        .expect("interrupt answers a sequence");
+    assert!(
+        interrupt > before,
+        "the interrupt is a new fact: {interrupt} > {before}"
+    );
+    rig.host.close().await.unwrap();
+}
+
+/// An input that reaches a line after its close started is refused `Closed`
+/// by the line itself and writes nothing, while the holder can still select
+/// the closing line; the route answers `no_line` for it
+/// ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_input_racing_a_close_is_refused_by_the_line() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let id = session.id().to_owned();
+    let scope = rig.scope(&session);
+    let source = || BranchSource::Host {
+        operation_id: "close-race".into(),
+    };
+    let line_id = session
+        .branch(
+            "main".into(),
+            0,
+            BranchOptions {
+                prompt: "a line that closes".into(),
+                source: source(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut held = hold_close(&id, &line_id);
+    let ending = {
+        let session = session.clone();
+        let line_id = line_id.clone();
+        tokio::spawn(async move { session.end_branch(&line_id, source()).await })
+    };
+    held.arrived().await;
+
+    let line = rig
+        .host
+        .routed_session(&id)
+        .expect("the owning instance serves its scope")
+        .line(&line_id)
+        .expect("the holder still selects a closing line");
+    let mut data = InputMessageData::text("too late", Some(InputMode::Append));
+    data.submission_id = Some("close:late".into());
+    let refused = line.context().input(data).await;
+    assert!(
+        matches!(refused, Err(AgentError::Closed(_))),
+        "the closing line refuses the input: {refused:?}"
+    );
+    assert!(
+        matches!(
+            scope
+                .line_call(LineCall::new(&line_id, "timeline", "sequence", vec![]))
+                .await,
+            Err(RouteError::NoLine { .. })
+        ),
+        "the route does not select a closing line"
+    );
+    held.release();
+    ending.await.unwrap().unwrap();
+    rig.host.close().await.unwrap();
+}

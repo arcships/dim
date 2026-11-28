@@ -3228,9 +3228,10 @@ async fn read_page(
     if through > head || after > through {
         return Err(AgentError::InvalidInput("future Timeline cursor".into()));
     }
-    // The face exposes no batch-boundary probe: a page ends on an atomic
-    // batch, so the cut is the published head the caller asked for.
-    let _ = (sessions, after);
+    // A page ends at `after + limit` or at `through`, whichever comes first;
+    // it does not look for an atomic batch boundary. Its readers (the input's
+    // fate and a request's outcome) read facts one by one and page on from
+    // where the last page ended, so a cut inside a batch loses nothing.
     if after == through {
         return Ok((after, Vec::new()));
     }
