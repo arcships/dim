@@ -8,7 +8,9 @@
 //! and a write whose id would share an output directory with a stored one
 //! under a supported filesystem's identity rules — Unicode folding pairs,
 //! default-ignorable code points, the Windows separators, trailing dots and
-//! spaces and Unicode mappings, and the 8.3 short names. Both refusals are
+//! spaces and Unicode mappings, the 8.3 short names, and the relative
+//! segments either platform resolves before it accesses the directory. Ids
+//! resolving at or outside the output root refuse nothing. Both refusals are
 //! InvalidInput, while a byte-identical duplicate keeps its Storage error. A
 //! fork refused before its copy starts writes nothing and drops nothing, so
 //! it cannot delete the rows of the Session it conflicted with. Ids already
@@ -774,6 +776,151 @@ directory_shape!(
     "ab12cd~7",
     "abwxyztuv",
     "an 8.3 volume may serve the long name abwxyztuv as the hashed ab12cd~7"
+);
+directory_shape!(
+    windows_parent_segment_climbs_out_and_back_to_the_candidate,
+    "x\\..\\abc",
+    "abc",
+    "under Windows rules x\\..\\abc resolves the parent segment before the directory is accessed, landing on abc"
+);
+directory_shape!(
+    windows_dot_segment_is_dropped_before_the_directory_is_accessed,
+    ".\\abc",
+    "abc",
+    "under Windows rules the . segment is dropped, so .\\abc is abc"
+);
+directory_shape!(
+    windows_trailing_dot_segment_lands_on_the_parent,
+    "abc\\.",
+    "abc",
+    "under Windows rules abc\\. resolves inside abc, which the candidate's own directory covers"
+);
+directory_shape!(
+    windows_inner_parent_segment_cancels_into_the_first,
+    "abc\\x\\..",
+    "abc",
+    "under Windows rules abc\\x\\.. resolves to abc itself"
+);
+directory_shape!(
+    windows_reentry_after_a_climb_out_passes_through_the_root_name,
+    "..\\command-output\\abc",
+    "abc",
+    "under Windows rules ..\\command-output\\abc climbs out of the output root and re-enters it onto abc"
+);
+directory_shape!(
+    forward_slash_parent_segment_resolves_on_posix,
+    "x/../abc",
+    "abc",
+    "a forward-slash parent segment resolves on POSIX, so x/../abc lands on abc"
+);
+
+/// A legacy id whose resolved output directory never covers a candidate's:
+/// its path climbs out of the output root without re-entering it, lands on
+/// the root itself, leaves the root sideways, or the join replaces the root.
+/// Refusing candidates over these would lock ids that share nothing. Creation
+/// and the fork admission each run in a fresh store, since the admitted id is
+/// written by then.
+async fn assert_directory_shape_admitted(stored: &str, candidate: &str, why: &str) {
+    for fork_only in [false, true] {
+        let database = Database::new();
+        let directory = database.0.parent().unwrap().canonicalize().unwrap();
+        let root = rutis::Ctx::root().unwrap();
+        (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+            .await
+            .unwrap();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+        let store = SqliteTimelineStore::new(db.clone());
+        let connection = Connection::open(&database.0).unwrap();
+        seed_owner(&connection);
+        seed_stored_session(&connection, stored);
+        store
+            .create_session("source", &SessionConfig::default())
+            .await
+            .unwrap();
+        append(&store, key("source", "main"), vec![text(1, "source")])
+            .await
+            .unwrap();
+        let config = sessions
+            .session_config_text("source")
+            .await
+            .unwrap()
+            .unwrap();
+
+        if fork_only {
+            let forked = sessions.fork_session("source", candidate, 1, &config).await;
+            assert!(
+                forked.is_ok(),
+                "{why}: forking into {candidate:?} while {stored:?} is stored must succeed, got {forked:?}"
+            );
+        } else {
+            let created = sessions
+                .create_owned_session(
+                    candidate,
+                    &SessionConfig::default(),
+                    "owner",
+                    2,
+                    None,
+                    SessionOrigin::Client,
+                    None,
+                )
+                .await;
+            assert!(
+                created.is_ok(),
+                "{why}: creating {candidate:?} while {stored:?} is stored must succeed, got {created:?}"
+            );
+        }
+        assert!(
+            stored_rows(&connection, candidate) > 0,
+            "{why}: the admitted candidate {candidate:?} is written"
+        );
+
+        drop(connection);
+        drop(sessions);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+}
+
+macro_rules! directory_shape_admitted {
+    ($name:ident, $stored:expr, $candidate:expr, $why:expr) => {
+        #[tokio::test]
+        async fn $name() {
+            assert_directory_shape_admitted($stored, $candidate, $why).await;
+        }
+    };
+}
+
+directory_shape_admitted!(
+    windows_climb_out_without_reentry_shares_nothing,
+    "..\\abc",
+    "abc",
+    "..\\abc resolves beside the output root, never inside the candidate's directory"
+);
+directory_shape_admitted!(
+    windows_resolution_landing_on_the_root_shares_nothing,
+    "abc\\..",
+    "abc",
+    "abc\\.. resolves onto the output root itself, which no candidate's directory is"
+);
+directory_shape_admitted!(
+    windows_resolution_leaving_the_root_sideways_shares_nothing,
+    "abc\\..\\def",
+    "abc",
+    "abc\\..\\def resolves to def, a sibling of the candidate's directory"
+);
+directory_shape_admitted!(
+    windows_rooted_path_replaces_the_output_root,
+    "\\abc",
+    "abc",
+    "a rooted path replaces the output root in the join, so \\abc never lands inside it"
+);
+directory_shape_admitted!(
+    windows_resolution_deeper_than_one_segment_shares_nothing,
+    "x\\abc",
+    "abc",
+    "x\\abc resolves two components deep, below x rather than inside abc"
 );
 
 /// A trigger that stands in for another connection committing a Session of

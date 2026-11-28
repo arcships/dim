@@ -671,11 +671,19 @@ impl SqliteStorage {
         session: String,
         config: SessionConfig,
     ) -> Result<()> {
+        let database = self.path.clone();
         self.run(move |connection| {
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(error)?;
-            create_session(&tx, &session, &config, None, SessionOrigin::Unknown)?;
+            create_session(
+                &tx,
+                &database,
+                &session,
+                &config,
+                None,
+                SessionOrigin::Unknown,
+            )?;
             tx.commit().map_err(error)
         })
         .await
@@ -1761,13 +1769,14 @@ impl SessionStore {
                 },
             )
             .transpose()?;
+        let database = self.timeline.db.path.clone();
         self.timeline
             .db
             .run(move |connection| {
                 let tx = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(error)?;
-                create_session(&tx, &session, &config, leader.as_deref(), origin)?;
+                create_session(&tx, &database, &session, &config, leader.as_deref(), origin)?;
                 tx.execute(
                     "INSERT INTO session_owners VALUES (?1, ?2, ?3)",
                     params![session, agent, protocol_version],
@@ -2404,25 +2413,21 @@ fn non_ascii_word_conflicts(connection: &Connection) -> Result<Vec<String>> {
     Ok(rows)
 }
 
-/// The identity of `stored` on a volume that folds case — APFS, HFS+ or a
-/// Linux casefold directory — as one canonical key: lowercase, uppercase,
-/// then ASCII-lowercase. Lowercase alone misses the pairs whose lowercase is
-/// the same non-ASCII letter while their uppercase differs; uppercasing in
-/// between maps every folding pair onto one key — ASCII case, the Kelvin
-/// sign, the long s, ß/ẞ onto ss, the ligatures onto their expansion. The
-/// second key strips the Unicode default-ignorable code points first, which a
-/// casefold volume drops before comparing. The admitted lowercase ASCII
-/// candidate is its own key, so comparison is bytewise.
-fn casefold_keys(stored: &str) -> [String; 2] {
-    let fold = |text: &str| text.to_lowercase().to_uppercase().to_ascii_lowercase();
-    let folded = fold(stored);
-    let stripped = fold(
-        &stored
-            .chars()
-            .filter(|c| !is_default_ignorable(*c))
-            .collect::<String>(),
-    );
-    [folded, stripped]
+/// The identity of `name` on a volume that folds case — APFS, HFS+ or a
+/// Linux casefold directory — as one canonical key: the Unicode
+/// default-ignorable code points stripped first, which a casefold volume
+/// drops before comparing, then lowercase, uppercase, then ASCII-lowercase.
+/// Lowercase alone misses the pairs whose lowercase is the same non-ASCII
+/// letter while their uppercase differs; uppercasing in between maps every
+/// folding pair onto one key — ASCII case, the Kelvin sign, the long s, ß/ẞ
+/// onto ss, the ligatures onto their expansion.
+fn casefold_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !is_default_ignorable(*c))
+        .collect::<String>()
+        .to_lowercase()
+        .to_uppercase()
+        .to_ascii_lowercase()
 }
 
 /// The Unicode default-ignorable code points a casefold volume strips from a
@@ -2457,14 +2462,37 @@ fn windows_lower(stored: &str) -> String {
         .collect()
 }
 
-/// The name `stored` addresses on a Windows volume after its syntactic rules:
-/// the segment before the first backslash, then before the first colon — what
-/// a path inside the directory or one of its streams shares — with trailing
-/// dots and spaces trimmed, under the Windows case mapping.
-fn windows_name(stored: &str) -> String {
-    let backslash = stored.split('\\').next().unwrap_or(stored);
-    let colon = backslash.split(':').next().unwrap_or(backslash);
-    windows_lower(colon.trim_end_matches(['.', ' ']))
+/// Whether two path components can address the same entry on a Windows
+/// volume: equal after the syntactic rules — the part before the first
+/// colon, which the directory itself and every stream of it share, trailing
+/// dots and spaces trimmed — under the Windows case mapping, or one the 8.3
+/// short name the volume can serve the other as.
+fn windows_names_share(one: &str, other: &str) -> bool {
+    let windows_name = |name: &str| {
+        windows_lower(
+            name.split(':')
+                .next()
+                .unwrap_or(name)
+                .trim_end_matches(['.', ' ']),
+        )
+    };
+    let (one, other) = (windows_name(one), windows_name(other));
+    one == other || windows_8_3_share(&one, &other) || windows_8_3_share(&other, &one)
+}
+
+/// Whether `short` can be the 8.3 short name a Windows volume serves `long`
+/// as, the directional half of [`windows_names_share`]: the classic form
+/// truncates at the stem, so the name must exceed the eight characters the
+/// volume caps the short form at.
+fn windows_8_3_share(short: &str, long: &str) -> bool {
+    long.len() > 8 && short.len() <= 8 && windows_8_3_collides(short, long)
+}
+
+/// Whether two path components can address the same entry under the identity
+/// rules of a supported filesystem — a volume folding case, or a Windows
+/// volume with its colon syntax, trailing characters and 8.3 short names.
+fn components_share(one: &str, other: &str) -> bool {
+    casefold_name(one) == casefold_name(other) || windows_names_share(one, other)
 }
 
 /// Whether `stem` (the Windows form of a stored id, tilde and tail included)
@@ -2497,29 +2525,121 @@ fn windows_8_3_collides(stem: &str, candidate: &str) -> bool {
         && candidate.starts_with(&letters[..letters.len() - 4].iter().collect::<String>())
 }
 
+/// The normal components of `<database directory>/command-output`, the root
+/// every Session output directory is joined under (session files §3.1 and
+/// the deletion layout in storage/files.rs). The joining form mirrors the
+/// launcher's current working directory, which matters only for a relative
+/// database path.
+fn output_root_components(database: &Path) -> Vec<String> {
+    let joined = std::env::current_dir()
+        .map(|cwd| cwd.join(database))
+        .unwrap_or_else(|_| database.to_path_buf());
+    let mut components: Vec<String> = joined
+        .parent()
+        .map(|parent| {
+            parent
+                .components()
+                .filter_map(|part| match part {
+                    Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    components.push(super::COMMAND_OUTPUT_DIRECTORY.into());
+    components
+}
+
+/// The components of `root.join(stored)` after the relative segments a
+/// Windows volume resolves before it touches the directory (#2204): both
+/// separators split, trailing dots and spaces trimmed, `.` dropped and `..`
+/// consuming the deepest component left — and nothing once the root is
+/// reached. `None` for a path the join replaces `root` with — rooted or
+/// drive-anchored — which can never share the root's directory. The same
+/// resolution runs on the POSIX separators a forward-slash id carries, so a
+/// store moving between platforms keeps one comparison.
+fn resolve_output_directory(root: &[String], stored: &str) -> Option<Vec<String>> {
+    let text = if stored.len() >= 2
+        && stored.as_bytes()[1] == b':'
+        && stored.as_bytes()[0].is_ascii_alphabetic()
+    {
+        &stored[2..]
+    } else {
+        stored
+    };
+    if text.starts_with(['/', '\\']) {
+        return None;
+    }
+    let mut resolved: Vec<String> = root.to_vec();
+    for segment in text.split(['/', '\\']) {
+        if segment.is_empty() {
+            continue;
+        }
+        // `.` and `..` are relative before the trailing trim consumes them;
+        // one trimming to them is relative too: the exact segments resolve on
+        // every platform, and the trailing trim Windows applies to a name is
+        // ambiguous for them, so the relative reading — the one that resolves
+        // to a real directory — is the one that can collide.
+        if segment == "." {
+            continue;
+        }
+        if segment == ".." {
+            resolved.pop();
+            continue;
+        }
+        let trimmed = segment.trim_end_matches(['.', ' ']);
+        if trimmed == "." {
+            continue;
+        }
+        if trimmed == ".." {
+            resolved.pop();
+            continue;
+        }
+        resolved.push(trimmed.into());
+    }
+    Some(resolved)
+}
+
 /// Whether a stored Session id can share its output directory with a newly
 /// admitted id under the identity rules of a supported filesystem — a volume
 /// folding case, or a Windows volume with its separators, trailing characters
-/// and 8.3 short names. Both rule sets apply wherever the store runs, so a
-/// store moving between platforms keeps its isolation (#2204): refusing too
-/// much is safe, missing a collision is not.
-fn shares_output_directory(stored: &str, candidate: &str) -> bool {
-    if casefold_keys(stored).iter().any(|key| key == candidate) {
-        return true;
+/// and 8.3 short names — once the id is resolved against the output root the
+/// way the platform accessing it does (#2204). The directories share when the
+/// stored id's directory is the candidate's own or inside it, because writing
+/// and deletion follow the directory recursively. An id resolving at or above
+/// the root — `..` climbing out of it — and one whose path leaves the root
+/// share nothing the candidate's directory covers, so they do not refuse.
+/// Re-entering the root after a climb passes through the root's real
+/// components, which the comparison of those components checks.
+/// Both rule sets apply wherever the store runs, so a store moving between
+/// platforms keeps its isolation: refusing too much is safe, missing a
+/// collision is not.
+fn shares_output_directory(root: &[String], stored: &str, candidate: &str) -> bool {
+    let Some(resolved) = resolve_output_directory(root, stored) else {
+        return false;
+    };
+    if resolved.len() < root.len() + 1 {
+        return false;
     }
-    let windows = windows_name(stored);
-    if windows == candidate {
-        return true;
+    for (component, root_component) in resolved.iter().zip(root) {
+        if !components_share(component, root_component) {
+            return false;
+        }
     }
-    candidate.len() > 8 && windows.len() <= 8 && windows_8_3_collides(&windows, candidate)
+    components_share(&resolved[root.len()], candidate)
 }
 
 /// A stored id that shares an output directory with `candidate` beyond ASCII
 /// case folding, judged row by row under the filesystem identity rules
 /// (#2204).
-fn directory_conflict(connection: &Connection, candidate: &str) -> Result<Option<String>> {
+fn directory_conflict(
+    connection: &Connection,
+    database: &Path,
+    candidate: &str,
+) -> Result<Option<String>> {
+    let root = output_root_components(database);
     for stored in non_ascii_word_conflicts(connection)? {
-        if shares_output_directory(&stored, candidate) {
+        if shares_output_directory(&root, &stored, candidate) {
             return Ok(Some(stored));
         }
     }
@@ -2527,13 +2647,14 @@ fn directory_conflict(connection: &Connection, candidate: &str) -> Result<Option
 }
 fn create_session(
     connection: &Connection,
+    database: &Path,
     session: &str,
     config: &SessionConfig,
     leader: Option<&str>,
     origin: SessionOrigin,
 ) -> Result<()> {
     dim_agent_runtime::check_new_session_id(session)?;
-    reject_conflicting_id(connection, session)?;
+    reject_conflicting_id(connection, database, session)?;
     let config = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
@@ -3201,10 +3322,13 @@ impl SqliteTimelineStore {
             .collect();
         let (source, fork, config) = (source.to_owned(), fork.to_owned(), config.to_owned());
         let reset = fork.clone();
+        let database = self.db.path.clone();
         let copied = self
             .db
             .run_copy(move |connection| {
-                copy_fork(connection, &source, &fork, at, &content, &arrays, &config)
+                copy_fork(
+                    connection, &database, &source, &fork, at, &content, &arrays, &config,
+                )
             })
             .await;
         if copied.is_ok() {
@@ -3294,8 +3418,13 @@ fn chunk<T>(connection: &mut Connection, step: impl FnOnce(&Connection) -> Resul
 /// id's rows only while no Session of that exact id exists; one another
 /// connection committed during the copy keeps the cleanup from deleting its
 /// rows.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per piece of the copy"
+)]
 fn copy_fork(
     connection: &mut Connection,
+    database: &Path,
     source: &str,
     fork: &str,
     at: u64,
@@ -3305,7 +3434,7 @@ fn copy_fork(
 ) -> Result<()> {
     let committed = Cell::new(false);
     let copied = copy_fork_rows(
-        connection, source, fork, at, content, arrays, config, &committed,
+        connection, database, source, fork, at, content, arrays, config, &committed,
     );
     if copied.is_err() && committed.get() {
         match drop_fork_rows(connection, fork) {
@@ -3330,7 +3459,7 @@ fn copy_fork(
 /// duplicate's Storage error even when a case variant or a directory-shape
 /// collision is stored beside it (#2204); a case-only variant and a
 /// directory-shape collision are InvalidInput.
-fn reject_conflicting_id(connection: &Connection, candidate: &str) -> Result<()> {
+fn reject_conflicting_id(connection: &Connection, database: &Path, candidate: &str) -> Result<()> {
     let conflicts = case_conflicts(connection, candidate)?;
     if conflicts.iter().any(|stored| stored == candidate) {
         return Err(error(format!("Session id {candidate} already exists")));
@@ -3340,7 +3469,7 @@ fn reject_conflicting_id(connection: &Connection, candidate: &str) -> Result<()>
             "Session id {candidate} differs from a stored one only by case"
         )));
     }
-    if let Some(stored) = directory_conflict(connection, candidate)? {
+    if let Some(stored) = directory_conflict(connection, database, candidate)? {
         return Err(AgentError::InvalidInput(format!(
             "Session id {candidate} would share an output directory with stored Session {stored}"
         )));
@@ -3357,6 +3486,7 @@ fn reject_conflicting_id(connection: &Connection, candidate: &str) -> Result<()>
 )]
 fn copy_fork_rows(
     connection: &mut Connection,
+    database: &Path,
     source: &str,
     fork: &str,
     at: u64,
@@ -3378,7 +3508,7 @@ fn copy_fork_rows(
         // transaction started is seen here, and none can commit before the
         // writes once the lock is held (#2204). A refusal rolls the chunk
         // back, so the copy writes nothing.
-        reject_conflicting_id(tx, fork)?;
+        reject_conflicting_id(tx, database, fork)?;
         branches = tx
             .prepare("SELECT branch_id, info FROM timeline_branches WHERE session_id=?1")
             .map_err(error)?
@@ -3505,7 +3635,7 @@ fn copy_fork_rows(
         // The first chunk's check covered the copy's start; this re-check
         // closes the race against an insertion committed while the chunks
         // copied (#2204).
-        reject_conflicting_id(tx, fork)?;
+        reject_conflicting_id(tx, database, fork)?;
         // A fork is a new Session of the client that forked it, never its
         // source's origin (session classification §3.2).
         tx.execute(
