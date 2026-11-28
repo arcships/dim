@@ -586,7 +586,8 @@ pub struct AgentIndex {
 }
 /// Whether a routed call only reads or waits: it changes nothing, so a caller
 /// may ask it again, and a Session that stays loaded across an Agents reload
-/// can serve it while the next generation loads ([#2227]).
+/// can serve it while the next generation loads ([#2227]). The methods are
+/// listed one by one: `timeline.append` and every write stay refused.
 ///
 /// [#2227]: https://github.com/arcships/dim/pull/2227
 pub(crate) fn changes_nothing(request: &crate::agents::sessions::CallRequest) -> bool {
@@ -595,7 +596,10 @@ pub(crate) fn changes_nothing(request: &crate::agents::sessions::CallRequest) ->
         (
             "timelineContext",
             "waitPublished" | "waitDispatched" | "idle" | "lookup" | "state"
-        ) | ("timeline", _)
+        ) | (
+            "timeline",
+            "branchId" | "ancestors" | "sequence" | "committed" | "hasPending" | "query"
+        )
     )
 }
 

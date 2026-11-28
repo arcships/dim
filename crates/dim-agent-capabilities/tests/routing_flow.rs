@@ -981,3 +981,109 @@ async fn an_input_racing_a_close_is_refused_by_the_line() {
     ending.await.unwrap().unwrap();
     rig.host.close().await.unwrap();
 }
+
+/// A wait whose target the close drain reaches is answered by where dispatch
+/// finally got, also when the close finishes between the wait's read of the
+/// dispatch position and its look at the close: it succeeds, and never
+/// answers `Closed` for a target the drain dispatched
+/// ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wait_reached_by_the_close_drain_succeeds_when_the_close_finishes_first() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let id = session.id().to_owned();
+    let source = || BranchSource::Host {
+        operation_id: "wait-race".into(),
+    };
+    let line_id = session
+        .branch(
+            "main".into(),
+            0,
+            BranchOptions {
+                prompt: "a line that ends".into(),
+                source: source(),
+            },
+        )
+        .await
+        .unwrap();
+    let line = rig
+        .host
+        .routed_session(&id)
+        .expect("the owning instance serves its scope")
+        .line(&line_id)
+        .unwrap();
+    // The line's first turn settles first; then the close's own interrupt is
+    // the next fact, and only the close drain dispatches it.
+    line.context().idle().await.unwrap();
+    let through = line.sequence() + 1;
+    let mut held = dim_agent_runtime::testing::hold_dispatch_wait(&id, &line_id);
+    let waiting = {
+        let line = line.clone();
+        tokio::spawn(async move { line.context().wait_dispatched(through).await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), held.arrived())
+        .await
+        .expect("the wait reads a position short of its target");
+    session.end_branch(&line_id, source()).await.unwrap();
+    held.release();
+    let answer = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the wait settles with the line")
+        .unwrap();
+    assert!(
+        answer.is_ok(),
+        "the drain reached the target before the close finished: {answer:?}"
+    );
+    rig.host.close().await.unwrap();
+}
+
+/// A wait admitted for an input that the line committed before its close is
+/// answered by where dispatch finally got: the close drain dispatches through
+/// its interrupt, past the input, so the wait succeeds however the drain and
+/// the close's completion interleave with it, and never answers `Closed` for
+/// a consumed input ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wait_for_a_committed_input_succeeds_across_the_close() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let id = session.id().to_owned();
+    let source = || BranchSource::Host {
+        operation_id: "wait-close".into(),
+    };
+    for round in 0..20 {
+        let line_id = session
+            .branch(
+                "main".into(),
+                0,
+                BranchOptions {
+                    prompt: "a line that ends".into(),
+                    source: source(),
+                },
+            )
+            .await
+            .unwrap();
+        let line = rig
+            .host
+            .routed_session(&id)
+            .expect("the owning instance serves its scope")
+            .line(&line_id)
+            .unwrap();
+        let mut data = InputMessageData::text("consumed before the end", Some(InputMode::Append));
+        data.submission_id = Some(format!("wait-close:{round}"));
+        let sequence = line.context().input(data).await.unwrap().event.sequence;
+        let waiting = {
+            let line = line.clone();
+            tokio::spawn(async move { line.context().wait_dispatched(sequence).await })
+        };
+        session.end_branch(&line_id, source()).await.unwrap();
+        let answer = tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the wait settles with the line")
+            .unwrap();
+        assert!(
+            answer.is_ok(),
+            "round {round}: the drain dispatched the input, so the wait succeeds: {answer:?}"
+        );
+    }
+    rig.host.close().await.unwrap();
+}

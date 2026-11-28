@@ -297,7 +297,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 
 `delete` 即 Agents 的 Session 删除（S5c）：Session 已装载时先关闭它，再删除它的行与文件。不存在或已删除的 Session 回复 `{}`，因此调用方在任何错误后都可再次删除（[sessions 服务 §6.8](../appserver/sessions-service.md#68-delete)）。启动 Session 的调用方在删掉最后一条指向它的记录时删除它（[§8.7](../appserver/sessions-service.md#87-删除运行用的-session)）。
 
-已实现：上表全部方法，由 Agents 的目录部分提供（S2，[#98](https://github.com/arcships/dim/pull/98)；`delete` 在 S5c 之后加入，[#97](https://github.com/arcships/dim/pull/97)）。`input` 和删除成功的 `withdraw` 都在其事件发布后才回复。
+已实现：上表全部方法，由 Agents 的目录部分提供（S2，[#98](https://github.com/arcships/dim/pull/98)；`delete` 在 S5c 之后加入，[#97](https://github.com/arcships/dim/pull/97)）。删除成功的 `withdraw` 在其事件发布后才回复。线的 `timelineContext.input` 经 `call` 调用，在输入提交后、发布前就回复：不能让投递记录先于存储的调用方，要先用 `timelineContext.waitPublished(event.sequence)` 或 `timelineContext.lookup(submissionId)` 确认已发布。
 
 ### A.2 来源输入约定
 

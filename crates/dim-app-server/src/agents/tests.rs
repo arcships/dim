@@ -432,6 +432,30 @@ async fn agents_restart_records_a_creation_timeout_and_keeps_loaded_sessions() {
         let root = held.arrived().await;
         let reply = call(&root, "call", lookup(&stored.session)).await;
         assert_eq!(reply, stored.accepted, "a loaded Session answers its read");
+        // A write is not served meanwhile: `timeline.append` answers the
+        // reload result and appends nothing.
+        let before = dim_agent_runtime::testing::SessionLines::sequence(&loaded, "main").unwrap();
+        let append = call(
+            &root,
+            "call",
+            json!({
+                "sessionId": stored.session,
+                "lineId": "main",
+                "service": "timeline",
+                "method": "append",
+                "args": [{"type": "input", "name": "message", "data": {
+                    "mode": "append",
+                    "blocks": [{"type": "raw", "text": "during the reload"}],
+                }}],
+            }),
+        )
+        .await;
+        assert_eq!(append["error"]["code"], "session_reloading", "{append}");
+        assert_eq!(
+            dim_agent_runtime::testing::SessionLines::sequence(&loaded, "main").unwrap(),
+            before,
+            "nothing was appended"
+        );
     });
     restarted.unwrap();
     let index = server.root.get::<AgentIndex>().unwrap();

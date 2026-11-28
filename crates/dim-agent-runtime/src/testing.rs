@@ -314,6 +314,90 @@ pub(crate) async fn closing(session_id: &str, branch: &str) {
     }
 }
 
+/// One dispatch wait, stopped after it read a dispatch position short of its
+/// target and before it looks at the line's close.
+struct WaitHold {
+    session: String,
+    branch: String,
+    arrived: mpsc::UnboundedSender<()>,
+    release: watch::Receiver<bool>,
+}
+static WAITS: Mutex<Vec<WaitHold>> = Mutex::new(Vec::new());
+
+/// The next dispatch wait on `branch` in `session_id` that reads a position
+/// short of its target, held before it looks at the line's close, so a test
+/// can finish the close in between.
+pub struct HeldWait {
+    session: String,
+    branch: String,
+    arrived: mpsc::UnboundedReceiver<()>,
+    release: watch::Sender<bool>,
+}
+impl HeldWait {
+    /// Resolves once the wait has stopped.
+    pub async fn arrived(&mut self) {
+        let _ = self.arrived.recv().await;
+    }
+    /// Lets the wait continue.
+    pub fn release(&self) {
+        self.release.send_replace(true);
+    }
+}
+impl Drop for HeldWait {
+    fn drop(&mut self) {
+        self.release();
+        let (session, branch) = (
+            std::mem::take(&mut self.session),
+            std::mem::take(&mut self.branch),
+        );
+        WAITS
+            .lock()
+            .unwrap()
+            .retain(|hold| hold.session != session || hold.branch != branch);
+    }
+}
+
+/// Holds the next dispatch wait on `branch` in `session_id` between its read
+/// of the dispatch position and its look at the close.
+pub fn hold_dispatch_wait(session_id: &str, branch: &str) -> HeldWait {
+    let (arrived, wait) = mpsc::unbounded_channel();
+    let (release, released) = watch::channel(false);
+    WAITS.lock().unwrap().push(WaitHold {
+        session: session_id.to_owned(),
+        branch: branch.to_owned(),
+        arrived,
+        release: released,
+    });
+    HeldWait {
+        session: session_id.to_owned(),
+        branch: branch.to_owned(),
+        arrived: wait,
+        release,
+    }
+}
+
+/// The hook [`hold_dispatch_wait`] installs: no hold, no wait. A hold stops
+/// one wait.
+pub(crate) async fn dispatch_wait(session_id: &str, branch: &str) {
+    let (arrived, mut release) = {
+        let mut holds = WAITS.lock().unwrap();
+        let Some(index) = holds
+            .iter()
+            .position(|hold| hold.session == session_id && hold.branch == branch)
+        else {
+            return;
+        };
+        let hold = holds.remove(index);
+        (hold.arrived, hold.release)
+    };
+    let _ = arrived.send(());
+    while !*release.borrow_and_update() {
+        if release.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Mounts the loader on `root`, reconciles the assembly and creates the
 /// Agent instance, then builds the Agent in it.
 async fn assemble(

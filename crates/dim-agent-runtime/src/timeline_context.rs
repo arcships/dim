@@ -636,8 +636,19 @@ impl BranchRuntime {
             if self.dispatcher.sequence() >= through {
                 return Ok(());
             }
+            #[cfg(feature = "testing")]
+            crate::testing::dispatch_wait(&self.timeline.key().session_id, &self.id).await;
             if self.close.finished() {
-                return Err(short());
+                // The close is final, and so is what dispatch reached: read it
+                // once more after observing the close, so a drain that reached
+                // `through` just before the close finished answers success.
+                if let Some(error) = self.dispatcher.failure() {
+                    return Err(error);
+                }
+                return match self.dispatcher.sequence() >= through {
+                    true => Ok(()),
+                    false => Err(short()),
+                };
             }
             tokio::select! {
                 result = dispatch.changed() => {

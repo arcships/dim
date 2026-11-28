@@ -301,7 +301,7 @@ The optional `worktree` request and reply members follow [managed worktrees §3]
 
 `delete` is Agents' Session delete (S5c): it closes the Session if it is loaded, then removes its rows and files. An absent or already deleted Session replies `{}`, so a caller deletes again after any error ([sessions service §6.8](../appserver/sessions-service.md#68-delete)). The caller that launched a Session deletes it when it drops the last record that names it ([§8.7](../appserver/sessions-service.md#87-deleting-run-sessions)).
 
-Implemented: every method above, served by Agents' directory part (S2, [#98](https://github.com/arcships/dim/pull/98); `delete` after S5c, [#97](https://github.com/arcships/dim/pull/97)). `input` and a `withdraw` that deletes reply once their event is published.
+Implemented: every method above, served by Agents' directory part (S2, [#98](https://github.com/arcships/dim/pull/98); `delete` after S5c, [#97](https://github.com/arcships/dim/pull/97)). A `withdraw` that deletes replies once its event is published. A line's `timelineContext.input`, reached through `call`, replies once its input is committed, before publication: a caller that must not record a delivery ahead of the store confirms publication with `timelineContext.waitPublished(event.sequence)` or `timelineContext.lookup(submissionId)` first.
 
 ### A.2 Source input conventions
 
