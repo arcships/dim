@@ -216,6 +216,99 @@ fn media_lookup_and_explicit_capabilities_survive_editing() {
     assert_eq!(edited.metadata, model.metadata);
 }
 
+/// A listing that writes `modalities: []` states nothing about what the model
+/// reads; the empty array is the undeclared value, so the set the identified
+/// row declares applies instead of being overwritten by it. A descriptor that
+/// states no modalities of its own falls back to its `vision` declaration, and
+/// an explicit non-empty array stays authoritative (#1980).
+#[test]
+fn an_empty_modalities_array_is_the_undeclared_value() {
+    let declaring = catalog(json!([vendor(
+        "acme",
+        json!([with_vision(
+            row("acme-vision", "Acme Vision", 400_000, 128_000),
+            &["text", "image", "audio"],
+        )]),
+    )]));
+    let provider = ProviderProjection {
+        provider_id: "acme".into(),
+        source: Some(ModelSource::Custom),
+        ..Default::default()
+    };
+    let read = |catalog: &BundledCatalog, descriptor: serde_json::Value| {
+        catalog
+            .project(&provider, &descriptor)
+            .unwrap()
+            .capabilities
+            .modalities
+    };
+    for descriptor in [
+        json!({ "id": "acme-vision", "modalities": [] }),
+        json!({ "id": "acme-vision", "vision": true, "modalities": [] }),
+        json!({ "id": "acme-vision", "vision": true, "capabilities": { "modalities": [] } }),
+        json!({ "id": "acme-vision", "vision": true }),
+    ] {
+        assert_eq!(
+            read(&declaring, descriptor.clone()),
+            ["text", "image", "audio"],
+            "{descriptor}"
+        );
+    }
+    let declared = declaring
+        .project(
+            &provider,
+            &json!({ "id": "acme-vision", "vision": true, "modalities": ["text"] }),
+        )
+        .unwrap();
+    assert_eq!(declared.capabilities.modalities, ["text"]);
+    assert!(declared.capabilities.vision);
+
+    // No row declares the model, so `vision` is the only statement left.
+    let undeclared = catalog(json!([]));
+    for descriptor in [
+        json!({ "id": "zz-vision", "vision": true, "modalities": [] }),
+        json!({ "id": "zz-vision", "vision": true }),
+        json!({ "id": "zz-vision", "vision": true, "capabilities": { "modalities": [] } }),
+    ] {
+        assert_eq!(
+            read(&undeclared, descriptor.clone()),
+            ["text", "image"],
+            "{descriptor}"
+        );
+    }
+    for descriptor in [
+        json!({ "id": "zz-text", "vision": false, "modalities": [] }),
+        json!({ "id": "zz-text", "vision": false }),
+    ] {
+        assert_eq!(
+            read(&undeclared, descriptor.clone()),
+            ["text"],
+            "{descriptor}"
+        );
+    }
+}
+
+/// The shipped `deepseek-v4.1-flash` row declares image input, and the live
+/// descriptor that reported the empty array is the account catalog's own
+/// listing: the model the catalog snapshot serves keeps the row's set (#1980).
+#[test]
+fn a_live_empty_modalities_array_keeps_the_shipped_deepseek_declaration() {
+    let catalog = BundledCatalog::load().unwrap();
+    let provider = ProviderProjection {
+        provider_id: "dimcode-api-oauth".into(),
+        ..Default::default()
+    };
+    let model = catalog
+        .project(
+            &provider,
+            &json!({ "id": "deepseek-v4.1-flash", "vision": true, "modalities": [] }),
+        )
+        .unwrap();
+    assert!(model.capabilities.vision);
+    assert_eq!(model.capabilities.modalities, ["text", "image"]);
+    assert_eq!(model.capabilities.context_window, Some(1_048_576));
+}
+
 #[test]
 fn visible_edits_preserve_hidden_fields_and_update_legacy_media_readers() {
     let catalog = BundledCatalog::load().unwrap();

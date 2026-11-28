@@ -1223,6 +1223,54 @@ async fn a_relay_model_without_declared_limits_is_published_as_undeclared() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The relay's own descriptors, projected through the account catalog's
+/// boundary: an empty `modalities` array states nothing, so the bundled row's
+/// set applies and `vision` decides only for a model no row declares (#1980).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_relay_modalities_array_is_the_undeclared_value() {
+    let fixture = oauth::start().await;
+    *fixture.service.models.lock().unwrap() = Some(json!({"data":[
+        {"id":"deepseek-v4.1-flash","dim":{"id":"deepseek-v4.1-flash","endpoint_type":"openai",
+            "vision":true,"modalities":[],"contextWindow":1048576,"maxOutputTokens":65536}},
+        {"id":"gemini-2.5-flash","dim":{"id":"gemini-2.5-flash","endpoint_type":"openai",
+            "vision":true,"modalities":[],"contextWindow":1048576,"maxOutputTokens":65536}},
+        {"id":"zzzz-relay-vision","dim":{"id":"zzzz-relay-vision","endpoint_type":"openai",
+            "vision":true,"modalities":[],"contextWindow":64000,"maxOutputTokens":8000}},
+        {"id":"zzzz-relay-text","dim":{"id":"zzzz-relay-text","endpoint_type":"openai",
+            "vision":false,"modalities":[],"contextWindow":64000,"maxOutputTokens":8000}},
+        {"id":"zzzz-relay-declared","dim":{"id":"zzzz-relay-declared","endpoint_type":"openai",
+            "vision":true,"modalities":["text"],"contextWindow":64000,"maxOutputTokens":8000}}
+    ]}));
+    let home = home();
+    let Process { root, providers } = process(&home).await;
+    login(&providers, &fixture.base).await;
+    let catalog = providers.catalog(PROVIDER, &cancel()).await.unwrap();
+    let modalities = |id: &str| {
+        catalog
+            .models
+            .iter()
+            .find(|model| model.entry.model_id == id)
+            .unwrap()
+            .entry
+            .capabilities
+            .modalities
+            .clone()
+    };
+    // The relay's empty array does not overwrite the shipped declaration.
+    assert_eq!(modalities("deepseek-v4.1-flash"), ["text", "image"]);
+    assert_eq!(
+        modalities("gemini-2.5-flash"),
+        ["text", "image", "audio", "video"]
+    );
+    // No row declares these, so `vision` is the statement that decides.
+    assert_eq!(modalities("zzzz-relay-vision"), ["text", "image"]);
+    assert_eq!(modalities("zzzz-relay-text"), ["text"]);
+    // An explicit non-empty array stays authoritative.
+    assert_eq!(modalities("zzzz-relay-declared"), ["text"]);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// The distinct model ids the shipped catalog lists, in catalog order. A case
 /// picks the id it asserts on from here by property, never by name.
 fn listed_ids(catalog: &BundledCatalog) -> Vec<String> {
