@@ -1315,8 +1315,13 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
 pub fn declared_modalities(input: &Map<String, Value>) -> Option<Vec<String>> {
     let declared = input
         .get("modalities")
-        .or_else(|| input.get("capabilities")?.get("modalities"))?
-        .as_array()?;
+        .and_then(Value::as_array)
+        .or_else(|| {
+            input
+                .get("capabilities")
+                .and_then(|capabilities| capabilities.get("modalities"))
+                .and_then(Value::as_array)
+        })?;
     let modalities = strings(declared);
     (!modalities.is_empty()).then_some(modalities)
 }
