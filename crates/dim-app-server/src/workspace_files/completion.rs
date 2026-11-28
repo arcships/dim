@@ -76,7 +76,11 @@ fn candidate(mut text: String, path: PathBuf, dir: bool) -> Option<FileCandidate
     let image = !dir && images::is_image(&path);
     Some(FileCandidate {
         insert_text: text,
-        absolute_path: path.into_os_string().into_string().ok()?,
+        absolute_path: std::path::absolute(path)
+            .ok()?
+            .into_os_string()
+            .into_string()
+            .ok()?,
         dir,
         image,
     })

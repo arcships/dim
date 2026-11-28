@@ -808,7 +808,11 @@ impl Composer {
             return;
         }
         let target_image = candidate.target_image;
-        let path = candidate.path;
+        let path = if target_image.is_some() {
+            candidate.path
+        } else {
+            std::path::absolute(&candidate.path).unwrap_or(candidate.path)
+        };
         let display = Line::from(Span::styled(
             label.clone(),
             Style::default().add_modifier(Modifier::BOLD),
