@@ -1,0 +1,114 @@
+name: issue-gate
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+  issues:
+    types: [labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  checks: write
+
+jobs:
+  discover:
+    name: discover
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      prs: ${{ steps.list.outputs.prs }}
+      complete: ${{ steps.list.outputs.complete }}
+    steps:
+      # Trusted definition: pull_request_target runs this file from the base branch.
+      # Checkout the base branch only; never check out or run pull request code.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - id: list
+        name: List linked open PRs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result=$(node scripts/issue-gate.mjs --discover)
+          prs=$(printf '%s' "$result" | jq -c '.prs')
+          complete=$(printf '%s' "$result" | jq -r '.complete')
+          printf 'prs=%s\n' "$prs" >> "$GITHUB_OUTPUT"
+          printf 'complete=%s\n' "$complete" >> "$GITHUB_OUTPUT"
+
+  evaluate-pr:
+    name: evaluate-pr
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    concurrency:
+      group: issue-gate-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # Trusted definition: pull_request_target runs this file from the base branch.
+      # Checkout the base branch only; never check out or run pull request code.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Evaluate linked issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ github.event.pull_request.number }}
+          TARGET_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/issue-gate.mjs
+
+  evaluate-issue:
+    name: evaluate-issue
+    needs: discover
+    if: always() && !cancelled() && needs.discover.result == 'success' && needs.discover.outputs.prs != '[]'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.discover.outputs.prs) }}
+    concurrency:
+      group: issue-gate-pr-${{ matrix.pr.number }}
+      cancel-in-progress: true
+    steps:
+      # Trusted definition: pull_request_target runs this file from the base branch.
+      # Checkout the base branch only; never check out or run pull request code.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Evaluate linked issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ matrix.pr.number }}
+          TARGET_HEAD: ${{ matrix.pr.head }}
+        run: node scripts/issue-gate.mjs
+
+  coverage:
+    name: coverage
+    needs: [discover, evaluate-issue]
+    if: always() && !cancelled() && github.event_name == 'issues' && needs.discover.result == 'success' && needs.discover.outputs.complete != 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail on incomplete linked-PR discovery
+        run: |
+          echo "::error::Linked-PR discovery was incomplete; some issue-gate checks were not refreshed. Re-run the full issue-gate workflow after the API recovers; rerunning only this job reuses the old discovery result."
+          exit 1
