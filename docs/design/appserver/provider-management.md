@@ -558,12 +558,12 @@ automatically delete unsupported saved fields. Explicit adoption reports the
 rejected saved preferences; the user can set or clear each field explicitly.
 
 A service-tier declaration is a capability, not a hint: `supported: true` states
-a usable set, so `options` is non-empty and `default`, when present, is one of
-them. A declaration whose options neither the descriptor nor the row it is
-identified with enumerates is `supported: false` with no `default` and no
-`options`, and the preference patch then refuses every tier. A declared
-`default` outside the options gives way to the option named `default`, else the
-first one, so a supported declaration always names a tier it offers.
+a usable set, so `options` is non-empty and a `default` is one of them when the
+declaration names one. A declaration whose options neither the descriptor nor
+the row it is identified with enumerates is `supported: false` with no
+`default` and no `options`, and the preference patch then refuses every tier. A
+`default` the options do not offer gives way to the option named `default`, else
+the first one; a declaration that names no default offers none at adoption.
 
 Existing `delete` keeps its builtin-disable/custom-delete behavior. `models.edit`
 keeps `ModelEdit` and adds `endpoint: {action:"set",value:NewApiEndpoint} |
