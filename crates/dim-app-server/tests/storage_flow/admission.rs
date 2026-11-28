@@ -2146,3 +2146,280 @@ async fn a_fork_refused_before_its_first_write_deletes_no_preexisting_rows() {
     db.close().await.unwrap();
     root.shutdown().await.unwrap();
 }
+
+/// #2204: a legacy id whose Windows resolution forks past the state cap —
+/// every `.. ` segment doubles the comparison's states — cannot establish its
+/// destination, so it is undecidable rather than disjoint: creation and the
+/// fork refuse before either publishes anything, while the stored row keeps
+/// its bytes, its reads and POSIX deletion are unchanged, and deleting the
+/// row unblocks the candidates. Forking *from* the row while it is stored is
+/// refused too: the target cannot prove its directory disjoint from a
+/// destination no bounded comparison can place.
+#[tokio::test]
+async fn windows_state_cap_is_undecidable_and_refuses_create_and_fork() {
+    const CAPPED: &str = "abc\\.. \\.. \\.. \\.. \\.. \\.. \\.. \\.. \\.. \\def";
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    seed_stored_session(&connection, CAPPED);
+    connection
+        .execute(
+            "INSERT INTO timeline_branches (session_id, branch_id, info, sequence) \
+             VALUES (?1, 'main', '{\"id\":\"main\"}', 0)",
+            [CAPPED],
+        )
+        .unwrap();
+    append(
+        &store,
+        key(CAPPED, "main"),
+        vec![text(1, "first"), text(2, "second")],
+    )
+    .await
+    .unwrap();
+
+    let created = sessions
+        .create_owned_session(
+            "abc",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(created, Err(AgentError::InvalidInput(_))),
+        "an id whose resolution passes the state cap is undecidable, so creation must be InvalidInput, got {created:?}"
+    );
+    let forked = sessions.fork_session("source", "abc", 1, &config).await;
+    assert!(
+        matches!(forked, Err(AgentError::InvalidInput(_))),
+        "an id whose resolution passes the state cap is undecidable, so the fork must be InvalidInput, got {forked:?}"
+    );
+    assert_eq!(
+        stored_rows(&connection, "abc"),
+        0,
+        "the refused candidate writes nothing"
+    );
+
+    let capped_config = sessions.session_config_text(CAPPED).await.unwrap().unwrap();
+    assert!(
+        sessions.session_config(CAPPED).await.unwrap().is_some(),
+        "the stored row reads as written"
+    );
+    let from_capped = sessions
+        .fork_session(CAPPED, "valid-fork", 2, &capped_config)
+        .await;
+    assert!(
+        matches!(from_capped, Err(AgentError::InvalidInput(_))),
+        "forking from the undecidable row is refused while the row is stored: the target cannot prove disjointness, got {from_capped:?}"
+    );
+    assert_eq!(
+        stored_rows(&connection, "valid-fork"),
+        0,
+        "the refused fork writes nothing"
+    );
+
+    assert!(
+        sessions.delete_session(CAPPED).await.unwrap(),
+        "POSIX deletes the row as before: its backslashes are ordinary bytes of one component"
+    );
+    sessions
+        .create_owned_session(
+            "abc",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await
+        .unwrap();
+    sessions
+        .fork_session("source", "def", 1, &config)
+        .await
+        .unwrap();
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// The test store's output root: the directory the admission comparison
+/// resolves, spelled exactly as `SqliteStorage::open` derives it, so a watch
+/// registered for it matches.
+fn output_root(database: &Database) -> std::path::PathBuf {
+    database.0.parent().unwrap().join("command-output")
+}
+
+/// #2204: the indexed admission is constant-time for a store without legacy
+/// rows — and for one whose only non-conforming rows are pure ASCII, which
+/// the covering partial index never lists. Neither opening the store nor any
+/// creation or fork entry may resolve the output root: no filesystem probe
+/// rides on the write path at all. A case-colliding candidate is refused by
+/// the case lookup before the directory comparison is even needed.
+#[tokio::test]
+async fn the_indexed_admission_never_resolves_the_output_root() {
+    use dim_app_server::storage::timeline_testing;
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let mut watch = timeline_testing::observe_root_resolutions(output_root(&database));
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+
+    store
+        .create_session("alpha", &SessionConfig::default())
+        .await
+        .unwrap();
+    sessions
+        .create_owned_session(
+            "beta",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await
+        .unwrap();
+    append(&store, key("alpha", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    sessions
+        .fork_session("alpha", "gamma", 1, &config)
+        .await
+        .unwrap();
+    assert_eq!(
+        watch.count(),
+        0,
+        "an empty legacy index resolves the output root zero times across open and every creation and fork entry"
+    );
+
+    seed_stored_session(&connection, "Legacy-Case");
+    store
+        .create_session("delta", &SessionConfig::default())
+        .await
+        .unwrap();
+    sessions
+        .create_owned_session(
+            "epsilon",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await
+        .unwrap();
+    sessions
+        .fork_session("alpha", "zeta", 1, &config)
+        .await
+        .unwrap();
+    let colliding = store
+        .create_session("legacy-case", &SessionConfig::default())
+        .await;
+    assert!(
+        matches!(colliding, Err(AgentError::InvalidInput(_))),
+        "the case-colliding candidate is refused by the case lookup alone, got {colliding:?}"
+    );
+    assert_eq!(
+        watch.count(),
+        0,
+        "pure ASCII rows never enter the partial index, so the output root still resolves zero times"
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    drop(watch);
+    root.shutdown().await.unwrap();
+}
+
+/// #2204: resolving the output root probes the filesystem, so the two-phase
+/// admission runs it after the first transaction rolled back — outside the
+/// SQLite write lock and the connection mutex. With a legacy row stored, the
+/// resolution is held at its entry: a second connection can begin and commit
+/// an IMMEDIATE transaction in that interval, which the write lock would make
+/// impossible, and once the resolution is released the conflict is still
+/// refused before anything is written.
+#[tokio::test]
+async fn root_resolution_happens_outside_the_write_lock() {
+    use dim_app_server::storage::timeline_testing;
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_stored_session(&connection, "abc\\def");
+    drop(connection);
+
+    let mut watch = timeline_testing::hold_root_resolutions(output_root(&database));
+    let creating = {
+        let store = store.clone();
+        tokio::spawn(async move { store.create_session("abc", &SessionConfig::default()).await })
+    };
+    watch.arrived().await;
+
+    let probe = Connection::open(&database.0).unwrap();
+    probe.busy_timeout(Duration::ZERO).unwrap();
+    probe
+        .execute_batch("BEGIN IMMEDIATE; COMMIT;")
+        .expect("a second write transaction begins and commits while the output root resolution is held outside the write lock");
+    drop(probe);
+
+    watch.release();
+    let created = creating.await.unwrap();
+    assert!(
+        matches!(created, Err(AgentError::InvalidInput(_))),
+        "the conflict is still refused once the resolution completes, got {created:?}"
+    );
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(
+        stored_rows(&connection, "abc"),
+        0,
+        "the refused creation writes nothing"
+    );
+
+    drop(connection);
+    drop(watch);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}

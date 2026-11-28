@@ -95,6 +95,7 @@ enum Command {
 #[cfg(feature = "testing")]
 pub mod testing {
     use super::{StoredEvent, TimelineKey};
+    use std::path::PathBuf;
     use std::sync::{Arc, Condvar, Mutex};
     use tokio::sync::mpsc;
 
@@ -188,6 +189,104 @@ pub mod testing {
         let mut released = released.lock().unwrap();
         while !*released {
             released = wake.wait(released).unwrap();
+        }
+    }
+
+    type ResolutionWatch = (
+        PathBuf,
+        mpsc::UnboundedSender<()>,
+        Arc<(Mutex<bool>, Condvar)>,
+    );
+    static RESOLUTION_WATCHES: Mutex<Vec<ResolutionWatch>> = Mutex::new(Vec::new());
+
+    /// One registered watch of the output-root resolution the admission
+    /// comparison runs (#2204). Feature `testing` only; production builds
+    /// have no hook. The tests of one process run in parallel, so the watch
+    /// matches the exact output-root path the store resolves and never
+    /// observes another test's root.
+    pub struct RootResolutionWatch {
+        output_root: PathBuf,
+        arrivals: mpsc::UnboundedReceiver<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl RootResolutionWatch {
+        /// Resolves once the resolution is entered. For a hold, the
+        /// resolution thread is parked at that point.
+        pub async fn arrived(&mut self) {
+            let _ = self.arrivals.recv().await;
+        }
+        /// The arrivals drained so far: how often the watched root resolved.
+        pub fn count(&mut self) -> usize {
+            let mut count = 0;
+            while self.arrivals.try_recv().is_ok() {
+                count += 1;
+            }
+            count
+        }
+        /// Lets a held resolution continue; a no-op for a pure observer.
+        pub fn release(&self) {
+            let (released, wake) = &*self.release;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+    }
+    impl Drop for RootResolutionWatch {
+        fn drop(&mut self) {
+            self.release();
+            let output_root = std::mem::take(&mut self.output_root);
+            RESOLUTION_WATCHES
+                .lock()
+                .unwrap()
+                .retain(|(root, ..)| *root != output_root);
+        }
+    }
+
+    fn watch(output_root: PathBuf, released: bool) -> RootResolutionWatch {
+        let (arrived, arrivals) = mpsc::unbounded_channel();
+        let release = Arc::new((Mutex::new(released), Condvar::new()));
+        RESOLUTION_WATCHES
+            .lock()
+            .unwrap()
+            .push((output_root.clone(), arrived, release.clone()));
+        RootResolutionWatch {
+            output_root,
+            arrivals,
+            release,
+        }
+    }
+
+    /// Reports every output-root resolution of `output_root` without
+    /// disturbing it: the watch counts how often the admission comparison
+    /// resolves the root at all.
+    pub fn observe_root_resolutions(output_root: PathBuf) -> RootResolutionWatch {
+        watch(output_root, true)
+    }
+
+    /// Parks the next output-root resolution of `output_root` at its entry
+    /// until [`RootResolutionWatch::release`]. It runs on the resolving
+    /// thread, so the hold takes no async lock and holds none while it waits.
+    pub fn hold_root_resolutions(output_root: PathBuf) -> RootResolutionWatch {
+        watch(output_root, false)
+    }
+
+    /// Runs at the entry of every output-root resolution; production builds
+    /// carry no hook.
+    pub(super) fn resolution(output_root: &std::path::Path) {
+        let found = {
+            let watches = RESOLUTION_WATCHES.lock().unwrap();
+            watches
+                .iter()
+                .filter(|(root, ..)| root == output_root)
+                .map(|(_, arrived, release)| (arrived.clone(), release.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (arrived, release) in found {
+            let _ = arrived.send(());
+            let (released, wake) = &*release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = wake.wait(released).unwrap();
+            }
         }
     }
 }
@@ -620,6 +719,55 @@ impl From<dim_agent_runtime::TimelineAppend> for TimelineBatch {
     }
 }
 
+/// Runs a Session-inserting write through the admission's two phases
+/// (#2204): the first transaction passes no output root, so a store whose
+/// legacy index is empty inserts and commits in that one transaction without
+/// a single filesystem probe. When the index is not empty the first
+/// transaction reports it and rolls back unwritten, the output root resolves
+/// outside the write lock and the connection mutex — the resolution walks the
+/// filesystem — and a second transaction re-runs the authoritative conflict
+/// lookup against it and the insertion together.
+async fn write_with_output_root<W>(db: &Arc<SqliteStorage>, write: W) -> Result<()>
+where
+    W: Fn(&Connection, Option<&OutputRoot>) -> Result<bool> + Send + Sync + 'static,
+{
+    let write = Arc::new(write);
+    let first = {
+        let write = write.clone();
+        db.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            let needs = write(&tx, None)?;
+            if needs {
+                return Ok(true);
+            }
+            tx.commit().map_err(error)?;
+            Ok(false)
+        })
+        .await?
+    };
+    if !first {
+        return Ok(());
+    }
+    let output_root = db.output_root.clone();
+    let resolved = tokio::task::spawn_blocking(move || output_root_destinations(&output_root))
+        .await
+        .map_err(error)?;
+    db.run(move |connection| {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        if write(&tx, Some(&resolved))? {
+            return Err(error(
+                "the admission needed the output root after it was resolved",
+            ));
+        }
+        tx.commit().map_err(error)
+    })
+    .await
+}
+
 impl SqliteStorage {
     pub(super) async fn batch_end(self: &Arc<Self>, key: TimelineKey, sequence: u64) -> Result<()> {
         if self.batch_end_at(key, sequence).await? > sequence {
@@ -671,20 +819,15 @@ impl SqliteStorage {
         session: String,
         config: SessionConfig,
     ) -> Result<()> {
-        let output_root = self.output_root.clone();
-        self.run(move |connection| {
-            let tx = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(error)?;
+        write_with_output_root(self, move |connection, root| {
             create_session(
-                &tx,
-                &output_root,
+                connection,
+                root,
                 &session,
                 &config,
                 None,
                 SessionOrigin::Unknown,
-            )?;
-            tx.commit().map_err(error)
+            )
         })
         .await
     }
@@ -1769,45 +1912,44 @@ impl SessionStore {
                 },
             )
             .transpose()?;
-        let output_root = self.timeline.db.output_root.clone();
-        self.timeline
-            .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                create_session(
-                    &tx,
-                    &output_root,
-                    &session,
-                    &config,
-                    leader.as_deref(),
-                    origin,
-                )?;
-                tx.execute(
+        write_with_output_root(&self.timeline.db, move |connection, output_root| {
+            if create_session(
+                connection,
+                output_root,
+                &session,
+                &config,
+                leader.as_deref(),
+                origin,
+            )? {
+                return Ok(true);
+            }
+            connection
+                .execute(
                     "INSERT INTO session_owners VALUES (?1, ?2, ?3)",
                     params![session, agent, protocol_version],
                 )
                 .map_err(error)?;
-                if let Some((repository, root, subtree, now)) = worktree {
-                    tx.execute(
+            if let Some((repository, root, subtree, now)) = &worktree {
+                connection
+                    .execute(
                         "INSERT INTO worktree_directories (repository, root, last_used_at_ms) \
                          VALUES (?1, ?2, ?3) ON CONFLICT (repository, root) \
                          DO UPDATE SET last_used_at_ms=excluded.last_used_at_ms",
                         params![repository, root, now],
                     )
                     .map_err(error)?;
-                    tx.execute(
+                connection
+                    .execute(
                         "INSERT INTO session_worktrees (session_id, repository, root, subtree) \
                          VALUES (?1, ?2, ?3, ?4) ON CONFLICT (session_id, repository, root) \
                          DO UPDATE SET subtree=excluded.subtree",
                         params![session, repository, root, subtree],
                     )
                     .map_err(error)?;
-                }
-                tx.commit().map_err(error)
-            })
-            .await
+            }
+            Ok(false)
+        })
+        .await
     }
     /// Atomically records a Git-verified directory and its Session association.
     /// Paths must be canonical absolute UTF-8 paths and `subtree` must be inside
@@ -2678,11 +2820,12 @@ fn windows_prefix(text: &str) -> (Prefix, &str) {
     (Prefix::Join, text)
 }
 
-/// Resolution states one id may fork into. A segment trimming to `.` or `..`
-/// keeps both its Windows resolution and its POSIX literal reading, so the
-/// states multiply with the segment count; past this cap only the resolution
-/// reading continues — the one that reaches a real directory on both
-/// platforms — instead of the comparison degenerating.
+/// Resolution states one id may fork into. A segment of nothing but dots and
+/// spaces keeps both its Windows resolution and its literal reading, so the
+/// states multiply with the segment count; a segment whose doubling would
+/// pass this cap ends the resolution as undecidable — the literal branch the
+/// cap would drop is the only one that can prove an overlap, and a comparison
+/// that cannot place the destination refuses rather than guessing disjoint.
 const RESOLUTION_STATES: usize = 16;
 
 /// Advances one Windows resolution state over a segment: exact `.` and `..`
@@ -2691,7 +2834,17 @@ const RESOLUTION_STATES: usize = 16;
 /// parent when it begins with `..`, the current directory otherwise — and
 /// forks into that resolution reading and the literal one, anything else is a
 /// name — pushed raw, since the comparison normalizes trailing characters.
-fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Vec<Vec<String>> {
+/// `None` when the fork would pass [`RESOLUTION_STATES`]: the bounded
+/// comparison cannot establish the destination, so the caller treats the id
+/// as undecidable and refuses (#2204).
+fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Option<Vec<Vec<String>>> {
+    let trimmed = segment.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty()
+        && !matches!(segment, "" | "." | "..")
+        && states.len() * 2 > RESOLUTION_STATES
+    {
+        return None;
+    }
     let mut advanced = Vec::new();
     for state in states {
         if segment.is_empty() || segment == "." {
@@ -2704,25 +2857,22 @@ fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Vec<Vec<String>> 
             advanced.push(state);
             continue;
         }
-        let trimmed = segment.trim_end_matches(['.', ' ']);
         if trimmed.is_empty() {
             let mut resolved = state.clone();
             if segment.starts_with("..") {
                 resolved.pop();
             }
             advanced.push(resolved);
-            if advanced.len() < RESOLUTION_STATES {
-                let mut literal = state;
-                literal.push(segment.into());
-                advanced.push(literal);
-            }
+            let mut literal = state;
+            literal.push(segment.into());
+            advanced.push(literal);
             continue;
         }
         let mut state = state;
         state.push(segment.into());
         advanced.push(state);
     }
-    advanced
+    Some(advanced)
 }
 
 /// Advances one POSIX resolution state over a segment: only exact `.` and
@@ -2762,38 +2912,47 @@ fn posix_destination(root: &Destination, stored: &str) -> Destination {
 /// `C:\abc`.
 fn windows_destinations(root: &Destination, stored: &str) -> Vec<Destination> {
     let (prefix, text) = windows_prefix(stored);
+    if let Prefix::DriveRelative(letter) = prefix {
+        // A drive-relative id resolves against the drive's own current
+        // directory, which no static comparison knows: undecidable where the
+        // root can be that drive, disjoint where it provably is not.
+        if root.anchor == VolumeAnchor::Disk(letter) || root.anchor == VolumeAnchor::Volume {
+            return vec![Destination::undecidable()];
+        }
+        return Vec::new();
+    }
+    if matches!(prefix, Prefix::Device | Prefix::Malformed) {
+        return vec![Destination::undecidable()];
+    }
+    let anchor = match &prefix {
+        Prefix::Join | Prefix::Rooted => root.anchor.clone(),
+        Prefix::Disk(letter) => VolumeAnchor::Disk(*letter),
+        Prefix::Unc(host, share) => VolumeAnchor::Unc(host.clone(), share.clone()),
+        Prefix::DriveRelative(_) | Prefix::Device | Prefix::Malformed => {
+            unreachable!()
+        }
+    };
+    // A provably disjoint volume answers the comparison before any segment
+    // resolution runs, so a state-cap undecidable cannot widen a disjoint
+    // drive into a refusal (#2204).
+    if anchors_disjoint(&anchor, &root.anchor) {
+        return Vec::new();
+    }
     let mut states = if matches!(prefix, Prefix::Join) {
         vec![root.segments.clone()]
     } else {
         vec![Vec::new()]
     };
     for segment in text.split(['/', '\\']) {
-        states = advance_windows(states, segment);
+        let Some(advanced) = advance_windows(states, segment) else {
+            return vec![Destination::undecidable()];
+        };
+        states = advanced;
     }
-    match prefix {
-        Prefix::Join | Prefix::Rooted => states
-            .into_iter()
-            .map(|segments| Destination::decided(root.anchor.clone(), segments))
-            .collect(),
-        Prefix::Disk(letter) => states
-            .into_iter()
-            .map(|segments| Destination::decided(VolumeAnchor::Disk(letter), segments))
-            .collect(),
-        Prefix::Unc(host, share) => states
-            .into_iter()
-            .map(|segments| {
-                Destination::decided(VolumeAnchor::Unc(host.clone(), share.clone()), segments)
-            })
-            .collect(),
-        Prefix::DriveRelative(letter) => {
-            if root.anchor == VolumeAnchor::Disk(letter) || root.anchor == VolumeAnchor::Volume {
-                vec![Destination::undecidable()]
-            } else {
-                Vec::new()
-            }
-        }
-        Prefix::Device | Prefix::Malformed => vec![Destination::undecidable()],
-    }
+    states
+        .into_iter()
+        .map(|segments| Destination::decided(anchor.clone(), segments))
+        .collect()
 }
 
 /// The Windows parse of an absolute root path: the prefix names its anchor,
@@ -2869,8 +3028,12 @@ fn real_root_forms(output_root: &Path) -> Vec<PathBuf> {
 
 /// The output root's destinations per platform parse. Components are strings
 /// because resolution and comparison are textual; a non-UTF-8 component
-/// compares by its lossy form, which can only widen a refusal.
+/// compares by its lossy form, which can only widen a refusal. Resolving the
+/// root probes the filesystem, so the admission only runs it outside every
+/// write lock, once the legacy index proves a comparison is needed (#2204).
 fn output_root_destinations(output_root: &Path) -> OutputRoot {
+    #[cfg(feature = "testing")]
+    testing::resolution(output_root);
     let mut posix = Vec::new();
     let mut windows = Vec::new();
     for form in real_root_forms(output_root) {
@@ -2968,32 +3131,22 @@ fn shares_output_directory(root: &OutputRoot, stored: &str, candidate: &str) -> 
     false
 }
 
-/// A stored id that shares an output directory with `candidate` beyond ASCII
-/// case folding, judged row by row under the filesystem identity rules
-/// (#2204).
-fn directory_conflict(
-    connection: &Connection,
-    output_root: &Path,
-    candidate: &str,
-) -> Result<Option<String>> {
-    let root = output_root_destinations(output_root);
-    for stored in non_ascii_word_conflicts(connection)? {
-        if shares_output_directory(&root, &stored, candidate) {
-            return Ok(Some(stored));
-        }
-    }
-    Ok(None)
-}
+/// Inserts a Session record after the admission check. Returns `true` when
+/// `output_root` was `None` and the legacy index is not empty: nothing was
+/// inserted, and the caller must resolve the output root outside the write
+/// lock and run the insertion again with `Some` (#2204).
 fn create_session(
     connection: &Connection,
-    output_root: &Path,
+    output_root: Option<&OutputRoot>,
     session: &str,
     config: &SessionConfig,
     leader: Option<&str>,
     origin: SessionOrigin,
-) -> Result<()> {
+) -> Result<bool> {
     dim_agent_runtime::check_new_session_id(session)?;
-    reject_conflicting_id(connection, output_root, session)?;
+    if reject_conflicting_id(connection, output_root, session)? {
+        return Ok(true);
+    }
     let config = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
@@ -3015,7 +3168,8 @@ fn create_session(
         create_anchor: None,
     };
     insert_branch(connection, session, &info)?;
-    super::catalog::create(connection, session)
+    super::catalog::create(connection, session)?;
+    Ok(false)
 }
 /// The creation origin a stored value names. The column's `CHECK` and the
 /// format gate keep any other text out; reaching this error means the store
@@ -3356,7 +3510,9 @@ fn write_batch(
     // words, whatever line the conversation moved to (session catalog §3.3).
     if batch.key.branch_id == ROOT_BRANCH_ID
         && batch.events.first().is_some_and(|record| record.event.sequence <= 256)
-        && batch.events.iter().any(|record| matches!(&record.event.kind, EventKind::InputMessage(input) if input.user.is_some()))
+        && batch.events.iter().any(|record| {
+            matches!(&record.event.kind, EventKind::InputMessage(input) if input.user.is_some())
+        })
     {
         super::catalog::refresh_preview(connection, &batch.key.session_id)?;
     }
@@ -3752,6 +3908,39 @@ fn chunk<T>(connection: &mut Connection, step: impl FnOnce(&Connection) -> Resul
     Ok(value)
 }
 
+/// Runs `step` with the admission's two phases (#2204): the first
+/// transaction passes no output root, and when the legacy index is not empty
+/// the transaction rolls back unwritten, the root resolves outside the write
+/// transaction — this connection is the copy's own, so the resolution runs on
+/// its blocking thread — and `resolved` keeps it for every later recheck of
+/// the copy. A step that reports the need for a root after it was resolved
+/// never wrote its transaction, so rolling it back loses nothing.
+fn admission_chunk<T>(
+    connection: &mut Connection,
+    output_root: &Path,
+    resolved: &mut Option<OutputRoot>,
+    mut step: impl FnMut(&Connection, Option<&OutputRoot>) -> Result<(T, bool)>,
+) -> Result<T> {
+    loop {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        let (value, needs) = step(&tx, resolved.as_ref())?;
+        if !needs {
+            tx.commit().map_err(error)?;
+            std::thread::sleep(Duration::from_millis(2));
+            return Ok(value);
+        }
+        if resolved.is_some() {
+            return Err(error(
+                "the admission needed the output root after it was resolved",
+            ));
+        }
+        tx.rollback().map_err(error)?;
+        *resolved = Some(output_root_destinations(output_root));
+    }
+}
+
 /// Copies a fork's rows in bounded transactions; the final transaction
 /// inserts the session row, so an interrupted copy leaves no Session.
 ///
@@ -3813,11 +4002,19 @@ fn copy_fork(
 /// duplicate's Storage error even when a case variant or a directory-shape
 /// collision is stored beside it (#2204); a case-only variant and a
 /// directory-shape collision are InvalidInput.
+///
+/// The directory comparison judges the legacy rows of the covering partial
+/// index against `output_root`, resolved before the call because resolving
+/// the root probes the filesystem and must never run inside a write
+/// transaction. With `output_root` `None` only the indexed lookups run: an
+/// empty index clears the candidate with no filesystem access at all, and a
+/// nonempty one returns `true` — undecided — so the caller rolls back, resolves
+/// the root outside the write lock, and runs the authoritative check again.
 fn reject_conflicting_id(
     connection: &Connection,
-    output_root: &Path,
+    output_root: Option<&OutputRoot>,
     candidate: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let conflicts = case_conflicts(connection, candidate)?;
     if conflicts.iter().any(|stored| stored == candidate) {
         return Err(error(format!("Session id {candidate} already exists")));
@@ -3827,12 +4024,21 @@ fn reject_conflicting_id(
             "Session id {candidate} differs from a stored one only by case"
         )));
     }
-    if let Some(stored) = directory_conflict(connection, output_root, candidate)? {
-        return Err(AgentError::InvalidInput(format!(
-            "Session id {candidate} would share an output directory with stored Session {stored}"
-        )));
+    let rows = non_ascii_word_conflicts(connection)?;
+    if rows.is_empty() {
+        return Ok(false);
     }
-    Ok(())
+    let Some(root) = output_root else {
+        return Ok(true);
+    };
+    for stored in rows {
+        if shares_output_directory(root, &stored, candidate) {
+            return Err(AgentError::InvalidInput(format!(
+                "Session id {candidate} would share an output directory with stored Session {stored}"
+            )));
+        }
+    }
+    Ok(false)
 }
 
 /// Copies the rows; `committed` flips the moment the first chunk transaction
@@ -3859,14 +4065,17 @@ fn copy_fork_rows(
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(error)?;
+    let mut resolved = None;
     let mut branches = Vec::new();
-    chunk(connection, |tx| {
+    admission_chunk(connection, output_root, &mut resolved, |tx, root| {
         // The first conflict check shares this transaction's write lock with
         // the copy's first writes: a conflicting Session committed before the
         // transaction started is seen here, and none can commit before the
         // writes once the lock is held (#2204). A refusal rolls the chunk
         // back, so the copy writes nothing.
-        reject_conflicting_id(tx, output_root, fork)?;
+        if reject_conflicting_id(tx, root, fork)? {
+            return Ok(((), true));
+        }
         branches = tx
             .prepare("SELECT branch_id, info FROM timeline_branches WHERE session_id=?1")
             .map_err(error)?
@@ -3894,7 +4103,7 @@ fn copy_fork_rows(
             .map_err(error)?;
             super::members::branch(tx, fork, id)?;
         }
-        Ok(())
+        Ok(((), false))
     })?;
     committed.set(true);
     for (array, length) in arrays {
@@ -3989,11 +4198,13 @@ fn copy_fork_rows(
     connection
         .pragma_update(None, "synchronous", "FULL")
         .map_err(error)?;
-    chunk(connection, |tx| {
+    admission_chunk(connection, output_root, &mut resolved, |tx, root| {
         // The first chunk's check covered the copy's start; this re-check
         // closes the race against an insertion committed while the chunks
         // copied (#2204).
-        reject_conflicting_id(tx, output_root, fork)?;
+        if reject_conflicting_id(tx, root, fork)? {
+            return Ok(((), true));
+        }
         // A fork is a new Session of the client that forked it, never its
         // source's origin (session classification §3.2).
         tx.execute(
@@ -4074,7 +4285,7 @@ fn copy_fork_rows(
         files::share(tx, source, fork).map_err(error)?;
         files::share_output(tx, source, fork).map_err(error)?;
         // A fork is a new Session and does not inherit grants (ADR 012 D1).
-        Ok(())
+        Ok(((), false))
     })
 }
 
