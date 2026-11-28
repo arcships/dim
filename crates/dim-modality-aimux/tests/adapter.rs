@@ -2145,9 +2145,8 @@ async fn an_inline_answering_model_id_sends_no_response_format_through_the_famil
     let dir = work_dir("family-image-inline-ids");
     let png = [PNG_HEADER, b"inline-id-bytes"].concat();
     let reply = png.clone();
-    let (adapter, requests) = scripted(move |_| {
-        ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
-    });
+    let (adapter, requests) =
+        scripted(move |_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]})));
     let created = "6f1c2f9e-0000-4000-8000-000000000000";
     for model_id in ["gpt-image-2", "chatgpt-image-1", "custom-image"] {
         let output = run(
