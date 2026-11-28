@@ -646,15 +646,12 @@ async fn deliver(
         },
         Ok(Err(failure)) => {
             // A closed Session is not gone: it keeps its rows and restores, so
-            // its subscription stays and the failure is recorded instead.
+            // its subscription stays and the failure is recorded as
+            // `session_closed`; `sessions.exists` then decides
+            // (design §Delivery). Only a line that is missing or ended is gone.
             let gone = matches!(
-                failure.code.as_str(),
-                "no_line"
-                    | "Closed"
-                    | "UnknownBranch"
-                    | "BranchEnded"
-                    | "branch_missing"
-                    | "branch_ended"
+                sessions_code(&failure.code),
+                "branch_missing" | "branch_ended"
             );
             if gone {
                 Delivery::Gone {
@@ -1006,6 +1003,14 @@ pub(crate) async fn write_published(
     .await?
     {
         Ok(_) => Ok(Ok((input_id.to_owned(), sequence))),
-        Err(_) => Err("the input's publication was not confirmed".to_owned()),
+        // The input committed and only its publication is unconfirmed: that is
+        // `publication_unknown`, not a transport failure (design Appendix C).
+        Err(failure) => Ok(Err(SessionsFailure {
+            code: "publication_unknown".to_owned(),
+            message: format!(
+                "the input's publication was not confirmed: {}",
+                failure.message
+            ),
+        })),
     }
 }

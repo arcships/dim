@@ -32,7 +32,7 @@
 
 `Branch`（`branch.rs`）：`history` :126、`page_cursor` :132、`page` :138、`local` :146、`context` :164、`compaction_cut` :170、`context_page` :176、`trace` :188。
 `Session`（`agent.rs`）：`context` :524、`compaction_cut` :528、`context_page` :532、`history` :543、`local` :550、`local_page` :562、`trace` :659。
-提交查找：`Branch::lookup`（`branch.rs:73`）经 `Session::lookup`（`agent.rs:490`）到 `BranchRuntime::lookup`（`timeline_context.rs:392`），再到 :411 的点读；调用方 `connection/tree.rs:99`、`agents/sessions.rs:569`。
+提交查找：线的数据面操作 `timelineContext.lookup`（`timeline_context.rs` 中的 `TimelineContext::lookup`，经 `sessions.call` 或持有者的 `RoutedSession::line` 调用）到 `BranchRuntime::lookup`，再到点读；调用方 `connection/tree.rs:99`、`agents/sessions.rs:569`。
 只删 `Timeline` 上的方法，这些读仍然可达。
 
 ### 1.3 Dispatcher 导出给 TypeScript 的读（`core/dispatcher.rs`）
@@ -288,7 +288,7 @@ flowchart LR
 
 - 能力部件声明对其分支的 Timeline 服务的依赖，并直接调它的 `query`。门面不在它们的路径上。
 - goal 插件读事件时注入 Timeline 服务而不是 `dispatcher`，调用 `Timeline.query`。`npm/branch-services.d.ts` 已经在 `Timeline` 上声明了 `query`。该文件的 `Services` 接口列出了 `timeline: Timeline`，所以这个名字存在。goal 目前注入 dispatcher、timelineIdentity、treeCommands、settings、branchLifecycle 和 sessionLifecycle；绑定能否为分支部件解析 `timeline` 未核实。goal 还读到已分配位置（`dispatcher.committed()` :104、`local(turnStart, through)` :176），所以它和文件读取、协作重建属于同一个未决问题。
-- App Server 通过 `Session::query(branch, query)` 读已装载的会话，它转发到 `Branch::query`，再到 Timeline 服务。
+- App Server 通过持有者的线句柄 `RoutedSession::line(branch).query(query)` 读已装载的会话，它读取该线的 Timeline 服务。
 - App Server 通过 `SessionStore` 读未装载的会话，因为它没有 Timeline 服务可用。页形状与 `query` 一致，所以装载与否不改变协议。
 - 删除这些读之后，`xtask types` 重新生成 `npm/branch-services.d.ts`，仅修改受影响的声明。
 

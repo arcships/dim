@@ -331,9 +331,15 @@ impl Connection {
                 }
             };
             let before = params.before.unwrap_or_else(|| through.saturating_add(1));
+            // The line selected above serves the read, also once it is
+            // closing; selecting it again could miss a line that is ending
+            // ([#2227]).
             let open = match session.ended_head(branch) {
                 Some(_) => None,
-                None => Some(self.line(&session, branch)?),
+                None => match &line {
+                    Some(line) => Some(line.clone()),
+                    None => Some(self.line(&session, branch)?),
+                },
             };
             let read = match &open {
                 Some(line) => HistoryRead::Open(line, self.protocol_version()),
@@ -380,7 +386,10 @@ impl Connection {
             .map_err(history_error)?;
         let open = match session.ended_head(branch) {
             Some(_) => None,
-            None => Some(self.line(&session, branch)?),
+            None => match &line {
+                Some(line) => Some(line.clone()),
+                None => Some(self.line(&session, branch)?),
+            },
         };
         let read = match &open {
             Some(line) => HistoryRead::Open(line, self.protocol_version()),

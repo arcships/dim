@@ -45,13 +45,16 @@ Each one maps onto Agents' existing Session creation and admission (`AgentIndex`
   starter branch's current policy, which is the `PermissionState` folded from `permission/changed` facts. Without a
   starter, the cap is the host's Session defaults. Agents applies the cap before creation, through
   `SessionConfig.permission_policy`.
-- **Input.** `input` writes `input/message` through `Session::input` and replies once the event is published. The
-  branch accepts each `submissionId` once: a resubmission writes nothing and replies the first input's receipt.
-  `lookup` by `submissionId` queries the same input identities without writing.
+- **Input.** Input is the line's own operation, `timelineContext.input`, reached through `sessions.call`
+  ([#2027](https://github.com/arcships/dim/issues/2027)). It commits `input/message` and replies
+  `InputWrite {event, written}` at commit, before publication; a caller that reads history next waits with
+  `timelineContext.waitPublished(event.sequence)`. The line accepts each `submissionId` once: a resubmission writes
+  nothing and replies the first input with `written: false`. `timelineContext.lookup` by `submissionId` queries the
+  same input identities without writing.
 - **Exists.** `exists` answers whether a Session id still exists: `false` means it was deleted, and a closed,
   restorable Session is `true`. It never acquires or restores a Session, so it has no effect on idle unload and
   writes nothing.
-- **Idle.** `idle` is the facade's `Session::idle`: Loop has no open turn, nothing waits for publication, and
+- **Idle.** `idle` is the line's `timelineContext.idle`, reached through `sessions.call`: Loop has no open turn, nothing waits for publication, and
   dispatch has reached the tail. A pending approval or question keeps a turn open, so a caller bounds its wait with
   `stop`.
 - **Withdraw.** `withdraw` forwards to S1's branch withdrawal service. S1 owns the semantics; a deletion replies once
@@ -78,7 +81,7 @@ The throwaway tests and measurements were deleted; nothing from them is committe
 | 4 | What does a pending approval do to `idle`? | Test: a non-interactive workspace-write Session whose model calls `exec` | `approval/request` is written and `idle` has not returned after 500 ms. `stop` ends the turn and `idle` returns; `exec` never ran. Nothing reads `interactive` for approvals | Approvals keep `idle` open; callers bound a run with `stop` (§6.4) |
 | 5 | How does a TypeScript consumer reach a Rust service? | The `pluginFiles` precedent and the rutis 0.10 sources | A `dyn HostDispatch` at `host_key(name)` plus `ServiceCatalog::register_shared(name)` is visible to JavaScript rows. `HostDispatch::invoke(method, args)` carries no caller identity. The JavaScript plugin API has only `inject`, a hard dependency with no per-use lookup. rutis 0.10 does not carry a JavaScript `AbortSignal` into a Rust call ([App Server README](../../../crates/dim-app-server/README.md#trusted-plugin-storage)) | `sessions` comes from the directory part (§5). "Source fixed by Agents" leaves A.1. Cancellation from JavaScript is raised to C4 (§14) |
 | 6 | What does a loaded Session cost? | `xtask measure`, release build, mock model, Apple M4 | About 300 KB of Rust allocations and 43 Tokio tasks per loaded idle Session. Mean creation time is 1.5 ms with 10 Sessions loaded, 4.0 ms with 100 and 57 ms with 1000. The App Server never unloads idle Sessions ([#57](https://github.com/arcships/dim/issues/57)) | Launched Sessions accumulate until restart; idle unload is raised as a follow-up (§8.6) |
-| 7 | When can readers see an input? | Code: `Session::input` returns at commit, before publication; protocol v3+ `session.submit` waits for publication | A caller that reads right after `Session::input` can miss its own input | `input` replies after publication, and `lookup` waits for pending publication first (§6.2, §6.3) |
+| 7 | When can readers see an input? | Code: `Session::input` returns at commit, before publication; protocol v3+ `session.submit` waits for publication | A caller that reads right after `Session::input` can miss its own input | `input` replies after publication, and `lookup` waits for pending publication first (§6.2, §6.3). Superseded by [#2027](https://github.com/arcships/dim/issues/2027): `timelineContext.input` replies at commit and the caller waits with `waitPublished` |
 | 8 | Where does lookup by `submissionId` live? | Code | Only in Rpc: `session.input_lookup` scans the published pages, O(n) | Agents owns one lookup and Rpc calls it (§6.3) |
 
 The spike changed three things: where the service is provided (finding 5), the lifecycle follow-up (finding 6), and
@@ -97,7 +100,7 @@ the contract refinements in §12.
 | D7 | `LaunchRequest.model` is `{providerId, modelId}` | A bare model id string | A model id is unique only within its provider. `{providerId, modelId}` is `ModelId`, the type of Agent profiles and of `session.create`'s explicit model |
 | D8 | `input` replies after publication | Replying at commit | `history {atLeast: sequence}` right after the reply must succeed (finding 7) |
 | D9 | `lookup` waits for pending publication, then scans; Rpc's `session.input_lookup` uses the same code | Scanning at once; a second scanner | An input that is committed but not yet published would read `unknown`, and Scheduler would mark a running input `lost` |
-| D10 | `idle` is the facade's `Session::idle`, and S2 keeps today's behaviour: while an approval is pending, `idle` keeps waiting, and the caller ends the wait with `stop`. It takes no timeout | A "blocked" status, deciding in S2 what happens to asks in non-interactive Sessions (for example denying them), or `idle {timeoutMs}` | How asks in a non-interactive Session are handled is Approval's decision, tied to the Questions redesign. It is not designed yet, and S2 presumes no outcome: `idle` follows the turn however Approval settles it. Callers already own their deadlines and end runs with `stop` |
+| D10 | `idle` is the facade's `Session::idle` (now the line's `timelineContext.idle`, [#2027](https://github.com/arcships/dim/issues/2027)), and S2 keeps today's behaviour: while an approval is pending, `idle` keeps waiting, and the caller ends the wait with `stop`. It takes no timeout | A "blocked" status, deciding in S2 what happens to asks in non-interactive Sessions (for example denying them), or `idle {timeoutMs}` | How asks in a non-interactive Session are handled is Approval's decision, tied to the Questions redesign. It is not designed yet, and S2 presumes no outcome: `idle` follows the turn however Approval settles it. Callers already own their deadlines and end runs with `stop` |
 | D11 | `history` pages the branch's own events with `after`, `limit` and a fixed `through`, as `AgentEvent` records | One reply with the whole history, ancestors included | That reply has no size bound across the bridge. Each branch numbers its own sequences, so one cursor cannot page across ancestors. Launched Sessions are read on `main`, which has no ancestors |
 | D12 | `sessions` has no `close` or `release`; Agents owns launched Sessions | Closing a run's Session when the caller is done; counting releases | Closing ends the Session for every user of it (design rules §4 rule 8: detaching is not closing). Unloading is a host decision, and it must cover client Sessions too (§8.6) |
 | D13 | No `sessions.fork` | Adding one with S2 | It has no consumer. S5c owns creation from a cut (`AgentIndex::fork`, [#97](https://github.com/arcships/dim/pull/97)) |
@@ -241,6 +244,13 @@ filter of the class it was created in. No launch lookup is added for this harmle
 
 ### 6.2 input
 
+> Superseded in part by [#2027](https://github.com/arcships/dim/issues/2027): `sessions.input` is removed. The write
+> is the line's `timelineContext.input(InputMessageData)` through `sessions.call({sessionId, lineId, service:
+> "timelineContext", method: "input", args})`. It replies `InputWrite {event, written}` at commit; a caller that
+> needs the input published calls `timelineContext.waitPublished(event.sequence)`. `submissionId` is optional and
+> must not be empty when present. The mapping and outcomes below still describe the input's content and its
+> refusals.
+
 | `InputWrite` | `input/message` (`InputMessageData`) |
 | --- | --- |
 | `submissionId` | `submission_id`. A non-empty string; by convention `<source>:<uuid>` ([A.2](../contracts/session-access.md#a2-source-input-conventions)) |
@@ -292,6 +302,10 @@ and no row check.
 
 ### 6.3 lookup
 
+> Superseded in part by [#2027](https://github.com/arcships/dim/issues/2027): `sessions.lookup` is removed. The read
+> is the line's `timelineContext.lookup(submissionId)` through `sessions.call`, answering the published input or
+> `null`.
+
 `{sessionId, branchId, submissionId}` → `{status: "accepted", inputId, sequence}` or `{status: "unknown"}`; error
 `ambiguous`.
 
@@ -318,8 +332,8 @@ recovery from it:
 | Owner | Writes | Decides from it |
 | --- | --- | --- |
 | Rpc `session.submit`, protocol v3 ([connection/tree.rs](../../../crates/dim-app-server/src/connection/tree.rs)) | An optional UUID | — |
-| Agents `timelineContext.input` (§6.2) | A required, non-empty id, `<source>:<uuid>` by convention | — |
-| The branch Timeline ([core/timeline.rs](../../../crates/dim-agent-runtime/src/core/timeline.rs)), through `Session::input` and `Session::lookup` (`timelineContext.input`, `timelineContext.lookup`, Rpc's `session.submit` and `session.input_lookup`) | — | Accepts each id once per branch; `accepted`, `unknown` or `ambiguous` for lookup |
+| A line's `timelineContext.input` (§6.2) | An optional id, non-empty when present, `<source>:<uuid>` by convention | — |
+| The branch Timeline ([core/timeline.rs](../../../crates/dim-agent-runtime/src/core/timeline.rs)), through the line's `timelineContext.input` and `timelineContext.lookup` (also Rpc's `session.submit` and `session.input_lookup`) | — | Accepts each id once per branch; `accepted`, `unknown` or `ambiguous` for lookup |
 | Goal parts ([crates/dim-goal](../../../crates/dim-goal)) | `goal:<uuid>`, through `TreeCommands::input` | Nothing |
 | Workflow ([engine.ts](../../../runtime/plugins/workflow/engine.ts)) | `workflow:<uuid>` for each stage input and report, stored in its run file before the write | A retry, by the same or a replacement generation, resubmits the same id and settles from the reply |
 | Scheduler ([A.5](../plugins/Scheduler.md#a5-timeline-and-capability-mechanics), [A.6](../plugins/Scheduler.md#a6-run-outcome-delivery); runtime in draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>`, one per delivery | An uncertain reply is settled by lookup (A.6); a window is never written twice |

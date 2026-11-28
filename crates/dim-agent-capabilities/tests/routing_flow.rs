@@ -737,3 +737,51 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     assert!(message.contains("absent"), "{message}");
     rig.host.close().await.unwrap();
 }
+
+/// A submission id is optional, but one that is present must not be empty:
+/// the face refuses an empty id on every input operation and on lookup,
+/// and still writes an input that carries none ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_submission_id_is_refused_and_an_absent_one_writes() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let empty = serde_json::json!({
+        "mode": "queue",
+        "submission_id": "",
+        "blocks": [{"type": "raw", "text": "<dim-test></dim-test>"}],
+    });
+    for (method, args) in [
+        ("input", vec![empty.clone()]),
+        ("inputIfHead", vec![empty.clone(), serde_json::json!(0)]),
+        ("inputs", vec![serde_json::json!([empty.clone()])]),
+        ("lookup", vec![serde_json::json!("")]),
+    ] {
+        let refused = scope
+            .line_call(LineCall::new("main", "timelineContext", method, args))
+            .await;
+        let error = refused.expect_err(method);
+        assert!(
+            error.to_string().contains("submissionId must not be empty"),
+            "{method} refuses the empty id: {error}"
+        );
+    }
+    let absent = serde_json::json!({
+        "mode": "queue",
+        "blocks": [{"type": "raw", "text": "<dim-test></dim-test>"}],
+    });
+    for _ in 0..2 {
+        let written = scope
+            .line_call(LineCall::new(
+                "main",
+                "timelineContext",
+                "input",
+                vec![absent.clone()],
+            ))
+            .await
+            .expect("an input without an id writes")
+            .expect("input answers its write");
+        assert_eq!(written["written"], serde_json::json!(true), "{written}");
+    }
+    rig.host.close().await.unwrap();
+}

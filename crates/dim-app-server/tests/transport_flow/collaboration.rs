@@ -7841,7 +7841,7 @@ async fn a_stop_issued_before_a_reload_still_ends_the_member_turn() {
     let collaboration = server
         .service::<dim_app_server::collaboration::Collaboration>()
         .expect("the process serves Collaboration");
-    let before = collaboration.delivered_stops();
+    let before = collaboration.resumed_stops();
     server.restart("Agents").await.unwrap();
     poll("the failed request's result", async || {
         result_of(&events(&lead_session).await, &member)
@@ -7866,7 +7866,7 @@ async fn a_stop_issued_before_a_reload_still_ends_the_member_turn() {
     // The stop was carried by the generation the reload installed, and a
     // delivered stop leaves no record ([#2027]).
     assert!(
-        collaboration.delivered_stops() > before,
+        collaboration.resumed_stops() > before,
         "the reload's generation delivers the stop"
     );
     assert!(

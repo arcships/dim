@@ -16,9 +16,9 @@ Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 C
 
 - **形态。** 一个具名进程服务 `sessions`，没有实例 key。它是 `host_key("sessions")` 上的 `dyn HostDispatch`，像 `pluginFiles` 一样经服务目录跨语言共享。由 Agents 中从不重载的目录部分提供，每次调用时查找 Agents 索引，因此使用方从不随索引重载（#35）。
 - **启动。** `launch` 创建非交互 Session。它的权限策略是请求的策略，以启动方分支的当前策略为上限；当前策略即由 `permission/changed` 事实折叠出的 `PermissionState`。没有启动方时，上限是宿主的 Session 默认值。Agents 在创建前经 `SessionConfig.permission_policy` 施加上限。
-- **输入。** `input` 经 `Session::input` 写入 `input/message`，事件发布后才回复。分支对每个 `submissionId` 只接受一次：重复提交不写入，回复第一条输入的回执。按 `submissionId` 的 `lookup` 读同一个索引，不写入。
+- **输入。** 输入是线自己的操作 `timelineContext.input`，经 `sessions.call` 调用（[#2027](https://github.com/arcships/dim/issues/2027)）。它提交 `input/message`，在提交时回复 `InputWrite {event, written}`，早于发布；接着要读历史的调用方先用 `timelineContext.waitPublished(event.sequence)` 等待。线对每个 `submissionId` 只接受一次：重复提交不写入，回复第一条输入并带 `written: false`。按 `submissionId` 的 `timelineContext.lookup` 读同一个索引，不写入。
 - **存在。** `exists` 回答某个 Session id 是否仍存在：`false` 表示已被删除，已关闭但可恢复的 Session 为 `true`。它从不取得或恢复 Session，因此对空闲卸载没有影响，也不写入任何东西。
-- **空闲。** `idle` 就是门面的 `Session::idle`：Loop 没有未结束的 turn，没有等待发布的事件，分发已追到尾部。待处理的审批或提问会让 turn 保持未结束，因此调用方用 `stop` 给等待设上限。
+- **空闲。** `idle` 就是线的 `timelineContext.idle`，经 `sessions.call` 调用：Loop 没有未结束的 turn，没有等待发布的事件，分发已追到尾部。待处理的审批或提问会让 turn 保持未结束，因此调用方用 `stop` 给等待设上限。
 - **撤回。** `withdraw` 转交给 S1 的分支撤回服务，语义归 S1；删除成功时，与 `input` 一样等 `input/deleted` 发布后才回复。
 - **生命周期。** Agents 像拥有其他 Session 一样拥有启动的 Session；`sessions` 既不关闭也不卸载它们。已装载的 Session 曾会累积（§2 第 6 条），空闲卸载（[#126](https://github.com/arcships/dim/issues/126)）之后，Agents 卸载在宽限期内没有被任何租约持有的 Session，下一次调用恢复它（§8.6）。存储中的 Session 同样会累积，因此使用方在删掉一次运行的记录时删除该次运行的 Session，经由转交给 S5c 删除的 `sessions.delete`（§6.8、§8.7）。
 
@@ -36,7 +36,7 @@ S2 是 L 级工作项，因此先做 spike（[路线图 §5.4](../../../design/r
 | 4 | 待处理的审批对 `idle` 有什么影响？ | 测试：非交互的 workspace-write Session，模型调用 `exec` | 写入了 `approval/request`，500 ms 后 `idle` 仍未返回。`stop` 结束 turn 后 `idle` 返回；`exec` 从未运行。没有任何部件为审批读取 `interactive` | 审批让 `idle` 保持等待；调用方用 `stop` 给运行设上限（§6.4） |
 | 5 | TypeScript 使用方怎样访问 Rust 服务？ | `pluginFiles` 先例与 rutis 0.10 源码 | `host_key(name)` 上的 `dyn HostDispatch` 加上 `ServiceCatalog::register_shared(name)`，JavaScript 行就能看到它。`HostDispatch::invoke(method, args)` 不携带调用方身份。JavaScript 插件 API 只有 `inject`，是硬依赖，没有按次查找。rutis 0.10 不会把 JavaScript 的 `AbortSignal` 带进 Rust 调用（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)） | `sessions` 由目录部分提供（§5）；A.1 删去“由 Agents 确定来源”；JavaScript 侧的取消提给 C4（§14） |
 | 6 | 一个已装载的 Session 成本多少？ | `xtask measure`，release 构建，mock 模型，Apple M4 | 每个已装载的空闲 Session 约 300 KB Rust 分配、43 个 Tokio 任务。已装载 10 个时平均创建耗时 1.5 ms，100 个时 4.0 ms，1000 个时 57 ms。App Server 从不卸载空闲 Session（[#57](https://github.com/arcships/dim/issues/57)） | 启动的 Session 会累积到重启为止；空闲卸载作为后续项提出（§8.6） |
-| 7 | 读者何时能看到一条输入？ | 代码：`Session::input` 在提交时返回，早于发布；协议 v3 的 `session.submit` 会等待发布 | `Session::input` 一返回就读，调用方可能读不到自己的输入 | `input` 在发布后回复；`lookup` 先等待待发布事件（§6.2、§6.3） |
+| 7 | 读者何时能看到一条输入？ | 代码：`Session::input` 在提交时返回，早于发布；协议 v3 的 `session.submit` 会等待发布 | `Session::input` 一返回就读，调用方可能读不到自己的输入 | `input` 在发布后回复；`lookup` 先等待待发布事件（§6.2、§6.3）。已被 [#2027](https://github.com/arcships/dim/issues/2027) 取代：`timelineContext.input` 在提交时回复，调用方用 `waitPublished` 等待 |
 | 8 | 按 `submissionId` 查找在哪里？ | 代码 | 只在 Rpc：`session.input_lookup` 扫描已发布的页，O(n) | 由 Agents 持有唯一的查找实现，Rpc 调用它（§6.3） |
 
 spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期后续项（第 6 条），以及 §12 的合同细化。
@@ -54,7 +54,7 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 | D7 | `LaunchRequest.model` 为 `{providerId, modelId}` | 单独的模型 id 字符串 | 模型 id 只在其 provider 内唯一。`{providerId, modelId}` 即 `ModelId`，Agent profile 与 `session.create` 的显式模型都用这个类型 |
 | D8 | `input` 在发布后回复 | 提交时回复 | 回复后立即调用 `history {atLeast: sequence}` 必须成功（第 7 条） |
 | D9 | `lookup` 先等待待发布事件再扫描；Rpc 的 `session.input_lookup` 使用同一份代码 | 立即扫描；另写一个扫描器 | 已提交但尚未发布的输入会读成 `unknown`，Scheduler 就会把一条正在运行的输入记为 `lost` |
-| D10 | `idle` 就是门面的 `Session::idle`，S2 沿用现状：审批待处理时 `idle` 一直等待，调用方用 `stop` 结束等待。它不带超时 | 返回“阻塞”状态、由 S2 决定非交互 Session 中的询问怎么处理（例如直接拒绝），或 `idle {timeoutMs}` | 非交互 Session 中的询问怎么处理由 Approval 决定，也和 Questions 的重新设计相关。它还没有设计，S2 不预设结论：无论 Approval 怎样处理，`idle` 都跟随 turn。调用方本来就有自己的截止时间，并用 `stop` 结束运行 |
+| D10 | `idle` 就是门面的 `Session::idle`（现为线的 `timelineContext.idle`，[#2027](https://github.com/arcships/dim/issues/2027)），S2 沿用现状：审批待处理时 `idle` 一直等待，调用方用 `stop` 结束等待。它不带超时 | 返回“阻塞”状态、由 S2 决定非交互 Session 中的询问怎么处理（例如直接拒绝），或 `idle {timeoutMs}` | 非交互 Session 中的询问怎么处理由 Approval 决定，也和 Questions 的重新设计相关。它还没有设计，S2 不预设结论：无论 Approval 怎样处理，`idle` 都跟随 turn。调用方本来就有自己的截止时间，并用 `stop` 结束运行 |
 | D11 | `history` 用 `after`、`limit` 和固定的 `through` 分页读取该分支自己的事件，返回 `AgentEvent` 记录 | 一次回复包含祖先在内的全部历史 | 这样的回复跨桥接时没有大小上限。每个分支各自编号，一个游标无法跨祖先分页。启动的 Session 都在 `main` 上读取，`main` 没有祖先 |
 | D12 | `sessions` 没有 `close` 或 `release`；Agents 拥有启动的 Session | 调用方用完时关闭该次运行的 Session；对释放计数 | 关闭会为该 Session 的所有使用者结束它（设计规则 §4 第 8 条：断开不是关闭）。卸载是宿主的决定，并且必须同样覆盖客户端 Session（§8.6） |
 | D13 | 不提供 `sessions.fork` | 随 S2 一起加入 | 没有使用方。从切点创建归 S5c（`AgentIndex::fork`，[#97](https://github.com/arcships/dim/pull/97)） |
@@ -180,6 +180,8 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 
 ### 6.2 input
 
+> 已被 [#2027](https://github.com/arcships/dim/issues/2027) 部分取代：`sessions.input` 已删除。写入改为线的 `timelineContext.input(InputMessageData)`，经 `sessions.call({sessionId, lineId, service: "timelineContext", method: "input", args})` 调用。它在提交时回复 `InputWrite {event, written}`；需要输入已发布的调用方再调 `timelineContext.waitPublished(event.sequence)`。`submissionId` 可省略，给出时不能为空。下面的映射和结果仍描述输入内容与拒绝情况。
+
 | `InputWrite` | `input/message`（`InputMessageData`） |
 | --- | --- |
 | `submissionId` | `submission_id`。非空字符串；按约定为 `<source>:<uuid>`（[A.2](../contracts/session-access.md#a2-来源输入约定)） |
@@ -213,6 +215,8 @@ Agents 取得该分支的发布观察器，调用 `Session::input`；它像对�
 
 ### 6.3 lookup
 
+> 已被 [#2027](https://github.com/arcships/dim/issues/2027) 部分取代：`sessions.lookup` 已删除。查找改为线的 `timelineContext.lookup(submissionId)`，经 `sessions.call` 调用，回复已发布的输入或 `null`。
+
 `{sessionId, branchId, submissionId}` → `{status: "accepted", inputId, sequence}` 或 `{status: "unknown"}`；错误 `ambiguous`。
 
 `Session::lookup` 读取分支的 `submission_id` 索引（§6.2）。对于它持有的输入，等到该输入发布后回复它；分支先关闭或失败时以该错误结束。否则回复 `unknown`。调用前提交的每条输入都在索引中，因此对于查找开始前已经返回的写入，`unknown` 是最终结果，不必等待其他待发布事件，也不扫描页面。重启后同样正确：未发布的尾部随进程丢失，索引从恢复的历史重建。`ambiguous` 只回答写于分支只接受一次之前、有多条输入的标识。Rpc 的 `session.input_lookup` 调用同一方法，其边界仍自行解析参数。提交标识是输入本身的字段，没有其他记录保存它（[见下](#提交标识存放在哪里)）。
@@ -226,8 +230,8 @@ Agents 取得该分支的发布观察器，调用 `Session::input`；它像对�
 | 所有者 | 写入 | 据此决定 |
 | --- | --- | --- |
 | Rpc `session.submit`，协议 v3（[connection/tree.rs](../../../../crates/dim-app-server/src/connection/tree.rs)） | 可选的 UUID | — |
-| Agents `timelineContext.input`（§6.2） | 必填、非空，按约定为 `<source>:<uuid>` | — |
-| 分支 Timeline（[core/timeline.rs](../../../../crates/dim-agent-runtime/src/core/timeline.rs)），经 `Session::input` 与 `Session::lookup`（`timelineContext.input`、`timelineContext.lookup`、Rpc 的 `session.submit` 与 `session.input_lookup`） | — | 每个分支对每个标识只接受一次；查找回答 `accepted`、`unknown` 或 `ambiguous` |
+| 线的 `timelineContext.input`（§6.2） | 可选，给出时不能为空，按约定为 `<source>:<uuid>` | — |
+| 分支 Timeline（[core/timeline.rs](../../../../crates/dim-agent-runtime/src/core/timeline.rs)），经线的 `timelineContext.input` 与 `timelineContext.lookup`（以及 Rpc 的 `session.submit` 与 `session.input_lookup`） | — | 每个分支对每个标识只接受一次；查找回答 `accepted`、`unknown` 或 `ambiguous` |
 | Goal 的部件（[crates/dim-goal](../../../../crates/dim-goal)） | 经 `TreeCommands::input` 写 `goal:<uuid>` | 不读取 |
 | Workflow（[engine.ts](../../../../runtime/plugins/workflow/engine.ts)） | 每个阶段输入和报告写 `workflow:<uuid>`，写入前先存入运行文件 | 同一代或替换代重试时以同一标识重新提交，按回复结算 |
 | Scheduler([A.5](../plugins/Scheduler.md#a5-timeline-与-capability-机制)、[A.6](../plugins/Scheduler.md#a6-运行结果投递)；运行时在 draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>`，每个投递一个 | 不确定的回复由查询结算(A.6)；同一窗口绝不写两次 |

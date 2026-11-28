@@ -97,7 +97,7 @@ text. The stable process dependency boundary still applies. This settles the
 | Management namespace | The process row restores its delivery store before registering `schedule` with `managementMethods` and publishing `scheduleJobs`. A failed restore retains the fault and still registers the namespace before failing the row, so subsequent calls report that row's failed status. Native per-call admission and `report`/`drain` follow the registering row's lifetime and status. |
 | Settings | The process row alone registers source `schedule`, user file `schedule.json`, no `projectFile` (§7.1). Read the validated/defaulted document at use, and CAS with its document revision. The native binding uses typed owner reads/writes; clients manage jobs through `schedule.*`, not generic `settings.*`. |
 | Storage | The [public binding](../process-typescript.md#52-public-pluginfiles-binding) supplies pluginFiles at the authorized product root. The embedding host provisions `scheduler/` before enabling the row; a missing parent returns `io` before the transaction callback. Scheduler inner v1 (A.7) and host outer v1 are unchanged. |
-| Sessions | Calls use `{ok:true,value}` / `{ok:false,error:{code,message,retryable}}`. `launch` returns `{sessionId,policy}`, `input` returns `{inputId,sequence}`, and `lookup` returns `accepted`/`unknown`. Keep data in these existing shapes. |
+| Sessions | Calls use `{ok:true,value}` / `{ok:false,error:{code,message,retryable}}`. `launch` returns `{sessionId,policy}`, the line's `timelineContext.input` (through `sessions.call`) returns `InputWrite {event, written}` at commit, `waitPublished(event.sequence)` confirms publication, and `timelineContext.lookup` returns the input or `null`. Keep data in these existing shapes. |
 | Native lifetime | Each S2 call holds its own lease. Agents' automatic idle unload is delivered by [#331](https://github.com/arcships/dim/pull/331) for [#126](https://github.com/arcships/dim/issues/126). Scheduler does not turn detachment into close or add its own unload loop. |
 
 ### 1.2 Impact
@@ -239,7 +239,7 @@ sequenceDiagram
   T->>SET: read the job document
   T->>ST: persist delivering (target, submission id)
   T->>AG: timelineContext.input(sessionId, branchId, mode, marker, prompt)
-  AG-->>T: {inputId, sequence}
+  AG-->>T: InputWrite {event, written}, then waitPublished
   T->>ST: persist delivered
   S->>IQ: Dispatcher: input/applied, input/consumed, turn
 ```
@@ -256,7 +256,7 @@ sequenceDiagram
   AG-->>T: {sessionId, policy}
   T->>ST: persist sessionId, branch, policy
   T->>AG: timelineContext.input(sessionId, main, queue, marker, prompt)
-  AG-->>T: {inputId, sequence}
+  AG-->>T: InputWrite {event, written}, then waitPublished
   T->>ST: persist delivered
   Note over T: at deadline_at: timelineContext.stop(main)
 ```
@@ -745,10 +745,10 @@ A delivery touches the Timeline once, by writing one input; Scheduler never read
 | Step | Path |
 | --- | --- |
 | Trigger | The timer task computes the next window per enabled job; at a window it applies the grace and enablement rules and persists `delivering` with a fresh `run_id` |
-| Session target | `timelineContext.input {sessionId, branchId, mode, submissionId:"scheduler:<run_id>", rawBlocks:[{text:"<dim-scheduler …>…</dim-scheduler>"}], content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`. The marker text is constructed/escaped at Scheduler's external-input boundary; S2 accepts `RawBlock {text,key?}`, not a structured marker object. |
+| Session target | `sessions.call {sessionId, lineId, service:"timelineContext", method:"input", args:[{mode, submission_id:"scheduler:<run_id>", blocks:[{type:"raw", text:"<dim-scheduler …>…</dim-scheduler>"}], user:{content:[{type:"text", text:prompt}]}}]}` → `InputWrite {event, written}`, then `waitPublished(event.sequence)`. The marker text is constructed/escaped at Scheduler's external-input boundary; S2 accepts `RawBlock {text,key?}`, not a structured marker object. |
 | Launch target | `sessions.launch {agent?, cwd, policy?}` → `{sessionId,policy}`. Agents chooses the profile's model and caps the policy against the live bound; Scheduler does not resolve either. Persist the Session identity and the reply's `policy` on the `delivering` record, start its stop timer, then write the same input shape to the Session's `main` branch. Nothing else is called and nothing follows the Session afterwards. |
-| Settle | `{inputId,sequence}` → `delivered` with `input_event_id`. A definite refusal → `failed: <code>`; with a target-gone code, disable the job (A.3). |
-| Uncertain reply | `reloading`, `publication_unknown`, `ambiguous` or a transport failure → `timelineContext.lookup {sessionId,branchId,submissionId}` (§A.6). |
+| Settle | A published `InputWrite` → `delivered` with `input_event_id` = `event.id`. A definite refusal → `failed: <code>`; with a target-gone code, disable the job (A.3). |
+| Uncertain reply | `reloading`, `publication_unknown`, `ambiguous` or a transport failure → `timelineContext.lookup(submissionId)` through `sessions.call` (§A.6). |
 | Missed | A window older than the grace is one `missed` record; no launch, no input. |
 | Stop | A launch Session is stopped at `deadline_at` by the record's own stop timer; the record stays `delivered` (§3.2). |
 

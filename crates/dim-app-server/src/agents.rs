@@ -572,6 +572,29 @@ pub struct AgentIndex {
     #[cfg(feature = "testing")]
     close_hold: Arc<Mutex<Option<Arc<crate::CloseHold>>>>,
 }
+/// The holder's line `line` of `routed`, answered as the Session facade
+/// answered it: a line that has left the tree with a recorded ended head is
+/// `BranchEnded`, so the callers' ended-line paths serve its fixed head; one the
+/// Session never had is `UnknownBranch`; a Session whose scope is gone is
+/// `Closed` ([#2227]).
+///
+/// [#2227]: https://github.com/arcships/dim/pull/2227
+fn held_line(
+    routed: &dim_agent_runtime::RoutedSession,
+    line: &str,
+) -> dim_agent_runtime::Result<dim_agent_runtime::Line> {
+    routed.line(line).map_err(|error| match error {
+        dim_agent_runtime::RouteError::NoLine { line, .. } => {
+            if routed.session().ended_head(&line).is_some() {
+                AgentError::BranchEnded(line)
+            } else {
+                AgentError::UnknownBranch(line)
+            }
+        }
+        other => AgentError::Closed(other.to_string()),
+    })
+}
+
 /// One page of `branch`'s own facts after `after` through its Session's query:
 /// at most `limit`, never past `through`, ending on an atomic batch.
 async fn session_history_page(
@@ -790,10 +813,7 @@ impl AgentIndex {
             .agent
             .routed_session(id)
             .ok_or_else(|| AgentError::Closed(id.into()))?;
-        routed.line(line).map_err(|error| match error {
-            dim_agent_runtime::RouteError::NoLine { line, .. } => AgentError::UnknownBranch(line),
-            other => AgentError::Closed(other.to_string()),
-        })
+        held_line(&routed, line)
     }
     /// The line `line` of Session `id`, resolved as the route resolves it: the
     /// holder reads and drives the line through the returned handle.
@@ -805,10 +825,7 @@ impl AgentIndex {
         let routed = self
             .routed_session(id)
             .ok_or_else(|| AgentError::Closed(id.into()))?;
-        routed.line(line).map_err(|error| match error {
-            dim_agent_runtime::RouteError::NoLine { line, .. } => AgentError::UnknownBranch(line),
-            other => AgentError::Closed(other.to_string()),
-        })
+        held_line(&routed, line)
     }
     /// The Agent owning a Session, also after the Session itself closed and
     /// while its Agent is closing; its archives may still be finishing.
@@ -1137,10 +1154,12 @@ impl AgentIndex {
             return Err(AgentError::Closed(id.into()));
         };
         // The slot's gate is held for a whole operation and for a close, so
-        // waiting for it is waiting on the Session. A Session that is closing
-        // keeps the answer the facade gave (`Closed`); an index that is
-        // stopping answers a reload the caller retries once the next
-        // generation holds the Session ([#2027]).
+        // waiting for it is waiting on the Session. A closed Session answers
+        // `Closed` as before; one that is still closing is admitted as before,
+        // so a concurrent close waits for that close's cleanup instead of
+        // answering first. An index that is stopping answers a reload the
+        // caller retries once the next generation holds the Session
+        // ([#2027]).
         if self.stopping.is_cancelled() {
             return Err(AgentError::Reloading("process admission".into()));
         }
@@ -1151,7 +1170,7 @@ impl AgentIndex {
             }
             gate = slot.gate.clone().lock_owned() => gate,
         };
-        if slot.closed.load(Ordering::Acquire) || slot.closing.load(Ordering::Acquire) {
+        if slot.closed.load(Ordering::Acquire) {
             return Err(AgentError::Closed(id.into()));
         }
         if self.stopping.is_cancelled() {

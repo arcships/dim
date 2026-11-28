@@ -65,8 +65,9 @@ impl From<PluginFileError> for EventHubError {
 /// name is `failed`, which is what every other refused input is.
 pub fn sessions_code(code: &str) -> &'static str {
     match code {
-        "session_closed" | "no_session" => "session_closed",
-        "branch_missing" | "branch_ended" | "no_line" => "branch_missing",
+        "session_closed" | "no_session" | "Closed" => "session_closed",
+        "branch_missing" | "no_line" | "UnknownBranch" => "branch_missing",
+        "branch_ended" | "BranchEnded" => "branch_ended",
         "reloading" | "session_reloading" | "session_closing" => "reloading",
         "rejected" | "InvalidInput" => "rejected",
         "ambiguous" | "AmbiguousSubmission" => "ambiguous",

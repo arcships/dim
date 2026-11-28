@@ -562,6 +562,10 @@ async fn read<R: std::ops::RangeBounds<u64> + Send>(
 pub trait SessionLines {
     /// The line, resolved as the route resolves it.
     fn line_of(&self, line: &str) -> Result<crate::route::Line>;
+    /// The answer a write gets before its line is selected, as the facade
+    /// gave it: the runtime fault that stopped the Session first, then
+    /// `Closed` once the Session is closing.
+    fn admit_write(&self) -> Result<()>;
     async fn submit(
         &self,
         text: String,
@@ -579,6 +583,7 @@ pub trait SessionLines {
         data: dim_agent_types::InputMessageData,
         line: &str,
     ) -> Result<Arc<dim_agent_types::AgentEvent>> {
+        self.admit_write()?;
         Ok(self.line_of(line)?.context().input(data).await?.event)
     }
     async fn input_commit(
@@ -586,6 +591,7 @@ pub trait SessionLines {
         data: dim_agent_types::InputMessageData,
         line: &str,
     ) -> Result<(Arc<dim_agent_types::AgentEvent>, crate::InputCommit)> {
+        self.admit_write()?;
         let reply = self.line_of(line)?.context().input(data).await?;
         Ok((
             reply.event,
@@ -601,6 +607,7 @@ pub trait SessionLines {
         inputs: Vec<dim_agent_types::InputMessageData>,
         line: &str,
     ) -> Result<Vec<Arc<dim_agent_types::AgentEvent>>> {
+        self.admit_write()?;
         self.line_of(line)?.context().inputs(inputs).await
     }
     async fn lookup(
@@ -673,6 +680,15 @@ impl SessionLines for crate::Session {
     /// one answer as they did before the handle existed.
     fn line_of(&self, line: &str) -> Result<crate::route::Line> {
         self.line_for_test(line)
+    }
+    fn admit_write(&self) -> Result<()> {
+        if let Some(error) = self.failure() {
+            return Err(error);
+        }
+        if self.is_closing() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        Ok(())
     }
     fn ended_head(&self, line: &str) -> Option<u64> {
         crate::Session::ended_head(self, line)

@@ -262,6 +262,24 @@ impl SessionScope {
         Ok(session)
     }
 
+    /// The line `line_id` as its holder selects it: closing or not, while the
+    /// Session's loaded scope is there ([`RoutedSession::line`]).
+    fn held_line(&self, line_id: &str) -> Routed<Arc<BranchRuntime>> {
+        let session = self
+            .session
+            .upgrade()
+            .ok_or_else(|| RouteError::SessionClosing(self.session_id.clone()))?;
+        if session.loaded().is_err() {
+            return Err(RouteError::SessionClosing(self.session_id.clone()));
+        }
+        session
+            .published_line(line_id)
+            .ok_or_else(|| RouteError::NoLine {
+                session: self.session_id.clone(),
+                line: line_id.to_owned(),
+            })
+    }
+
     /// The live line `line_id` of this Session. A Session that started closing
     /// while the line was being resolved answers `SessionClosing`, not
     /// `NoLine`: closing the Session closes its lines.
@@ -331,22 +349,27 @@ impl RoutedSession {
         &self.scope
     }
     /// One of this Session's lines, for the mechanism caller that holds the
-    /// Session: the same selection `sessionScope.lineCall` makes, answering
-    /// [`RouteError::NoLine`] or [`RouteError::SessionClosing`] first.
+    /// Session.
+    ///
+    /// Unlike `sessionScope.lineCall`, the holder still selects a line that
+    /// is closing, and a line of a Session that is closing: it reads and
+    /// observes the line until its close settles, so a client watching or
+    /// reading it gets the line's last state and its fixed head instead of an
+    /// error ([#2227]). The face's own operations answer for a closing line
+    /// (a write is refused there). The selection answers
+    /// [`RouteError::NoLine`] once the line has left the tree, when the
+    /// caller reads its ended head instead, and [`RouteError::SessionClosing`]
+    /// once the Session's loaded scope is gone.
     ///
     /// The handle carries the line's data face ([`Line::context`]) and the
     /// reads and observations only the holder has. It is built from a
     /// `RoutedSession`, which only the runtime constructs, so a crate holding a
     /// bare [`Session`] has no path to it (ADR 027 appendix F).
+    ///
+    /// [#2227]: https://github.com/arcships/dim/pull/2227
     pub fn line(&self, line_id: &str) -> Routed<Line> {
-        select_line(&self.scope, line_id).map(Line)
+        self.scope.held_line(line_id).map(Line)
     }
-}
-
-/// Selects `line_id` for `scope` as the route does: the Session must be open,
-/// the line selectable, and the Session must still be open once it is.
-fn select_line(scope: &SessionScope, line_id: &str) -> Routed<Arc<BranchRuntime>> {
-    scope.line_context(line_id)
 }
 
 /// One line of a Session, for the mechanism caller that holds the Session

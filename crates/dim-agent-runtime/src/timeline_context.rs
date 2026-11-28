@@ -409,6 +409,7 @@ impl BranchRuntime {
         if self.close.started() {
             return Err(AgentError::Closed(self.id().into()));
         }
+        check_submission_id(data.submission_id.as_deref())?;
         data.validate()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))
     }
@@ -490,6 +491,7 @@ impl BranchRuntime {
             ));
         }
         for input in &inputs {
+            check_submission_id(input.submission_id.as_deref())?;
             input
                 .validate()
                 .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
@@ -516,6 +518,7 @@ impl BranchRuntime {
     }
     /// The committed input with submission id `id`, once it is published.
     pub(crate) async fn lookup(&self, id: &str) -> Result<Option<Arc<AgentEvent>>> {
+        check_submission_id(Some(id))?;
         let Some(input) = self
             .timeline
             .submission(id, self.timeline.committed())
@@ -877,18 +880,6 @@ impl BranchRuntime {
         self.close.start(self.ctx.handle(), async move {
             #[cfg(feature = "testing")]
             crate::testing::closing(&this.timeline.key().session_id, &this.id).await;
-            // The closing interrupt is committed before the branch lock: a
-            // tool that is running sees the stop, writes its own terminal
-            // result, and only then does this wait for the turn to settle. The
-            // lock a close takes is the same one a stop holds while it waits,
-            // so committing after it would deadlock the two ([#2027]).
-            let interrupt = match unloading {
-                true => Ok(this.timeline.sequence()),
-                false => {
-                    this.timeline.thaw();
-                    this.commit_interrupt("timeline closed".into(), InterruptScope::Branch, None)
-                }
-            };
             let _guard = this.control.lock().await;
             let span = tracing::info_span!(
                 "timeline.close",
@@ -897,14 +888,15 @@ impl BranchRuntime {
                 outcome = tracing::field::Empty,
             );
             let mut errors = vec![];
-            let stopped = match interrupt {
-                Ok(interrupt) if !unloading => {
-                    guarded("timeline.stop", async {
-                        this.await_settled(interrupt).await
-                    })
-                    .await
-                }
-                other => other,
+            let stopped = if unloading {
+                Ok(this.timeline.sequence())
+            } else {
+                this.timeline.thaw();
+                guarded("timeline.stop", async {
+                    this.stop_inner("timeline closed".into(), InterruptScope::Branch, None)
+                        .await
+                })
+                .await
             };
             let stopped = match stopped {
                 Err(AgentError::Closed(_)) if this.loop_state().is_err() => Ok(0),
@@ -1044,4 +1036,15 @@ impl TimelineContext {
     pub async fn wait_published(&self, sequence: u64) -> std::result::Result<(), AgentError> {
         self.line.wait_published(sequence).await
     }
+}
+
+/// A submission id is optional, but one that is present must not be empty:
+/// an empty id would make every later empty-id input a duplicate of the first.
+fn check_submission_id(id: Option<&str>) -> Result<()> {
+    if id.is_some_and(str::is_empty) {
+        return Err(AgentError::InvalidInput(
+            "submissionId must not be empty when present".into(),
+        ));
+    }
+    Ok(())
 }

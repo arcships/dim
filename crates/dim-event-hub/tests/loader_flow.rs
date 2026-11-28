@@ -318,7 +318,7 @@ async fn a_delivery_in_flight_updates_the_view_the_next_generation_reads() {
     );
     assert_eq!(
         receipt["deliveries"][0]["code"],
-        json!("branch_missing"),
+        json!("branch_ended"),
         "{receipt}"
     );
 
@@ -616,4 +616,32 @@ async fn two_publishes_share_the_install_delivery_budget() {
         );
     }
     assert_eq!(gate.max(), 8);
+}
+
+/// An owner that answers `Closed` closed the Session while the delivery was
+/// admitted: the Session keeps its rows and restores, so the delivery is
+/// `failed: session_closed` and the subscription stays (design §Delivery,
+/// [#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owner_closed_answer_fails_the_delivery_and_keeps_the_subscription() {
+    let fixture = LoaderFixture::mount().await;
+    fixture.producer.declare(im_declaration()).await.unwrap();
+    fixture.subscribe("branch", &["im.*"], None).await.unwrap();
+    fixture.sessions.fail("branch", "Closed");
+    let receipt = fixture.producer.publish(event("closed")).await.unwrap();
+    assert_eq!(
+        receipt["deliveries"][0]["status"],
+        json!("failed"),
+        "{receipt}"
+    );
+    assert_eq!(
+        receipt["deliveries"][0]["code"],
+        json!("session_closed"),
+        "{receipt}"
+    );
+    assert_eq!(
+        fixture.subscriptions(None).await.len(),
+        1,
+        "a closed Session keeps its subscription"
+    );
 }

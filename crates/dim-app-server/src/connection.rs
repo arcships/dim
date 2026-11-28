@@ -1591,10 +1591,11 @@ impl Connection {
                 {
                     continue;
                 }
-                let running = session
-                    .branches()
-                    .iter()
-                    .any(|branch| session.state(&branch.id).is_ok_and(|state| state.running));
+                let running = session.branches().iter().any(|branch| {
+                    AgentIndex::host_line(&host, session.id(), &branch.id)
+                        .and_then(|line| line.context().state())
+                        .is_ok_and(|state| state.running)
+                });
                 if !running && self.hub.attached_clients(session.id()) == 0 {
                     continue;
                 }

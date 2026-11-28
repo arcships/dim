@@ -68,7 +68,7 @@ flowchart LR
 | 管理 | 进程行注入 managementMethods，在 apply 中注册 workflow，注册使用原生按调用准入及 report/drain；包已实现这五个具体方法。 |
 | 定义 / Settings | Settings owner 读写/CAS/事件与生成的 workflowFiles 已交付。来源、文件授权、包身份沿用已接受原生接入合同，§1.3 指定包内位置；包提供业务 schema 和 A.1 语义诊断。不直接访问文件系统。 |
 | 存储 | [公开绑定](../../../design/process-typescript.md#52-public-pluginfiles-binding)在宿主授权 product root 提供 pluginFiles。宿主在启用行前创建 `workflow/`；父目录缺失时在事务回调前返回 `io`。运行存储及其变更标记、拒绝 v1 并保留原字节、延后迁移仍遵循 A.4。 |
-| Sessions | 使用既有 {ok:true,value} / {ok:false,error:{code,message,retryable}}；launch 返回 {sessionId,policy}，input 返回 {inputId,sequence}；分支对每个 submissionId 只接受一次；lookup 查已提交输入，不写入。 |
+| Sessions | 使用既有 {ok:true,value} / {ok:false,error:{code,message,retryable}}；launch 返回 {sessionId,policy}，线的 timelineContext.input（经 sessions.call）在提交时返回 InputWrite {event, written}，再用 timelineContext.waitPublished(event.sequence) 确认发布；线对每个 submissionId 只接受一次；lookup 查已提交输入，不写入。 |
 | 权限 | S2 在真正准入阶段时收窄权限，§3.3 按已确认 A17 复用返回的 policy 约束后续阶段，不增加权限查询服务，不把创建配置当作实时 Permission。 |
 | 生命周期 | S2 每次调用的租约结束不等于关闭 Session。反复创建阶段 Session 发布前仍须 [#126](https://github.com/arcships/dim/issues/126)；确认保留期所有权后使用既有 sessions.delete。 |
 
@@ -523,7 +523,7 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 | --- | --- |
 | 启动 | 校验定义/参数，保留 starter 身份，持久化 Run running、首准入 pending 后返回 run_id；阶段推进归进程任务 owner，不直接写 Timeline；A17 已确认。 |
 | 阶段启动 | 按 A.1 渲染并检查整步长度后才准入任何同组阶段，复核运行状态，持久化 launching，S2 launch 省略未设置 agent/model；首回复在输入前保存 sessionId 和 policy 上限，后续启动显式传入已存 policy；保存 `submissionId = workflow:<uuid>`。 |
-| 阶段输入 | `timelineContext.input {sessionId,branchId:"main",mode:"queue",submissionId,rawBlocks:[{text:"<dim-workflow …>…</dim-workflow>"}],content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`；Workflow 输入边界构建/转义标记，S2 接受 RawBlock {text,key?} 而非结构化 marker，先存 receipt 再继续。 |
+| 阶段输入 | `sessions.call {sessionId, lineId:"main", service:"timelineContext", method:"input", args:[{mode:"queue", submission_id, blocks:[{type:"raw", text:"<dim-workflow …>…</dim-workflow>"}], user:{content:[{type:"text", text:prompt}]}}]}` → `InputWrite {event, written}`，再 `waitPublished(event.sequence)`；提交后发布等待失败时，用同一个 `submission_id` 重试；Workflow 输入边界构建/转义标记，S2 接受 RawBlock {text,key?} 而非结构化 marker，先存 receipt 再继续。 |
 | 消费 | 阶段 Session 的 InputQueue 和 Loop 在各自的 Dispatcher 上（`input/applied`、`input/consumed`），然后是轮次 |
 | 完成 | 自持历史跟踪（§3.2），每次固定一个已发布截止点。本输入消费前：匹配的 input/deleted，或本输入 input/applied 后接 stop/interrupt → stopped，否则继续等待；消费后第一个 turn/end 决定 completed/failed/stopped，取该轮次最后的回复文本。 |
 | 推进 | 持久化阶段结果；某一步的所有阶段都到达终态时，启动下一步或结束运行；失败的阶段会停止运行中的同组阶段并使运行失败（A4） |

@@ -172,31 +172,40 @@ pub(crate) struct CollaborationDirectory {
     /// Watched Session ids and their Agents: closure (treated as deletion)
     /// removes their relations and may release an owned Agent.
     watched: Mutex<BTreeMap<String, Arc<WatchedSession>>>,
-    /// Stops a failed request still has to deliver, by member Session id. A
-    /// generation that stops before the member does leaves the entry for the
-    /// next one to finish ([#2027], design rule 8).
-    pending_stops: Mutex<BTreeMap<String, PendingStop>>,
-    /// Members whose stop this generation carries, by member Session id. A
-    /// new request to that member is refused `Busy` while the mark of the
-    /// generation that holds it lives; a mark left by a generation that
-    /// stopped protects nothing (design rule 8, [#2027]).
-    stopping: Mutex<BTreeMap<String, StoppingMark>>,
-    /// Which generation of Collaboration is current.
-    generation: std::sync::atomic::AtomicUsize,
-    /// Stops a generation actually delivered. Feature `testing` only: a test
-    /// reads it to see which generation carried the stop.
+    /// Member stops still to carry out, by member Session id. A stop that
+    /// waits for its input's `input/consumed` is recorded here, which no
+    /// reload rebuilds: a generation that stops first leaves the record, and
+    /// the next generation carries it out (design rule 8, [#2227]).
+    ///
+    /// [#2227]: https://github.com/arcships/dim/pull/2227
+    member_stops: Mutex<BTreeMap<String, MemberStop>>,
+    /// Member stops a generation carried out from a record an earlier one
+    /// left. Feature `testing` only.
     #[cfg(feature = "testing")]
-    delivered: std::sync::atomic::AtomicUsize,
+    resumed_stops: std::sync::atomic::AtomicUsize,
 }
 
-/// One stop a later generation has to deliver.
+/// One member stop to carry out: the input a request delivered, on the line it
+/// was delivered to. Its fate decides what is stopped, so the record never
+/// reaches a turn that did not consume that input.
 #[derive(Clone)]
-pub(crate) struct PendingStop {
-    pub line: String,
-    pub reason: String,
-    /// The input the request delivered: its fate decides whether the stop
-    /// ends a turn or withdraws an unapplied input ([#2027]).
-    pub input_event_id: String,
+struct MemberStop {
+    line: String,
+    input: String,
+    reason: String,
+}
+
+/// How a member stop ended.
+enum StopEnd {
+    /// The consuming turn was stopped, the input withdrawn, or nothing was
+    /// left to stop: the record is done.
+    Done,
+    /// This generation stopped first, or the owner reloads: the record stays
+    /// for the next attempt.
+    Kept,
+    /// The member's line or Session is gone, or a read failed: the record is
+    /// dropped and the error reported.
+    Failed(AgentError),
 }
 
 impl CollaborationDirectory {
@@ -264,8 +273,6 @@ pub struct Collaboration {
     settings: Option<Arc<SettingsService>>,
     tasks: TaskTracker,
     stop: CancellationToken,
-    /// Which generation of the part this is, as the directory counts them.
-    generation: usize,
 }
 struct Peer {
     usage: crate::agents::SessionUse,
@@ -284,156 +291,19 @@ struct Participant {
     status: &'static str,
 }
 impl Collaboration {
-    /// The effect and the wait of one carry-out; `carry_out_stop` holds the
-    /// mark across both and clears the request's flag when either fails.
-    async fn stop_request_input(
-        self: &Arc<Self>,
-        session: &Session,
-        branch: &str,
-        input: &str,
-        reason: &str,
-        stopping: Arc<Stopping>,
-    ) -> dim_agent_runtime::Result<()> {
-        let mut after = 0;
-        let mut open = None;
-        // The delivery's line, held on the request: moving the member's
-        // default branch does not redirect the withdrawal or the stop to a
-        // line that never held the input (design §9, §15).
-        let line = branch.to_owned();
-        // The published head is read before the check and the wait names the
-        // next sequence: whatever the check cannot see happened after that
-        // head, so waiting for it to be passed cannot miss a change
-        // ([#2027](https://github.com/arcships/dim/issues/2027)).
-        match input_fate(
-            self.sessions.as_ref(),
-            session,
-            &line,
-            input,
-            &mut after,
-            &mut open,
-        )
-        .await?
-        {
-            InputFate::Consumed(Some(turn)) => {
-                stop_member_turn(session, &line, &turn, reason)?;
-                return Ok(());
-            }
-            // A consumed input whose turn already ended, and a deleted one
-            // that no turn will consume, leave nothing to stop.
-            InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
-            InputFate::Pending => {}
-        }
-        match session
-            .service::<dim_agent_capabilities::input_queue::InputQueue>(&line)?
-            .withdraw(InputWithdrawData {
-                input_id: input.to_owned(),
-                reason: Some(reason.into()),
-                steer: None,
-            })
-            .await?
-        {
-            // (W): no turn will run for the input; the settle names it.
-            dim_agent_capabilities::input_queue::Withdrawal::Deleted { .. } => return Ok(()),
-            dim_agent_capabilities::input_queue::Withdrawal::NotHeld => {}
-        }
-        // (S): InputQueue handed the input to Loop, so the turn that consumes
-        // it is the one to stop. Waiting for its `input/consumed` names that
-        // turn, the documented `consumed < interrupt` order, instead of
-        // racing its application. The carry-out ends when the stop lands, when
-        // the withdrawal deletes the input, when the member client deletes it
-        // first, when the consuming turn has ended, when the member closes, or
-        // when Collaboration stops: not on the branch's abort and not on the
-        // request's settle, because a branch close settles the request while
-        // the member may not have consumed yet.
-        let stop = self.stop.clone();
-        let tasks = self.tasks.clone();
-        let sessions = self.sessions.clone();
-        let session = session.clone();
-        let line = line.clone();
-        let input = input.to_owned();
-        let reason = reason.to_owned();
-        let wait = async move {
-            // The mark lives until this block ends, and a failure of the loop
-            // below clears the request's flag before it goes.
-            let result: dim_agent_runtime::Result<()> = async {
-                loop {
-                    let head = line_head(sessions.as_ref(), &session, &line).await?;
-                    tokio::select! {
-                        _ = stop.cancelled() => return Ok(()),
-                        _ = session.closed() => {
-                            return Err(AgentError::Closed(session.id().into()));
-                        }
-                        result = line_call(
-                            sessions.as_ref(),
-                            &session,
-                            &line,
-                            "timelineContext",
-                            "waitPublished",
-                            vec![serde_json::json!(head + 1)],
-                        ) => {
-                            // A line that closed ends the wait; the next check
-                            // reads what is there.
-                            if result.is_err() {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    match input_fate(
-                        sessions.as_ref(),
-                        &session,
-                        &line,
-                        &input,
-                        &mut after,
-                        &mut open,
-                    )
-                    .await?
-                    {
-                        InputFate::Consumed(Some(turn)) => {
-                            stop_member_turn(&session, &line, &turn, &reason)?;
-                            return Ok(());
-                        }
-                        // The member deleted the input first: no turn will
-                        // consume it, so the wait ends with nothing to stop.
-                        InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
-                        InputFate::Pending => {}
-                    }
-                }
-            }
-            .await;
-            if result.is_err() {
-                stopping.failed(&input);
-            }
-            result
-        };
-        tasks.spawn(wait);
-        Ok(())
-    }
-    /// Whether this generation holds a stopping mark for `member`: a request
-    /// to it is refused until that stop ends.
-    fn stopping(&self, member: &str) -> bool {
-        let generation = self.generation;
-        self.directory
-            .stopping
-            .lock()
-            .unwrap()
-            .get(member)
-            .is_some_and(|mark| mark.generation == generation)
-    }
-
-    /// The stops this process delivered, and the ones still recorded. Feature
-    /// `testing` only: a test tells a stop carried by the next generation from
-    /// one carried by the first, and that a delivered stop leaves no record.
+    /// The member stops a generation carried out from a record an earlier one
+    /// left, and the members whose stop is still recorded. Feature `testing`
+    /// only.
     #[cfg(feature = "testing")]
-    pub fn delivered_stops(&self) -> usize {
+    pub fn resumed_stops(&self) -> usize {
         self.directory
-            .delivered
+            .resumed_stops
             .load(std::sync::atomic::Ordering::SeqCst)
     }
-
     #[cfg(feature = "testing")]
     pub fn recorded_stops(&self) -> Vec<String> {
         self.directory
-            .pending_stops
+            .member_stops
             .lock()
             .unwrap()
             .keys()
@@ -441,56 +311,149 @@ impl Collaboration {
             .collect()
     }
 
-    /// Delivers the stop recorded for `member`, if this generation still has
-    /// one: a delivered stop, a Session or line that is gone, and a closing
-    /// Session all end the record; only this generation stopping first leaves
-    /// it ([#2027], design rule 8).
-    async fn deliver_pending_stop(self: &Arc<Self>, member: String) {
-        let Some(pending) = self
-            .directory
-            .pending_stops
-            .lock()
-            .unwrap()
-            .get(&member)
-            .cloned()
-        else {
-            return;
-        };
-        let Some((_, session)) = self.index.session(&member) else {
-            self.directory.pending_stops.lock().unwrap().remove(&member);
-            return;
-        };
-        let stopping = Stopping::cross_generation(&self.directory, &member);
-        match self
-            .stop_request_input(
-                &session,
-                &pending.line,
-                &pending.input_event_id,
-                &pending.reason,
-                Arc::new(stopping),
-            )
-            .await
-        {
-            Ok(()) => {}
-            // The owner is reloading: the stop did not run, so the record
-            // waits for the next attempt ([ADR 027 D2][027]).
-            //
-            // [027]: ../../../docs/adr/027-cross-scope-access-by-id.md
-            Err(AgentError::Reloading(_)) => return,
-            Err(_) => {
-                self.directory.pending_stops.lock().unwrap().remove(&member);
-                return;
+    /// Carries out the stop recorded for `member`: the turn that consumed the
+    /// recorded input is stopped, an input still queued is withdrawn, and an
+    /// input already handed to Loop is waited for until its `input/consumed`
+    /// names the turn. The record ends with the carry-out; a reloading owner
+    /// is waited out, and this generation stopping first leaves the record for
+    /// the next one (design rule 8, [#2227]).
+    ///
+    /// [#2227]: https://github.com/arcships/dim/pull/2227
+    async fn carry_out_member_stop(self: &Arc<Self>, member: &str) -> StopEnd {
+        let mut wait = std::time::Duration::from_millis(20);
+        let end = loop {
+            let Some(record) = self
+                .directory
+                .member_stops
+                .lock()
+                .unwrap()
+                .get(member)
+                .cloned()
+            else {
+                return StopEnd::Done;
+            };
+            let Some((_, session)) = self.index.session(member) else {
+                // The member is not loaded: no turn of it runs.
+                break StopEnd::Done;
+            };
+            match self.member_stop_once(&session, &record).await {
+                Err(AgentError::Reloading(_)) => {}
+                Ok(end) => break end,
+                Err(error) => break StopEnd::Failed(error),
             }
+            tokio::select! {
+                _ = self.stop.cancelled() => return StopEnd::Kept,
+                _ = tokio::time::sleep(wait) => {}
+            }
+            wait = (wait * 2).min(std::time::Duration::from_secs(1));
+        };
+        if !matches!(end, StopEnd::Kept) {
+            self.directory.member_stops.lock().unwrap().remove(member);
         }
+        end
+    }
+
+    /// One pass of a member stop, from the input's fate on: `Kept` when this
+    /// generation stops while it waits for `input/consumed`.
+    async fn member_stop_once(
+        &self,
+        session: &Session,
+        record: &MemberStop,
+    ) -> dim_agent_runtime::Result<StopEnd> {
+        let (mut after, mut open) = (0, None);
+        let line = record.line.as_str();
+        match input_fate(
+            self.sessions.as_ref(),
+            session,
+            line,
+            &record.input,
+            &mut after,
+            &mut open,
+        )
+        .await?
         {
-            self.directory.pending_stops.lock().unwrap().remove(&member);
-            #[cfg(feature = "testing")]
-            self.directory
-                .delivered
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            InputFate::Consumed(Some(turn)) => {
+                stop_member_turn(session, line, &turn, &record.reason)?;
+                return Ok(StopEnd::Done);
+            }
+            InputFate::Consumed(None) | InputFate::Deleted => return Ok(StopEnd::Done),
+            InputFate::Pending => {}
+        }
+        match session
+            .service::<dim_agent_capabilities::input_queue::InputQueue>(line)?
+            .withdraw(InputWithdrawData {
+                input_id: record.input.clone(),
+                reason: Some(record.reason.clone()),
+                steer: None,
+            })
+            .await?
+        {
+            dim_agent_capabilities::input_queue::Withdrawal::Deleted { .. } => {
+                return Ok(StopEnd::Done);
+            }
+            dim_agent_capabilities::input_queue::Withdrawal::NotHeld => {}
+        }
+        // The published head is read before each check and the wait names the
+        // next sequence, so a consumption that lands between the check and the
+        // wait is seen by the next check ([#2027]).
+        loop {
+            let head = line_head(self.sessions.as_ref(), session, line).await?;
+            match input_fate(
+                self.sessions.as_ref(),
+                session,
+                line,
+                &record.input,
+                &mut after,
+                &mut open,
+            )
+            .await?
+            {
+                InputFate::Consumed(Some(turn)) => {
+                    stop_member_turn(session, line, &turn, &record.reason)?;
+                    return Ok(StopEnd::Done);
+                }
+                InputFate::Consumed(None) | InputFate::Deleted => return Ok(StopEnd::Done),
+                InputFate::Pending => {}
+            }
+            tokio::select! {
+                _ = self.stop.cancelled() => return Ok(StopEnd::Kept),
+                _ = session.closed() => return Ok(StopEnd::Done),
+                result = line_call(
+                    self.sessions.as_ref(),
+                    session,
+                    line,
+                    "timelineContext",
+                    "waitPublished",
+                    vec![serde_json::json!(head + 1)],
+                ) => match result {
+                    Ok(_) | Err(AgentError::Reloading(_)) => {}
+                    // A line that closed ends the wait: its close stopped the turn.
+                    Err(_) => return Ok(StopEnd::Done),
+                },
+            }
         }
     }
 
+    /// Records the stop of `member`'s turn that consumes `input` and carries
+    /// it out on this generation's tracker; a generation that stops first
+    /// leaves it for the next ([`Self::carry_out_member_stop`]).
+    fn stop_member_across_reloads(self: &Arc<Self>, member: &str, record: MemberStop) {
+        self.directory
+            .member_stops
+            .lock()
+            .unwrap()
+            .insert(member.to_owned(), record);
+        let this = self.clone();
+        let member = member.to_owned();
+        self.tasks.spawn(async move {
+            if let StopEnd::Failed(error) = this.carry_out_member_stop(&member).await {
+                tracing::warn!(member = %member, %error, "a member stop could not be carried out");
+            }
+        });
+    }
+}
+
+impl Collaboration {
     /// Creates a member Session under the target Agent (created first when
     /// temporary) and records the relation. `adopted` is the requesting
     /// branch's model selection, captured when its request was consumed.
@@ -1013,14 +976,6 @@ impl DynPlugin for CollaborationPlugin {
                 Some(settings) => Some(ctx.require_at(settings)?),
                 None => None,
             };
-            // A new generation invalidates the stopping marks of the one it
-            // replaced: a stop that crossed the reload is carried by
-            // `pending_stops`, not by a mark nothing would clear.
-            let generation = directory
-                .generation
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                + 1;
-            directory.stopping.lock().unwrap().clear();
             let service = Arc::new(Collaboration {
                 index,
                 sessions,
@@ -1028,7 +983,6 @@ impl DynPlugin for CollaborationPlugin {
                 settings,
                 tasks: TaskTracker::new(),
                 stop: CancellationToken::new(),
-                generation,
             });
             let owner = service.clone();
             ctx.effect(move || async move {
@@ -1059,20 +1013,34 @@ impl DynPlugin for CollaborationPlugin {
                 service.observe(watched);
             }
             service.reconcile().await;
-            // A stop the previous generation did not finish is delivered by
-            // this one ([#2027], design rule 8).
-            let pending: Vec<String> = service
+            // A stop the previous generation did not finish is carried out by
+            // this one (design rule 8, [#2227]).
+            let recorded: Vec<String> = service
                 .directory
-                .pending_stops
+                .member_stops
                 .lock()
                 .unwrap()
                 .keys()
                 .cloned()
                 .collect();
-            for member in pending {
+            for member in recorded {
                 let resumed = service.clone();
                 service.tasks.spawn(async move {
-                    resumed.deliver_pending_stop(member).await;
+                    match resumed.carry_out_member_stop(&member).await {
+                        StopEnd::Done => {
+                            #[cfg(feature = "testing")]
+                            resumed
+                                .directory
+                                .resumed_stops
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        StopEnd::Kept => {}
+                        StopEnd::Failed(error) => tracing::warn!(
+                            member = %member,
+                            %error,
+                            "a member stop could not be carried out"
+                        ),
+                    }
                 });
             }
             ctx.provide_as::<Collaboration>(service)?;
@@ -1172,23 +1140,20 @@ struct State {
     branches: BTreeMap<String, BranchRecord>,
     /// Keyed by member Session id: one request per member.
     requests: BTreeMap<String, Request>,
-}
-
-/// A member's stopping mark and the generation that holds it.
-#[derive(Clone, Copy)]
-struct StoppingMark {
-    count: usize,
-    generation: usize,
+    /// Member Session id -> the cancel or leader interrupt on that member
+    /// that is still being carried out. A request to that member is refused
+    /// `Busy` while a mark is held, so a stop reaches only the turn of the
+    /// request it was decided for; the mark lasts until the carry-out ends:
+    /// the stop lands, the input is deleted, the consuming turn has ended,
+    /// the member closes, or Collaboration stops.
+    stopping: BTreeMap<String, usize>,
 }
 
 /// Holds a member's stopping mark until the carry-out ends, however it does:
 /// the stop lands, the input is deleted, the consuming turn has ended, the
 /// member closes, or Collaboration stops.
 struct Stopping {
-    /// The Session whose request the stop was decided for; a stop a later
-    /// generation delivers has none, so it clears no request flag.
-    owner: Option<Arc<CollaborationSession>>,
-    directory: Arc<CollaborationDirectory>,
+    owner: Arc<CollaborationSession>,
     member: String,
 }
 impl Stopping {
@@ -1196,40 +1161,10 @@ impl Stopping {
     /// section, so the mark and the decision it protects are one step: while
     /// the guard lives, a new request to that member is refused `Busy`, and
     /// the stop reaches only the turn it was decided for.
-    fn mark(owner: &Arc<CollaborationSession>, _state: &mut State, member: &str) -> Self {
-        let directory = &owner.collaboration.directory;
-        let generation = directory
-            .generation
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let mut marks = directory.stopping.lock().unwrap();
-        let mark = marks.entry(member.to_owned()).or_insert(StoppingMark {
-            count: 0,
-            generation,
-        });
-        mark.count += 1;
-        mark.generation = generation;
+    fn mark(owner: &Arc<CollaborationSession>, state: &mut State, member: &str) -> Self {
+        *state.stopping.entry(member.to_owned()).or_insert(0) += 1;
         Stopping {
-            owner: Some(owner.clone()),
-            directory: owner.collaboration.directory.clone(),
-            member: member.to_owned(),
-        }
-    }
-    /// Takes the mark for a stop a later generation delivers: it protects the
-    /// same member while that stop runs.
-    fn cross_generation(directory: &Arc<CollaborationDirectory>, member: &str) -> Self {
-        let generation = directory
-            .generation
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let mut marks = directory.stopping.lock().unwrap();
-        let mark = marks.entry(member.to_owned()).or_insert(StoppingMark {
-            count: 0,
-            generation,
-        });
-        mark.count += 1;
-        mark.generation = generation;
-        Stopping {
-            owner: None,
-            directory: directory.clone(),
+            owner: owner.clone(),
             member: member.to_owned(),
         }
     }
@@ -1239,10 +1174,7 @@ impl Stopping {
     /// by a newer request keeps its own flag. The mark is still held while
     /// this runs, so no new request can take the member before the mark goes.
     fn failed(&self, input: &str) {
-        let Some(owner) = &self.owner else {
-            return;
-        };
-        let mut state = owner.state.lock().unwrap();
+        let mut state = self.owner.state.lock().unwrap();
         if let Some(request) = state
             .requests
             .get_mut(&self.member)
@@ -1254,11 +1186,11 @@ impl Stopping {
 }
 impl Drop for Stopping {
     fn drop(&mut self) {
-        let mut marks = self.directory.stopping.lock().unwrap();
-        if let Some(mark) = marks.get_mut(&self.member) {
-            mark.count -= 1;
-            if mark.count == 0 {
-                marks.remove(&self.member);
+        let mut state = self.owner.state.lock().unwrap();
+        if let Some(count) = state.stopping.get_mut(&self.member) {
+            *count -= 1;
+            if *count == 0 {
+                state.stopping.remove(&self.member);
             }
         }
     }
@@ -2421,7 +2353,7 @@ impl CollaborationSession {
             let mut state = self.state.lock().unwrap();
             if !new
                 && (state.requests.contains_key(&member)
-                    || self.collaboration.stopping(&member)
+                    || state.stopping.contains_key(&member)
                     || working)
             {
                 return Err(Refusal::Busy.into());
@@ -2575,16 +2507,30 @@ impl CollaborationSession {
             // The idle wait follows the line the delivery wrote, held on the
             // request rather than re-read: a member move does not redirect it
             // (design §9, §15).
-            let idle = tokio::select! {
-                result = line_read::<u64>(
-                    sessions.as_ref(),
-                    &session,
-                    &line,
-                    "timelineContext",
-                    "idle",
-                    vec![],
-                ) => result,
-                _ = abort.cancelled() => return,
+            // An owner that reloads did not run the wait: it is asked again,
+            // and the branch's unload settles the request if this generation
+            // goes first ([#2227]).
+            let mut wait = std::time::Duration::from_millis(20);
+            let idle = loop {
+                let result = tokio::select! {
+                    result = line_read::<u64>(
+                        sessions.as_ref(),
+                        &session,
+                        &line,
+                        "timelineContext",
+                        "idle",
+                        vec![],
+                    ) => result,
+                    _ = abort.cancelled() => return,
+                };
+                if !matches!(result, Err(AgentError::Reloading(_))) {
+                    break result;
+                }
+                tokio::select! {
+                    _ = abort.cancelled() => return,
+                    _ = tokio::time::sleep(wait) => {}
+                }
+                wait = (wait * 2).min(std::time::Duration::from_secs(1));
             };
             this.settle(&branch_id, &member, Some(idle)).await;
         });
@@ -2659,87 +2605,21 @@ impl CollaborationSession {
         };
         let outcome =
             settle.unwrap_or_else(|| cancel_named(derived, cancelled, leader_reason.as_deref()));
-        // A request that failed leaves nothing that will read the member's
-        // turn: it is stopped with the request instead of running on
-        // unobserved. The stop goes through the `sessions` face, so a stop
-        // issued while Agents reloads lands once the next generation takes
-        // the Session ([#2027]).
-        // The result is written to the branch record that holds the leader's
-        // line now, not to the one this settlement captured: a reload
-        // replaces it, and a write into the replaced Timeline reaches no
-        // client. A write that still fails is reported, never swallowed
-        // (design rule 8).
-        let result_data = CollaborationResultData {
-            request_event_id: op.clone(),
-            agent_id: agent_id.clone(),
-            session_id: member.to_owned(),
-            last_turn_id: last_turn_id.clone(),
-            text: text.clone(),
-            outcome: outcome.clone(),
-        };
-        let result = EventKind::CollaborationResult(result_data.clone());
-        let current = self
-            .state
-            .lock()
-            .unwrap()
-            .branches
-            .get(branch_id)
-            .map(|branch| branch.timeline.clone())
-            .or(timeline);
-        let draft = result.clone().into();
-        match &current {
-            Some(timeline) => match timeline.append(draft) {
-                Ok(_) => true,
-                Err(error) => {
-                    tracing::warn!(
-                        session_id = %self.session_id,
-                        member = %member,
-                        %error,
-                        "a failed request's result was written through the line"
-                    );
-                    false
-                }
-            },
-            None => {
-                tracing::warn!(
-                    session_id = %self.session_id,
-                    member = %member,
-                    "no branch record holds the leader's line for a failed request's result"
-                );
-                false
-            }
-        };
+        if let Some(timeline) = timeline {
+            let _ = timeline.append(
+                EventKind::CollaborationResult(CollaborationResultData {
+                    request_event_id: op,
+                    agent_id,
+                    session_id: member.to_owned(),
+                    last_turn_id,
+                    text,
+                    outcome,
+                })
+                .into(),
+            );
+        }
         if let Some(request) = self.state.lock().unwrap().requests.remove(member) {
             request.done.send_replace(true);
-        }
-        // The result is delivered first; the stop that ends the turn the
-        // request left behind follows it (design rule 8).
-        if matches!(outcome, CollaborationOutcome::Failed { .. }) {
-            // The stop is recorded where a reload cannot lose it, then run by
-            // this generation; one that stops first leaves the record for the
-            // next generation to finish ([#2027], design rule 8).
-            // The record names the turn it was decided for: only that turn is
-            // stopped, and one a member started later is left alone.
-            if let Some(input) = input.clone() {
-                self.collaboration
-                    .directory
-                    .pending_stops
-                    .lock()
-                    .unwrap()
-                    .insert(
-                        member.to_owned(),
-                        PendingStop {
-                            line: member_branch.clone(),
-                            reason: "the request failed".into(),
-                            input_event_id: input,
-                        },
-                    );
-                let this = self.collaboration.clone();
-                let stopping_member = member.to_owned();
-                self.collaboration.tasks.spawn(async move {
-                    this.deliver_pending_stop(stopping_member).await;
-                });
-            }
         }
     }
 
@@ -2768,13 +2648,103 @@ impl CollaborationSession {
     ) -> dim_agent_runtime::Result<()> {
         let stopping = Arc::new(stopping);
         let result = self
-            .collaboration
             .stop_request_input(session, branch, input, reason, Arc::clone(&stopping))
             .await;
         if result.is_err() {
             stopping.failed(input);
         }
         result
+    }
+
+    /// The effect and the wait of one carry-out; `carry_out_stop` holds the
+    /// mark across both and clears the request's flag when either fails.
+    async fn stop_request_input(
+        self: &Arc<Self>,
+        session: &Session,
+        branch: &str,
+        input: &str,
+        reason: &str,
+        stopping: Arc<Stopping>,
+    ) -> dim_agent_runtime::Result<()> {
+        let mut after = 0;
+        let mut open = None;
+        // The delivery's line, held on the request: moving the member's
+        // default branch does not redirect the withdrawal or the stop to a
+        // line that never held the input (design §9, §15).
+        let line = branch.to_owned();
+        // The published head is read before the check and the wait names the
+        // next sequence: whatever the check cannot see happened after that
+        // head, so waiting for it to be passed cannot miss a change
+        // ([#2027](https://github.com/arcships/dim/issues/2027)).
+        match input_fate(
+            self.collaboration.sessions.as_ref(),
+            session,
+            &line,
+            input,
+            &mut after,
+            &mut open,
+        )
+        .await?
+        {
+            InputFate::Consumed(Some(turn)) => {
+                stop_member_turn(session, &line, &turn, reason)?;
+                return Ok(());
+            }
+            // A consumed input whose turn already ended, and a deleted one
+            // that no turn will consume, leave nothing to stop.
+            InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
+            InputFate::Pending => {}
+        }
+        match session
+            .service::<dim_agent_capabilities::input_queue::InputQueue>(&line)?
+            .withdraw(InputWithdrawData {
+                input_id: input.to_owned(),
+                reason: Some(reason.into()),
+                steer: None,
+            })
+            .await?
+        {
+            // (W): no turn will run for the input; the settle names it.
+            dim_agent_capabilities::input_queue::Withdrawal::Deleted { .. } => return Ok(()),
+            dim_agent_capabilities::input_queue::Withdrawal::NotHeld => {}
+        }
+        // (S): InputQueue handed the input to Loop, so the turn that consumes
+        // it is the one to stop. Waiting for its `input/consumed` names that
+        // turn, the documented `consumed < interrupt` order, instead of
+        // racing its application. The carry-out ends when the stop lands, when
+        // the withdrawal deletes the input, when the member client deletes it
+        // first, when the consuming turn has ended, when the member closes, or
+        // when Collaboration stops: not on the branch's abort and not on the
+        // request's settle, because a branch close settles the request while
+        // the member may not have consumed yet.
+        //
+        // The wait is recorded where no reload rebuilds it, so a generation
+        // that stops first leaves it for the next ([#2227]); this generation
+        // carries it out under the mark, and a failure clears the request's
+        // flag before the mark goes.
+        let member = session.id().to_owned();
+        self.collaboration
+            .directory
+            .member_stops
+            .lock()
+            .unwrap()
+            .insert(
+                member.clone(),
+                MemberStop {
+                    line,
+                    input: input.to_owned(),
+                    reason: reason.to_owned(),
+                },
+            );
+        let collaboration = self.collaboration.clone();
+        let input = input.to_owned();
+        self.collaboration.tasks.spawn(async move {
+            if let StopEnd::Failed(error) = collaboration.carry_out_member_stop(&member).await {
+                tracing::warn!(member = %member, %error, "a member stop could not be carried out");
+                stopping.failed(&input);
+            }
+        });
+        Ok(())
     }
 
     /// Posts the result input unless a stop covered the request or the
@@ -2936,7 +2906,7 @@ impl CollaborationSession {
             );
         }
         for member in members {
-            let (session, branch, start) = {
+            let (session, branch, start, delivered_input) = {
                 let mut state = self.state.lock().unwrap();
                 let Some(request) = state.requests.get_mut(&member) else {
                     continue;
@@ -2966,10 +2936,16 @@ impl CollaborationSession {
                 };
                 let session = request.session.clone();
                 let branch = request.member_branch.clone();
+                let delivered_input = request.input_event_id.clone();
                 let stopping = input
                     .as_ref()
                     .map(|_| Stopping::mark(self, &mut state, &member));
-                (session, branch, input.map(|input| (input, stopping)))
+                (
+                    session,
+                    branch,
+                    input.map(|input| (input, stopping)),
+                    delivered_input,
+                )
             };
             if closing {
                 if let Some((input, Some(stopping))) = start {
@@ -2982,16 +2958,21 @@ impl CollaborationSession {
                             .await;
                     });
                 }
-            } else {
-                let _ = line_call(
-                    self.collaboration.sessions.as_ref(),
-                    &session,
-                    &branch,
-                    "timelineContext",
-                    "interrupt",
-                    vec![serde_json::json!(INTERRUPTED)],
-                )
-                .await;
+            } else if let Some(input) = delivered_input {
+                // Agents may be reloading under this unload, so the `sessions`
+                // face cannot stop the member now. The stop is recorded where
+                // no reload rebuilds it and carried out by whichever
+                // generation reaches the member first (design rule 8,
+                // [#2227]).
+                let _ = &session;
+                self.collaboration.stop_member_across_reloads(
+                    &member,
+                    MemberStop {
+                        line: branch.clone(),
+                        input,
+                        reason: INTERRUPTED.into(),
+                    },
+                );
             }
             self.settle(branch_id, &member, None).await;
         }
@@ -3079,30 +3060,6 @@ async fn line_call(
     method: &str,
     args: Vec<serde_json::Value>,
 ) -> dim_agent_runtime::Result<Option<serde_json::Value>> {
-    line_envelope(sessions, session, line, service, method, args)
-        .await
-        .map_err(|(code, message)| match code.as_str() {
-            // The Session or the line is gone: final for this request.
-            "no_session" | "session_closing" => AgentError::Closed(session.id().into()),
-            "no_line" => AgentError::UnknownBranch(line.to_owned()),
-            // The owner is reloading: the operation did not run, so it is
-            // retried by its caller.
-            "session_reloading" => AgentError::Reloading(session.id().into()),
-            _ => AgentError::fault("collaboration.lineCall", message),
-        })
-}
-
-/// One line operation as the `sessions` face answered it: its value, or the
-/// service's own code and message. The code is kept because a stop reads it:
-/// a closing Session is still on its way out, not gone.
-async fn line_envelope(
-    sessions: &dyn HostDispatch,
-    session: &Session,
-    line: &str,
-    service: &str,
-    method: &str,
-    args: Vec<serde_json::Value>,
-) -> std::result::Result<Option<serde_json::Value>, (String, String)> {
     let request = serde_json::json!({
         "sessionId": session.id(),
         "lineId": line,
@@ -3112,23 +3069,30 @@ async fn line_envelope(
     });
     let call = sessions
         .invoke("call", serde_json::json!([request]).into())
-        .map_err(|error| (String::from("failed"), error.to_string()))?;
+        .map_err(|error| AgentError::Closed(error.to_string()))?;
     let envelope = settle(call)
         .await
-        .map_err(|error| (String::from("failed"), error.to_string()))?
+        .map_err(|error| AgentError::Closed(error.to_string()))?
         .json()
-        .map_err(|error| (String::from("failed"), error.to_string()))?;
+        .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))?;
     if envelope["ok"] == serde_json::json!(true) {
         return Ok(envelope.get("value").cloned());
     }
     let error = &envelope["error"];
-    Err((
-        error["code"].as_str().unwrap_or("failed").to_owned(),
-        error["message"]
-            .as_str()
-            .unwrap_or("the line refused the call")
-            .to_owned(),
-    ))
+    let code = error["code"].as_str().unwrap_or("failed");
+    Err(match code {
+        // The Session or the line is gone: final for this request.
+        "no_session" | "session_closing" => AgentError::Closed(session.id().into()),
+        "no_line" => AgentError::UnknownBranch(line.to_owned()),
+        // The owner is reloading: the operation did not run, so it is retried.
+        "session_reloading" => AgentError::Reloading(session.id().into()),
+        _ => AgentError::fault(
+            "collaboration.lineCall",
+            error["message"]
+                .as_str()
+                .unwrap_or("the line refused the call"),
+        ),
+    })
 }
 
 /// One decoded operation on a member's line.

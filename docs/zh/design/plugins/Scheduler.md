@@ -71,7 +71,7 @@ flowchart LR
 | 管理命名空间 | 进程行在把 `schedule` 注册到 `managementMethods` 并发布 `scheduleJobs` 之前恢复其投递存储。恢复失败保留该故障，仍在行失败前注册命名空间，因此后续调用报告该行的失败状态。原生按调用准入与 `report`/`drain` 遵循注册行的生命周期与状态。 |
 | Settings | 只有进程行注册来源 `schedule`，用户文件 `schedule.json`，无 `projectFile`(§7.1)。在使用时读取经校验/带默认值的文档，并按文档修订做 CAS。原生绑定使用类型化所有者读写；客户端经 `schedule.*` 管理任务，而不是通用 `settings.*`。 |
 | 存储 | [公开绑定](../../../design/process-typescript.md#52-public-pluginfiles-binding)在经授权的产品根提供 pluginFiles。嵌入宿主在启用该行前准备 `scheduler/`；缺少父目录在事务回调之前返回 `io`。Scheduler 内层 v1(A.7)与宿主外层 v1 不变。 |
-| Sessions | 调用使用 `{ok:true,value}` / `{ok:false,error:{code,message,retryable}}`。`launch` 返回 `{sessionId,policy}`，`input` 返回 `{inputId,sequence}`，`lookup` 返回 `accepted`/`unknown`。保持这些既有形状。 |
+| Sessions | 调用使用 `{ok:true,value}` / `{ok:false,error:{code,message,retryable}}`。`launch` 返回 `{sessionId,policy}`，线的 `timelineContext.input`（经 `sessions.call`）在提交时返回 `InputWrite {event, written}`，`waitPublished(event.sequence)` 确认发布，`timelineContext.lookup` 返回该输入或 `null`。保持这些既有形状。 |
 | 原生生命周期 | 每个 S2 调用持有自己的租约。Agents 的自动空闲卸载由 [#331](https://github.com/arcships/dim/pull/331) 为 [#126](https://github.com/arcships/dim/issues/126) 交付。Scheduler 不把分离变成关闭，也不增加自己的卸载循环。 |
 
 ### 1.2 影响面
@@ -198,7 +198,7 @@ sequenceDiagram
   T->>SET: 读取任务文档
   T->>ST: 保存 delivering(目标、提交 id)
   T->>AG: timelineContext.input(sessionId, branchId, mode, 标记, 提示词)
-  AG-->>T: {inputId, sequence}
+  AG-->>T: InputWrite {event, written}，再 waitPublished
   T->>ST: 保存 delivered
   S->>IQ: Dispatcher：input/applied、input/consumed、turn
 ```
@@ -215,7 +215,7 @@ sequenceDiagram
   AG-->>T: {sessionId, policy}
   T->>ST: 保存 sessionId、分支、policy
   T->>AG: timelineContext.input(sessionId, main, queue, 标记, 提示词)
-  AG-->>T: {inputId, sequence}
+  AG-->>T: InputWrite {event, written}，再 waitPublished
   T->>ST: 保存 delivered
   Note over T: 到 deadline_at：timelineContext.stop(main)
 ```

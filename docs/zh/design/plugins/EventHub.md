@@ -115,7 +115,7 @@ GuideRecord {
 | 状态 | 内容 | 对订阅的影响 |
 | --- | --- | --- |
 | `delivered` | `{sessionId, branchId, subscriptionIds, inputId, sequence, truncated?, repeated?}` | 保留 |
-| `gone` | `{sessionId, branchId, subscriptionIds, code}`，`code` 为 `branch_missing` 或 `branch_ended` | 每条列出的订阅都被移除，因为该目标分支不会再接受输入；仅由 `to` 到达的分支，列表为空 |
+| `gone` | `{sessionId, branchId, subscriptionIds, code}`，`code` 为 `branch_missing` 或 `branch_ended`。`sessions.call` 的路由对已结束的线和 Session 从未有过的线都回答 `no_line`（[#2127](https://github.com/arcships/dim/issues/2127)），所以投递到已结束的线时为 `branch_missing`；所有者自己回答 `branch_ended` 时仍为 `branch_ended` | 每条列出的订阅都被移除，因为该目标分支不会再接受输入；仅由 `to` 到达的分支，列表为空 |
 | `failed` | `{sessionId, branchId?, subscriptionIds, code, message}`，`code` 为其他任何 `sessions` 错误或 `transport`：`session_closed`、`reloading`、`rejected`、`ambiguous`、`publication_unknown`、`transport`、`failed` | 每条列出的订阅都保留，并由 `lastFailure` 记录该码 |
 
 - `subscriptionIds` 列出所有导致这条分支被投递的匹配订阅；仅由 `to` 到达的分支为空。表中的效果作用于每一条列出的订阅。
@@ -591,7 +591,7 @@ Session 部件为标记 `dim-event` 与 `dim-event-guide` 在 Session 作用域�
 - **身份。** `declare` 与 `publish` 接收调用方的 `ctx`，即 `EventHub::declare(&self, ctx: &Ctx, request)`。dispatch 在 `invoke` 内读取 `rutis_bridge::session::caller_row()` 并使用该行的上下文，与 `ForeignGuideEntries` 相同，见 `crates/dim-agent-capabilities/src/prompt_guide.rs:266-298`；取不到行的调用是 `no_caller_row`。声明登记为调用方上下文的一个 effect，因此随该行结束。
 - **可选读取。** Rust 生产方持有 `Key<EventHub>`，每次调用用 `ctx.get_at(&key)` 读取；EventHub 未安装、Pending 或重载时它回答 `None`，所以依赖不门控任何东西，见 [rutis 用法 A.3](../rutis-usage.md#a3-已定的问题)。`definePlugin` 行则 inject 该名字，见 2.1。同一形式用于读取 `sessionFiles`，即 `Key<SessionFiles>`，见 `crates/dim-agent-capabilities/src/host.rs:1002-1038`，以及 `sessions`，即在 `host_key("sessions")` 上的 `Key<dyn HostDispatch>`，见 `crates/dim-agent-scheduler/src/methods.rs:44,56`。
 - **声明通知。** Rust 或 Cordis 生产方先监听再读取：`ctx.listen::<dim_event_hub::Ready>()`，即名字为 `eventhub/ready` 的公开 `Event` 类型，然后 `ctx.get_at(&key)`；收到通知时再次读取该 key 并声明，见 2.1。`definePlugin` 行不需要这条通知：它 inject 该名字并在 `apply` 里声明，见 2.1。监听器持有一个类型，而不是一个运行中的 EventHub，所以在 EventHub 之前装载的生产方也能听到第一次提供它的那次 `apply`。通知本身由进程部件的一个依赖行发出，而不是在它的 `apply` 里：一行的服务只在部件活跃时才可被其他行读取，而部件在 `apply` 返回时才变为活跃。每次通知都声明不会增加 effect，因为重复声明是原地替换，见 A.1。
-- **投递。** `timelineContext.input` 就是在 `Key<dyn HostDispatch>` 上的一次 `invoke("input", json!([args]))`，见 `crates/dim-agent-scheduler/src/engine.rs:611-633`；回复是 `{inputId, sequence}`，错误码见 [session access A.6](../contracts/session-access.md#a6-错误)。
+- **投递。** `timelineContext.input` 就是在 `Key<dyn HostDispatch>` 上的一次 `invoke("call", json!([{sessionId, lineId, service: "timelineContext", method: "input", args}]))`；提交时回复 `InputWrite {event, written}`，随后调 `timelineContext.waitPublished(event.sequence)`，提交后等待失败即为 `publication_unknown`。错误码见 [session access A.6](../contracts/session-access.md#a6-错误)。
 - **存储。** 订阅更新通过调用方持有的 pluginFiles scope 调用 `scope.withLock`。已经受理的发布持有该 scope 直到结算完成，即使期间发生行重启。
 - **Session 部件** 注入 `guideEntries`、`toolRegistry`、`sessionIdentity` 与 `eventSubscriptions`，并在 `apply` 中登记条目与 `events` 工具，与 Scheduler 的部件相同，见 `crates/dim-agent-scheduler/src/session.rs:147-201`。
 - **TypeScript。** `npm/plugin.d.ts` 在 `sessions` 旁边声明这个服务：`EventHub`(`declare` 与 `publish`)、A.1 与 A.2 的请求和回复类型，以及列出附录 C 全部码的 `EventHubErrorThrown`。用 `definePlugin` 写成的行 inject `eventHub`，并用 `ctx.use<EventHub>('eventHub')` 读取它，在 `apply` 里声明；原始 Cordis 行则用 `ctx.get('eventHub')` 读取，见 [rutis 用法 §3.5](../rutis-usage.md#35-各运行时如何解析名字)。

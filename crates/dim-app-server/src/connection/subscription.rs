@@ -438,13 +438,29 @@ fn state_notice(
 /// One branch's next state, or `None` for its receiver, which means the line
 /// is gone: it is reported once as ended instead of being dropped unread
 /// ([#2027]).
-type StateChange = Pending<'static, Option<(String, Option<watch::Receiver<()>>)>>;
-fn state_change(id: String, mut receiver: watch::Receiver<()>) -> StateChange {
+/// A watched line's next status change. The selected [`Line`] travels with
+/// its receiver, so a change is read from the line that was watched, also
+/// while that line is closing, instead of selecting it again by id ([#2227]).
+///
+/// [`Line`]: dim_agent_runtime::Line
+/// [#2227]: https://github.com/arcships/dim/pull/2227
+type StateChange = Pending<
+    'static,
+    Option<(
+        String,
+        Option<(dim_agent_runtime::Line, watch::Receiver<()>)>,
+    )>,
+>;
+fn state_change(
+    id: String,
+    line: dim_agent_runtime::Line,
+    mut receiver: watch::Receiver<()>,
+) -> StateChange {
     Box::pin(async move {
         match receiver.changed().await {
             // The status sender went with the line: report that it ended.
             Err(_) => Some((id, None)),
-            Ok(()) => Some((id, Some(receiver))),
+            Ok(()) => Some((id, Some((line, receiver)))),
         }
     })
 }
@@ -848,7 +864,7 @@ impl Connection {
                 Err(dim_agent_runtime::AgentError::Reloading(_)) => true,
                 Err(_) => return true,
             };
-            watches.push(state_change(branch.clone(), receiver));
+            watches.push(state_change(branch.clone(), line, receiver));
             match progress {
                 Some(progress) if sent => progress.follow(self, &session, generation, branch),
                 _ => sent,
@@ -883,7 +899,7 @@ impl Connection {
                     let Some(Some((branch, receiver))) = changed else {
                         continue;
                     };
-                    let Some(mut receiver) = receiver else {
+                    let Some((line, mut receiver)) = receiver else {
                         // The line's status sender went with it: the branch
                         // ended, and a client attached to it still needs that
                         // answer ([#2027]).
@@ -900,50 +916,40 @@ impl Connection {
                         }
                         continue;
                     };
-                    {
-                        let receiver = &mut receiver;
-                        receiver.borrow_and_update();
-                        match self
-                            .line(&session, &branch)
-                            .and_then(|line| line.context().state().map_err(RpcError::from))
-                        {
-                            Ok(next) => {
-                                if reported.get(&branch) != Some(&next) {
-                                    let notice = state_notice(version, &id, &branch, &next);
-                                    if !self.notify(&id, generation, notice) {
-                                        return;
-                                    }
-                                    reported.insert(branch.clone(), next.clone());
+                    receiver.borrow_and_update();
+                    match line.context().state() {
+                        Ok(next) => {
+                            if reported.get(&branch) != Some(&next) {
+                                let notice = state_notice(version, &id, &branch, &next);
+                                if !self.notify(&id, generation, notice) {
+                                    return;
                                 }
-                                if !next.closed {
-                                    watches.push(state_change(branch, receiver.clone()));
-                                }
+                                reported.insert(branch.clone(), next.clone());
                             }
-                            Err(error)
-                                if error
-                                    .data
-                                    .as_ref()
-                                    .is_some_and(|data| data.app_error == "Reloading") =>
-                            {
-                                watches.push(state_change(branch, receiver.clone()));
+                            if !next.closed {
+                                watches.push(state_change(branch, line, receiver));
                             }
-                            // The line is no longer selectable — it ended, or
-                            // it went with its Session — and a client that was
-                            // watching it still needs that answer. It is
-                            // reported as ended rather than dropped unread
-                            // ([#2027]).
-                            Err(_) => {
-                                let closed = BranchStatus {
-                                    closed: true,
-                                    ..Default::default()
-                                };
-                                if reported.get(&branch) != Some(&closed) {
-                                    let notice = state_notice(version, &id, &branch, &closed);
-                                    if !self.notify(&id, generation, notice) {
-                                        return;
-                                    }
-                                    reported.insert(branch, closed);
+                        }
+                        // The owner reloads under the line: the next change
+                        // reads it again.
+                        Err(dim_agent_runtime::AgentError::Reloading(_)) => {
+                            watches.push(state_change(branch, line, receiver));
+                        }
+                        // The line's state is no longer readable: it ended, or
+                        // it went with its Session. A client that was watching
+                        // it still needs that answer, so it is reported as
+                        // ended rather than dropped unread ([#2027]).
+                        Err(_) => {
+                            let closed = BranchStatus {
+                                closed: true,
+                                ..Default::default()
+                            };
+                            if reported.get(&branch) != Some(&closed) {
+                                let notice = state_notice(version, &id, &branch, &closed);
+                                if !self.notify(&id, generation, notice) {
+                                    return;
                                 }
+                                reported.insert(branch, closed);
                             }
                         }
                     }

@@ -400,7 +400,10 @@ export class Workflow {
   }
 
   /** Commits one input on `branchId` and waits for its publication: a delivery
-   * record must not outrun the store. */
+   * record must not outrun the store. Once the input committed, a publication
+   * wait that fails for any reason but a gone line answers the retryable
+   * `publication_unknown`: the caller resubmits the same submission id, which
+   * the line accepts once and answers with the first input. */
   private async deliver(sessionId: string, branchId: string, message: InputMessageData):
     Promise<LineAnswer<{ inputId: string; sequence: number }>> {
     const written = await this.sessions.call({ sessionId, lineId: branchId, service: 'timelineContext',
@@ -412,7 +415,8 @@ export class Workflow {
         method: 'waitPublished', args: [event.sequence] })
       if (published.ok) return { ok: true, value: { inputId: event.id, sequence: Number(event.sequence) } }
       const failed = refusal(published.error)
-      if (!failed.retryable) return { ok: false, ...failed }
+      if (gone(failed.code)) return { ok: false, ...failed }
+      if (!failed.retryable) return { ok: false, code: 'publication_unknown', retryable: true }
       await this.pause()
     }
   }

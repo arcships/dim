@@ -56,8 +56,9 @@ impl Refusal {
     /// else is `failed`.
     pub(crate) fn recorded(&self) -> &str {
         match self.owner_code.as_deref().unwrap_or(&self.code) {
-            "no_session" => "session_closed",
-            "no_line" => "branch_missing",
+            "no_session" | "Closed" => "session_closed",
+            "no_line" | "UnknownBranch" => "branch_missing",
+            "BranchEnded" => "branch_ended",
             "session_reloading" | "session_closing" => "reloading",
             "AmbiguousSubmission" => "ambiguous",
             "InvalidInput" => "rejected",
