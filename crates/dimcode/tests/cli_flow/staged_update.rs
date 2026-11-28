@@ -1029,11 +1029,12 @@ mod recovery {
             command.env("UPDATE_NATIVE", &installed.updater);
         }
         let mut terminal = Terminal::launch_tui(command);
+        let shown = format!("Store format: v{future}");
         let status = terminal.wait();
         let output = strip_ansi(&terminal.transcript);
         assert!(
-            output.contains(&format!("Store format: v{future}")),
-            "{output}"
+            output.contains(&shown),
+            "the flow exited with {status:?} before it showed {shown:?}: {output}"
         );
         assert!(!output.contains("store-newer"), "{output}");
         assert_eq!(fs::read(&database).unwrap(), original);

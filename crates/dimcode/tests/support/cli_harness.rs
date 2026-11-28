@@ -864,6 +864,24 @@ impl Terminal {
                 Err(error) => panic!("{error}"),
             }
             if let Some(status) = self.child.try_wait().unwrap() {
+                // The pty keeps what the child wrote until a reader takes it.
+                // A flow that waits for exit alone would answer the status
+                // before its last frame was read, so drain what is left. A
+                // descendant that holds the slave open, or keeps writing,
+                // must not replace the status this wait already has.
+                let grace = Instant::now() + Duration::from_millis(250);
+                while Instant::now() < grace {
+                    let mut bytes = [0u8; 4096];
+                    match self.master.as_mut().unwrap().read(&mut bytes) {
+                        Ok(size) if size > 0 => self.record(&bytes[..size]),
+                        Ok(_) => break,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+                        Err(error) => panic!("{error}"),
+                    }
+                }
                 return status;
             }
             thread::sleep(Duration::from_millis(10));
