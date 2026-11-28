@@ -2709,7 +2709,7 @@ fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Vec<Vec<String>> 
                 resolved.pop();
             }
             advanced.push(resolved);
-            if advanced.len() + 1 <= RESOLUTION_STATES {
+            if advanced.len() < RESOLUTION_STATES {
                 let mut literal = state;
                 literal.push(segment.into());
                 advanced.push(literal);
