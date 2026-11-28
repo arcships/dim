@@ -459,7 +459,8 @@ async function main() {
   let checks;
   let checkedPr = knownPr;
   try {
-    checks = await beginCheckRun(knownPr);
+    const knownChecks = await beginCheckRun(knownPr);
+    checks = knownChecks;
     const pr = await getPr(target);
     if (pr.head !== knownHead) {
       const changed = {
@@ -467,14 +468,21 @@ async function main() {
         title: 'PR head changed',
         summary: 'The discovery snapshot was stale; this run evaluates and completes the current revision.',
       };
-      await finishCheckRun(knownPr, checks, changed);
       checks = undefined;
       checkedPr = pr;
-      checks = await beginCheckRun(pr);
-      const result = await evaluateStable(pr);
-      await finishCheckRun(pr, checks, result);
-      console.log(`#${target}: ${result.ok ? 'PASS' : 'FAIL'}: ${result.title}\n${result.summary}`);
-      process.exitCode = result.ok ? 0 : 1;
+      try {
+        checks = await beginCheckRun(pr);
+        const result = await evaluateStable(pr);
+        await finishCheckRun(pr, checks, result);
+        console.log(`#${target}: ${result.ok ? 'PASS' : 'FAIL'}: ${result.title}\n${result.summary}`);
+        process.exitCode = result.ok ? 0 : 1;
+      } finally {
+        try {
+          await finishCheckRun(knownPr, knownChecks, changed);
+        } catch (error) {
+          console.error(`Could not complete the stale issue-gate check: ${error.message}`);
+        }
+      }
       return;
     }
     const result = await evaluateStable(pr);

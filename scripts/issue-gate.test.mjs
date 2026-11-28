@@ -636,10 +636,68 @@ test('completes the current head when the known head is stale', async (t) => {
 
   assert.equal(result.status, 0, result.stderr);
   const completed = patches.filter((patch) => patch.status === 'completed');
-  assert.deepEqual(completed.map((patch) => patch.id), [1, 2]);
-  assert.equal(completed[0].conclusion, 'failure');
-  assert.equal(completed[0].output.title, 'PR head changed');
-  assert.equal(completed[1].conclusion, 'success');
+  assert.deepEqual(completed.map((patch) => patch.id).sort((a, b) => a - b), [1, 2]);
+  const byId = new Map(completed.map((patch) => [patch.id, patch]));
+  assert.equal(byId.get(1).conclusion, 'failure');
+  assert.equal(byId.get(1).output.title, 'PR head changed');
+  assert.equal(byId.get(2).conclusion, 'success');
+});
+
+test('settles the current head when the stale-head update fails', async (t) => {
+  const runsByHead = new Map([
+    ['old-head', []],
+    ['new-head', [{ id: 2, name: 'issue-gate', external_id: 'issue-gate:77', status: 'in_progress' }]],
+  ]);
+  const patches = [];
+  let nextId = 1;
+  const api = await startFakeApi((request) => {
+    if (request.method === 'GET' && request.path === `/repos/${REPOSITORY}/pulls/77`) {
+      return reply(200, pullRequest('Fixes #1', 'new-head'));
+    }
+    if (request.method === 'POST' && request.path === '/graphql') {
+      return closingRefs([]);
+    }
+    if (request.method === 'GET' && request.path === `/repos/${REPOSITORY}/issues/1`) {
+      return reply(200, issue());
+    }
+    const prefix = `/repos/${REPOSITORY}/commits/`;
+    const suffix = '/check-runs';
+    if (request.method === 'GET' && request.path.startsWith(prefix) && request.path.endsWith(suffix)) {
+      const head = request.path.slice(prefix.length, -suffix.length);
+      return reply(200, { check_runs: runsByHead.get(head) ?? [] });
+    }
+    if (request.method === 'POST' && request.path === `/repos/${REPOSITORY}/check-runs`) {
+      const payload = JSON.parse(request.body);
+      const created = { id: nextId, name: 'issue-gate', external_id: 'issue-gate:77' };
+      nextId += 1;
+      runsByHead.get(payload.head_sha).push(created);
+      return reply(201, created);
+    }
+    if (request.method === 'PATCH' && request.path.startsWith(`/repos/${REPOSITORY}/check-runs/`)) {
+      const id = Number(request.path.split('/').pop());
+      const payload = JSON.parse(request.body);
+      if (id === 1 && payload.status === 'completed') {
+        return reply(500, { message: 'temporary failure' });
+      }
+      patches.push({ id, ...payload });
+      return reply(200, {});
+    }
+    return undefined;
+  });
+  t.after(() => api.close());
+
+  const result = await runGate(api, {
+    eventName: 'pull_request_target',
+    event: { pull_request: { number: 77 } },
+    target: 77,
+    targetHead: 'old-head',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const completed = patches.filter((patch) => patch.status === 'completed');
+  assert.deepEqual(completed.map((patch) => patch.id), [2]);
+  assert.equal(completed[0].conclusion, 'success');
+  assert.match(result.stderr, /Could not complete the stale issue-gate check/);
 });
 
 test('the discovery step propagates a gate script failure', () => {
