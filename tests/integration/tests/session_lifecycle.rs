@@ -303,3 +303,112 @@ async fn a_closed_child_branch_no_longer_refuses_an_idle_release() {
     within("release", session.closed()).await.unwrap();
     env.agent.close().await.unwrap();
 }
+
+/// A fault a required part reports while its Session assembles is settled by
+/// creation, not by the published Session's supervisor: the reply is the
+/// fault, nothing is published, and what creation wrote is rolled back
+/// (#1955).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fault_reported_during_assembly_fails_creation_and_rolls_back() {
+    let dirs = Dirs::new();
+    let store = Arc::new(MemoryTimelineStore::default());
+    let fault = Arc::new(StartupFault::while_assembling());
+    let env = env(
+        &dirs,
+        Options {
+            store: Some(store.clone()),
+            startup_fault: Some(fault.clone()),
+            ..Options::default()
+        },
+    )
+    .await;
+    let error = env
+        .session(&dirs.dir("work"), "")
+        .await
+        .err()
+        .expect("a fault reported during assembly fails creation");
+    assert!(
+        matches!(&error, AgentError::Fault { component, .. } if component == "StartupFault"),
+        "the creation reply is the reported fault: {error:?}"
+    );
+    assert!(
+        env.agent.sessions().is_empty(),
+        "the faulting Session was published"
+    );
+    let id = fault.session();
+    assert!(
+        store.session_config(&id).await.unwrap().is_none(),
+        "the failed creation left the Session's record"
+    );
+    env.agent.close().await.unwrap();
+}
+
+/// A restore that ends on the same fault releases its stored Session instead
+/// of rolling it back (#1955).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fault_during_a_restore_releases_the_stored_session() {
+    let dirs = Dirs::new();
+    let store = Arc::new(MemoryTimelineStore::default());
+    let cwd = dirs.dir("work");
+    store
+        .create_session(
+            "restored",
+            &SessionConfig {
+                cwd: cwd.to_string_lossy().into_owned(),
+                ..SessionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+    let fault = Arc::new(StartupFault::while_assembling());
+    let env = env(
+        &dirs,
+        Options {
+            store: Some(store.clone()),
+            startup_fault: Some(fault.clone()),
+            ..Options::default()
+        },
+    )
+    .await;
+    let error = env
+        .agent
+        .restore_session("restored".into(), Default::default())
+        .await
+        .err()
+        .expect("a fault reported during assembly fails the restore");
+    assert!(
+        matches!(&error, AgentError::Fault { component, .. } if component == "StartupFault"),
+        "the restore reply is the reported fault: {error:?}"
+    );
+    assert!(env.agent.sessions().is_empty());
+    assert!(
+        store.session_config("restored").await.unwrap().is_some(),
+        "the failed restore rolled back the stored Session"
+    );
+    env.agent.close().await.unwrap();
+}
+
+/// A fault reported once the Session is published keeps its current behavior:
+/// creation returns the Session, which records the fault and closes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fault_reported_after_publication_closes_the_published_session() {
+    let dirs = Dirs::new();
+    let fault = Arc::new(StartupFault::after_publication());
+    let env = env(
+        &dirs,
+        Options {
+            startup_fault: Some(fault.clone()),
+            ..Options::default()
+        },
+    )
+    .await;
+    let session = env.session(&dirs.dir("work"), "").await.unwrap();
+    within("fault report", fault.reported.notified()).await;
+    within("close", session.closed()).await.unwrap();
+    assert!(
+        matches!(session.failure(), Some(AgentError::Fault { .. })),
+        "the Session recorded the fault"
+    );
+    assert!(env.agent.sessions().is_empty());
+    env.agent.close().await.unwrap();
+}
