@@ -2041,6 +2041,157 @@ async fn a_compatible_family_image_forwards_the_output_format_to_the_wire() {
 }
 
 #[tokio::test]
+async fn a_compatible_family_image_asks_for_inline_bytes_and_reads_them() {
+    // The compatible package reads data[].b64_json alone, so the family
+    // binding asks its gateway for that shape: without the field the mock
+    // answers the API's default data[].url, which the package cannot read;
+    // with it the gateway answers inline bytes. The relay never resolves
+    // here — `the_dim_account_relay_image_binding_still_serves_seedream`
+    // pins its own openai package — and the Seedream word family is refused
+    // before either path.
+    let dir = work_dir("family-image-inline");
+    let png = [PNG_HEADER, b"inline-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) = scripted(move |request| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if body.get("response_format").and_then(Value::as_str) == Some("b64_json") {
+            ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
+        } else {
+            ok_json(json!({"created": 1, "data": [{"url": "https://router.example.test/img.png"}]}))
+        }
+    });
+    let output = run(
+        &adapter,
+        job(
+            "6f1c2f9e-0000-4000-8000-000000000000",
+            "custom-image",
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://router.example.test/v1",
+        "custom-image",
+    )
+    .await
+    .unwrap();
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["response_format"], "b64_json",
+        "the binding asks the gateway for inline bytes: {body}"
+    );
+    assert_eq!(output.files.len(), 1);
+    assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+}
+
+#[tokio::test]
+async fn a_callers_response_format_wins_over_the_compatible_default() {
+    // A job that names its own response_format keeps exactly that value on
+    // the wire: the default asks for inline bytes only where the caller
+    // asked for nothing. The control job asks for nothing, and without the
+    // default it would send no field at all.
+    let dir = work_dir("family-image-caller-format");
+    let (adapter, requests) = scripted(move |_| {
+        ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]}))
+    });
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    for params in [
+        json!({"prompt": "a cat", "providerOptions": {"response_format": "url"}}),
+        json!({"prompt": "a cat"}),
+    ] {
+        run(
+            &adapter,
+            job(
+                created,
+                "custom-image",
+                "image",
+                "generate",
+                params,
+                Vec::new(),
+                &dir,
+            ),
+            "https://router.example.test/v1",
+            "custom-image",
+        )
+        .await
+        .unwrap();
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["response_format"], "url",
+        "the caller's own value reaches the wire unchanged: {body}"
+    );
+    let control: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_eq!(
+        control["response_format"], "b64_json",
+        "the job that asked for nothing carries the default: {control}"
+    );
+}
+
+#[tokio::test]
+async fn an_inline_answering_model_id_sends_no_response_format_through_the_family() {
+    // gpt-image- and chatgpt-image- ids answer inline bytes without being
+    // asked (the OpenAI package's rule), so the compatible fallback omits
+    // the field for them alone; any other model still asks. The mock is the
+    // gateway those ids sit behind: it answers inline bytes whatever the
+    // request says.
+    let dir = work_dir("family-image-inline-ids");
+    let png = [PNG_HEADER, b"inline-id-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) = scripted(move |_| {
+        ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
+    });
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    for model_id in ["gpt-image-2", "chatgpt-image-1", "custom-image"] {
+        let output = run(
+            &adapter,
+            job(
+                created,
+                model_id,
+                "image",
+                "generate",
+                json!({"prompt": "a cat"}),
+                Vec::new(),
+                &dir,
+            ),
+            "https://router.example.test/v1",
+            model_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.files.len(), 1);
+        assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for (index, model_id) in ["gpt-image-2", "chatgpt-image-1", "custom-image"]
+        .iter()
+        .enumerate()
+    {
+        let body: Value = serde_json::from_slice(&requests[index].body).unwrap();
+        if model_id.starts_with("custom-") {
+            assert_eq!(
+                body["response_format"], "b64_json",
+                "the control model still asks for inline bytes: {body}"
+            );
+        } else {
+            assert!(
+                body.get("response_format").is_none(),
+                "{model_id} sends no response_format: {body}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn the_dim_account_relay_listing_comes_from_the_compatible_family() {
     // The relay id matches no vendor row, so its listing is the family's:
     // image stays (with the OpenAI package serving it), and the video,
@@ -2373,11 +2524,12 @@ async fn the_seedream_image_word_family_carries_no_compatible_binding() {
 }
 
 #[tokio::test]
-async fn the_seedream_exclusion_reaches_the_video_wait_binding() {
+async fn the_ark_video_exclusion_reaches_the_video_wait_binding() {
     // wait re-resolves the binding on the way to a video poll, through the
-    // same check submit applies. The blocking image wait cannot be reached
-    // without a submit the refusal prevents, so the video handle is the
-    // structure the wait path offers.
+    // same check submit applies: the Ark video exclusion is the one this
+    // exercises. The Seedream image exclusion has no public wait path —
+    // submit refuses the model before a job exists — so the video handle is
+    // the structure the wait path offers.
     let dir = work_dir("seedream-wait");
     let (adapter, requests) = scripted(|_| ok_json(json!({})));
     let video_job = job(

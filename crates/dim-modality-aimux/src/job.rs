@@ -75,6 +75,25 @@ pub fn image_options(job: &Job, binding: &Binding) -> Result<ImageCallOptions, A
             .or_default()
             .insert(key.into(), Value::String(format.into()));
     }
+    // The compatible fallback's package reads inline bytes alone, so the
+    // binding asks its gateway for them by default: the field travels in the
+    // provider options the package forwards, and a caller's own
+    // `response_format` wins over the default. Model ids that answer inline
+    // bytes without the field send nothing (the OpenAI package's rule); the
+    // relay never reaches here because its image binding is the openai one,
+    // which asks on its own. A gateway that ignores the field and answers
+    // `data[].url` alone stays unreadable: the upstream package has no
+    // download for it.
+    if binding.package == crate::vendor::Package::OpenaiCompatible
+        && !crate::vendor::answers_inline_bytes_by_default(&job.model.model_id)
+    {
+        options
+            .provider_options
+            .entry(binding.options.to_owned())
+            .or_default()
+            .entry("response_format")
+            .or_insert(Value::String("b64_json".into()));
+    }
     let mut files = Vec::new();
     for file in &job.files {
         files.push(image_file(file)?);

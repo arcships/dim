@@ -412,6 +412,15 @@ fn is_seedream_image_model(model_id: &str) -> bool {
     in_word_family(model_id, "seedream")
 }
 
+/// Whether the model id answers inline bytes without being asked. aimux's
+/// openai package omits `response_format` for these prefixes
+/// (aimux-providers 0.7.0 `openai/image/image_model_options.rs`), and the
+/// compatible fallback reads the same rule because the gateways behind it
+/// follow the OpenAI shape.
+pub(crate) fn answers_inline_bytes_by_default(model_id: &str) -> bool {
+    model_id.starts_with("gpt-image-") || model_id.starts_with("chatgpt-image-")
+}
+
 /// How a binding builds its aimux provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Package {
@@ -479,9 +488,13 @@ impl Vendor {
 /// image generation and edit go to the openai-compatible package, and
 /// speech and transcription to the OpenAI one, which is the only aimux
 /// package that serves them for this family. The relay's image generation
-/// is the one exception: its gateway answers the OpenAI Image API, whose
-/// package asks for inline bytes the compatible one does not, so it stays
-/// on the OpenAI package with its image create never retried. `None` is
+/// is the one exception: its gateway answers the OpenAI Image API itself,
+/// so it stays on the OpenAI package with its image create never retried.
+/// The compatible image binding asks its gateway for the same inline bytes
+/// by default — the call sends `response_format` through the provider
+/// options, a caller's own value wins, and the id prefixes the OpenAI
+/// package omits the field for send nothing — so a gateway that honors the
+/// field answers bytes instead of the default URL shape. `None` is
 /// startup recovery's answer for a route it cannot re-read: the family
 /// answers as the compatible one would, and a route that no longer matches
 /// is the call's own failure.
