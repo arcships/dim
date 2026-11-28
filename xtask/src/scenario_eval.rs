@@ -16837,11 +16837,29 @@ mod tests {
         }
         let current = fixture.arm("current");
         let candidate = fixture.arm("candidate");
+        // A current arm without a summarizer request means compaction did not
+        // run, not that the product prompt went missing; the failure states
+        // which requests each arm recorded.
+        let mut diagnosis = String::new();
+        for record in &records {
+            diagnosis.push_str(&format!("\nrecord {record}"));
+        }
+        for (arm, requests) in [("current", &current), ("candidate", &candidate)] {
+            diagnosis.push_str(&format!("\n{arm}: {} requests", requests.len()));
+            for request in requests.iter() {
+                diagnosis.push_str(&format!(
+                    "\n  summarizer={} candidate={} bytes={}",
+                    request.contains("You summarize a coding session"),
+                    request.contains("CANDIDATE SUMMARY PROMPT"),
+                    request.len()
+                ));
+            }
+        }
         assert!(
             current
                 .iter()
                 .any(|request| request.contains("You summarize a coding session")),
-            "the current arm's summarizer request carries the product prompt"
+            "the current arm's summarizer request carries the product prompt: {diagnosis}"
         );
         assert!(
             current
@@ -16853,7 +16871,7 @@ mod tests {
             candidate
                 .iter()
                 .any(|request| request.contains("CANDIDATE SUMMARY PROMPT")),
-            "the candidate arm's summarizer request carries the candidate text"
+            "the candidate arm's summarizer request carries the candidate text: {diagnosis}"
         );
         assert!(
             candidate
