@@ -307,6 +307,109 @@ async fn store_creation_rejects_case_variants_and_keeps_storage_error_for_byte_d
     db.close().await.unwrap();
 }
 
+/// One `sqliteStorage` `createSession` call as a plugin makes it, through the
+/// face's HostDispatch rather than the Rust binding: the wire error's `code`,
+/// or the decoded reply when the call succeeds.
+async fn dispatch_create_session(
+    face: &Arc<dyn rutis_bridge::session::HostDispatch>,
+    session_id: &str,
+) -> Result<serde_json::Value, rutis_bridge::session::Error> {
+    let request = serde_json::json!({
+        "sessionId": session_id,
+        "config": SessionConfig::default(),
+    });
+    let reply = face
+        .invoke(
+            "createSession",
+            rutis_bridge::session::Value::List(vec![request.into()]),
+        )
+        .unwrap();
+    let rutis_bridge::session::Value::Reference(future) = reply else {
+        panic!("createSession is asynchronous")
+    };
+    future.wait_async().await.map(|value| value.json().unwrap())
+}
+
+/// #2204: the write entry eric8810 6094968589 names — the creation the
+/// `SqliteStorage.createSession` plugin face dispatches to — admits the same
+/// boundary as every other entry: a malformed or reserved id, a case-only
+/// variant and a directory-sharing id are refused with the wire code
+/// `invalid` before anything is written, and a byte-identical duplicate keeps
+/// its `storage` code.
+#[tokio::test]
+async fn the_sqlite_storage_create_session_dispatch_applies_the_admission_boundary() {
+    use rutis_bridge::session::{HostDispatch, host_key};
+    let database = Database::new();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
+        database.0.clone(),
+    )))
+        .await
+        .unwrap();
+    let face = root
+        .get_at::<dyn HostDispatch>(&host_key("sqliteStorage"))
+        .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    seed_stored_session(&connection, "Stored-7");
+    seed_stored_session(&connection, "abc\\def");
+
+    for (id, why) in [
+        ("Uppercase", "an uppercase id violates the shape rule"),
+        ("with space", "an id with a space violates the shape rule"),
+        ("con", "a Windows reserved device name"),
+        ("stored-7", "differs from the stored Stored-7 only by case"),
+        (
+            "abc",
+            "shares the output directory of the stored abc\\def under Windows rules",
+        ),
+    ] {
+        let error = dispatch_create_session(&face, id)
+            .await
+            .expect_err(&format!("{why}: creating {id:?} must be refused"));
+        assert_eq!(
+            error.code(),
+            Some("invalid"),
+            "{why}: the refusal of {id:?} must be the wire code invalid, got {error}"
+        );
+        assert_eq!(
+            stored_rows(&connection, id),
+            0,
+            "{why}: nothing of {id:?} may be written"
+        );
+    }
+
+    dispatch_create_session(&face, "valid-id")
+        .await
+        .expect("a conforming id is admitted");
+    assert_eq!(
+        stored_rows(&connection, "valid-id"),
+        2,
+        "the admitted creation writes its Session and root branch rows"
+    );
+    let duplicate = dispatch_create_session(&face, "valid-id")
+        .await
+        .expect_err("a byte-identical duplicate must be refused");
+    assert_eq!(
+        duplicate.code(),
+        Some("storage"),
+        "a byte-identical duplicate must keep the wire code storage, got {duplicate}"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM agent_sessions WHERE session_id='valid-id'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1,
+        "the stored row is neither duplicated nor overwritten"
+    );
+
+    drop(connection);
+    root.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn owned_creation_rejects_case_variants_and_keeps_storage_error_for_byte_duplicates() {
     let database = Database::new();

@@ -1590,9 +1590,19 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
         );
         raw.rollback_session(session).await.unwrap();
     }
-    raw.create_session(protected.to_str().unwrap(), &config)
-        .await
-        .unwrap();
+    {
+        let seeding = rusqlite::Connection::open(home.join("rust/dimcode.sqlite")).unwrap();
+        seeding
+            .execute(
+                "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+                 VALUES (?1, ?2, 0, 'client')",
+                rusqlite::params![
+                    protected.to_str().unwrap(),
+                    serde_json::to_string(&SessionConfig::default()).unwrap()
+                ],
+            )
+            .unwrap();
+    }
     let refused = client
         .rpc(
             "storefixture.invalid_id",
