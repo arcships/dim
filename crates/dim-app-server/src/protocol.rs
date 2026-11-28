@@ -616,6 +616,10 @@ pub struct Catalog {
     pub query: Option<String>,
     #[serde(default, deserialize_with = "optional_non_null")]
     pub cwd: Option<Workspaces>,
+    /// The Sessions this read selects, as a set of ids (#2246). The set is
+    /// part of the cursor's filter set.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub session_ids: Option<SessionIds>,
     #[serde(default)]
     pub with_preview: bool,
     /// Whether Sessions whose origin is `internal` are listed (#557).
@@ -636,6 +640,51 @@ pub struct Catalog {
     /// keep their stored rows. The flag is part of the cursor's filter set.
     #[serde(default)]
     pub include_closed: bool,
+}
+
+/// The Sessions a catalog read selects (#2246): a non-empty set of Session
+/// ids. Its serialized form is the deduplicated set in id order, so a list,
+/// the same list reordered and the same list with a repeated id are one
+/// filter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionIds(std::collections::BTreeSet<String>);
+
+/// The largest id set one catalog read accepts, the maximum `limit` the method
+/// already allows. A longer list is refused, not clamped.
+pub const CATALOG_SESSION_IDS_MAX: usize = 200;
+
+impl SessionIds {
+    pub fn count(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionIds {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let Value::Array(items) = Value::deserialize(deserializer)? else {
+            return Err(serde::de::Error::custom(
+                "sessionIds must be a list of Session ids",
+            ));
+        };
+        let mut sessions = std::collections::BTreeSet::new();
+        for item in items {
+            match item {
+                Value::String(session) => {
+                    sessions.insert(session);
+                }
+                _ => return Err(serde::de::Error::custom("sessionIds must hold Session ids")),
+            }
+        }
+        if sessions.is_empty() {
+            return Err(serde::de::Error::custom(
+                "sessionIds must name at least one Session",
+            ));
+        }
+        Ok(Self(sessions))
+    }
 }
 
 /// The workspaces a catalog read selects: one workspace, or any of a set.

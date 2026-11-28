@@ -700,6 +700,7 @@ async fn run_connection(
                                                 methods.push("session.catalog.includeClosed");
                                                 methods.push("session.catalog.acpHistory");
                                                 methods.push("session.catalog.automation");
+                                                methods.push("session.catalog.sessionIds");
                                             }
                                             methods
                                         } else {
