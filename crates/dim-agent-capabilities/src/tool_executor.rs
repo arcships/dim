@@ -4,7 +4,7 @@ use crate::{
     approval::{AdmitCall, Approval},
     host::*,
     tool_binding::ToolBinding,
-    tool_registry::{ToolClaim, ToolConcurrency, ToolContribution},
+    tool_registry::{ToolCallPublication, ToolClaim, ToolConcurrency, ToolContribution},
 };
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, Names, QueryComparison, QueryFilter,
@@ -165,14 +165,17 @@ async fn run_child(
     let outcome = AssertUnwindSafe(dim_agent_runtime::core::with_parent_call_id(
         child_call_id,
         async {
-            execute(
+            let admitted = admit(
                 &executor.binding,
                 &executor.approval,
                 call.clone(),
-                context.clone(),
-                cancel,
+                &context,
+                cancel.clone(),
             )
-            .await
+            .await?;
+            let publication = ToolCallPublication::default();
+            publication.assign(&executor.timeline, batch.sequence);
+            run(admitted, context.clone(), cancel, Some(publication)).await
         },
     ))
     .catch_unwind()
@@ -516,6 +519,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                                                 admitted,
                                                                 context.clone(),
                                                                 cancel.clone(),
+                                                                None,
                                                             ))
                                                             .catch_unwind()
                                                             .await;
@@ -526,6 +530,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                                             admitted,
                                                             context.clone(),
                                                             cancel.clone(),
+                                                            None,
                                                         ))
                                                         .catch_unwind()
                                                         .await;
@@ -731,6 +736,7 @@ async fn run(
     admitted: Admitted,
     context: ToolExecutionContext,
     cancel: CancellationToken,
+    publication: Option<ToolCallPublication>,
 ) -> Result<ToolResult, HostError> {
     match admitted.claim {
         Some(claim) => claim.dispatch(admitted.call, context, cancel).await,
@@ -738,22 +744,10 @@ async fn run(
             admitted
                 .tool
                 .handler
-                .execute(admitted.call, context, cancel)
+                .execute_in_batch(admitted.call, context, cancel, publication)
                 .await
         }
     }
-}
-
-/// Admits one call through Approval, then runs its handler.
-async fn execute(
-    binding: &ToolBinding,
-    approval: &Approval,
-    call: ToolCall,
-    context: ToolExecutionContext,
-    cancel: CancellationToken,
-) -> Result<ToolResult, HostError> {
-    let admitted = admit(binding, approval, call, &context, cancel.clone()).await?;
-    run(admitted, context, cancel).await
 }
 
 /// The steps of one batch and the barrier between them.

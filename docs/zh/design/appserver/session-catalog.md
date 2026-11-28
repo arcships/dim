@@ -71,7 +71,7 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 
 目录读取从不装载、恢复或启动 Session：存储的字段由投影回答，因此列目录不花任何模型、工具或 MCP 启动。`running` 与 `attachedClients` 取自进程的内存状态，与 `session.summaries` 相同：已卸载的 Session 读作未运行，两个字段都不落盘，因此读取它们不取租约、也不装载任何东西。
 
-当 `hello.features` 包含 `session.summaries.attention` 时，`session.summaries` 和 `session.catalog` 的每一行都汇总该 Session 所有分支的待处理请求。`pendingApprovalCount` 是待审批请求数，`pendingQuestionCount` 是等待回答的 `ask_user` 调用数。一次调用可以包含多道题，只需提交一次回答。`lastAttentionAt` 是当前最早待处理请求的开始时间，单位为 Unix 毫秒。没有待处理请求时，两项计数均为零，省略时间字段。已卸载的 Session 也遵循这个规则。
+当 `hello.features` 包含 `session.summaries.attention` 时，`session.summaries` 和 `session.catalog` 的每一行都汇总该 Session 所有分支的待处理请求。`pendingApprovalCount` 是待审批请求数，`pendingQuestionCount` 是已发布且仍待回答的 `ask_user` 调用数。一次调用可以包含多道题，只需提交一次回答。`lastAttentionAt` 是当前最早待处理请求的开始时间，单位为 Unix 毫秒。没有待处理请求时，两项计数均为零，省略时间字段。已卸载的 Session 也遵循这个规则。
 
 客户端可以直接读取这些数据，无需先连接 Session。每次分页读取都取该页各行的实时状态。计数变化不影响活动时间、行顺序或分页游标。查看内容时再打开相应的 Session，通过审批重放或待回答问题查询取得详情。
 

@@ -98,7 +98,7 @@ individual call failures and publishes correlated results.
 The claim of a call exists before its batch is published: Loop asks each
 handler for one immediately before appending `step/tool-call`
 ([Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact)),
-and ToolBinding holds the claims with the request's tool snapshot. AgentLoop
+and ToolBinding holds the claims with the request's tool snapshot. A handler can track the batch's assigned sequence against its Timeline's published head. A Code Mode child can use the same publication when it executes after admission. AgentLoop
 drops them with that snapshot, so a batch that never dispatches releases every
 claim without a separate step; a claim that reaches execution is taken from the
 binding and consumed by `ToolClaim::dispatch`, which runs the call as resolved

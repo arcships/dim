@@ -18,7 +18,7 @@ its `ToolResult`, so Questions writes no events. Design:
 | `S:TreeCommands` | Resolve the branch facade for pending-question queries. |
 
 The Session part provides the [`questions` data face](../../../design/plugins/Questions.md#2-data-and-state).
-Its pending summary reads the same registrations used to accept responses.
+Its pending summary reads the same registrations used to accept responses and checks each batch against the published sequence of its branch.
 
 ## Tool
 

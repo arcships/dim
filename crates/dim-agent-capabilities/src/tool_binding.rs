@@ -10,7 +10,9 @@ use crate::{
     context_preparation::ToolSetAdoption,
     host::{ModelSettings, ToolExecutionContext},
     prompt::{Prompt, ToolAdoptOutcome},
-    tool_registry::{ToolClaim, ToolContribution, ToolRegistry, ToolSourceSet, project},
+    tool_registry::{
+        ToolCallPublication, ToolClaim, ToolContribution, ToolRegistry, ToolSourceSet, project,
+    },
 };
 use dim_agent_runtime::{
     AgentError, BRANCH_GROUP, BranchLifecycle, BranchOpening, Dispatcher, Names, QueryFilter,
@@ -281,10 +283,16 @@ impl ToolBinding {
     /// A call whose handler takes nothing, or whose handler is not in the
     /// request's snapshot, takes nothing here. This does not admit execution:
     /// ToolExecutor still checks the pinned handler and approval for a live call.
-    pub fn claim(&self, request_id: &str, calls: &[ToolCall], context: &ToolExecutionContext) {
+    pub fn claim(
+        &self,
+        request_id: &str,
+        calls: &[ToolCall],
+        context: &ToolExecutionContext,
+    ) -> ToolCallPublication {
+        let publication = ToolCallPublication::default();
         let mut state = self.state.lock().unwrap();
         let Some(snapshot) = state.snapshots.get_mut(request_id) else {
-            return;
+            return publication;
         };
         let claims: Vec<_> = calls
             .iter()
@@ -293,10 +301,14 @@ impl ToolBinding {
                     return None;
                 }
                 let tool = snapshot.tools.get(&call.name)?;
-                Some((call.id.clone(), tool.handler.claim(call, context)?))
+                Some((
+                    call.id.clone(),
+                    tool.handler.claim_in_batch(call, context, &publication)?,
+                ))
             })
             .collect();
         snapshot.claims.extend(claims);
+        publication
     }
 
     /// The claim a handler made for `call`, if the request holds one. It is

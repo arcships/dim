@@ -58,6 +58,33 @@ pub enum ToolConcurrency {
     Exclusive,
 }
 
+/// Tracks when the Timeline publishes the batch that owns a tool call.
+#[derive(Clone, Default)]
+pub struct ToolCallPublication(Arc<std::sync::OnceLock<BatchPosition>>);
+
+#[derive(Debug)]
+struct BatchPosition {
+    sequence: u64,
+    head: watch::Receiver<(u64, bool)>,
+}
+
+impl ToolCallPublication {
+    pub(crate) fn assign(&self, timeline: &dim_agent_runtime::Timeline, sequence: u64) {
+        self.0
+            .set(BatchPosition {
+                sequence,
+                head: timeline.watch(),
+            })
+            .expect("a batch is assigned once");
+    }
+
+    pub fn is_published(&self) -> bool {
+        self.0
+            .get()
+            .is_some_and(|batch| batch.head.borrow().0 >= batch.sequence)
+    }
+}
+
 pub trait ToolHandler: Send + Sync + 'static {
     /// Resolve a filesystem write's target without effects before admission.
     fn resolve_write(&self, call: ToolCall, _: CancellationToken) -> HostFuture<'_, ToolCall> {
@@ -90,6 +117,26 @@ pub trait ToolHandler: Send + Sync + 'static {
     /// one; a claim that returns `None` leaves the first in place.
     fn claim(&self, _: &ToolCall, _: &ToolExecutionContext) -> Option<Box<dyn ToolClaim>> {
         None
+    }
+    /// Claims a call before append with a receipt for its batch's publication.
+    fn claim_in_batch(
+        &self,
+        call: &ToolCall,
+        context: &ToolExecutionContext,
+        _: &ToolCallPublication,
+    ) -> Option<Box<dyn ToolClaim>> {
+        self.claim(call, context)
+    }
+    /// Executes an unclaimed call. A nested batch can still be publishing when
+    /// it reaches execution; a dispatched top-level batch is already published.
+    fn execute_in_batch(
+        &self,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+        _: Option<ToolCallPublication>,
+    ) -> HostFuture<'_, ToolResult> {
+        self.execute(call, context, cancel)
     }
     fn execute(
         &self,

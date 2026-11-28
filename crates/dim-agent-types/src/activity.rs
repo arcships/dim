@@ -10,11 +10,13 @@ pub struct PendingRequestSummary {
 }
 
 impl PendingRequestSummary {
-    pub fn from_start_times(times: impl ExactSizeIterator<Item = u64>) -> Self {
-        Self {
-            count: times.len(),
-            oldest_at: times.min(),
+    pub fn from_start_times(times: impl Iterator<Item = u64>) -> Self {
+        let mut summary = Self::default();
+        for time in times {
+            summary.count += 1;
+            summary.oldest_at = Some(summary.oldest_at.map_or(time, |oldest| oldest.min(time)));
         }
+        summary
     }
 }
 

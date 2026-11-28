@@ -88,7 +88,25 @@ async fn an_unattached_client_discovers_and_clears_question_attention() {
     let server = launch_questions(&store).await;
     let mut worker = Client::new_version(&server, false, 3).await;
     let sid = session(&mut worker, true).await;
+    let mut held =
+        dim_app_server::storage::timeline_testing::hold_publication(&sid, "main", "step/tool-call");
     submit(&mut worker, &sid, ASK).await;
+    tokio::time::timeout(Duration::from_secs(10), held.arrived())
+        .await
+        .expect("the question reached the store");
+    let summaries = worker.rpc("session.summaries", json!({})).await;
+    let row = &summaries["result"][0];
+    assert_eq!(row["sessionId"], sid);
+    assert_eq!(row["pendingQuestionCount"], 0);
+    assert!(row.get("lastAttentionAt").is_none());
+    let pending = worker
+        .rpc(
+            "session.question.pending",
+            json!({"sessionId":sid,"branchId":"main"}),
+        )
+        .await;
+    assert_eq!(pending["result"]["batches"], json!([]));
+    held.release();
     let asked = step(&mut worker, "tool-call").await;
     let request_id = request(&asked);
     let call_id = asked["event"]["data"]["calls"][0]["id"].as_str().unwrap();
@@ -105,13 +123,14 @@ async fn an_unattached_client_discovers_and_clears_question_attention() {
     );
     let summaries = observer.rpc("session.summaries", json!({})).await;
     let page = observer.rpc("session.catalog", json!({"limit":1})).await;
-    let row = &page["result"]["sessions"][0];
-    assert_eq!(row, &summaries["result"][0]);
-    assert_eq!(row["sessionId"], sid);
-    assert_eq!(row["attachedClients"], 0);
-    assert_eq!(row["pendingQuestionCount"], 1);
-    assert_eq!(row["pendingApprovalCount"], 0);
-    let oldest = row["lastAttentionAt"].as_u64().unwrap();
+    let oldest = summaries["result"][0]["lastAttentionAt"].as_u64().unwrap();
+    for row in [&summaries["result"][0], &page["result"]["sessions"][0]] {
+        assert_eq!(row["sessionId"], sid);
+        assert_eq!(row["attachedClients"], 0);
+        assert_eq!(row["pendingQuestionCount"], 1);
+        assert_eq!(row["pendingApprovalCount"], 0);
+        assert_eq!(row["lastAttentionAt"], oldest);
+    }
     let routed = server.agent().unwrap().routed_session(&sid).unwrap();
     assert_eq!(
         routed

@@ -187,7 +187,7 @@ takes no lease and loads nothing.
 When `hello.features` includes `session.summaries.attention`, each row of
 `session.summaries` and `session.catalog` includes two live counts across all
 branches. `pendingApprovalCount` counts unanswered approval requests and
-`pendingQuestionCount` counts answerable `ask_user` calls. One call can ask
+`pendingQuestionCount` counts answerable `ask_user` calls whose tool-call batch is published. One call can ask
 several questions and takes one response. `lastAttentionAt` is the oldest
 start time among those requests, in Unix milliseconds. With no pending requests
 both counts are zero and the timestamp is absent. This includes unloaded Sessions.
