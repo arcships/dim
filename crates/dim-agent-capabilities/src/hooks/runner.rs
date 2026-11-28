@@ -989,7 +989,7 @@ pub struct HooksSessionPlugin {
     sources: Key<HookSourcesHost>,
     platform: Key<HostPlatform>,
     config: Key<SessionConfig>,
-    identity: Key<SessionScope>,
+    lifecycle: Key<SessionScope>,
     checks: Key<SubmitChecks>,
     runtime: Key<HooksRuntime>,
 }
