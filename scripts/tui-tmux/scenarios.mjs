@@ -1025,7 +1025,7 @@ const scenarios = [
       // from the palette and the draft it restored is asserted after it.
       const runFromPalette = async (terminal, filter, expected) => {
         terminal.key('C-o');
-        await terminal.waitFor(/Commands|Command Palette/, {describe: 'the command palette'});
+        await terminal.waitFor(/Commands|Suggestions|Command Palette/, {describe: 'the command palette'});
         terminal.send(filter);
         await terminal.waitFor(`/${filter}`, {describe: `the ${filter} entry`});
         terminal.key('Enter');
@@ -1201,6 +1201,9 @@ const scenarios = [
             await terminal.waitFor(excluded);
             terminal.key('Escape');
             await terminal.waitForAbsent('Sessions · All workspaces');
+            terminal.key('Escape');
+            terminal.key('Escape');
+            await terminal.untilComposer();
             await exitWith(terminal);
           }
         }
@@ -1258,6 +1261,9 @@ const scenarios = [
           await terminal.waitFor('This computer');
           terminal.key('Escape');
           await terminal.waitForAbsent('Computers');
+          terminal.key('Escape');
+          terminal.key('Escape');
+          await terminal.untilComposer();
           terminal.send('/devices');
           terminal.key('Enter');
           await terminal.waitFor('Add by address');
@@ -1297,7 +1303,7 @@ const scenarios = [
           await owner.waitFor(ANSWER);
           const devicesOverDraft = async () => {
             terminal.key('C-o');
-            await terminal.waitFor(/Commands|Command Palette/);
+            await terminal.waitFor(/Commands|Suggestions|Command Palette/);
             terminal.send('devices');
             terminal.key('Enter');
             await terminal.waitFor('Remembered');
@@ -1321,6 +1327,8 @@ const scenarios = [
           await terminal.waitFor(/refused/i);
           terminal.key('Escape');
           await terminal.waitForAbsent('Computers');
+          terminal.key('Escape');
+          terminal.key('Escape');
           await terminal.waitFor('remote draft');
           const calls = turnRequests(tui.model).length;
           const reset = JSON.parse(remote('share', 'reset'));
@@ -1360,6 +1368,9 @@ const scenarios = [
         await named.waitFor('Computers');
         named.key('Escape');
         await named.waitForAbsent('Computers');
+        named.key('Escape');
+        named.key('Escape');
+        await named.untilComposer();
         named.send('/devices');
         named.key('Enter');
         await named.waitFor('This computer');
@@ -1445,7 +1456,7 @@ const scenarios = [
       const terminal = await tui.launch([], {waitForComposer: true});
 
       terminal.send('/');
-      await terminal.waitFor('Commands');
+      await terminal.waitFor(/Commands|Suggestions/);
       await terminal.waitFor('/new');
       const palette = terminal.capture();
       assert(palette.includes('type filter'), 'the palette names its keyboard actions');
@@ -1459,7 +1470,10 @@ const scenarios = [
       await terminal.waitFor('Theme');
       await terminal.waitFor('Language');
       terminal.key('Escape');
-      await terminal.waitForAbsent('Settings');
+      await terminal.waitFor('/settings', {describe: 'the command list returns'});
+      terminal.key('Escape');
+      terminal.key('Escape');
+      await terminal.waitForAbsent('/settings');
 
       terminal.send('/keys');
       terminal.key('Enter');
@@ -1715,6 +1729,9 @@ const scenarios = [
       );
       terminal.key('Escape');
       await terminal.waitForAbsent('Queue');
+      terminal.key('Escape');
+      terminal.key('Escape');
+      await terminal.untilComposer();
 
       await terminal.waitForAbsent('esc interrupt', {timeout: 40_000});
       await exitWith(terminal);
@@ -1964,6 +1981,8 @@ const scenarios = [
       await terminal.waitForAbsent('1 in background');
       terminal.key('Escape');
       await terminal.waitForAbsent('Background tasks');
+      terminal.key('Escape');
+      terminal.key('Escape');
       await terminal.untilComposer();
 
       await exitWith(terminal);
@@ -2055,6 +2074,8 @@ const scenarios = [
       await scroll.waitFor('Background tasks');
       scroll.key('Escape');
       await scroll.waitForAbsent('Background tasks');
+      scroll.key('Escape');
+      scroll.key('Escape');
       await scroll.untilComposer();
       await exitWith(scroll);
     },
@@ -2122,6 +2143,8 @@ const scenarios = [
       await terminal.waitFor('agent cancelled: stopped by the user');
       terminal.key('Escape');
       await terminal.waitForAbsent('Background tasks');
+      terminal.key('Escape');
+      terminal.key('Escape');
       await terminal.waitFor('Noted the cancellation.', {timeout: 30_000});
       await terminal.waitForAbsent('1 in background');
       await exitWith(terminal);
@@ -2152,6 +2175,9 @@ const scenarios = [
       await terminal.waitFor('302.AI');
       terminal.key('Escape');
       await terminal.waitForAbsent('Enter open');
+      terminal.key('Escape');
+      terminal.key('Escape');
+      await terminal.untilComposer();
       await exitWith(terminal);
     },
   },
@@ -2188,6 +2214,9 @@ const scenarios = [
       await terminal.waitFor('302.AI', {describe: 'the cleared provider filter'});
       terminal.key('Escape');
       await terminal.waitForAbsent('Providers');
+      terminal.key('Escape');
+      terminal.key('Escape');
+      await terminal.untilComposer();
 
       await terminal.sendPrompt('a turn through the added provider');
       await terminal.waitFor(ANSWER);
@@ -2210,6 +2239,9 @@ const scenarios = [
       restarted.key('Escape');
       restarted.key('Escape');
       await restarted.waitForAbsent('Providers');
+      restarted.key('Escape');
+      restarted.key('Escape');
+      await restarted.untilComposer();
       await exitWith(restarted);
     },
   },
