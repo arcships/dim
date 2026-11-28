@@ -125,6 +125,12 @@ async fn respond_responses(
         json!({"input_tokens":3,"output_tokens":6,"total_tokens":9,
             "output_tokens_details":{"reasoning_tokens":0}})
     };
+    if let Some(scenario) = requested_text(&request).strip_prefix("tags:") {
+        return Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from(responses_tag_script(scenario, usage)))
+            .unwrap();
+    }
     let body = sse_value(&[
         json!({"type":"response.output_item.added","output_index":0,
             "item":{"type":"message","id":"msg-1","role":"assistant","content":[]}}),
@@ -138,6 +144,37 @@ async fn respond_responses(
         .header("content-type", "text/event-stream")
         .body(Body::from(body))
         .unwrap()
+}
+
+/// One Responses text reply of streamed deltas, in the SSE framing the real
+/// provider sends.
+fn responses_text_events(deltas: &[&str], usage: Value) -> String {
+    let mut events = vec![json!({"type":"response.output_item.added","output_index":0,
+        "item":{"type":"message","id":"msg-1","role":"assistant","content":[]}})];
+    for delta in deltas {
+        events.push(
+            json!({"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"delta":delta}),
+        );
+    }
+    events.push(json!({"type":"response.output_item.done","output_index":0,
+        "item":{"type":"message","id":"msg-1","role":"assistant",
+            "content":[{"type":"output_text","text":deltas.concat()}]}}));
+    events.push(
+        json!({"type":"response.completed","response":{"id":"resp-1","status":"completed","usage":usage}}),
+    );
+    sse_value(&events)
+}
+
+/// The replies of the `<thinking>` scenarios: the close tag of `convert` is
+/// split across two deltas, as the provider fragments them on the wire.
+fn responses_tag_script(scenario: &str, usage: Value) -> String {
+    let deltas: &[&str] = match scenario {
+        "convert" => &["<thinking>\nINNER-THOUGHT\n</think", "ing>\n\nFINAL-ANSWER"],
+        "inline" => &["inline <thinking>not a tag</thinking> INLINE-ANSWER"],
+        "only" => &["<thinking>EVERYTHING-INSIDE</thinking>"],
+        _ => panic!("unknown tag scenario: {scenario}"),
+    };
+    responses_text_events(deltas, usage)
 }
 
 /// Gemini replies in its own SSE framing: `thoughtsTokenCount` appears only
@@ -1834,6 +1871,327 @@ async fn a_wait_for_response_headers_past_the_idle_allowance_fails_as_a_network_
     );
     server.abort();
     root.shutdown().await.unwrap();
+}
+
+/// The managed codex account's connection for the test server, answered
+/// through the process's connection port. The development model
+/// configuration cannot express this pairing on purpose: `compatible.preset`
+/// requires openai-compatible (models.rs) while the driver requires
+/// openai-codex connections to speak the Responses protocol (driver.rs), so
+/// only the managed account path carries the preset in production.
+struct CodexConnection {
+    base_url: String,
+    generation: CancellationToken,
+}
+impl ResolveModalityConnection for CodexConnection {
+    fn resolve_for_modality(
+        &self,
+        target: ModalityTarget,
+        _cancel: CancellationToken,
+    ) -> HostFuture<'_, ModalityConnection> {
+        Box::pin(async move { Err(undeclared_modality_operation(&target.operation)) })
+    }
+}
+impl ResolveModelConnection for CodexConnection {
+    fn resolve(
+        &self,
+        _request: Arc<ModelRequest>,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async move {
+            if self.generation.is_cancelled() {
+                return Err(HostError::classified(
+                    HostErrorKind::OwnerClosed,
+                    "Model catalog owner is closed",
+                ));
+            }
+            if cancel.is_cancelled() {
+                return Err(HostError::Cancelled(
+                    "Connection resolution cancelled".into(),
+                ));
+            }
+            Ok(ResolvedModelConnection {
+                failure_policy: None,
+                recovery: None,
+                connection: ModelConnection::Http(HttpModelConnection {
+                    protocol: ModelProtocol::OpenaiResponses,
+                    base_url: self.base_url.clone(),
+                    network: Default::default(),
+                    headers: Default::default(),
+                    bearer: Some("codex-test-token".into()),
+                    api_key: None,
+                    preset: Some("openai-codex".into()),
+                }),
+            })
+        })
+    }
+}
+
+/// The same process services ConfiguredModelsPlugin provides, with the
+/// managed account's connection behind the shared resolver.
+struct CodexModelsPlugin {
+    base_url: String,
+    models: Arc<AimuxModels>,
+}
+impl rutis::Plugin for CodexModelsPlugin {
+    type Deps = (Arc<ModelHost>,);
+    fn name(&self) -> &str {
+        "CodexModels"
+    }
+    async fn apply(&self, ctx: &rutis::Ctx, _: Self::Deps) -> rutis::Result {
+        ctx.provide_as::<AimuxModels>(self.models.clone())?;
+        let resolver = Arc::new(CodexConnection {
+            base_url: self.base_url.clone(),
+            generation: ctx.cancellation_token(),
+        });
+        ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
+        let selection = resolver.clone();
+        dim_agent_capabilities::host::provide_model_selection(
+            ctx,
+            &ModelSelectionHost::new(Arc::new(move |explicit, _cwd, _cancel| {
+                let generation = selection.generation.clone();
+                Box::pin(async move {
+                    if generation.is_cancelled() {
+                        return Err(HostError::classified(
+                            HostErrorKind::OwnerClosed,
+                            "Model catalog owner is closed",
+                        ));
+                    }
+                    let id = explicit.unwrap_or_else(|| ModelId {
+                        provider_id: "local".into(),
+                        model_id: "test-model".into(),
+                    });
+                    Ok(ModelSelection {
+                        provider_id: id.provider_id,
+                        model_id: id.model_id,
+                        capability_snapshot: None,
+                        config: Some(ModelConfig {
+                            max_tokens: Some(4096.),
+                            temperature: Some(0.),
+                            ..Default::default()
+                        }),
+                        metadata: Some(RequestMetadata {
+                            extensions: serde_json::Map::from_iter([(
+                                "providerProtocol".into(),
+                                json!("openai-responses"),
+                            )]),
+                            ..Default::default()
+                        }),
+                    })
+                })
+            })),
+        )?;
+        ctx.provide(ModalityConnectionHost(resolver.clone()))?;
+        dim_agent_capabilities::host::provide_selectable_models(
+            ctx,
+            &SelectableModelsHost::new(
+                Arc::new(move |_cancel| Box::pin(async move { Ok(Vec::new()) })),
+                Arc::new(move |_cancel| Box::pin(async move { Ok(Vec::new()) })),
+            ),
+        )?;
+        Ok(())
+    }
+}
+
+/// A Session whose model requests resolve to the managed codex account's
+/// connection against the test server.
+async fn codex_session(server: &TestServer) -> (MinimalHost, dim_agent_runtime::Session) {
+    let models = Arc::new(AimuxModels::from_config(configuration(&server.url)).unwrap());
+    let mut builder = builder(models.clone(), Arc::new(MockTools));
+    builder
+        .plugin(|_| Ok(Box::new(AimuxPlugin::default())))
+        .plugin({
+            let url = server.url.clone();
+            move |_| {
+                Ok(Box::new(CodexModelsPlugin {
+                    base_url: url.clone(),
+                    models: models.clone(),
+                }))
+            }
+        });
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(session_config(), Default::default())
+        .await
+        .unwrap();
+    (agent, session)
+}
+
+/// The flattened thinking and text deltas of the main branch, in order.
+async fn thinking_text_flow(session: &dim_agent_runtime::Session) -> Vec<(String, String)> {
+    chain_events(session, "main", ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::Thinking(data) => Some(("thinking".into(), data.delta.clone())),
+            EventKind::Text(data) => Some(("text".into(), data.delta.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_thinking_tags_leave_text_as_thinking_and_the_next_request() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let (agent, session) = codex_session(&server).await;
+        session
+            .submit("tags:convert".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let flow = thinking_text_flow(&session).await;
+        let thinking: String = flow
+            .iter()
+            .filter(|(kind, _)| kind == "thinking")
+            .map(|(_, delta)| delta.clone())
+            .collect();
+        let text: String = flow
+            .iter()
+            .filter(|(kind, _)| kind == "text")
+            .map(|(_, delta)| delta.clone())
+            .collect();
+        assert!(
+            thinking.contains("INNER-THOUGHT"),
+            "the tag's content streams as thinking: {flow:?}"
+        );
+        assert!(
+            !thinking.contains("<thinking") && !thinking.contains("</thinking"),
+            "the tags never reach the stream: {flow:?}"
+        );
+        assert!(
+            text.contains("FINAL-ANSWER"),
+            "what follows the close tag is the answer's text: {flow:?}"
+        );
+        assert!(
+            !text.contains("INNER-THOUGHT")
+                && !text.contains("<thinking")
+                && !text.contains("</think"),
+            "the tag never reaches the text: {flow:?}"
+        );
+        let first_text = flow.iter().position(|(kind, _)| kind == "text").unwrap();
+        assert!(
+            flow[..first_text]
+                .iter()
+                .all(|(kind, _)| kind == "thinking"),
+            "the stream yields thinking before the first text: {flow:?}"
+        );
+
+        session
+            .submit("tags:inline".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+
+        let requests = server.endpoint.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        for request in &requests {
+            assert_eq!(request["store"].as_bool(), Some(false), "{request}");
+        }
+        let second = requests[1].to_string();
+        assert!(
+            !second.contains("<thinking") && !second.contains("</thinking"),
+            "the next request must not carry the tags: {second}"
+        );
+        assert!(
+            !second.contains("INNER-THOUGHT"),
+            "unsigned thinking stays out of the next request: {second}"
+        );
+        assert!(
+            second.contains("FINAL-ANSWER"),
+            "the answer itself is the assistant message of the next request: {second}"
+        );
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let inline: String = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Text(data) => Some(data.delta.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            inline.contains("<thinking>not a tag</thinking> INLINE-ANSWER"),
+            "a tag inside the text is not converted at this level either: {inline}"
+        );
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// The same scripted reply over a connection without the preset streams the
+/// tags as the text they are for every other provider.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_without_the_codex_preset_streams_tags_verbatim() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let (agent, session) = protocol_session(&server, "openai-responses").await;
+        session
+            .submit("tags:convert".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let flow = thinking_text_flow(&session).await;
+        assert!(
+            flow.iter().all(|(kind, _)| kind == "text"),
+            "without the preset nothing is thinking: {flow:?}"
+        );
+        let text: String = flow.iter().map(|(_, delta)| delta.clone()).collect();
+        assert!(
+            text.contains("<thinking>") && text.contains("INNER-THOUGHT"),
+            "the reply streams verbatim: {flow:?}"
+        );
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_thinking_tags_only_reply_completes_the_turn() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let (agent, session) = codex_session(&server).await;
+        session
+            .submit("tags:only".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::Thinking(data) if data.delta.contains("EVERYTHING-INSIDE")
+            )),
+            "the whole reply is its thinking: {events:?}"
+        );
+        assert!(
+            matches!(
+                events
+                    .iter()
+                    .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                    .unwrap()
+                    .kind,
+                EventKind::TurnEnd(TurnEndData {
+                    outcome: TurnOutcome::Completed { .. },
+                    ..
+                })
+            ),
+            "a reply of nothing but its tag completes instead of retrying empty: {events:?}"
+        );
+        assert_eq!(
+            server.endpoint.requests.lock().unwrap().len(),
+            1,
+            "no empty-reply retry issued another request"
+        );
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 #[path = "model_flow/native.rs"]

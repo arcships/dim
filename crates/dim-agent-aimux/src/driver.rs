@@ -950,6 +950,7 @@ impl ModelDriver for AimuxDriver {
                 result,
                 tool_names,
                 protocol,
+                preset == Some(OPENAI_CODEX_PRESET),
                 cancel,
                 abort,
                 self.generation.clone(),

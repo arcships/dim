@@ -74,6 +74,7 @@ fn fixture_with(
         result,
         ToolNames::default(),
         ModelProtocol::OpenaiChat,
+        false,
         cancel.clone(),
         abort.clone(),
         CancellationToken::new(),
@@ -119,6 +120,7 @@ fn feedable() -> (ModelStream, Feed) {
         result,
         ToolNames::default(),
         ModelProtocol::OpenaiChat,
+        false,
         CancellationToken::new(),
         AbortSignal::new(),
         CancellationToken::new(),
@@ -1041,6 +1043,7 @@ async fn cancelling_a_cut_tool_call_wins_a_ready_part() {
         result,
         ToolNames::default(),
         ModelProtocol::OpenaiChat,
+        false,
         cancel,
         abort.clone(),
         CancellationToken::new(),
@@ -1153,6 +1156,7 @@ async fn a_strict_responses_stream_delivers_a_cut_call_next_to_its_filter() {
         },
         ToolNames::default(),
         ModelProtocol::OpenaiResponses,
+        false,
         CancellationToken::new(),
         AbortSignal::new(),
         CancellationToken::new(),
@@ -2072,5 +2076,503 @@ fn a_string_code_is_a_status_only_when_it_is_exactly_three_digits_in_range() {
             status: Some(200),
             code: Some("500".into()),
         }
+    );
+}
+
+/// A scan fixture: the codex conversion over the OpenAI Responses protocol,
+/// which is the only pairing the driver ever enables it for.
+fn scan_fixture(
+    parts: Vec<Result<StreamPart, AiMuxError>>,
+) -> (ModelStream, CancellationToken, AbortSignal, Arc<AtomicBool>) {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let result = StreamResult {
+        stream: Box::pin(NativeStream {
+            parts: parts.into(),
+            dropped: dropped.clone(),
+            end_when_empty: true,
+        }),
+        request: None,
+        response: None,
+    };
+    let cancel = CancellationToken::new();
+    let abort = AbortSignal::new();
+    let stream = convert(
+        result,
+        ToolNames::default(),
+        ModelProtocol::OpenaiResponses,
+        true,
+        cancel.clone(),
+        abort.clone(),
+        CancellationToken::new(),
+        tokio_util::task::TaskTracker::new().token(),
+    );
+    (stream, cancel, abort, dropped)
+}
+
+/// The same parts with the scan off: what every other provider streams.
+fn unscanned_responses_fixture(
+    parts: Vec<Result<StreamPart, AiMuxError>>,
+) -> (ModelStream, CancellationToken, AbortSignal, Arc<AtomicBool>) {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let result = StreamResult {
+        stream: Box::pin(NativeStream {
+            parts: parts.into(),
+            dropped: dropped.clone(),
+            end_when_empty: true,
+        }),
+        request: None,
+        response: None,
+    };
+    let cancel = CancellationToken::new();
+    let abort = AbortSignal::new();
+    let stream = convert(
+        result,
+        ToolNames::default(),
+        ModelProtocol::OpenaiResponses,
+        false,
+        cancel.clone(),
+        abort.clone(),
+        CancellationToken::new(),
+        tokio_util::task::TaskTracker::new().token(),
+    );
+    (stream, cancel, abort, dropped)
+}
+
+fn text_block(id: &str, deltas: &[&str]) -> Vec<Result<StreamPart, AiMuxError>> {
+    let mut parts = vec![
+        Ok(start()),
+        Ok(StreamPart::TextStart {
+            id: id.into(),
+            provider_metadata: None,
+        }),
+    ];
+    for delta in deltas {
+        parts.push(Ok(StreamPart::TextDelta {
+            id: id.into(),
+            delta: (*delta).into(),
+            provider_metadata: None,
+        }));
+    }
+    parts.push(Ok(StreamPart::TextEnd {
+        id: id.into(),
+        provider_metadata: None,
+    }));
+    parts.push(Ok(finish(
+        FinishReasonUnified::Stop,
+        NativeUsage::default(),
+    )));
+    parts
+}
+
+/// The stream's chunks reduced to what the scan decides: thinking and text
+/// payloads, both ends, and the terminal.
+fn reduced(chunks: &[Result<ModelChunk, HostError>]) -> Vec<String> {
+    chunks
+        .iter()
+        .filter_map(|chunk| match chunk {
+            Ok(ModelChunk::Text(text)) => Some(format!("text:{text:?}")),
+            Ok(ModelChunk::TextEnd) => Some("text-end".into()),
+            Ok(ModelChunk::Thinking(thinking)) => Some(format!("thinking:{thinking:?}")),
+            Ok(ModelChunk::ThinkingEnd { thinking }) => Some(format!("thinking-end:{thinking:?}")),
+            Ok(ModelChunk::MessageStop { reason, .. }) => Some(format!("stop:{reason:?}")),
+            Err(error) => Some(format!("error:{error}")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The reply's committed parts, or a test failure naming what ended instead.
+fn committed(chunks: &[Result<ModelChunk, HostError>], case: &str) -> Vec<MessagePart> {
+    chunks
+        .iter()
+        .find_map(|chunk| match chunk {
+            Ok(ModelChunk::Content(parts)) => Some(parts.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{case}: the reply committed no content: {}",
+                reduced(chunks).join(" ")
+            )
+        })
+}
+
+async fn scan_chunks(
+    parts: Vec<Result<StreamPart, AiMuxError>>,
+) -> Vec<Result<ModelChunk, HostError>> {
+    let (stream, _, _, _) = scan_fixture(parts);
+    collect_or_stall(stream, "scan fixture").await
+}
+
+#[tokio::test]
+async fn thinking_tags_convert_a_codex_block_into_thinking_then_text() {
+    let chunks = scan_chunks(text_block(
+        "msg",
+        &["<thinking>\nthe plan\n</thinking>\n\nthe answer"],
+    ))
+    .await;
+    assert_eq!(
+        reduced(&chunks),
+        [
+            "thinking:\"\\nthe plan\\n\"",
+            "thinking-end:\"\\nthe plan\\n\"",
+            "text:\"\\n\\nthe answer\"",
+            "text-end",
+            "stop:EndTurn",
+        ]
+    );
+    let parts = committed(&chunks, "converted block");
+    assert_eq!(parts.len(), 2, "{parts:?}");
+    let MessagePart::Thinking {
+        thinking,
+        provider_metadata,
+        ..
+    } = &parts[0]
+    else {
+        panic!("the thinking section is not a thinking part: {parts:?}")
+    };
+    assert_eq!(thinking, "\nthe plan\n");
+    assert_eq!(
+        *provider_metadata, None,
+        "converted thinking must carry no continuation metadata"
+    );
+    let MessagePart::Text { text, .. } = &parts[1] else {
+        panic!("the answer is not a text part: {parts:?}")
+    };
+    assert_eq!(text, "\n\nthe answer");
+}
+
+#[tokio::test]
+async fn thinking_tags_split_across_deltas_convert_identically() {
+    for deltas in [
+        vec!["<thin", "king>plan</think", "ing>answer"],
+        vec![
+            "<", "t", "h", "i", "n", "k", "i", "n", "g", ">", "p", "l", "a", "n", "<", "/", "t",
+            "h", "i", "n", "k", "i", "n", "g", ">", "a", "n", "s", "w", "e", "r",
+        ],
+        vec!["<thinking>plan</thinking>answer"],
+    ] {
+        let chunks = scan_chunks(text_block("msg", &deltas)).await;
+        // Deltas fragment the thinking and text emissions, so only the
+        // conversion's shape and content are identical across splittings.
+        let mut kinds: Vec<_> = reduced(&chunks)
+            .iter()
+            .filter(|event| !event.starts_with("thinking:\"\"") && !event.starts_with("text:\"\""))
+            .map(|event| event.split(':').next().unwrap().to_owned())
+            .collect();
+        kinds.dedup();
+        assert_eq!(
+            kinds,
+            ["thinking", "thinking-end", "text", "text-end", "stop"],
+            "deltas {deltas:?}: {}",
+            reduced(&chunks).join(" ")
+        );
+        let parts = committed(&chunks, "split tags");
+        assert!(
+            matches!(&parts[0], MessagePart::Thinking { thinking, .. } if thinking == "plan"),
+            "deltas {deltas:?}: {parts:?}"
+        );
+        assert!(
+            matches!(&parts[1], MessagePart::Text { text, .. } if text == "answer"),
+            "deltas {deltas:?}: {parts:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn thinking_tags_inside_text_stay_verbatim() {
+    for (case, deltas) in [
+        ("inline", vec!["use <thinking>plan</thinking> carefully"]),
+        (
+            "mid-block",
+            vec!["first half", " then <thinking>not a tag</thinking>"],
+        ),
+        (
+            "inside a code fence",
+            vec!["```\n<thinking>example</thinking>\n```"],
+        ),
+    ] {
+        let chunks = scan_chunks(text_block("msg", &deltas)).await;
+        assert!(
+            reduced(&chunks)
+                .iter()
+                .all(|event| !event.starts_with("thinking")),
+            "{case}: a tag inside the text converted: {}",
+            reduced(&chunks).join(" ")
+        );
+        let parts = committed(&chunks, case);
+        assert_eq!(parts.len(), 1, "{case}: {parts:?}");
+        let joined: String = deltas.concat();
+        assert!(
+            matches!(&parts[0], MessagePart::Text { text, .. } if *text == joined),
+            "{case}: buffered bytes were lost or repeated: {parts:?} vs {joined:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn thinking_tags_almost_openings_are_buffered_verbatim() {
+    for (case, deltas, expected) in [
+        (
+            "no closing bracket",
+            vec!["<thin"],
+            vec!["text:\"<thin\"", "text-end", "stop:EndTurn"],
+        ),
+        (
+            "space inside the bracket",
+            vec!["< thinking>not a tag"],
+            vec!["text:\"< thinking>not a tag\"", "text-end", "stop:EndTurn"],
+        ),
+        (
+            "longer tag name",
+            vec!["<thinkingx", ">rest"],
+            vec![
+                "text:\"<thinkingx\"",
+                "text:\">rest\"",
+                "text-end",
+                "stop:EndTurn",
+            ],
+        ),
+        (
+            "short tag name",
+            vec!["<think>rest"],
+            vec!["text:\"<think>rest\"", "text-end", "stop:EndTurn"],
+        ),
+    ] {
+        let chunks = scan_chunks(text_block("msg", &deltas)).await;
+        assert_eq!(
+            reduced(&chunks),
+            expected,
+            "{case}: buffered bytes were lost or repeated"
+        );
+    }
+}
+
+#[tokio::test]
+async fn thinking_tags_leading_whitespace_before_the_open_tag() {
+    let chunks = scan_chunks(text_block("msg", &["\n  <thinking>plan</thinking>done"])).await;
+    assert_eq!(
+        reduced(&chunks),
+        [
+            "thinking:\"plan\"",
+            "thinking-end:\"plan\"",
+            "text:\"done\"",
+            "text-end",
+            "stop:EndTurn",
+        ]
+    );
+    let parts = committed(&chunks, "leading whitespace");
+    assert!(
+        matches!(&parts[0], MessagePart::Thinking { thinking, .. } if thinking == "plan"),
+        "the whitespace before the tag is not text: {parts:?}"
+    );
+}
+
+#[tokio::test]
+async fn thinking_tags_close_followed_by_text_on_the_same_line() {
+    let chunks = scan_chunks(text_block("msg", &["<thinking>plan</thinking>right after"])).await;
+    assert_eq!(
+        reduced(&chunks),
+        [
+            "thinking:\"plan\"",
+            "thinking-end:\"plan\"",
+            "text:\"right after\"",
+            "text-end",
+            "stop:EndTurn",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn thinking_tags_unclosed_at_the_block_end_stay_thinking() {
+    let chunks = scan_chunks(text_block("msg", &["<thinking>never closed</think"])).await;
+    assert_eq!(
+        reduced(&chunks),
+        [
+            "thinking:\"never closed\"",
+            "thinking:\"</think\"",
+            "thinking-end:\"never closed</think\"",
+            "text-end",
+            "stop:EndTurn",
+        ]
+    );
+    let parts = committed(&chunks, "unclosed tag");
+    assert!(
+        matches!(&parts[0], MessagePart::Thinking { thinking, .. } if thinking == "never closed</think"),
+        "an unclosed tag's content must not reach the text: {parts:?}"
+    );
+    assert!(
+        matches!(&parts[1], MessagePart::Text { text, .. } if text.is_empty()),
+        "{parts:?}"
+    );
+}
+
+#[tokio::test]
+async fn thinking_tags_scoped_blocks_scan_independently() {
+    let mut parts = vec![Ok(start())];
+    for (index, (id, delta)) in [
+        ("first", "plain answer"),
+        ("second", "<thinking>hidden</thinking>done"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        if index == 1 {
+            // The second block of a turn usually follows a tool call, as when
+            // the model answers after its calls: the blocks scan independently.
+            parts.push(Ok(tool("{}")));
+        }
+        parts.push(Ok(StreamPart::TextStart {
+            id: (*id).into(),
+            provider_metadata: None,
+        }));
+        parts.push(Ok(StreamPart::TextDelta {
+            id: (*id).into(),
+            delta: (*delta).into(),
+            provider_metadata: None,
+        }));
+        parts.push(Ok(StreamPart::TextEnd {
+            id: (*id).into(),
+            provider_metadata: None,
+        }));
+    }
+    parts.push(Ok(finish(
+        FinishReasonUnified::Stop,
+        NativeUsage::default(),
+    )));
+    let chunks = scan_chunks(parts).await;
+    assert_eq!(
+        reduced(&chunks),
+        [
+            "text:\"plain answer\"",
+            "text-end",
+            "thinking:\"hidden\"",
+            "thinking-end:\"hidden\"",
+            "text:\"done\"",
+            "text-end",
+            "stop:EndTurn",
+        ]
+    );
+    let parts = committed(&chunks, "multiple blocks");
+    assert!(
+        matches!(&parts[0], MessagePart::Text { text, .. } if text == "plain answer"),
+        "the first block must not be scanned into the second: {parts:?}"
+    );
+    assert!(
+        matches!(&parts[1], MessagePart::ToolUse { .. }),
+        "{parts:?}"
+    );
+    assert!(
+        matches!(&parts[2], MessagePart::Thinking { .. }),
+        "{parts:?}"
+    );
+    assert!(
+        matches!(&parts[3], MessagePart::Text { text, .. } if text == "done"),
+        "{parts:?}"
+    );
+}
+
+#[tokio::test]
+async fn thinking_tags_only_reply_answers_the_turn() {
+    let chunks = scan_chunks(text_block("msg", &["<thinking>everything</thinking>"])).await;
+    assert_eq!(
+        reduced(&chunks),
+        [
+            "thinking:\"everything\"",
+            "thinking-end:\"everything\"",
+            "text-end",
+            "stop:EndTurn",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn thinking_tags_empty_section_answers_nothing() {
+    let chunks = scan_chunks(text_block("msg", &["<thinking></thinking>"])).await;
+    let events = reduced(&chunks);
+    assert_eq!(
+        events[..2],
+        ["thinking-end:\"\"", "text-end"],
+        "{}",
+        events.join(" ")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("error:") && event.contains("no text and no tool call")),
+        "an empty tag alone still answers nothing: {}",
+        events.join(" ")
+    );
+}
+
+#[tokio::test]
+async fn thinking_tags_other_providers_stream_them_verbatim() {
+    let chunks = {
+        let (stream, _, _, _) =
+            unscanned_responses_fixture(text_block("msg", &["<thinking>plan</thinking>answer"]));
+        collect_or_stall(stream, "unscanned fixture").await
+    };
+    assert_eq!(
+        reduced(&chunks),
+        [
+            "text:\"<thinking>plan</thinking>answer\"",
+            "text-end",
+            "stop:EndTurn",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn thinking_tags_continuation_metadata_reaches_only_the_text_part() {
+    let metadata = || {
+        aimux_core::shared::provider_namespace(
+            "openai",
+            json!({"itemId": "msg_1", "phase": "final_answer"}),
+        )
+        .unwrap()
+    };
+    let (stream, _, _, _) = scan_fixture(vec![
+        Ok(start()),
+        Ok(StreamPart::TextStart {
+            id: "msg".into(),
+            provider_metadata: Some(metadata()),
+        }),
+        Ok(StreamPart::TextDelta {
+            id: "msg".into(),
+            delta: "<thinking>plan</thinking>answer".into(),
+            provider_metadata: Some(metadata()),
+        }),
+        Ok(StreamPart::TextEnd {
+            id: "msg".into(),
+            provider_metadata: Some(metadata()),
+        }),
+        Ok(finish(FinishReasonUnified::Stop, NativeUsage::default())),
+    ]);
+    let chunks = collect_or_stall(stream, "metadata fixture").await;
+    let parts = committed(&chunks, "metadata");
+    let MessagePart::Thinking {
+        provider_metadata, ..
+    } = &parts[0]
+    else {
+        panic!("{parts:?}")
+    };
+    assert_eq!(
+        *provider_metadata, None,
+        "the converted thinking must not carry the item reference: {parts:?}"
+    );
+    let MessagePart::Text {
+        provider_metadata: text_metadata,
+        ..
+    } = &parts[1]
+    else {
+        panic!("{parts:?}")
+    };
+    assert!(
+        matches!(
+            text_metadata,
+            Some(dim_agent_types::ContentMetadata::OpenaiResponses { item_id, phase, .. })
+            if item_id == "msg_1" && phase.as_deref() == Some("final_answer")
+        ),
+        "the trailing text part keeps the item's continuation metadata: {text_metadata:?}"
     );
 }
