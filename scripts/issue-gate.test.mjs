@@ -513,6 +513,133 @@ test('completes the check as a gate error when the initial PR read fails', async
   assert.equal(completed[0].output.title, 'Gate error');
 });
 
+test('marks discovery incomplete when a timeline link is absent from the open PR list', async (t) => {
+  let api;
+  api = await startFakeApi((request) => {
+    if (request.path === `/repos/${REPOSITORY}/pulls`) {
+      return reply(200, []);
+    }
+    if (request.path === `/repos/${REPOSITORY}/issues/1/timeline`) {
+      return reply(200, [
+        {
+          event: 'cross-referenced',
+          source: {
+            issue: {
+              number: 77,
+              state: 'open',
+              pull_request: {},
+              repository_url: api.url + '/repos/' + REPOSITORY,
+            },
+          },
+        },
+      ]);
+    }
+    return undefined;
+  });
+  t.after(() => api.close());
+
+  const result = await runGate(api, {
+    eventName: 'issues',
+    event: { issue: { number: 1 } },
+    discover: true,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const discovered = JSON.parse(result.stdout.trim());
+  assert.deepEqual(discovered.prs, []);
+  assert.equal(discovered.complete, false);
+  assert.match(result.stderr, /#77 is missing from the open pull request list/);
+});
+
+test('treats a missing closing-reference read as incomplete discovery', async (t) => {
+  const prs = Array.from({ length: 21 }, (_, index) => ({
+    number: index + 1,
+    body: index === 20 ? 'Refs #1' : 'Refs #999',
+    head: { sha: `head-${index + 1}` },
+  }));
+  const api = await startFakeApi((request) => {
+    if (request.path === `/repos/${REPOSITORY}/issues/1/timeline`) {
+      return reply(500, { message: 'temporary failure' });
+    }
+    if (request.path === `/repos/${REPOSITORY}/pulls`) {
+      return reply(200, prs);
+    }
+    if (request.method === 'POST' && request.path === '/graphql') {
+      const { number } = JSON.parse(request.body).variables;
+      if (number === 1) return reply(404, { message: 'not found' });
+      return closingRefs([]);
+    }
+    return undefined;
+  });
+  t.after(() => api.close());
+
+  const result = await runGate(api, {
+    eventName: 'issues',
+    event: { issue: { number: 1 } },
+    discover: true,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const discovered = JSON.parse(result.stdout.trim());
+  assert.deepEqual(discovered.prs, [{ number: 21, head: 'head-21' }]);
+  assert.equal(discovered.complete, false);
+  assert.match(result.stderr, /Incomplete linked-PR discovery/);
+});
+
+test('leaves a current-head success untouched when the known head is stale', async (t) => {
+  const runsByHead = new Map([
+    ['old-head', []],
+    [
+      'new-head',
+      [{ id: 2, name: 'issue-gate', external_id: 'issue-gate:77', status: 'completed', conclusion: 'success' }],
+    ],
+  ]);
+  const patches = [];
+  let nextId = 1;
+  const api = await startFakeApi((request) => {
+    if (request.method === 'GET' && request.path === `/repos/${REPOSITORY}/pulls/77`) {
+      return reply(200, pullRequest('Fixes #1', 'new-head'));
+    }
+    const prefix = `/repos/${REPOSITORY}/commits/`;
+    const suffix = '/check-runs';
+    if (request.method === 'GET' && request.path.startsWith(prefix) && request.path.endsWith(suffix)) {
+      const head = request.path.slice(prefix.length, -suffix.length);
+      return reply(200, { check_runs: runsByHead.get(head) ?? [] });
+    }
+    if (request.method === 'POST' && request.path === `/repos/${REPOSITORY}/check-runs`) {
+      const payload = JSON.parse(request.body);
+      const created = { id: nextId, name: 'issue-gate', external_id: 'issue-gate:77' };
+      nextId += 1;
+      runsByHead.get(payload.head_sha).push(created);
+      return reply(201, created);
+    }
+    if (request.method === 'PATCH' && request.path.startsWith(`/repos/${REPOSITORY}/check-runs/`)) {
+      patches.push({
+        id: Number(request.path.split('/').pop()),
+        ...JSON.parse(request.body),
+      });
+      return reply(200, {});
+    }
+    return undefined;
+  });
+  t.after(() => api.close());
+
+  const result = await runGate(api, {
+    eventName: 'pull_request_target',
+    event: { pull_request: { number: 77 } },
+    target: 77,
+    targetHead: 'old-head',
+  });
+
+  assert.equal(result.status, 1);
+  assert.ok(!api.requests.some((request) => request.path.includes('/commits/new-head/check-runs')));
+  const completed = patches.filter((patch) => patch.status === 'completed');
+  assert.deepEqual(completed.map((patch) => patch.id), [1]);
+  assert.equal(completed[0].conclusion, 'failure');
+  assert.equal(completed[0].output.title, 'PR head changed');
+  assert.ok(!patches.some((patch) => patch.id === 2));
+});
+
 test('the discovery step propagates a gate script failure', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'issue-gate.yml'), 'utf8');
   assert.match(workflow, /set -euo pipefail/);

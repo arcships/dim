@@ -110,5 +110,5 @@ jobs:
     steps:
       - name: Fail on incomplete linked-PR discovery
         run: |
-          echo "::error::Linked-PR discovery was incomplete; some issue-gate checks were not refreshed. Re-run after the API recovers."
+          echo "::error::Linked-PR discovery was incomplete; some issue-gate checks were not refreshed. Re-run the full issue-gate workflow after the API recovers; rerunning only this job reuses the old discovery result."
           exit 1

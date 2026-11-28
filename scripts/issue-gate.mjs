@@ -163,10 +163,8 @@ async function scanOpenPrsForIssue(issueNumber, prs) {
           try {
             for (const number of await getClosingRefs(pr.number)) refs.add(number);
           } catch (error) {
-            if (error.status !== 404) {
-              problems.push(`#${pr.number}: ${error.message}`);
-              console.error(`Could not read closing references for #${pr.number}: ${error.message}`);
-            }
+            problems.push(`#${pr.number}: ${error.message}`);
+            console.error(`Could not read closing references for #${pr.number}: ${error.message}`);
             return null;
           }
         }
@@ -218,7 +216,10 @@ async function getLinkedOpenPrs(issueNumber) {
   const prs = [];
   for (const number of numbers) {
     const pr = byNumber.get(number);
-    if (!pr) continue;
+    if (!pr) {
+      problems.push(`#${number} is missing from the open pull request list`);
+      continue;
+    }
     const head = pr.head?.sha;
     if (!head) {
       problems.push(`#${number} has no head SHA`);
@@ -465,8 +466,6 @@ async function main() {
         title: 'PR head changed',
         summary: 'The pull request head changed before evaluation; the current revision is evaluated by its own event.',
       };
-      const currentChecks = await beginCheckRun(pr);
-      await finishCheckRun(pr, currentChecks, changed);
       await finishCheckRun(knownPr, checks, changed);
       console.log(`#${target}: FAIL: ${changed.title}\n${changed.summary}`);
       process.exitCode = 1;
