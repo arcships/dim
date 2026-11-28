@@ -89,7 +89,7 @@ impl CompactionStrategy for UsageResolver {
     fn name(&self) -> &str {
         "fixture"
     }
-    fn replacement_size(&self, _: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, _: &dyn ContextModel, _: f64) -> f64 {
         0.
     }
     fn compact(

@@ -45,7 +45,7 @@ impl CompactionStrategy for Scripted {
     fn name(&self) -> &str {
         "scripted"
     }
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, model: &dyn ContextModel, _: f64) -> f64 {
         let messages = match self.mode {
             Mode::TwoMessages => vec![
                 Message::text(Role::User, "first replacement"),
@@ -310,6 +310,120 @@ fn starts_of(events: &[Arc<AgentEvent>]) -> Vec<Option<u64>> {
             _ => None,
         })
         .collect()
+}
+
+/// Manual cut points shape with the physical budget, not the compaction
+/// window (ContextCompaction §5.3, #2235): after two 1300-token turns inside
+/// a 1500-token compaction budget, the manual compaction keeps a tail only
+/// the 2032-token physical cap allows, not the 375 tokens automatic shaping
+/// at the compaction scale would cap it at.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_cut_points_keep_the_physical_scale_under_a_narrow_window() {
+    let strategy = Arc::new(Scripted {
+        mode: Mode::Cut,
+        context: Context {
+            threshold: Some(10_000.),
+            window: 8_192.,
+            compaction: 1_500.,
+            ..Context::default()
+        },
+        ..Scripted::default()
+    });
+    let agent = MinimalHost::start(&builder_with_strategy(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        strategy,
+        None,
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    for text in ["x".repeat(600), "y".repeat(600)] {
+        session
+            .submit(text, InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let command = session
+        .service::<AgentLoop>("main")
+        .unwrap()
+        .compact()
+        .unwrap();
+    let events = until(&session, |events| result_for(events, command).is_some()).await;
+    let result = result_for(&events, command).unwrap();
+    let ContextCompactionResult::Completed { diagnostics, .. } = &result.outcome else {
+        panic!("the manual compaction completes, {events:#?}");
+    };
+    let output = diagnostics
+        .estimated_output_tokens
+        .expect("a completed compaction reports its projected size");
+    assert!(
+        output >= 1_500.,
+        "the retained tail scales with the physical budget, not the compaction window, {output}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ContextCompactionStart(data) if data.trigger == CompactionTrigger::Threshold
+        )),
+        "no automatic compaction ran: the tail's size is the manual step's"
+    );
+    agent.close().await.unwrap();
+}
+
+/// Request validation compares with the physical input budget, not the
+/// compaction window (ContextCompaction §5.3, #2235): a request well above
+/// the 1500-token compaction budget but inside the 8128-token physical budget
+/// completes instead of exhausting the window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_above_the_compaction_window_validates_at_the_physical_scale() {
+    let strategy = Arc::new(Scripted {
+        mode: Mode::Cut,
+        context: Context {
+            threshold: Some(10_000.),
+            window: 8_192.,
+            compaction: 1_500.,
+            ..Context::default()
+        },
+        ..Scripted::default()
+    });
+    let agent = MinimalHost::start(&builder_with_strategy(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        strategy,
+        None,
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    session
+        .submit("x".repeat(2_000), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        !events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TurnEnd(data) if matches!(&data.outcome, TurnOutcome::Failed { .. })
+        )),
+        "the turn completes: validation reads the physical budget, {events:#?}"
+    );
+    assert!(
+        events.iter().any(
+            |event| matches!(&event.kind, EventKind::ModelOutputEnd(data)
+            if matches!(&data.outcome, ModelOutputOutcome::Completed { .. }))
+        ),
+        "the model output completes"
+    );
+    agent.close().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1649,5 +1763,107 @@ async fn a_second_command_consumed_while_one_is_outstanding_is_skipped() {
     assert_eq!(results_of(&events, raw), 1);
     assert_eq!(strategy.calls.load(Ordering::SeqCst), 1);
     assert_paired(&events);
+    agent.close().await.unwrap();
+}
+
+/// The trigger a completed or skipped outcome records.
+fn trigger_of(outcome: &ContextCompactionResult) -> Option<CompactionTrigger> {
+    match outcome {
+        ContextCompactionResult::Completed { diagnostics, .. }
+        | ContextCompactionResult::Skipped { diagnostics, .. } => Some(diagnostics.trigger),
+        ContextCompactionResult::Failed {
+            diagnostics: Some(diagnostics),
+            ..
+        } => Some(diagnostics.trigger),
+        _ => None,
+    }
+}
+
+/// Recovery cut points shape with the physical budget, not the compaction
+/// window (ContextCompaction §5.3, #2235): after ten 400-token turns the
+/// request exceeds the physical input budget, and the recovery compaction
+/// keeps the largest tail the 8128-token physical budget allows. At the
+/// 1500-token compaction window the tail cap is a quarter of it (375 tokens),
+/// so nothing fits the bound and the fallback keeps at most the running turn
+/// alone — far below what the physical scale keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn budget_recovery_keeps_the_physical_scale_under_a_narrow_window() {
+    let strategy = Arc::new(Scripted {
+        mode: Mode::Cut,
+        context: Context {
+            threshold: Some(10_000.),
+            window: 8_192.,
+            compaction: 1_500.,
+            ..Context::default()
+        },
+        ..Scripted::default()
+    });
+    let agent = MinimalHost::start(&builder_with_strategy(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        strategy,
+        None,
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    turns(
+        &session,
+        &[
+            "a".repeat(400).as_str(),
+            "b".repeat(400).as_str(),
+            "c".repeat(400).as_str(),
+            "d".repeat(400).as_str(),
+            "e".repeat(400).as_str(),
+            "f".repeat(400).as_str(),
+            "g".repeat(400).as_str(),
+            "h".repeat(400).as_str(),
+            "i".repeat(400).as_str(),
+            "j".repeat(400).as_str(),
+        ],
+    )
+    .await;
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let recoveries: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data)
+                if trigger_of(&data.outcome)
+                    == Some(CompactionTrigger::ProviderOutputBudgetExhausted) =>
+            {
+                Some(data)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        recoveries.len(),
+        1,
+        "the rejection compacts once, {events:#?}"
+    );
+    let ContextCompactionResult::Completed { diagnostics, .. } = &recoveries[0].outcome else {
+        panic!(
+            "the recovery compaction completes, {:?}",
+            recoveries[0].outcome
+        )
+    };
+    let output = diagnostics
+        .estimated_output_tokens
+        .expect("a completed compaction reports its projected size");
+    assert!(
+        output >= 1_500.,
+        "recovery keeps the tail the physical budget allows, not the compaction window's quarter, {output}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ContextCompaction(data)
+                if trigger_of(&data.outcome) == Some(CompactionTrigger::Threshold)
+        )),
+        "no automatic compaction ran: the tail's size is the recovery step's"
+    );
     agent.close().await.unwrap();
 }

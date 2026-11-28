@@ -200,16 +200,20 @@ The existing `ContextModel` port is split in two. Each comes from its own Sessio
 | Port | Session value | Methods | F1 implementation |
 | --- | --- | --- | --- |
 | `ContextModel` (narrowed) | `ContextModelHost(Option<Arc<dyn ResolveContextModel>>)` (existing) | `context_window`, `output_tokens`, `threshold_tokens`, `count_tokens`; `compact` moves out | `ProductContextModel` (§5.1) |
-| `CompactionStrategy` (new) | `CompactionStrategyHost(Option<Arc<dyn CompactionStrategy>>)` | `name`, `replacement_size(model)`, `compact(input, cancel) -> Completed {retain_from, replacement, strategy, diagnostics} \| Skipped {reason, diagnostics} \| Failed {error, diagnostics} \| Err(HostError)` | `ProductSummaryStrategy` (§5.2) |
+| `CompactionStrategy` (new) | `CompactionStrategyHost(Option<Arc<dyn CompactionStrategy>>)` | `name`, `replacement_size(model, budget)`, `compact(input, cancel) -> Completed {retain_from, replacement, strategy, diagnostics} \| Skipped {reason, diagnostics} \| Failed {error, diagnostics} \| Err(HostError)` | `ProductSummaryStrategy` (§5.2) |
 
 Both values are bound explicitly in every profile, as `ContextModelHost` is today. The policy
 exists when both are `Some`. One `Some` without the other is an assembly defect that
 ContextPreparation reports when it loads.
 
-`replacement_size(model)` is the planned token count of the messages `compact` returns: the
-summary's target `S` (§13.3) plus one empty `summary_message` wrapper, counted with
-`count_tokens`. `S` comes from the strategy's factory configuration — the same rule its prompt
-states — so the plan cannot drift from the summarizer. The retention rule reserves that space
+`replacement_size(model, budget)` is the planned token count of the messages `compact`
+returns: the summary's target `S` (§13.3) plus one empty `summary_message` wrapper, counted
+with `count_tokens`. `budget` is the step's shaping budget `B` of §5.3 — the compaction budget
+for the automatic trigger, the physical input budget for a manual step or budget recovery —
+and `S` is `min(α × O, β × budget)` of it: the plan and the retention that reserves its space
+measure one budget, and a manual or recovery step does not mis-size what it replaces. `S` comes
+from the strategy's factory configuration — the same rule its prompt states — so the plan
+cannot drift from the summarizer. The retention rule reserves that space
 before the strategy runs (§5.3). It is a planning size, not a cap: `maxTokens` stays
 `output_tokens`, and a reply that overshoots `S` completes and reports its actual size in the
 diagnostics. `Completed`'s `replacement` holds the strategy's own messages; ContextPolicy
@@ -475,7 +479,7 @@ pub trait ContextModel { fn context_window(&self) -> f64; fn output_tokens(&self
 pub struct HistoryEntry { /* existing */ pub source: String }   // id of the placing event
 pub trait CompactionStrategy: Send + Sync + 'static {
     fn name(&self) -> &str;                            // written into the start, e.g. "summary"
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64;   // planned replacement tokens
+    fn replacement_size(&self, model: &dyn ContextModel, budget: f64) -> f64;   // planned replacement tokens of budget
     fn compact(&self, input: CompactionInput, cancel: CancellationToken)
         -> HostFuture<'_, StrategyOutcome>; }          // Completed | Skipped | Failed
 pub struct StrategyDiagnostics { pub model_call_count: u64, pub usage: Option<Usage>,
@@ -533,7 +537,8 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | --- | --- |
 | `context_window` | `snapshot.capabilities.contextWindow`, the catalog value with its existing overrides |
 | `output_tokens` | The adopted output allowance: `request.config.maxTokens`, which Provider derives from the declared pair as `max(1, min(declared maxOutputTokens, 131,072, contextWindow / 2))`. A stored value that is absent or above that function is repaired on read at the request boundary; the declared `maxOutputTokens` fact is not rewritten. The allowance bounds the whole reply, not only its answer: a request that thinks keeps `answer_tokens` of it for the answer ([model configuration](model-configuration.md#model-parameters)), so compaction plans against the cap the request may spend in total |
-| `threshold_tokens` | `B − reserve`, where `B = context_window − output_tokens` (the input budget) and `reserve = min(max(0.10 × B, 16,000), 0.20 × B)`. The reserve absorbs the estimation error of the next request; it is a provisional heuristic that does not cover every request without a provider baseline ([research §3.3, §6.4](../research/compaction-trigger.md#33-recommendation)) |
+| `threshold_tokens` | `B_c − reserve`, where `B_c` is the compaction budget below and `reserve = min(max(0.10 × B_c, 16,000), 0.20 × B_c)`. The reserve absorbs the estimation error of the next request; it is a provisional heuristic that does not cover every request without a provider baseline ([research §3.3, §6.4](../research/compaction-trigger.md#33-recommendation)) |
+| `compaction_budget` | `min(B, max(0, W − O))` when a startup compaction window `W` is adopted, otherwise `B = context_window − output_tokens`, the physical input budget. `O` is the output reserve inside the effective window, capped at half of it: `O = min(output_tokens, W / 2)`. The compaction budget shapes automatic compaction everywhere this document scales with `B` — the retention, bound, regrowth, pinned-inputs and digest shares of §5.3, §5.6, §5.9 and §5.10 — while validation, overflow recovery, summary chunking and manual cut points keep scaling with the physical budget `B` (#2235) |
 | `count_tokens` | UTF-8 bytes of the serialized system prompt, messages and tool declarations divided by 4; each image part counts a fixed 1,600 tokens. Provisional (#128). Used for deltas over the provider's `prompt_tokens`, the first request, `validate` and the reduction check |
 
 **Composable counting.** Window facts may expose an optional contribution counter;
@@ -583,14 +588,24 @@ while the capability is unknown.
 with their overrides: `B`, `0.5 × B`, `0.25 × B` and `S` scale with the declared capacity.
 The output allowance is Provider's adopted value, not the declared maximum: a reply ceiling
 (131,072 tokens) and half the window bound it, so `B` is at least half the window even when
-a source declares an output at or above it. An adopted [startup](../model-startup.md)
-`auto_compact_window = W` caps only `threshold_tokens` at `max(0, W − output_tokens)`: the
-effective threshold is the minimum of that cap and `B − reserve` above. The output allowance
-remains reserved; the smaller trigger window neither reduces actual capacity nor changes
-chunking, retention, regrowth or manual compaction. Provider validates that W is positive and
-does not exceed adopted capacity. Without W, including startup `auto`, the threshold is
-unchanged. Compaction has no constant capacity cap of its own; a different actual capacity is
-declared by Provider or the existing `contextWindow` override.
+a source declares an output at or above it.
+
+An adopted [startup](../model-startup.md) `auto_compact_window = W` splits the budget in
+two (#2235): the physical input budget `B` stays what validation, overflow recovery,
+summary chunking and manual compaction measure, while everything that shapes automatic
+compaction scales with the compaction budget `B_c = min(B, max(0, W − O))` — the
+effective threshold, the retained-tail share, the post-compaction bound including the
+re-plan trigger, the regrowth gate, the pinned-inputs and digest shares, and, in the
+automatic step, the summary replacement target, which each step measures against its own
+shaping budget (§13.3). The smaller shaping window never reduces actual capacity: a turn that
+legitimately outgrows `W` compacts instead of failing, and compaction returns the context
+inside the shaping budget on time. Token counts wider than the model's capacity fail
+validation as before, and a value below the floor `min(32,000, 10% of the capacity)`
+clamps to it; the adopting operation's reply carries the raise, and clients report it as a
+one-time notice (#2235). Percentages are taken of the adopted capacity. Without W, including startup
+`auto`, `B_c` is `B` and nothing changes. Compaction has no constant capacity cap of its
+own; a different actual capacity is declared by Provider or the existing `contextWindow`
+override.
 
 ### 5.2 ProductSummaryStrategy
 
@@ -643,8 +658,9 @@ How the summary is produced:
   whole request is checked against the budget again before the call; a half that no longer fits
   is halved too, keeping all of its text, and when the carried summary and envelope do not fit
   without any transcript the compaction fails without sending the request.
-- **Replacement size.** The strategy plans its replacement at `replacement_size(model)`: the
-  target `S` (§13.3, `S = min(α × O, β × B)`, from the strategy's factory configuration) plus
+- **Replacement size.** The strategy plans its replacement at `replacement_size(model, budget)`:
+  the target `S` (§13.3, `S = min(α × O, β × budget)` of the step's shaping budget, from the
+  strategy's factory configuration) plus
   the tokens of an empty `summary_message`. Until the §13.4 evaluation chooses, `α = 0.5` and
   `β = 0.10` (provisional, like `RETAINED_SHARE`); the prompt's target sentence stays §13's
   decision and is not added here. It is a planning size: `maxTokens` stays `O`, a reply that
@@ -691,15 +707,21 @@ How the summary is produced:
 
 `compact_step` is the existing compaction section of `ContextPolicy::prepare`, extracted:
 
-1. **Resident parts and retention limit.** With `B = context_window − output_tokens` (§5.1), the
-   parts a compaction at a cut cannot shrink are:
+1. **Resident parts and retention limit.** The step's shaping budget is the model's compaction
+   budget for the automatic trigger and the physical input budget for a manual step or budget
+   recovery (#2235); in what follows `B` is that shaping budget, so without a startup window
+   every formula is unchanged. A compaction whose resident parts exceed half its shaping budget
+   falls back to the latest content-keeping cut with the insufficient-space mark, and the
+   regrowth gate debounces the next attempt (§5.6); no budget is raised beyond
+   the step's own shaping budget. The parts a compaction at a cut cannot shrink are:
    - the request frame: the system prompt, the tool declarations, and any messages the
      preparation appended beyond the history;
    - the keyed baseline at the cut;
    - the pinned inputs of the running turn before the cut (§5.9), at that cut's own size;
    - the digest at its bound, `0.05 × B` (§5.10);
-   - the strategy's replacement at `replacement_size(model)` (§4.2); a re-plan measures the
-     replacement the first pass actually produced instead (step 4).
+   - the strategy's replacement at `replacement_size(model, B)` (§4.2), where `B` is the step's
+     shaping budget; a re-plan measures the replacement the first pass actually produced
+     instead (step 4).
 
    `resident(cut)` is the sum of those parts with `count_tokens`, and the tail budget at that
    cut is `min(RETAINED_SHARE × B, 0.5 × B − resident(cut))`, with `RETAINED_SHARE = 0.25`
@@ -728,6 +750,9 @@ How the summary is produced:
    insufficient-space mark (step 5). When the context's last event placed entries that do not
    fit, no cut exists after that event, so those entries stay and the result carries no mark:
    every part the compaction cannot shrink fits.
+
+   A manual step shapes with the physical input budget, so its token-rule cut keeps the share
+   the full capacity allows; the turn-start rule is a semantic cut and does not scale.
 2. **Start.** It appends `context/compaction-start` with the caller's ids, `command`,
    `through`, `trigger` and `strategy.name()`. The automatic threshold trigger stops here,
    before the strategy is called, on a conservative planned-size heuristic: when the entries
@@ -957,8 +982,10 @@ requests, budget recovery, `LoopSnapshot` and `context/prepare`.
   `CompactionStrategyHost`, and its policy exists when both hosts are `Some`.
 - **Trigger.** Below or at the input budget, threshold compaction runs in `prepare` only when both hold:
   - the estimate reaches `threshold_tokens` (existing);
-  - at least `0.25 × B` of new history has accumulated since the branch's latest compaction
-    attempt. New history is the entries placed by events after that attempt's
+  - at least `0.25 × B_c` of new history has accumulated since the branch's latest compaction
+    attempt: the share keeps
+    a narrow configured window from starting a compaction every turn (#2235). New history is
+    the entries placed by events after that attempt's
     `context/compaction-start` `through`, counted with `count_tokens` each and summed. The
     attempt is the latest start of any trigger and any outcome; a branch with no start has all
     its history new.
@@ -1071,8 +1098,9 @@ rest of the replaced range. The replacement carries them verbatim.
   public fields only; no marker inside an input's text is parsed, so a plugin that writes keyed
   content (TimelineTree's branch context, for example) is excluded by its key and never by its
   text. A pin a previous record wrote is already a rendered message and is carried unchanged.
-- **Budget.** The pinned messages total at most `0.1 × B`, counted with `count_tokens` over the
-  whole list — the carried pins and the turn's new inputs together. When all of them fit they
+- **Budget.** The pinned messages total at most `0.1 × B`, the step's shaping budget — `B_c` for
+  the automatic trigger, the physical input budget for a manual step or budget recovery (§5.3) —
+  counted with `count_tokens` over the whole list — the carried pins and the turn's new inputs together. When all of them fit they
   are pinned verbatim; when they do not, each input keeps its head and tail within an equal
   share of the budget, with a marker naming its `input/message` event id — the handle Recall
   opens for that input ([Recall §4](Recall.md#4-handles-time-and-event-id)) — and a share too
@@ -1146,10 +1174,10 @@ ran with their exit status, and nothing else.
   bytes. An entry that alone exceeds the bound is dropped like an older one, `dropped` becomes
   true, and its result stays readable through Recall, so the newest entry fits whenever the
   bound can hold it at all.
-- **Bound.** The digest part holds at most `0.05 × B`, counted with `count_tokens` over its
-  rendered message — half the pinned inputs' share, so that the summary at its planned size (at
-  most `0.1 × B`, §13.3), the pins (`0.1 × B`, §5.9), the digest and the kept tail (`0.25 × B`,
-  §5.3) together add up to the `0.5 × B` bound; the frame and the keyed baseline are resident as
+- **Bound.** The digest part holds at most `0.05 × B`, the step's shaping budget (§5.3), counted
+  with `count_tokens` over its rendered message — half the pinned inputs' share, so that the
+  summary at its planned size (at most `0.1 × B`, §13.3), the pins (`0.1 × B`, §5.9), the digest
+  and the kept tail (`0.25 × B`, §5.3) together add up to the `0.5 × B` bound; the frame and the keyed baseline are resident as
   well, so they shorten the tail. Beyond the bound, entries are dropped from the front, the ones
   declared least recently, and the part says that earlier effects are not listed; the record's
   `dropped` becomes true and the note stays in every later digest, because those entries cannot
@@ -1334,13 +1362,13 @@ Internal Rust changes:
 | Half-finished compaction | Never resumed; settled as `cancelled` (§5.8) |
 | Summarizer reasoning (#170) | `off` (§13.2). The evaluation ([research note](../research/summary-eval.md)) passes `off` on the OpenAI-compatible class, with no other arm's `F` more than `δ` above it, so the value is a strategy constant and `compaction.json` is removed. Decided on the class that ran; provisional for OpenAI Responses and Anthropic budget thinking (§13.4 Coverage), evaluated under [#565](https://github.com/arcships/dim/issues/565) |
 | Target summary length (#170) | No instruction (§13.3). Every phase-2 arm passed; the no-instruction arm's cut-offs and failures were no higher than any target arm's, so none is kept. The planning size uses α = 0.5 and β = 0.10 |
-| Window limits | The window facts are the model's catalog values with their overrides; `B`, `0.5 × B`, `0.25 × B` and `S` scale with capacity. `output_tokens` is Provider's adopted allowance, derived from the declared pair with a reply ceiling and half the window as its bound, so `B` is at least half the window, and repaired on read for a stored configuration (§5.1). Startup may separately cap the automatic trigger window while reserving that allowance |
+| Window limits | The window facts are the model's catalog values with their overrides; `B`, `0.5 × B`, `0.25 × B` and `S` scale with capacity. `output_tokens` is Provider's adopted allowance, derived from the declared pair with a reply ceiling and half the window as its bound, so `B` is at least half the window, and repaired on read for a stored configuration (§5.1). An adopted startup compaction window reshapes automatic compaction at its compaction budget while reserving that allowance (§5.1) |
 | The `0.5 × B` bound | The tail budget is `min(0.25 × B, 0.5 × B − resident)` with the replacement planned at `replacement_size` (§13.3's `S` at the provisional α = 0.5, β = 0.10); when no kept tail fits, the limit is the cut that replaces everything; a completed result still above the bound is re-planned once at the replacement's actual size before anything is committed, and only that re-plan's outcome is written; the mark is measured from the written result's total, so a result above the bound always carries it (§5.3). The `0.5` share is provisional (#428) |
 | Insufficient space | A descriptive `insufficientSpace` object present exactly when a completed compaction's total exceeds `0.5 × B`, naming the resident parts that cover the excess, largest first, and never the kept tail; no decision reads it (§4.3, §5.3) |
-| Regrowth | Automatic threshold compaction needs `0.25 × B` of entries after the latest compaction attempt's `through`, decided in the context's branch-aware order: `through` maps to the writing branch's last committed event at or before it, so a forked child regrows from its own history; recovery is exempt and runs once per request (§5.6, §5.3) |
+| Regrowth | Automatic threshold compaction needs `0.25 × B_c` of entries after the latest compaction attempt's `through`, decided in the context's branch-aware order: `through` maps to the writing branch's last committed event at or before it, so a forked child regrows from its own history; recovery is exempt and runs once per request (§5.6, §5.3) |
 | Recovery failure | A request still over `B` after its recovery compaction fails with an error naming what keeps it there — the resident parts, or the entries the last event placed — and is not compacted again (§5.3, §6) |
-| Class 2(a) pinning | In ContextPolicy, not the strategy: the running turn's inputs before the cut, keyed blocks excluded, at most `0.1 × B` (provisional, #428), head and tail with the `input/message` id; a compaction later in the same turn carries the previous result's pinned part as-is, merged with the inputs consumed at or after its cut under the same share, and reads both from committed facts so a missing snapshot changes nothing (§5.9) |
-| Class 3a digest | The tool contract's effect declarations ([session boundary A.6](../contracts/session-boundary.md#a6-tool-effects)) from the `step/tool-result` events of the replaced range, and from no other fact, folded into one data message in the replacement, after the strategy's messages and before the pinned inputs; one entry per path or command with its latest outcome, a command shortened to its first 200 characters with the cut marked; the entries are stored as data on the record (`digest_entries`) and rolled forward from it, never parsed from the rendering; at most `0.05 × B` (provisional, #428), dropping the least recently declared beyond it, with Recall reading their events; the input guide gains the `<dim-digest>` entry with the message (§5.10) |
+| Class 2(a) pinning | In ContextPolicy, not the strategy: the running turn's inputs before the cut, keyed blocks excluded, at most `0.1 × B` of the step's shaping budget — `B_c` for the automatic trigger, the physical input budget for a manual step or budget recovery — (provisional, #428), head and tail with the `input/message` id; a compaction later in the same turn carries the previous result's pinned part as-is, merged with the inputs consumed at or after its cut under the same share, and reads both from committed facts so a missing snapshot changes nothing (§5.9) |
+| Class 3a digest | The tool contract's effect declarations ([session boundary A.6](../contracts/session-boundary.md#a6-tool-effects)) from the `step/tool-result` events of the replaced range, and from no other fact, folded into one data message in the replacement, after the strategy's messages and before the pinned inputs; one entry per path or command with its latest outcome, a command shortened to its first 200 characters with the cut marked; the entries are stored as data on the record (`digest_entries`) and rolled forward from it, never parsed from the rendering; at most `0.05 × B` of the step's shaping budget, the same split as the pins (provisional, #428), dropping the least recently declared beyond it, with Recall reading their events; the input guide gains the `<dim-digest>` entry with the message (§5.10) |
 | Summarizer work | At most `chunkCount + 8` requests per compaction, each counted when sent, over both passes of a re-plan; `modelCallCount` and `durationMs` report them, and `modelUsage` sums their usage (§5.2, §4.3) |
 | Substantive summary | Non-empty is enforced on every reply, so a committed summary is never empty; the parts are checked when [#429's prompt](../compaction-quality.md#77-model-facing-prompts-429) declares them, added with it (§5.2) |
 
@@ -1355,7 +1383,7 @@ window, and the same App Server on a `--models` file whose entry declares a smal
 (`crates/dim-app-server/tests`), plus Loop and policy flow tests in
 `crates/dim-agent-capabilities/tests`.
 
-1. **Automatic.** Past the threshold, and with `0.25 × B` of new history since the previous
+1. **Automatic.** Past the threshold, and with `0.25 × B_c` of new history since the previous
    compaction, the next preparation writes `context/budget`, then
    `context/compaction-start {trigger: threshold}`. When the selected cut removes more than
    the replacement's planned size, it also sends one summarizer request and commits
@@ -1450,7 +1478,7 @@ window, and the same App Server on a `--models` file whose entry declares a smal
     result's `estimatedOutputTokens` is above `0.5 × B`, and every completed result without a
     mark is at most `0.5 × B`.
 11. **Regrowth.** After a completed automatic compaction, a preparation at the threshold with
-    less than `0.25 × B` of new history writes no `context/compaction-start`; once `0.25 × B` of
+    less than `0.25 × B_c` of new history writes no `context/compaction-start`; once `0.25 × B_c` of
     new history has accumulated it does. Because no new history has accumulated, a skipped or
     failed automatic compaction is not retried on the same history, and a manual compaction runs
     on it.
@@ -1461,7 +1489,7 @@ window, and the same App Server on a `--models` file whose entry declares a smal
 13. **Class 2(a) pinning.** A cut inside the running turn carries that turn's consumed inputs
     verbatim, in event order, as the model saw them, including a steer that joined the turn; a
     keyed block, retiring or not, is not repeated; an input consumed after the cut is not
-    duplicated; a turn whose inputs exceed `0.1 × B` pins each input as its head and tail with
+    duplicated; a turn whose inputs exceed `0.1 × B` of the step's shaping budget pins each input as its head and tail with
     its `input/message` id; a cut at the turn's start or in an earlier turn pins nothing.
 14. **Linear rolling.** A compaction over a history several times the window sends summarizer
     requests that carry the previous replacement's summary and pinned parts and the newly cut
@@ -1498,7 +1526,7 @@ window, and the same App Server on a `--models` file whose entry declares a smal
     compaction over more history reads the first record's `digest_entries` and adds the new
     declarations without re-reading any event before the first cut and without parsing the first
     message; its summarizer request carries the previous summary part and not the previous
-    digest part. (d) With more declarations than `0.05 × B` holds, entries are dropped from the
+    digest part. (d) With more declarations than `0.05 × B` of the step's shaping budget holds, entries are dropped from the
     front, `dropped` is set, the part says earlier effects are not listed, every dropped
     declaration's event is readable through Recall, an entry that alone exceeds the bound is
     dropped the same way — when that leaves no entry the message holds the note alone, with
@@ -1514,11 +1542,11 @@ window, and the same App Server on a `--models` file whose entry declares a smal
     not from a snapshot. A steer the turn consumes between the two compactions is pinned after
     the carried pin, in event order. An input consumed exactly at the first cut stays in that
     cut's tail and is not duplicated; a later cut that replaces it pins it. When the merged pins
-    exceed `0.1 × B`, each keeps its head and tail with the handle naming its own `input/message`
+    exceed `0.1 × B` of the step's shaping budget, each keeps its head and tail with the handle naming its own `input/message`
     id, the carried one included; a carried pin whose record named no id keeps head and tail
     with no handle, and the new record names no ids either.
 20. **Regrowth after a fork.** A child branch forked right after its parent's first completed
-    compaction compacts at the threshold once `0.25 × B` of its own new history has accumulated:
+    compaction compacts at the threshold once `0.25 × B_c` of its own new history has accumulated:
     the parent's `through` maps to the parent's last event at or before it in the context's
     order, so the child's smaller local sequences are not mistaken for old history. On the flow
     test's numbers — `B = 4,032`, threshold 3,000, an estimated 3,602 and a 1,500-character
@@ -1658,16 +1686,18 @@ The sentence is the strategy's factory configuration (`length_sentence`): a temp
 (§13.4, §13.5).
 
 **Deriving S.** With `O = model.output_tokens()` (the allowance the summarizer request gets as
-`maxTokens`) and `B = context_window − O` (the input budget):
+`maxTokens`) and `budget` the step's shaping budget — the model's compaction budget `B_c` (§5.1)
+for the automatic trigger, the physical input budget for a manual step or budget recovery (§5.3):
 
-`S = min(α × O, β × B)`, rounded down to a multiple of 100.
+`S = min(α × O, β × budget)`, rounded down to a multiple of 100.
 
 - `α × O` leaves `(1 − α) × O` of the allowance for thinking and for overshoot, so a summary that
   follows the instruction does not reach `max_tokens`.
-- `β × B` bounds what the replacement takes from every later request. After a compaction the
-  context is about `S` plus the digest (at most `0.05 × B`, §5.10), the pinned inputs (at most
-  `0.1 × B`, §5.9) and the retained tail (at most `0.25 × B`, §5.3), so `β = 0.10` keeps it within
-  `0.5 × B` (§5.3), below the trigger.
+- `β × budget` bounds what the replacement takes from every later request. After a compaction the
+  context is about `S` plus the digest, the pinned inputs and the retained tail. All four scale
+  with the step's shaping budget — `B_c` for the automatic trigger, the physical input budget
+  for a manual step or budget recovery (§5.3, §5.9, §5.10) — so `β = 0.10` keeps the whole within
+  half the step's shaping budget (§5.3), and an automatic step stays below the trigger.
 - S is a soft instruction. `maxTokens` stays `O`: a hard limit at S would turn every overshoot into
   a cut-off reply, which is halved and retried (#169).
 

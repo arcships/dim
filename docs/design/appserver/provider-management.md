@@ -125,7 +125,11 @@ protected-local `session.create`, `session.model.update` and
 contains optional `connection`,
 `contextWindow`, `maxOutputTokens` and `autoCompactWindow`. Connection fields are
 `apiFormat`, `baseUrl`, optional `apiKey` or `authToken`, and optional `headers`
-(a name/value map). A compaction window is a positive integer or `"auto"`.
+(a name/value map). A compaction window is a positive integer, `"auto"`, or a
+percentage of the adopted context capacity such as `"40%"`. A window below the
+shaping floor is raised to it ([model startup](../model-startup.md)), and the
+reply carries the raise as a typed field with the requested value and the tokens
+in force, absent otherwise.
 Remote entries reject this admission. Ordinary creation stays unchanged.
 
 Provider admits the connection and model together. It uses the existing protocol

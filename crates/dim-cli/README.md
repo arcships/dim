@@ -398,7 +398,9 @@ and retained.
 effort, without changing its saved service tier or writing preferences. Provider
 validates LEVEL against declared capabilities, not a vendor-specific CLI list.
 `--autocompact auto|TOKENS` overrides `DIM_AUTO_COMPACT_WINDOW`; positive counts
-accept `k`/`m` suffixes (1000/1000000). This window is separate from model capacity.
+accept `k`/`m` suffixes (1000/1000000), and a percentage such as `40%` is taken
+of the model's adopted context capacity. This window is separate from model
+capacity.
 
 `DIM_BASE_URL` and `DIM_API_FORMAT` together select a Session-owned direct
 connection, including with an already-running daemon. Formats are `anthropic`,

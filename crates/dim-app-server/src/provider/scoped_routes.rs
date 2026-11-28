@@ -302,6 +302,7 @@ impl ProviderService {
             model,
             owner: self.clone(),
             pending: Some(id),
+            auto_compact_window_elevation: None,
         }))
     }
 }

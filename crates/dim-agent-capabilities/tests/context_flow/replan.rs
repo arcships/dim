@@ -51,7 +51,7 @@ impl CompactionStrategy for Overshoot {
     fn name(&self) -> &str {
         "test"
     }
-    fn replacement_size(&self, _: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, _: &dyn ContextModel, _: f64) -> f64 {
         self.planned
     }
     fn compact(
@@ -514,5 +514,53 @@ async fn a_recovery_compaction_is_re_planned_once() {
         })
         .expect("the recovery compaction completed");
     assert_eq!(*diagnostics, 2, "both passes are counted in one result");
+    agent.close().await.unwrap();
+}
+
+/// Under a narrowed compaction window an automatic compaction re-plans the
+/// overshooting first pass because the result lands above half the compaction
+/// budget, a bound the physical budget's half would not reach
+/// (ContextCompaction §5.3 step 4, #2235).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_replan_threshold_scales_with_the_compaction_budget() {
+    let big: &'static str = Box::leak("s".repeat(400).into_boxed_str());
+    let strategy = Overshoot::new(40., vec![big, "short", "short", "short"]);
+    let (agent, session) = replanned_session_with(
+        Context {
+            compaction: 2_500.,
+            threshold: Some(1_200.),
+            ..Context::default()
+        },
+        Arc::new(EchoModel),
+        strategy.clone(),
+    )
+    .await;
+    for _ in 0..12 {
+        session
+            .submit("q".repeat(150), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let first = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data)
+                if matches!(data.outcome, ContextCompactionResult::Completed { .. }) =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("an automatic compaction");
+    let ContextCompactionResult::Completed { diagnostics, .. } = &first.outcome else {
+        unreachable!()
+    };
+    assert_eq!(diagnostics.trigger, CompactionTrigger::Threshold);
+    assert_eq!(
+        diagnostics.model_call_count, 2,
+        "the overshooting first pass is re-planned once at the compaction budget's bound"
+    );
     agent.close().await.unwrap();
 }
