@@ -319,13 +319,12 @@ impl CollaborationSession {
                 _ = ended.cancelled() => {},
                 _ = abort.cancelled() => {},
             }
-            let _ = super::line_input(
-                owner.collaboration.sessions.as_ref(),
-                &leader,
-                &leader_branch,
-                source.input(true),
-            )
-            .await;
+            // An unload for an Agents reload wakes this task, so the write is
+            // carried across the reload.
+            owner
+                .collaboration
+                .write_across_reloads(&leader, &leader_branch, source.input(true))
+                .await;
         });
     }
 

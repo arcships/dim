@@ -8611,10 +8611,18 @@ async fn member_tool_approval_reviews_the_original_action_and_settles_cancelled_
         say(&mut client, lead, tool(json!({"action":"request","agentId":agent_id,"sessionId":member_id,"prompt":"tool:danger {\"command\":\"must not run after reload\"}"})), "queue").await;
         let pending = client.notice("approval.request").await;
         let pending_id = pending["params"]["requestId"].as_str().unwrap();
+        let pending_route = client.rpc("session.collaboration.approval.get", json!({"sessionId":lead,"branchId":"main","requestId":pending_id})).await["result"]["approvalId"].as_str().unwrap().to_owned();
         server.restart("Agents").await.unwrap();
         poll("reloaded member approval is ended", async || {
             let ended = client.rpc("session.collaboration.approval.get", json!({"sessionId":lead,"branchId":"main","requestId":pending_id})).await;
             (ended["result"]["state"] == "ended").then_some(())
+        }).await;
+        // The approval the reload ended is retired on the leader's line: the
+        // reload unload writes its terminal input, as an ended member's does.
+        poll("the reloaded approval's terminal reaches the leader", async || {
+            events(&leader).await.into_iter().any(|event| matches!(&event.kind,
+                EventKind::InputMessage(data) if data.submission_id.as_deref() == Some(format!("collaboration-approval-ended:{pending_route}").as_str())
+            )).then_some(())
         }).await;
         let _ = client.rpc("approval.respond", json!({"sessionId":lead,"branchId":"main","requestId":pending_id,"decision":"allow"})).await;
         idle(&mut client, lead).await;
