@@ -190,7 +190,7 @@ Session 值不持有状态。解析出的连接只存在于一次策略调用内
   - 原来的 `cursor` 是 `HistoryEntry` 的 id，例如 `<event id>:block:<i>`，依赖可注入的 `HistoryRenderer` 的 id 方案。换一个渲染器，旧记录就会失效。
   - 记录是用户和其他状态机从历史中读取的内容，所以必须引用 Timeline 事件，而不是渲染细节。事件 id 在 fork 继承前缀时也保持稳定。
   - 有了 K 轮保留，切点自然就是最早保留轮的第一个事件，本身就是事件边界。
-- **投影时的映射。** ContextPolicy 和 `history.rs` 把 `retain_from` 映射到当前渲染中的位置：按序号，第一条来源事件在 `retain_from` 或之后的渲染条目。为此 `HistoryEntry` 携带放置它的事件的 id（`source`），条目自身的 id 方案因此不再重要。
+- **投影时的映射。** ContextPolicy 和 `history.rs` 把 `retain_from` 映射到当前渲染中的位置：按序号，第一条来源事件在 `retain_from` 或之后的渲染条目。为此 `HistoryEntry` 携带放置它的事件的 id（`source`），条目自身的 id 方案因此不再重要。裁剪点可以是两个上下文标记都为假的事件。即使没有快照，重放也按该事件在固定分支链中的位置定位。若它位于前缀末尾，检查点包含在它之前累积的全部投影状态。
 
 **重放规则（所有策略）：**
 

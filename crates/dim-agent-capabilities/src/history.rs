@@ -1,8 +1,8 @@
 use crate::prompt_state::PromptSnapshot;
 use dim_agent_runtime::{
-    AgentError, ContextHistory, QueryCursor, QueryFilter, QueryOperand, QueryOutput, QueryPage,
-    QuerySelect, QuerySpec, QueryValue, Session, Timeline, TimelineQuery, TimelineQueryReply,
-    TimelineQueryScope,
+    AgentError, ContextHistory, QueryCursor, QueryEvent, QueryFilter, QueryOperand, QueryOutput,
+    QueryPage, QuerySelect, QuerySpec, QueryValue, Session, Timeline, TimelineQuery,
+    TimelineQueryReply, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use serde::{Deserialize, Serialize};
@@ -122,6 +122,36 @@ impl<'a> FoldRead<'a> {
     pub(crate) fn tail(mut self) -> Self {
         self.tail = matches!(self.reads, ContextReads::Timeline(_));
         self
+    }
+
+    async fn collect(
+        mut self,
+        checkpoint: Option<ProjectionCheckpoint>,
+        ancestry: Vec<String>,
+    ) -> dim_agent_runtime::Result<ContextHistory> {
+        let mut context = ContextHistory {
+            checkpoint,
+            ancestry,
+            events: Vec::new(),
+            positions: Vec::new(),
+        };
+        while let Some(page) = self.next(FOLD_PAGE).await? {
+            context.events.extend(page.events);
+            context.positions.extend(page.positions);
+        }
+        if let Some(ContextCompactionData {
+            outcome: ContextCompactionResult::Completed { retain_from, .. },
+            ..
+        }) = context_compaction(&context)
+            && let Some((index, row)) = self
+                .reads
+                .missing_cut(&context, retain_from, self.through, self.tail)
+                .await?
+        {
+            context.events.insert(index, row.event);
+            context.positions.insert(index, row.position);
+        }
+        Ok(context)
     }
 
     pub(crate) async fn next(
@@ -351,6 +381,27 @@ impl HistoryRenderer {
         Ok(snapshot)
     }
 
+    pub(crate) async fn snapshot_at(
+        &self,
+        timeline: &Timeline,
+        context: &ContextHistory,
+        through: u64,
+        retain_from: &str,
+        anchor: &AgentEvent,
+    ) -> Result<RecoverySnapshot, String> {
+        let mut context = std::borrow::Cow::Borrowed(context);
+        if let Some((index, row)) = ContextReads::Timeline(timeline)
+            .missing_cut(&context, retain_from, through, false)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            let context = context.to_mut();
+            context.events.insert(index, row.event);
+            context.positions.insert(index, row.position);
+        }
+        self.snapshot(&context, retain_from, anchor)
+    }
+
     pub fn snapshot_from_checkpoint(
         &self,
         checkpoint: &dim_agent_types::ProjectionCheckpoint,
@@ -445,7 +496,11 @@ impl HistoryRenderer {
                 .positions
                 .iter()
                 .position(|position| {
-                    position.branch_id == cut.branch_id && position.sequence >= cut.sequence
+                    let segment = segments
+                        .iter()
+                        .position(|(branch, _)| *branch == position.branch_id)
+                        .expect("context page is inside the chain");
+                    (segment, position.sequence) >= (boundary, cut.sequence)
                 })
                 .unwrap_or(page.events.len());
             state = Some(
@@ -458,24 +513,24 @@ impl HistoryRenderer {
                 .1,
             );
             if fold < page.events.len() {
-                let mut state = state.unwrap_or_default();
-                state.retain_from = retain_from.to_owned();
-                return Ok(ProjectionCheckpoint {
-                    resume: ResumePoint {
-                        branch_id: cut.branch_id,
-                        sequence: cut.sequence,
-                        event_id: retain_from.to_owned(),
-                    },
-                    state,
-                });
-            }
-            if (page.events.len() as u64) < batch {
                 break;
             }
         }
-        Err(AgentError::InvalidInput(
-            "Compaction cut is outside the branch chain".into(),
-        ))
+        if read.begin.is_some() {
+            return Err(AgentError::InvalidInput(
+                "Checkpoint resume is outside the branch chain".into(),
+            ));
+        }
+        let mut state = state.unwrap_or_default();
+        state.retain_from = retain_from.to_owned();
+        Ok(ProjectionCheckpoint {
+            resume: ResumePoint {
+                branch_id: cut.branch_id,
+                sequence: cut.sequence,
+                event_id: retain_from.to_owned(),
+            },
+            state,
+        })
     }
 
     /// The context at `through` alone, for readers that inspect events instead
@@ -571,7 +626,7 @@ impl HistoryRenderer {
     ) -> dim_agent_runtime::Result<ContextHistory> {
         let through = timeline.bound(through)?;
         let resume = checkpoint.as_ref().map(|checkpoint| &checkpoint.resume);
-        let mut read = match resume {
+        let read = match resume {
             Some(resume) if resume.branch_id == timeline.branch_id() => {
                 FoldRead::from_sequence(timeline, resume.sequence, through)
             }
@@ -579,22 +634,12 @@ impl HistoryRenderer {
             None => FoldRead::timeline(timeline, None, through),
         }
         .tail();
-        let mut events = Vec::new();
-        let mut positions = Vec::new();
-        while let Some(page) = read.next(FOLD_PAGE).await? {
-            events.extend(page.events);
-            positions.extend(page.positions);
-        }
-        Ok(ContextHistory {
-            checkpoint,
-            ancestry: timeline
-                .ancestors()
-                .into_iter()
-                .map(|(branch, _)| branch)
-                .collect(),
-            events,
-            positions,
-        })
+        let ancestry = timeline
+            .ancestors()
+            .into_iter()
+            .map(|(branch, _)| branch)
+            .collect();
+        read.collect(checkpoint, ancestry).await
     }
 
     /// Streams the branch chain in pages and returns only the projection. A
@@ -755,25 +800,15 @@ impl HistoryRenderer {
                 "future timeline sequence {through}"
             )));
         }
-        let mut read = FoldRead::in_session(session, branch, None, through);
-        let mut events = Vec::new();
-        let mut positions: Vec<TimelinePosition> = Vec::new();
-        while let Some(page) = read.next(FOLD_PAGE).await? {
-            events.extend(page.events);
-            positions.extend(page.positions);
-        }
-        let mut ancestry: Vec<String> = Vec::new();
-        for position in &positions {
-            if ancestry.last() != Some(&position.branch_id) {
-                ancestry.push(position.branch_id.clone());
+        let mut context = FoldRead::in_session(session, branch, None, through)
+            .collect(None, Vec::new())
+            .await?;
+        for position in &context.positions {
+            if context.ancestry.last() != Some(&position.branch_id) {
+                context.ancestry.push(position.branch_id.clone());
             }
         }
-        Ok(ContextHistory {
-            checkpoint: None,
-            ancestry,
-            events,
-            positions,
-        })
+        Ok(context)
     }
 }
 
@@ -1348,6 +1383,77 @@ enum ContextReads<'a> {
 }
 
 impl ContextReads<'_> {
+    /// Locates a cut omitted by the context flags, within this replay's fixed
+    /// suffix. The next projection row places it even across a fork boundary.
+    async fn missing_cut(
+        &self,
+        context: &ContextHistory,
+        cut: &str,
+        through: u64,
+        include_publishing: bool,
+    ) -> dim_agent_runtime::Result<Option<(usize, QueryEvent)>> {
+        if initial_state(context).is_some_and(|state| state.retain_from == cut)
+            || context.events.iter().any(|event| event.id == cut)
+        {
+            return Ok(None);
+        }
+        let mut query = chain_by_id(cut, through, QuerySelect::Events);
+        query.include_publishing = include_publishing;
+        query.from = context
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| TimelinePosition {
+                branch_id: checkpoint.resume.branch_id.clone(),
+                sequence: checkpoint.resume.sequence,
+            });
+        let QueryOutput::Events { events } = self.query(query).await?.result else {
+            unreachable!("event selection returns events")
+        };
+        let Some(row) = events.into_iter().next() else {
+            return Ok(None);
+        };
+        let mut next = context_read(
+            TimelineQueryScope::Chain,
+            Some(row.position.clone()),
+            through,
+            include_publishing,
+            QueryPage {
+                limit: NonZeroU64::MIN,
+                after: None,
+            },
+        );
+        next.query.select = QuerySelect::Fields {
+            fields: vec!["id".into()],
+        };
+        let QueryOutput::Rows { rows } = self.query(next).await?.result else {
+            unreachable!("field selection returns rows")
+        };
+        let index = match rows.first() {
+            Some(next) => {
+                let [
+                    QueryValue::Value {
+                        value: serde_json::Value::String(id),
+                    },
+                ] = next.values.as_slice()
+                else {
+                    unreachable!("event has an id")
+                };
+                context
+                    .events
+                    .iter()
+                    .position(|event| event.id == *id)
+                    .ok_or_else(|| {
+                        AgentError::fault(
+                            "History",
+                            "Missing context row after compaction cut".to_owned(),
+                        )
+                    })?
+            }
+            None => context.events.len(),
+        };
+        Ok(Some((index, row)))
+    }
+
     /// The cut ends an atomic batch, as it must for a branch prefix: batch
     /// structure is the store's check, not a query (ADR 020 D4).
     async fn batch_end(&self, through: u64) -> dim_agent_runtime::Result<()> {
