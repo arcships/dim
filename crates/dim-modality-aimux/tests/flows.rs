@@ -1651,19 +1651,19 @@ async fn cataloged_seedream_image_entries_list_unavailable_with_the_adapter_reas
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cataloged_minimax_h3_image_entries_list_unavailable_with_the_adapter_reason() {
-    // zenmux carries the MiniMax H3 image rows as plain image-generation
-    // entries, and recognition infers image.generate and image.edit from
-    // them. The MiniMax image API's documented response is `data[].url`
-    // alone (https://platform.minimax.io/docs/api-reference/image-generation),
-    // which the compatible package cannot read — the same shape the seedream
-    // rows are refused for — so the entries list unavailable with the
-    // adapter reason and submit refuses them before any request. The video
-    // `minimax/minimax-h3` rows are a different family and stay served.
+async fn undocumented_catalog_image_entries_list_unavailable_while_verified_ones_stay() {
+    // The strict filter is catalog-scoped: an aihubmix or zenmux image entry
+    // whose endpoint documentation proves no inline shape — a schema that
+    // lists `url` alone, no `/v1/images/generations` endpoint, or no schema
+    // at all — lists unavailable with the adapter reason, and a submit is
+    // refused before any request. A schema-verified aihubmix row and a
+    // prefix-answering zenmux row stay available, the verified one runs end
+    // to end, and its start asks the gateway for the inline format.
     let stub = stub(0).await;
-    let home = home("catalog-minimax-image-availability");
+    let home = home("catalog-image-strict");
     let server = start_in(home.clone()).await;
     let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "aihubmix", &stub.base_url).await;
     point_at_stub(&mut client, "zenmux", &stub.base_url).await;
 
     let capabilities = client.rpc("modality.capabilities", json!({})).await;
@@ -1681,49 +1681,136 @@ async fn cataloged_minimax_h3_image_entries_list_unavailable_with_the_adapter_re
         .find(|operation| operation["operation"] == "generate")
         .unwrap()
         .clone();
-    for model_id in ["minimax/minimax-h3-image", "minimax/minimax-h3-image-highspeed"] {
-        let entry = generate["options"]
+    let option = |provider_id: &str, model_id: &str| -> Value {
+        generate["options"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|option| option["providerId"] == "zenmux" && option["modelId"] == model_id)
-            .unwrap_or_else(|| panic!("zenmux/{model_id} is not an image option: {generate}"));
+            .find(|option| option["providerId"] == provider_id && option["modelId"] == model_id)
+            .unwrap_or_else(|| {
+                panic!("{provider_id}/{model_id} is not an image option: {generate}")
+            })
+            .clone()
+    };
+    for (provider_id, model_id) in [
+        // url-only `response_format` enums, and no `/v1` endpoint at all.
+        ("aihubmix", "ideogram-vector-1"),
+        ("aihubmix", "qwen-image-3.0"),
+        ("aihubmix", "grok-imagine-image-2.0"),
+        // no `response_format` documented, and the id answers base64 by no
+        // documented rule either.
+        ("aihubmix", "gemini-3-pro-image"),
+        ("aihubmix", "glm-image"),
+        // the gateway's own schema service answers model_not_found.
+        ("aihubmix", "gpt-image-1-mini"),
+        ("aihubmix", "dall-e-3"),
+        // zenmux publishes no per-model image schema, so its non-prefixed
+        // rows verify nothing — the MiniMax H3 image rows among them.
+        ("zenmux", "minimax/minimax-h3-image"),
+        ("zenmux", "x-ai/grok-imagine-image-2.0"),
+    ] {
+        let entry = option(provider_id, model_id);
         assert_eq!(
             entry["available"], false,
-            "zenmux/{model_id} is unavailable: {entry}"
+            "{provider_id}/{model_id} is unavailable: {entry}"
         );
         assert_eq!(
             entry["reason"]["dimension"], "adapter",
             "the refusal names the adapter: {entry}"
         );
     }
-    let gpt_image = generate["options"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|option| option["providerId"] == "zenmux" && option["modelId"] == "openai/gpt-image-2")
-        .unwrap_or_else(|| panic!("zenmux/openai/gpt-image-2 is not an image option: {generate}"));
-    assert_eq!(
-        gpt_image["available"], true,
-        "a whitelisted gateway's ordinary image entry stays available: {gpt_image}"
-    );
+    for (provider_id, model_id) in [
+        ("aihubmix", "qwen-image"),
+        ("aihubmix", "gpt-image-2"),
+        ("zenmux", "openai/gpt-image-2"),
+    ] {
+        let entry = option(provider_id, model_id);
+        assert_eq!(
+            entry["available"], true,
+            "{provider_id}/{model_id} stays available: {entry}"
+        );
+    }
 
     let refused = client
         .rpc(
             "modality.task.submit",
             json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
-                "files": [], "model": model("zenmux", "minimax/minimax-h3-image")}),
+                "files": [], "model": model("aihubmix", "ideogram-vector-1")}),
         )
         .await;
     assert_eq!(
         app_error(&refused),
         "unavailable",
-        "the catalog minimax image submit is refused before any request: {refused}"
+        "the undocumented entry's submit is refused before any request: {refused}"
     );
     assert!(
         stub.starts("/v1/images/generations") == 0,
         "no image generation reaches the gateway"
     );
+
+    let task_id = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model("aihubmix", "qwen-image"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+    let starts = stub
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path == "/v1/images/generations")
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1, "the verified row starts one generation");
+    let body: Value = serde_json::from_slice(&starts[0].body).unwrap();
+    assert_eq!(
+        body["response_format"], "b64_json",
+        "the verified row asks its gateway for the inline format: {body}"
+    );
+    assert_eq!(body["model"], "qwen-image");
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prefixed_catalog_image_entry_sends_no_response_format_and_reads_back() {
+    // A vendor-prefixed `gpt-image-` id still names the inline-answering
+    // family, so the binding asks nothing: the zenmux row runs end to end
+    // and its start body carries no `response_format` at all.
+    let stub = stub(0).await;
+    let home = home("catalog-prefixed-image");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "zenmux", &stub.base_url).await;
+
+    let task_id = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model("zenmux", "openai/gpt-image-2"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+    let starts = stub
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path == "/v1/images/generations")
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1, "the prefixed row starts one generation");
+    let body: Value = serde_json::from_slice(&starts[0].body).unwrap();
+    assert!(
+        body.get("response_format").is_none(),
+        "a `gpt-image-` row sends no response_format: {body}"
+    );
+    assert_eq!(body["model"], "openai/gpt-image-2");
 
     server.shutdown();
     server.join().await.unwrap();
@@ -1758,7 +1845,11 @@ async fn siliconflow_image_entries_list_unavailable_with_the_adapter_reason() {
         .find(|operation| operation["operation"] == "generate")
         .unwrap()
         .clone();
-    for model_id in ["Kwai-Kolors/Kolors", "Qwen/Qwen-Image", "black-forest-labs/FLUX.1-schnell"] {
+    for model_id in [
+        "Kwai-Kolors/Kolors",
+        "Qwen/Qwen-Image",
+        "black-forest-labs/FLUX.1-schnell",
+    ] {
         let entry = generate["options"]
             .as_array()
             .unwrap()

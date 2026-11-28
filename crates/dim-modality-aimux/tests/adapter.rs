@@ -2123,8 +2123,14 @@ async fn a_callers_response_format_wins_over_the_compatible_default() {
     for (model_id, provider_options) in [
         ("custom-image", json!({"response_format": "url"})),
         ("gpt-image-2", json!({"response_format": "url"})),
-        ("custom-image", json!({"openaiCompatible": {"response_format": "url"}})),
-        ("custom-image", json!({"openaiCompatible": {"response_format": 7}})),
+        (
+            "custom-image",
+            json!({"openaiCompatible": {"response_format": "url"}}),
+        ),
+        (
+            "custom-image",
+            json!({"openaiCompatible": {"response_format": 7}}),
+        ),
     ] {
         let task = job(
             created,
@@ -2685,78 +2691,6 @@ async fn the_seedream_image_word_family_carries_no_compatible_binding() {
             "a refused image submit sends no request"
         );
     }
-}
-
-#[tokio::test]
-async fn the_minimax_h3_image_word_family_carries_no_compatible_binding() {
-    // MiniMax's documented image response is `data[].url` alone, which the
-    // compatible package cannot read — the same shape the Seedream family is
-    // refused for — so the image operations refuse the family together on a
-    // created provider. The video `minimax-h3` family is untouched, and a
-    // non-whole-word `minimax-h3-imagegen` keeps its binding.
-    let adapter = MediaAdapter::new();
-    let created = "6f1c2f9e-0000-4000-8000-000000000000";
-    for model_id in ["minimax-h3-image", "minimax-h3-image-highspeed", "minimax/minimax-h3-image"] {
-        let model = ModelId {
-            provider_id: created.to_owned(),
-            model_id: model_id.to_owned(),
-        };
-        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
-            let names = operation_names(&adapter, &model, protocol);
-            assert!(
-                !names.contains(&"image.generate".to_owned())
-                    && !names.contains(&"image.edit".to_owned()),
-                "{model_id} ({protocol:?}) lists no image operation: {names:?}"
-            );
-        }
-    }
-    for (model_id, operation) in [
-        ("minimax-h3", "video.generate"),
-        ("minimax-h3-max", "video.generate"),
-        ("minimax-h3-imagegen", "image.generate"),
-        ("minimax-h3-imagerefiner", "image.generate"),
-    ] {
-        let model = ModelId {
-            provider_id: created.to_owned(),
-            model_id: model_id.to_owned(),
-        };
-        let names = operation_names(&adapter, &model, Some(ModelProtocol::OpenaiCompatible));
-        assert!(
-            names.contains(&operation.to_owned()),
-            "{model_id} keeps {operation}: {names:?}"
-        );
-    }
-
-    let dir = work_dir("minimax-h3-image");
-    let (scripted_adapter, requests) = scripted(|_| {
-        ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]}))
-    });
-    let task = job(
-        created,
-        "minimax-h3-image",
-        "image",
-        "generate",
-        json!({"prompt": "a cat"}),
-        Vec::new(),
-        &dir,
-    );
-    let error = scripted_adapter
-        .submit(
-            task,
-            connection("https://router.example.test/v1", "minimax-h3-image"),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.code,
-        AdapterErrorCode::Unavailable,
-        "minimax-h3-image submit is refused: {error}"
-    );
-    assert!(
-        requests.lock().unwrap().is_empty(),
-        "a refused image submit sends no request"
-    );
 }
 
 #[tokio::test]

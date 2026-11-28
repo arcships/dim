@@ -372,8 +372,7 @@ pub fn vendor(provider_id: &str) -> Option<&'static Vendor> {
 /// shapes the compatible packages can consume, so listing them available
 /// would send requests whose results cannot be read.
 fn eligible_for_fallback(provider_id: &str) -> bool {
-    uuid::Uuid::parse_str(provider_id)
-        .is_ok_and(|id| id.to_string() == provider_id)
+    uuid::Uuid::parse_str(provider_id).is_ok_and(|id| id.to_string() == provider_id)
         || provider_id == "dimcode-api-oauth"
         || provider_id == "aihubmix"
         || provider_id == "zenmux"
@@ -398,15 +397,68 @@ fn is_seedream_image_model(model_id: &str) -> bool {
     in_word_family(model_id, "seedream")
 }
 
-/// Whether the model id names the MiniMax H3 image family: the `minimax`,
-/// `h3` and `image` words all present. The MiniMax image API answers
-/// `data[].url` alone (https://platform.minimax.io/docs/api-reference/image-generation),
-/// which the compatible package cannot read either, so these models are
-/// refused the same way the Seedream family is.
-fn is_minimax_h3_image_model(model_id: &str) -> bool {
-    in_word_family(model_id, "minimax")
-        && in_word_family(model_id, "h3")
-        && in_word_family(model_id, "image")
+/// The catalog image entries whose endpoint documentation names the inline
+/// response shape the compatible package reads. aihubmix publishes a
+/// per-model endpoint schema (`/call/schema/models/{id}/endpoints`, no
+/// auth): these entries' `/v1/images/generations` schema lists
+/// `response_format` with the inline enum value, so the binding's default
+/// request reads bytes back. Entries absent from this table — a schema that
+/// lists `url` alone, no `/v1/images/generations` endpoint at all, or a
+/// schema the gateway does not publish — document no way to read the bytes,
+/// so the generic fallback refuses them rather than billing a generation
+/// whose answer never reads back.
+const AIHUBMIX_INLINE_IMAGE_MODELS: &[&str] = &[
+    "agnes-image-2.1-flash",
+    "doubao-seedream-4-0",
+    "doubao-seedream-4-5",
+    "doubao-seedream-5-0-flash",
+    "doubao-seedream-5-0-lite",
+    "ernie-image-turbo",
+    "flux-2-flex",
+    "flux-2-pro",
+    "gemini-2.5-flash-image",
+    "gemini-2.5-flash-image-preview",
+    "gemini-3.1-flash-image-preview",
+    "gpt-image-1",
+    "mai-image-2.5",
+    "mai-image-2.5-flash",
+    "mai-image-2.5-pro",
+    "mai-image-2.6",
+    "mai-image-2.6-flash",
+    "musesteamer-air-image",
+    "qwen-image",
+    "qwen-image-2.0",
+    "qwen-image-2.0-pro",
+    "qwen-image-2.1-pro",
+    "qwen-image-2.1-turbo",
+    "qwen-image-edit",
+    "qwen-image-max",
+    "wan2.6-t2i",
+    "wan2.7-image",
+    "wan2.7-image-pro",
+];
+
+/// Whether a cataloged entry on one of the two whitelisted aggregator
+/// gateways documents the inline response shape. An id starting with the
+/// `gpt-image-` or `chatgpt-image-` prefixes after the vendor namespace
+/// answers inline bytes without the field — the OpenAI Image API documents
+/// base64 for those models, and both gateways pass it through — so those
+/// entries need no `response_format` at all. Every other entry must be one
+/// of the schema-verified ids above; zenmux publishes no per-model image
+/// schema, so nothing beyond the prefixes verifies there.
+fn catalog_image_verified(provider_id: &str, model_id: &str) -> bool {
+    // Three aihubmix ids answer `model_not_found` in the gateway's own
+    // endpoint schema service: the entry is stale, and a stale entry reads
+    // nothing whatever its family documents.
+    const AIHUBMIX_NOT_FOUND: &[&str] = &["dall-e-3", "gpt-image-1-mini", "gpt-image-test"];
+    let tail = model_id.rsplit('/').next().unwrap_or(model_id);
+    if provider_id == "aihubmix" && AIHUBMIX_NOT_FOUND.contains(&tail) {
+        return false;
+    }
+    if tail.starts_with("gpt-image-") || tail.starts_with("chatgpt-image-") {
+        return true;
+    }
+    provider_id == "aihubmix" && AIHUBMIX_INLINE_IMAGE_MODELS.contains(&tail)
 }
 
 /// Whether the model id answers inline bytes without being asked. aimux's
@@ -415,7 +467,8 @@ fn is_minimax_h3_image_model(model_id: &str) -> bool {
 /// compatible fallback reads the same rule because the gateways behind it
 /// follow the OpenAI shape.
 pub(crate) fn answers_inline_bytes_by_default(model_id: &str) -> bool {
-    model_id.starts_with("gpt-image-") || model_id.starts_with("chatgpt-image-")
+    let tail = model_id.rsplit('/').next().unwrap_or(model_id);
+    tail.starts_with("gpt-image-") || tail.starts_with("chatgpt-image-")
 }
 
 /// How a binding builds its aimux provider.
@@ -509,10 +562,12 @@ impl Vendor {
 /// (`seedream`, `doubao-seedream`) is refused by the generic fallback alone —
 /// the relay stays on the OpenAI package — because a Seedream endpoint
 /// answers image URLs by default while the compatible package reads inline
-/// bytes alone, and the per-model binding is the same later slice. And an
-/// image model whose id names the MiniMax H3 image family (`minimax`, `h3`
-/// and `image` as words) is refused the same way: its documented response
-/// is `data[].url` alone, which the compatible package cannot read either.
+/// bytes alone, and the per-model binding is the same later slice. The two
+/// whitelisted gateways answer one check more: a cataloged image entry is
+/// refused unless its endpoint documentation proves the inline shape —
+/// the inline-answering id prefixes, or the schema-verified aihubmix ids —
+/// because the sweep behind this adapter requires every listed-available
+/// image model to read its bytes back (#1927).
 pub fn binding(
     provider_id: &str,
     model_id: &str,
@@ -553,11 +608,17 @@ pub fn binding(
             format: Some("outputFormat"),
             no_retry: true,
         },
-        (true, Operation::Image)
-            if is_seedream_image_model(model_id) || is_minimax_h3_image_model(model_id) =>
-        {
+        (true, Operation::Image) if is_seedream_image_model(model_id) => {
             return Err(dim_modality::AdapterError::unavailable(format!(
                 "The `{model_id}` model's image generation needs its provider's own route"
+            )));
+        }
+        (true, Operation::Image)
+            if (provider_id == "aihubmix" || provider_id == "zenmux")
+                && !catalog_image_verified(provider_id, model_id) =>
+        {
+            return Err(dim_modality::AdapterError::unavailable(format!(
+                "The `{model_id}` model's image endpoint does not document the inline response shape this binding reads"
             )));
         }
         (true, Operation::Image) => Binding {
