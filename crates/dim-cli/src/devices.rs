@@ -62,7 +62,9 @@ pub(crate) struct Target {
     pub id: String,
     pub address: Option<String>,
     options: Options,
-    config: dim_client::ConnectionConfig,
+    pub(crate) config: dim_client::ConnectionConfig,
+    pub(crate) instance: String,
+    pub(crate) runtime: Handle,
     _lifetime: Option<ChildStdin>,
 }
 
@@ -183,7 +185,9 @@ impl Devices {
             id,
             address: route,
             options,
+            instance: link.client.instance_id().into(),
             config: link.client.connection_config().clone(),
+            runtime: self.runtime.clone(),
             _lifetime: lifetime,
         }))
     }
@@ -206,7 +210,9 @@ impl Devices {
             },
             address: remote.then(|| read("DIMCODE_TERMINAL_ADDRESS")).flatten(),
             options: self.options.clone(),
+            instance: client.instance_id().into(),
             config: client.connection_config().clone(),
+            runtime: self.runtime.clone(),
             _lifetime: None,
         })
     }

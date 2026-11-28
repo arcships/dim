@@ -322,6 +322,16 @@ async fn workspace_search_is_local_only() {
         local.features
     );
 
+    assert!(
+        !local
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("native.uploadSessionFile"))
+    );
+    let rejected = local.rpc("native.uploadSessionFile", json!({})).await;
+    assert!(rejected.get("error").is_some(), "{rejected}");
+
     let opened = local.rpc("web.open", json!({"port":0})).await["result"].clone();
     let address = opened["address"].as_str().unwrap().to_owned();
     let bootstrap = opened["url"]
@@ -360,6 +370,11 @@ async fn workspace_search_is_local_only() {
         "{}",
         web.features
     );
+    for method in ["workspace.files.complete", "native.uploadSessionFile"] {
+        assert!(!web.features.as_array().unwrap().contains(&json!(method)));
+        let rejected = web.rpc(method, json!({})).await;
+        assert!(rejected.get("error").is_some(), "{rejected}");
+    }
     let refused = web
         .rpc("workspace.files.search", json!({"cwd": home, "query": "x"}))
         .await;

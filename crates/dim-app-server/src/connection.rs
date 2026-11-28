@@ -21,6 +21,7 @@ mod mcp;
 mod subscription;
 mod tree;
 mod ui_extensions;
+mod upload_staging;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use rutis_bridge::session::{
@@ -39,6 +40,7 @@ use std::{
 };
 use subscription::Attachment;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+pub(crate) use upload_staging::UploadStaging;
 
 const MAX_REQUESTS: usize = 64;
 const CONTROL_RESERVE: usize = 8;
@@ -968,7 +970,7 @@ impl Connection {
     }
     /// A Session belongs to the protocol version that created it, and one
     /// whose storage is damaged is unavailable.
-    fn authorize(&self, rpc: &RpcService, id: &str) -> Result<(), RpcError> {
+    pub(crate) fn authorize(&self, rpc: &RpcService, id: &str) -> Result<(), RpcError> {
         self.authorize_version(rpc, id)?;
         if let Some(reason) = rpc.index.unavailable_session(id) {
             return Err(RpcError::from(AgentError::Storage(reason)));
@@ -2240,6 +2242,8 @@ pub(crate) struct ConnectionHub {
     closing: CancellationToken,
     rpc: RwLock<Option<Arc<RpcService>>>,
     pub web: crate::web_entry::WebEntry,
+    pub uploads: tokio::sync::Semaphore,
+    staging: tokio::sync::OnceCell<Arc<UploadStaging>>,
     pub ui: Arc<crate::ui_host::UiHost>,
     /// Feature `testing`: holds the next subscription's `follow` task.
     #[cfg(feature = "testing")]
@@ -2274,6 +2278,8 @@ impl ConnectionHub {
             ui,
             connections: Mutex::new(HashMap::new()),
             admission: Mutex::new(IdleAdmission::default()),
+            uploads: tokio::sync::Semaphore::new(4),
+            staging: Default::default(),
             client_emitter: Mutex::new(None),
             tasks: TaskTracker::new(),
             shutdown_requests: TaskTracker::new(),
@@ -2290,6 +2296,16 @@ impl ConnectionHub {
             #[cfg(feature = "testing")]
             fail_attach_before_registration: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+    pub async fn upload_staging(&self) -> Result<&Arc<UploadStaging>, RpcError> {
+        self.staging
+            .get_or_try_init(|| async {
+                let database = self.config.database_path.clone();
+                tokio::task::spawn_blocking(move || UploadStaging::open(database).map(Arc::new))
+                    .await
+                    .map_err(|_| RpcError::interrupted())?
+            })
+            .await
     }
     pub fn config(&self) -> &ServerConfig {
         &self.config
@@ -2558,6 +2574,17 @@ impl DynPlugin for ConnectionPlugin {
                 owner.close().await;
                 Ok(())
             })?;
+            if self
+                .config
+                .database_path
+                .as_deref()
+                .is_some_and(|db| UploadStaging::directory(db).exists())
+            {
+                let recovering = hub.clone();
+                hub.tasks.spawn(async move {
+                    let _ = recovering.upload_staging().await;
+                });
+            }
             ctx.provide_as::<ConnectionHub>(hub.clone())?;
             dim_agent_capabilities::environment_clients::register_parts(ctx, &parts)?;
             ctx.provide_at(self.clients.clone(), Arc::new(hub_clients(hub)))?;

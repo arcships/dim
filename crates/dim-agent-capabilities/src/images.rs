@@ -7,6 +7,9 @@ use image::{
 };
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, Cursor, Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::{fs::OpenOptions, path::Path};
 
 /// The placeholder an image the request cannot carry becomes when it has no
 /// content reference.
@@ -670,4 +673,43 @@ fn invalid(kind: ImageKind, error: impl std::fmt::Display) -> ImageRefusal {
         kind,
         reason: error.to_string(),
     }
+}
+
+/// Whether a local file is meant as an image: its first bytes or its
+/// extension say so. Unreadable files are not.
+pub fn is_image(path: &Path) -> bool {
+    if image_extension(path) {
+        return true;
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let Ok(file) = options.open(path) else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take(32).read_to_end(&mut bytes).is_ok() && image_header(&bytes)
+}
+
+pub fn image_header(bytes: &[u8]) -> bool {
+    matches!(
+        image::guess_format(bytes),
+        Ok(image::ImageFormat::Png
+            | image::ImageFormat::Jpeg
+            | image::ImageFormat::WebP
+            | image::ImageFormat::Gif)
+    )
+}
+
+pub fn image_extension(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        image::ImageFormat::from_extension(extension).is_some()
+            || extension
+                .to_str()
+                .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "svg" | "heic" | "heif"))
+    })
 }

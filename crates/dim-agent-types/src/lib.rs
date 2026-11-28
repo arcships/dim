@@ -28,6 +28,7 @@ pub use input::*;
 pub use member_approval::*;
 pub use model::*;
 pub use permission::*;
+pub mod native_files;
 pub use profile::*;
 pub use prompt::*;
 pub use question::*;

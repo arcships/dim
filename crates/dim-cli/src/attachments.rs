@@ -3,6 +3,82 @@
 
 use std::path::{Path, PathBuf};
 
+pub async fn complete(
+    config: &dim_client::ConnectionConfig,
+    instance: &str,
+    request: dim_agent_types::native_files::Complete,
+) -> crate::Result<Vec<dim_agent_types::native_files::FileCandidate>> {
+    let mut client = dim_client::Client::connect(config).await?;
+    if client.instance_id() != instance {
+        return Err("The selected device restarted during file search".into());
+    }
+    if !client.supports(&["workspace.files.complete"]) {
+        return Err("Target does not support file completion; type the remote path".into());
+    }
+    let result: dim_agent_types::native_files::Completions = client
+        .typed("workspace.files.complete", serde_json::to_value(request)?)
+        .await?;
+    Ok(result.candidates)
+}
+
+pub async fn resolve_file(
+    client: &mut dim_client::Client,
+    session: &str,
+    path: &Path,
+    label: &str,
+    target_image: bool,
+) -> crate::Result<dim_agent_types::ContentBlock> {
+    use dim_agent_types::{
+        ContentBlock,
+        native_files::{Header, ImportedFile},
+    };
+    if target_image {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Import<'a> {
+            session_id: &'a str,
+            path: &'a Path,
+            image: bool,
+        }
+        let stored: ImportedFile = client
+            .typed(
+                "attachment.import",
+                serde_json::to_value(Import {
+                    session_id: session,
+                    path,
+                    image: true,
+                })?,
+            )
+            .await?;
+        return Ok(ContentBlock::Image {
+            source: stored.image.ok_or("Target did not return an image")?,
+        });
+    }
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    opts.custom_flags(libc::O_NONBLOCK);
+    let file = opts.open(path).await?;
+    let metadata = file.metadata().await?;
+    if !metadata.is_file() {
+        return Err("Select a regular file to upload".into());
+    }
+    let stored = client
+        .upload_session_file(
+            Header {
+                session_id: session.into(),
+                name: label.into(),
+                byte_length: metadata.len(),
+                image: false,
+            },
+            file,
+        )
+        .await?;
+    Ok(ContentBlock::Text {
+        text: file_link(label, Path::new(&stored.path)),
+    })
+}
+
 /// A paste longer than this is stored as a session attachment
 /// (`attachment.put`) instead of being sent inline.
 pub const INLINE_PASTE: usize = 16 * 1024;

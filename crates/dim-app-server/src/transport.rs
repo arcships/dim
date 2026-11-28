@@ -1,3 +1,5 @@
+mod upload;
+
 use crate::{
     ServerConfig, ServerError,
     connection::{ClientIdentity, Connection, ConnectionHub, Entry},
@@ -579,6 +581,7 @@ async fn run_connection(
     });
     let deadline = tokio::time::Instant::now() + hub.config().hello_timeout;
     let mut hello = false;
+    let mut first_operation = true;
     loop {
         let frame = tokio::select! {
             biased;
@@ -780,6 +783,11 @@ async fn run_connection(
                                         features.extend(LOCAL_EXECUTION_METHODS);
                                     }
                                     if local {
+                                        if params.protocol_version == PROTOCOL_VERSION
+                                            && hub.config().session_execution
+                                        {
+                                            features.push(dim_agent_types::native_files::UPLOAD);
+                                        }
                                         features.extend(WEB_ENTRY_METHODS);
                                         features.extend(UI_HOST_METHODS);
                                         features.push("ui.leaf.2");
@@ -834,6 +842,31 @@ async fn run_connection(
                     );
                 }
             }
+        } else if let Call::Contributed { method, params } = &request.call
+            && method == dim_agent_types::native_files::UPLOAD
+        {
+            let result = match &mut reader {
+                #[cfg(any(unix, windows))]
+                Reader::Local(input, _)
+                    if first_operation && connection.version.get() == Some(&PROTOCOL_VERSION) =>
+                {
+                    upload::receive(&hub, &connection, params.clone(), input).await
+                }
+                _ => {
+                    let _ = connection.sender.send(
+                        Outbound::result(request.id, Err(RpcError::unknown_method())),
+                        false,
+                    );
+                    continue;
+                }
+            };
+            if let Ok(Some(written)) = connection
+                .sender
+                .send(Outbound::result(request.id, result), true)
+            {
+                let _ = tokio::time::timeout(timeout, written).await;
+            }
+            break;
         } else if hub.control.shutdown().is_cancelled() {
             let _ = connection.sender.send(
                 Outbound::result(
@@ -843,6 +876,7 @@ async fn run_connection(
                 false,
             );
         } else {
+            first_operation = false;
             connection.dispatch(request);
         }
     }

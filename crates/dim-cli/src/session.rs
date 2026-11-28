@@ -433,7 +433,12 @@ pub async fn chat(
                 reader,
                 &mut draft,
                 notice.take(),
-                options.workspace().path(),
+                if options.endpoint.is_some() { options.launch_dir() } else { options.workspace().path() },
+                options.endpoint.as_ref().map(|_| (
+                    client.connection_config(),
+                    client.instance_id(),
+                    session_cwd.as_deref().unwrap_or_else(|| options.workspace().as_str()),
+                )),
                 &mut interrupts,
             )
             .await?
@@ -617,7 +622,7 @@ pub async fn chat(
             let submission = if let Some(text) = text.filter(|text| text.starts_with('!')) {
                 Submission::Shell(text)
             } else {
-                match draft.prepare(client, &session_id, &mut interrupts, &mut notice).await? {
+                match draft.prepare(client, &session_id, &conversation, &mut interrupts, &mut notice).await? {
                     Some(user) => Submission::Message(user),
                     None => continue,
                 }
@@ -806,7 +811,13 @@ async fn wait_turn(
             None
         }
         Some(Submission::Message(mut user)) => {
-            crate::images::import(client, session_id, &mut user.content).await?;
+            crate::images::import(
+                client,
+                session_id,
+                &mut user.content,
+                crate::sharing::proxy().is_some(),
+            )
+            .await?;
             let submission_id = uuid::Uuid::new_v4().to_string();
             let mut params = json!({"sessionId":session_id,"branchId":conversation,"submissionId":submission_id.clone(),"mode":"queue"});
             match user.content.as_slice() {

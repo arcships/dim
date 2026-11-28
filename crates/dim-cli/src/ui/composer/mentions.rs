@@ -115,6 +115,100 @@ pub fn trigger(text: &str, cursor: usize) -> Option<Trigger> {
     None
 }
 
+pub(super) struct Remote {
+    target: std::sync::Arc<crate::devices::Target>,
+    cwd: String,
+    query: Option<String>,
+    pub result: Result<Vec<dim_agent_types::native_files::FileCandidate>, String>,
+    job: Option<tokio::task::JoinHandle<()>>,
+    pending: Option<
+        tokio::sync::oneshot::Receiver<
+            Result<Vec<dim_agent_types::native_files::FileCandidate>, String>,
+        >,
+    >,
+}
+
+impl Remote {
+    pub fn new(target: std::sync::Arc<crate::devices::Target>, cwd: String) -> Self {
+        Self {
+            target,
+            cwd,
+            query: None,
+            result: Ok(Vec::new()),
+            job: None,
+            pending: None,
+        }
+    }
+
+    pub fn set_cwd(&mut self, cwd: &str) {
+        if self.cwd != cwd {
+            *self = Self::new(self.target.clone(), cwd.to_owned());
+        }
+    }
+
+    pub fn searching(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn changed(&mut self) -> bool {
+        let Some(rx) = &mut self.pending else {
+            return false;
+        };
+        self.result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+            Err(_) => Err("File search interrupted".into()),
+        };
+        self.pending = None;
+        true
+    }
+
+    pub fn candidates(&mut self, query: &str) -> Vec<Candidate> {
+        if self.query.as_deref() != Some(query) {
+            if let Some(job) = self.job.take() {
+                job.abort()
+            }
+            self.query = Some(query.to_owned());
+            self.result = Ok(Vec::new());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.pending = Some(rx);
+            let target = self.target.clone();
+            let request = dim_agent_types::native_files::Complete {
+                cwd: self.cwd.clone(),
+                query: query.into(),
+                limit: Some(RESULTS),
+            };
+            self.job = Some(self.target.runtime.spawn(async move {
+                let result = async {
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    crate::attachments::complete(&target.config, &target.instance, request).await
+                }
+                .await;
+                let _ = tx.send(result.map_err(|e| e.to_string()));
+            }));
+        }
+        self.result
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|c| Candidate {
+                text: c.insert_text.clone(),
+                path: c.absolute_path.clone().into(),
+                dir: c.dir,
+                target_image: Some(c.image),
+            })
+            .collect()
+    }
+}
+
+impl Drop for Remote {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.abort()
+        }
+    }
+}
+
 /// One file or directory the picker offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -123,6 +217,7 @@ pub struct Candidate {
     pub text: String,
     pub path: PathBuf,
     pub dir: bool,
+    pub target_image: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -413,6 +508,7 @@ impl Mentions {
                             text: format!("{prefix}{entry}{}", if dir_kind { "/" } else { "" }),
                             path: dir.join(&entry),
                             dir: dir_kind,
+                            target_image: None,
                         },
                     ))
                 })
@@ -480,6 +576,7 @@ impl Mentions {
                 text: format!("{}{}", entry.rel, if entry.dir { "/" } else { "" }),
                 path: root.join(&entry.rel),
                 dir: entry.dir,
+                target_image: None,
             })
             .collect();
         drop(found);

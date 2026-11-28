@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { connect } from 'node:net';
+import { rpc } from './tui-tmux/native-rpc.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -17,28 +17,6 @@ const cli = path.resolve(process.env.DIM_SHARING_TEST_CLI || path.join(debug, 'd
 const helper = path.join(path.dirname(cli), 'dim-sharing' + suffix);
 const fixture = path.join(debug, 'examples', 'sharing-shutdown-fixture' + suffix);
 const model = path.resolve(import.meta.dirname, '../crates/dim-agent-aimux/examples/offline.json');
-
-async function rpc(socket) {
-  const stream = connect(socket);
-  await once(stream, 'connect');
-  const lines = createInterface({ input: stream, crlfDelay: Infinity })[Symbol.asyncIterator]();
-  let id = 0;
-  async function receive(matches) {
-    for (;;) {
-      const { value, done } = await lines.next();
-      if (done) throw Error('App Server stream ended');
-      const reply = JSON.parse(value);
-      if (matches(reply)) return reply;
-    }
-  }
-  function call(method, params) {
-    const request = ++id;
-    stream.write(JSON.stringify({ jsonrpc: '2.0', id: request, method, params }) + '\n');
-    return receive(reply => reply.id === request);
-  }
-  const { result: hello } = await call('hello', { protocolVersion: 4, clientKind: 'cli', clientName: 'sharing-test' });
-  return { stream, call, hello, receive };
-}
 
 async function environment(t) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'dim-net-'));
@@ -68,7 +46,7 @@ async function environment(t) {
   return { temp, a, b, tmp, env, start, run };
 }
 
-test('a remembered shared link carries independent native streams, large frames and revocation', { skip: windows, timeout: 50_000 }, async (t) => {
+test('a remembered shared link carries independent native streams, large frames and revocation', { skip: windows, timeout: 90_000 }, async (t) => {
   const { temp, a, b, tmp, env, start, run } = await environment(t);
   for (const flag of ['--help', '--version']) {
     const local = await run([flag]);
@@ -83,6 +61,10 @@ test('a remembered shared link carries independent native streams, large frames 
   }
   await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
   await chmod(path.dirname(target), 0o700);
+  const staging = path.join(path.dirname(target), 'dimcode.sqlite.web-uploads');
+  const abandoned = path.join(staging, 'upload-abandoned');
+  await mkdir(abandoned, {recursive: true, mode: 0o700});
+  await writeFile(path.join(abandoned, 'upload'), 'partial upload');
   const disabled = await run(['--home', a, 'share', 'disable']);
   assert.equal(disabled.code, 0, disabled.err);
   assert.equal(JSON.parse(disabled.out).enabled, false);
@@ -167,6 +149,38 @@ test('a remembered shared link carries independent native streams, large frames 
   assert.deepEqual((await first.call('session.active', {})).result, []);
   const { result: session } = await direct.call('session.create', { cwd: temp });
   assert.equal((await first.call('session.attach', { sessionId: session.sessionId })).result.sessionId, session.sessionId);
+  const {sessionId} = session;
+  assert.ok(!(await readdir(staging)).includes('upload-abandoned'), 'startup cleaned a previous interrupted reception');
+  const complete = await second.call('workspace.files.complete', {cwd: folder, query: 'readme'});
+  assert.deepEqual(complete.result.candidates.map(({insertText, absolutePath, dir, image}) =>
+    [insertText, absolutePath, dir, image]), [['readme.txt', await realpath(file), false, false]]);
+  const upload = 'native.uploadSessionFile';
+  assert.ok(second.hello.features.includes(upload));
+  const bytes = Buffer.alloc(16 * 1024 * 1024);
+  for (let offset = 0; offset < bytes.length; offset++) bytes[offset] = offset % 251;
+  const header = {sessionId, name: '记录 1.bin', byteLength: bytes.length, image: false};
+  const refused = await rpc(proxy);
+  const tooLarge = await refused.call(upload, {...header, byteLength: bytes.length + 1});
+  assert.equal(tooLarge.error.data.appError, 'attachment_too_large');
+  refused.stream.destroy();
+  const short = await rpc(proxy);
+  const shortReady = short.receive(message => message.method === upload + '.ready');
+  short.stream.write(JSON.stringify({jsonrpc: '2.0', id: 2, method: upload, params: header}) + '\n');
+  await shortReady;
+  short.stream.end(bytes.subarray(0, 100));
+  short.stream.destroy();
+  const binary = await rpc(proxy);
+  const admitted = binary.receive(message => message.method === upload + '.ready');
+  binary.stream.write(JSON.stringify({jsonrpc: '2.0', id: 2, method: upload, params: header}) + '\n');
+  await admitted;
+  binary.stream.write(bytes.subarray(0, 17));
+  assert.equal((await second.call('session.active', {})).result[0].sessionId, sessionId);
+  binary.stream.write(bytes.subarray(17));
+  const receipt = await binary.receive(message => message.id === 2);
+  assert.ok(receipt.result, JSON.stringify(receipt.error));
+  assert.equal(receipt.result.bytes, bytes.length);
+  assert.deepEqual(await readFile(receipt.result.path), bytes);
+  binary.stream.destroy();
   const active = (await second.call('session.active', {})).result;
   assert.deepEqual(active.map(s => [s.sessionId, s.cwd, s.running]), [[session.sessionId, await realpath(temp), false]]);
   const notice = first.receive(message => message.method === 'session.event' && message.params.sessionId === session.sessionId);

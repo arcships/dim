@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import {rpc} from './native-rpc.mjs';
 
 const ANSWER = 'The fixture answer is deterministic.';
 
@@ -761,6 +762,121 @@ const scenarios = [
     },
   },
   {
+    name: 'remote_draft_uploads_local_bytes_and_mentions_target_files',
+    area: 'composer',
+    title: 'Both terminal layouts send dragged bytes and choose mentions on the selected computer',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const env = tui.environment({DIMCODE_SHARING_LISTEN: '127.0.0.1:0'});
+      const targetHome = path.join(tui.root, 'receiver');
+      const project = fs.realpathSync(path.join(tui.root, 'workspace'));
+      const name = 'notes.txt';
+      const source = path.join(tui.root, name);
+      fs.writeFileSync(source, 'keyboard-side notes');
+      fs.writeFileSync(path.join(project, name), 'workspace-side notes');
+      const server = (...args) => execFileSync(tui.binary, ['--home', targetHome, ...args],
+        {env, cwd: project, encoding: 'utf8', timeout: 20000});
+      const {addresses: [address], token} = JSON.parse(server('share', 'enable'));
+      try {
+        server('share', 'rename', 'ReviewOffice');
+        const owner = await rpc(path.join(targetHome, 'rust', 'daemon.sock'));
+        const providerId = '018ec73f-4d19-7f61-bc79-7130618bb455', modelId = 'fixture-model';
+        try {
+          const created = await owner.call('provider.create', {
+            providerId, displayName: 'Fixture', enabled: true,
+            connection: {driverKind: 'openai-compatible', auth: {type: 'anonymous'}, baseUrl: tui.model.url},
+            models: [modelId, 'fixture-text'].map(id => ({
+              modelId: id, displayName: id, status: 'active', capabilities: {
+                modalities: id === modelId ? ['text', 'image'] : ['text'], vision: id === modelId,
+                audio: false, toolCalling: true, streaming: true, structuredOutput: true, reasoning: false,
+                contextWindow: 128000, maxOutputTokens: 4096,
+              },
+            })),
+          });
+          assert.ok(created.result, JSON.stringify(created.error));
+          const selected = await owner.call('provider.select', {providerId,modelId});
+          assert.ok(selected.result, JSON.stringify(selected.error));
+        } finally {
+          owner.stream.destroy();
+        }
+        const localPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', targetPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC';
+        const photo = path.join(tui.root, 'photo.png');
+        fs.writeFileSync(photo, Buffer.from(localPng, 'base64'));
+        fs.writeFileSync(path.join(project, 'photo.png'), Buffer.from(targetPng, 'base64'));
+        const command = [tui.binary, '--home', tui.home, 'share', 'connect', address, '--'];
+        execFileSync(command[0], [...command.slice(1), 'mcp', 'list'], {input: token + '\n', env, cwd: project, timeout: 20000, stdio: ['pipe','pipe','pipe']});
+        for (const args of [[], ['--fullscreen']]) {
+          const terminal = await tui.launch([...args, '--cwd', project], {command, env, cols: 110, rows: 32, waitForComposer: true});
+          terminal.send('Compare ');
+          terminal.paste(source);
+          terminal.send(' to @notes');
+          await terminal.waitFor('@notes.txt');
+          terminal.key('Tab', 'Enter');
+          await terminal.waitFor(ANSWER);
+          const sent = lastTurnText(tui.model);
+          assert.ok(sent.includes('[@notes.txt](' + path.join(project, name) + ')'), sent);
+          const ref = /\[notes\.txt\]\(<?([^)>]+)>?\)/.exec(sent);
+          assert.ok(ref, sent);
+          assert.ok(ref[1].startsWith(fs.realpathSync(targetHome) + path.sep), ref[1]);
+          assert.equal(fs.readFileSync(ref[1], 'utf8'), 'keyboard-side notes');
+          const prompt = 'Compare pictures ' + (args.length ? 'fullscreen' : 'scrollback');
+          terminal.send(prompt + ' ');
+          terminal.paste(photo);
+          terminal.send(' and @photo');
+          await terminal.waitFor('@photo.png');
+          terminal.key('Tab', 'Enter');
+          const pictures = await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes(prompt) &&
+            (lastMessage(request).content ?? []).some?.(part => part.type === 'image_url'));
+          const urls = lastMessage(pictures.body).content.filter(part => part.type === 'image_url').map(part => part.image_url.url);
+          assert.deepEqual(urls, [localPng,targetPng].map(bytes => 'data:image/png;base64,' + bytes));
+          await terminal.waitFor(ANSWER);
+          await exitWith(terminal);
+        }
+        const line = await tui.launch(['--no-tui', '--cwd', project], {command, env, cols: 120, rows: 30});
+        await line.waitFor('Enter: send');
+        line.send('Line comparison ');
+        line.paste(source);
+        line.send(' and @photo');
+        await line.waitFor('* photo.png');
+        line.key('Tab', 'Enter');
+        const lineRequest = await waitForRequest(tui.model, request =>
+          request.tools?.length && userText(request).includes('Line comparison'));
+        const content = lastMessage(lineRequest.body).content;
+        assert.equal(content.find(part => part.type === 'image_url')?.image_url.url, 'data:image/png;base64,' + targetPng);
+        const uploaded = /\[notes\.txt\]\(<?([^)>]+)>?\)/.exec(content.filter(part => part.type === 'text').map(part => part.text).join(''));
+        assert.ok(uploaded);
+        assert.equal(fs.readFileSync(uploaded[1], 'utf8'), 'keyboard-side notes');
+        await line.waitFor('Enter: send');
+        line.send('/exit');
+        line.key('Enter');
+        assert.equal((await line.waitForExit()).status, 0);
+        await tui.runCommandAsync([...command.slice(1), '--cwd', project, 'exec', '-p', 'Inspect headless photo', '--image', photo], {env});
+        const headless = await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes('Inspect headless photo'));
+        assert.ok(userText(headless.body).includes(localPng));
+        const plain = await tui.launch(['--no-tui', '--cwd', project, '--provider', providerId, '--model', 'fixture-text'], {command, env});
+        await plain.waitFor('Enter: send');
+        plain.send('Text model file ');
+        plain.paste(photo);
+        plain.send(' and @photo');
+        await plain.waitFor('* photo.png');
+        plain.key('Tab', 'Enter');
+        const textOnly = await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes('Text model file'));
+        const text = userText(textOnly.body);
+        assert.ok(text.includes(path.join(project, 'photo.png')), text);
+        assert.ok(!text.includes('image_url'), text);
+        const storedPhoto = /\[photo\.png\]\(<?([^)>]+)>?\)/.exec(text);
+        assert.ok(storedPhoto, text);
+        assert.equal(fs.readFileSync(storedPhoto[1]).toString('base64'), localPng);
+        await plain.waitFor('Enter: send');
+        plain.send('/exit');
+        plain.key('Enter');
+        assert.equal((await plain.waitForExit()).status, 0);
+      } finally {
+        server('daemon', 'stop');
+      }
+    },
+  },
+  {
     name: 'file_mention_inserts_a_workspace_link',
     area: 'composer',
     title: 'The @ picker lists the workspace and inserts the chosen file into the draft',
@@ -939,9 +1055,12 @@ const scenarios = [
     area: 'commands',
     title: 'Switch targets from Home, pair once, browse the target and return in both layouts',
     async run(tui) {
-      let complete;
+      let complete, waitingFor;
+      const includesInput = (request, text) => request.tools?.length && request.messages.some(message =>
+        message.role === 'user' && typeof message.content === 'string' && message.content.includes(text));
       await tui.setup({respond: async request => {
-        if (request.tools?.length && userText(request).includes('keep working after switch')) {
+        if (waitingFor && includesInput(request, waitingFor)) {
+          waitingFor = undefined;
           await new Promise(resolve => { complete = resolve; });
           return {text: 'Remote work finished'};
         }
@@ -1054,8 +1173,11 @@ const scenarios = [
           await terminal.waitFor(topic);
           await terminal.waitFor('remote draft');
           assert.equal(turnRequests(tui.model).length, calls, 'reconnecting preserves unsent input');
-          await owner.sendPrompt('keep working after switch');
-          await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes('keep working after switch'));
+          const working = `keep working after switch ${index}`;
+          waitingFor = working;
+          await owner.sendPrompt(working);
+          await waitForRequest(tui.model, request => includesInput(request, working));
+          await terminal.waitFor(working);
           await devicesOverDraft();
           terminal.key('Home', 'Enter');
           await terminal.waitForAbsent('OfficeFixture:');

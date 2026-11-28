@@ -37,7 +37,7 @@ use tokio::sync::Notify;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 /// One file's limit: a put is one message, and storage holds it in memory.
-const MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// The `sessionFiles` service of one SessionStore generation.
 #[derive(Clone)]

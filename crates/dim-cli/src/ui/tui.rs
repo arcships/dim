@@ -404,6 +404,7 @@ fn run_terminal(
                     next.apply(update);
                 }
                 let mut old = std::mem::replace(&mut app, next);
+                old.retain_preparing_draft();
                 let saved = DeviceDraft {
                     line: old.snapshot.as_ref().map(|s| s.focus.clone()),
                     opening: old.line_draft.take(),
@@ -430,6 +431,8 @@ fn run_terminal(
                         *current = saved;
                     }
                 }
+                app.retained_uploads = std::mem::take(&mut old.retained_uploads);
+                app.restore_retained_upload();
                 old.host.shutdown();
                 app.host.send(Command::LoginStatus(DIM_OAUTH_ID.into()));
                 app.reflow_requested = true;
@@ -1289,6 +1292,8 @@ struct App {
     devices: Option<Devices>,
     target: Option<Arc<Target>>,
     local_return: Option<(String, Option<String>)>,
+    preparing_draft: Option<PreparingDraft>,
+    retained_uploads: HashMap<(String, String, String), Vec<DraftPart>>,
     host: Box<dyn SessionPort>,
     composer: Composer,
     cwd_key: String,
@@ -1667,6 +1672,13 @@ impl ForkAsk {
     }
 }
 
+struct PreparingDraft {
+    original: Vec<DraftPart>,
+    session: Origin,
+    line: String,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
 struct DeviceDraft {
     line: Option<String>,
     opening: Option<LineDraft>,
@@ -1806,15 +1818,18 @@ impl App {
         // the local `--cwd` (cli-attachment-input), which an attach does not
         // change; the border's workspace label is the Session's and does.
         let mut composer = Composer::new(past);
-        composer.set_root(remote.map_or_else(
-            || PathBuf::from(&cwd_key),
-            |target| target.keyboard_dir().to_owned(),
-        ));
+        if let Some(target) = remote {
+            composer.set_remote(target.clone(), cwd_key.clone());
+        } else {
+            composer.set_root(PathBuf::from(&cwd_key));
+        }
         let mut app = Self {
             devices: None,
             target,
             history_key,
             local_return: None,
+            preparing_draft: None,
+            retained_uploads: HashMap::new(),
             host,
             composer,
             workspace: String::new(),
@@ -2672,6 +2687,45 @@ impl App {
             .unwrap_or_default()
     }
 
+    fn retain_upload(&mut self, session: String, line: String, parts: Vec<DraftPart>) {
+        let device = self
+            .target
+            .as_ref()
+            .map(|t| t.id.clone())
+            .unwrap_or_default();
+        self.retained_uploads.insert((device, session, line), parts);
+    }
+
+    fn restore_retained_upload(&mut self) {
+        if self.retained_uploads.is_empty() {
+            return;
+        }
+        let key = (
+            self.target
+                .as_ref()
+                .map(|t| t.id.clone())
+                .unwrap_or_default(),
+            self.session_id.clone(),
+            self.target_line(),
+        );
+        if let Some(parts) = self.retained_uploads.remove(&key) {
+            self.composer.restore_draft(parts);
+        }
+    }
+
+    fn retain_preparing_draft(&mut self) {
+        if let Some(pending) = self.preparing_draft.take() {
+            pending.cancel.cancel();
+            if let Origin::Session(sid) = pending.session
+                && (sid != self.session_id || pending.line != self.target_line())
+            {
+                self.retain_upload(sid, pending.line, pending.original);
+            } else {
+                self.composer.restore_draft(pending.original);
+            }
+        }
+    }
+
     fn apply(&mut self, update: Update) {
         match update {
             Update::Withdrawn(input) => {
@@ -2807,6 +2861,7 @@ impl App {
                 }
                 self.runs.observe(&snapshot);
                 let previous = self.snapshot.replace(*snapshot);
+                self.restore_retained_upload();
                 self.follow_floors(previous.as_ref());
                 self.apply_earlier(previous.as_ref());
                 self.refresh_compactions();
@@ -3558,6 +3613,7 @@ impl App {
                     .remove(&(branch_id.clone(), request_id.clone()));
             }
             Update::Failed(message) => {
+                self.retain_preparing_draft();
                 if let Some(Prompt::Report(report)) = &mut self.prompt {
                     report.disconnected(&message);
                 }
@@ -3571,11 +3627,57 @@ impl App {
                     self.open_devices(false);
                 }
             }
+            Update::RemoteDraftPrepared {
+                session,
+                line,
+                mode,
+                parts,
+                error,
+            } => {
+                let Some(pending) = self.preparing_draft.take() else {
+                    return;
+                };
+                if self.target_session() != Origin::Session(session.clone())
+                    || self.target_line() != line
+                {
+                    self.retain_upload(session, line, parts);
+                    self.set_notice(
+                        "The session or line changed during upload; the draft was kept",
+                    );
+                } else if pending.cancel.is_cancelled() {
+                    self.composer.restore_draft(parts);
+                    self.set_notice("Attachment preparation cancelled; draft retained");
+                } else if let Some(message) = error {
+                    self.composer.restore_draft(parts);
+                    self.set_notice(format!("{message}; draft retained"));
+                } else {
+                    let text: String = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            DraftPart::Text(text) => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !text.trim().is_empty() {
+                        history::append(&self.home, &self.history_key, text.trim());
+                        self.composer.push_history(text.trim());
+                    }
+                    self.host.send(Command::SubmitDraft {
+                        preparation: None,
+                        session: Origin::Session(session),
+                        line,
+                        mode,
+                        parts,
+                    });
+                }
+            }
             Update::DraftNotSent { parts, message } => {
+                self.preparing_draft = None;
                 self.notices.push(message);
                 self.composer.restore_draft(parts);
             }
             Update::SubmitNotSent(message) => {
+                self.retain_preparing_draft();
                 self.notices.push(message);
                 self.restore_unsent();
             }
@@ -3590,7 +3692,9 @@ impl App {
                 // A first message the invocation supplied has no Session
                 // to take it: keep it in the draft and stay, rather than
                 // exiting nonzero with nothing sent.
-                if self.initial.is_some() || self.unsent.is_some() {
+                if self.initial.is_some() || self.unsent.is_some() || self.preparing_draft.is_some()
+                {
+                    self.retain_preparing_draft();
                     self.restore_unsent();
                 } else {
                     self.exit_code = Some(1);
@@ -3997,15 +4101,10 @@ impl App {
             ComposerOutcome::Submit(text) => {
                 vec![dim_agent_types::ContentBlock::Text { text }]
             }
-            ComposerOutcome::SubmitDraft { parts, .. } => parts
-                .into_iter()
-                .map(|part| match part {
-                    DraftPart::Text(text) | DraftPart::Paste(text) => {
-                        dim_agent_types::ContentBlock::Text { text }
-                    }
-                    DraftPart::Block(block) => block,
-                })
-                .collect(),
+            ComposerOutcome::SubmitDraft { parts, .. } => {
+                self.composer.restore_draft(parts);
+                return;
+            }
             _ => return,
         };
         self.composer
@@ -4026,6 +4125,16 @@ impl App {
         // cannot arrive here while a gesture settles. If one ever does, the
         // draft is put back rather than dropped: a refused submit must never
         // cost the operator their text or attachments.
+        if self.preparing_draft.is_some()
+            && matches!(
+                outcome,
+                ComposerOutcome::Submit(_) | ComposerOutcome::SubmitDraft { .. }
+            )
+        {
+            self.restore_outcome(outcome);
+            self.set_notice("Preparing the previous attachments; the draft was kept");
+            return Outcome::Continue;
+        }
         if self.send_now.is_some()
             && self.line_draft.is_none()
             && matches!(
@@ -4046,6 +4155,16 @@ impl App {
                 self.open_line(&text);
             }
             ComposerOutcome::SubmitDraft { text, parts } if self.line_draft.is_some() => {
+                if parts
+                    .iter()
+                    .any(|part| matches!(part, DraftPart::File { .. }))
+                {
+                    self.composer.restore_draft(parts);
+                    self.set_notice(t(
+                        "A line opens from text; images and files were not included",
+                    ));
+                    return Outcome::Continue;
+                }
                 if parts.iter().any(|part| matches!(part, DraftPart::Block(_))) {
                     self.set_notice(t(
                         "A line opens from text; images and files were not included",
@@ -4064,14 +4183,28 @@ impl App {
                 self.host.submit(text, mode, line, session);
             }
             ComposerOutcome::SubmitDraft { text, parts } => {
-                let text = text.trim().to_owned();
-                history::append(&self.home, &self.history_key, &text);
-                self.composer.push_history(&text);
+                if self.target.as_ref().is_some_and(|t| t.address.is_some())
+                    && parts.iter().any(DraftPart::needs_preparation)
+                {
+                    self.preparing_draft = Some(PreparingDraft {
+                        original: parts.clone(),
+                        cancel: tokio_util::sync::CancellationToken::new(),
+                        session: session.clone(),
+                        line: line.clone(),
+                    });
+                } else {
+                    history::append(&self.home, &self.history_key, text.trim());
+                    self.composer.push_history(text.trim());
+                }
                 self.jump = Some(Jump::Bottom);
                 if mode == SubmitMode::Queue && self.running() {
                     self.set_notice(t("Message queued"));
                 }
                 self.host.send(Command::SubmitDraft {
+                    preparation: self
+                        .preparing_draft
+                        .as_ref()
+                        .map(|pending| pending.cancel.clone()),
                     parts,
                     mode,
                     line,
@@ -4165,7 +4298,13 @@ impl App {
     /// as `[name]` tokens, except into a shell command.
     fn paste(&mut self, text: String) {
         self.dismiss_suggestion();
-        let base = std::path::Path::new(&self.cwd_key);
+        let base = self
+            .target
+            .as_ref()
+            .filter(|target| target.address.is_some())
+            .map_or(std::path::Path::new(&self.cwd_key), |target| {
+                target.keyboard_dir()
+            });
         let paths = match self.composer.shell() {
             Some(_) => None,
             None => crate::attachments::pasted_entries(&text, base),
@@ -4332,6 +4471,10 @@ impl App {
     /// session in fullscreen (where Esc interrupts), clears the draft, then
     /// warns, then exits — through the confirmation while busy.
     fn ctrl_c(&mut self) -> Outcome {
+        if let Some(pending) = &self.preparing_draft {
+            pending.cancel.cancel();
+            return Outcome::Continue;
+        }
         if self.shell.is_some() && !matches!(self.prompt, Some(Prompt::Ask(_))) {
             self.stop_shell();
             return Outcome::Continue;
@@ -6386,6 +6529,7 @@ impl App {
             let text = banner(
                 cols,
                 &self.palette,
+                &self.workspace,
                 self.branch.as_deref().unwrap_or(t("Not available")),
             );
             self.record(Block::Banner);
@@ -7932,6 +8076,7 @@ impl App {
     fn show_workspace(&mut self, cwd: Option<&str>) {
         let cwd = cwd.unwrap_or(&self.cwd_key);
         if self.target.as_ref().is_some_and(|t| t.address.is_some()) {
+            self.composer.set_remote_cwd(cwd);
             self.workspace = crate::sanitize::safe_line(cwd);
             self.git_head = None;
             self.branch = None;
@@ -8844,6 +8989,7 @@ impl App {
             Block::Banner => banner(
                 cols,
                 &self.palette,
+                &self.workspace,
                 self.branch.as_deref().unwrap_or(t("Not available")),
             ),
             Block::ToolGroup(group) if self.fullscreen => chunk(&render_group(
@@ -8912,6 +9058,9 @@ impl App {
             None => match &self.snapshot {
                 Some(s) if !s.questions.is_empty() => Some(t("answer required").to_owned()),
                 Some(s) if !s.approvals.is_empty() => Some(t("permission required").to_owned()),
+                _ if self.preparing_draft.is_some() => {
+                    Some("Preparing attachments · Ctrl+C to cancel".to_owned())
+                }
                 Some(s) if s.running => Some(t("esc interrupt").to_owned()),
                 _ => None,
             },
@@ -9685,12 +9834,8 @@ fn fullscreen_home(cols: usize, p: &Palette) -> Vec<String> {
     )
 }
 
-fn banner(cols: usize, p: &Palette, branch: &str) -> String {
+fn banner(cols: usize, p: &Palette, cwd: &str, branch: &str) -> String {
     let version = dim_agent_capabilities::build::current();
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| t("Not available").into());
-    let branch = branch.to_owned();
     let body_width = cols.saturating_sub(2 + MARGIN).max(4) - 4;
     let greeting = [
         tf(
@@ -9702,7 +9847,7 @@ fn banner(cols: usize, p: &Palette, branch: &str) -> String {
     let header = startup_header(&greeting, body_width);
     let mut info = vec![String::new()];
     info.extend(labeled_rows(
-        &[(t("Workspace"), &cwd), (t("Git branch"), &branch)],
+        &[(t("Workspace"), cwd), (t("Git branch"), branch)],
         body_width,
     ));
     let rows: Vec<String> = header.iter().chain(info.iter()).cloned().collect();
@@ -19566,7 +19711,7 @@ mod tests {
             session_id: None,
         };
         for cols in [120, 31, 30, 29, 24, 15] {
-            let welcome = banner(cols, &theme.palette, "main");
+            let welcome = banner(cols, &theme.palette, "/work", "main");
             let web = web_panel(cols, &theme.palette, &opened);
             for panel in [&welcome, &web] {
                 for row in panel.lines() {
@@ -21216,6 +21361,45 @@ mod tests {
             }],
         }));
         assert_eq!(app.composer.text(), "second");
+    }
+
+    #[test]
+    fn an_upload_finished_after_a_handoff_or_cancel_cannot_submit() {
+        for moved in [false, true] {
+            let (mut app, sent, _home) = session_with_queue(true, &[]);
+            app.session_id = "s1".into();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let original = vec![DraftPart::Text("original input".into())];
+            let line = app.target_line();
+            let session = if moved {
+                "previous session".to_owned()
+            } else {
+                cancel.cancel();
+                app.session_id.clone()
+            };
+            app.preparing_draft = Some(PreparingDraft {
+                original,
+                cancel,
+                session: Origin::Session(session.clone()),
+                line: line.clone(),
+            });
+            let committed = "confirmed file on the original target";
+            app.apply(Update::RemoteDraftPrepared {
+                session: session.clone(),
+                line,
+                mode: SubmitMode::Queue,
+                parts: vec![DraftPart::Text(committed.into())],
+                error: None,
+            });
+            assert!(sent.borrow().is_empty());
+            if moved {
+                assert!(app.composer.is_empty());
+                app.session_id = session;
+                let snapshot = app.snapshot.clone().unwrap();
+                app.apply(Update::Snapshot(Box::new(snapshot)));
+            }
+            assert_eq!(app.composer.text(), committed);
+        }
     }
 
     #[test]

@@ -28,6 +28,7 @@ enum Part {
         path: Option<String>,
     },
     File {
+        origin: Option<(PathBuf, bool)>,
         label: String,
         content: ContentBlock,
     },
@@ -222,7 +223,7 @@ impl Draft {
                     pastes += 1;
                     vec![(format!("[Paste {pastes}: {lines} lines]"), 1)]
                 }
-                Part::File { label, content } => {
+                Part::File { label, content, .. } => {
                     let text = match content {
                         ContentBlock::Image { .. } => {
                             images += 1;
@@ -304,6 +305,9 @@ impl Draft {
                     Part::File {
                         content: ContentBlock::Image { .. },
                         ..
+                    } | Part::File {
+                        origin: Some((_, true)),
+                        ..
                     }
                 )
             })
@@ -348,10 +352,12 @@ impl Draft {
                 .map_err(|error| format!("{}: {error}", truncate(&escaped(&planned.label), 24)))?;
             let part = match content {
                 images::Item::Image(image) => Part::File {
+                    origin: crate::sharing::proxy().map(|_| (planned.path, false)),
                     label: image_label(&planned.label, &image),
                     content: image.block(),
                 },
                 images::Item::Text(text) => Part::File {
+                    origin: crate::sharing::proxy().map(|_| (planned.path, false)),
                     label: planned.label,
                     content: ContentBlock::Text { text },
                 },
@@ -411,6 +417,7 @@ impl Draft {
                 }
                 let label = image_label("clipboard", &image);
                 self.insert(Part::File {
+                    origin: None,
                     label,
                     content: image.block(),
                 });
@@ -419,20 +426,51 @@ impl Draft {
         }
     }
 
-    fn completion(&self, base: &Path) -> Result<Option<Completion>> {
+    fn mention_query(&self) -> Option<(Range<usize>, String)> {
         let (index, offset) = self.locate(self.cursor);
         let Some(Part::Text(text)) = self.parts.get(index) else {
-            return Ok(None);
+            return None;
         };
-        let Some(start) = text[..offset]
+        let start = text[..offset]
             .rfind('@')
-            .filter(|&pos| pos == 0 || text[..pos].ends_with(char::is_whitespace))
-        else {
-            return Ok(None);
-        };
+            .filter(|&pos| pos == 0 || text[..pos].ends_with(char::is_whitespace))?;
         let query = &text[start + 1..offset];
         if query.contains(['\n', '\r']) {
-            return Ok(None);
+            return None;
+        }
+        Some((
+            self.cursor - (offset - start)..self.cursor,
+            query.to_owned(),
+        ))
+    }
+
+    async fn completion(
+        base: &Path,
+        range: Range<usize>,
+        query: String,
+        remote: Option<(&dim_client::ConnectionConfig, &str, &str)>,
+    ) -> Result<Completion> {
+        if let Some((config, instance, cwd)) = remote {
+            let request = dim_agent_types::native_files::Complete {
+                cwd: cwd.into(),
+                query,
+                limit: None,
+            };
+            let entries = crate::attachments::complete(config, instance, request)
+                .await?
+                .into_iter()
+                .map(|c| CompletionEntry {
+                    name: c.insert_text,
+                    path: c.absolute_path.into(),
+                    directory: c.dir,
+                    image: c.image,
+                })
+                .collect();
+            return Ok(Completion {
+                range,
+                entries,
+                selected: 0,
+            });
         }
         let boundary = query
             .rfind(std::path::is_separator)
@@ -452,25 +490,61 @@ impl Draft {
                     path,
                     name,
                     directory,
+                    image: false,
                 });
             }
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Some(Completion {
-            range: self.cursor - (offset - start)..self.cursor,
+        Ok(Completion {
+            range,
             entries,
             selected: 0,
-        }))
+        })
     }
 
     pub async fn prepare(
         &mut self,
         client: &mut Client,
         session: &str,
+        branch: &str,
         #[cfg(unix)] interrupts: &mut tokio::signal::unix::Signal,
         #[cfg(windows)] interrupts: &mut tokio::signal::windows::CtrlC,
         notice: &mut Option<String>,
     ) -> Result<Option<UserInput>> {
+        let remote = crate::sharing::proxy().is_some();
+        let accepts_images =
+            if remote && self.image_parts() > 0 && client.offers("session.model.get") {
+                let (_, configuration) =
+                    dim_client::configuration::adopted(client, session, branch, None).await?;
+                configuration
+                    .and_then(|config| config.capability_snapshot)
+                    .is_none_or(|snapshot| {
+                        snapshot.capabilities.vision
+                            || snapshot
+                                .capabilities
+                                .modalities
+                                .iter()
+                                .any(|m| m == "image")
+                    })
+            } else {
+                true
+            };
+        if !accepts_images
+            && self.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    Part::File {
+                        origin: None,
+                        content: ContentBlock::Image { .. },
+                        ..
+                    }
+                )
+            })
+        {
+            *notice =
+                Some("The current model does not accept clipboard images; draft retained".into());
+            return Ok(None);
+        }
         let mut pastes = 0;
         for part in &mut self.parts {
             let Part::Paste { text, path, .. } = part else {
@@ -531,16 +605,59 @@ impl Draft {
             }
         }
         for part in &mut self.parts {
-            let Part::File { content, .. } = part else {
+            let Part::File {
+                content,
+                label,
+                origin,
+            } = part
+            else {
                 continue;
             };
+            if let Some((path, target_image)) = origin {
+                if *target_image && !accepts_images {
+                    *origin = None;
+                    continue;
+                }
+                if !*target_image && accepts_images && matches!(content, ContentBlock::Image { .. })
+                {
+                    *origin = None;
+                } else {
+                    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or(label);
+                    let resolve = crate::attachments::resolve_file(
+                        client,
+                        session,
+                        path,
+                        name,
+                        *target_image,
+                    );
+                    let result = tokio::select! {
+                        _=interrupts.recv()=>{*notice=Some("Preparation cancelled; draft retained".into());return Ok(None)}
+                        result=resolve=>result
+                    };
+                    match result {
+                        Ok(block) => {
+                            *content = block;
+                            *origin = None;
+                        }
+                        Err(error) => {
+                            *notice = Some(format!("Attachment: {error}; draft retained"));
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
             if !matches!(
                 content,
                 ContentBlock::Image { source } if source.source_type == ImageSourceType::Base64
             ) {
                 continue;
             }
-            let import = crate::images::import(client, session, std::slice::from_mut(content));
+            let import = crate::images::import(
+                client,
+                session,
+                std::slice::from_mut(content),
+                crate::sharing::proxy().is_some(),
+            );
             tokio::pin!(import);
             let mut cancelled = false;
             let result = loop {
@@ -603,6 +720,7 @@ struct Completion {
 }
 
 struct CompletionEntry {
+    image: bool,
     path: PathBuf,
     name: String,
     directory: bool,
@@ -878,7 +996,11 @@ impl Screen {
                         "{} {}{}",
                         if index == value.selected { "*" } else { " " },
                         entry.name,
-                        if entry.directory { "/" } else { "" }
+                        if entry.directory && !entry.name.ends_with('/') {
+                            "/"
+                        } else {
+                            ""
+                        }
                     )),
                     size.0.saturating_sub(1),
                 ));
@@ -945,6 +1067,7 @@ pub async fn edit(
     draft: &mut Draft,
     mut notice: Option<String>,
     base: &Path,
+    remote: Option<(&dim_client::ConnectionConfig, &str, &str)>,
     #[cfg(unix)] interrupts: &mut tokio::signal::unix::Signal,
     #[cfg(windows)] interrupts: &mut tokio::signal::windows::CtrlC,
 ) -> Result<bool> {
@@ -952,6 +1075,9 @@ pub async fn edit(
     let mut screen = Screen::default();
     let mut decoder = Decoder::default();
     let mut completion = None;
+    let mut search: Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Completion>> + '_>>,
+    > = None;
     let mut dismissed = false;
     let mut clipboard_read: Option<
         std::pin::Pin<Box<dyn std::future::Future<Output = Result<Source>>>>,
@@ -967,6 +1093,7 @@ pub async fn edit(
                     return Ok(false);
                 }
                 draft.clear();
+                search = None;
                 clipboard_read = None;
                 decoder = Decoder::default();
                 notice = None;
@@ -975,8 +1102,18 @@ pub async fn edit(
                 screen.draw(draft, size, None, None)?;
                 continue;
             },
+            result = async {search.as_mut().expect("pending completion").await}, if search.is_some() => {
+                search = None;
+                match result {
+                    Ok(found) => completion = Some(found),
+                    Err(error) => notice = Some(error.to_string()),
+                }
+                screen.draw(draft, size, notice.as_deref(), completion.as_ref())?;
+                continue;
+            }
             source = async { clipboard_read.as_mut().expect("pending clipboard read").as_mut().await }, if clipboard_read.is_some() => {
                 clipboard_read = None;
+                search = None;
                 notice = match source {
                     Ok(source) => draft
                         .clipboard(source, base)
@@ -1026,30 +1163,52 @@ pub async fn edit(
                 }
                 (Key::Tab, Some(value)) => {
                     if let Some(entry) = value.entries.get(value.selected) {
-                        let result = if entry.directory {
-                            entry
-                                .path
-                                .trim_prefix(base)
-                                .to_str()
-                                .ok_or_else(|| "File paths must be UTF-8".into())
-                                .map(|path| {
-                                    draft.erase(value.range.start, value.range.end);
-                                    draft.insert(Part::Text(format!(
-                                        "@{path}{}",
-                                        std::path::MAIN_SEPARATOR
-                                    )));
-                                })
-                        } else {
-                            draft
-                                .files(std::slice::from_ref(&entry.path), value.range.clone())
-                                .await
-                        };
+                        let result =
+                            if remote.is_some() && entry.image && draft.image_parts() >= MAX_IMAGES
+                            {
+                                Err("A submission accepts at most 20 images".into())
+                            } else if remote.is_some() {
+                                draft.erase(value.range.start, value.range.end);
+                                if entry.directory {
+                                    draft.insert(Part::Text(format!("@{}", entry.name)))
+                                } else {
+                                    draft.insert(Part::File {
+                                        label: format!("@{}", entry.name),
+                                        origin: entry.image.then(|| (entry.path.clone(), true)),
+                                        content: ContentBlock::Text {
+                                            text: crate::attachments::file_link(
+                                                &format!("@{}", entry.name),
+                                                &entry.path,
+                                            ),
+                                        },
+                                    })
+                                }
+                                Ok(())
+                            } else if entry.directory {
+                                entry
+                                    .path
+                                    .trim_prefix(base)
+                                    .to_str()
+                                    .ok_or_else(|| "File paths must be UTF-8".into())
+                                    .map(|path| {
+                                        draft.erase(value.range.start, value.range.end);
+                                        draft.insert(Part::Text(format!(
+                                            "@{path}{}",
+                                            std::path::MAIN_SEPARATOR
+                                        )));
+                                    })
+                            } else {
+                                draft
+                                    .files(std::slice::from_ref(&entry.path), value.range.clone())
+                                    .await
+                            };
                         if let Err(error) = result {
                             notice = Some(error.to_string());
                         }
                     }
                 }
                 (Key::Escape, _) => {
+                    search = None;
                     completion = None;
                     dismissed = true;
                     continue;
@@ -1097,17 +1256,19 @@ pub async fn edit(
                 Key::End => draft.line_edge(true),
                 Key::Tab | Key::Escape => {}
             }
-            completion = if dismissed {
-                None
-            } else {
-                match draft.completion(base) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        notice = Some(error.to_string());
-                        None
+            search = None;
+            completion = None;
+            if !dismissed && let Some((range, query)) = draft.mention_query() {
+                let found = Draft::completion(base, range, query, remote);
+                if remote.is_some() {
+                    search = Some(Box::pin(found));
+                } else {
+                    match found.await {
+                        Ok(value) => completion = Some(value),
+                        Err(error) => notice = Some(error.to_string()),
                     }
                 }
-            };
+            }
         }
         if changed {
             size = input.size()?;
