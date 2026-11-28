@@ -2302,14 +2302,18 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
         starter.config().permission_policy.preset,
         dim_agent_types::PermissionPreset::FullAccess
     );
-    for (request, code) in [
+    // `sessionPermissions` answers its own `SessionsError` codes; the routed
+    // `sessions.call` answers its selection codes (#2127).
+    for (request, code, routed) in [
         (
             json!({"sessionId":"missing","branchId":"main"}),
             "session_closed",
+            "no_session",
         ),
         (
             json!({"sessionId":starter.id(),"branchId":"missing"}),
             "branch_missing",
+            "no_line",
         ),
     ] {
         let read = client.rpc("permissions.branch", request.clone()).await;
@@ -2324,7 +2328,7 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
         assert_ok(&legacy);
         let legacy: Value = serde_json::from_str(legacy["result"].as_str().unwrap()).unwrap();
         assert_eq!(legacy["ok"], false);
-        assert_eq!(legacy["error"]["code"], code);
+        assert_eq!(legacy["error"]["code"], routed, "{legacy}");
         assert_eq!(legacy["error"]["retryable"], false);
     }
     rules.hold.send_replace(true);
@@ -2444,8 +2448,11 @@ async fn node_input_settlement_outlives_reloads_and_a_resubmission_gets_its_rece
     let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
+                // `history` acquires its Session as the removed `idle` did, so
+                // it answers `session_closed` for a missing one until the index
+                // stops, and `reloading` from then on.
                 let probe = sessions
-                    .call("idle", json!({"sessionId":"missing","branchId":"main"}))
+                    .call("history", json!({"sessionId":"missing","branchId":"main"}))
                     .await;
                 if probe["error"]["code"] == "reloading" {
                     break;
@@ -2519,10 +2526,10 @@ async fn node_input_settlement_outlives_reloads_and_a_resubmission_gets_its_rece
     assert!(held.try_recv().is_err(), "resubmissions write nothing");
     assert_ne!(after["generation"], before["generation"]);
     assert_eq!(
-        after["cleanup"]["error"]["code"], "reloading",
+        after["cleanup"]["error"]["code"], "session_reloading",
         "a stopping row's late cleanup writes no input"
     );
-    assert_eq!(sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:late-row-call"})).await, json!({"status":"unknown"}));
+    assert_eq!(sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:late-row-call"})).await, Value::Null);
     let history = branch_events(&target, "main", ..).await.unwrap();
     for id in ["settlement:index:publication", "settlement:row:append"] {
         assert_eq!(history.iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some(id))).count(), 1);
@@ -2753,8 +2760,9 @@ async fn node_input_preparation_refuses_a_retired_row_before_handoff() {
     let reply = client.response(call).await;
     assert_ok(&reply);
     let reply: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
-    assert_eq!(reply["error"]["code"], "reloading", "{reply}");
-    assert_eq!(sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:retired-before-handoff"})).await, json!({"status":"unknown"}));
+    // The routed call answers a retired row with its transient selection code.
+    assert_eq!(reply["error"]["code"], "session_reloading", "{reply}");
+    assert_eq!(sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:retired-before-handoff"})).await, Value::Null);
     assert_ne!(
         settlement_status(&mut client).await["generation"],
         before["generation"]

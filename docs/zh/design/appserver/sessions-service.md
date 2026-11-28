@@ -652,16 +652,13 @@ pub struct LaunchRequest {
     pub starter: Option<SessionRef>,
 }
 pub struct LaunchReply { pub session_id: String, pub policy: PermissionPolicy }
-pub struct InputWrite {
-    pub session_id: String, pub branch_id: String,
-    pub mode: InputMode, pub submission_id: String,
-    pub raw_blocks: Vec<RawBlock>, pub content: Vec<ContentBlock>,
+/// 按 id 调用一个 Session 或其某条线的数据面（#2127）。
+pub struct CallRequest {
+    pub session_id: String,
+    pub line_id: Option<String>,   // 缺省：Session 自己的数据面
+    pub service: String, pub method: String,
+    pub args: Vec<serde_json::Value>,
 }
-pub struct RawBlock { pub text: String, pub key: Option<BlockKey> }
-pub struct BlockKey { pub r#use: KeyUse, pub name: String }   // KeyUse：Live | Retire
-pub struct InputReceipt { pub input_id: String, pub sequence: u64 }
-pub struct LookupRequest { pub session_id: String, pub branch_id: String, pub submission_id: String }
-pub enum LookupReply { Accepted { input_id: String, sequence: u64 }, Unknown }
 pub struct HistoryRequest {
     pub session_id: String, pub branch_id: String,
     pub after: Option<u64>, pub through: Option<u64>,
@@ -675,24 +672,23 @@ pub struct WithdrawRequest {
 pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
 pub struct PendingReply { pub pending: bool }
 pub struct DefaultBranchReply { pub default_branch_id: String }
-pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
-pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() 由错误码决定
+pub enum SessionsError { /* 每个错误码一个变体；call 的选择错误码与 Routed */ }  // retryable() 由错误码决定
 
 impl AgentIndex {
     pub async fn launch(self: &Arc<Self>, request: LaunchRequest) -> Result<LaunchReply, SessionsError>;
-    pub async fn input(&self, write: InputWrite) -> Result<InputReceipt, SessionsError>;
-    pub async fn lookup(&self, request: LookupRequest) -> Result<LookupReply, SessionsError>;
+    pub async fn exists(&self, request: SessionRequest) -> Result<ExistsReply, SessionsError>;
     pub async fn history(&self, request: HistoryRequest) -> Result<HistoryPage, SessionsError>;
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal 来自 S1
     /// 输入是否仍在该分支上待处理（§6.10）。
     pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
     /// 该 Session 的对话所在的那条线（§6.11）。
     pub async fn default_branch_id(&self, request: SessionRequest) -> Result<DefaultBranchReply, SessionsError>;
-    pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
-    pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
+    /// `sessions.call`：调用期间装载并持有该 Session，按 id 选中目标，执行目标在
+    /// catalog 中的操作；线上的输入、查找、停止与空闲就是经这里调用的 `timelineContext` 操作。
+    pub(crate) async fn call(&self, request: CallRequest) -> Result<Option<serde_json::Value>, RouteError>;
     /// S5c 的删除，作为 `sessions.delete {sessionId}` 提供（§6.8）。
     pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<()>;
 }
 ```
 
-请求类型以 camelCase 字段与 `deny_unknown_fields` 派生 `Deserialize`，回复类型派生 `Serialize`。具名服务把每个请求对象（A.1）解码成对应的请求类型，调用方法并编码信封；`withdraw`、`stop` 与 `idle` 的回复在那里编码为 `{status, sequence?}` 与 `{sequence}`。对 `delete`，它把 `{sessionId}` 解码为 Rpc 的 `protocol::SessionId`，按 `From<AgentError>` 映射 `AgentError`（§9），并回复 `{}`。上限是 `launch` 旁边一个作用于两个 `PermissionPolicy` 值的函数。每个方法的租约是 `acquire` 得到的私有 `SessionUse`。`input` 与 `lookup` 调用门面的 `Session::input` 与 `Session::lookup`，Rpc 的 `session.submit` 与 `session.input_lookup` 也调用它们。
+请求类型以 camelCase 字段与 `deny_unknown_fields` 派生 `Deserialize`，回复类型派生 `Serialize`。具名服务把每个请求对象（A.1）解码成对应的请求类型，调用方法并编码信封；`withdraw` 的回复在那里编码为 `{status, sequence?}`；`call` 回复目标操作的结果，或选择错误码（`no_session`、`session_closing`、`session_reloading`、`session_unavailable`、`no_line`、`no_service`、`not_data_face`、`method_not_routable`、`wrong_scope`），或带所有者失败的 `routed`。对 `delete`，它把 `{sessionId}` 解码为 Rpc 的 `protocol::SessionId`，按 `From<AgentError>` 映射 `AgentError`（§9），并回复 `{}`。上限是 `launch` 旁边一个作用于两个 `PermissionPolicy` 值的函数。每个方法的租约是 `acquire` 得到的私有 `SessionUse`。线的 `timelineContext.input` 与 `timelineContext.lookup` 由 `call` 调用，Rpc 的 `session.submit` 与 `session.input_lookup` 经持有者的线句柄调用同样的操作。

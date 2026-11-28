@@ -91,9 +91,19 @@ export default definePlugin({
             const text = `<dim-workflow kind="report" run_id="${run.run_id}">completed</dim-workflow>`
             const written = await sessions.call({ sessionId: target.sessionId, lineId: target.branchId,
               service: 'timelineContext', method: 'input',
-              args: [{ submission_id: submissionId, mode: 'steer', blocks: [{ type: 'raw', text }] }] })
-            const code = written.ok ? undefined : written.error.owner_code ?? written.error.code
-            const reply = written.ok ? written : { ok: false as const, error: { code: code!, retryable: written.error.retryable === true } }
+              args: [{ submission_id: submissionId, mode: 'steer', blocks: [{ type: 'raw', text }],
+                user: { content: [{ type: 'text', text }] } }] })
+            // The write answers its commit; the record must not outrun the
+            // store, so the report waits for the input's publication first.
+            let settled: typeof written | Awaited<ReturnType<typeof sessions.call>> = written
+            while (written.ok) {
+              const published = await sessions.call({ sessionId: target.sessionId, lineId: target.branchId,
+                service: 'timelineContext', method: 'waitPublished', args: [written.value.event.sequence] })
+              if (published.ok || published.error.retryable !== true) { settled = published.ok ? written : published; break }
+              await new Promise(resolve => setTimeout(resolve, 10))
+            }
+            const code = settled.ok ? undefined : settled.error.owner_code ?? settled.error.code
+            const reply = settled.ok ? settled : { ok: false as const, error: { code: code!, retryable: settled.error.retryable === true } }
             if (!reply.ok && reply.error.code === 'AmbiguousSubmission') {
               const delivered = await store(run => { run.report = { state: 'delivered' } })
               progress({ phase: 'duplicate_report_violation' })

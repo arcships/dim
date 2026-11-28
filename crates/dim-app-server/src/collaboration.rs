@@ -183,6 +183,11 @@ pub(crate) struct CollaborationDirectory {
     /// left. Feature `testing` only.
     #[cfg(feature = "testing")]
     resumed_stops: std::sync::atomic::AtomicUsize,
+    /// While set, a stop recorded at a reload unload is left to the next
+    /// generation instead of being tried by the one that recorded it, so a
+    /// test reaches the resume path deterministically. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    defer_stops: std::sync::atomic::AtomicBool,
 }
 
 /// One member stop to carry out: the input a request delivered, on the line it
@@ -299,6 +304,14 @@ impl Collaboration {
         self.directory
             .resumed_stops
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// Leaves the stops recorded from now on to the next generation. Feature
+    /// `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn defer_stops(&self) {
+        self.directory
+            .defer_stops
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     #[cfg(feature = "testing")]
     pub fn recorded_stops(&self) -> Vec<String> {
@@ -443,6 +456,14 @@ impl Collaboration {
             .lock()
             .unwrap()
             .insert(member.to_owned(), record);
+        #[cfg(feature = "testing")]
+        if self
+            .directory
+            .defer_stops
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
         let this = self.clone();
         let member = member.to_owned();
         self.tasks.spawn(async move {

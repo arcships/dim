@@ -962,16 +962,13 @@ pub struct LaunchRequest {
     pub starter: Option<SessionRef>,
 }
 pub struct LaunchReply { pub session_id: String, pub policy: PermissionPolicy }
-pub struct InputWrite {
-    pub session_id: String, pub branch_id: String,
-    pub mode: InputMode, pub submission_id: String,
-    pub raw_blocks: Vec<RawBlock>, pub content: Vec<ContentBlock>,
+/// A call by id to a data face of a Session, or of one of its lines (#2127).
+pub struct CallRequest {
+    pub session_id: String,
+    pub line_id: Option<String>,   // absent: the Session's own faces
+    pub service: String, pub method: String,
+    pub args: Vec<serde_json::Value>,
 }
-pub struct RawBlock { pub text: String, pub key: Option<BlockKey> }
-pub struct BlockKey { pub r#use: KeyUse, pub name: String }   // KeyUse: Live | Retire
-pub struct InputReceipt { pub input_id: String, pub sequence: u64 }
-pub struct LookupRequest { pub session_id: String, pub branch_id: String, pub submission_id: String }
-pub enum LookupReply { Accepted { input_id: String, sequence: u64 }, Unknown }
 pub struct HistoryRequest {
     pub session_id: String, pub branch_id: String,
     pub after: Option<u64>, pub through: Option<u64>,
@@ -985,21 +982,21 @@ pub struct WithdrawRequest {
 pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
 pub struct PendingReply { pub pending: bool }
 pub struct DefaultBranchReply { pub default_branch_id: String }
-pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
-pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() follows the code
+pub enum SessionsError { /* one variant per code; selection codes and Routed for call */ }  // retryable() follows the code
 
 impl AgentIndex {
     pub async fn launch(self: &Arc<Self>, request: LaunchRequest) -> Result<LaunchReply, SessionsError>;
-    pub async fn input(&self, write: InputWrite) -> Result<InputReceipt, SessionsError>;
-    pub async fn lookup(&self, request: LookupRequest) -> Result<LookupReply, SessionsError>;
+    pub async fn exists(&self, request: SessionRequest) -> Result<ExistsReply, SessionsError>;
     pub async fn history(&self, request: HistoryRequest) -> Result<HistoryPage, SessionsError>;
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal from S1
     /// Whether the input is still pending on the branch (§6.10).
     pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
     /// The line the Session's conversation is on (§6.11).
     pub async fn default_branch_id(&self, request: SessionRequest) -> Result<DefaultBranchReply, SessionsError>;
-    pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
-    pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
+    /// `sessions.call`: loads and holds the Session for the call, selects the
+    /// target by id, and runs the target's catalog operation; input, lookup,
+    /// stop and idle are the line's `timelineContext` operations reached here.
+    pub(crate) async fn call(&self, request: CallRequest) -> Result<Option<serde_json::Value>, RouteError>;
     /// S5c's delete, served as `sessions.delete {sessionId}` (§6.8).
     pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<()>;
 }
@@ -1007,9 +1004,9 @@ impl AgentIndex {
 
 Request types derive `Deserialize` with camelCase fields and `deny_unknown_fields`, and reply types derive `Serialize`.
 The named service decodes each request object (A.1) into its request type, calls the method and encodes the envelope;
-`withdraw`, `stop` and `idle` replies are encoded there as `{status, sequence?}` and `{sequence}`. For `delete` it
+the `withdraw` reply is encoded there as `{status, sequence?}`, and `call` answers the target operation's reply or its selection code (`no_session`, `session_closing`, `session_reloading`, `session_unavailable`, `no_line`, `no_service`, `not_data_face`, `method_not_routable`, `wrong_scope`) or `routed` with the owner's failure. For `delete` it
 decodes `{sessionId}` into Rpc's `protocol::SessionId`, maps the `AgentError` as `From<AgentError>` does (§9) and
 replies `{}`. The cap is a function
-of two `PermissionPolicy` values next to `launch`. Each method's lease is a private `SessionUse` from `acquire`. `input`
-and `lookup` call the facade's `Session::input` and `Session::lookup`, which Rpc's `session.submit` and
-`session.input_lookup` also call.
+of two `PermissionPolicy` values next to `launch`. Each method's lease is a private `SessionUse` from `acquire`. The line's
+`timelineContext.input` and `timelineContext.lookup` are reached through `call`, and Rpc's `session.submit` and
+`session.input_lookup` reach the same operations through the holder's line handle.

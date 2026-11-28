@@ -234,15 +234,15 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
 | Method | Mode | Request | Reply | Errors |
 | --- | --- | --- | --- | --- |
 | `launch` | async | `LaunchRequest` | `{sessionId, policy, worktree?}` | `rejected`, `agent_unknown`, `session_closed`, `branch_missing` (the starter), `branch_ended` (the starter), `reloading`, `failed` |
-| `input` | async | `InputWrite` | `{inputId, sequence}` | `rejected`, `ambiguous`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `publication_unknown`, `failed` |
-| `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`, `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
 | `exists` | async | `{sessionId}` | `{exists}` | `rejected`, `reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`, `future_sequence`, `session_closed`, `branch_missing`, `reloading` |
 | `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | [S2 §6.10](../appserver/sessions-service.md#610-pending) |
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `publication_unknown` |
-| `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
-| `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
 | `delete` | async | `{sessionId}` | `{}` | `rejected`, `reloading`, `failed` |
+| `defaultBranchId` | async | `{sessionId}` | `{defaultBranchId}` | `session_closed`, `reloading` |
+| `call` | async | `{sessionId, lineId?, service, method, args}` | the target operation's own reply | Selection: `no_session`, `session_closing`, `session_reloading` (retryable), `session_unavailable`, `no_line`, `no_service`, `not_data_face`, `method_not_routable`, `wrong_scope`. The target owner's failure: `routed`, with the owner's `name`, `message`, `owner_code` and `retryable` |
+
+Input, lookup, stop and idle on a line are that line's own operations, not `sessions` methods: `call` reaches them as `timelineContext.input`, `lookup`, `stop` and `idle` (§6). `call` selects the target by id at each call and holds no result of the selection ([ADR 027](../../adr/027-cross-scope-access-by-id.md), [#2127](https://github.com/arcships/dim/issues/2127)).
 
 ```text
 // LaunchRequest
@@ -252,16 +252,15 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
   "policy?": { /* PermissionPolicy data */ },  // narrowed request; absent: starter's or read-only default
   "starter?": { "sessionId": "string", "branchId": "string" }, // upper bound; absent: host configuration bound
   "worktree?": { /* managed worktrees §3 request */ } }
-// InputWrite
-{ "sessionId": "string", "branchId": "string",
-  "mode": "queue" | "steer" | "append",
-  "submissionId": "<source>:<uuid>",
-  "rawBlocks": [ RawBlock ],         // first block is the caller's marker (A.2)
-  "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] }
-// RawBlock
-{ "text": "string", "key?": { "use": "live" | "retire", "name": "string" } }
-// LookupReply
-{ "status": "accepted", "inputId": "string", "sequence": 0 } | { "status": "unknown" }
+// timelineContext.input argument: InputMessageData
+{ "mode": "queue" | "steer" | "append",
+  "submission_id?": "<source>:<uuid>",   // optional; not empty when present
+  "blocks": [ { "type": "raw", "text": "string", "key?": "string", "retire?": true } ],
+                                        // first block is the caller's marker (A.2)
+  "user?": { "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] } }
+// timelineContext.input reply: InputWrite
+{ "event": { /* the committed input/message event */ }, "written": true | false }
+// timelineContext.lookup(submissionId) reply: the published input/message event, or null
 // HistoryRequest
 { "sessionId": "string", "branchId": "string",
   "after?": 0,                        // exclusive lower bound; absent: from the start of the branch

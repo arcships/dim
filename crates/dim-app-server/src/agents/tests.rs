@@ -409,7 +409,9 @@ async fn a_failed_owner_read_fails_startup_and_cleans_up() {
 /// `restart("Agents")` keeps the per-Agent creation timeout and no overall
 /// deadline: a stored Agent whose creation times out is recorded
 /// unavailable, initialization continues, loaded Sessions stay loaded and
-/// the unavailable owner's Sessions keep their real error.
+/// the unavailable owner's Sessions keep their real error. A read on a
+/// Session that stays loaded is served by the directory while the next
+/// generation initializes ([#2227](https://github.com/arcships/dim/pull/2227)).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agents_restart_records_a_creation_timeout_and_keeps_loaded_sessions() {
     let stored = stored().await;
@@ -429,7 +431,7 @@ async fn agents_restart_records_a_creation_timeout_and_keeps_loaded_sessions() {
     let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
         let root = held.arrived().await;
         let reply = call(&root, "call", lookup(&stored.session)).await;
-        assert_eq!(reply["error"]["code"], "session_reloading", "{reply}");
+        assert_eq!(reply, stored.accepted, "a loaded Session answers its read");
     });
     restarted.unwrap();
     let index = server.root.get::<AgentIndex>().unwrap();

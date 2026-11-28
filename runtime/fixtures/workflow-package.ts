@@ -35,18 +35,26 @@ export default definePlugin({
         for await (const _ of socket) break
       } finally { phase = null; socket.destroy() }
     }
+    let steerWritten = false
     const observed: Sessions = {
       async launch(request) { await pause('before_launch'); return native.launch(request) },
       exists: request => native.exists(request),
       defaultBranchId: request => native.defaultBranchId(request),
       // A line's input is its own operation, reached through `call` (#2027):
       // the fixture pauses around the `timelineContext.input` calls.
+      // A write answers its commit and Workflow then waits for publication:
+      // the `reply_write` pause follows that wait, where the old write replied.
       async call(request: Parameters<Sessions['call']>[0]) {
-        const input = request.service === 'timelineContext' && request.method === 'input'
+        const line = request.service === 'timelineContext'
+        const input = line && request.method === 'input'
         const mode = input ? (request.args?.[0] as { mode?: string } | undefined)?.mode : undefined
         if (input) await pause(mode === 'steer' ? 'before_input' : 'stage_input')
-        const reply = await native.call(request as never)
-        if (input && mode === 'steer') await pause('reply_write')
+        const reply = await native.call(request as never) as { ok: boolean }
+        if (input && mode === 'steer' && reply.ok) steerWritten = true
+        if (line && request.method === 'waitPublished' && steerWritten && reply.ok) {
+          steerWritten = false
+          await pause('reply_write')
+        }
         return reply as never
       },
       async history(request) { await pause('stage_history'); return native.history(request) },

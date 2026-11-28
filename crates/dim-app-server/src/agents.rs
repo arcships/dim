@@ -397,6 +397,18 @@ pub(crate) struct AgentDirectory {
     server_instance_id: String,
 }
 impl AgentDirectory {
+    /// The router of a Session an Agent in this directory still holds loaded.
+    /// The directory outlives an `Agents` reload and so do its Sessions, so a
+    /// call that only reads or waits is served here while the next generation
+    /// of the index loads ([`changes_nothing`]).
+    pub(crate) fn routed_session(&self, id: &str) -> Option<dim_agent_runtime::RoutedSession> {
+        let inner = self.inner.lock().expect("agent index");
+        inner
+            .agents
+            .values()
+            .find_map(|entry| entry.host.agent.get_session(id).map(|_| entry.host.clone()))
+            .and_then(|host| host.agent.routed_session(id))
+    }
     /// Registration of a scope that finished apply. A first load completes
     /// the entry with the instance it created; a scope that applies again
     /// in an existing instance enters directly.
@@ -572,6 +584,49 @@ pub struct AgentIndex {
     #[cfg(feature = "testing")]
     close_hold: Arc<Mutex<Option<Arc<crate::CloseHold>>>>,
 }
+/// Whether a routed call only reads or waits: it changes nothing, so a caller
+/// may ask it again, and a Session that stays loaded across an Agents reload
+/// can serve it while the next generation loads ([#2227]).
+///
+/// [#2227]: https://github.com/arcships/dim/pull/2227
+pub(crate) fn changes_nothing(request: &crate::agents::sessions::CallRequest) -> bool {
+    matches!(
+        (request.service.as_str(), request.method.as_str()),
+        (
+            "timelineContext",
+            "waitPublished" | "waitDispatched" | "idle" | "lookup" | "state"
+        ) | ("timeline", _)
+    )
+}
+
+/// Runs a routed call on the Session scope it was selected in.
+pub(crate) async fn route_call(
+    scope: &dim_agent_runtime::SessionScope,
+    request: crate::agents::sessions::CallRequest,
+) -> std::result::Result<Option<serde_json::Value>, RouteError> {
+    match request.line_id {
+        Some(line_id) => {
+            scope
+                .line_call(dim_agent_runtime::LineCall::new(
+                    line_id,
+                    request.service,
+                    request.method,
+                    request.args,
+                ))
+                .await
+        }
+        None => {
+            scope
+                .call(dim_agent_runtime::SessionCall::new(
+                    request.service,
+                    request.method,
+                    request.args,
+                ))
+                .await
+        }
+    }
+}
+
 /// The holder's line `line` of `routed`, answered as the Session facade
 /// answered it: a line that has left the tree with a recorded ended head is
 /// `BranchEnded`, so the callers' ended-line paths serve its fixed head; one the
@@ -1087,12 +1142,16 @@ impl AgentIndex {
         if session.is_unloading() {
             return Err(AgentError::Storage("Session is unloading".into()));
         }
-        // A line the user ended — or one that is ending before the tree
-        // records its head — is served from the archive ([#2227]).
-        if session.ended_head(branch).is_some() || self.line(id, branch).is_err() {
+        // The line is selected once: a line the user ended, one that leaves
+        // the tree before the selection, and one that ends during the read are
+        // all served from the archive at the fixed cutoff ([#2227]).
+        let line = match session.ended_head(branch) {
+            Some(_) => None,
+            None => self.line(id, branch).ok(),
+        };
+        let Some(line) = line else {
             return ended_page(&session, branch, after, limit, through).await;
-        }
-        let line = self.line(id, branch)?;
+        };
         match session_history_page(&line, branch, after, limit, through).await {
             // The line ended between the check above and the read: the tree
             // serves it at its fixed head.
@@ -1903,9 +1962,15 @@ impl AgentIndex {
     /// A target that cannot be selected answers `NoSession`,
     /// `SessionClosing`, `SessionReloading`, `SessionUnavailable`, `NoLine` or
     /// `NoService` before the target's operation runs.
+    ///
+    /// A call from a runtime row carries that row's cancellation `row`: an
+    /// input from a row that retires while the Session is acquired writes
+    /// nothing and answers `SessionReloading`, as `sessions.input` refused a
+    /// retired row before its handoff (S2 §6.2).
     pub(crate) async fn call(
         &self,
         request: crate::agents::sessions::CallRequest,
+        row: Option<&tokio_util::sync::CancellationToken>,
     ) -> std::result::Result<Option<serde_json::Value>, RouteError> {
         let id = request.session_id.clone();
         // A replaced or stopping index is transient: the caller retries the
@@ -1930,6 +1995,18 @@ impl AgentIndex {
         if session.is_closing() {
             return Err(RouteError::SessionClosing(id));
         }
+        // The last admission check of a write before the target runs, with no
+        // await in between: an index that stopped or a calling row that retired
+        // while the Session was acquired writes nothing. Reads and waits are
+        // not refused, so a retiring row can still settle what it wrote.
+        let writes = request.service == "timelineContext"
+            && matches!(request.method.as_str(), "input" | "inputIfHead" | "inputs");
+        if writes
+            && (self.stopping.is_cancelled()
+                || row.is_some_and(tokio_util::sync::CancellationToken::is_cancelled))
+        {
+            return Err(RouteError::SessionReloading(id));
+        }
         // The router comes from the owning instance: the runtime hands out a
         // handle it alone can build, so a bare `Session` has no path to it.
         let Some(routed) = used.host.agent.routed_session(&id) else {
@@ -1945,27 +2022,9 @@ impl AgentIndex {
             });
         };
         let scope = routed.scope().clone();
-        match request.line_id {
-            Some(line_id) => {
-                scope
-                    .line_call(dim_agent_runtime::LineCall::new(
-                        line_id,
-                        request.service,
-                        request.method,
-                        request.args,
-                    ))
-                    .await
-            }
-            None => {
-                scope
-                    .call(dim_agent_runtime::SessionCall::new(
-                        request.service,
-                        request.method,
-                        request.args,
-                    ))
-                    .await
-            }
-        }
+        // An admitted call runs to its own outcome: the reload replaces the
+        // index, not the Session the call holds.
+        route_call(&scope, request).await
     }
     /// `session.delete` ([S5c §3.2](../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)):
     /// holds S's admission gate, so nothing loads or builds S meanwhile,

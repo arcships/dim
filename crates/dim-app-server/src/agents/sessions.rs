@@ -14,7 +14,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{AgentError, Publication};
 use dim_agent_types::{AgentEvent, InputWithdrawData, ModelId, ModelSelection, PermissionPolicy};
 use rutis::Ctx;
-use rutis_bridge::session::{HostDispatch, Reply, Value};
+use rutis_bridge::session::{HostDispatch, Reply, Value, caller_row};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{future::Future, sync::Arc, sync::atomic::Ordering};
@@ -697,17 +697,27 @@ impl HostDispatch for SessionsService {
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        // A routed call from a runtime row is admitted only while that row
+        // lives (S2 §6.2).
+        let row = (method == "call")
+            .then(caller_row)
+            .flatten()
+            .map(|caller| rutis::host::CtxHost::cancellation_token(caller.ctx()));
         let index = self.0.get::<AgentIndex>();
+        let directory = self.0.get::<crate::agents::AgentDirectory>();
         let method = method.to_owned();
         let args = args.json();
         let operation = async move {
             match (index, args) {
                 // A routed call to a Session whose index is being replaced is
                 // transient: the caller retries the Session it knows (#2127).
+                // A read or a wait on a Session that stays loaded across the
+                // reload is served by the directory meanwhile (#2227).
+                (None, Ok(args)) if method == "call" => held_read(&directory, args).await,
                 (None, _) if method == "call" => Err(index_reloading()),
                 (None, _) => Err(SessionsError::reloading("the Agents index")),
                 (_, Err(error)) => Err(SessionsError::rejected(error.to_string())),
-                (Some(index), Ok(args)) => call(&index, &method, args).await,
+                (Some(index), Ok(args)) => call(&index, &method, args, row.as_ref()).await,
             }
         };
         Ok(Value::future(async move {
@@ -717,6 +727,27 @@ impl HostDispatch for SessionsService {
             }
         }))
     }
+}
+
+/// A routed call while the Agents index is being replaced: a read or a wait on
+/// a Session the directory still holds loaded runs there; anything else, or a
+/// Session that is not loaded, answers the transient `session_reloading`.
+async fn held_read(
+    directory: &Option<Arc<crate::agents::AgentDirectory>>,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, SessionsError> {
+    let request: CallRequest = request(args)?;
+    let routed = directory
+        .as_ref()
+        .filter(|_| crate::agents::changes_nothing(&request))
+        .and_then(|directory| directory.routed_session(&request.session_id));
+    let Some(routed) = routed else {
+        return Err(index_reloading());
+    };
+    crate::agents::route_call(routed.scope(), request)
+        .await
+        .map_err(routed_error)
+        .map(call_reply)
 }
 
 /// What a routed call answers while the Agents index is being replaced: the
@@ -730,7 +761,7 @@ fn index_reloading() -> SessionsError {
 
 /// The routing answer as this face reports it: its own kind for a target that
 /// could not be selected, and the owner's failure as the owner wrote it.
-fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
+fn routed_error(error: dim_agent_runtime::RouteError) -> SessionsError {
     use dim_agent_runtime::RouteError;
     let message = error.to_string();
     match error {
@@ -794,10 +825,23 @@ fn reply(value: impl Serialize) -> Result<serde_json::Value, SessionsError> {
     Ok(serde_json::to_value(value).expect("sessions replies are JSON data"))
 }
 
+/// A routed call's success envelope. A method that answers nothing leaves
+/// `value` out: a caller reads absent as `undefined`, while `null` stays the
+/// owner's reply.
+fn call_reply(value: Option<serde_json::Value>) -> serde_json::Value {
+    let mut reply = serde_json::Map::new();
+    reply.insert("ok".into(), serde_json::Value::Bool(true));
+    if let Some(value) = value {
+        reply.insert("value".into(), value);
+    }
+    serde_json::Value::Object(reply)
+}
+
 async fn call(
     index: &Arc<AgentIndex>,
     method: &str,
     args: serde_json::Value,
+    row: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<serde_json::Value, SessionsError> {
     match method {
         "launch" => reply(index.launch(request(args)?).await?),
@@ -815,19 +859,10 @@ async fn call(
             reply(json!({}))
         }
         "call" => index
-            .call(request(args)?)
+            .call(request(args)?, row)
             .await
-            .map_err(routed)
-            .map(|value| {
-                let mut reply = serde_json::Map::new();
-                reply.insert("ok".into(), serde_json::Value::Bool(true));
-                // A method that answers nothing leaves `value` out: a caller reads
-                // absent as `undefined`, while `null` stays the owner's reply.
-                if let Some(value) = value {
-                    reply.insert("value".into(), value);
-                }
-                serde_json::Value::Object(reply)
-            }),
+            .map_err(routed_error)
+            .map(call_reply),
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"
         ))),

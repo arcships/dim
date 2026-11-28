@@ -612,9 +612,23 @@ impl BranchRuntime {
     /// Waits until dispatch has consumed through `through`. Loop and every
     /// consumer reload as a restart, so a dispatcher that is merely replaced
     /// keeps this waiting; a dispatcher that failed answers its failure.
+    ///
+    /// A line that starts closing keeps dispatching through its close drain,
+    /// so the wait goes on while it closes: it succeeds once the drain reaches
+    /// `through`, and fails terminally only once the close has finished short
+    /// of it, so it never holds the close open ([ADR 027][027], [rule 8]).
+    ///
+    /// [027]: ../../../docs/adr/027-cross-scope-access-by-id.md
+    /// [rule 8]: ../../../docs/architecture/rust-agent/principles.md
     pub(crate) async fn wait_dispatched(&self, through: u64) -> Result<()> {
         let mut dispatch = self.dispatcher.watch();
-        let mut state = self.watch();
+        let mut closed = self.close.wait();
+        let short = || {
+            self.dispatcher
+                .failure()
+                .or_else(|| self.timeline.failure())
+                .unwrap_or_else(|| AgentError::Closed(self.id.clone()))
+        };
         loop {
             if let Some(error) = self.dispatcher.failure() {
                 return Err(error);
@@ -622,31 +636,22 @@ impl BranchRuntime {
             if self.dispatcher.sequence() >= through {
                 return Ok(());
             }
-            // A line that ended answers here instead of holding its close
-            // open: dispatch reaching the asked sequence is the wait, and one
-            // that did not is a terminal failure ([ADR 027][027], [rule 8]).
-            //
-            // [027]: ../../../docs/adr/027-cross-scope-access-by-id.md
-            // [rule 8]: ../../../docs/architecture/rust-agent/principles.md
-            if self.close.started() || self.is_closing() {
-                return match self.dispatcher.sequence() >= through {
-                    true => Ok(()),
-                    false => Err(self
-                        .dispatcher
-                        .failure()
-                        .or_else(|| self.timeline.failure())
-                        .unwrap_or_else(|| AgentError::Closed(self.id.clone()))),
-                };
+            if self.close.finished() {
+                return Err(short());
             }
             tokio::select! {
                 result = dispatch.changed() => {
-                    result.map_err(|_| AgentError::Closed(self.id.clone()))?;
+                    if result.is_err() {
+                        // The dispatcher went with the line: what it reached is
+                        // the answer.
+                        return match self.dispatcher.sequence() >= through {
+                            true => Ok(()),
+                            false => Err(short()),
+                        };
+                    }
                 }
-                result = state.changed() => {
-                    // The status changed: the loop re-reads it, which settles a
-                    // line that started closing.
-                    let _ = result;
-                }
+                // The close finished: the loop reads what dispatch reached.
+                _ = &mut closed => {}
             }
         }
     }

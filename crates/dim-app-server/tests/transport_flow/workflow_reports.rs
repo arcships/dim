@@ -125,7 +125,10 @@ async fn node_workflow_report_crash_recovery_resubmits_and_gets_the_first_input(
             json!({"sessionId":target.id(),"branchId":"main","submissionId":"workflow:report:binding-report"}),
         )
         .await;
-    assert_eq!(lookup["status"], "accepted");
+    assert!(
+        lookup["id"].is_string(),
+        "the line holds the report's input: {lookup}"
+    );
     loader.restart("workflow-report").await.unwrap();
     ready(&mut client).await;
     assert_ok(&client.rpc("report.recover", json!({})).await);

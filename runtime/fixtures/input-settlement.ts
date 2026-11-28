@@ -2,8 +2,24 @@ import { definePlugin } from '@arcships/rutis'
 import type { InputMessageData } from '../../npm/branch-services.js'
 import type { ManagementMethods, MethodReply, Sessions } from '../../npm/plugin.js'
 
-/** One input the fixture writes: the line it targets, and the write itself. */
-type Write = InputMessageData & { sessionId: string; branchId: string }
+/** One input the fixture writes, as the tests send it: the line it targets,
+ * and the write in the request shape the tests build. */
+type Write = {
+  sessionId: string; branchId: string; submissionId: string; mode: InputMessageData['mode'];
+  rawBlocks?: { text: string; key?: { use: 'live' | 'retire'; name: string } }[];
+  content?: unknown[]
+}
+
+/** The line's input operation takes `InputMessageData`: the routing fields go
+ * to `sessions.call`, and the write becomes the face's own shape. */
+const message = (write: Write): InputMessageData => ({
+  submission_id: write.submissionId,
+  mode: write.mode,
+  blocks: (write.rawBlocks ?? []).map(block => block.key
+    ? { type: 'raw', text: block.text, key: block.key.name, retire: block.key.use === 'retire' }
+    : { type: 'raw', text: block.text }),
+  ...(write.content && write.content.length > 0 ? { user: { content: write.content } } : {}),
+} as InputMessageData)
 
 let generation = 0
 let cleanup: unknown = null
@@ -21,7 +37,7 @@ export default definePlugin({
     // retrying while the answer says it may.
     const settle = async (request: Write) => {
       const written = await sessions.call({ sessionId: request.sessionId, lineId: request.branchId,
-        service: 'timelineContext', method: 'input', args: [request] })
+        service: 'timelineContext', method: 'input', args: [message(request)] })
       if (!written.ok) return written
       const event = written.value.event
       for (;;) {

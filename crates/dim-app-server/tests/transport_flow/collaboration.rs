@@ -7842,6 +7842,10 @@ async fn a_stop_issued_before_a_reload_still_ends_the_member_turn() {
         .service::<dim_app_server::collaboration::Collaboration>()
         .expect("the process serves Collaboration");
     let before = collaboration.resumed_stops();
+    // The reloading generation could deliver the stop itself, since a loaded
+    // member is readable while Agents reloads; the test leaves it to the next
+    // generation so the resume path is the one exercised.
+    collaboration.defer_stops();
     server.restart("Agents").await.unwrap();
     poll("the failed request's result", async || {
         result_of(&events(&lead_session).await, &member)

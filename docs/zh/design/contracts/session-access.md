@@ -231,15 +231,15 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | 方法 | 模式 | 请求 | 回复 | 错误 |
 | --- | --- | --- | --- | --- |
 | `launch` | async | `LaunchRequest` | `{sessionId, policy, worktree?}` | `rejected`、`agent_unknown`、`session_closed`、`branch_missing`（启动方）、`branch_ended`（启动方）、`reloading`、`failed` |
-| `input` | async | `InputWrite` | `{inputId, sequence}` | `rejected`、`ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown`、`failed` |
-| `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `exists` | async | `{sessionId}` | `{exists}` | `rejected`、`reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |
 | `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | [S2 §6.10](../appserver/sessions-service.md#610-pending) |
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown` |
-| `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
-| `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `delete` | async | `{sessionId}` | `{}` | `rejected`、`reloading`、`failed` |
+| `defaultBranchId` | async | `{sessionId}` | `{defaultBranchId}` | `session_closed`、`reloading` |
+| `call` | async | `{sessionId, lineId?, service, method, args}` | 目标操作自己的回复 | 选不中：`no_session`、`session_closing`、`session_reloading`（可重试）、`session_unavailable`、`no_line`、`no_service`、`not_data_face`、`method_not_routable`、`wrong_scope`。目标所有者自己的失败：`routed`，带所有者的 `name`、`message`、`owner_code` 与 `retryable` |
+
+线上的输入、查找、停止与空闲是该线自己的操作，不是 `sessions` 的方法：`call` 以 `timelineContext.input`、`lookup`、`stop`、`idle` 调用它们（§6）。`call` 每次调用时按 id 选目标，不保存选择结果（[ADR 027](../../../adr/027-cross-scope-access-by-id.md)、[#2127](https://github.com/arcships/dim/issues/2127)）。
 
 ```text
 // LaunchRequest
@@ -249,16 +249,15 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
   "policy?": { /* PermissionPolicy 数据 */ },  // 收窄后的请求；缺省：启动方策略或只读默认值
   "starter?": { "sessionId": "string", "branchId": "string" }, // 上限；缺省：以宿主配置为界
   "worktree?": { /* 托管 worktree §3 的请求 */ } }
-// InputWrite
-{ "sessionId": "string", "branchId": "string",
-  "mode": "queue" | "steer" | "append",
-  "submissionId": "<source>:<uuid>",
-  "rawBlocks": [ RawBlock ],         // 第一个块是调用方的标记（A.2）
-  "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] }
-// RawBlock
-{ "text": "string", "key?": { "use": "live" | "retire", "name": "string" } }
-// LookupReply
-{ "status": "accepted", "inputId": "string", "sequence": 0 } | { "status": "unknown" }
+// timelineContext.input 的参数：InputMessageData
+{ "mode": "queue" | "steer" | "append",
+  "submission_id?": "<source>:<uuid>",   // 可省略；给出时不能为空
+  "blocks": [ { "type": "raw", "text": "string", "key?": "string", "retire?": true } ],
+                                        // 第一个块是调用方的标记（A.2）
+  "user?": { "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] } }
+// timelineContext.input 的回复：InputWrite
+{ "event": { /* 已提交的 input/message 事件 */ }, "written": true | false }
+// timelineContext.lookup(submissionId) 的回复：已发布的 input/message 事件，或 null
 // HistoryRequest
 { "sessionId": "string", "branchId": "string",
   "after?": 0,                        // 不含的下界；缺省：从分支开头
