@@ -5,6 +5,7 @@ use crate::{
     clipboard::{self, Source},
     images,
     input::Input,
+    ui::i18n::{t, tf},
 };
 use dim_agent_types::{ContentBlock, ImageSourceType, UserInput};
 use serde::Deserialize;
@@ -53,12 +54,14 @@ struct PlannedFile {
 
 #[derive(Default)]
 pub struct Draft {
+    pub pending: Option<(crate::model::session::submission::SubmissionKey, UserInput)>,
     parts: Vec<Part>,
     cursor: usize,
 }
 
 impl Draft {
     pub fn clear(&mut self) {
+        self.pending = None;
         self.parts.clear();
         self.cursor = 0;
     }
@@ -68,6 +71,10 @@ impl Draft {
             [Part::Text(text)] if !text.contains(['\r', '\n']) => Some(text),
             _ => None,
         }
+    }
+
+    pub fn has_attachments(&self) -> bool {
+        self.parts.iter().any(|part| !matches!(part, Part::Text(_)))
     }
 
     pub fn command(&self) -> Option<&str> {
@@ -514,8 +521,17 @@ impl Draft {
         let remote = crate::sharing::proxy().is_some();
         let accepts_images =
             if remote && self.image_parts() > 0 && client.offers("session.model.get") {
-                let (_, configuration) =
-                    dim_client::configuration::adopted(client, session, branch, None).await?;
+                let configuration =
+                    match dim_client::configuration::adopted(client, session, branch, None).await {
+                        Ok((_, configuration)) => configuration,
+                        Err(error) => {
+                            *notice = Some(tf(
+                                "{reason}; draft retained",
+                                &[("reason", &error.to_string())],
+                            ));
+                            return Ok(None);
+                        }
+                    };
                 configuration
                     .and_then(|config| config.capability_snapshot)
                     .is_none_or(|snapshot| {
@@ -541,8 +557,9 @@ impl Draft {
                 )
             })
         {
-            *notice =
-                Some("The current model does not accept clipboard images; draft retained".into());
+            *notice = Some(
+                t("The current model does not accept clipboard images; draft retained").into(),
+            );
             return Ok(None);
         }
         let mut pastes = 0;
@@ -557,7 +574,7 @@ impl Draft {
             tokio::select! {
                 biased;
                 _ = interrupts.recv() => {
-                    *notice = Some("Preparation cancelled; draft retained".into());
+                    *notice = Some(tf("{reason}; draft retained", &[("reason", t("Attachment preparation cancelled"))]));
                     return Ok(None);
                 },
                 _ = std::future::ready(()) => {}
@@ -600,7 +617,10 @@ impl Draft {
                 Err(error) => return Err(error),
             };
             if cancelled {
-                *notice = Some("Preparation cancelled; draft retained".into());
+                *notice = Some(tf(
+                    "{reason}; draft retained",
+                    &[("reason", t("Attachment preparation cancelled"))],
+                ));
                 return Ok(None);
             }
         }
@@ -631,7 +651,7 @@ impl Draft {
                         *target_image,
                     );
                     let result = tokio::select! {
-                        _=interrupts.recv()=>{*notice=Some("Preparation cancelled; draft retained".into());return Ok(None)}
+                        _=interrupts.recv()=>{*notice=Some(tf("{reason}; draft retained", &[("reason", t("Attachment preparation cancelled"))]));return Ok(None)}
                         result=resolve=>result
                     };
                     match result {
@@ -640,7 +660,10 @@ impl Draft {
                             *origin = None;
                         }
                         Err(error) => {
-                            *notice = Some(format!("Attachment: {error}; draft retained"));
+                            *notice = Some(tf(
+                                "{reason}; draft retained",
+                                &[("reason", t(&error.to_string()))],
+                            ));
                             return Ok(None);
                         }
                     }
@@ -667,11 +690,17 @@ impl Draft {
                 }
             };
             if let Err(error) = result {
-                *notice = Some(format!("Image import failed: {error}; draft retained"));
+                *notice = Some(tf(
+                    "{reason}; draft retained",
+                    &[("reason", t(&error.to_string()))],
+                ));
                 return Ok(None);
             }
             if cancelled {
-                *notice = Some("Preparation cancelled; draft retained".into());
+                *notice = Some(tf(
+                    "{reason}; draft retained",
+                    &[("reason", t("Attachment preparation cancelled"))],
+                ));
                 return Ok(None);
             }
         }
@@ -704,7 +733,7 @@ impl Draft {
         tokio::select! {
             biased;
             _ = interrupts.recv() => {
-                *notice = Some("Preparation cancelled; draft retained".into());
+                *notice = Some(tf("{reason}; draft retained", &[("reason", t("Attachment preparation cancelled"))]));
                 return Ok(None);
             },
             _ = std::future::ready(()) => {}
@@ -1078,6 +1107,7 @@ pub async fn edit(
     let mut search: Option<
         std::pin::Pin<Box<dyn std::future::Future<Output = Result<Completion>> + '_>>,
     > = None;
+    let mut current_query = None;
     let mut dismissed = false;
     let mut clipboard_read: Option<
         std::pin::Pin<Box<dyn std::future::Future<Output = Result<Source>>>>,
@@ -1089,10 +1119,12 @@ pub async fn edit(
     loop {
         let bytes = tokio::select! {
             _ = interrupts.recv() => {
+                if draft.pending.is_some() { return Ok(false); }
                 if draft.parts.is_empty() && decoder.paste.is_none() {
                     return Ok(false);
                 }
                 draft.clear();
+                current_query = None;
                 search = None;
                 clipboard_read = None;
                 decoder = Decoder::default();
@@ -1106,13 +1138,14 @@ pub async fn edit(
                 search = None;
                 match result {
                     Ok(found) => completion = Some(found),
-                    Err(error) => notice = Some(error.to_string()),
+                    Err(error) => notice = Some(t(&error.to_string()).to_owned()),
                 }
                 screen.draw(draft, size, notice.as_deref(), completion.as_ref())?;
                 continue;
             }
             source = async { clipboard_read.as_mut().expect("pending clipboard read").as_mut().await }, if clipboard_read.is_some() => {
                 clipboard_read = None;
+                current_query = None;
                 search = None;
                 notice = match source {
                     Ok(source) => draft
@@ -1149,6 +1182,13 @@ pub async fn edit(
         decoder.bytes.extend(bytes);
         while let Some(key) = decoder.next() {
             changed = true;
+            if draft.pending.is_some() {
+                match key {
+                    Key::Enter => return Ok(true),
+                    Key::Interrupt | Key::Eof => return Ok(false),
+                    _ => continue,
+                }
+            }
             notice = None;
             match (&key, &mut completion) {
                 (Key::Up | Key::Down, Some(value)) => {
@@ -1208,6 +1248,7 @@ pub async fn edit(
                     }
                 }
                 (Key::Escape, _) => {
+                    current_query = None;
                     search = None;
                     completion = None;
                     dismissed = true;
@@ -1256,16 +1297,21 @@ pub async fn edit(
                 Key::End => draft.line_edge(true),
                 Key::Tab | Key::Escape => {}
             }
+            let query = (!dismissed).then(|| draft.mention_query()).flatten();
+            if remote.is_some() && query == current_query {
+                continue;
+            }
+            current_query = query.clone();
             search = None;
             completion = None;
-            if !dismissed && let Some((range, query)) = draft.mention_query() {
+            if let Some((range, query)) = query {
                 let found = Draft::completion(base, range, query, remote);
                 if remote.is_some() {
                     search = Some(Box::pin(found));
                 } else {
                     match found.await {
                         Ok(value) => completion = Some(value),
-                        Err(error) => notice = Some(error.to_string()),
+                        Err(error) => notice = Some(t(&error.to_string()).to_owned()),
                     }
                 }
             }

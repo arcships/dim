@@ -65,9 +65,11 @@ B 为存储文件生成安全名称 `attachment`，并保留不超过 16 位的 
 
 暂存使用 B 的私有目录、按接收实例管理并清扫。Web 和原生入口可共享现有暂存与导入实现；两个入口同时启用时由一个所有者持有目录锁和并发预算。文件提交后的唯一持久归属在 SessionStore。没有每块 RPC、上传 ID 或断点续传表。
 
+附件准备完成后，终端保留原设备、Session、会话线、已确认附件与本次提交 ID，直到收到消息回执。明确拒绝时，草稿在原会话线恢复。若回执丢失，TUI 在原会话线的空输入框提示按 Enter 核对，行模式在保留的草稿上提供相同操作。终端用 `session.input_lookup` 查询原提交：已接收就结束等待，查无记录才用原 ID 和原内容重试；查询失败则继续保留。[会话输入的幂等约定](../appserver/sessions-service.md#63-lookup)
+
 ## 工作区引用与启动目录
 
-`workspace.files.complete({cwd, query, limit?})` 是私有原生入口的只读管理方法，返回 `{candidates:[{insertText, absolutePath, dir, image}]}`。`cwd` 是界面当前已从 B 确认的工作区，恢复会话时使用该会话自己的目录。普通项目查询调用现有 `MentionIndex.search`。当根是 B 的 home、文件系统根，或输入为 `~/`、绝对路径、含 `../` 的前缀时，B 只枚举用户正在输入的那一级，沿用原生补全的隐藏项、排序与数量规则。`insertText` 是 `@` 后面可继续编辑的拼写，例如 `~/work/`；`absolutePath` 是 B 上选中的位置。B 同时用文件扩展名与文件头判断候选是否为图片，A 使用返回的 `image` 标志。根目录与 home 的判断也在 B。已有 `workspace.files.search` 和 `session.files.search` 保留各自的索引查询契约，`/devices` 新建会话继续使用只列可见目录的 `workspace.files.directories`。旧目标未声明补全方法时提示可以直接键入目标路径。
+`workspace.files.complete({cwd, query, limit?})` 是私有原生入口的只读管理方法，返回 `{candidates:[{insertText, absolutePath, dir, image}]}`。`cwd` 是界面当前已从 B 确认的工作区，恢复会话时使用该会话自己的目录。普通项目查询调用现有 `MentionIndex.search`。当根是 B 的 home、文件系统根，或输入为 `~/`、绝对路径、含 `../` 的前缀时，B 只枚举用户正在输入的那一级，沿用原生补全的隐藏项、排序与数量规则。键入的目录不存在或不可读时，返回空候选。`insertText` 是 `@` 后面可继续编辑的拼写，例如 `~/work/`；`absolutePath` 是 B 上选中的位置。B 同时用文件扩展名与文件头判断候选是否为图片，A 使用返回的 `image` 标志。根目录与 home 的判断也在 B。已有 `workspace.files.search` 和 `session.files.search` 保留各自的索引查询契约，`/devices` 新建会话继续使用只列可见目录的 `workspace.files.directories`。旧目标未声明补全方法时提示可以直接键入目标路径。
 
 A 给每次补全关联设备、工作区和当前查询序号，仅应用仍然匹配的结果。普通远端文件或目录按 B 返回的位置生成引用；视觉模型下选中 B 的图片时，通过原生连接对 B 的路径调用现有 `attachment.import({sessionId,path,name,image:true})`。当模型只接受文字时，带路径的图片转成目标可读的文件链接，纯剪贴板图片沿用保留草稿的行为。选自 A 的文件型图片若需要发成链接，也须先上传为 B 的会话文件。目录引用可以从 B 的 `@` 选择。A 拖入的是目录时，建议保留草稿并提示选择具体文件；把整棵本机目录作为一次附件处理是单独的产品决定。[原生输入规则](../cli-attachment-input.md)
 

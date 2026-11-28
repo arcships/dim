@@ -126,6 +126,18 @@ async fn workspace_search_matches_the_session_search_and_shares_its_index() {
     assert_ok(&created);
     let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
 
+    for prefix in ["missing", "notes.txt"] {
+        let query = root.join(prefix).join("note");
+        let completion = client
+            .rpc(
+                "workspace.files.complete",
+                json!({"cwd": root, "query": query}),
+            )
+            .await;
+        assert_ok(&completion);
+        assert!(candidates(&completion).is_empty(), "{completion}");
+    }
+
     let session_search = client
         .rpc(
             "session.files.search",

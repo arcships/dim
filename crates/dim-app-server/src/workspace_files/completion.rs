@@ -33,11 +33,12 @@ pub(super) fn complete(index: &MentionIndex, request: Complete) -> Result<Comple
         };
         let mut entries = Vec::new();
         let needle = needle.to_lowercase();
-        for entry in std::fs::read_dir(dir)
-            .map_err(|e| RpcError::invalid(e.to_string()))?
-            .take(2000)
-            .flatten()
-        {
+        let Ok(children) = std::fs::read_dir(dir) else {
+            return Ok(Completions {
+                candidates: Vec::new(),
+            });
+        };
+        for entry in children.take(2000).flatten() {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };

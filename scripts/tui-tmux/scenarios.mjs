@@ -3,6 +3,7 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {rpc} from './native-rpc.mjs';
+import {draftDelivery} from './draft-delivery.mjs';
 
 const ANSWER = 'The fixture answer is deterministic.';
 
@@ -760,6 +761,12 @@ const scenarios = [
 
       await exitWith(terminal);
     },
+  },
+  {
+    name: 'remote_attachment_draft_survives_refusal_and_uncertain_delivery',
+    area: 'composer',
+    title: 'Recover confirmed attachments and reconcile a lost submission receipt on the original line',
+    run: draftDelivery,
   },
   {
     name: 'remote_draft_uploads_local_bytes_and_mentions_target_files',

@@ -24,6 +24,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::args::Options;
 use crate::client::{self, Client, Message};
+use crate::model::session::submission::{
+    Delivery, PreparedDraft, SubmissionKey, prepared_user, refused,
+};
 use crate::model::session::{
     ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
     DIM_OAUTH_ID, DeleteOutcome, DeleteReply, DraftPart, EmptyProvider, EmptyReason,
@@ -508,11 +511,16 @@ async fn prepare_draft(
                     )
                     .await
                     .map_err(|error| format!("Paste {pastes}: {error}"))?;
-                *part = DraftPart::Text(format!(
+                let text = format!(
                     "[Pasted text: {} ({} lines)]",
                     stored.path,
                     text.lines().count()
-                ));
+                );
+                *part = if remote {
+                    DraftPart::Block(dim_agent_types::ContentBlock::Text { text })
+                } else {
+                    DraftPart::Text(text)
+                };
             }
             DraftPart::File {
                 path,
@@ -522,15 +530,18 @@ async fn prepare_draft(
                 let block =
                     crate::attachments::resolve_file(client, session, path, label, *target_image)
                         .await?;
-                *part = match block {
-                    dim_agent_types::ContentBlock::Text { text } => DraftPart::Text(text),
-                    block => DraftPart::Block(block),
-                };
+                *part = DraftPart::Block(block);
             }
             DraftPart::Block(block) => {
                 crate::images::import(client, session, std::slice::from_mut(block), remote)
                     .await
-                    .map_err(|e| format!("Image import failed: {e}"))?
+                    .map_err(|error| {
+                        if remote {
+                            error
+                        } else {
+                            format!("Image import failed: {error}").into()
+                        }
+                    })?
             }
         }
     }
@@ -647,10 +658,13 @@ async fn run(
                         .get(&worker.focus)
                         .is_some_and(|history| history.error.is_some())
                 {
-                    worker.send(Update::SubmitNotSent(
-                        "Conversation state could not be read; retry the read before submitting"
-                            .into(),
-                    ));
+                    let message = "Conversation state could not be read; retry the read before submitting".to_owned();
+                    worker.send(match command {
+                        Command::SubmitDraft { parts, preparation: None, .. } => {
+                            Update::DraftNotSent { parts, message }
+                        }
+                        _ => Update::SubmitNotSent(message),
+                    });
                     continue;
                 }
                 if let Command::SubmitDraft {mut parts,mode,preparation:Some(cancel),..} = command {
@@ -660,6 +674,9 @@ async fn run(
                     let instance = worker.client.instance_id().to_owned();
                     preparation.spawn(async move {
                         let prepare = async {
+                            if !parts.iter().any(DraftPart::needs_preparation) {
+                                return Ok(());
+                            }
                             let mut client = Client::connect(&config).await?;
                             if client.instance_id() != instance {
                                 return Err("Target changed during attachment preparation".into());
@@ -1523,7 +1540,6 @@ impl Worker {
     }
 
     async fn submit_draft(&mut self, mut parts: Vec<DraftPart>, mode: &str) {
-        use dim_agent_types::ContentBlock;
         if let Err(error) = prepare_draft(
             &mut self.client,
             &self.session_id,
@@ -1538,38 +1554,75 @@ impl Worker {
             });
             return;
         }
-        let mut content = Vec::new();
-        let mut text = String::new();
-        for part in parts {
-            match part {
-                DraftPart::Text(value) => text.push_str(&value),
-                DraftPart::Block(block) => {
-                    if !text.is_empty() {
-                        content.push(ContentBlock::Text {
-                            text: std::mem::take(&mut text),
-                        });
-                    }
-                    content.push(block);
-                }
-                DraftPart::Paste(_) | DraftPart::File { .. } => unreachable!("prepared draft"),
+        let key = SubmissionKey::new(&self.session_id, &self.focus);
+        match self.send_prepared(&key, &parts, mode).await {
+            Delivery::Accepted => {}
+            Delivery::Refused(message) => self.send(Update::DraftNotSent { parts, message }),
+            Delivery::Unconfirmed(message) => self.report(message, true),
+        }
+    }
+
+    async fn send_prepared(
+        &mut self,
+        key: &SubmissionKey,
+        parts: &[DraftPart],
+        mode: &str,
+    ) -> Delivery {
+        let params = match key.params(&prepared_user(parts), mode) {
+            Ok(params) => params,
+            Err(error) => return Delivery::Refused(error.to_string()),
+        };
+        match self
+            .client
+            .typed::<crate::wire::SubmissionReceipt>("session.submit", params)
+            .await
+        {
+            Ok(reply) => {
+                self.report_warnings(&reply.warnings);
+                Delivery::Accepted
+            }
+            Err(error) if refused(error.as_ref()) => Delivery::Refused(error.to_string()),
+            Err(error) => Delivery::Unconfirmed(error.to_string()),
+        }
+    }
+
+    async fn deliver_draft(&mut self, draft: &PreparedDraft, reconcile: bool) -> Delivery {
+        let key = &draft.key;
+        if self.session_id != key.session_id || self.focus != key.branch_id {
+            let message = "The centre moved before the command ran; the draft was kept".to_owned();
+            return if reconcile {
+                Delivery::Unconfirmed(message)
+            } else {
+                Delivery::Refused(message)
+            };
+        }
+        if reconcile {
+            match key.accepted(&mut self.client).await {
+                Ok(true) => return Delivery::Accepted,
+                Ok(false) => {}
+                Err(error) => return Delivery::Unconfirmed(error.to_string()),
             }
         }
-        if !text.is_empty() {
-            content.push(ContentBlock::Text { text });
+        if self
+            .task_history
+            .get(&self.focus)
+            .is_some_and(|h| h.error.is_some())
+        {
+            let message =
+                "Conversation state could not be read; retry the read before submitting".to_owned();
+            return if reconcile {
+                Delivery::Unconfirmed(message)
+            } else {
+                Delivery::Refused(message)
+            };
         }
-        let mut params = json!({
-            "sessionId": self.session_id,
-            "branchId": self.focus,
-            "submissionId": uuid::Uuid::new_v4().to_string(),
-            "mode": mode,
-        });
-        match content.as_slice() {
-            [ContentBlock::Text { text }] => params["text"] = json!(text),
-            _ => params["user"] = json!(dim_agent_types::UserInput { content }),
+        match self
+            .send_prepared(key, &draft.parts, draft.mode.as_str())
+            .await
+        {
+            Delivery::Refused(reason) if reconcile => Delivery::Unconfirmed(reason),
+            result => result,
         }
-        let result = self.client.rpc("session.submit", params).await;
-        self.report_value_warnings(&result);
-        self.report_failure(result);
     }
 
     /// A command typed for a Session and line only runs while it still names
@@ -1685,6 +1738,21 @@ impl Worker {
             return Some(command);
         }
         match &command {
+            Command::SubmitDraft {
+                parts,
+                mode,
+                preparation: Some(_),
+                session: Origin::Session(session),
+                line,
+            } => {
+                self.send(Update::RemoteDraftPrepared {
+                    session: session.clone(),
+                    line: line.clone(),
+                    mode: *mode,
+                    parts: parts.clone(),
+                    error: Some(cancelled.into()),
+                });
+            }
             Command::SubmitNow { .. } => self.send(Update::Stopped {
                 error: Some(cancelled.into()),
             }),
@@ -1716,6 +1784,13 @@ impl Worker {
     async fn command(&mut self, command: Command) -> crate::Result<()> {
         match command {
             Command::Submit { text, mode, .. } => self.submit(text, mode.as_str()).await,
+            Command::DeliverDraft { draft, reconcile } => {
+                let result = self.deliver_draft(&draft, reconcile).await;
+                self.send(Update::DraftDelivery {
+                    id: draft.key.submission_id.clone(),
+                    result,
+                });
+            }
             Command::SubmitDraft { parts, mode, .. } => {
                 self.submit_draft(parts, mode.as_str()).await
             }

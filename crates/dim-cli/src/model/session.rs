@@ -7,6 +7,8 @@
 //! read-only views. Optional methods missing from a daemon produce an
 //! unavailable diagnostic.
 
+pub(crate) mod submission;
+
 use crate::model::shell::ShellResult;
 use crate::model::view::{MemberConversationState, TaskOutputState, TaskTarget, ViewSnapshot};
 use crate::wire::Configuration;
@@ -213,6 +215,10 @@ pub enum Command {
         mode: SubmitMode,
         line: String,
         session: Origin,
+    },
+    DeliverDraft {
+        draft: std::sync::Arc<crate::model::session::submission::PreparedDraft>,
+        reconcile: bool,
     },
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft {
@@ -1352,6 +1358,10 @@ impl DeleteOutcome {
 }
 
 pub enum Update {
+    DraftDelivery {
+        id: String,
+        result: crate::model::session::submission::Delivery,
+    },
     RemoteDraftPrepared {
         session: String,
         line: String,

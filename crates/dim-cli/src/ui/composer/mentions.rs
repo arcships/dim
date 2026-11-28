@@ -157,7 +157,7 @@ impl Remote {
         self.result = match rx.try_recv() {
             Ok(result) => result,
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
-            Err(_) => Err("File search interrupted".into()),
+            Err(_) => Err(crate::ui::i18n::t("File search interrupted").into()),
         };
         self.pending = None;
         true
@@ -179,11 +179,8 @@ impl Remote {
                 limit: Some(RESULTS),
             };
             self.job = Some(self.target.runtime.spawn(async move {
-                let result = async {
-                    tokio::time::sleep(Duration::from_millis(60)).await;
-                    crate::attachments::complete(&target.config, &target.instance, request).await
-                }
-                .await;
+                let result =
+                    crate::attachments::complete(&target.config, &target.instance, request).await;
                 let _ = tx.send(result.map_err(|e| e.to_string()));
             }));
         }

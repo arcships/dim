@@ -334,6 +334,11 @@ impl Composer {
                     text,
                     None,
                 ),
+                DraftPart::Block(dim_agent_types::ContentBlock::Text { text }) => (
+                    text.clone(),
+                    text.clone(),
+                    Some(dim_agent_types::ContentBlock::Text { text }),
+                ),
                 DraftPart::Block(block) => ("[Image]".to_owned(), String::new(), Some(block)),
             };
             let id = self
@@ -845,7 +850,7 @@ impl Composer {
         let candidates = self.mention_candidates(&trigger.query);
         let searching = self.mention_searching();
         if let Some(reason) = self.remote.as_ref().and_then(|m| m.result.as_ref().err()) {
-            return Some(vec![crate::sanitize::safe_line(reason)]);
+            return Some(vec![crate::sanitize::safe_line(t(reason))]);
         }
         let root = self
             .mentions
@@ -1022,6 +1027,9 @@ impl Composer {
                                     .into_owned(),
                                 target_image: false,
                             }
+                        }
+                        (Some(block @ dim_agent_types::ContentBlock::Text { .. }), None) => {
+                            DraftPart::Block(block.clone())
                         }
                         (Some(_), None) if !self.accepts_images => {
                             return Err(tf(
@@ -1335,6 +1343,7 @@ impl Composer {
             return self.accepts_images && image;
         }
         match (&token.block, &token.file) {
+            (Some(dim_agent_types::ContentBlock::Text { .. }), None) => false,
             (Some(_), None) => true,
             (Some(_), Some(_)) => self.accepts_images,
             (None, Some(path)) => self.accepts_images && crate::images::is_image(path),
