@@ -231,13 +231,6 @@ pub struct TimelineIdentity {
     pub session_id: String,
     pub branch_id: String,
 }
-#[service]
-impl TimelineIdentity {
-    /// The identity as data, for parts in other languages.
-    pub fn get(&self) -> TimelineIdentity {
-        self.clone()
-    }
-}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionIdentity {

@@ -1014,6 +1014,7 @@ impl DynPlugin for HooksSessionPlugin {
             self.sources.erase(),
             self.platform.erase(),
             self.config.erase(),
+            self.lifecycle.erase(),
             self.checks.erase(),
         ]
     }

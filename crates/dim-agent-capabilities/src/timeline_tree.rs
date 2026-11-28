@@ -3315,7 +3315,7 @@ impl DynPlugin for TreeTimelinePlugin {
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.commands.erase(),
-            self.identity.erase(),
+            self.lifecycle.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -3373,7 +3373,7 @@ pub struct TimelineTreePlugin {
     control: Key<dyn TimelineTreeControl>,
     factory: Key<TimelineFactory>,
     store: Key<dyn TimelineStore>,
-    identity: Key<SessionScope>,
+    lifecycle: Key<SessionScope>,
     guide: Key<GuideEntries>,
 }
 impl TimelineTreePlugin {
@@ -3397,7 +3397,7 @@ impl DynPlugin for TimelineTreePlugin {
         vec![
             self.factory.erase(),
             self.store.erase(),
-            self.identity.erase(),
+            self.lifecycle.erase(),
             self.guide.erase(),
         ]
     }
@@ -3691,7 +3691,6 @@ impl BranchLinePlugin {
             timeline: names.key()?,
             dispatcher: names.key()?,
             lifecycle: names.key()?,
-            lifecycle: names.key()?,
             session: names.key()?,
             tree: names.key()?,
             guide: names.key()?,
@@ -3707,7 +3706,6 @@ impl DynPlugin for BranchLinePlugin {
         vec![
             self.timeline.erase(),
             self.dispatcher.erase(),
-            self.identity.erase(),
             self.lifecycle.erase(),
             self.session.erase(),
             self.tree.erase(),

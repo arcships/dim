@@ -19,7 +19,7 @@ declaration splits into protocol and policy is ToolRegistry's
 | `S:ToolRegistry` | Current tools and their source-state watch (`sources_state()`). |
 | `B:Prompt` | Adopt tool configuration and await initial prompt completion. |
 | `B:Timeline` | Reconcile committed configuration/request pins. |
-| `B:BranchLifecycle` | Gate background refresh on activation/closing. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:BranchOpening` | Register the opening receipt reconcile completes. |
 | `B:Dispatcher` | Handle branch opening. |
 
@@ -116,7 +116,7 @@ contract](Permission.md#write-targets-without-the-facts) decides whether the tar
 | --- | --- |
 | `B:Approval` | Admit each call under permission/approval policy. |
 | `B:ToolBinding` | Resolve the request's pinned tools. |
-| `B:TimelineIdentity` | Construct the calling branch execution context; Session and branch ids of the `tool.execute` span. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:Dispatcher` | Register recovery/live handoff, receive batches/interrupts and report faults. |
 | `B:Timeline` | Commit progress/results. |
 

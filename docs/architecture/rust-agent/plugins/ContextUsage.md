@@ -10,7 +10,7 @@ contributions and request calibration under [ContextUsage](../../../design/plugi
 | --- | --- |
 | `B:Timeline` | Read source fields and cumulative numeric results; commit changed results. |
 | `B:Dispatcher` | Observe publication and report owned failures. |
-| `B:BranchLifecycle` | Start after activation and stop when closing. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `S:ContextModelHost` | Resolve the additive counter and algorithm. |
 | `S:ToolRegistry` | Read the live projection as the fallback before the first request declares tools. |
 

@@ -1188,11 +1188,6 @@ export interface SessionConfig {
   get(): Promise<import('./plugin.js').SessionConfig>
 }
 
-export interface TimelineIdentity {
-  /** The identity as data, for parts in other languages. */
-  get(): Promise<import('./plugin.js').SessionRef>
-}
-
 export interface SessionIdentity {
   /**
    * The identity as data, `{sessionId, restored}`, for parts in other
@@ -1977,7 +1972,6 @@ export interface Services {
   backgroundExec: BackgroundExec
   agentConfig: AgentConfig
   sessionConfig: SessionConfig
-  timelineIdentity: TimelineIdentity
   sessionIdentity: SessionIdentity
   branchLifecycle: BranchLifecycle
   sessionLifecycle: SessionLifecycle
@@ -2007,7 +2001,6 @@ export type LineFaces = {
   permission: Omit<Permission, 'check'>
   timeline: Timeline
   timelineContext: TimelineContext
-  timelineIdentity: TimelineIdentity
   wait: Omit<Wait, 'wait'>
 }
 

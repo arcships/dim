@@ -61,7 +61,7 @@ cancellation token terminates its process tree on close.
 | `S:HookSourcesHost` | Read the effective documents of the user, the workspace and the plugins. |
 | `P:HostPlatform` | Build each command's process spec, environment and process tree. |
 | `S:SessionConfig` | Pass the working directory, permission and collaboration-role facts to the payload. |
-| `S:SessionIdentity` | Name the Session in the payload and `DIM_SESSION_ID`. |
+| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SubmitChecks` | Register `hooks`, the `UserPromptSubmit` check the operator-input entries call. |
 
 ## HooksBranch
@@ -140,8 +140,8 @@ compacted context baseline.
 | `B:Approval` | Answer a `PermissionRequest` decision for the pending admission. |
 | `B:Permission` | Register the `hooks` advisor the admission decision asks (`PreToolUse`). |
 | `S:HooksRuntime` | Read sources, build payloads and run the point's handlers. |
-| `B:BranchLifecycle` | Close the branch's jobs and settle its processes. |
-| `B:TimelineIdentity` | Name the branch in the payload and in the main-branch rule. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:Dispatcher` | Follow the events that open each hook point. |
 | `B:Timeline` | Query the specific facts each hook point needs and append output. |
 | `S:ToolRegistry` | Read a tool's declaration for its matcher alias when the branch adopted no tool part. |

@@ -64,7 +64,7 @@ releases the waiters. Provider-specific limits still apply.
 | `P:sessionFiles` (optional) | Resolve durable images through the [SessionStore data face](../../../design/appserver/session-files.md#9-interface) before request adaptation. Read at load without a gate; standalone hosts need no file service for text or inline-image requests. |
 | `B:Dispatcher` | Replay unsettled calls, receive calls/steers/interrupts and report faults. |
 | `B:Timeline` | Commit output. |
-| `B:TimelineIdentity` | Session and branch ids of the `model.invoke` span. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 
 ## Events and lifetime
 

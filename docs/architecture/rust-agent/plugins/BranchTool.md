@@ -116,8 +116,8 @@ are unchanged. See [service faces](../../../design/service-faces.md).
 | --- | --- |
 | `B:Dispatcher` | Consume the line's own facts in order after the rebuild. |
 | `B:Timeline` | Fix the committed mount cutoff. |
-| `B:TimelineIdentity` | The line's own id. |
-| `B:BranchLifecycle` | Wait for the branch to be Active before writing. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `S:SessionLifecycle` | Wait for the restored child directory to be published before roster repair. |
 | `S:TreeCommands` | `info` for the role and its lines; `head`, the crate-internal `turn_ends` and the parent's new-activity check for the parent block; `default_branch`, the crate-internal move signal and the line's own queue of owed moves for the status note; `input` for every write. |
 | `S:GuideEntries` | Register the roster and message entries on every line, until this part unloads. |
