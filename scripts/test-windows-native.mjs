@@ -23,6 +23,7 @@ export const flows = [
     'named_pipe_flow::native_client_authenticates_before_rpc_and_exits_without_stdin_eof',
     'named_pipe_flow::named_pipe_is_private_exclusive_and_shares_session_cleanup',
     'windows_output_isolation_flow::drive_absolute_overlap_refuses_create_and_fork',
+    'windows_output_isolation_flow::legacy_single_component_ids_remain_operable',
     'windows_output_isolation_flow::verbatim_overlap_refuses_create_and_fork',
     'worktree_removal_flow::a_non_force_removal_refuses_an_unregistered_directory',
   ]},
