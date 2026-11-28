@@ -1147,7 +1147,6 @@ async fn the_opened_output_root_is_the_one_the_admission_compares_against() {
     std::fs::create_dir_all(&output_root).unwrap();
     let canonical_root = output_root.canonicalize().unwrap();
     let canonical_id = format!("\\{}\\abc", normal_names(&canonical_root).join("\\"));
-    let literal_id = format!("\\{}\\abc", normal_names(&output_root).join("\\"));
     let directory = database.0.parent().unwrap().canonicalize().unwrap();
     let root = rutis::Ctx::root().unwrap();
     (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
