@@ -4,7 +4,9 @@ use crate::http::{Body, MAX_SAFE_INTEGER, text};
 use dim_agent_capabilities::host::ModelProtocol;
 use dim_app_server::{
     managed_provider::{ManagedError, ManagedModel},
-    model_catalog::{BundledCatalog, ProviderProjection, kind_of},
+    model_catalog::{
+        BundledCatalog, ProviderProjection, declared_modalities, effective_modalities, kind_of,
+    },
 };
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -401,6 +403,10 @@ fn project(
         .or(safe_positive(limit.get("output")))
         .or(safe_positive(declared.get("maxOutputTokens")));
     let found_caps = found.as_ref().map(|f| object(f.get("capabilities")));
+    let bundled_modalities = found_caps
+        .as_ref()
+        .map(|caps| strings(caps.get("modalities")))
+        .unwrap_or_default();
     let mut caps = found_caps.clone().unwrap_or_else(|| {
         object(Some(
             &json!({"modalities":["text"],"toolCalling":true,"streaming":true,
@@ -431,24 +437,20 @@ fn project(
             caps.insert(key.into(), json!(value));
         }
     }
-    if declared.contains_key("modalities") {
-        caps.insert(
-            "modalities".into(),
-            json!(strings(declared.get("modalities"))),
-        );
-    }
-    if input.contains_key("modalities") {
-        caps.insert("modalities".into(), json!(strings(input.get("modalities"))));
-    }
     if let Some(Value::Bool(tool_calling)) = input.get("toolCalling") {
         caps.insert("toolCalling".into(), json!(tool_calling));
     }
     if let Some(Value::Bool(vision)) = input.get("vision") {
         caps.insert("vision".into(), json!(vision));
-        if *vision && !input.contains_key("modalities") && !declared.contains_key("modalities") {
-            caps.insert("modalities".into(), json!(["text", "image"]));
-        }
     }
+    caps.insert(
+        "modalities".into(),
+        json!(effective_modalities(
+            declared_modalities(input),
+            &bundled_modalities,
+            input.get("vision").and_then(Value::as_bool),
+        )),
+    );
     if let Some(r) = &r {
         caps.insert(
             "reasoning".into(),

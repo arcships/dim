@@ -306,7 +306,10 @@ fn a_live_empty_modalities_array_keeps_the_shipped_deepseek_declaration() {
         .unwrap();
     assert!(model.capabilities.vision);
     assert_eq!(model.capabilities.modalities, ["text", "image"]);
-    assert_eq!(model.capabilities.context_window, Some(1_048_576));
+    assert!(
+        model.capabilities.missing_limits().is_empty(),
+        "the row the id identifies declares its limits, so the set is the row's"
+    );
 }
 
 #[test]
