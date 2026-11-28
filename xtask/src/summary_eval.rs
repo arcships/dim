@@ -1673,7 +1673,7 @@ fn count(counts: Counts, present: bool) -> Counts {
     Counts::new(counts.outcome + u64::from(present), counts.total + 1)
 }
 fn recall(counts: Counts) -> Option<f64> {
-    (counts.total > 0).then(|| counts.outcome as f64 / counts.total as f64)
+    (counts.total > 0).then_some(counts.outcome as f64 / counts.total as f64)
 }
 
 /// Each arm's loss and p-value against the decision's baseline

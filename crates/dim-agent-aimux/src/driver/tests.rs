@@ -219,7 +219,7 @@ fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
 }
 
 fn next_chunk(stream: &mut ModelStream) -> Option<Result<ModelChunk, HostError>> {
-    let mut next = Box::pin(stream.next());
+    let mut next = std::pin::pin!(stream.next());
     poll_until_idle(next.as_mut()).flatten()
 }
 

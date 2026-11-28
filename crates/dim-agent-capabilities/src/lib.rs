@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 pub mod adapters;
 pub mod agent_loop;
 pub mod approval;

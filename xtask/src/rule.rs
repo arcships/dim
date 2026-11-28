@@ -34,7 +34,7 @@ impl Counts {
         Self { outcome, total }
     }
     pub(crate) fn rate(&self) -> Option<f64> {
-        (self.total > 0).then(|| self.outcome as f64 / self.total as f64)
+        (self.total > 0).then_some(self.outcome as f64 / self.total as f64)
     }
 }
 
