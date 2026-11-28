@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import type { ToolMode, ToolModeState } from "../../rpc/protocol"
 
 /** Session tool mode; the picker lists every mode and marks one whose entry tool is absent. */
 const props = defineProps<{ state: ToolModeState | undefined; available: ToolMode[] }>()
-const emit = defineEmits<{ select: [mode: ToolMode] }>()
+const emit = defineEmits<{ select: [mode: ToolMode]; close: [] }>()
 const { t } = useI18n()
 const popoverOpen = ref(false)
+watch(popoverOpen, (isOpen, wasOpen) => { if (wasOpen && !isOpen) emit("close") })
 
 const MODES: ToolMode[] = ["normal", "codemode", "shell"]
 

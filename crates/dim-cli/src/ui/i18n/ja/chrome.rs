@@ -319,8 +319,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "ファイル",
         "Searching…" => "検索中…",
-        "type filter · enter select · esc clear/close" => {
-            "フィルタを入力 · enter 選択 · esc 消去/閉じる"
+        "type filter · enter select · esc back · closes at /" => {
+            "フィルタを入力 · enter 選択 · esc 戻る · / で閉じる"
         }
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 選択 · enter/tab 挿入 · esc 閉じる",
         "not sent to the model" => "モデルへ未送信",

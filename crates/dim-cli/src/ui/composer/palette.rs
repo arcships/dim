@@ -6,7 +6,7 @@ use crate::ui::commands::{COMMANDS, Command, Context};
 use crate::ui::i18n::t;
 use crate::ui::render::Overlay;
 use crate::ui::render::panel::{bordered, follow_window};
-use crate::ui::rows::{Columns, Kind, Row, footer, panel_row, title};
+use crate::ui::rows::{Columns, Kind, Row, footer, panel_row, title_plain};
 use crate::ui::text::truncate_cells;
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, fg, paint};
@@ -15,7 +15,7 @@ use crate::ui::theme::ansi::{Paint, fg, paint};
 pub const PAGE_SIZE: usize = 6;
 /// Chrome around the rows: top border, title, footer, bottom border.
 pub const CHROME_ROWS: usize = 4;
-const HINT: &str = "type filter · enter select · esc clear/close";
+const HINT: &str = "type filter · enter select · esc back · closes at /";
 
 fn skill_hint(state: &PaletteState, rows: &[Row]) -> Option<&'static str> {
     matches!(rows.get(state.current(rows))?.kind, Kind::Skill).then(|| t("Tab / Enter complete"))
@@ -328,7 +328,7 @@ pub fn render(
     let page = max_rows.saturating_sub(chrome).clamp(1, PAGE_SIZE);
     let mut content: Vec<String> = Vec::new();
     if title_visible {
-        content.push(title(t(panel_title(rows)), inner, p));
+        content.push(title_plain(t(panel_title(rows)), inner, p));
     }
     content.extend(list(state, rows, inner, page, p));
     if footer_visible {
@@ -822,13 +822,14 @@ mod tests {
         let panel = render(&PaletteState::default(), &rows, 80, 18, &theme.palette);
         assert_eq!(panel.len(), PAGE_SIZE + CHROME_ROWS);
         let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
-        assert!(plain[1].contains("Commands") && plain[1].contains("esc close"));
+        assert!(plain[1].contains("Commands"), "{plain:#?}");
         assert!(plain[2].starts_with("│   /new"), "{:?}", plain[2]);
         assert!(
             plain[8].contains(&format!("1 / {}", rows.len())),
             "{:?}",
             plain[8]
         );
+        assert!(plain[8].contains("esc back"), "{:?}", plain[8]);
         assert!(plain.iter().all(|r| display_width(r) == 80), "{plain:#?}");
     }
 

@@ -79,7 +79,7 @@ const zhCN: Messages = {
   "composer.command.models": "选择模型",
   "composer.command.new": "新建会话",
   "composer.command.scheduled": "管理 CLI 主机上的定时任务",
-  "composer.commandKeys": "↑↓ 选择 · Enter 确认 · Esc 关闭",
+  "composer.commandKeys": "↑↓ 选择 · Enter 确认 · Esc 返回 · / 关闭",
   "composer.command.permissions": "查看或修改会话权限",
   "composer.command.toolMode": "查看或切换会话工具模式",
   "composer.toolMode.label": "工具模式",

@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import type { PermissionPolicy, PermissionPreset } from "../../rpc/protocol"
 
 /** Session permission preset; process isolation stays in Settings. */
 const props = defineProps<{ policy: PermissionPolicy | undefined }>()
-const emit = defineEmits<{ select: [preset: PermissionPreset] }>()
+const emit = defineEmits<{ select: [preset: PermissionPreset]; close: [] }>()
 const { t } = useI18n()
 const popoverOpen = ref(false)
 const confirm = ref<InstanceType<typeof ConfirmDialog>>()
+watch(popoverOpen, (isOpen, wasOpen) => { if (wasOpen && !isOpen) emit("close") })
 
 const PRESETS: PermissionPreset[] = ["read-only", "workspace-write", "full-access"]
 

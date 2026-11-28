@@ -1494,6 +1494,9 @@ struct App {
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
     /// comes back when command entry ends.
     palette_stash: Option<SavedDraft>,
+    /// The command list a panel opened from the palette returns to: its
+    /// query and selected row.
+    palette_return: Option<(String, usize)>,
     /// The workspace's git branch for the banner and composer.
     branch: Option<String>,
     git_head: Option<PathBuf>,
@@ -1950,6 +1953,7 @@ impl App {
             notified_tasks: HashSet::new(),
             runs: Runs::default(),
             palette_stash: None,
+            palette_return: None,
             branch: None,
             git_head: None,
             git_checked: Instant::now(),
@@ -2054,10 +2058,48 @@ impl App {
     /// Opens the command palette on the draft it replaces; the draft comes
     /// back when command entry ends ([`Self::handle`]).
     fn open_palette(&mut self) {
+        self.palette_return = None;
         if let Some(draft) = self.composer.take_draft() {
             self.palette_stash = Some(draft);
         }
         self.set_draft("/");
+    }
+
+    /// Whether a prompt is a panel the command list can open, rather than a
+    /// decision or an update the list did not open.
+    fn command_panel(prompt: &Prompt) -> bool {
+        matches!(
+            prompt,
+            Prompt::Devices(_)
+                | Prompt::Sessions(_)
+                | Prompt::Tasks(_)
+                | Prompt::Lines(_)
+                | Prompt::Timeline(_)
+                | Prompt::Queue(_)
+                | Prompt::Export(_)
+                | Prompt::Report(_)
+                | Prompt::Fork(_)
+                | Prompt::Models(_)
+                | Prompt::Providers(_)
+                | Prompt::Plugins(_)
+                | Prompt::Runtime(_)
+                | Prompt::Management(_)
+                | Prompt::Login(_)
+                | Prompt::Approvals(_)
+                | Prompt::Theme(_)
+                | Prompt::Language(_)
+                | Prompt::Settings(_)
+                | Prompt::RemoteAccess(_)
+                | Prompt::Isolation(_)
+                | Prompt::Effort(_)
+        )
+    }
+
+    /// Puts the command list back as the closed panel found it.
+    fn restore_command_menu(&mut self) {
+        if let Some((query, selected)) = self.palette_return.take() {
+            self.composer.restore_palette(&query, selected);
+        }
     }
 
     /// Opens the target picker, optionally starting at the current computer's sessions.
@@ -2744,6 +2786,17 @@ impl App {
     }
 
     fn apply(&mut self, update: Update) {
+        let menu_panel = self.prompt.as_ref().is_some_and(Self::command_panel);
+        self.apply_update(update);
+        if menu_panel
+            && self.palette_return.is_some()
+            && !self.prompt.as_ref().is_some_and(Self::command_panel)
+        {
+            self.palette_return = None;
+        }
+    }
+
+    fn apply_update(&mut self, update: Update) {
         match update {
             Update::Withdrawn(input) => {
                 self.dismiss_suggestion();
@@ -3783,8 +3836,21 @@ impl App {
     }
 
     fn handle(&mut self, event: InputEvent) -> Outcome {
+        let escape = matches!(&event, InputEvent::Key(key) if key.code == KeyCode::Esc);
         let outcome = self.handle_input(event);
         self.restore_question();
+        if self.palette_return.is_some() {
+            let back_to_menu = escape
+                && self
+                    .prompt
+                    .as_ref()
+                    .is_none_or(|prompt| matches!(prompt, Prompt::Ask(_) | Prompt::Upgrade(_)));
+            if back_to_menu {
+                self.restore_command_menu();
+            } else if !self.prompt.as_ref().is_some_and(Self::command_panel) {
+                self.palette_return = None;
+            }
+        }
         if self.composer.is_empty()
             && let Some(draft) = self.palette_stash.take()
         {
@@ -4169,7 +4235,14 @@ impl App {
             _ => {}
         }
         match self.composer.handle_key(key) {
-            ComposerOutcome::Command { name, args } => return self.run_command(&name, &args),
+            ComposerOutcome::Command { name, args } => {
+                let menu = self.composer.take_palette_return();
+                let outcome = self.run_command(&name, &args);
+                if self.prompt.as_ref().is_some_and(Self::command_panel) {
+                    self.palette_return = menu;
+                }
+                return outcome;
+            }
             outcome => {
                 self.dispatch_composer(outcome, mode, self.target_line(), self.target_session());
             }
@@ -14742,6 +14815,9 @@ mod tests {
             assert!(settings.contains("Process isolation"), "{settings}");
             assert!(settings.contains("Permission"), "{settings}");
             drawn.key(KeyCode::Esc);
+            // The panel, its filter and the bar: one Esc per level.
+            drawn.key(KeyCode::Esc);
+            drawn.key(KeyCode::Esc);
             typed(&mut drawn.app, "/model");
             drawn.key(KeyCode::Enter);
             let models = screen(&mut drawn);
@@ -19900,6 +19976,9 @@ mod tests {
                 press(&mut app, KeyCode::Enter);
                 assert!(app.frame((36, 16)).live.join("\n").contains(message));
                 assert_eq!(sent.borrow().len(), before + 1);
+                // The picker, its filter and the bar: one Esc per level.
+                press(&mut app, KeyCode::Esc);
+                press(&mut app, KeyCode::Esc);
                 press(&mut app, KeyCode::Esc);
                 assert_eq!(selection(&app), answer);
             }
@@ -21933,6 +22012,103 @@ mod tests {
         );
     }
 
+    /// Esc clears the command filter before it closes the bar; only the
+    /// unfiltered list closes it and gives the replaced draft back.
+    #[test]
+    fn escape_clears_the_command_filter_then_closes_at_the_root() {
+        for fullscreen in [false, true] {
+            let (mut app, sent, _home) = session_with_queue(false, &[]);
+            app.fullscreen = fullscreen;
+            typed(&mut app, "keep");
+            let ctrl_o = crate::ui::terminal::KeyEvent::new(KeyCode::Char('o'), Modifiers::CTRL);
+            app.handle(InputEvent::Key(ctrl_o));
+            typed(&mut app, "mod");
+            assert_eq!(app.composer.text(), "/mod");
+
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.composer.text(), "/", "the filter is cleared");
+            assert!(app.composer.palette_open(), "the command list stays open");
+
+            press(&mut app, KeyCode::Esc);
+            assert!(!app.composer.palette_open(), "the root closes the bar");
+            assert_eq!(app.composer.text(), "keep", "the replaced draft returns");
+            assert!(sent.borrow().is_empty(), "Esc sent nothing");
+        }
+    }
+
+    /// A panel opened from the command list returns to that list, with the
+    /// query and selected row it had, before its root Esc closes anything.
+    #[test]
+    fn escape_returns_from_a_panel_root_to_the_command_list() {
+        for fullscreen in [false, true] {
+            let (mut app, sent, _home) = session_with_queue(false, &[]);
+            app.fullscreen = fullscreen;
+            typed(&mut app, "/");
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(app.prompt, Some(Prompt::Models(_))));
+            assert!(matches!(sent.borrow().last(), Some(Command::ListModels)));
+
+            press(&mut app, KeyCode::Esc);
+            assert!(app.prompt.is_none(), "the panel root closes at Esc");
+            assert!(
+                app.composer.palette_open(),
+                "the command list stays open at the panel's root"
+            );
+            assert_eq!(app.composer.text(), "/", "the list query is restored");
+
+            let before = sent.borrow().len();
+            press(&mut app, KeyCode::Enter);
+            assert!(
+                matches!(app.prompt, Some(Prompt::Models(_))),
+                "the selected row is restored"
+            );
+            assert_eq!(
+                sent.borrow().len(),
+                before + 1,
+                "the restored row runs the command it names"
+            );
+        }
+    }
+
+    /// A child page returns to its panel root first; the next Esc returns to
+    /// the command list, so one Esc never unwinds two levels.
+    #[test]
+    fn escape_steps_back_from_a_panel_child_to_its_root_before_the_list() {
+        use crate::model::session::{ModelPolicyUpdate, SubagentModelPolicy};
+
+        for fullscreen in [false, true] {
+            let (mut app, _sent, _home) = session_with_queue(false, &[]);
+            app.fullscreen = fullscreen;
+            typed(&mut app, "/models");
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(app.prompt, Some(Prompt::Models(_))));
+            app.apply(Update::ModelPolicy(ModelPolicyUpdate::Read {
+                revision: "1".into(),
+                policy: SubagentModelPolicy::Inherit,
+                saved: false,
+            }));
+
+            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Enter);
+            press(&mut app, KeyCode::Esc);
+            assert!(
+                matches!(app.prompt, Some(Prompt::Models(_))),
+                "the child page returns to the panel root"
+            );
+            assert!(
+                !app.composer.palette_open(),
+                "the command list does not open from the panel root's parent"
+            );
+
+            press(&mut app, KeyCode::Esc);
+            assert!(app.prompt.is_none(), "the panel root closes at Esc");
+            assert!(app.composer.palette_open());
+            assert_eq!(app.composer.text(), "/models");
+        }
+    }
+
     fn open_test_report(app: &mut App) -> u64 {
         press(app, KeyCode::Char('/'));
         typed(app, "report");
@@ -23626,6 +23802,9 @@ mod tests {
                 .expect("opening /resume starts repository discovery")
         };
         let closed = open_picker(&mut drawn);
+        // The picker, its filter and the bar: one Esc per level.
+        drawn.key(KeyCode::Esc);
+        drawn.key(KeyCode::Esc);
         drawn.key(KeyCode::Esc);
         let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
         for open in 1..=2 {

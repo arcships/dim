@@ -303,7 +303,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Files" => "檔案",
         "Searching…" => "正在搜尋…",
-        "type filter · enter select · esc clear/close" => "輸入篩選 · enter 選擇 · esc 清除/關閉",
+        "type filter · enter select · esc back · closes at /" => {
+            "輸入篩選 · enter 選擇 · esc 返回 · 在 / 關閉"
+        }
         "↑↓ select · enter/tab insert · esc close" => "↑↓ 選擇 · enter/tab 插入 · esc 關閉",
         "not sent to the model" => "未傳送給模型",
         "… {count} more lines" => "… 還有 {count} 行",

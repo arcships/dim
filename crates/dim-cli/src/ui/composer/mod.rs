@@ -135,6 +135,9 @@ pub struct Composer {
     shell: Option<Shell>,
     saved_shell: Option<Shell>,
     palette: PaletteState,
+    /// The command list a panel opened from the palette returns to: its
+    /// query and the row Enter took.
+    palette_return: Option<(String, usize)>,
     context: crate::ui::commands::Context,
     skills: Vec<palette::Skill>,
     /// Whether the model takes images; unknown counts as yes.
@@ -161,6 +164,7 @@ impl Composer {
             shell: None,
             saved_shell: None,
             palette: PaletteState::default(),
+            palette_return: None,
             context: crate::ui::commands::Context::default(),
             skills: Vec::new(),
             accepts_images: true,
@@ -500,6 +504,7 @@ impl Composer {
         self.shell = None;
         self.saved_shell = None;
         self.palette = PaletteState::default();
+        self.palette_return = None;
         self.picker = mentions::Picker::default();
         self.state = TextAreaState::default();
     }
@@ -528,6 +533,22 @@ impl Composer {
 
     pub fn palette_open(&self) -> bool {
         self.command_query().is_some()
+    }
+
+    /// The command list a panel opened from here returns to, taken once.
+    pub(crate) fn take_palette_return(&mut self) -> Option<(String, usize)> {
+        self.palette_return.take()
+    }
+
+    /// Puts the command list back as a panel found it: the query it held and
+    /// the row it selected.
+    pub(crate) fn restore_palette(&mut self, query: &str, selected: usize) {
+        self.clear();
+        let text = format!("/{query}");
+        self.area.set_text(&text);
+        self.area.set_cursor(text.len());
+        self.palette.set_query(query);
+        self.palette.selected = selected;
     }
 
     pub(crate) fn palette_rows(&self) -> Vec<crate::ui::rows::Row> {
@@ -636,7 +657,9 @@ impl Composer {
                 match Self::row_command(row, &query) {
                     Some(command) => {
                         let name = command.name.to_owned();
+                        let menu = (query.clone(), self.palette.current(&rows));
                         self.clear();
+                        self.palette_return = Some(menu);
                         Some(Outcome::Command {
                             name,
                             args: String::new(),
