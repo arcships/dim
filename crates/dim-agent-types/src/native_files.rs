@@ -1,6 +1,14 @@
 use crate::ImageSource;
 use serde::{Deserialize, Serialize};
 
+pub const WORKTREES: &str = "workspace.files.worktrees";
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Worktrees {
+    pub cwd: String,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Complete {

@@ -391,7 +391,11 @@ async fn workspace_search_is_local_only() {
         "{}",
         web.features
     );
-    for method in ["workspace.files.complete", "native.uploadSessionFile"] {
+    for method in [
+        "workspace.files.complete",
+        "workspace.files.worktrees",
+        "native.uploadSessionFile",
+    ] {
         assert!(!web.features.as_array().unwrap().contains(&json!(method)));
         let rejected = web.rpc(method, json!({})).await;
         assert!(rejected.get("error").is_some(), "{rejected}");

@@ -358,7 +358,9 @@ pub enum Command {
     /// Switch to a stored session.
     Resume(String),
     /// Find the launch workspace's repository worktrees, once per picker open.
-    FindRepository,
+    FindRepository {
+        picker: uuid::Uuid,
+    },
     /// List stored sessions (newest first), in `scope`.
     ListSessions {
         id: String,
@@ -1468,7 +1470,10 @@ pub enum Update {
     /// The workspaces the picker's local scope may list: the launch
     /// workspace and the same relative directory in every worktree of its git
     /// repository, found once per picker open. The set may hold one entry.
-    RepositoryWorkspaces(Vec<String>),
+    RepositoryWorkspaces {
+        picker: uuid::Uuid,
+        workspaces: Vec<String>,
+    },
     /// The default a `/models` selection wrote: the folder whose workspace
     /// scope it wrote, or `None` when it wrote the global one, and the row's
     /// own label. The interface names the scope; it owns the display form.

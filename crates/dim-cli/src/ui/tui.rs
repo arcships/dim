@@ -2990,9 +2990,11 @@ impl App {
                     panel.page(&id, paged, result);
                 }
             }
-            Update::RepositoryWorkspaces(workspaces) => {
-                if let Some(Prompt::Sessions(panel)) = &mut self.prompt {
-                    panel.repository(workspaces);
+            Update::RepositoryWorkspaces { picker, workspaces } => {
+                if let Some(Prompt::Sessions(panel)) = &mut self.prompt
+                    && panel.id == picker
+                {
+                    panel.repository(&self.cwd_key, workspaces);
                 }
             }
             Update::Toast(text) => self.set_notice(text),
@@ -6382,10 +6384,10 @@ impl App {
             }
             "web" => Outcome::Web,
             "resume" => {
-                self.open_prompt(Prompt::Sessions(SessionsPanel::new(
-                    crate::ui::config::saved_show_acp(&self.home),
-                )));
-                self.host.send(Command::FindRepository);
+                let panel = SessionsPanel::new(crate::ui::config::saved_show_acp(&self.home));
+                let picker = panel.id;
+                self.open_prompt(Prompt::Sessions(panel));
+                self.host.send(Command::FindRepository { picker });
                 self.sync_sessions();
                 Outcome::Continue
             }
@@ -23611,10 +23613,23 @@ mod tests {
             picked.expect("Enter resumes the selected row")
         };
 
-        let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
-        for open in 1..=2 {
+        let open_picker = |drawn: &mut Drawn| {
+            sent.borrow_mut().clear();
             typed(&mut drawn.app, "/resume");
             drawn.key(KeyCode::Enter);
+            sent.borrow()
+                .iter()
+                .find_map(|command| match command {
+                    Command::FindRepository { picker } => Some(*picker),
+                    _ => None,
+                })
+                .expect("opening /resume starts repository discovery")
+        };
+        let closed = open_picker(&mut drawn);
+        drawn.key(KeyCode::Esc);
+        let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
+        for open in 1..=2 {
+            let picker = open_picker(&mut drawn);
             sequence.push(("opened", states(&mut drawn)));
 
             let asked = reads(&sent);
@@ -23627,6 +23642,21 @@ mod tests {
                 matches!(asked[0].1, SessionsScope::Local(None)),
                 "open {open}: the opening read lists the exact launch workspace: {asked:?}"
             );
+            if open == 1 {
+                drawn.app.apply(Update::RepositoryWorkspaces {
+                    picker: closed,
+                    workspaces: set.clone(),
+                });
+                drawn.app.tick();
+                assert_eq!(
+                    states(&mut drawn),
+                    ["Sessions · This workspace", "Loading sessions..."]
+                );
+                assert!(
+                    reads(&sent).is_empty(),
+                    "late Git results must not replace the reopened picker's page"
+                );
+            }
             drawn.app.apply(Update::Sessions {
                 id: asked[0].0.clone(),
                 paged: true,
@@ -23638,7 +23668,10 @@ mod tests {
             // wider page lists that row third: the selection must stay on it,
             // not on the same index.
             drawn.key(KeyCode::Down);
-            drawn.app.apply(Update::RepositoryWorkspaces(set.clone()));
+            drawn.app.apply(Update::RepositoryWorkspaces {
+                picker,
+                workspaces: set.clone(),
+            });
             let answered = states(&mut drawn);
             assert!(
                 !answered.contains(&"Loading sessions..."),

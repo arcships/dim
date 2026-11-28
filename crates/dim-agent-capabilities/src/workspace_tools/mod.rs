@@ -15,6 +15,7 @@ pub mod file_reads;
 pub mod files;
 pub mod mentions;
 mod pending;
+pub mod repository;
 pub use pending::call_positions;
 
 use crate::{

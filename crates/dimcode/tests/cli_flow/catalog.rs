@@ -905,6 +905,15 @@ fn tui_resume_draws_the_workspace_while_a_slow_git_runs() {
 
 #[test]
 fn tui_resume_skips_the_repository_scope_a_daemon_cannot_read() {
+    resume_without_repository_scope(false);
+}
+
+#[test]
+fn tui_resume_never_uses_keyboard_git_for_an_older_remote_daemon() {
+    resume_without_repository_scope(true);
+}
+
+fn resume_without_repository_scope(remote: bool) {
     let home = Home::new();
     let (repo, linked) = scratch_repository(&home.0, true);
     let workspace = std::fs::canonicalize(repo.join("sub")).unwrap();
@@ -912,7 +921,11 @@ fn tui_resume_skips_the_repository_scope_a_daemon_cannot_read() {
     let mine = workspace.clone();
     assert!(linked.is_some(), "the worktree exists");
     let daemon = home.daemon(move |wire| {
-        wire.hello(&["session.catalog"]);
+        if remote {
+            wire.hello(&["session.catalog", "session.catalog.workspaces"]);
+        } else {
+            wire.hello(&["session.catalog"]);
+        }
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
         let history = wire.read("session.history");
@@ -929,12 +942,17 @@ fn tui_resume_skips_the_repository_scope_a_daemon_cannot_read() {
         let all = wire.read("session.catalog");
         assert!(
             all["params"].get("cwd").is_none(),
-            "a daemon without the set is asked for every workspace: {all}"
+            "Ctrl+S must request all workspaces: {all}"
         );
         wire.reply(&all, json!({"sessions":[]}));
         no_catalog(wire);
     });
     let mut command = home.command();
+    let marker = home.0.join("worktree-read");
+    if remote {
+        command.env("DIMCODE_TERMINAL_PROXY", home.0.join("rust/daemon.sock"));
+        command.env("PATH", gated_git(&home.0, &marker));
+    }
     command.args(["--cwd", &workspace]);
     let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
@@ -947,6 +965,10 @@ fn tui_resume_skips_the_repository_scope_a_daemon_cannot_read() {
     terminal.until("Bye!");
     assert!(terminal.wait().success());
     daemon.join().unwrap();
+    assert!(
+        !marker.exists(),
+        "the keyboard computer read its worktree list"
+    );
 }
 /// Two stored Sessions the picker lists, and the launch workspace.
 fn two_sessions() -> Value {

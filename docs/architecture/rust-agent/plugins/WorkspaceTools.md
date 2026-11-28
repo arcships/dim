@@ -29,7 +29,14 @@ methods take no Session:
 ```text
 workspace.files.search {cwd, query, limit?} -> {candidates: [{relativePath, absolutePath, dir}]}
 workspace.files.directories {path?} -> {path, parent, directories: [{name, path}]}
+workspace.files.worktrees {cwd} -> [workspacePath, ...]
 ```
+
+The worktrees method resolves an absolute directory on the App Server. It returns
+the canonical launch directory first, then the same relative directory under
+each other non-bare Git worktree, including worktrees created outside Dim.
+An invalid directory returns `invalid_params`. Outside Git, or when discovery
+fails or exceeds two seconds, the result is an empty array.
 
 The directory picker starts at `/` on POSIX or a list of drives on Windows
 when the request omits `path`. Each read resolves the supplied absolute
