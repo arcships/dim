@@ -671,7 +671,6 @@ impl DynPlugin for ModelProviderPlugin {
             self.host.erase(),
         ];
         keys.extend(self.resolver.as_ref().map(Key::erase));
-        keys.push(self.identity.erase());
         keys
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -685,7 +684,9 @@ impl DynPlugin for ModelProviderPlugin {
                 None => None,
             };
             let files = self.files.as_ref().and_then(|key| ctx.get_at(key));
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             let service = Arc::new(ModelProvider {
                 state: Mutex::new(ModelState::default()),
                 tasks: TaskTracker::new(),

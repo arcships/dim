@@ -275,7 +275,6 @@ impl DynPlugin for ToolExecutorPlugin {
             self.dispatcher.erase(),
             self.binding.erase(),
             self.approval.erase(),
-            self.identity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -284,7 +283,9 @@ impl DynPlugin for ToolExecutorPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let binding = ctx.require_at(&self.binding)?;
             let approval = ctx.require_at(&self.approval)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             let emit_progress = self.emit_progress;
             let service = Arc::new(ToolExecutor {
                 state: Mutex::new(ToolState::default()),

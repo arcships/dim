@@ -761,7 +761,6 @@ impl DynPlugin for PromptPlugin {
             self.host.erase(),
             self.initial.erase(),
             self.publisher.erase(),
-            self.identity.erase(),
             self.session_lifecycle.erase(),
             self.branch_phase.erase(),
             self.opening.erase(),
@@ -775,7 +774,9 @@ impl DynPlugin for PromptPlugin {
             let host = ctx.require_at(&self.host)?;
             let initial = ctx.require_at(&self.initial)?;
             let publisher = ctx.require_at(&self.publisher)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             let session_lifecycle = ctx.require_at(&self.session_lifecycle)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
             let opening = ctx.require_at(&self.opening)?;
