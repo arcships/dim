@@ -214,7 +214,7 @@ v36 的文本索引和事件编码合同继续适用。
 
 后续提案：[状态读取索引与数组元素](#提案状态读取索引与数组元素)。数组元素编码采用独立新格式；owner 结果复用既有事件索引。
 
-The current native format is **v48**, with optional command and delegation task titles, conditional queued-input Steer candidates in withdrawal commands, directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records with the directory's last-used time, `prompt/changed` events naming their delivery inputs, source-owned `settings_documents`,
+The v48 native format introduced optional command and delegation task titles, conditional queued-input Steer candidates in withdrawal commands, directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records with the directory's last-used time, `prompt/changed` events naming their delivery inputs, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -222,11 +222,11 @@ branch end events, the tool-effect and digest fields, and tool schemas that may
 omit `type`, the Session catalog projection, a configuration's System source,
 a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
-ownership and the two context reading switches on timeline events. Startup
-requires the exact v48 SQL schema and a single
+ownership and the two context reading switches on timeline events. The v48
+startup gate required the exact v48 SQL schema and a single
 format marker of 48 before writable PRAGMAs, or the exact v47, main v42–v46 and resume v42–v44 families, v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
-which the same startup transaction upgrades in place to v48 one step after
+which the same startup transaction upgraded in place to v48 one step after
 another ([v48 task titles](#v48-task-titles), [v47 merged resume format](#v47合并-main-v46-与-resume-v44), [#1477 v46 reasoning count](#v46modelusage-携带推理-token-数), [#1451 v45 last-used time](#v45worktree-目录的最后使用时间), [v44 prompt changes](#v44提示变更携带其投递输入), [v43 conditional Steer](#v43-conditional-queued-input-steer), [v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
 [S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
