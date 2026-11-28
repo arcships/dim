@@ -3006,12 +3006,13 @@ impl SqliteTimelineStore {
     /// ([S5c §6.3](../../../../docs/design/appserver/session-deletion-and-fork.md#63-what-a-fork-copies)):
     /// `fork` gets the source's `SessionConfig` text and owner, the source's
     /// `main` through `at` with the content rows its events reference and the
-    /// snapshots anchored on them, a directory without events for every branch
-    /// `main` created by then, and an owner row for every Session file and
-    /// every output path the source owns (ADR 013 D4). Rows are copied as
-    /// stored, except grants: a fork is a new Session and does not inherit
-    /// them. A source whose delete committed first is `Closed`. The runtime
-    /// validates the copy when it builds the fork.
+    /// snapshots anchored on them, `main`'s directory, and an owner row for
+    /// every Session file and every output path the source owns (ADR 013 D4).
+    /// No child branch is copied: a directory without events means a creation
+    /// in flight to the branch restore, and the source's children are not part
+    /// of the fork. Rows are copied as stored, except grants: a fork is a new
+    /// Session and does not inherit them. A source whose delete committed first
+    /// is `Closed`. The runtime validates the copy when it builds the fork.
     ///
     /// The events at or before `at` never change, so their references and the
     /// content closure are read in bounded holds on read connections first.
@@ -3149,35 +3150,30 @@ fn copy_fork_rows(
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(error)?;
-    let mut branches = Vec::new();
     chunk(connection, |tx| {
-        branches = tx
-            .prepare("SELECT branch_id, info FROM timeline_branches WHERE session_id=?1")
-            .map_err(error)?
-            .query_map([source], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(error)?;
-        for (id, info) in &branches {
-            let parsed: BranchRecord = serde_json::from_str(info).map_err(error)?;
-            let head = if id == ROOT_BRANCH_ID {
-                cut
-            } else if parsed.parent.as_deref() == Some(ROOT_BRANCH_ID)
-                && parsed.create_anchor.is_some_and(|anchor| anchor <= at)
-            {
-                0
-            } else {
-                continue;
-            };
-            tx.execute(
-                "INSERT INTO timeline_branches VALUES (?1, ?2, ?3, ?4)",
-                params![fork, id, info, head],
+        let (stored, root): (bool, Option<String>) = tx
+            .prepare(
+                "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1), \
+                 (SELECT info FROM timeline_branches WHERE session_id=?1 AND branch_id=?2)",
             )
+            .map_err(error)?
+            .query_row(params![source, ROOT_BRANCH_ID], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .map_err(error)?;
-            super::members::branch(tx, fork, id)?;
-        }
+        let Some(root) = root else {
+            return Err(if stored {
+                error("fork source has no root branch")
+            } else {
+                AgentError::Closed(source.to_owned())
+            });
+        };
+        tx.execute(
+            "INSERT INTO timeline_branches VALUES (?1, ?2, ?3, ?4)",
+            params![fork, ROOT_BRANCH_ID, root, cut],
+        )
+        .map_err(error)?;
+        super::members::branch(tx, fork, ROOT_BRANCH_ID)?;
         Ok(())
     })?;
     for (array, length) in arrays {
