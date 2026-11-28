@@ -3169,7 +3169,7 @@ fn copy_fork_rows(
                 AgentError::Closed(source.to_owned())
             });
         };
-        let ended: BTreeSet<String> = tx
+        let concluded: BTreeSet<String> = tx
             .prepare(
                 "SELECT json_extract(body, '$.record.event.data.branch') FROM timeline_events \
                  INDEXED BY timeline_events_by_kind \
@@ -3202,12 +3202,14 @@ fn copy_fork_rows(
             super::members::branch(tx, fork, id)
         };
         insert(ROOT_BRANCH_ID, &root, cut)?;
+        // A line still open at the cut would read as a creation in flight in the
+        // fork, so only a concluded child's directory is copied.
         for (id, info) in &children {
             let parsed: BranchRecord = serde_json::from_str(info).map_err(error)?;
-            let ended_by_cut = parsed.parent.as_deref() == Some(ROOT_BRANCH_ID)
+            let concluded_by_cut = parsed.parent.as_deref() == Some(ROOT_BRANCH_ID)
                 && parsed.create_anchor.is_some_and(|anchor| anchor <= at)
-                && ended.contains(id);
-            if ended_by_cut {
+                && concluded.contains(id);
+            if concluded_by_cut {
                 insert(id, info, 0)?;
             }
         }
