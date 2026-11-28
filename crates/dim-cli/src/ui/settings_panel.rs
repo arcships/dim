@@ -29,11 +29,13 @@
 
 use crate::model::session::{PromptField, PromptSetting, SubmitMode};
 use crate::ui::i18n::t;
+use crate::ui::line_input::LineInput;
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
 use crate::ui::terminal::{KeyCode, KeyEvent};
 use crate::ui::theme::Palette;
 use crate::ui::transcript::tool_group::Detail;
+use dim_agent_types::compaction_settings::CompactionWindowSpec;
 
 /// The values the rows show, read when the panel opens.
 pub struct Values {
@@ -49,6 +51,11 @@ pub struct Values {
     /// Whether the daemon lists the suggestion methods: without them the row
     /// is absent.
     pub prompt_suggestion_supported: bool,
+    /// The compaction row's state: `Some` is the row as the daemon's
+    /// document resolves it for the current model, and `None` is a read
+    /// that has not happened or failed, which the row shows as unavailable
+    /// (#2235 PR 1b).
+    pub compaction: Option<CompactionRow>,
     /// `Some` is the switch as the daemon reported it; `None` is a read that
     /// has not happened or failed, which the row shows rather than a value.
     pub prompt_suggestion: Option<bool>,
@@ -57,6 +64,17 @@ pub struct Values {
     pub prompts: [Option<bool>; 3],
     pub permission: String,
     pub tool_mode: String,
+}
+
+/// The compaction row's read state for the current model: the window in
+/// force at the document's own resolution order — the exact
+/// `<provider>/<model>` key first, then the bare `<model>` key, then
+/// `default` — and the exact key's configured window when the document
+/// carries one, which editing writes and deleting targets (#2235 PR 1b).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompactionRow {
+    pub effective: CompactionWindowSpec,
+    pub entry: Option<CompactionWindowSpec>,
 }
 
 /// One row: a switch flips in place, a link opens its picker.
@@ -72,6 +90,7 @@ pub enum Setting {
     Notify,
     AcpSessions,
     PromptSuggestion,
+    Compaction,
     BasePrompt,
     SummaryPrompt,
     SkillsPrompt,
@@ -81,7 +100,7 @@ pub enum Setting {
     RemoteAccess,
 }
 
-const ROWS: [(Setting, &str); 17] = [
+const ROWS: [(Setting, &str); 18] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
@@ -92,6 +111,7 @@ const ROWS: [(Setting, &str); 17] = [
     (Setting::Notify, "notify"),
     (Setting::AcpSessions, "acp-sessions"),
     (Setting::PromptSuggestion, "prompt-suggestion"),
+    (Setting::Compaction, "compaction"),
     (Setting::BasePrompt, "base-prompt"),
     (Setting::SummaryPrompt, "summary-prompt"),
     (Setting::SkillsPrompt, "skills-prompt"),
@@ -159,12 +179,24 @@ const SKILLS_HINT: &str =
 const PROMPT_HINT: &str = "↑↓ move · Enter edit · r reset · Esc close";
 
 fn hint_for(setting: Setting) -> &'static str {
-    if setting == Setting::SkillsPrompt {
+    if setting == Setting::Compaction {
+        "Enter edit · r reset"
+    } else if setting == Setting::SkillsPrompt {
         SKILLS_HINT
     } else if setting.prompt_field().is_some() {
         PROMPT_HINT
     } else {
         HINT
+    }
+}
+
+/// The compaction row's value text and whether Enter may edit it: the
+/// window in force for the current model, or the unavailable text when the
+/// source is unread or there is no model (#2235 PR 1b).
+fn compaction_detail(state: Option<CompactionRow>) -> (String, bool) {
+    match state {
+        Some(row) => (row.effective.display(), true),
+        None => (t("Not available").to_owned(), false),
     }
 }
 
@@ -179,6 +211,11 @@ fn prompt_origin(prompt: Option<bool>) -> String {
 pub struct SettingsPanel {
     list: ListPanel,
     prompts: [Option<bool>; 3],
+    /// The compaction row's read state, kept for the `r` reset guard: a key
+    /// that exists deletes, a fallback does not (#2235 PR 1b).
+    compaction: Option<CompactionRow>,
+    /// The row's inline editor while Enter has it open.
+    compaction_edit: Option<LineInput>,
 }
 
 impl SettingsPanel {
@@ -244,6 +281,10 @@ impl SettingsPanel {
                 },
             ));
         }
+        {
+            let (detail, _) = compaction_detail(values.compaction);
+            items.push(row(Setting::Compaction, "Compaction window", detail));
+        }
         items.push(Item::heading(t("Prompts")));
         for (index, field) in PromptField::ALL.into_iter().enumerate() {
             items.push(row(
@@ -269,12 +310,40 @@ impl SettingsPanel {
         Self {
             list,
             prompts: values.prompts,
+            compaction: values.compaction,
+            compaction_edit: None,
         }
     }
 
-    /// A paste goes into the filter.
+    /// A paste goes into the inline editor while it is open, else the
+    /// filter.
     pub fn paste(&mut self, text: &str) {
-        self.list.paste(text);
+        if let Some(input) = &mut self.compaction_edit {
+            input.paste(text);
+            self.list
+                .set_detail(Setting::Compaction.id(), input.text().to_owned());
+        } else {
+            self.list.paste(text);
+        }
+    }
+
+    /// Shows the compaction row's read state; while its editor is open the
+    /// row keeps the draft.
+    pub fn set_compaction(&mut self, state: CompactionRow) {
+        self.compaction = Some(state);
+        if self.compaction_edit.is_none() {
+            let (detail, _) = compaction_detail(self.compaction);
+            self.list.set_detail(Setting::Compaction.id(), detail);
+        }
+    }
+
+    /// Shows that the compaction source could not be read.
+    pub fn set_compaction_unavailable(&mut self) {
+        self.compaction = None;
+        if self.compaction_edit.is_none() {
+            let (detail, _) = compaction_detail(None);
+            self.list.set_detail(Setting::Compaction.id(), detail);
+        }
     }
 
     /// Shows a value that was read after the panel opened.
@@ -321,7 +390,51 @@ impl SettingsPanel {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
+        if self.compaction_edit.is_some() {
+            match key.code {
+                KeyCode::Enter => {
+                    let input = self.compaction_edit.take().expect("checked");
+                    let (detail, _) = compaction_detail(self.compaction);
+                    self.list.set_detail(Setting::Compaction.id(), detail);
+                    self.set_hint();
+                    return Effect::SaveCompaction(input.text().to_owned());
+                }
+                KeyCode::Esc => {
+                    // Inline editing's Esc leaves the editor for the panel
+                    // list; the panel stays open (#2235 PR 1b B1).
+                    self.compaction_edit = None;
+                    let (detail, _) = compaction_detail(self.compaction);
+                    self.list.set_detail(Setting::Compaction.id(), detail);
+                    self.set_hint();
+                    return Effect::None;
+                }
+                _ => {
+                    let input = self.compaction_edit.as_mut().expect("checked");
+                    input.handle_key(key);
+                    self.list
+                        .set_detail(Setting::Compaction.id(), input.text().to_owned());
+                    return Effect::None;
+                }
+            }
+        }
         let setting = self.selected();
+        if setting == Setting::Compaction && self.compaction.is_some() {
+            if key.mods.0 == 0 && key.code == KeyCode::Char('r') {
+                // Deleting guards at the App layer (design §5.1.1): the
+                // panel emits the intent and the App refuses it when the
+                // exact key is absent.
+                return Effect::ResetCompaction;
+            }
+            if key.mods.0 == 0 && key.code == KeyCode::Enter {
+                let exact = self.compaction.and_then(|row| row.entry);
+                let input = LineInput::new(&exact.map_or(String::new(), |spec| spec.display()));
+                self.list
+                    .set_detail(Setting::Compaction.id(), input.text().to_owned());
+                self.compaction_edit = Some(input);
+                self.list.set_hint(t("Enter save · Esc cancel").to_owned());
+                return Effect::None;
+            }
+        }
         if let Some(field) = setting.prompt_field() {
             let custom = PromptField::ALL
                 .iter()

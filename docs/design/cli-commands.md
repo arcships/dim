@@ -1071,6 +1071,34 @@ first, changes one field and writes the whole document back, so a concurrent cha
 rather than overwritten. `edit` needs a terminal; a failed write keeps the draft and names it.
 The command menu is unchanged: the entry lives inside `/settings`, not as a new slash command.
 
+## Compaction window settings
+
+`/settings` lists the `Compaction window` row at the tail of the Interface
+rows, before the Prompts section (#2235 PR 1b). The row shows the window in force for the current model,
+read from the daemon's `compaction` settings source with the runtime's own resolution order: the exact
+`<provider>/<model>` key first, then the bare `<model>` key, then `default`, and a default the document
+never sets is `auto`. Without a model in force, or when the daemon
+serves no `settings.read`/`settings.update`, the row shows `Not available` and refuses
+edits. Enter opens the row's inline single-line editor for the exact key: the text is
+`auto`, a token count such as `128000` or `400k`, or a percentage such as `40%`; a
+malformed value is refused in place. Enter saves to the exact key, an empty submission
+removes it when it exists, `r` on the row does the same, and Esc leaves the editor for
+the panel list without closing the panel. A removal never touches `default` or another
+model's entries. Every write reads the revision and the document first and writes the
+whole document back with `settings.update`, so a concurrent change is reported rather
+than overwritten. When the written value sits below the shaping floor of the current
+model, the row reports the raised window once at save time
+([ContextCompaction §5.1.1](plugins/ContextCompaction.md#511-the-persisted-window-2235-pr-1b)).
+
+```text
+Settings
+  Prompt suggestion    on
+> Compaction window    40%
+  Prompts
+  ...
+Enter edit · r reset
+```
+
 ## Management surfaces
 
 A management area is one owner's management methods. The App Server serves each area through its

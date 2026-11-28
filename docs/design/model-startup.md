@@ -31,6 +31,18 @@ contracts; this document does not introduce a second model backend.
 | `DIM_MAX_OUTPUT_TOKENS` | Positive safe integer declaring output capacity where the catalog does not declare it. It is a declared fact, so it may equal or exceed the adopted context capacity; the request output allowance is derived from the final declared pair (see [ContextCompaction §5.1](plugins/ContextCompaction.md#51-productcontextmodel)) and always leaves at least half the window as input budget. |
 | `--autocompact auto\|TOKENS` / `DIM_AUTO_COMPACT_WINDOW` | Separate compaction window, not model capacity. The explicit flag wins. Accept positive token counts with optional `k`/`m` suffixes, or a percentage of the adopted context capacity such as `40%`; zero and values above 100% are refused. `auto` uses the existing model-derived threshold. Token counts wider than the model's capacity fail validation, and values below `min(32k, 10% of the capacity)` clamp to that floor, and the adopting operation's reply carries the requested value and the tokens in force, which clients report as a one-time notice. Do not impose Claude's vendor-specific 100K minimum or 1M maximum on Dim models. Reserve the existing output allowance. |
 
+The startup window layer is explicit configuration: a Session that adopted
+`--autocompact` or `DIM_AUTO_COMPACT_WINDOW` — including the explicit `auto` — never
+reads the persisted `compaction` settings document, whatever it says, and a Session
+started with only `--model` or `--effort` is not explicit and follows it (#2235 PR 1b,
+[ContextCompaction §5.1.1](plugins/ContextCompaction.md#511-the-persisted-window-2235-pr-1b)).
+The startup validation stays strict where the persisted layer is soft: a token count
+wider than the model's capacity fails here and falls back to the model-derived default
+there. Startup metadata records whether the window was explicit, and a resume keeps the
+exemption its launch adopted: a resume without startup flags adopts no new configuration
+at all, one that passes flags without a window reuses the adopted metadata unchanged, and
+only naming a window again adopts the new value.
+
 Flags and environment overrides are read only for Session execution, not help,
 version, login or management commands. `--help` and `-h` explain the supported
 inputs, protocol-specific authentication, precedence and examples without

@@ -255,6 +255,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Opened link" => "已開啟連結",
         "Link: {url}" => "連結：{url}",
         "Not available" => "無法使用",
+        "Compaction window" => "壓縮視窗",
+        "Enter edit · r reset" => "Enter 編輯 · r 重設",
+        "Compaction window: {error}" => "壓縮視窗：{error}",
+        "Compaction settings are not available" => "壓縮設定無法使用",
+        "Compaction window {configured} raised to the shaping floor {tokens} for the current model" => {
+            "壓縮視窗 {configured} 已被抬升至當前模型的塑形下限 {tokens}"
+        }
         "files changed  {count}" => "已變更檔案  {count}",
         "active session" => "目前工作階段",
         "new-session draft" => "新工作階段草稿",

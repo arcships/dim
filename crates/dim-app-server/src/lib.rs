@@ -5,6 +5,7 @@ pub mod cli;
 pub mod codex_oauth;
 pub mod collaboration;
 mod collaboration_model_policy;
+pub mod compaction_settings;
 mod connection;
 mod control;
 mod exec_shell_settings;
@@ -98,6 +99,11 @@ pub struct ServerConfig {
     /// as `session.tool_mode.<mode>`.
     pub tool_modes: Vec<dim_agent_types::ToolMode>,
     pub model_catalog: Option<Arc<dim_agent_aimux::AimuxModels>>,
+    /// The late binding between the process's model stacks, wired while the
+    /// host builds them, and the compaction port the `compaction` settings
+    /// row publishes (#2235 PR 1b). A process serving no compaction-reading
+    /// model stack leaves the cell empty and its resolutions are unchanged.
+    pub compaction_settings: dim_agent_capabilities::compaction_settings::CompactionSettingsCell,
     /// The override `DIM_USER_AGENT` names, read and validated once by the
     /// process that hosts models and passed to this Server's Aimux part.
     /// `None` leaves dim's built-in User-Agent, subject to the `provider`
@@ -156,6 +162,7 @@ impl Default for ServerConfig {
             session_execution: true,
             tool_modes: vec![],
             model_catalog: None,
+            compaction_settings: Default::default(),
             user_agent: None,
             file_roots: vec![],
             session_defaults: SessionConfig::default(),
@@ -1156,6 +1163,18 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 prompt_suggestion_settings::PromptSuggestionSettingsPlugin::new(names)?,
             ))
         })?);
+        {
+            let cell = config.compaction_settings.clone();
+            rows.push(register_part(
+                &mut builtins,
+                builder.catalog(),
+                move |names| {
+                    Ok(Box::new(
+                        compaction_settings::CompactionSettingsPlugin::new(names, cell.clone())?,
+                    ))
+                },
+            )?);
+        }
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(prompt_settings::PromptSettingsPlugin::new(names)?))
         })?);

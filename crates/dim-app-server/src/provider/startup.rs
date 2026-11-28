@@ -104,15 +104,11 @@ impl<'de> Deserialize<'de> for CompactPercent {
     }
 }
 
-/// The least compaction window a configuration may shape with
-/// (#2235): 32k tokens, capped at a tenth of the model's capacity.
-fn compact_window_floor(context_window: u64) -> u64 {
-    32_000.min(context_window / 10)
-}
+use dim_agent_types::compaction_settings::{compact_window_floor, compact_window_percent_tokens};
 
 /// The tokens a compaction window of `percent` of the capacity is.
 fn compact_window_tokens(percent: CompactPercent, context_window: u64) -> u64 {
-    (percent.0 * context_window as f64 / 100.0).floor() as u64
+    compact_window_percent_tokens(percent.0, context_window)
 }
 
 pub(super) struct Binding {
@@ -464,7 +460,13 @@ impl ProviderService {
         let startup = metadata.startup.get_or_insert_default();
         let capacity = snapshot.capabilities.context_window;
         match input.auto_compact_window {
-            Some(AutoCompactWindow::Auto(_)) => startup.auto_compact_window = None,
+            Some(AutoCompactWindow::Auto(_)) => {
+                // An explicit `auto` holds no window, yet it is a choice: the
+                // explicit fact keeps persisted compaction settings off this
+                // session (#2235 PR 1b).
+                startup.auto_compact_window = None;
+                startup.auto_compact_window_explicit = true;
+            }
             Some(AutoCompactWindow::Tokens(tokens)) => {
                 if tokens == 0 || tokens > snapshot.capabilities.context_window {
                     return Err(failure(
@@ -472,9 +474,11 @@ impl ProviderService {
                     ));
                 }
                 startup.auto_compact_window = Some(tokens);
+                startup.auto_compact_window_explicit = false;
             }
             Some(AutoCompactWindow::Percent(percent)) => {
                 startup.auto_compact_window = Some(compact_window_tokens(percent, capacity));
+                startup.auto_compact_window_explicit = false;
             }
             None => {}
         }

@@ -470,8 +470,14 @@ fn settings_shows_no_suggestion_row_without_the_methods() {
     let daemon = home.daemon(move |wire| {
         opened_with_methods(wire, &["settings.read", "settings.update"], vec![], false);
         ready.recv_timeout(PATIENCE).unwrap();
-        // The settings panel reads the prompt texts too; this test is about
-        // the absent suggestion source.
+        // The settings panel reads the compaction and prompt sources too;
+        // this test is about the absent suggestion source.
+        let compaction = wire.read("settings.read");
+        assert_eq!(compaction["params"]["source"], "compaction");
+        wire.reply(
+            &compaction,
+            json!({"revision":"r1","document":{"default":"auto"}}),
+        );
         let read = wire.read("settings.read");
         assert_eq!(read["params"]["source"], "prompts");
         wire.reply(&read, json!({"revision":"r1","document":{}}));
@@ -514,6 +520,13 @@ fn settings_toggles_the_switch_through_the_daemon() {
         wire.reply(
             &read,
             json!({"revision":"r1","document":{"enabled":false,"maxChars":80}}),
+        );
+        // `/settings` reads the compaction source before the prompt texts.
+        let compaction = wire.read("settings.read");
+        assert_eq!(compaction["params"]["source"], "compaction");
+        wire.reply(
+            &compaction,
+            json!({"revision":"r1","document":{"default":"auto"}}),
         );
         // `/settings` also reads the prompt texts when it opens.
         let prompts = wire.read("settings.read");

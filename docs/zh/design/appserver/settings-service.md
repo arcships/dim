@@ -322,6 +322,8 @@ impl SettingsService {
   `register_declared` 用 `jsonschema` 编译 schema。进程级所有者在 `apply` 中登记：Mcp（`mcp`、
   `mcp-projects`、`mcp-plugins`）、SkillsCatalog（`skills`）、PermissionRules（`permission`）、
   CollaborationModelPolicy（`collaboration`）和 App Server 的 ExecutionSettings（`execution`）。
+  App Server 还登记 `compaction`（`compaction.json`，仅用户作用域）：默认压缩窗口与按模型的覆盖，
+  其匹配顺序、软上限与塑形下限属于 [ContextCompaction](../plugins/ContextCompaction.md#511-持久化窗口2235-pr-1b)（#2235 PR 1b）。
   其他插件中的读取方只读；对某个名字用不是其已登记类型的
   `read::<D>`/`update::<D>` 得到 `UnknownSource`。`settings` 服务的 `register` 以调用行的上下文调用
   `register_declared`。

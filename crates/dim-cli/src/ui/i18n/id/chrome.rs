@@ -271,6 +271,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Opened link" => "Tautan dibuka",
         "Link: {url}" => "Tautan: {url}",
         "Not available" => "Tak tersedia",
+        "Compaction window" => "Jendela pemadatan",
+        "Enter edit · r reset" => "Enter ubah · r reset",
+        "Compaction window: {error}" => "Jendela pemadatan: {error}",
+        "Compaction settings are not available" => "Pengaturan pemadatan tak tersedia",
+        "Compaction window {configured} raised to the shaping floor {tokens} for the current model" => {
+            "Jendela pemadatan {configured} dinaikkan ke batas minimum pembentukan {tokens} untuk model saat ini"
+        }
         "files changed  {count}" => "file diubah  {count}",
         "active session" => "sesi aktif",
         "new-session draft" => "draf sesi baru",
