@@ -557,6 +557,14 @@ options, not those choices. Descriptor edits, route changes and refresh never
 automatically delete unsupported saved fields. Explicit adoption reports the
 rejected saved preferences; the user can set or clear each field explicitly.
 
+A service-tier declaration is a capability, not a hint: `supported: true` states
+a usable set, so `options` is non-empty and `default`, when present, is one of
+them. A declaration whose options neither the descriptor nor the row it is
+identified with enumerates is `supported: false` with no `default` and no
+`options`, and the preference patch then refuses every tier. A declared
+`default` outside the options gives way to the option named `default`, else the
+first one, so a supported declaration always names a tier it offers.
+
 Existing `delete` keeps its builtin-disable/custom-delete behavior. `models.edit`
 keeps `ModelEdit` and adds `endpoint: {action:"set",value:NewApiEndpoint} |
 {action:"clear"}` for static New API models only, restricted to §6's executable subset.

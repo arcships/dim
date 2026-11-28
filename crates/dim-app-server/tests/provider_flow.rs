@@ -1364,6 +1364,14 @@ fn declared_efforts(
         .and_then(|reasoning| reasoning.effort_options.clone())
 }
 
+/// A model's service-tier capability as a client reads it, in the shape the
+/// public reply carries.
+fn published_tier(
+    metadata: Option<&dim_app_server::model_catalog::ModelMetadata>,
+) -> Option<Value> {
+    Some(serde_json::to_value(metadata?.service_tier.as_ref()?).unwrap())
+}
+
 /// The effort list one bundled row declares for `id`.
 fn bundled_efforts(catalog: &BundledCatalog, provider_id: &str, id: &str) -> Vec<String> {
     catalog
@@ -1493,6 +1501,38 @@ impl ServedListing {
             .unwrap();
         let models = management.providers[0].models.as_ref().unwrap();
         declared_efforts(
+            models
+                .iter()
+                .find(|model| model.model.model_id == id)
+                .unwrap()
+                .model
+                .metadata
+                .as_ref(),
+        )
+    }
+
+    /// The service tier `id` publishes, as the refresh reply reports it.
+    fn served_tier(&self, id: &str) -> Option<Value> {
+        published_tier(
+            self.catalog
+                .models
+                .iter()
+                .find(|model| model.id == id)
+                .unwrap()
+                .metadata
+                .as_ref(),
+        )
+    }
+
+    /// The same, as `provider.management` reports it from the stored record.
+    async fn tier_read_back(&self, id: &str) -> Option<Value> {
+        let management = self
+            .provider
+            .management(LISTED.into(), None, &self.cancel)
+            .await
+            .unwrap();
+        let models = management.providers[0].models.as_ref().unwrap();
+        published_tier(
             models
                 .iter()
                 .find(|model| model.model.model_id == id)
@@ -1703,6 +1743,143 @@ async fn a_saved_effort_is_validated_against_the_listings_levels() {
     assert!(
         matches!(refused, Err(ProviderError::InvalidConfig(_))),
         "a level only the identified row states is refused: {refused:?}"
+    );
+    listing.close().await;
+}
+
+/// A service-tier declaration is a capability, not a hint: `supported: true`
+/// states a usable set, and a declaration whose options nothing enumerates is
+/// unavailable, so a client never offers a tier the model does not accept
+/// (#2248).
+#[tokio::test]
+async fn a_service_tier_declaration_states_only_a_usable_set() {
+    let function = |id: &str, service_tier: Value| {
+        json!({
+            "id": id,
+            "limit": {"context": 128000, "output": 16384},
+            "serviceTier": service_tier
+        })
+    };
+    let listing = ServedListing::refreshed(json!([
+        function(
+            "tier-declared",
+            json!({"supported": true, "default": "default", "options": ["default", "priority"]})
+        ),
+        function("tier-unenumerated", json!(true)),
+        function(
+            "tier-empty-options",
+            json!({"supported": true, "default": "priority", "options": []})
+        ),
+        function("tier-off", json!(false)),
+        function(
+            "tier-default-outside",
+            json!({"supported": true, "default": "flex", "options": ["default", "priority"]})
+        ),
+        function("gpt-5.5", json!(true)),
+    ]))
+    .await;
+    let declared = json!({"supported": true, "default": "default", "options": ["default", "priority"]});
+    assert_eq!(listing.served_tier("tier-declared"), Some(declared.clone()));
+    assert_eq!(
+        listing.tier_read_back("tier-declared").await,
+        Some(declared.clone()),
+        "the edit-view read states the same capability as the catalog"
+    );
+    for id in ["tier-unenumerated", "tier-empty-options", "tier-off"] {
+        assert_eq!(
+            listing.served_tier(id),
+            Some(json!({"supported": false})),
+            "{id} states no usable set"
+        );
+        assert_eq!(
+            listing.tier_read_back(id).await,
+            Some(json!({"supported": false})),
+            "{id} states no usable set in the edit-view read either"
+        );
+    }
+    assert_eq!(
+        listing.served_tier("tier-default-outside"),
+        Some(declared.clone()),
+        "a default outside the options gives way to one of them"
+    );
+    assert_eq!(
+        listing.served_tier("gpt-5.5"),
+        Some(declared.clone()),
+        "the identified row enumerates the options a listing names none of"
+    );
+
+    let accepted = listing
+        .provider
+        .update_preferences(
+            LISTED.into(),
+            listing.catalog.version,
+            "tier-declared".into(),
+            serde_json::from_value(json!({"serviceTier":{"action":"set","value":"priority"}}))
+                .unwrap(),
+            &listing.cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted.preferences["tier-declared"].service_tier.as_deref(),
+        Some("priority"),
+        "an offered tier is accepted"
+    );
+    for (id, tier) in [
+        ("tier-unenumerated", "priority"),
+        ("tier-empty-options", "priority"),
+        ("tier-off", "default"),
+        ("tier-default-outside", "flex"),
+    ] {
+        let refused = listing
+            .provider
+            .update_preferences(
+                LISTED.into(),
+                accepted.info.version.unwrap(),
+                id.into(),
+                serde_json::from_value(json!({"serviceTier":{"action":"set","value":tier}}))
+                    .unwrap(),
+                &listing.cancel,
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(ProviderError::InvalidConfig(_))),
+            "{id} refuses the tier {tier} it does not offer: {refused:?}"
+        );
+    }
+    let accepted = listing
+        .provider
+        .update_preferences(
+            LISTED.into(),
+            accepted.info.version.unwrap(),
+            "tier-default-outside".into(),
+            serde_json::from_value(json!({"serviceTier":{"action":"set","value":"priority"}}))
+                .unwrap(),
+            &listing.cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted.preferences["tier-default-outside"].service_tier.as_deref(),
+        Some("priority"),
+        "the options a declaration keeps are still offered"
+    );
+    let accepted = listing
+        .provider
+        .update_preferences(
+            LISTED.into(),
+            accepted.info.version.unwrap(),
+            "gpt-5.5".into(),
+            serde_json::from_value(json!({"serviceTier":{"action":"set","value":"priority"}}))
+                .unwrap(),
+            &listing.cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted.preferences["gpt-5.5"].service_tier.as_deref(),
+        Some("priority"),
+        "the identified row's options are the model's own"
     );
     listing.close().await;
 }
