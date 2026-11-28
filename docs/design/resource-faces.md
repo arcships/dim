@@ -509,11 +509,17 @@ operation, without repeated remote probes. `trace` takes the same position and r
 and `saveSnapshot {sessionId,branchId,snapshot}` return `{}`. `sessionConfig {sessionId}` returns
 `{config}`. `latestSnapshot {sessionId,branchId,through,interpreter}` returns `{snapshot}`.
 These are storage lifecycle steps. `createSession` prepares the backend record; it does not
-initialize or publish an Agent Session. `rollbackSession` undoes a successfully prepared creation
-whose initialization failed, after its producers have stopped; it is not the general deletion
-workflow. `releaseSession` drains accepted backend writes and releases their resources without
-closing the Agent Session or its admission. App Server creation/deletion retain the repository
-and lifecycle obligations in §5.2.
+initialize or publish an Agent Session. Its id is caller-selected, so the native store's shared
+insertion boundary applies the same admission as the creation entries in §5.2: one to sixty-four
+characters of `[a-z0-9_-]`, never a Windows reserved device name, rejected with `invalid` before
+anything is written, as is an id differing from a stored one only by case or sharing its output
+directory with a stored legacy id; a byte-identical duplicate keeps its `storage` error. Ids
+already stored are never re-validated: restoration reads them as written, and deletion plus use
+as a fork source keep the single normal path component check (#2204). `rollbackSession` undoes a
+successfully prepared creation whose initialization failed, after its producers have stopped; it
+is not the general deletion workflow. `releaseSession` drains accepted backend writes and releases
+their resources without closing the Agent Session or its admission. App Server creation/deletion
+retain the repository and lifecycle obligations in §5.2.
 
 Snapshots retain their canonical fields (`sequence`, `event_id`, `interpreter`, `state`), optional
 acceleration semantics and owner validation. Domain errors preserve `{code,message}` using

@@ -2532,6 +2532,7 @@ fn create_session(
     leader: Option<&str>,
     origin: SessionOrigin,
 ) -> Result<()> {
+    dim_agent_runtime::check_new_session_id(session)?;
     reject_conflicting_id(connection, session)?;
     let config = serde_json::to_string(config).map_err(error)?;
     connection

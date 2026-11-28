@@ -1,7 +1,9 @@
 //! #2204: a new Session id admitted through `CreateSessionOptions::prepare`,
-//! `createOwnedSession` or a fork's target is lowercase ASCII — one to
-//! sixty-four characters of `[a-z0-9_-]`, and never a Windows reserved device
-//! name — and is rejected with InvalidInput before anything is written. The
+//! `createOwnedSession`, a fork's target or the low-level store creation the
+//! `SqliteStorage.createSession` face dispatches to is lowercase ASCII — one
+//! to sixty-four characters of `[a-z0-9_-]`, and never a Windows reserved
+//! device name — and is rejected with InvalidInput before anything is
+//! written. The
 //! store refuses a write whose id differs from a stored one only by case,
 //! and a write whose id would share an output directory with a stored one
 //! under a supported filesystem's identity rules — Unicode folding pairs,
@@ -199,6 +201,108 @@ async fn owned_creation_admits_only_lowercase_ascii_ids() {
     store.close().await.unwrap();
     db.close().await.unwrap();
     root.shutdown().await.unwrap();
+}
+
+/// The low-level creation the `SqliteStorage.createSession` plugin face and
+/// the `timelineStore.createSession` process face both dispatch to, and the
+/// plain `Agent::create_session` writes through: a caller-selected id admits
+/// the same shape rule as the entries above, at the store's shared insertion
+/// boundary. Every refusal is InvalidInput before anything is written.
+#[tokio::test]
+async fn store_creation_admits_only_lowercase_ascii_ids() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+
+    let overlong = "x".repeat(65);
+    for id in [
+        "Uppercase",
+        "with space",
+        "with/slash",
+        "con",
+        "com0",
+        "lpt9",
+        "unicode-é",
+        overlong.as_str(),
+    ] {
+        let result = store.create_session(id, &SessionConfig::default()).await;
+        assert!(
+            matches!(result, Err(AgentError::InvalidInput(_))),
+            "store creation with id {id:?} must be rejected with InvalidInput, got {result:?}"
+        );
+        assert_eq!(
+            stored_rows(&connection, id),
+            0,
+            "nothing of {id:?} may be written"
+        );
+    }
+
+    store
+        .create_session("valid-id_1", &SessionConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        stored_rows(&connection, "valid-id_1"),
+        2,
+        "a conforming id writes its Session and root branch rows"
+    );
+
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// The shared insertion boundary keeps the collision semantics the creation
+/// entries pin: a case-only variant of a stored id is InvalidInput, while a
+/// byte-identical duplicate keeps its Storage error.
+#[tokio::test]
+async fn store_creation_rejects_case_variants_and_keeps_storage_error_for_byte_duplicates() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_stored_session(&connection, "Stored-9");
+
+    let variant = store
+        .create_session("stored-9", &SessionConfig::default())
+        .await;
+    assert!(
+        matches!(variant, Err(AgentError::InvalidInput(_))),
+        "a case-only variant must be InvalidInput at the low-level creation, got {variant:?}"
+    );
+    assert_eq!(
+        stored_rows(&connection, "stored-9"),
+        0,
+        "nothing of the variant may be written"
+    );
+
+    store
+        .create_session("valid-id", &SessionConfig::default())
+        .await
+        .unwrap();
+    let duplicate = store
+        .create_session("valid-id", &SessionConfig::default())
+        .await;
+    assert!(
+        matches!(duplicate, Err(AgentError::Storage(_))),
+        "a byte-identical duplicate must keep its Storage error, got {duplicate:?}"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM agent_sessions WHERE session_id='valid-id'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1,
+        "the stored row is neither duplicated nor overwritten"
+    );
+
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -407,9 +511,10 @@ async fn fork_with_a_byte_identical_target_is_refused_without_touching_the_exist
 }
 
 /// Ids stored before the admission rule are neither migrated nor rewritten:
-/// the raw store still writes them as given, an uppercase source forks into
-/// a conforming target, and deletion removes it as before. This pins behavior
-/// the change must not alter.
+/// restoration reads them as written, an uppercase source forks into
+/// a conforming target, and deletion removes it as before. The rows are
+/// seeded around the creation boundary the way a pre-#2204 daemon wrote them.
+/// This pins behavior the change must not alter.
 #[tokio::test]
 async fn stored_uppercase_ids_remain_operable() {
     let database = Database::new();
@@ -421,9 +526,14 @@ async fn stored_uppercase_ids_remain_operable() {
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
     let store = SqliteTimelineStore::new(db.clone());
-    store
-        .create_session("Legacy-9", &SessionConfig::default())
-        .await
+    let connection = Connection::open(&database.0).unwrap();
+    seed_stored_session(&connection, "Legacy-9");
+    connection
+        .execute(
+            "INSERT INTO timeline_branches (session_id, branch_id, info, sequence) \
+             VALUES ('Legacy-9', 'main', '{\"id\":\"main\"}', 0)",
+            [],
+        )
         .unwrap();
     append(
         &store,
@@ -438,11 +548,14 @@ async fn stored_uppercase_ids_remain_operable() {
         .await
         .unwrap()
         .unwrap();
+    assert!(
+        sessions.session_config("Legacy-9").await.unwrap().is_some(),
+        "restoration reads the uppercase id's configuration as written"
+    );
     sessions
         .fork_session("Legacy-9", "valid-fork", 2, &config)
         .await
         .unwrap();
-    let connection = Connection::open(&database.0).unwrap();
     assert!(
         !stored_events(&connection, "valid-fork").is_empty(),
         "the uppercase source's rows are copied into the fork"

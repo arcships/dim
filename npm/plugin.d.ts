@@ -760,7 +760,8 @@ export interface TimelineStore {
   /** Registration completes before return; observe later admissions, without replay of earlier batches. */
   commits(request: { sessionId: string }, listener: (completion: TimelineStoreCompletion) => void | Promise<void>): Promise<{ subscriptionId: string }>;
   closeCommits(request: { subscriptionId: string }): Promise<{}>;
-  /** Prepare the backend record; the lifecycle owner initializes and publishes the Agent Session. */
+  /** Prepare the backend record; the lifecycle owner initializes and publishes the Agent Session.
+   * The id is caller-selected and admits the same rule as create/fork targets: one to sixty-four characters of `[a-z0-9_-]`, never a Windows reserved device name, rejected with `invalid` before anything is written, as is an id differing from a stored one only by case or sharing its output directory with a stored legacy id; a byte-identical duplicate rejects `storage`. Ids already stored stay readable, deletable and usable as fork sources unchanged. */
   createSession(request: { sessionId: string; config: SessionConfig }): Promise<{}>;
   sessionConfig(request: { sessionId: string }): Promise<{ config: SessionConfig | null }>;
   /** Drain accepted storage writes; does not close the Agent Session or its admission. */
