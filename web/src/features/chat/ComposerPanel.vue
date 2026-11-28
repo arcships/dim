@@ -654,7 +654,6 @@ async function onModel(model: ModelId): Promise<void> {
 
 /** Fills `/skill:<name> ` into the draft and sends nothing; the token is part of the message. */
 function completeSkill(name: string): void {
-  commandReturn.value = undefined
   text.value = `${SKILL_TOKEN_PREFIX}${name} `
   dismissed.value = true
   void nextTick(() => {
