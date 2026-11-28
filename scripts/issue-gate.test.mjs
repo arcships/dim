@@ -586,19 +586,22 @@ test('treats a missing closing-reference read as incomplete discovery', async (t
   assert.match(result.stderr, /Incomplete linked-PR discovery/);
 });
 
-test('leaves a current-head success untouched when the known head is stale', async (t) => {
+test('completes the current head when the known head is stale', async (t) => {
   const runsByHead = new Map([
     ['old-head', []],
-    [
-      'new-head',
-      [{ id: 2, name: 'issue-gate', external_id: 'issue-gate:77', status: 'completed', conclusion: 'success' }],
-    ],
+    ['new-head', [{ id: 2, name: 'issue-gate', external_id: 'issue-gate:77', status: 'in_progress' }]],
   ]);
   const patches = [];
   let nextId = 1;
   const api = await startFakeApi((request) => {
     if (request.method === 'GET' && request.path === `/repos/${REPOSITORY}/pulls/77`) {
       return reply(200, pullRequest('Fixes #1', 'new-head'));
+    }
+    if (request.method === 'POST' && request.path === '/graphql') {
+      return closingRefs([]);
+    }
+    if (request.method === 'GET' && request.path === `/repos/${REPOSITORY}/issues/1`) {
+      return reply(200, issue());
     }
     const prefix = `/repos/${REPOSITORY}/commits/`;
     const suffix = '/check-runs';
@@ -631,13 +634,12 @@ test('leaves a current-head success untouched when the known head is stale', asy
     targetHead: 'old-head',
   });
 
-  assert.equal(result.status, 1);
-  assert.ok(!api.requests.some((request) => request.path.includes('/commits/new-head/check-runs')));
+  assert.equal(result.status, 0, result.stderr);
   const completed = patches.filter((patch) => patch.status === 'completed');
-  assert.deepEqual(completed.map((patch) => patch.id), [1]);
+  assert.deepEqual(completed.map((patch) => patch.id), [1, 2]);
   assert.equal(completed[0].conclusion, 'failure');
   assert.equal(completed[0].output.title, 'PR head changed');
-  assert.ok(!patches.some((patch) => patch.id === 2));
+  assert.equal(completed[1].conclusion, 'success');
 });
 
 test('the discovery step propagates a gate script failure', () => {

@@ -457,6 +457,7 @@ async function main() {
   const knownPr = { number: target, head: knownHead };
 
   let checks;
+  let checkedPr = knownPr;
   try {
     checks = await beginCheckRun(knownPr);
     const pr = await getPr(target);
@@ -464,11 +465,16 @@ async function main() {
       const changed = {
         ok: false,
         title: 'PR head changed',
-        summary: 'The pull request head changed before evaluation; the current revision is evaluated by its own event.',
+        summary: 'The discovery snapshot was stale; this run evaluates and completes the current revision.',
       };
       await finishCheckRun(knownPr, checks, changed);
-      console.log(`#${target}: FAIL: ${changed.title}\n${changed.summary}`);
-      process.exitCode = 1;
+      checks = undefined;
+      checkedPr = pr;
+      checks = await beginCheckRun(pr);
+      const result = await evaluateStable(pr);
+      await finishCheckRun(pr, checks, result);
+      console.log(`#${target}: ${result.ok ? 'PASS' : 'FAIL'}: ${result.title}\n${result.summary}`);
+      process.exitCode = result.ok ? 0 : 1;
       return;
     }
     const result = await evaluateStable(pr);
@@ -476,7 +482,7 @@ async function main() {
     console.log(`#${target}: ${result.ok ? 'PASS' : 'FAIL'}: ${result.title}\n${result.summary}`);
     process.exitCode = result.ok ? 0 : 1;
   } catch (error) {
-    if (checks) await failCheckRun(knownPr, checks, error);
+    if (checks) await failCheckRun(checkedPr, checks, error);
     throw error;
   }
 }
