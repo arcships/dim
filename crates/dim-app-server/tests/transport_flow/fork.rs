@@ -320,6 +320,73 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
     server.join().await.unwrap();
 }
 
+/// A fork of a Session with a child branch copies `main` only, so opening the
+/// fork records no creation failure and the fork's directory lists no branch
+/// it does not have (S5c §6.3, #1978).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_of_a_session_with_a_child_branch_reports_no_creation_failure() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut params = create(json!(["wait", "branch"]));
+    params["interactive"] = json!(false);
+    let sid = forked(&client.rpc("session.create", params).await);
+    turn(&mut client, &sid, "first").await;
+    let source = agent.get_session(&sid).unwrap();
+    let head = source.sequence("main").unwrap();
+    let child = branch(&mut client, &sid, head, "tool:wait {\"millis\":1}").await;
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":sid,"branchId":child}))
+            .await,
+    );
+    assert!(!history(&source, &child).await.is_empty(), "the child ran");
+    let at = source.sequence("main").unwrap();
+
+    let fid = forked(&fork(&mut client, &sid, at).await);
+    let fork = agent.get_session(&fid).unwrap();
+    // The fork's opening writes its facts before it accepts input, so a turn
+    // that ends here settles everything the opening wrote.
+    turn(&mut client, &fid, "in the fork").await;
+    let copied = history(&fork, "main").await;
+    assert_eq!(
+        failed_creations(&copied),
+        Vec::<String>::new(),
+        "opening a fork records no creation failure: {:?}",
+        keys(&copied)
+    );
+    let directories: Vec<String> = store
+        .connection()
+        .prepare("SELECT branch_id FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
+        .unwrap()
+        .query_map([&fid], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(directories, ["main"], "a fork's directory is its root");
+    let listed = client
+        .rpc("session.branches", json!({"sessionId":fid}))
+        .await;
+    assert_ok(&listed);
+    let ids: Vec<&str> = listed["result"]["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|branch| branch["branchId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["main"], "a fork lists only the line it has");
+    assert!(
+        fork.state(&child).is_err(),
+        "the source's child is not part of the fork"
+    );
+    assert!(
+        source.state(&child).is_ok(),
+        "the source keeps its child"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// A branch's cut is at most its parent's published head: `session.branch_create`
 /// checks it before any read and creates nothing when the cut is a future one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
