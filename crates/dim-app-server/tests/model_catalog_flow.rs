@@ -1,6 +1,6 @@
 use dim_app_server::model_catalog::{
-    BundledCatalog, CatalogCapabilities, ModelEdit, ModelEntry, ModelIdentification, ModelServiceTier,
-    ModelSource, ProviderProjection, infer_capability_edits, rebase_override,
+    BundledCatalog, CatalogCapabilities, ModelEdit, ModelEntry, ModelIdentification,
+    ModelServiceTier, ModelSource, ProviderProjection, infer_capability_edits, rebase_override,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -226,7 +226,8 @@ fn a_service_tier_declaration_states_only_a_usable_set() {
         provider_id: "openai-codex".into(),
         ..Default::default()
     };
-    let declared = Some(json!({"supported": true, "default": "default", "options": ["default", "priority"]}));
+    let declared =
+        Some(json!({"supported": true, "default": "default", "options": ["default", "priority"]}));
     assert_eq!(
         tier(&bundled(&catalog, "openai-codex", "gpt-5.5")),
         declared,

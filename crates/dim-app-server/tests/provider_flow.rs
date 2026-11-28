@@ -1777,7 +1777,8 @@ async fn a_service_tier_declaration_states_only_a_usable_set() {
         ),
     ]))
     .await;
-    let declared = json!({"supported": true, "default": "default", "options": ["default", "priority"]});
+    let declared =
+        json!({"supported": true, "default": "default", "options": ["default", "priority"]});
     assert_eq!(listing.served_tier("tier-declared"), Some(declared.clone()));
     assert_eq!(
         listing.tier_read_back("tier-declared").await,
@@ -1815,7 +1816,9 @@ async fn a_service_tier_declaration_states_only_a_usable_set() {
         .await
         .unwrap();
     assert_eq!(
-        accepted.preferences["tier-declared"].service_tier.as_deref(),
+        accepted.preferences["tier-declared"]
+            .service_tier
+            .as_deref(),
         Some("priority"),
         "an offered tier is accepted"
     );
@@ -1854,7 +1857,9 @@ async fn a_service_tier_declaration_states_only_a_usable_set() {
         .await
         .unwrap();
     assert_eq!(
-        accepted.preferences["tier-default-outside"].service_tier.as_deref(),
+        accepted.preferences["tier-default-outside"]
+            .service_tier
+            .as_deref(),
         Some("priority"),
         "the options a declaration keeps are still offered"
     );
