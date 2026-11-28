@@ -733,7 +733,6 @@ async fn assert_directory_shape_rejected(stored: &str, candidate: &str, why: &st
     let store = SqliteTimelineStore::new(db.clone());
     let connection = Connection::open(&database.0).unwrap();
     seed_owner(&connection);
-    seed_stored_session(&connection, stored);
     store
         .create_session("source", &SessionConfig::default())
         .await
@@ -746,6 +745,10 @@ async fn assert_directory_shape_rejected(stored: &str, candidate: &str, why: &st
         .await
         .unwrap()
         .unwrap();
+    // A shape resolving onto the output root or its ancestor refuses every
+    // creation, so its row is seeded only once the fork source exists; the
+    // row predates every admission check the candidate runs either way.
+    seed_stored_session(&connection, stored);
 
     let created = sessions
         .create_owned_session(
@@ -917,6 +920,373 @@ directory_shape!(
     "a forward-slash parent segment resolves on POSIX, so x/../abc lands on abc"
 );
 
+directory_shape!(
+    windows_resolution_landing_on_the_root_refuses_every_candidate,
+    "abc\\..",
+    "abc",
+    "abc\\.. resolves onto the output root itself, which every candidate's directory sits inside"
+);
+directory_shape!(
+    dot_resolution_lands_on_the_root_and_refuses_every_candidate,
+    ".",
+    "abc",
+    ". resolves onto the output root itself"
+);
+directory_shape!(
+    parent_resolution_lands_above_the_root_and_refuses_every_candidate,
+    "..",
+    "abc",
+    ".. resolves onto an ancestor of the output root"
+);
+directory_shape!(
+    backslash_resolution_is_the_volume_root_and_refuses_every_candidate,
+    "\\",
+    "abc",
+    "\\ resolves onto the volume's own root, an ancestor of every candidate's directory"
+);
+directory_shape!(
+    drive_root_resolution_is_the_volume_root_and_refuses_every_candidate,
+    "C:\\",
+    "abc",
+    "C:\\ resolves onto the volume's own root, an ancestor of every candidate's directory"
+);
+directory_shape!(
+    unc_id_proves_no_disjoint_volume_and_refuses,
+    "\\\\host\\share\\abc",
+    "abc",
+    "no static comparison proves a UNC share disjoint from the output root's volume"
+);
+directory_shape!(
+    verbatim_unicode_id_is_the_device_namespace_and_refuses,
+    "\\\\?\\\u{e9}\u{e9}",
+    "abc",
+    "a verbatim path naming neither a drive nor a share is the device namespace, and a multibyte name may not break its parse"
+);
+directory_shape!(
+    device_namespace_id_resolves_no_destination_and_refuses,
+    "\\\\.\\device\\abc",
+    "abc",
+    "the device namespace places no statically checkable directory, so the destination is unknown"
+);
+directory_shape!(
+    posix_parent_segment_resolution_into_the_root_refuses,
+    "abc/../def",
+    "def",
+    "POSIX resolves abc/../def onto def, the candidate's own directory"
+);
+directory_shape!(
+    drive_absolute_parent_segment_resolution_refuses,
+    "c:/../abc",
+    "abc",
+    "POSIX reads c:/../abc as a relative path whose parent segment resolves it into the output root"
+);
+
+/// The normal components of a canonical output root, the names a Windows or
+/// POSIX path spelling of that root carries.
+fn normal_names(root: &std::path::Path) -> Vec<String> {
+    root.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The drive letter of a canonical Windows output root, `c` where the root
+/// names no letter: on a POSIX store every letter is undecidable alike, so
+/// the fallback exercises the same refusal.
+fn root_drive_letter(root: &std::path::Path) -> char {
+    let text = root.to_string_lossy();
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        (bytes[0] as char).to_ascii_lowercase()
+    } else {
+        'c'
+    }
+}
+
+/// A legacy id computed from the test's own output root, refused by its
+/// resolved destination on both the creation and the fork entry. The
+/// resolution forms the comparison judges — volume anchor, rooted form,
+/// canonical spelling — only exist relative to the root the store writes
+/// under, so the stored id derives from it instead of hardcoding a letter or
+/// a layout.
+async fn assert_computed_shape_rejected(
+    stored: impl Fn(&std::path::Path) -> String,
+    candidate: &str,
+    why: &str,
+) {
+    let database = Database::new();
+    let output_root = database
+        .0
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+        .join("command-output");
+    let stored = stored(&output_root);
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    seed_stored_session(&connection, &stored);
+
+    let created = sessions
+        .create_owned_session(
+            candidate,
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(created, Err(AgentError::InvalidInput(_))),
+        "{why}: creating {candidate:?} while {stored:?} is stored must be InvalidInput, got {created:?}"
+    );
+    let forked = sessions.fork_session("source", candidate, 1, &config).await;
+    assert!(
+        matches!(forked, Err(AgentError::InvalidInput(_))),
+        "{why}: forking into {candidate:?} while {stored:?} is stored must be InvalidInput, got {forked:?}"
+    );
+    assert_eq!(
+        stored_rows(&connection, candidate),
+        0,
+        "{why}: the refused candidate {candidate:?} writes nothing"
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+macro_rules! root_shape {
+    ($name:ident, $compute:expr, $candidate:expr, $why:expr) => {
+        #[tokio::test]
+        async fn $name() {
+            assert_computed_shape_rejected($compute, $candidate, $why).await;
+        }
+    };
+}
+
+root_shape!(
+    windows_rooted_resolution_inside_the_root_refuses,
+    |root: &std::path::Path| format!("\\{}\\abc", normal_names(root).join("\\")),
+    "abc",
+    "a rooted id resolving back inside the output root overlaps the candidate's directory"
+);
+root_shape!(
+    windows_drive_absolute_resolution_inside_the_root_refuses,
+    |root: &std::path::Path| format!(
+        "{}:\\{}\\abc",
+        root_drive_letter(root),
+        normal_names(root).join("\\")
+    ),
+    "abc",
+    "a drive-absolute id resolving back inside the output root overlaps the candidate's directory"
+);
+root_shape!(
+    windows_verbatim_resolution_inside_the_root_refuses,
+    |root: &std::path::Path| format!(
+        "\\\\?\\{}:\\{}\\abc",
+        root_drive_letter(root),
+        normal_names(root).join("\\")
+    ),
+    "abc",
+    "a verbatim id resolves onto the same volume the drive letter names, so its destination inside the output root overlaps"
+);
+root_shape!(
+    drive_relative_id_resolves_no_destination_and_refuses,
+    |root: &std::path::Path| format!("{}:other", root_drive_letter(root)),
+    "abc",
+    "c:rest resolves against the drive's own current directory, which no static comparison knows"
+);
+root_shape!(
+    posix_absolute_resolution_inside_the_root_refuses,
+    |root: &std::path::Path| format!("/{}/abc", normal_names(root).join("/")),
+    "abc",
+    "a POSIX-absolute id resolving back inside the output root overlaps the candidate's directory"
+);
+
+/// #2204: the comparison's output root is the one the store was opened with,
+/// not `<database directory>/command-output` by construction. A host whose
+/// command-output layout moves away from the database — the CLI's split home
+/// is one — opens the store with that root, and the admission judges ids
+/// against it. The root is opened through its literal spelling while its
+/// canonical spelling differs wherever a prefix of the temporary directory
+/// is a symlink, so a rooted id spelling the canonical form must refuse
+/// too: it names the same directory.
+#[tokio::test]
+async fn the_opened_output_root_is_the_one_the_admission_compares_against() {
+    let database = Database::new();
+    let output_root = std::env::temp_dir()
+        .join(format!("dim-nocase-custom-{}", uuid::Uuid::new_v4()))
+        .join("command-output");
+    std::fs::create_dir_all(&output_root).unwrap();
+    let canonical_root = output_root.canonicalize().unwrap();
+    let canonical_id = format!(
+        "\\{}\\abc",
+        normal_names(&canonical_root).join("\\")
+    );
+    let literal_id = format!("\\{}\\abc", normal_names(&output_root).join("\\"));
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open_with_output_root(database.0.clone(), output_root.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    // Only the canonical spelling is seeded: it names the same directory as
+    // the literal root the store was opened with, so the refusal exists only
+    // when the comparison canonicalizes the root's longest existing prefix.
+    // Where the temporary directory already spells its canonical form the two
+    // ids are one row.
+    seed_stored_session(&connection, &canonical_id);
+
+    let created = sessions
+        .create_owned_session(
+            "abc",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(created, Err(AgentError::InvalidInput(_))),
+        "a rooted id over the opened output root must refuse creation, got {created:?}"
+    );
+    let forked = sessions.fork_session("source", "abc", 1, &config).await;
+    assert!(
+        matches!(forked, Err(AgentError::InvalidInput(_))),
+        "a rooted id over the opened output root must refuse the fork, got {forked:?}"
+    );
+    assert_eq!(
+        stored_rows(&connection, "abc"),
+        0,
+        "the refused candidate writes nothing"
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+    let _ = std::fs::remove_dir_all(output_root.parent().unwrap());
+}
+
+/// #2204: the refusal follows the stored row, not the shape. Once the row of
+/// an id resolving onto the output root is deleted, candidates the id blocked
+/// are admitted again.
+#[tokio::test]
+async fn deleting_the_row_of_a_root_wide_shape_unblocks_the_candidates() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    seed_stored_session(&connection, "..");
+
+    let blocked = sessions
+        .create_owned_session(
+            "abc",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(blocked, Err(AgentError::InvalidInput(_))),
+        "the root-wide id refuses the candidate while its row is stored, got {blocked:?}"
+    );
+
+    connection
+        .execute("DELETE FROM agent_sessions WHERE session_id='..'", [])
+        .unwrap();
+    sessions
+        .create_owned_session(
+            "abc",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    sessions
+        .fork_session("source", "def", 1, &config)
+        .await
+        .unwrap();
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
 /// A legacy id whose resolved output directory never covers a candidate's:
 /// its path climbs out of the output root without re-entering it, lands on
 /// the root itself, leaves the root sideways, or the join replaces the root.
@@ -1002,12 +1372,6 @@ directory_shape_admitted!(
     "..\\abc resolves beside the output root, never inside the candidate's directory"
 );
 directory_shape_admitted!(
-    windows_resolution_landing_on_the_root_shares_nothing,
-    "abc\\..",
-    "abc",
-    "abc\\.. resolves onto the output root itself, which no candidate's directory is"
-);
-directory_shape_admitted!(
     windows_resolution_leaving_the_root_sideways_shares_nothing,
     "abc\\..\\def",
     "abc",
@@ -1015,9 +1379,9 @@ directory_shape_admitted!(
 );
 directory_shape_admitted!(
     windows_rooted_path_replaces_the_output_root,
-    "\\abc",
+    "\\unshared-root\\abc",
     "abc",
-    "a rooted path replaces the output root in the join, so \\abc never lands inside it"
+    "a rooted path resolving beside the output root's own directory shares nothing with the candidate"
 );
 directory_shape_admitted!(
     windows_resolution_deeper_than_one_segment_shares_nothing,

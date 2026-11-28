@@ -671,14 +671,14 @@ impl SqliteStorage {
         session: String,
         config: SessionConfig,
     ) -> Result<()> {
-        let database = self.path.clone();
+        let output_root = self.output_root.clone();
         self.run(move |connection| {
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(error)?;
             create_session(
                 &tx,
-                &database,
+                &output_root,
                 &session,
                 &config,
                 None,
@@ -1769,14 +1769,21 @@ impl SessionStore {
                 },
             )
             .transpose()?;
-        let database = self.timeline.db.path.clone();
+        let output_root = self.timeline.db.output_root.clone();
         self.timeline
             .db
             .run(move |connection| {
                 let tx = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(error)?;
-                create_session(&tx, &database, &session, &config, leader.as_deref(), origin)?;
+                create_session(
+                    &tx,
+                    &output_root,
+                    &session,
+                    &config,
+                    leader.as_deref(),
+                    origin,
+                )?;
                 tx.execute(
                     "INSERT INTO session_owners VALUES (?1, ?2, ?3)",
                     params![session, agent, protocol_version],
@@ -2525,108 +2532,438 @@ fn windows_8_3_collides(stem: &str, candidate: &str) -> bool {
         && candidate.starts_with(&letters[..letters.len() - 4].iter().collect::<String>())
 }
 
-/// The normal components of `<database directory>/command-output`, the root
-/// every Session output directory is joined under (session files §3.1 and
-/// the deletion layout in storage/files.rs). The joining form mirrors the
-/// launcher's current working directory, which matters only for a relative
-/// database path.
-fn output_root_components(database: &Path) -> Vec<String> {
-    let joined = std::env::current_dir()
-        .map(|cwd| cwd.join(database))
-        .unwrap_or_else(|_| database.to_path_buf());
-    let mut components: Vec<String> = joined
-        .parent()
-        .map(|parent| {
-            parent
-                .components()
-                .filter_map(|part| match part {
-                    Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    components.push(super::COMMAND_OUTPUT_DIRECTORY.into());
-    components
+/// The volume a destination lives on, normalized so that the verbatim forms
+/// a canonicalized Windows path carries name the same volume as the plain
+/// forms (#2204): `\\?\C:` is `Disk('C')` and `\\?\UNC\host\share` is
+/// `Unc(host, share)`. `Volume` is the host volume an output root or a rooted
+/// path sits on when no letter or share names it — a POSIX store parsed under
+/// Windows rules has no volume, yet every rooted id inherits it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VolumeAnchor {
+    Posix,
+    Disk(char),
+    Unc(String, String),
+    Volume,
 }
 
-/// The components of `root.join(stored)` after the relative segments a
-/// Windows volume resolves before it touches the directory (#2204): both
-/// separators split, trailing dots and spaces trimmed, `.` dropped and `..`
-/// consuming the deepest component left — and nothing once the root is
-/// reached. `None` for a path the join replaces `root` with — rooted or
-/// drive-anchored — which can never share the root's directory. The same
-/// resolution runs on the POSIX separators a forward-slash id carries, so a
-/// store moving between platforms keeps one comparison.
-fn resolve_output_directory(root: &[String], stored: &str) -> Option<Vec<String>> {
-    let text = if stored.len() >= 2
-        && stored.as_bytes()[1] == b':'
-        && stored.as_bytes()[0].is_ascii_alphabetic()
-    {
-        &stored[2..]
-    } else {
-        stored
-    };
-    if text.starts_with(['/', '\\']) {
+/// A resolved filesystem destination: the volume it lives on and the
+/// components below that volume's anchor, `.` and `..` already consumed.
+/// `undecidable` marks a shape no static resolution can place — a device
+/// namespace path or a drive-relative one on its own volume — which refuses
+/// every candidate rather than a directory it cannot name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Destination {
+    anchor: VolumeAnchor,
+    segments: Vec<String>,
+    undecidable: bool,
+}
+
+impl Destination {
+    fn decided(anchor: VolumeAnchor, segments: Vec<String>) -> Self {
+        Self {
+            anchor,
+            segments,
+            undecidable: false,
+        }
+    }
+    fn undecidable() -> Self {
+        Self {
+            anchor: VolumeAnchor::Volume,
+            segments: Vec::new(),
+            undecidable: true,
+        }
+    }
+}
+
+/// The output root as the filesystem sees it, parsed once per platform's
+/// rules (#2204): POSIX separator parsing in `posix`, Windows prefix and
+/// separator parsing in `windows`. Each side holds the literal absolute form
+/// and, when it differs, the form the longest existing prefix canonicalizes
+/// to — `/var` and `/private/var` are the same directory, and a comparison
+/// that knew only one spelling would miss the overlap.
+struct OutputRoot {
+    posix: Vec<Destination>,
+    windows: Vec<Destination>,
+}
+
+/// The prefix a Windows parse strips before the segments: the volume the path
+/// is anchored to, or the marker that the join keeps the base's anchor.
+enum Prefix {
+    Disk(char),
+    Unc(String, String),
+    /// Rooted at the volume of the path it is joined onto (`\abc`).
+    Rooted,
+    /// `\\?\` or `\\.\` without a drive letter or UNC share behind it:
+    /// the device namespace, whose destinations no static comparison places.
+    Device,
+    /// `c:rest` with no separator after the colon: relative to the drive's
+    /// own current directory, which a static check cannot know.
+    DriveRelative(char),
+    /// Two leading separators with no usable host and share.
+    Malformed,
+    /// No prefix: the join keeps the base.
+    Join,
+}
+
+fn ascii_prefix_insensitive(text: &str, prefix: &str) -> bool {
+    text.len() >= prefix.len()
+        && text.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
+/// `host\share\rest` with both parts nonempty: the normalized UNC anchor and
+/// the rest. Host and share compare case-insensitively, so they normalize
+/// lowercase here.
+fn split_unc(text: &str) -> Option<(Prefix, &str)> {
+    let mut parts = text.splitn(3, ['/', '\\']);
+    let host = parts.next()?;
+    let share = parts.next()?;
+    if host.is_empty() || share.is_empty() {
         return None;
     }
-    let mut resolved: Vec<String> = root.to_vec();
-    for segment in text.split(['/', '\\']) {
-        if segment.is_empty() {
-            continue;
+    let rest = parts.next().unwrap_or("");
+    Some((Prefix::Unc(host.to_lowercase(), share.to_lowercase()), rest))
+}
+
+/// Parses the Windows prefix of `text` — verbatim drive and UNC forms,
+/// ordinary drive and UNC forms, rooted and drive-relative — returning the
+/// rest of the string with the prefix removed.
+fn windows_prefix(text: &str) -> (Prefix, &str) {
+    let separator = |byte: u8| byte == b'/' || byte == b'\\';
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && separator(bytes[0]) && separator(bytes[1]) {
+        let rest = text[2..].trim_start_matches(['/', '\\']);
+        if let Some(device) = rest.strip_prefix('?') {
+            let device = device.trim_start_matches(['/', '\\']);
+            if ascii_prefix_insensitive(device, "unc") {
+                let after = device[3..].trim_start_matches(['/', '\\']);
+                if let Some((anchor, tail)) = split_unc(after) {
+                    return (anchor, tail);
+                }
+                return (Prefix::Device, "");
+            }
+            let device_bytes = device.as_bytes();
+            if device_bytes.len() >= 2
+                && device_bytes[1] == b':'
+                && device_bytes[0].is_ascii_alphabetic()
+            {
+                let tail = device[2..].trim_start_matches(['/', '\\']);
+                return (
+                    Prefix::Disk((device_bytes[0] as char).to_ascii_uppercase()),
+                    tail,
+                );
+            }
+            return (Prefix::Device, "");
         }
-        // `.` and `..` are relative before the trailing trim consumes them;
-        // one trimming to them is relative too: the exact segments resolve on
-        // every platform, and the trailing trim Windows applies to a name is
-        // ambiguous for them, so the relative reading — the one that resolves
-        // to a real directory — is the one that can collide.
-        if segment == "." {
+        if rest.starts_with('.') {
+            return (Prefix::Device, "");
+        }
+        if let Some((anchor, tail)) = split_unc(rest) {
+            return (anchor, tail);
+        }
+        return (Prefix::Malformed, "");
+    }
+    if bytes.first().is_some_and(|byte| separator(*byte)) {
+        return (Prefix::Rooted, text[1..].trim_start_matches(['/', '\\']));
+    }
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let letter = (bytes[0] as char).to_ascii_uppercase();
+        if bytes.len() >= 3 && separator(bytes[2]) {
+            return (
+                Prefix::Disk(letter),
+                text[3..].trim_start_matches(['/', '\\']),
+            );
+        }
+        return (Prefix::DriveRelative(letter), &text[2..]);
+    }
+    (Prefix::Join, text)
+}
+
+/// Resolution states one id may fork into. A segment trimming to `.` or `..`
+/// keeps both its Windows resolution and its POSIX literal reading, so the
+/// states multiply with the segment count; past this cap only the resolution
+/// reading continues — the one that reaches a real directory on both
+/// platforms — instead of the comparison degenerating.
+const RESOLUTION_STATES: usize = 16;
+
+/// Advances one Windows resolution state over a segment: exact `.` and `..`
+/// resolve on every platform, a segment trimming to one of them forks into
+/// the resolution reading and the literal one, anything else is a name —
+/// pushed raw, since the comparison normalizes trailing characters.
+fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Vec<Vec<String>> {
+    let mut advanced = Vec::new();
+    for state in states {
+        if segment.is_empty() || segment == "." {
+            advanced.push(state);
             continue;
         }
         if segment == ".." {
-            resolved.pop();
+            let mut state = state;
+            state.pop();
+            advanced.push(state);
             continue;
         }
         let trimmed = segment.trim_end_matches(['.', ' ']);
-        if trimmed == "." {
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+            let mut resolved = state.clone();
+            if trimmed == ".." {
+                resolved.pop();
+            }
+            advanced.push(resolved);
+            if advanced.len() + 1 <= RESOLUTION_STATES {
+                let mut literal = state;
+                literal.push(segment.into());
+                advanced.push(literal);
+            }
             continue;
         }
-        if trimmed == ".." {
-            resolved.pop();
-            continue;
-        }
-        resolved.push(trimmed.into());
+        let mut state = state;
+        state.push(segment.into());
+        advanced.push(state);
     }
-    Some(resolved)
+    advanced
 }
 
-/// Whether a stored Session id can share its output directory with a newly
-/// admitted id under the identity rules of a supported filesystem — a volume
-/// folding case, or a Windows volume with its separators, trailing characters
-/// and 8.3 short names — once the id is resolved against the output root the
-/// way the platform accessing it does (#2204). The directories share when the
-/// stored id's directory is the candidate's own or inside it, because writing
-/// and deletion follow the directory recursively. An id resolving at or above
-/// the root — `..` climbing out of it — and one whose path leaves the root
-/// share nothing the candidate's directory covers, so they do not refuse.
-/// Re-entering the root after a climb passes through the root's real
-/// components, which the comparison of those components checks.
-/// Both rule sets apply wherever the store runs, so a store moving between
-/// platforms keeps its isolation: refusing too much is safe, missing a
-/// collision is not.
-fn shares_output_directory(root: &[String], stored: &str, candidate: &str) -> bool {
-    let Some(resolved) = resolve_output_directory(root, stored) else {
-        return false;
+/// Advances one POSIX resolution state over a segment: only exact `.` and
+/// `..` resolve, every other byte sequence — trailing dots and spaces
+/// included — is a literal name.
+fn advance_posix(state: &mut Vec<String>, segment: &str) {
+    if segment.is_empty() || segment == "." {
+        return;
+    }
+    if segment == ".." {
+        state.pop();
+        return;
+    }
+    state.push(segment.into());
+}
+
+/// The destinations `stored` resolves to under a POSIX parse: `/` separates,
+/// a leading one anchors the path at the POSIX root and replaces the output
+/// root, anything else joins below it.
+fn posix_destination(root: &Destination, stored: &str) -> Destination {
+    let (mut segments, anchor) = if stored.starts_with('/') {
+        (Vec::new(), VolumeAnchor::Posix)
+    } else {
+        (root.segments.clone(), root.anchor.clone())
     };
-    if resolved.len() < root.len() + 1 {
+    for segment in stored.split('/') {
+        advance_posix(&mut segments, segment);
+    }
+    Destination::decided(anchor, segments)
+}
+
+/// The destinations `stored` resolves to under a Windows parse — both
+/// separators, the prefix handling of [`windows_prefix`], relative segments
+/// resolved — one per fork the ambiguous segments take, and `None` for the
+/// drive-relative shape provably disjoint from the root's volume. A rooted
+/// id inherits the root form's anchor: joining `\abc` onto `C:\x` yields
+/// `C:\abc`.
+fn windows_destinations(root: &Destination, stored: &str) -> Vec<Destination> {
+    let (prefix, text) = windows_prefix(stored);
+    let mut states = if matches!(prefix, Prefix::Join) {
+        vec![root.segments.clone()]
+    } else {
+        vec![Vec::new()]
+    };
+    for segment in text.split(['/', '\\']) {
+        states = advance_windows(states, segment);
+    }
+    match prefix {
+        Prefix::Join | Prefix::Rooted => states
+            .into_iter()
+            .map(|segments| Destination::decided(root.anchor.clone(), segments))
+            .collect(),
+        Prefix::Disk(letter) => states
+            .into_iter()
+            .map(|segments| Destination::decided(VolumeAnchor::Disk(letter), segments))
+            .collect(),
+        Prefix::Unc(host, share) => states
+            .into_iter()
+            .map(|segments| {
+                Destination::decided(VolumeAnchor::Unc(host.clone(), share.clone()), segments)
+            })
+            .collect(),
+        Prefix::DriveRelative(letter) => {
+            if root.anchor == VolumeAnchor::Disk(letter) || root.anchor == VolumeAnchor::Volume {
+                vec![Destination::undecidable()]
+            } else {
+                Vec::new()
+            }
+        }
+        Prefix::Device | Prefix::Malformed => vec![Destination::undecidable()],
+    }
+}
+
+/// The Windows parse of an absolute root path: the prefix names its anchor,
+/// the segments below resolve lexically. Rooted and unanchored forms — a
+/// POSIX path read under Windows rules — sit on the host volume.
+fn windows_root(text: &str) -> Destination {
+    let (prefix, rest) = windows_prefix(text);
+    let mut segments: Vec<String> = Vec::new();
+    for segment in rest.split(['/', '\\']) {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if segment == ".." {
+            segments.pop();
+            continue;
+        }
+        segments.push(segment.into());
+    }
+    let anchor = match prefix {
+        Prefix::Disk(letter) => VolumeAnchor::Disk(letter),
+        Prefix::Unc(host, share) => VolumeAnchor::Unc(host, share),
+        _ => VolumeAnchor::Volume,
+    };
+    Destination::decided(anchor, segments)
+}
+
+/// The POSIX parse of an absolute root path.
+fn posix_root(text: &str) -> Destination {
+    let mut segments: Vec<String> = Vec::new();
+    for segment in text.split('/') {
+        advance_posix(&mut segments, segment);
+    }
+    Destination::decided(VolumeAnchor::Posix, segments)
+}
+
+/// The real forms of `output_root`: the absolute literal spelling and the
+/// spelling the longest existing prefix canonicalizes to with the missing
+/// tail rejoined — the same directory either way once the filesystem
+/// resolves it. Canonicalization failure of the whole chain keeps the
+/// literal form, which is correct for the fresh paths a new home carries.
+fn real_root_forms(output_root: &Path) -> Vec<PathBuf> {
+    let absolute = std::env::current_dir()
+        .map(|cwd| cwd.join(output_root))
+        .unwrap_or_else(|_| output_root.to_path_buf());
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut existing = absolute.as_path();
+    loop {
+        match existing.canonicalize() {
+            Ok(canonical) => {
+                let mut form = canonical;
+                for component in missing.iter().rev() {
+                    form.push(component);
+                }
+                let mut forms = vec![absolute];
+                if form != forms[0] {
+                    forms.push(form);
+                }
+                return forms;
+            }
+            Err(_) => {
+                let Some(parent) = existing.parent() else {
+                    return vec![absolute];
+                };
+                match existing.file_name() {
+                    Some(name) => missing.push(name.to_os_string()),
+                    None => return vec![absolute],
+                }
+                existing = parent;
+            }
+        }
+    }
+}
+
+/// The output root's destinations per platform parse. Components are strings
+/// because resolution and comparison are textual; a non-UTF-8 component
+/// compares by its lossy form, which can only widen a refusal.
+fn output_root_destinations(output_root: &Path) -> OutputRoot {
+    let mut posix = Vec::new();
+    let mut windows = Vec::new();
+    for form in real_root_forms(output_root) {
+        let text = form.to_string_lossy().into_owned();
+        for destination in [posix_root(&text), windows_root(&text)] {
+            let targets = if destination.anchor == VolumeAnchor::Posix {
+                &mut posix
+            } else {
+                &mut windows
+            };
+            if !targets.contains(&destination) {
+                targets.push(destination);
+            }
+        }
+    }
+    OutputRoot { posix, windows }
+}
+
+/// Whether two anchors provably never name the same volume: the POSIX root
+/// against anything the Windows parse produces, two drive letters, or two
+/// UNC shares. Everything else stays undecided — `Volume` can be any letter,
+/// and a UNC share can alias a drive — so the segments decide, and where the
+/// segments cannot (a UNC path against a non-UNC root) the branch refuses.
+fn anchors_disjoint(one: &VolumeAnchor, other: &VolumeAnchor) -> bool {
+    match (one, other) {
+        (VolumeAnchor::Posix, anchor) | (anchor, VolumeAnchor::Posix) => {
+            *anchor != VolumeAnchor::Posix
+        }
+        (VolumeAnchor::Disk(a), VolumeAnchor::Disk(b)) => a != b,
+        (VolumeAnchor::Unc(host_a, share_a), VolumeAnchor::Unc(host_b, share_b)) => {
+            host_a != host_b || share_a != share_b
+        }
+        _ => false,
+    }
+}
+
+/// Whether one resolved branch overlaps the candidate's output directory:
+/// the candidate's directory is the root form with the candidate appended,
+/// so a positional walk over the shorter side decides — equality or one side
+/// a prefix of the other is an overlap, any divergence within the walk is
+/// disjoint. Segments compare under the union of the identity rules a
+/// supported filesystem applies. A mixed UNC/non-UNC pair can never prove
+/// its segments align on one volume — the share can alias the drive — so it
+/// refuses without the walk.
+fn branch_overlaps_candidate(branch: &Destination, root: &Destination, candidate: &str) -> bool {
+    if branch.undecidable {
+        return true;
+    }
+    if anchors_disjoint(&branch.anchor, &root.anchor) {
         return false;
     }
-    for (component, root_component) in resolved.iter().zip(root) {
-        if !components_share(component, root_component) {
+    let unc = |anchor: &VolumeAnchor| matches!(anchor, VolumeAnchor::Unc(_, _));
+    if unc(&branch.anchor) != unc(&root.anchor) {
+        return true;
+    }
+    let length = branch.segments.len().min(root.segments.len() + 1);
+    for position in 0..length {
+        let root_component = if position < root.segments.len() {
+            root.segments[position].as_str()
+        } else {
+            candidate
+        };
+        if !components_share(&branch.segments[position], root_component) {
             return false;
         }
     }
-    components_share(&resolved[root.len()], candidate)
+    true
+}
+
+/// Whether a stored Session id can share its output directory with a newly
+/// admitted id, judged on the resolved destinations (#2204): the id parses
+/// under both platforms' rules, each parse against the root forms of its own
+/// platform, and any branch whose destination equals or contains the
+/// candidate's directory — or whose destination no static resolution can
+/// place — refuses. An id resolving onto the output root or one of its
+/// ancestors overlaps every candidate, so it refuses them all until its row
+/// is deleted; that is the isolation the refusal protects, not a false
+/// positive. Both rule sets apply wherever the store runs, so a store moving
+/// between platforms keeps its isolation: refusing too much is safe, missing
+/// a collision is not.
+fn shares_output_directory(root: &OutputRoot, stored: &str, candidate: &str) -> bool {
+    for form in &root.posix {
+        let branch = posix_destination(form, stored);
+        if branch_overlaps_candidate(&branch, form, candidate) {
+            return true;
+        }
+    }
+    for form in &root.windows {
+        for branch in windows_destinations(form, stored) {
+            if branch_overlaps_candidate(&branch, form, candidate) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// A stored id that shares an output directory with `candidate` beyond ASCII
@@ -2634,10 +2971,10 @@ fn shares_output_directory(root: &[String], stored: &str, candidate: &str) -> bo
 /// (#2204).
 fn directory_conflict(
     connection: &Connection,
-    database: &Path,
+    output_root: &Path,
     candidate: &str,
 ) -> Result<Option<String>> {
-    let root = output_root_components(database);
+    let root = output_root_destinations(output_root);
     for stored in non_ascii_word_conflicts(connection)? {
         if shares_output_directory(&root, &stored, candidate) {
             return Ok(Some(stored));
@@ -2647,14 +2984,14 @@ fn directory_conflict(
 }
 fn create_session(
     connection: &Connection,
-    database: &Path,
+    output_root: &Path,
     session: &str,
     config: &SessionConfig,
     leader: Option<&str>,
     origin: SessionOrigin,
 ) -> Result<()> {
     dim_agent_runtime::check_new_session_id(session)?;
-    reject_conflicting_id(connection, database, session)?;
+    reject_conflicting_id(connection, output_root, session)?;
     let config = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
@@ -3322,12 +3659,19 @@ impl SqliteTimelineStore {
             .collect();
         let (source, fork, config) = (source.to_owned(), fork.to_owned(), config.to_owned());
         let reset = fork.clone();
-        let database = self.db.path.clone();
+        let output_root = self.db.output_root.clone();
         let copied = self
             .db
             .run_copy(move |connection| {
                 copy_fork(
-                    connection, &database, &source, &fork, at, &content, &arrays, &config,
+                    connection,
+                    &output_root,
+                    &source,
+                    &fork,
+                    at,
+                    &content,
+                    &arrays,
+                    &config,
                 )
             })
             .await;
@@ -3424,7 +3768,7 @@ fn chunk<T>(connection: &mut Connection, step: impl FnOnce(&Connection) -> Resul
 )]
 fn copy_fork(
     connection: &mut Connection,
-    database: &Path,
+    output_root: &Path,
     source: &str,
     fork: &str,
     at: u64,
@@ -3434,7 +3778,15 @@ fn copy_fork(
 ) -> Result<()> {
     let committed = Cell::new(false);
     let copied = copy_fork_rows(
-        connection, database, source, fork, at, content, arrays, config, &committed,
+        connection,
+        output_root,
+        source,
+        fork,
+        at,
+        content,
+        arrays,
+        config,
+        &committed,
     );
     if copied.is_err() && committed.get() {
         match drop_fork_rows(connection, fork) {
@@ -3459,7 +3811,11 @@ fn copy_fork(
 /// duplicate's Storage error even when a case variant or a directory-shape
 /// collision is stored beside it (#2204); a case-only variant and a
 /// directory-shape collision are InvalidInput.
-fn reject_conflicting_id(connection: &Connection, database: &Path, candidate: &str) -> Result<()> {
+fn reject_conflicting_id(
+    connection: &Connection,
+    output_root: &Path,
+    candidate: &str,
+) -> Result<()> {
     let conflicts = case_conflicts(connection, candidate)?;
     if conflicts.iter().any(|stored| stored == candidate) {
         return Err(error(format!("Session id {candidate} already exists")));
@@ -3469,7 +3825,7 @@ fn reject_conflicting_id(connection: &Connection, database: &Path, candidate: &s
             "Session id {candidate} differs from a stored one only by case"
         )));
     }
-    if let Some(stored) = directory_conflict(connection, database, candidate)? {
+    if let Some(stored) = directory_conflict(connection, output_root, candidate)? {
         return Err(AgentError::InvalidInput(format!(
             "Session id {candidate} would share an output directory with stored Session {stored}"
         )));
@@ -3486,7 +3842,7 @@ fn reject_conflicting_id(connection: &Connection, database: &Path, candidate: &s
 )]
 fn copy_fork_rows(
     connection: &mut Connection,
-    database: &Path,
+    output_root: &Path,
     source: &str,
     fork: &str,
     at: u64,
@@ -3508,7 +3864,7 @@ fn copy_fork_rows(
         // transaction started is seen here, and none can commit before the
         // writes once the lock is held (#2204). A refusal rolls the chunk
         // back, so the copy writes nothing.
-        reject_conflicting_id(tx, database, fork)?;
+        reject_conflicting_id(tx, output_root, fork)?;
         branches = tx
             .prepare("SELECT branch_id, info FROM timeline_branches WHERE session_id=?1")
             .map_err(error)?
@@ -3635,7 +3991,7 @@ fn copy_fork_rows(
         // The first chunk's check covered the copy's start; this re-check
         // closes the race against an insertion committed while the chunks
         // copied (#2204).
-        reject_conflicting_id(tx, database, fork)?;
+        reject_conflicting_id(tx, output_root, fork)?;
         // A fork is a new Session of the client that forked it, never its
         // source's origin (session classification §3.2).
         tx.execute(

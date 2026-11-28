@@ -1280,6 +1280,12 @@ pub struct SqliteStorage {
     admission: Mutex<Admission>,
     idle: tokio::sync::Notify,
     pub(super) path: PathBuf,
+    /// The root Session output directories join under (session files §3.1):
+    /// `<database directory>/command-output`, or the root an embedding host
+    /// names through [`SqliteStorage::open_with_output_root`] when its
+    /// command-output layout differs. The Session-id admission compares a
+    /// stored id's resolved output directory against this root (#2204).
+    pub(super) output_root: PathBuf,
     upgraded_from: Option<u32>,
     /// What the v50 image conversion measured about its own work, kept for a
     /// flow test that bounds it; feature `testing` only.
@@ -1473,11 +1479,22 @@ impl Drop for Operation {
 }
 impl SqliteStorage {
     pub fn open(path: PathBuf) -> Result<Arc<Self>> {
-        Self::open_reporting(path, None)
+        Self::open_reporting(path, None, None)
+    }
+    /// Opens the store with the output root its Sessions write under, when
+    /// the host's command-output layout is not `<database directory>/command-output`.
+    /// The admission boundary compares resolved output directories against
+    /// this root (#2204); every write path of the store shares it.
+    pub fn open_with_output_root(path: PathBuf, output_root: PathBuf) -> Result<Arc<Self>> {
+        Self::open_reporting(path, None, Some(output_root))
     }
     /// Opens the store; with `ctx`, a format upgrade reports its progress to
     /// that plugin's opening and keeps the CLI's progress note current.
-    pub(crate) fn open_reporting(path: PathBuf, ctx: Option<&Ctx>) -> Result<Arc<Self>> {
+    pub(crate) fn open_reporting(
+        path: PathBuf,
+        ctx: Option<&Ctx>,
+        output_root: Option<PathBuf>,
+    ) -> Result<Arc<Self>> {
         let parent = path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -1901,6 +1918,11 @@ impl SqliteStorage {
                 lease: Some(admission),
             }),
             idle: tokio::sync::Notify::new(),
+            output_root: output_root.unwrap_or_else(|| {
+                path.parent()
+                    .map(|directory| directory.join(super::COMMAND_OUTPUT_DIRECTORY))
+                    .unwrap_or_else(|| PathBuf::from(super::COMMAND_OUTPUT_DIRECTORY))
+            }),
             path,
             upgraded_from,
             #[cfg(feature = "testing")]
@@ -1952,6 +1974,10 @@ impl SqliteStorage {
                     lease: None,
                 }),
                 idle: tokio::sync::Notify::new(),
+                output_root: path
+                    .parent()
+                    .map(|directory| directory.join(super::COMMAND_OUTPUT_DIRECTORY))
+                    .unwrap_or_else(|| PathBuf::from(super::COMMAND_OUTPUT_DIRECTORY)),
                 path,
                 upgraded_from: None,
                 #[cfg(feature = "testing")]
@@ -2977,14 +3003,24 @@ fn storage_failure(error: AgentError) -> BridgeError {
 
 pub struct SqliteStoragePlugin {
     path: PathBuf,
+    output_root: Option<PathBuf>,
     assembly: Option<Arc<AssemblyProgress>>,
 }
 impl SqliteStoragePlugin {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
+            output_root: None,
             assembly: None,
         }
+    }
+    /// The output root the host's Sessions write under, when it is not
+    /// `<database directory>/command-output` (#2204): the admission boundary
+    /// compares resolved output directories against the root the writing
+    /// side actually uses.
+    pub fn with_output_root(mut self, output_root: PathBuf) -> Self {
+        self.output_root = Some(output_root);
+        self
     }
     /// Reports the opening's progress in the startup note after this store's
     /// own note is gone; the host removes it when its listeners open.
@@ -3001,8 +3037,9 @@ impl Plugin for SqliteStoragePlugin {
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
         let path = self.path.clone();
         let reports = ctx.clone();
+        let output_root = self.output_root.clone();
         let storage = tokio::task::spawn_blocking(move || {
-            SqliteStorage::open_reporting(path, Some(&reports))
+            SqliteStorage::open_reporting(path, Some(&reports), output_root)
         })
         .await
         .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))??;

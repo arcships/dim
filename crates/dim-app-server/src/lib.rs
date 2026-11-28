@@ -82,6 +82,14 @@ pub struct ServerConfig {
     pub pipe_name: Option<String>,
     pub websocket_address: Option<SocketAddr>,
     pub database_path: Option<PathBuf>,
+    /// The root Session output directories join under, when it is not
+    /// `<database directory>/command-output` (session files §3.1): a host
+    /// whose command-output layout moves away from the database — the CLI's
+    /// split home, the xtask harness — names it here so the Session-id
+    /// admission compares resolved output directories against the root the
+    /// writing side actually uses (#2204). Rust-internal: it stays out of
+    /// every serialized configuration and protocol surface.
+    pub output_root: Option<PathBuf>,
     pub target_home: Option<PathBuf>,
     pub product_home: Option<PathBuf>,
     /// The user home the process reports, `$HOME` by default. A host that
@@ -147,6 +155,7 @@ impl Default for ServerConfig {
             pipe_name: None,
             websocket_address: Some(([127, 0, 0, 1], 0).into()),
             database_path: None,
+            output_root: None,
             target_home: None,
             product_home: None,
             platform_home: None,
@@ -955,14 +964,21 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     if let (Some(path), Some(files_root)) = (&config.database_path, session_files_root) {
         let path = path.clone();
         let assembly_progress = assembly_progress.clone();
+        let output_root = config.output_root.clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |_| {
-                Ok(Box::new(match &assembly_progress {
-                    Some(assembly_progress) => storage::SqliteStoragePlugin::new(path.clone())
-                        .with_assembly_progress(assembly_progress.clone()),
+                let plugin = match &output_root {
+                    Some(output_root) => storage::SqliteStoragePlugin::new(path.clone())
+                        .with_output_root(output_root.clone()),
                     None => storage::SqliteStoragePlugin::new(path.clone()),
+                };
+                Ok(Box::new(match &assembly_progress {
+                    Some(assembly_progress) => {
+                        plugin.with_assembly_progress(assembly_progress.clone())
+                    }
+                    None => plugin,
                 }))
             },
         )?);
