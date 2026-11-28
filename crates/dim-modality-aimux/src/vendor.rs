@@ -91,9 +91,11 @@ pub struct Vendor {
     pub base: Base,
     /// The `providerOptions` key the package reads an image output format
     /// from, when it reads one and spells it differently from aimux's
-    /// `outputFormat`. The requested format is the naming fallback for a
-    /// provider that returns bytes with no signature, so a row without one
-    /// still names its files.
+    /// `outputFormat`. A package that forwards its options verbatim reads
+    /// the wire spelling; a package that parses them reads the camelCase it
+    /// maps onto the wire itself. The requested format is the naming
+    /// fallback for a provider that returns bytes with no signature, so a
+    /// row without one still names its files.
     pub format: Option<&'static str>,
 }
 
@@ -501,9 +503,11 @@ pub struct Binding {
     pub image_edit: bool,
     /// The `providerOptions` key the package reads an image output format
     /// from, when it reads one and spells it differently from aimux's
-    /// `outputFormat`. The requested format is the naming fallback for a
-    /// provider that returns bytes with no signature, so a binding without
-    /// one still names its files.
+    /// `outputFormat`. A package that forwards its options verbatim reads
+    /// the wire spelling; a package that parses them reads the camelCase it
+    /// maps onto the wire itself. The requested format is the naming
+    /// fallback for a provider that returns bytes with no signature, so a
+    /// binding without one still names its files.
     pub format: Option<&'static str>,
     /// Whether an image create never retries a timed-out POST. Only the Dim
     /// account relay plays back a request it already accepted, and its media
@@ -546,10 +550,13 @@ impl Vendor {
 /// the OpenAI Image API itself, so it stays on the OpenAI package with its
 /// image create never retried. The compatible image binding asks its gateway
 /// for inline bytes by default — the call sends `response_format` through
-/// the provider options, the inline format is the one value a caller's own
-/// `response_format` may carry, and the id prefixes the OpenAI package omits
-/// the field for send nothing — so a gateway that honors the field answers
-/// bytes instead of the default URL shape. `None` is startup recovery's
+/// the provider options, and the inline format is the one value a caller's
+/// own `response_format` may carry — so a gateway that honors the field
+/// answers bytes instead of the default URL shape. On the id prefixes that
+/// answer inline bytes without the field, matched after the vendor
+/// namespace, nothing is sent at all — not even the caller's own copy of
+/// the same inline value — because a strict GPT Image endpoint rejects the
+/// field's presence. `None` is startup recovery's
 /// answer for a route it cannot re-read: the family answers as the
 /// compatible one would, and a route that no longer matches is the call's
 /// own failure.
@@ -626,7 +633,7 @@ pub fn binding(
             options: "openaiCompatible",
             base: Base::AsIs,
             image_edit: true,
-            format: Some("outputFormat"),
+            format: Some("output_format"),
             no_retry: false,
         },
         (true, Operation::Video) => Binding {

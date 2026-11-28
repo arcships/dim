@@ -49,7 +49,9 @@ fn milliseconds(seconds: f64) -> i64 {
 
 /// The inline format the compatible image binding asks its gateway for by
 /// default, and the only `response_format` an image job may carry on it:
-/// the package reads `data[].b64_json` alone.
+/// the package reads `data[].b64_json` alone. On the routes that answer
+/// inline bytes without the field even this value is stripped before the
+/// wire (see `image_options`).
 pub(crate) const INLINE_FORMAT: &str = "b64_json";
 
 /// Whether an image job's caller-chosen response format is one the binding
@@ -112,20 +114,30 @@ pub fn image_options(job: &Job, binding: &Binding) -> Result<ImageCallOptions, A
     // binding asks its gateway for them by default: the field travels in the
     // provider options the package forwards, and a caller's own
     // `response_format` — the inline format alone passes the check above —
-    // wins over the default. Model ids that answer inline bytes without the
-    // field send nothing (the OpenAI package's rule); the relay never
-    // reaches here because its image binding is the openai one, which asks
-    // on its own. A gateway that ignores the field and answers `data[].url`
-    // alone stays unreadable: the upstream package has no download for it.
-    if binding.package == crate::vendor::Package::OpenaiCompatible
-        && !crate::vendor::answers_inline_bytes_by_default(&job.model.model_id)
-    {
-        options
-            .provider_options
-            .entry(binding.options.to_owned())
-            .or_default()
-            .entry("response_format")
-            .or_insert(Value::String(INLINE_FORMAT.into()));
+    // wins over the default on every other route. The inline-answering ids
+    // send nothing instead (the OpenAI package's rule, applied after the
+    // vendor namespace): they answer bytes without the field, and a strict
+    // GPT Image endpoint rejects its presence, so the caller's own copy of
+    // the redundant inline value is stripped with the default — the answer
+    // is the same bytes. The relay never reaches here because its image
+    // binding is the openai one, which asks on its own. A gateway that
+    // ignores the field and answers `data[].url` alone stays unreadable:
+    // the upstream package has no download for it.
+    if binding.package == crate::vendor::Package::OpenaiCompatible {
+        if crate::vendor::answers_inline_bytes_by_default(&job.model.model_id) {
+            options
+                .provider_options
+                .entry(binding.options.to_owned())
+                .or_default()
+                .remove("response_format");
+        } else {
+            options
+                .provider_options
+                .entry(binding.options.to_owned())
+                .or_default()
+                .entry("response_format")
+                .or_insert(Value::String(INLINE_FORMAT.into()));
+        }
     }
     let mut files = Vec::new();
     for file in &job.files {
