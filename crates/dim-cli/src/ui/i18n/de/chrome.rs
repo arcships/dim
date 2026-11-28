@@ -281,6 +281,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Opened link" => "Link geöffnet",
         "Link: {url}" => "Link: {url}",
         "Not available" => "Nicht verfügbar",
+        "Compaction window" => "Kompaktierungsfenster",
+        "Enter edit · r reset" => "Enter bearbeiten · r zurücksetzen",
+        "Compaction window: {error}" => "Kompaktierungsfenster: {error}",
+        "Compaction settings are not available" => {
+            "Kompaktierungseinstellungen sind nicht verfügbar"
+        }
+        "Compaction window {configured} raised to the shaping floor {tokens} for the current model" => {
+            "Kompaktierungsfenster {configured} für das aktuelle Modell auf die Untergrenze {tokens} angehoben"
+        }
         "files changed  {count}" => "Dateien geändert  {count}",
         "active session" => "aktive Session",
         "new-session draft" => "Entwurf für neue Session",

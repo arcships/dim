@@ -2,6 +2,7 @@
 
 mod activity;
 mod checkpoint;
+pub mod compaction_settings;
 mod content;
 mod events;
 mod goal;

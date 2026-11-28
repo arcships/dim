@@ -610,6 +610,40 @@ one-time notice (#2235). Percentages are taken of the adopted capacity. Without 
 own; a different actual capacity is declared by Provider or the existing `contextWindow`
 override.
 
+#### 5.1.1 The persisted window (#2235 PR 1b)
+
+A session without a startup window may still shape automatic compaction: the
+`compaction` settings source ([settings-service](../appserver/settings-service.md))
+carries `{"default": "auto", "models": {"<provider>/<model>": …, "<model>": …}}`, whose
+values are `auto`, a token count (an integer, or a string with `k`/`m` suffixes) or a
+percentage of the adopted capacity — the same shapes a startup value parses. On every
+preparation the model stacks read the document again, so a write takes effect on the
+next request without a restart. The window in force for the request's model is the
+exact `<provider>/<model>` key first, then the bare `<model>` key, then `default`; an
+explicit `"auto"` entry is a hit and overrides a non-auto outer layer. A session whose
+startup adopted an explicit window — including explicit `auto` — never reads the
+persisted layer: the explicit configuration keeps governing, whatever the document
+says. The shaped window enters the preparation exactly as an adopted startup window
+does, so everything §5.1 shapes with the startup window shapes with the persisted one
+unchanged.
+
+Two rules separate the persisted layer from the startup one:
+
+- **Soft cap.** A persisted token value wider than the model's capacity does not fail:
+  it falls back to the model-derived default. Startup values still fail validation as
+  §5.1 states; only the persisted document is soft.
+- **Silent floor.** A persisted explicit value below the floor `min(32,000, 10% of the
+  capacity)` clamps to it without failing, and the runtime only logs the raise. A
+  client writing a value knows the same geometry through the shared pure shaping
+  function and reports the raise once at save time when it can resolve the model's
+  window; the window it checks against comes from the attached Session's adopted
+  capability snapshot, else the provider catalog — with the launch's declared window
+  taking precedence where one applies — else the session's own usage fact, and when
+  no source knows the window the document writes as-is and the row shows the literal.
+
+A read failure of the persisted document behaves as no configuration: the preparation
+falls back to the model-derived window rather than failing the request.
+
 ### 5.2 ProductSummaryStrategy
 
 `compact(input, cancel)`:

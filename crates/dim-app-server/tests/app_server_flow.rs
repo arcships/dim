@@ -3,6 +3,7 @@ mod mcp_host;
 
 #[cfg(unix)]
 mod attachments_flow;
+mod compaction_settings_flow;
 mod hooks_settings_flow;
 mod legacy_port_faces;
 mod legacy_session_faces;

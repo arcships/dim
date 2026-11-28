@@ -4,6 +4,7 @@ pub mod approval;
 pub mod auxiliary_model;
 pub(crate) mod branch_input;
 pub mod build;
+pub mod compaction_settings;
 pub mod context_block;
 pub mod context_methods;
 pub mod context_model;

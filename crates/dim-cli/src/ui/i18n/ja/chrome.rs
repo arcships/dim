@@ -269,6 +269,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Opened link" => "リンクを開きました",
         "Link: {url}" => "リンク：{url}",
         "Not available" => "利用不可",
+        "Compaction window" => "圧縮ウィンドウ",
+        "Enter edit · r reset" => "Enter 編集 · r リセット",
+        "Compaction window: {error}" => "圧縮ウィンドウ: {error}",
+        "Compaction settings are not available" => "圧縮設定は利用できません",
+        "Compaction window {configured} raised to the shaping floor {tokens} for the current model" => {
+            "圧縮ウィンドウ {configured} は現在のモデルのシェーピング下限 {tokens} に引き上げられました"
+        }
         "files changed  {count}" => "変更ファイル  {count}",
         "active session" => "アクティブセッション",
         "new-session draft" => "新規セッション下書き",

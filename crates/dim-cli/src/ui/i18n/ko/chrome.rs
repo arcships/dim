@@ -257,6 +257,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Opened link" => "링크 열림",
         "Link: {url}" => "링크: {url}",
         "Not available" => "사용 불가",
+        "Compaction window" => "압축 창",
+        "Enter edit · r reset" => "Enter 편집 · r 초기화",
+        "Compaction window: {error}" => "압축 창: {error}",
+        "Compaction settings are not available" => "압축 설정을 사용할 수 없습니다",
+        "Compaction window {configured} raised to the shaping floor {tokens} for the current model" => {
+            "현재 모델에서 압축 창 {configured}이(가) 셰이핑 하한 {tokens}(으)로 상향되었습니다"
+        }
         "files changed  {count}" => "변경된 파일  {count}",
         "active session" => "활성 세션",
         "new-session draft" => "새 세션 초안",

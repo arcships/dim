@@ -227,6 +227,11 @@ pub enum Effect {
     },
     /// Open one prompt override in the external editor.
     EditPrompt(PromptField),
+    /// Submit the compaction row's inline editor text (#2235 PR 1b).
+    SaveCompaction(String),
+    /// Remove the exact `<provider>/<model>` key from the compaction
+    /// document, leaving the outer layers to govern.
+    ResetCompaction,
     /// Remove one prompt override.
     ResetPrompt(PromptField),
     /// Change a provider (`/connect`).

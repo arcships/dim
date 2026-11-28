@@ -275,6 +275,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Opened link" => "Link aberto",
         "Link: {url}" => "Link: {url}",
         "Not available" => "Indisponível",
+        "Compaction window" => "Janela de compactação",
+        "Enter edit · r reset" => "Enter editar · r redefinir",
+        "Compaction window: {error}" => "Janela de compactação: {error}",
+        "Compaction settings are not available" => {
+            "As configurações de compactação não estão disponíveis"
+        }
+        "Compaction window {configured} raised to the shaping floor {tokens} for the current model" => {
+            "Janela de compactação {configured} elevada ao piso de forma {tokens} para o modelo atual"
+        }
         "files changed  {count}" => "arquivos alterados  {count}",
         "active session" => "sessão ativa",
         "new-session draft" => "rascunho de nova sessão",

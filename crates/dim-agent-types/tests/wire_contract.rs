@@ -929,3 +929,37 @@ fn a_system_source_round_trips_and_an_older_record_keeps_its_system() {
     assert_eq!(decoded.system_source, None);
     assert_eq!(decoded.system, data.system);
 }
+
+/// #2235 PR 1b: token and percentage startup windows serialize exactly as
+/// before the explicit marker; only a bare explicit `auto` carries it.
+#[test]
+fn the_startup_window_serializes_unchanged_for_token_and_percentage_adoptions() {
+    for window in [128_000, 40_000, 1_000_000, 2_000] {
+        let startup = ModelStartup {
+            connection: None,
+            auto_compact_window: Some(window),
+            auto_compact_window_explicit: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&startup).unwrap(),
+            format!(r#"{{"autoCompactWindow":{window}}}"#),
+            "a token or percentage window must not change its serialization"
+        );
+        let parsed: ModelStartup =
+            serde_json::from_str(&serde_json::to_string(&startup).unwrap()).unwrap();
+        assert_eq!(parsed, startup);
+    }
+    // The explicit `auto` marker appears only for an explicit auto adoption.
+    let explicit_auto = ModelStartup {
+        connection: None,
+        auto_compact_window: None,
+        auto_compact_window_explicit: true,
+    };
+    assert_eq!(
+        serde_json::to_string(&explicit_auto).unwrap(),
+        r#"{"autoCompactWindowExplicit":true}"#
+    );
+    // An older record without the marker still parses, defaulting false.
+    let legacy: ModelStartup = serde_json::from_str(r#"{"autoCompactWindow":128000}"#).unwrap();
+    assert!(!legacy.auto_compact_window_explicit);
+}

@@ -366,7 +366,10 @@ impl SettingsService {
   checked under one registry state (§3.1). `register_declared` compiles the schema with
   `jsonschema`. The process owners register in their `apply`: Mcp (`mcp`, `mcp-projects`, `mcp-plugins`),
   SkillsCatalog (`skills`), PermissionRules (`permission`), CollaborationModelPolicy
-  (`collaboration`) and the App Server's ExecutionSettings (`execution`). Readers in other plugins
+  (`collaboration`) and the App Server's ExecutionSettings (`execution`). The App Server also
+  registers `compaction` (`compaction.json`, user scope only): the default compaction window
+  and per-model overrides whose selection order, soft cap and shaping floor belong to
+  [ContextCompaction](../plugins/ContextCompaction.md#511-the-persisted-window-2235-pr-1b) (#2235 PR 1b). Readers in other plugins
   only read; `read::<D>`/`update::<D>` of a type that is not the registered one for its name is
   `UnknownSource`. The `settings` service's `register` calls `register_declared` with the calling
   row's context.

@@ -549,6 +549,7 @@ pub fn run_with(
     config.user_agent = user_agent_from_environment()?;
     let mut agent_config = AgentConfig::default();
     if let Some(models) = &models {
+        config.compaction_settings = models.compaction_settings();
         config.model_catalog = Some(models.clone());
         agent_config.model = models.default_model().clone();
         config.session_defaults.model = dim_agent_types::ModelSelection {
@@ -612,7 +613,12 @@ pub fn run_with(
             } else {
                 defaults::install_compaction(
                     &mut builder,
-                    Arc::new(ProductContextModel),
+                    Arc::new(
+                        dim_agent_capabilities::compaction_settings::CompactionContextModel::new(
+                            Arc::new(ProductContextModel),
+                            config.compaction_settings.clone(),
+                        ),
+                    ),
                     ProductSummaryStrategyConfig::default(),
                 );
                 builder.require_feature(

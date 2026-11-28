@@ -619,6 +619,29 @@ Reset 要求确认后把两个布尔值都写为 false。Off 可保留无效的�
 获准写入该来源的模型可以像用户操作此控件一样改变下次进程的边界；写入不创建授权，也不改变运行中的
 进程（[ADR 011 D2](../../adr/011-execution-settings.md)）。File access 不是 shell 代码的 OS 隔离。
 
+## 压缩窗口设置
+
+`/settings` 在 Interface 行尾部、Prompts 分组之前提供 `Compaction window` 行（#2235 PR 1b）。
+行显示当前模型生效的窗口：按运行时自己的解析顺序读取守护进程 `compaction` 设置源——先精确的
+`<provider>/<model>` 键，再裸 `<model>` 键，再 `default`；文档未设置 `default` 时为 `auto`。
+没有模型生效时，或守护进程不提供 `settings.read`/`settings.update`
+时，行显示 `Not available` 并拒绝编辑。Enter 打开该行的行内单行编辑器，编辑精确键：文本为
+`auto`、token 数（如 `128000`、`400k`）或百分比（如 `40%`）；畸形值就地拒绝。Enter 保存到精确键，
+空提交在键存在时删除它，行上按 `r` 同样删除，Esc 只退出编辑器回到面板列表而不关闭面板。
+删除从不动 `default` 或其他模型的条目。每次写都先读取 revision 与文档，用 `settings.update`
+写回整份文档，所以并发修改是被报告的，而不是被覆盖的。写入的值低于当前模型的塑形下限时，
+保存那一刻行内报告一次抬升后的窗口
+（[ContextCompaction §5.1.1](plugins/ContextCompaction.md#511-持久化窗口2235-pr-1b)）。
+
+```text
+Settings
+  Prompt suggestion    on
+> Compaction window    40%
+  Prompts
+  ...
+Enter edit · r reset
+```
+
 ## 管理界面
 
 一个管理领域就是一个所有者的一组管理方法。App Server 经各自的所有者提供每个领域，不向客户端提供跨领域的通用通路（[Settings 服务](appserver/settings-service.md#11-不做什么)）：Skills 是 `skills.*`，Hooks 是 `hooks.*`，MCP 是 `mcp.*`，Scheduler 是 `schedule.*`，Workflow 定义是 `workflow.*`，命令规则是 `permission.rules` 与 `permission.set_rules`，插件是 PluginManager 的方法，单个提供方的模型是 `provider.*`。它们的入口形态各不相同，并保持不变；本节只把客户端一侧做成同一个结构，使一个领域接入一次，而不是每个界面各接一次。

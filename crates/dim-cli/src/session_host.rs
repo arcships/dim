@@ -28,13 +28,13 @@ use crate::model::session::submission::{
     Delivery, PreparedDraft, SubmissionKey, prepared_user, refused,
 };
 use crate::model::session::{
-    ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
-    DIM_OAUTH_ID, DeleteOutcome, DeleteReply, DraftPart, EmptyProvider, EmptyReason,
-    ExecutionSnapshot, ManagementReply, ModelItem, ModelList, ModelOutcome, ModelPolicyUpdate,
-    NeedsLimitsProvider, OauthEvent, OauthStart, Origin, PluginItem, PluginReply, PromptField,
-    PromptSetting, ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem, RuntimesError,
-    SandboxBackend, SessionItem, SessionPort, SessionsScope, SubagentModelPolicy,
-    SuggestionSetting, SwitchKind, Update, Usage, stored_title,
+    ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, CompactionSetting,
+    ContextReading, DIM_OAUTH_ID, DeleteOutcome, DeleteReply, DraftPart, EmptyProvider,
+    EmptyReason, ExecutionSnapshot, ManagementReply, ModelItem, ModelList, ModelOutcome,
+    ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart, Origin, PluginItem,
+    PluginReply, PromptField, PromptSetting, ProviderAction, ProviderEntry, RuntimeAction,
+    RuntimeItem, RuntimesError, SandboxBackend, SessionItem, SessionPort, SessionsScope,
+    SubagentModelPolicy, SuggestionSetting, SwitchKind, Update, Usage, stored_title,
 };
 use crate::model::view::{
     Earlier, LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
@@ -1494,6 +1494,66 @@ impl Worker {
             .find(|entry| entry.id == model.model_id)
     }
 
+    /// The context window the model `provider_id`/`model_id` shapes its
+    /// compaction with, for the settings row's one-time floor report (#2235
+    /// PR 1b): the attached Session's adopted snapshot, then the provider
+    /// catalog — where DIM_MAX_CONTEXT_TOKENS declares the startup window
+    /// the launch's own value takes — then the usage fact of a session
+    /// whose configuration declares no snapshot.
+    async fn compaction_window(&mut self, provider_id: &str, model_id: &str) -> Option<u64> {
+        if let Some(model) = self
+            .model
+            .as_ref()
+            .filter(|model| model.provider_id == provider_id && model.model_id == model_id)
+            && let Some(window) = model
+                .capability_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.capabilities.context_window)
+        {
+            return Some(window);
+        }
+        if self.client.offers("provider.catalog") {
+            let model = ModelId {
+                provider_id: provider_id.to_owned(),
+                model_id: model_id.to_owned(),
+            };
+            if let Some(entry) = self.catalog_entry(&model).await {
+                let declared = entry.capabilities.context_window;
+                let window = match std::env::var("DIM_MAX_CONTEXT_TOKENS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|window| *window > 0)
+                {
+                    Some(startup) => Some(startup),
+                    None => declared,
+                };
+                if let Some(window) = window {
+                    return Some(window);
+                }
+            }
+        }
+        if !self.session_id.is_empty() {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct WindowUsage {
+                context_window: f64,
+            }
+            if let Ok(usage) = self
+                .client
+                .typed::<WindowUsage>(
+                    "session.context.usage",
+                    json!({"sessionId": self.session_id, "branchId": self.default_branch}),
+                )
+                .await
+                && usage.context_window.is_finite()
+                && usage.context_window > 0.
+            {
+                return Some(usage.context_window as u64);
+            }
+        }
+        None
+    }
+
     async fn attach(
         &mut self,
         session_id: String,
@@ -2432,6 +2492,73 @@ impl Worker {
                     .map_err(|error| error.to_string())
                     .and_then(suggestion_setting);
                 self.send(Update::SuggestionSetting(result));
+            }
+            Command::ReadCompactionSetting => {
+                if !self.client.supports(&["settings.read", "settings.update"]) {
+                    self.send(Update::CompactionSetting {
+                        result: Err("This daemon does not support compaction settings".into()),
+                        raised: None,
+                    });
+                } else {
+                    let result = self
+                        .client
+                        .typed(
+                            "settings.read",
+                            json!({"source": "compaction", "scope": "user"}),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(compaction_setting);
+                    self.send(Update::CompactionSetting {
+                        result,
+                        raised: None,
+                    });
+                }
+            }
+            Command::SaveCompactionSetting {
+                expected_revision,
+                document,
+                provider_id,
+                model_id,
+                entry,
+            } => {
+                // The one-time floor raise report computes the written
+                // entry's shaping against the model's window the same pure
+                // function the server shapes with (#2235 PR 1b); without a
+                // window the document writes as-is and shows its literal.
+                let raised = match entry {
+                    Some(spec) => match self.compaction_window(&provider_id, &model_id).await {
+                        Some(context_window) => {
+                            match dim_agent_types::compaction_settings::shape_compaction_window(
+                                spec,
+                                context_window,
+                            ) {
+                                dim_agent_types::compaction_settings::ShapedWindow::Shaped {
+                                    tokens,
+                                    raised_from: Some(configured),
+                                } => Some((configured, tokens)),
+                                _ => None,
+                            }
+                        }
+                        None => None,
+                    },
+                    None => None,
+                };
+                let result = self
+                    .client
+                    .typed(
+                        "settings.update",
+                        json!({
+                            "source": "compaction",
+                            "scope": "user",
+                            "expectedRevision": expected_revision,
+                            "document": document,
+                        }),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(compaction_setting);
+                self.send(Update::CompactionSetting { result, raised });
             }
             Command::ReadPromptSettings => {
                 let result = if self.client.supports(&["settings.read", "settings.update"]) {
@@ -6235,6 +6362,23 @@ fn suggestion_setting(value: serde_json::Value) -> Result<SuggestionSetting, Str
     Ok(SuggestionSetting { revision, document })
 }
 
+/// The `compaction` source as `settings.read` and `settings.update` answer
+/// it, in the source's own document type.
+fn compaction_setting(value: serde_json::Value) -> Result<CompactionSetting, String> {
+    let revision = value
+        .get("revision")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "compaction settings response has no revision".to_string())?
+        .to_owned();
+    let document = value
+        .get("document")
+        .cloned()
+        .ok_or_else(|| "compaction settings response has no document".to_string())?;
+    let document = serde_json::from_value(document)
+        .map_err(|error| format!("compaction settings: {error}"))?;
+    Ok(CompactionSetting { revision, document })
+}
+
 /// The `runtime.*` calls a change makes, in order: the configuration write
 /// first when it has one, then the apply (RuntimeManager §5).
 fn runtime_calls(action: &RuntimeAction) -> Vec<(&'static str, serde_json::Value)> {
@@ -6405,6 +6549,146 @@ async fn test_worker_answering(
     (worker, receiver, sent)
 }
 
+/// A test daemon that serves the compaction settings surface: `settings`
+/// reads and writes against an in-memory document, `session.context.usage`
+/// reporting the window it was launched with, and — with a catalog window —
+/// `provider.catalog` declaring it for the queried model (#2235 PR 1b).
+#[cfg(all(test, unix))]
+async fn test_worker_compaction(
+    window: Option<f64>,
+    catalog_window: Option<f64>,
+) -> (
+    Worker,
+    mpsc::Receiver<Update>,
+    std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let home = tempfile::tempdir().unwrap();
+    let endpoint = home.path().join("daemon.sock");
+    let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let options =
+        Options::parse(["--home".into(), home.path().to_str().unwrap().to_owned()].into_iter())
+            .unwrap();
+    let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = std::sync::Arc::clone(&sent);
+    tokio::spawn(async move {
+        let _home = home;
+        let mut revision = 1u64;
+        let mut document = json!({"default":"auto"});
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let (reader, mut writer) = stream.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                return;
+            };
+            let reply = match request["method"].as_str().unwrap_or("") {
+                "hello" => {
+                    let mut features = vec![
+                        "session.create",
+                        "session.history",
+                        "settings.read",
+                        "settings.update",
+                    ];
+                    if catalog_window.is_some() {
+                        features.push("provider.catalog");
+                    }
+                    Some(json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                        "instanceId":"compaction-test","serverVersion":"test","protocolVersion":4,
+                        "features":features,"daemonProfile":{"kind":"product"}
+                    }}))
+                }
+                method => {
+                    recorded.lock().unwrap().push(request.clone());
+                    match method {
+                        "settings.read" => {
+                            revision += 1;
+                            Some(json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                                "revision":format!("r{revision}"),"document":document
+                            }}))
+                        }
+                        "settings.update" => {
+                            if request["params"]["expectedRevision"].as_str().unwrap_or("")
+                                == format!("r{revision}")
+                            {
+                                document = request["params"]["document"].clone();
+                                revision += 1;
+                                Some(json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                                    "revision":format!("r{revision}"),"document":document
+                                }}))
+                            } else {
+                                Some(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                                    "code":-32603,"message":"a stale revision conflicts"
+                                }}))
+                            }
+                        }
+                        "provider.catalog" => Some(json!({"jsonrpc":"2.0","id":request["id"],
+                            "result":{"catalog":{"version":1,"models":[
+                                {"id":request["params"]["modelId"],"name":"fixture",
+                                 "capabilities":{"modalities":["text"],"toolCalling":true,
+                                    "streaming":true,"structuredOutput":true,"vision":false,
+                                    "audio":false,"reasoning":false,
+                                    "contextWindow":catalog_window,"maxOutputTokens":8192}}
+                            ],"disabledModelIds":[]}}})),
+                        "session.context.usage" => Some(match window {
+                            Some(window) => json!({"jsonrpc":"2.0","id":request["id"],
+                                "result":{"contextWindow":window}}),
+                            None => json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                                "code":-32601,"message":"unknown method"}}),
+                        }),
+                        "session.attach" => {
+                            Some(json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                                "sequence":1,"model":{"providerId":"test","modelId":"test"}
+                            }}))
+                        }
+                        "session.detach" => {
+                            Some(json!({"jsonrpc":"2.0","id":request["id"],"result":{}}))
+                        }
+                        _ => None,
+                    }
+                }
+            };
+            let Some(reply) = reply else {
+                continue;
+            };
+            if writer
+                .write_all(format!("{reply}\n").as_bytes())
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    let client = Client::connect(&dim_client::ConnectionConfig {
+        endpoint,
+        server: dim_client::Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "dim-cli-test",
+        protocol_version: 4,
+    })
+    .await
+    .unwrap();
+    let (updates, receiver) = mpsc::channel();
+    let worker = Worker::new(
+        options,
+        client,
+        updates,
+        rutis::Ctx::root().unwrap(),
+        tokio::sync::oneshot::channel().0,
+    );
+    (worker, receiver, sent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6433,6 +6717,333 @@ mod tests {
         assert_eq!(setting.revision, "r1");
         assert!(setting.document.enabled);
         assert_eq!(setting.document.max_chars, 120);
+    }
+
+    /// The `compaction` document is the capability's own type: a missing or
+    /// malformed document, or an unknown member, is an error rather than an
+    /// invented value.
+    #[test]
+    fn a_malformed_compaction_setting_is_an_error_not_a_default() {
+        for value in [
+            json!({"revision": "r1", "document": {"default": "a malformed window"}}),
+            json!({"revision": "r1", "document": "not an object"}),
+            json!({"revision": "r1"}),
+            json!({"document": {"default": "15%"}}),
+            json!({"revision": "r1", "document": {"default": "15%", "extra": 1}}),
+        ] {
+            assert!(
+                compaction_setting(value.clone()).is_err(),
+                "{value} was accepted"
+            );
+        }
+        let setting = compaction_setting(
+            json!({"revision":"r1","document":{"default":"auto","models":{"prov/mod":"40%"}}}),
+        )
+        .unwrap();
+        assert_eq!(setting.revision, "r1");
+        assert_eq!(
+            setting.document.models["prov/mod"],
+            dim_agent_types::compaction_settings::CompactionWindowSpec::Percent(40.0)
+        );
+    }
+
+    /// A save answers the written document's revision and reports a floor
+    /// raise against the window `session.context.usage` publishes: the
+    /// host's only window source without an attached snapshot or a catalog
+    /// (#2235 PR 1b B3).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_compaction_save_writes_the_document_and_reports_a_floor_raise() {
+        use dim_agent_types::compaction_settings::{CompactionSettings, CompactionWindowSpec};
+
+        let (mut worker, receiver, sent) = test_worker_compaction(Some(512_000.), None).await;
+        worker.session_id = "s1".into();
+        let mut document = CompactionSettings::default();
+        document
+            .models
+            .insert("prov/mod".into(), CompactionWindowSpec::Percent(4.0));
+        worker
+            .command(Command::SaveCompactionSetting {
+                expected_revision: "r1".into(),
+                document,
+                provider_id: "prov".into(),
+                model_id: "mod".into(),
+                entry: Some(CompactionWindowSpec::Percent(4.0)),
+            })
+            .await
+            .expect("the save is handled");
+        let writes: Vec<_> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "settings.update")
+            .cloned()
+            .collect();
+        assert_eq!(writes.len(), 1, "one write: {writes:?}");
+        assert_eq!(writes[0]["params"]["source"], "compaction");
+        assert_eq!(writes[0]["params"]["scope"], "user");
+        assert_eq!(writes[0]["params"]["document"]["models"]["prov/mod"], "4%");
+        let update = receiver
+            .try_iter()
+            .find(|update| matches!(update, Update::CompactionSetting { .. }))
+            .expect("the save answers");
+        let Update::CompactionSetting { result, raised } = update else {
+            unreachable!()
+        };
+        let Ok(setting) = result else {
+            panic!("the fixture accepts the write: {:?}", result.unwrap_err())
+        };
+        assert_eq!(
+            setting.document.models["prov/mod"],
+            CompactionWindowSpec::Percent(4.0)
+        );
+        // 4% of 512k is 20,480, below the 32,000 floor.
+        assert_eq!(raised, Some((20_480, 32_000)));
+    }
+
+    /// A value above the capacity is the soft cap: the write is not a raise,
+    /// it falls back to the model-derived window (#2235 PR 1b).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_compaction_save_above_the_capacity_reports_no_raise() {
+        use dim_agent_types::compaction_settings::{CompactionSettings, CompactionWindowSpec};
+
+        let (mut worker, receiver, _sent) = test_worker_compaction(Some(512_000.), None).await;
+        worker.session_id = "s1".into();
+        let mut document = CompactionSettings::default();
+        document
+            .models
+            .insert("prov/mod".into(), CompactionWindowSpec::Tokens(900_000));
+        worker
+            .command(Command::SaveCompactionSetting {
+                expected_revision: "r1".into(),
+                document,
+                provider_id: "prov".into(),
+                model_id: "mod".into(),
+                entry: Some(CompactionWindowSpec::Tokens(900_000)),
+            })
+            .await
+            .expect("the save is handled");
+        let update = receiver
+            .try_iter()
+            .find(|update| matches!(update, Update::CompactionSetting { .. }))
+            .expect("the save answers");
+        let Update::CompactionSetting { result, raised } = update else {
+            unreachable!()
+        };
+        assert!(result.is_ok());
+        assert_eq!(raised, None, "the soft cap is no raise");
+    }
+
+    /// Without any window source the document still writes as-is and no
+    /// raise is reported (#2235 PR 1b B3).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_compaction_save_without_a_window_writes_as_is() {
+        use dim_agent_types::compaction_settings::{CompactionSettings, CompactionWindowSpec};
+
+        let (mut worker, receiver, _sent) = test_worker_compaction(None, None).await;
+        worker.session_id = "s1".into();
+        let mut document = CompactionSettings::default();
+        document
+            .models
+            .insert("prov/mod".into(), CompactionWindowSpec::Percent(4.0));
+        worker
+            .command(Command::SaveCompactionSetting {
+                expected_revision: "r1".into(),
+                document,
+                provider_id: "prov".into(),
+                model_id: "mod".into(),
+                entry: Some(CompactionWindowSpec::Percent(4.0)),
+            })
+            .await
+            .expect("the save is handled");
+        let update = receiver
+            .try_iter()
+            .find(|update| matches!(update, Update::CompactionSetting { .. }))
+            .expect("the save answers");
+        let Update::CompactionSetting { result, raised } = update else {
+            unreachable!()
+        };
+        assert!(result.is_ok());
+        assert_eq!(raised, None, "no window, no raise report");
+    }
+
+    /// A floor raise is reported against the current model's adopted
+    /// snapshot, not another line's: the save names `prov`/`mod` while the
+    /// adopted configuration declares a snapshot for it, and a different
+    /// line's 128k window must not shape the report (#2235 PR 1b F4).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_compaction_save_shapes_against_the_current_models_snapshot() {
+        use dim_agent_types::compaction_settings::{CompactionSettings, CompactionWindowSpec};
+
+        let (mut worker, receiver, _sent) = test_worker_compaction(Some(512_000.), None).await;
+        worker.session_id = "s1".into();
+        worker.model = Some(crate::wire::Configuration {
+            provider_id: "prov".into(),
+            catalog_provider_id: None,
+            model_id: "mod".into(),
+            capability_snapshot: Some(Box::new(
+                serde_json::from_value(json!({
+                    "target": {"providerId": "prov", "modelId": "mod"},
+                    "capabilities": {"modalities": ["text"], "toolCalling": true,
+                        "streaming": true, "structuredOutput": true, "vision": false,
+                        "audio": false, "reasoning": false,
+                        "contextWindow": 64000, "maxOutputTokens": 8192}
+                }))
+                .unwrap(),
+            )),
+            model_preferences: None,
+        });
+        // A different line's wider window is not the current model's: with a
+        // 128k line window 4% of it is 5,120 and the floor is 12,800; the
+        // adopted snapshot's 64k gives 2,560 raised to 6,400 instead.
+        worker.line_configurations.insert(
+            "main".into(),
+            LineConfiguration {
+                configuration: crate::wire::Configuration {
+                    provider_id: "prov".into(),
+                    catalog_provider_id: None,
+                    model_id: "mod".into(),
+                    capability_snapshot: Some(Box::new(
+                        serde_json::from_value(json!({
+                            "target": {"providerId": "prov", "modelId": "mod"},
+                            "capabilities": {"modalities": ["text"], "toolCalling": true,
+                                "streaming": true, "structuredOutput": true, "vision": false,
+                                "audio": false, "reasoning": false,
+                                "contextWindow": 128000, "maxOutputTokens": 8192}
+                        }))
+                        .unwrap(),
+                    )),
+                    model_preferences: None,
+                },
+                sequence: 0,
+            },
+        );
+        let mut document = CompactionSettings::default();
+        document
+            .models
+            .insert("prov/mod".into(), CompactionWindowSpec::Percent(4.0));
+        worker
+            .command(Command::SaveCompactionSetting {
+                expected_revision: "r1".into(),
+                document,
+                provider_id: "prov".into(),
+                model_id: "mod".into(),
+                entry: Some(CompactionWindowSpec::Percent(4.0)),
+            })
+            .await
+            .expect("the save is handled");
+        let update = receiver
+            .try_iter()
+            .find(|update| matches!(update, Update::CompactionSetting { .. }))
+            .expect("the save answers");
+        let Update::CompactionSetting { result, raised } = update else {
+            unreachable!()
+        };
+        assert!(result.is_ok());
+        assert_eq!(
+            raised,
+            Some((2_560, 6_400)),
+            "4% of the current model's 64k window is 2,560, raised to its 6,400 floor"
+        );
+    }
+
+    /// Without an adopted snapshot the catalog declares the window the raise
+    /// is measured against: 4% of the catalog's 512k is 20,480, below the
+    /// 32,000 floor (#2235 PR 1b).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_compaction_save_shapes_against_the_catalog_without_a_snapshot() {
+        use dim_agent_types::compaction_settings::{CompactionSettings, CompactionWindowSpec};
+
+        let (mut worker, receiver, _sent) =
+            test_worker_compaction(Some(512_000.), Some(512_000.)).await;
+        worker.session_id = "s1".into();
+        let mut document = CompactionSettings::default();
+        document
+            .models
+            .insert("prov/mod".into(), CompactionWindowSpec::Percent(4.0));
+        worker
+            .command(Command::SaveCompactionSetting {
+                expected_revision: "r1".into(),
+                document,
+                provider_id: "prov".into(),
+                model_id: "mod".into(),
+                entry: Some(CompactionWindowSpec::Percent(4.0)),
+            })
+            .await
+            .expect("the save is handled");
+        let update = receiver
+            .try_iter()
+            .find(|update| matches!(update, Update::CompactionSetting { .. }))
+            .expect("the save answers");
+        let Update::CompactionSetting { result, raised } = update else {
+            unreachable!()
+        };
+        assert!(result.is_ok());
+        assert_eq!(
+            raised,
+            Some((20_480, 32_000)),
+            "the catalog's declared window shapes the raise"
+        );
+    }
+
+    /// The adopted snapshot takes the catalog's place: a current model with
+    /// its own 64k snapshot does not read the catalog's 512k window (#2235
+    /// PR 1b).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_compaction_save_prefers_the_snapshot_over_the_catalog() {
+        use dim_agent_types::compaction_settings::{CompactionSettings, CompactionWindowSpec};
+
+        let (mut worker, receiver, _sent) =
+            test_worker_compaction(Some(512_000.), Some(512_000.)).await;
+        worker.session_id = "s1".into();
+        worker.model = Some(crate::wire::Configuration {
+            provider_id: "prov".into(),
+            catalog_provider_id: None,
+            model_id: "mod".into(),
+            capability_snapshot: Some(Box::new(
+                serde_json::from_value(json!({
+                    "target": {"providerId": "prov", "modelId": "mod"},
+                    "capabilities": {"modalities": ["text"], "toolCalling": true,
+                        "streaming": true, "structuredOutput": true, "vision": false,
+                        "audio": false, "reasoning": false,
+                        "contextWindow": 64000, "maxOutputTokens": 8192}
+                }))
+                .unwrap(),
+            )),
+            model_preferences: None,
+        });
+        let mut document = CompactionSettings::default();
+        document
+            .models
+            .insert("prov/mod".into(), CompactionWindowSpec::Percent(4.0));
+        worker
+            .command(Command::SaveCompactionSetting {
+                expected_revision: "r1".into(),
+                document,
+                provider_id: "prov".into(),
+                model_id: "mod".into(),
+                entry: Some(CompactionWindowSpec::Percent(4.0)),
+            })
+            .await
+            .expect("the save is handled");
+        let update = receiver
+            .try_iter()
+            .find(|update| matches!(update, Update::CompactionSetting { .. }))
+            .expect("the save answers");
+        let Update::CompactionSetting { result, raised } = update else {
+            unreachable!()
+        };
+        assert!(result.is_ok());
+        assert_eq!(
+            raised,
+            Some((2_560, 6_400)),
+            "the adopted snapshot's 64k shapes the raise, not the catalog's 512k"
+        );
     }
 
     #[test]

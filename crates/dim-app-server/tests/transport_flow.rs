@@ -115,6 +115,9 @@ mod native_storage;
 #[path = "transport_flow/compaction.rs"]
 mod compaction;
 
+#[path = "transport_flow/compaction_settings.rs"]
+mod compaction_settings;
+
 #[path = "transport_flow/default_effort.rs"]
 mod default_effort;
 

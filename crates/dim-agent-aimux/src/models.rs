@@ -26,6 +26,7 @@ pub(crate) struct Model {
 pub struct AimuxModels {
     default_model: ModelId,
     providers: HashMap<String, HashMap<String, Model>>,
+    compaction_settings: dim_agent_capabilities::compaction_settings::CompactionSettingsCell,
 }
 impl std::fmt::Debug for AimuxModels {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -158,6 +159,7 @@ impl AimuxModels {
             providers.insert(provider.id, models);
         }
         let models = Self {
+            compaction_settings: Default::default(),
             default_model: config.default_model,
             providers,
         };
@@ -256,14 +258,52 @@ fn validate_network(network: &ModelNetwork, provider: &str) -> Result<(), HostEr
 
 /// The model-file profile's window facts: the entry the request names, by
 /// provider and model id (ContextCompaction §5.1).
+impl AimuxModels {
+    /// The cell the model-file profile reads persisted compaction windows
+    /// through (#2235 PR 1b): the host process wires it into the Server's
+    /// configuration, so the `compaction` settings row and this resolver
+    /// share one port. A development catalog without the row keeps an empty
+    /// cell and resolves as before.
+    pub fn compaction_settings(
+        &self,
+    ) -> dim_agent_capabilities::compaction_settings::CompactionSettingsCell {
+        self.compaction_settings.clone()
+    }
+}
+
 impl ResolveContextModel for AimuxModels {
     fn resolve(
         &self,
         request: Arc<ModelRequest>,
-        _: CancellationToken,
+        cancel: CancellationToken,
     ) -> HostFuture<'_, Arc<dyn ContextModel>> {
         Box::pin(async move {
             let model = self.get(&request.provider_id, &request.model_id)?;
+            if let Some(host) = self.compaction_settings.host()
+                && let Some((tokens, raised_from)) =
+                    dim_agent_capabilities::compaction_settings::overlay_window(
+                        &host,
+                        &request,
+                        model.context_window,
+                        cancel.clone(),
+                    )
+                    .await
+            {
+                if let Some(configured) = raised_from {
+                    tracing::warn!(
+                        provider = %request.provider_id,
+                        model = %request.model_id,
+                        configured,
+                        tokens,
+                        "persisted compaction window below the shaping floor; raised for this preparation"
+                    );
+                }
+                return Ok(window_facts(
+                    model.context_window,
+                    model.output_allowance as f64,
+                    &dim_agent_capabilities::compaction_settings::inject_window(&request, tokens),
+                ));
+            }
             Ok(window_facts(
                 model.context_window,
                 model.output_allowance as f64,

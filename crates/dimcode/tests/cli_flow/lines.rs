@@ -1632,6 +1632,9 @@ fn tui_resuming_into_a_refused_policy_read_shows_no_outgoing_preset() {
     );
     terminal.write(b"\x1b[27u");
     terminal.write(b"/settings\r");
+    for _ in 0..13 {
+        terminal.raw(b"\x1b[B");
+    }
     terminal.until_row("Permission", "Unavailable");
     home.kill(&terminal);
     terminal.wait();

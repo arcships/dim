@@ -760,6 +760,14 @@ export type StartupConnectionSource = {
 export type ModelStartup = {
   connection?: StartupConnectionSource | null
   autoCompactWindow?: number | bigint | null
+  /**
+   * The startup window was adopted from an explicit `--autocompact auto`:
+   * it holds no value, yet it is a deliberate choice a persisted
+   * compaction setting may not override (#2235 PR 1b). False for explicit
+   * token and percentage values, which `auto_compact_window` already
+   * carries, so their serialization stays unchanged.
+   */
+  autoCompactWindowExplicit?: boolean
 }
 
 export type RequestMetadata = {

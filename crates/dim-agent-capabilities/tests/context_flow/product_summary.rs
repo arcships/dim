@@ -1611,6 +1611,7 @@ async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowi
                     header_names: Vec::new(),
                 }),
                 auto_compact_window: Some(2_000),
+                auto_compact_window_explicit: false,
             }),
             agent_id: None,
             extensions: serde_json::from_value(
@@ -1994,6 +1995,7 @@ fn startup_selection(adopted: ModelSelection, auto_compact_window: u64) -> Model
         startup: Some(ModelStartup {
             connection: None,
             auto_compact_window: Some(auto_compact_window),
+            auto_compact_window_explicit: false,
         }),
         ..Default::default()
     });

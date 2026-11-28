@@ -2,6 +2,7 @@ mod support;
 
 mod agent_options_flow;
 mod branch_flow;
+mod compaction_settings_flow;
 #[path = "context_flow.rs"]
 mod context_flow;
 mod dispatch_flow;

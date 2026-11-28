@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 use crate::management::{self, editor};
 use crate::model::session::submission::{Delivery, PreparedDraft, SubmissionKey};
 use crate::model::session::{
-    Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DeleteOutcome, DeleteReply,
-    DraftPart, ManagementAction, ManagementRefusal, ManagementRequest, ManagementResult, Origin,
-    PromptField, PromptSetting, RenameReply, SessionPort, SubmitMode, SuggestionSetting,
-    SwitchKind, Update,
+    Area, Command, CompactReply, CompactionSetting, ContextReading, DIM_OAUTH_ID, DeleteOutcome,
+    DeleteReply, DraftPart, ManagementAction, ManagementRefusal, ManagementRequest,
+    ManagementResult, Origin, PromptField, PromptSetting, RenameReply, SessionPort, SubmitMode,
+    SuggestionSetting, SwitchKind, Update,
 };
 #[cfg(test)]
 use crate::model::shell::Outcome as ShellOutcome;
@@ -1550,6 +1550,10 @@ struct App {
     /// A flip asked for before the switch was known: the read that answers
     /// it sends the flip.
     suggestion_flip: bool,
+    /// The `compaction` source as last read or written, and the model the
+    /// `/settings` compaction row writes its exact key for (#2235 PR 1b).
+    compaction_setting: Option<CompactionSetting>,
+    compaction_model: Option<(String, String)>,
     /// The `prompts` source as last read or written.
     prompt_setting: Option<PromptSetting>,
     /// A draft a refused prompt write kept, for the next edit of its field.
@@ -1791,7 +1795,7 @@ enum Prompt {
     Approvals(ApprovalsPanel),
     Theme(ThemePanel),
     Language(LanguagePanel),
-    Settings(SettingsPanel),
+    Settings(Box<SettingsPanel>),
     RemoteAccess(Box<super::remote_access::RemoteAccess>),
     Isolation(Box<crate::ui::isolation_panel::IsolationPanel>),
     Exit(ExitConfirm),
@@ -1973,6 +1977,8 @@ impl App {
             suggestion_setting: None,
             suggestion_methods: false,
             suggestion_flip: false,
+            compaction_setting: None,
+            compaction_model: None,
             prompt_setting: None,
             prompt_draft: None,
             pending_prompt: None,
@@ -2807,9 +2813,16 @@ impl App {
                 ],
             )),
             Update::Ready(configuration) => {
+                self.compaction_model = Some((
+                    configuration.provider_id.clone(),
+                    configuration.model_id.clone(),
+                ));
                 self.label = Some(ModelLabel::new(&configuration));
             }
-            Update::NoModel => self.label = None,
+            Update::NoModel => {
+                self.compaction_model = None;
+                self.label = None;
+            }
             Update::ModelFeatures {
                 images,
                 service_tiers,
@@ -3487,6 +3500,37 @@ impl App {
                         panel.set_prompt_suggestion_unavailable();
                     }
                     self.set_notice(tf("Prompt suggestion: {error}", &[("error", &error)]));
+                }
+            },
+            Update::CompactionSetting { result, raised } => match result {
+                Ok(setting) => {
+                    self.compaction_setting = Some(setting);
+                    let row = self.compaction_row();
+                    if let Some(Prompt::Settings(panel)) = &mut self.prompt
+                        && let Some(row) = row
+                    {
+                        panel.set_compaction(row);
+                    }
+                    if let Some((configured, tokens)) = raised {
+                        self.set_notice(tf(
+                                "Compaction window {configured} raised to the shaping floor {tokens} for the current model",
+                                &[
+                                    ("configured", &configured.to_string()),
+                                    ("tokens", &tokens.to_string()),
+                                ],
+                            ));
+                    }
+                }
+                Err(error) => {
+                    let row = self.compaction_row();
+                    if let Some(Prompt::Settings(panel)) = &mut self.prompt {
+                        if self.compaction_setting.is_none() {
+                            panel.set_compaction_unavailable();
+                        } else if let Some(row) = row {
+                            panel.set_compaction(row);
+                        }
+                    }
+                    self.set_notice(tf("Compaction window: {error}", &[("error", &error)]));
                 }
             },
             Update::PromptSettings {
@@ -5080,6 +5124,73 @@ impl App {
                     request,
                 });
             }
+            Effect::SaveCompaction(text) => {
+                let Some(model) = self.compaction_model.clone() else {
+                    self.set_notice(t("Compaction settings are not available"));
+                    return Outcome::Continue;
+                };
+                let Some(setting) = self.compaction_setting.clone() else {
+                    self.set_notice(t("Compaction settings are not available"));
+                    return Outcome::Continue;
+                };
+                let trimmed = text.trim();
+                let exact = format!("{}/{}", model.0, model.1);
+                let entry = if trimmed.is_empty() {
+                    // An empty submission removes the exact key when it
+                    // exists; the outer layers' entries always stay (#2235
+                    // PR 1b B1).
+                    if !setting.document.models.contains_key(&exact) {
+                        return Outcome::Continue;
+                    }
+                    None
+                } else {
+                    match dim_agent_types::compaction_settings::CompactionWindowSpec::parse(trimmed)
+                    {
+                        Ok(spec) => Some(spec),
+                        Err(error) => {
+                            self.set_notice(error.to_string());
+                            return Outcome::Continue;
+                        }
+                    }
+                };
+                let mut document = setting.document;
+                match entry {
+                    Some(spec) => {
+                        document.models.insert(exact, spec);
+                    }
+                    None => {
+                        document.models.remove(&exact);
+                    }
+                }
+                self.host.send(Command::SaveCompactionSetting {
+                    expected_revision: setting.revision,
+                    document,
+                    provider_id: model.0,
+                    model_id: model.1,
+                    entry,
+                });
+            }
+            Effect::ResetCompaction => {
+                let Some(model) = self.compaction_model.clone() else {
+                    return Outcome::Continue;
+                };
+                let Some(setting) = self.compaction_setting.clone() else {
+                    return Outcome::Continue;
+                };
+                let exact = format!("{}/{}", model.0, model.1);
+                if !setting.document.models.contains_key(&exact) {
+                    return Outcome::Continue;
+                }
+                let mut document = setting.document;
+                document.models.remove(&exact);
+                self.host.send(Command::SaveCompactionSetting {
+                    expected_revision: setting.revision,
+                    document,
+                    provider_id: model.0,
+                    model_id: model.1,
+                    entry: None,
+                });
+            }
             Effect::ThemePreview(id) => self.paint_theme(&id),
             Effect::ThemeRestore(id) => {
                 self.prompt = None;
@@ -5630,6 +5741,7 @@ impl App {
                 if self.suggestion_methods {
                     self.host.send(Command::ReadSuggestionSetting);
                 }
+                self.host.send(Command::ReadCompactionSetting);
                 self.host.send(Command::ReadPromptSettings);
                 self.host.send(Command::ReadToolMode);
                 self.open_settings(Setting::Theme);
@@ -5673,6 +5785,7 @@ impl App {
                 .suggestion_setting
                 .as_ref()
                 .map(|setting| setting.document.enabled),
+            compaction: self.compaction_row(),
             prompts: self.prompt_origins(),
             tool_mode: tool_mode_row(
                 &self.tool_mode,
@@ -5684,7 +5797,25 @@ impl App {
                 |policy| crate::permission::name(policy.preset).to_owned(),
             ),
         };
-        self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
+        self.open_prompt(Prompt::Settings(Box::new(SettingsPanel::new(
+            &values, select,
+        ))));
+    }
+
+    /// The compaction row's state for the current model: the window in
+    /// force at the document's own resolution order — the exact
+    /// `<provider>/<model>` key, the bare `<model>` key, then `default` —
+    /// while editing still writes only the exact key (#2235 PR 1b).
+    fn compaction_row(&self) -> Option<crate::ui::settings_panel::CompactionRow> {
+        let setting = self.compaction_setting.as_ref()?;
+        let (provider_id, model_id) = self.compaction_model.as_ref()?;
+        let effective = setting.document.spec_for(provider_id, model_id);
+        let entry = setting
+            .document
+            .models
+            .get(&format!("{provider_id}/{model_id}"))
+            .copied();
+        Some(crate::ui::settings_panel::CompactionRow { effective, entry })
     }
 
     /// Each prompt text's origin, as the last read or write reported it.
@@ -5828,6 +5959,11 @@ impl App {
                     self.host.send(Command::ReadSuggestionSetting);
                 }
                 self.open_settings(setting);
+            }
+            // The compaction row edits inline; its Enter never reaches this
+            // picker branch while the row is editable (#2235 PR 1b).
+            Setting::Compaction => {
+                self.settings_return = None;
             }
         }
     }
@@ -14918,6 +15054,287 @@ mod tests {
         assert!(row(&mut app).starts_with("on"));
     }
 
+    /// The compaction row reads the current model's effective window,
+    /// edits the exact `<provider>/<model>` key inline, removes it on an
+    /// empty submission or `r`, degrades without a model or a read, keeps
+    /// the panel open on the editor's Esc, and reports the floor raise the
+    /// write answered once (#2235 PR 1b B1, B3).
+    mod compaction_row {
+        use super::*;
+        use crate::model::session::CompactionSetting;
+        use dim_agent_types::compaction_settings::{CompactionSettings, CompactionWindowSpec};
+
+        fn fixture() -> (
+            App,
+            tempfile::TempDir,
+            std::rc::Rc<std::cell::RefCell<Vec<Command>>>,
+        ) {
+            let home = tempfile::tempdir().unwrap();
+            let theme = test_theme();
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut app = App::new(
+                Box::new(Recorder(sent.clone())),
+                MarkdownRenderer::new(&theme),
+                theme.palette.clone(),
+                home.path().to_path_buf(),
+                "/work".into(),
+            );
+            app.apply(Update::Ready(Configuration {
+                catalog_provider_id: None,
+                provider_id: "prov".into(),
+                model_id: "mod".into(),
+                model_preferences: None,
+                capability_snapshot: None,
+            }));
+            app.open_settings(Setting::Compaction);
+            (app, home, sent)
+        }
+
+        fn key(code: KeyCode) -> InputEvent {
+            InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE))
+        }
+
+        fn document(entries: &[(&str, CompactionWindowSpec)]) -> CompactionSettings {
+            CompactionSettings {
+                default: CompactionWindowSpec::Auto,
+                models: entries
+                    .iter()
+                    .map(|(key, spec)| (key.to_string(), *spec))
+                    .collect(),
+            }
+        }
+
+        fn read_update(entries: &[(&str, CompactionWindowSpec)]) -> Update {
+            Update::CompactionSetting {
+                result: Ok(CompactionSetting {
+                    revision: "r1".into(),
+                    document: document(entries),
+                }),
+                raised: None,
+            }
+        }
+
+        fn row(app: &mut App) -> String {
+            let live =
+                crate::ui::render::panel::strip_escapes(&app.frame((100, 40)).live.join("\n"));
+            let line = live
+                .lines()
+                .find(|line| line.contains("Compaction window "))
+                .expect("the compaction row");
+            line.split("Compaction window")
+                .nth(1)
+                .expect("the row's value")
+                .trim_start()
+                .to_owned()
+        }
+
+        #[test]
+        fn the_row_shows_the_exact_key_and_the_fallback() {
+            let (mut app, _home, _sent) = fixture();
+            app.apply(read_update(&[]));
+            assert!(
+                row(&mut app).starts_with("auto"),
+                "no exact key: auto, {}",
+                row(&mut app)
+            );
+            app.apply(read_update(&[(
+                "prov/mod",
+                CompactionWindowSpec::Percent(15.0),
+            )]));
+            assert!(
+                row(&mut app).starts_with("15%"),
+                "the exact key's literal, {}",
+                row(&mut app)
+            );
+        }
+
+        /// Without an exact key the row shows the window in force, not
+        /// `auto`: the bare `<model>` key first, then `default` (#2235 PR
+        /// 1b F1).
+        #[test]
+        fn the_row_shows_the_bare_key_and_the_default_in_force() {
+            let (mut app, _home, _sent) = fixture();
+            app.apply(read_update(&[("mod", CompactionWindowSpec::Percent(15.0))]));
+            assert!(
+                row(&mut app).starts_with("15%"),
+                "the bare model key is the window in force: {}",
+                row(&mut app)
+            );
+            app.apply(Update::CompactionSetting {
+                result: Ok(CompactionSetting {
+                    revision: "r1".into(),
+                    document: CompactionSettings {
+                        default: CompactionWindowSpec::Tokens(400_000),
+                        models: std::collections::BTreeMap::new(),
+                    },
+                }),
+                raised: None,
+            });
+            assert!(
+                row(&mut app).starts_with("400000"),
+                "the default is the window in force: {}",
+                row(&mut app)
+            );
+        }
+
+        #[test]
+        fn enter_edits_the_exact_key_inline() {
+            let (mut app, _home, sent) = fixture();
+            app.apply(read_update(&[]));
+            app.handle_input(key(KeyCode::Enter));
+            for c in "50%".chars() {
+                app.handle_input(key(KeyCode::Char(c)));
+            }
+            app.handle_input(key(KeyCode::Enter));
+            assert!(
+                matches!(
+                    sent.borrow().last(),
+                    Some(Command::SaveCompactionSetting {
+                        expected_revision,
+                        provider_id,
+                        model_id,
+                        entry: Some(CompactionWindowSpec::Percent(percent)),
+                        document,
+                        ..
+                    }) if expected_revision == "r1"
+                        && provider_id == "prov"
+                        && model_id == "mod"
+                        && *percent == 50.0
+                        && document.models.get("prov/mod")
+                            == Some(&CompactionWindowSpec::Percent(50.0))
+                ),
+                "the exact-key write was not sent"
+            );
+        }
+
+        #[test]
+        fn an_empty_submission_and_r_remove_an_existing_exact_key_only() {
+            let (mut app, _home, sent) = fixture();
+            app.apply(read_update(&[(
+                "prov/mod",
+                CompactionWindowSpec::Percent(15.0),
+            )]));
+            // r removes the exact key; default and other keys stay.
+            app.handle_input(key(KeyCode::Char('r')));
+            assert!(
+                matches!(
+                    sent.borrow().last(),
+                    Some(Command::SaveCompactionSetting {
+                        entry: None,
+                        document,
+                        ..
+                    }) if !document.models.contains_key("prov/mod")
+                ),
+                "the removal write was not sent"
+            );
+            // No exact key: r writes nothing, and an empty editor submits nothing.
+            sent.borrow_mut().clear();
+            app.apply(read_update(&[]));
+            app.handle_input(key(KeyCode::Char('r')));
+            assert!(
+                !matches!(
+                    sent.borrow().last(),
+                    Some(Command::SaveCompactionSetting { .. })
+                ),
+                "r without a key writes nothing"
+            );
+            app.handle_input(key(KeyCode::Enter));
+            app.handle_input(key(KeyCode::Enter));
+            assert!(
+                !matches!(
+                    sent.borrow().last(),
+                    Some(Command::SaveCompactionSetting { .. })
+                ),
+                "an empty submission without a key writes nothing"
+            );
+        }
+
+        #[test]
+        fn the_row_is_unavailable_without_a_model_or_a_read() {
+            let (mut app, _home, sent) = fixture();
+            // No model in force: even a successful read stays uneditable.
+            app.apply(Update::NoModel);
+            app.apply(read_update(&[]));
+            assert!(
+                row(&mut app).starts_with("Not available"),
+                "no model: {}",
+                row(&mut app)
+            );
+            app.handle_input(key(KeyCode::Enter));
+            assert!(
+                !matches!(
+                    sent.borrow().last(),
+                    Some(Command::SaveCompactionSetting { .. })
+                ),
+                "editing is refused"
+            );
+            // A model in force but the read failed.
+            let (mut app, _home, _sent) = fixture();
+            app.apply(Update::CompactionSetting {
+                result: Err("fixture".into()),
+                raised: None,
+            });
+            assert!(
+                row(&mut app).starts_with("Not available"),
+                "read failed: {}",
+                row(&mut app)
+            );
+        }
+
+        #[test]
+        fn esc_leaves_the_editor_for_the_list_not_the_panel() {
+            let (mut app, _home, sent) = fixture();
+            app.apply(read_update(&[]));
+            app.handle_input(key(KeyCode::Enter));
+            assert!(
+                matches!(app.prompt, Some(Prompt::Settings(_))),
+                "the panel opened the editor"
+            );
+            app.handle_input(key(KeyCode::Char('x')));
+            assert!(
+                row(&mut app).starts_with('x'),
+                "the editor mirrors the draft: {}",
+                row(&mut app)
+            );
+            app.handle_input(key(KeyCode::Esc));
+            assert!(
+                matches!(app.prompt, Some(Prompt::Settings(_))),
+                "Esc leaves the panel open"
+            );
+            assert!(
+                row(&mut app).starts_with("auto"),
+                "Esc restores the row's read value: {}",
+                row(&mut app)
+            );
+            assert!(
+                !matches!(
+                    sent.borrow().last(),
+                    Some(Command::SaveCompactionSetting { .. })
+                ),
+                "Esc writes nothing"
+            );
+        }
+
+        #[test]
+        fn a_floor_raise_the_write_answered_reports_once() {
+            let (mut app, _home, _sent) = fixture();
+            app.apply(Update::CompactionSetting {
+                result: Ok(CompactionSetting {
+                    revision: "r2".into(),
+                    document: document(&[("prov/mod", CompactionWindowSpec::Tokens(1_000))]),
+                }),
+                raised: Some((1_000, 32_000)),
+            });
+            let live =
+                crate::ui::render::panel::strip_escapes(&app.frame((100, 40)).live.join("\n"));
+            assert!(
+                live.contains("raised to the shaping floor 32000"),
+                "the one-time report: {live}"
+            );
+            assert!(row(&mut app).starts_with("1000"), "{}", row(&mut app));
+        }
+    }
+
     /// The prompt rows show each text's origin, and Enter and `r` reach the
     /// editor and the reset without a new slash command.
     #[test]
@@ -14949,7 +15366,7 @@ mod tests {
             assert!(live.contains(row), "{row} is missing: {live}");
         }
         assert!(live.contains("custom"), "{live}");
-        for _ in 0..9 {
+        for _ in 0..10 {
             app.handle_input(key(KeyCode::Down));
         }
         assert!(matches!(
@@ -15065,7 +15482,7 @@ mod tests {
             request: None,
         });
         drawn.app.run_command("settings", "");
-        for _ in 0..11 {
+        for _ in 0..12 {
             drawn.app.handle_input(key(KeyCode::Down));
         }
         let live = strip_escapes(&drawn.app.frame((100, 40)).live.join("\n"));

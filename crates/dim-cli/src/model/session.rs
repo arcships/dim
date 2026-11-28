@@ -72,6 +72,15 @@ pub struct SuggestionSetting {
     pub document: dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettings,
 }
 
+/// The `compaction` source as `settings.read` and `settings.update` answer
+/// it (#2235 PR 1b): the revision the next write expects, and the document
+/// whose exact `<provider>/<model>` keys the settings row edits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactionSetting {
+    pub revision: String,
+    pub document: dim_agent_types::compaction_settings::CompactionSettings,
+}
+
 /// One field of the `prompts` source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptField {
@@ -402,6 +411,19 @@ pub enum Command {
         expected_revision: String,
         enabled: bool,
         max_chars: u32,
+    },
+    /// Read the `compaction` source.
+    ReadCompactionSetting,
+    /// Write the `compaction` document with `entry` as the exact
+    /// `provider/model` key's value (`None` removes the key), at the
+    /// revision the panel displayed. `window` is the exact key's model
+    /// target the raise check shapes for.
+    SaveCompactionSetting {
+        expected_revision: String,
+        document: dim_agent_types::compaction_settings::CompactionSettings,
+        provider_id: String,
+        model_id: String,
+        entry: Option<dim_agent_types::compaction_settings::CompactionWindowSpec>,
     },
     /// Read the `prompts` source.
     ReadPromptSettings,
@@ -1513,6 +1535,14 @@ pub enum Update {
     SuggestionMethods(bool),
     /// The `prompt-suggestion` switch, as last read or written.
     SuggestionSetting(Result<SuggestionSetting, String>),
+    /// The `compaction` source, as last read or written. `raised` is the
+    /// written window's shaping-floor raise — the configured tokens and what
+    /// they became — so the interface can report it once (#2235 PR 1b); a
+    /// read carries none.
+    CompactionSetting {
+        result: Result<CompactionSetting, String>,
+        raised: Option<(u64, u64)>,
+    },
     /// The `prompts` source, as last read or written. `field` names the write
     /// that produced it; a read carries none.
     PromptSettings {
