@@ -1162,7 +1162,6 @@ impl ShellSessionPlugin {
             facts: names.key()?,
             session: names.key()?,
             host: names.key()?,
-            lifecycle: names.key()?,
             session_config: names.key()?,
             branch_lifecycle: names.key()?,
             config: None,
@@ -1178,9 +1177,8 @@ impl DynPlugin for ShellSessionPlugin {
         vec![
             self.background.erase(),
             self.host.erase(),
-            self.lifecycle.erase(),
             self.session_config.erase(),
-            self.identity.erase(),
+            self.branch_lifecycle.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1198,12 +1196,12 @@ impl DynPlugin for ShellSessionPlugin {
                     output_dir: host
                         .home
                         .join(".dim/exec")
-                        .join(&branch_lifecycle.session_id)
-                        .join(&branch_lifecycle.branch_id),
+                        .join(&branch_lifecycle.session_id())
+                        .join(&branch_lifecycle.branch_id()),
                 }),
                 host,
                 owner,
-                branch_lifecycle.session_id.clone(),
+                branch_lifecycle.session_id().clone(),
                 background,
             );
             session.facts = Some((ctx.clone(), self.facts.clone()));
