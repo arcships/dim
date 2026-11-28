@@ -625,6 +625,9 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
         ("/contextWindow", json!(9_007_199_254_740_992u64)),
         ("/autoCompactWindow", json!(64001)),
         ("/autoCompactWindow", json!(0)),
+        ("/autoCompactWindow", json!("0%")),
+        ("/autoCompactWindow", json!("101%")),
+        ("/autoCompactWindow", json!("garbage")),
     ] {
         let mut invalid = input.clone();
         let (parent, field) = pointer.rsplit_once('/').unwrap();
@@ -1287,6 +1290,121 @@ async fn an_output_limit_above_the_window_is_adopted_with_the_derived_allowance(
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// A compaction window below the floor of 32,000 or 10% of the capacity,
+/// when that is smaller, rises to the floor; a percentage resolves against
+/// the declared context window (ContextCompaction §5.1, #2235).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_compaction_window_resolves_percentages_and_floors() {
+    let home = std::env::temp_dir().join(format!("dim-window-resolve-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for (window, expected) in [
+        (json!("40%"), 25_600),
+        (json!("100%"), 64_000),
+        (json!(1000), 6_400),
+        (json!(48000), 48_000),
+    ] {
+        let mut input = startup(&base, "openai-compatible", "private-window");
+        input["autoCompactWindow"] = window.clone();
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":home,"model":{"modelId":"startup-fixture"},"startup":input}),
+            )
+            .await;
+        assert_ok(&created);
+        let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        submit(&mut client, &sid, "main").await;
+        let session = server.agent().unwrap().get_session(&sid).unwrap();
+        let state = session.get::<PromptSnapshot>("main").unwrap().unwrap();
+        assert_eq!(
+            state
+                .configuration
+                .unwrap()
+                .metadata
+                .unwrap()
+                .startup
+                .unwrap()
+                .auto_compact_window,
+            Some(expected),
+            "{window}"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    fixture.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A large model window raises the floor to 32,000, and a window small enough
+/// that 10% of it is the floor resolves a small percentage against it
+/// (ContextCompaction §5.1, #2235).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_compaction_window_floor_scales_with_the_model_window() {
+    let home = std::env::temp_dir().join(format!("dim-window-floor-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for (window, max_output, percentage, expected) in [
+        (1_000_000, 1_000, "1%", 32_000),
+        (10_000, 1_000, "5%", 1_000),
+        (1_000_000, 1_000, "50%", 500_000),
+    ] {
+        let mut input = startup(&base, "openai-compatible", "private-window");
+        input["contextWindow"] = json!(window);
+        input["maxOutputTokens"] = json!(max_output);
+        input["autoCompactWindow"] = json!(percentage);
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":home,"model":{"modelId":"startup-fixture"},"startup":input}),
+            )
+            .await;
+        assert_ok(&created);
+        let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        submit(&mut client, &sid, "main").await;
+        let session = server.agent().unwrap().get_session(&sid).unwrap();
+        let state = session.get::<PromptSnapshot>("main").unwrap().unwrap();
+        assert_eq!(
+            state
+                .configuration
+                .unwrap()
+                .metadata
+                .unwrap()
+                .startup
+                .unwrap()
+                .auto_compact_window,
+            Some(expected),
+            "{window} x {percentage}"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    fixture.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// A temporary route on the built-in `xai` provider is still an xAI
 /// destination: the route connection names the `xai` vendor package, so a GIF in
 /// the conversation becomes its reference while the PNG stays pixels.
@@ -1879,5 +1997,81 @@ async fn a_reloaded_connection_writes_the_presence_snapshot_once() {
 
     server.shutdown();
     server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The startup window's raise is one field with one spelling on every reply
+/// that carries it (#2235): the real admission and the real serialization of
+/// `session.model.preview`, `session.create` and `session.model.update` all
+/// answer `autoCompactWindowElevation`, the spelling the CLI's clients read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_startup_replies_share_one_elevation_spelling() {
+    let home = std::env::temp_dir().join(format!("dim-elevation-wire-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let input = |window: Value| {
+        json!({"connection":{"baseUrl":base,"apiFormat":"openai-compatible","apiKey":"elevation-wire-secret"},
+            "contextWindow":1000000,"maxOutputTokens":1000,"autoCompactWindow":window})
+    };
+    let check = |reply: &Value, requested: Value, operation: &str| {
+        let result = &reply["result"];
+        let keys: Vec<&str> = result
+            .as_object()
+            .unwrap_or_else(|| panic!("{operation} returns an object: {reply}"))
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            !keys.contains(&"auto_compact_window_elevation"),
+            "{operation} answers the snake_case spelling: {keys:?} in {reply}"
+        );
+        let elevation = &result["autoCompactWindowElevation"];
+        assert_eq!(
+            elevation,
+            &json!({"requested":requested,"effectiveTokens":32000}),
+            "{operation}: 1% of one million is 10,000, below the 32,000 floor, and 12,000 rises to it: {reply}"
+        );
+    };
+    let preview = client
+        .rpc(
+            "session.model.preview",
+            json!({"cwd":home,"model":{"modelId":"startup-fixture"},"startup":input(json!("1%"))}),
+        )
+        .await;
+    assert_ok(&preview);
+    check(&preview, json!("1%"), "session.model.preview");
+    assert!(server.agent().unwrap().sessions().is_empty());
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"modelId":"startup-fixture"},"startup":input(json!(12000))}),
+        )
+        .await;
+    assert_ok(&created);
+    check(&created, json!(12000), "session.create");
+    let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    submit(&mut client, &sid, "main").await;
+    let updated = client
+        .rpc(
+            "session.model.update",
+            json!({"sessionId":sid,"branchId":"main","startup":input(json!(12000))}),
+        )
+        .await;
+    assert_ok(&updated);
+    check(&updated, json!(12000), "session.model.update");
+    server.shutdown();
+    server.join().await.unwrap();
+    fixture.abort();
     std::fs::remove_dir_all(home).unwrap();
 }

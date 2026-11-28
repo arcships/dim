@@ -55,7 +55,7 @@ pub struct Projection {
     /// Each line's own user messages, by input id and submission sequence,
     /// to count where a line was cut (timeline UI §6); a withdrawn message
     /// stays, and `withdrawals` decides which cuts still count it.
-    messages: HashMap<String, Vec<(String, u64)>>,
+    messages: HashMap<String, HashMap<String, u64>>,
     /// Each line's user messages withdrawn later, by input id and the sequence
     /// that withdrew them: a cut before that sequence still counts the
     /// message, whichever page carried the input or the withdrawal.
@@ -141,10 +141,11 @@ impl Projection {
     pub fn line_event(&mut self, parent: &str, event: &Event) {
         match &event.content {
             EventContent::Input(data) if data.user.is_some() => {
-                let messages = self.messages.entry(parent.to_owned()).or_default();
-                if !messages.iter().any(|(id, _)| *id == event.id) {
-                    messages.push((event.id.clone(), event.sequence));
-                }
+                self.messages
+                    .entry(parent.to_owned())
+                    .or_default()
+                    .entry(event.id.clone())
+                    .or_insert(event.sequence);
             }
             EventContent::InputDeleted(data) => {
                 let withdrawals = self.withdrawals.entry(parent.to_owned()).or_default();
@@ -232,11 +233,11 @@ impl Projection {
             messages
                 .iter()
                 .filter(|(id, at)| {
-                    *at <= sequence
+                    **at <= sequence
                         && self
                             .withdrawals
                             .get(branch)
-                            .and_then(|withdrawals| withdrawals.get(id))
+                            .and_then(|withdrawals| withdrawals.get(*id))
                             .is_none_or(|withdrawn| *withdrawn > sequence)
                 })
                 .count()
@@ -524,7 +525,7 @@ impl Projection {
                 }
             }
             EventContent::ModelStart(_) => {}
-            EventContent::Thinking(data) => {
+            EventContent::Thinking(data) | EventContent::SettledThinking(data, _) => {
                 *self
                     .thinking_characters
                     .entry(data.request_id.clone())
@@ -556,6 +557,9 @@ impl Projection {
                         &mut row.row_id,
                         format!("thinking-{}", event.id),
                     ));
+                }
+                if let EventContent::SettledThinking(_, closed_at) = &event.content {
+                    self.close_thinking(&data.request_id, *closed_at);
                 }
             }
             EventContent::Text(data) => {

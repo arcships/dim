@@ -167,7 +167,7 @@ impl CompactionStrategy for FixedSummary {
     fn name(&self) -> &str {
         "fixed"
     }
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, model: &dyn ContextModel, _: f64) -> f64 {
         model.count_tokens(&ModelRequest::new(
             "",
             "",

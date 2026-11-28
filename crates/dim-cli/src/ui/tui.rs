@@ -144,8 +144,8 @@ enum Jump {
     Pick,
     /// Pick the user message drawn as this block id (`/timeline`).
     Block(usize),
-    /// Scroll so this block id is at the top (after a page loads above it).
-    Show(usize),
+    /// Show the preceding screenful with this block still visible at the join.
+    Before(usize),
     /// Scroll to the top of this block id when it is taller than the viewport,
     /// so a long report opens at its heading instead of scrolled past it
     /// (`/keys`).
@@ -161,7 +161,7 @@ fn apply_jump(full: &mut FullScreen, app: &App, jump: Jump) {
         Jump::Top => full.scroll_to_top(),
         Jump::Pick => full.focus_older(app),
         Jump::Block(id) => full.pick_block(id, app),
-        Jump::Show(id) => full.show_block(id, app),
+        Jump::Before(id) => full.show_before_block(id, app),
         Jump::ShowTall(id) => full.show_tall_block(id, app),
     }
 }
@@ -731,6 +731,12 @@ fn run_terminal(
                 match full.mouse(event, &app) {
                     MouseOutcome::Ignored => {}
                     MouseOutcome::Redraw => dirty = true,
+                    MouseOutcome::Earlier => {
+                        if app.keyboard_free() && !app.shows_member() {
+                            app.show_earlier();
+                        }
+                        dirty = true;
+                    }
                     MouseOutcome::Overlay(rows) => {
                         app.scroll_overlay(rows * 3);
                         dirty = true;
@@ -1446,8 +1452,7 @@ struct App {
     pending_boundary: Option<SwitchKind>,
     /// The line the transcript switched to, until its boundary row is out.
     pending_line: Option<String>,
-    /// `(messages in the window, messages before it)` of the last switch.
-    window_info: (usize, usize),
+    window_messages: usize,
     /// Rows `[start, end)` queued to be drawn as an earlier-history page.
     history_request: Option<(usize, usize)>,
     /// The fullscreen interface is on screen.
@@ -1928,7 +1933,7 @@ impl App {
             switches: PendingSwitches::default(),
             pending_boundary: None,
             pending_line: None,
-            window_info: (0, 0),
+            window_messages: 0,
             history_request: None,
             fullscreen: false,
             signed_in: false,
@@ -2872,10 +2877,18 @@ impl App {
                     }
                 }
                 self.runs.observe(&snapshot);
+                let earlier = snapshot.earlier;
                 let previous = self.snapshot.replace(*snapshot);
                 self.restore_retained_upload();
                 self.follow_floors(previous.as_ref());
-                self.apply_earlier(previous.as_ref());
+                if self.reveal_pending {
+                    self.reveal_pending = !self.reveal_earlier()
+                        && (earlier == Earlier::Reading
+                            || earlier == Earlier::Unread
+                                && previous
+                                    .as_ref()
+                                    .is_some_and(|s| s.earlier == Earlier::Unread));
+                }
                 self.refresh_compactions();
                 self.refresh_cards();
                 self.refresh_tool_origins();
@@ -6236,14 +6249,7 @@ impl App {
                 Outcome::Continue
             }
             "earlier" => {
-                if self.fullscreen {
-                    self.show_earlier();
-                } else {
-                    self.host.send(Command::Earlier {
-                        line: self.target_line(),
-                        session: self.target_session(),
-                    });
-                }
+                self.show_earlier();
                 Outcome::Continue
             }
             "export" => {
@@ -6624,14 +6630,14 @@ impl App {
             self.record(Block::Boundary(label));
             frame.commits.push(text);
         }
-        if ready && std::mem::take(&mut self.load_more) && self.fullscreen {
-            let hidden = self.snapshot.as_ref().map_or(0, |snapshot| {
-                snapshot.rows[..self.window_floor.min(snapshot.rows.len())]
-                    .iter()
-                    .filter(|row| row.kind.is_message())
-                    .count()
-            });
-            if hidden > 0 {
+        if ready && std::mem::take(&mut self.load_more) {
+            let hidden = self.hidden_messages();
+            if hidden > 0
+                || self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.earlier != Earlier::AtStart)
+            {
                 let block = Block::LoadMore(hidden);
                 let text = chunk(&render_block(
                     &block,
@@ -6696,20 +6702,15 @@ impl App {
                     let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
                     tf(
                         "forked {id} · {count} messages",
-                        &[("id", sid), ("count", &self.window_info.0.to_string())],
+                        &[("id", sid), ("count", &self.window_messages.to_string())],
                     )
                 }
                 SwitchKind::Resumed => {
-                    let (count, hidden) = self.window_info;
                     let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
-                    let mut label = tf(
+                    tf(
                         "resumed {id} · {count} messages",
-                        &[("id", sid), ("count", &count.to_string())],
-                    );
-                    if hidden > 0 {
-                        label.push_str(t(" · earlier history: /timeline"));
-                    }
-                    label
+                        &[("id", sid), ("count", &self.window_messages.to_string())],
+                    )
                 }
             };
             let line = boundary_line(&label, width);
@@ -6726,7 +6727,7 @@ impl App {
                 self.jump = Some(if pick {
                     Jump::Block(id)
                 } else {
-                    Jump::Show(id)
+                    Jump::Before(id)
                 });
             }
         }
@@ -7612,7 +7613,7 @@ impl App {
         self.window_floor = if hidden > 0 { messages[hidden] } else { 0 };
         self.history_floor = self.window_floor;
         self.load_more = true;
-        self.window_info = (messages.len() - hidden, hidden);
+        self.window_messages = messages.len() - hidden;
         true
     }
 
@@ -8102,7 +8103,7 @@ impl App {
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
-        self.window_info = (0, 0);
+        self.window_messages = 0;
         self.history_request = None;
         self.awaiting_window = true;
     }
@@ -8119,7 +8120,7 @@ impl App {
         self.load_more = false;
         self.reveal_pending = false;
         self.landing = None;
-        self.window_info = (0, 0);
+        self.window_messages = 0;
         self.history_request = None;
         self.awaiting_window = true;
         self.pending_line = Some(line);
@@ -8219,7 +8220,7 @@ impl App {
         self.load_more = false;
         self.reveal_pending = false;
         self.landing = None;
-        self.window_info = (0, 0);
+        self.window_messages = 0;
         self.history_request = None;
         // Home has no window to wait for.
         self.awaiting_window = !self.session_id.is_empty();
@@ -8299,41 +8300,46 @@ impl App {
         } else if index < self.history_floor {
             self.history_request = Some((index, self.history_floor));
             self.history_floor = index;
+            self.load_more = true;
         } else {
             self.set_notice(t("Already on screen above; /tui jumps to it"));
         }
     }
 
-    /// Fullscreen's load-more row: draws the previous page above the drawn
-    /// messages and keeps the oldest drawn message at the top of the view.
-    fn load_earlier(&mut self) {
+    fn reveal_earlier(&mut self) -> bool {
         let Some(snapshot) = &self.snapshot else {
-            return;
+            return false;
         };
-        let floor = self.window_floor.min(snapshot.rows.len());
-        let messages: Vec<usize> = snapshot.rows[..floor]
+        let floor = self.history_floor.min(snapshot.rows.len());
+        if floor == 0 {
+            return false;
+        }
+        let start = snapshot.rows[..floor]
             .iter()
             .enumerate()
+            .rev()
             .filter(|(_, row)| row.kind.is_message())
-            .map(|(i, _)| i)
-            .collect();
-        if messages.is_empty() {
-            return;
+            .nth(HISTORY_WINDOW - 1)
+            .map_or(0, |(i, _)| i);
+        if !self.fullscreen {
+            self.rebuild_window(start);
+            self.banner_committed = false;
+            self.request_reflow();
+            return true;
         }
-        let start = messages[messages.len().saturating_sub(HISTORY_WINDOW)];
         self.landing = snapshot.rows[floor..]
             .iter()
             .find(|row| row.kind == RowKind::UserMessage && row.line.is_none())
             .map(|row| (row.row_id.clone(), false));
+        if self.landing.is_none() {
+            self.jump = Some(Jump::Top);
+        }
         self.rebuild_window(start);
+        true
     }
 
-    /// Shows what comes before the drawn top, for PageUp at that top, the
-    /// load-more row and fullscreen `/earlier`: loaded rows first, a read from
-    /// the daemon when none are loaded, and nothing at the branch start.
     fn show_earlier(&mut self) {
-        if self.hidden_messages() > 0 {
-            self.load_earlier();
+        if self.history_request.is_some() || self.reveal_earlier() {
             return;
         }
         let Some(snapshot) = &self.snapshot else {
@@ -8348,57 +8354,18 @@ impl App {
                 self.reveal_pending = true;
             }
             Earlier::Reading => self.reveal_pending = true,
-            Earlier::AtStart => {}
+            Earlier::AtStart => self.set_notice(t("Beginning of conversation")),
         }
     }
 
-    /// Message rows loaded above `window_floor`, which the drawn window hides.
     fn hidden_messages(&self) -> usize {
         let Some(snapshot) = &self.snapshot else {
             return 0;
         };
-        snapshot.rows[..self.window_floor.min(snapshot.rows.len())]
+        snapshot.rows[..self.history_floor.min(snapshot.rows.len())]
             .iter()
             .filter(|row| row.kind.is_message())
             .count()
-    }
-
-    /// Reveals the page an earlier read just prepended, keeping the oldest
-    /// drawn message at the top of the view.
-    fn reveal_prepended(&mut self) {
-        if self.hidden_messages() > 0 {
-            self.load_earlier();
-        }
-        self.reveal_pending = false;
-    }
-
-    /// The pending reveal, once a snapshot arrived. A prepended page is shown;
-    /// a read that ended without one drops the request, so a later unrelated
-    /// prepend is not revealed by it. A live-turn snapshot during the read
-    /// changes nothing, which is why `Earlier::Reading` keeps it.
-    fn apply_earlier(&mut self, previous: Option<&ViewSnapshot>) {
-        if !self.reveal_pending {
-            return;
-        }
-        let Some(snapshot) = &self.snapshot else {
-            return;
-        };
-        // Rows were prepended when the old first row now sits below the top: a
-        // front trim changes the first row too and must not count.
-        let prepended = previous.is_some_and(|previous| {
-            previous.rows.first().is_some_and(|first| {
-                snapshot
-                    .rows
-                    .iter()
-                    .position(|row| row.row_id == first.row_id)
-                    .is_some_and(|index| index > 0)
-            })
-        });
-        if prepended {
-            self.reveal_prepended();
-        } else if snapshot.earlier != Earlier::Reading {
-            self.reveal_pending = false;
-        }
     }
 
     /// Entering fullscreen: the shown line is drawn again from its window,
@@ -8411,8 +8378,7 @@ impl App {
         }
     }
 
-    /// Draws the fullscreen transcript again from row `floor`, the way a
-    /// line switch draws a line's.
+    /// Draws the shown line's transcript again from row `floor`.
     fn rebuild_window(&mut self, floor: usize) {
         self.planner.reset();
         self.thoughts.clear();
@@ -8448,7 +8414,12 @@ impl App {
         let (Some(previous), Some(snapshot)) = (previous, &self.snapshot) else {
             return;
         };
-        let index_of = |id: &str| snapshot.rows.iter().position(|row| row.row_id == id);
+        let index_of = |id: &str| {
+            snapshot
+                .rows
+                .iter()
+                .position(|row| row.row_id == id || row.provisional_id.as_deref() == Some(id))
+        };
         let moved = |floor: usize| -> usize {
             let Some(rows) = previous.rows.get(floor..).filter(|rows| !rows.is_empty()) else {
                 return floor.min(snapshot.rows.len());
@@ -8459,7 +8430,9 @@ impl App {
             let present: std::collections::HashSet<&str> = snapshot
                 .rows
                 .iter()
-                .map(|row| row.row_id.as_str())
+                .flat_map(|row| {
+                    std::iter::once(row.row_id.as_str()).chain(row.provisional_id.as_deref())
+                })
                 .collect();
             rows.iter()
                 .find(|row| present.contains(row.row_id.as_str()))
@@ -8813,6 +8786,7 @@ impl App {
     }
 
     fn set_fullscreen(&mut self, on: bool) {
+        self.reveal_pending = false;
         self.fullscreen = on;
         if on {
             self.redraw_window();
@@ -16535,9 +16509,8 @@ mod tests {
             "the retried page starts at the same floor"
         );
         assert_eq!(
-            drawn.app.window_info,
-            (HISTORY_WINDOW, 30),
-            "the window names the older messages it hides"
+            drawn.app.window_messages, HISTORY_WINDOW,
+            "the window counts its visible messages"
         );
         assert!(
             drawn
@@ -19296,7 +19269,10 @@ mod tests {
             !text.contains("ask 19\n") && text.contains("ask 20"),
             "{text}"
         );
-        assert!(text.contains("earlier history: /timeline"), "{text}");
+        assert!(
+            text.find("/earlier").unwrap() < text.find("ask 20").unwrap(),
+            "{text}"
+        );
         drawn.app.run_command("timeline", "");
         assert!(matches!(drawn.app.prompt, Some(Prompt::Timeline(_))));
         drawn.key(KeyCode::Home);
@@ -19364,7 +19340,7 @@ mod tests {
             .iter()
             .position(|block| matches!(block, Block::User { text, .. } if text == "ask 130"))
             .expect("the old top is drawn again");
-        assert_eq!(drawn.app.jump, Some(Jump::Show(drawn.app.dropped + kept)));
+        assert_eq!(drawn.app.jump, Some(Jump::Before(drawn.app.dropped + kept)));
         drawn.app.jump = None;
         drawn.app.open_card(LOAD_MORE);
         drawn.draw();
@@ -23929,7 +23905,7 @@ mod tests {
 
     /// `/earlier` at the drawn top asks for the page and draws it when it lands.
     #[test]
-    fn show_earlier_requests_unread_history_and_does_nothing_at_the_start() {
+    fn show_earlier_requests_unread_history_and_reports_the_start() {
         let mut drawn = Drawn::new((80, 40), None, true);
         drawn.app.fullscreen = true;
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -23950,6 +23926,8 @@ mod tests {
         assert!(matches!(sent.borrow()[0], Command::Earlier { .. }));
         drawn.draw();
         assert_eq!(drawn.transcript(), before, "the request draws nothing");
+        let queued = drawn.app.snapshot.as_ref().unwrap().clone();
+        drawn.app.apply(Update::Snapshot(Box::new(queued)));
         let mut rows = window_rows(HISTORY_WINDOW);
         let mut live = (*window_rows(1)[0]).clone();
         live.row_id = "live".into();
@@ -23992,65 +23970,31 @@ mod tests {
             "the page is drawn, nothing left hidden"
         );
         assert_eq!(drawn_top(&drawn.app), "older 0");
+        let join = drawn.app.block_of(&window_rows(1)[0]).unwrap();
+        assert_eq!(drawn.app.jump, Some(Jump::Before(join)));
         sent.borrow_mut().clear();
         drawn.app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
         drawn.app.show_earlier();
         assert!(sent.borrow().is_empty(), "a read in flight is not repeated");
 
-        // At the start nothing earlier exists and no read is in flight: a
-        // window opened on a short Session whose page it has not drawn yet.
-        // The call's frame is the window's first, so a floor it moved still
-        // changes the page; the twin draws without the call.
-        let at_start = || {
-            let mut drawn = Drawn::new((80, 40), None, true);
-            drawn.app.fullscreen = true;
-            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            drawn.app.host = Box::new(Recorder(sent.clone()));
-            drawn.app.snapshot = Some(ViewSnapshot {
-                session_id: "s1".into(),
-                rows: window_rows(HISTORY_WINDOW),
-                focus: "main".into(),
-                history_complete: true,
-                earlier: Earlier::AtStart,
-                ..ViewSnapshot::default()
-            });
-            (drawn, sent)
-        };
-        let (mut untouched, _) = at_start();
-        untouched.draw();
-        let page = untouched.transcript();
-        assert!(page.contains("ask 0"), "the window draws its page: {page}");
-        let (mut no_op, sent) = at_start();
-        no_op.app.show_earlier();
+        let mut drawn = Drawn::new((80, 40), None, true);
+        let (app, sent) = fullscreen_app();
+        drawn.app = app;
+        drawn.app.show_earlier();
         assert!(sent.borrow().is_empty(), "AtStart sends nothing");
-        no_op.draw();
-        assert_eq!(no_op.transcript(), page, "AtStart draws nothing");
+        drawn.draw();
+        assert!(drawn.transcript().contains("Beginning of conversation"));
 
         // A page that lands afterwards draws what it draws without the call:
         // the no-op armed no reveal.
         let mut rows = older_rows(HISTORY_WINDOW);
         rows.extend(window_rows(HISTORY_WINDOW));
-        let later = |drawn: &mut Drawn| {
-            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
-                session_id: "s1".into(),
-                rows: rows.clone(),
-                focus: "main".into(),
-                history_complete: true,
-                earlier: Earlier::AtStart,
-                ..ViewSnapshot::default()
-            })));
-            drawn.draw();
-            drawn.transcript()
-        };
-        let text = later(&mut no_op);
+        show_window(&mut drawn, rows);
+        drawn.draw();
+        let text = drawn.transcript();
         assert!(
             !text.contains("older ") && text.contains("ask 0"),
             "the no-op armed no reveal: {text}"
-        );
-        assert_eq!(
-            text,
-            later(&mut untouched),
-            "a page landing after the no-op draws what it draws without it"
         );
     }
 

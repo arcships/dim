@@ -363,6 +363,10 @@ struct Worker {
     unreadable_line: Option<String>,
     /// The model Home previews, which the first message's Session adopts.
     preview: Option<Configuration>,
+    /// The shaping-floor notice this client already showed (#2235): the Home
+    /// preview and the first Session's creation raise the same startup
+    /// window, and the one-time notice fires once for equal raises.
+    elevation_noticed: Option<crate::wire::AutoCompactWindowElevation>,
     /// The preference Home chose for that model: the members it named, which
     /// the server applies over the model's saved values. Dropped once Home
     /// shows another model or the Session starts.
@@ -960,6 +964,7 @@ impl Worker {
             line_configurations: Default::default(),
             unreadable_line: None,
             preview: None,
+            elevation_noticed: None,
             pending: None,
             mcp_attempt: None,
             mcp_callbacks: unbounded_channel(),
@@ -1026,7 +1031,9 @@ impl Worker {
                         client::resume_failure("Cannot set the permission preset", error)
                     })?;
             }
-            adopt_startup(&mut self.client, &self.options, &id, &self.default_branch).await?;
+            let elevation =
+                adopt_startup(&mut self.client, &self.options, &id, &self.default_branch).await?;
+            self.notice_elevation(elevation);
             if deferred {
                 self.register_ui().await?;
             }
@@ -1043,12 +1050,29 @@ impl Worker {
         Ok(())
     }
 
+    /// Shows the shaping-floor notice once per distinct raise (#2235): the
+    /// Home preview and the creations that follow it carry the same startup
+    /// window, and only a different raise reports again.
+    fn notice_elevation(&mut self, elevation: Option<crate::wire::AutoCompactWindowElevation>) {
+        let Some(elevation) = elevation else {
+            return;
+        };
+        if self.elevation_noticed.as_ref() == Some(&elevation) {
+            return;
+        }
+        let notice = elevation.notice();
+        self.elevation_noticed = Some(elevation);
+        self.send(Update::Notice(notice));
+    }
+
     async fn preview_model(&mut self) -> crate::Result<()> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Preview {
             model: ModelId,
             model_preferences: Option<dim_agent_types::ModelPreferences>,
+            #[serde(default)]
+            auto_compact_window_elevation: Option<crate::wire::AutoCompactWindowElevation>,
         }
         let preview: Preview = tokio::time::timeout(Duration::from_secs(5), async {
             let mut params = session_create_from_options(&mut self.client, &self.options).await?;
@@ -1068,6 +1092,7 @@ impl Worker {
             capability_snapshot: None,
             model_preferences: preview.model_preferences,
         };
+        self.notice_elevation(preview.auto_compact_window_elevation);
         self.preview = Some(configuration.clone());
         self.send(Update::Ready(configuration));
         Ok(())
@@ -1145,6 +1170,7 @@ impl Worker {
                         crate::sanitize::safe(&worktree.root)
                     )
                 });
+                self.notice_elevation(created.auto_compact_window_elevation.clone());
                 self.enter(
                     created.session_id,
                     Some(created.model),
@@ -2156,7 +2182,12 @@ impl Worker {
                 }
             }
             Command::Rename(title) => self.rename(title).await,
-            Command::Earlier { line, .. } => self.earlier(&line),
+            Command::Earlier { line, .. } => {
+                self.earlier(&line);
+                if self.earlier_view() == Earlier::Reading {
+                    self.publish();
+                }
+            }
             Command::Goal { request, .. } => self.goal(request).await,
             Command::Loop { request, .. } => self.loop_command(request).await,
             Command::CheckUpdate if self.options.endpoint.is_some() => {
@@ -5740,14 +5771,7 @@ impl Worker {
                     .values()
                     .any(|line| line.projection.held_input(id).is_some())
         });
-        let mut snapshot = match self
-            .lines
-            .get(&self.focus)
-            .filter(|_| self.focus != ROOT_BRANCH_ID)
-        {
-            Some(line) => line.projection.snapshot(),
-            None => self.projection.snapshot(),
-        };
+        let mut snapshot = self.shown().snapshot();
         snapshot.lines = self.line_views();
         snapshot.unread_lines = snapshot
             .lines
@@ -5897,9 +5921,9 @@ pub(crate) async fn adopt_startup(
     options: &Options,
     session_id: &str,
     branch: &str,
-) -> crate::Result<()> {
+) -> crate::Result<Option<crate::wire::AutoCompactWindowElevation>> {
     if options.startup.is_none() && options.effort.is_none() && options.model.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     // The update names the line the attach reply named: a move between attach
     // and this write must not apply the startup configuration to another line
@@ -5917,8 +5941,14 @@ pub(crate) async fn adopt_startup(
     if let Some(preferences) = options.creation_preferences() {
         params["modelPreferences"] = preferences;
     }
-    client
-        .rpc("session.model.update", params)
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Updated {
+        #[serde(default)]
+        auto_compact_window_elevation: Option<crate::wire::AutoCompactWindowElevation>,
+    }
+    let updated: Updated = client
+        .typed("session.model.update", params)
         .await
         .map_err(|error| {
             client::resume_failure(
@@ -5926,7 +5956,7 @@ pub(crate) async fn adopt_startup(
                 error,
             )
         })?;
-    Ok(())
+    Ok(updated.auto_compact_window_elevation)
 }
 
 /// The version of a `provider.selection` reply's row, `None` when the scope

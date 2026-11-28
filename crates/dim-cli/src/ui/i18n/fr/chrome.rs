@@ -36,6 +36,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y confirm · Esc cancel" => "y confirmer · Échap annuler",
         "Enter save · Esc cancel" => "Entrée enregistrer · Échap annuler",
         "Loading…" => "Chargement…",
+        "Beginning of conversation" => "Début de la conversation atteint",
         "Tab / Enter complete" => "Tab / Enter compléter",
         "Queue" => "File d’attente",
         "Export session" => "Exporter la session",
@@ -355,7 +356,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Only in fullscreen (/tui)" => "Plein écran uniquement (/tui)",
         "new session" => "nouvelle session",
         "resumed {id} · {count} messages" => "{id} repris · {count} messages",
-        " · earlier history: /timeline" => " · historique antérieur: /timeline",
+        "Earlier messages · {key}" => "Messages précédents · {key}",
+        "Clears terminal output from before Dim started" => {
+            "Efface la sortie du terminal antérieure au lancement de Dim"
+        }
         "Error: {message}" => "Erreur: {message}",
         "working…  {elapsed}" => "travail…  {elapsed}",
         "thinking…  {elapsed}" => "réflexion…  {elapsed}",

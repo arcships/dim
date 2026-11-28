@@ -985,3 +985,62 @@ async fn a_turn_start_cut_keeps_the_digest_of_the_compacted_turn() {
     );
     agent.close().await.unwrap();
 }
+
+/// Under a narrowed compaction window an automatic compaction drops the
+/// digest's least recent entries at the compaction budget's share, not the
+/// physical budget's (ContextCompaction §5.10, #2235). B is 24,000 with a
+/// narrowed compaction budget of 16,000: the share is 800 against 1,200, and
+/// the declared entries' rendered size lands between them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_digest_bound_scales_with_the_compaction_budget() {
+    let script = Arc::new(Script::default());
+    let mut context = facts(24_064.);
+    context.compaction = 16_000.;
+    context.threshold = Some(4_000.);
+    let (agent, session) = effects_session(script.clone(), context).await;
+    let effects: Vec<Value> = (0..35)
+        .map(|index| json!({"kind": "fileWritten", "path": format!("/work/f{index:02}.txt")}))
+        .collect();
+    turn(
+        &script,
+        &session,
+        "start",
+        vec![
+            Step::Calls(vec![("declare", json!({ "effects": effects }))]),
+            Step::Says("done"),
+        ],
+    )
+    .await;
+    for index in 0..6 {
+        turn(
+            &script,
+            &session,
+            &format!("{index}-{}", "x".repeat(1_000)),
+            vec![Step::Says("ok")],
+        )
+        .await;
+    }
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let completed = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data)
+                if matches!(data.outcome, ContextCompactionResult::Completed { .. }) =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("an automatic compaction completes");
+    let ContextCompactionResult::Completed { digest_entries, .. } = &completed.outcome else {
+        unreachable!()
+    };
+    let entries = digest_entries.as_ref().expect("the digest is composed");
+    assert!(
+        entries.dropped,
+        "the compaction budget's bound drops earlier entries"
+    );
+    assert!(entries.entries.len() < 35, "some entries are dropped");
+    assert!(!entries.entries.is_empty(), "the newest entries stand");
+    agent.close().await.unwrap();
+}

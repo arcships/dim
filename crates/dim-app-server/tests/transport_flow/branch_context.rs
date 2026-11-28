@@ -35,7 +35,7 @@ impl CompactionStrategy for KeepsHistory {
     fn name(&self) -> &str {
         "keeps-history"
     }
-    fn replacement_size(&self, _: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, _: &dyn ContextModel, _: f64) -> f64 {
         0.
     }
     fn compact(&self, _: CompactionInput, _: CancellationToken) -> HostFuture<'_, StrategyOutcome> {

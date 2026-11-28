@@ -31,7 +31,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -76,7 +76,7 @@ impl CompactionStrategy for Small {
     fn name(&self) -> &str {
         "test"
     }
-    fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+    fn replacement_size(&self, model: &dyn ContextModel, _: f64) -> f64 {
         model.count_tokens(&ModelRequest::new(
             "",
             "",
@@ -937,17 +937,30 @@ async fn wait_file(path: &Path, message: &str) {
 }
 
 async fn wait_blocks(session: &Session, kind: &str, count: usize) -> Vec<String> {
-    for _ in 0..500 {
+    let mut published = session
+        .publication("main")
+        .expect("main is published")
+        .watch();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
         let found = hook_blocks(session, kind).await;
         if found.len() >= count {
             return found;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "{count} {kind} blocks were not written: {:?}",
+            hook_blocks(session, kind).await
+        );
+        match tokio::time::timeout(remaining, published.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => panic!(
+                "{count} {kind} blocks were not written: {:?}",
+                hook_blocks(session, kind).await
+            ),
+        }
     }
-    panic!(
-        "{count} {kind} blocks were not written: {:?}",
-        hook_blocks(session, kind).await
-    );
 }
 
 /// The text of the last model request.
@@ -967,7 +980,12 @@ fn marker_command(path: &Path, text: &str) -> String {
 
 /// Waits for an event matching `find` on `main`.
 async fn wait_event<T>(session: &Session, find: impl Fn(&EventKind) -> Option<T>) -> T {
-    for _ in 0..500 {
+    let mut published = session
+        .publication("main")
+        .expect("main is published")
+        .watch();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
         if let Some(found) = branch_events(session, "main", ..)
             .await
             .unwrap()
@@ -976,9 +994,13 @@ async fn wait_event<T>(session: &Session, find: impl Fn(&EventKind) -> Option<T>
         {
             return found;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "the event was not committed");
+        match tokio::time::timeout(remaining, published.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => panic!("the event was not committed"),
+        }
     }
-    panic!("the event was not committed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2035,6 +2057,7 @@ async fn notification_runs_on_an_approval_and_writes_nothing() {
         _ => None,
     })
     .await;
+    wait_file(&seen, "Notification did not run").await;
     session
         .service::<dim_agent_capabilities::approval::Approval>("main")
         .unwrap()

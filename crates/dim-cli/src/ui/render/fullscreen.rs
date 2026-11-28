@@ -131,6 +131,7 @@ pub trait Document {
 pub enum MouseOutcome {
     Ignored,
     Redraw,
+    Earlier,
     /// A selection ended: its text, ready for the clipboard.
     Copy(String),
     /// The wheel turned over an overlay: the list in it moves (+ down).
@@ -759,14 +760,18 @@ impl FullScreen {
         self.reveal_focus(doc);
     }
 
-    /// Scrolls so block `id` starts at the top of the view.
-    pub fn show_block(&mut self, id: usize, doc: &dyn Document) {
+    /// Shows the previous screenful with two rows of context at the join.
+    pub fn show_before_block(&mut self, id: usize, doc: &dyn Document) {
         self.sync(doc);
         if let Some(start) = id
             .checked_sub(self.base)
             .and_then(|index| self.starts.get(index))
         {
-            self.pin((*start).min(self.max_top()));
+            self.pin(
+                start
+                    .saturating_sub(self.view_rows.saturating_sub(2))
+                    .min(self.max_top()),
+            );
         }
     }
 
@@ -1044,6 +1049,9 @@ impl FullScreen {
             }
             MouseKind::WheelUp => {
                 self.press = None;
+                if row < self.view_rows && self.at_top() {
+                    return MouseOutcome::Earlier;
+                }
                 let rows = self.wheel.rows(Instant::now());
                 self.scroll(-rows);
                 MouseOutcome::Redraw

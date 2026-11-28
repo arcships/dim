@@ -3809,19 +3809,32 @@ the turn settled, while a result read before its call asks nothing.
 
 ### Loading earlier conversation
 
-`/earlier` reads the next bounded older window for the shown branch, retaining its original
-cutoff and advancing its backward cursor. Fullscreen PageUp at the loaded top runs the same
-action. TUI prepends projected rows; line mode prints a labelled older segment. Neither changes
+Scrollback `/earlier` reveals one preceding page and redraws the shown branch in the
+same terminal, oldest to newest, with the draft below. Like a width-change redraw,
+this replaces native scrollback. Losing shell output from before Dim started is an
+accepted consequence of keeping the loaded conversation in chronological order in the
+same terminal. The redraw restores the banner and conversation rows, including recorded
+`!` shell runs. Private `!!` shell runs are not part of the conversation and are not
+restored. The warning appears only in the hint above
+the oldest message. Running `/earlier` from the composer does not ask for confirmation,
+even when the hint is offscreen. At the beginning there is no redraw. Paging does not open another
+window or switch screens. Fullscreen `/earlier` reads a bounded
+older window at the original cutoff and reveals it at the join; scrolling up or pressing
+PageUp at the drawn top does the same.
+Line mode prints a labelled older segment. None changes
 live event/state cutoffs or resubmits an input. Opening uses the separate read-stop
 and whole-page retention budgets in the [client window contract](clients.md#opening-a-conversation-with-a-bounded-window);
 additional older rows are retained only when the user explicitly loads them. Raw pages are released
 after projection. Export remains a complete fixed-prefix read.
 
+In this example, `↑` stands for the full hint: `↑ Earlier messages · /earlier · Clears terminal output from before Dim started`.
+
 ```text
-[earlier content not loaded]  <- /earlier, or PageUp at the loaded top
-older requested rows
-initial window
-live output
+Resume                 First /earlier         Second /earlier
+↑                      ↑                      messages 1–10
+messages 61–69         messages 11–60         messages 11–60
+                       messages 61–69         messages 61–69
+> draft                > draft                > draft
 ```
 
 ### Pending terminal frames

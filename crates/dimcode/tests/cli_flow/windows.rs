@@ -223,7 +223,7 @@ fn an_orphan_tool_result_reads_its_arguments_only_after_expanding_details() {
         wire.hold();
     });
     let mut terminal = Terminal::resume_tui(home.command());
-    terminal.until("Earlier content not loaded");
+    terminal.until("Earlier messages · /earlier");
     terminal.write(b"/tools\r");
     terminal.write(b"/tools\r");
     terminal.until("point-read origin arguments");

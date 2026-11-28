@@ -568,13 +568,17 @@ impl Worker {
                 }
             }
             Pending::History(_) => {
+                let mut at_start = false;
                 let page = result.map_err(|error| error.to_string()).and_then(|value| {
                     let page = if self
                         .client
                         .supports(&["session.history.display", "session.history.detail"])
                     {
-                        serde_json::from_value::<dim_client::wire::DisplayPage>(value)
-                            .map(Into::into)
+                        serde_json::from_value::<dim_client::wire::DisplayPage>(value).map(|page| {
+                            at_start = page.done()
+                                && self.client.offers("session.history.display.transcript");
+                            page.into()
+                        })
                     } else {
                         serde_json::from_value(value)
                     }
@@ -588,15 +592,16 @@ impl Worker {
                     Err(error) => self.fail_member(&id, error),
                     Ok(done) => {
                         if done {
+                            let events = observation.window.take_transcript(at_start);
                             if observation.earlier == EarlierRead::Reading {
                                 let mut older = Projection::default();
-                                for event in observation.window.take() {
+                                for event in events {
                                     older.replay(DEFAULT_BRANCH_ID, &event);
                                 }
                                 observation.projection.prepend(older);
                                 observation.earlier = EarlierRead::None;
                             } else {
-                                for event in observation.window.take() {
+                                for event in events {
                                     observation.event(event, true);
                                 }
                                 observation.cursor =

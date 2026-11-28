@@ -250,6 +250,94 @@ async function checkDeviceDraftDestination(terminal, devicesOverDraft) {
 
 const scenarios = [
   {
+    name: 'earlier_reveals_resumed_history_in_both_modes',
+    area: 'terminal-modes',
+    title: 'Redraw native scrollback oldest first and reveal the preceding page at the fullscreen join',
+    async run(tui) {
+      const thought = 'Check the first turn.';
+      await tui.setup({respond: (request) => userText(request).includes('history-turn-01')
+        ? {thinking: thought, text: ANSWER} : {text: ANSWER}});
+      let session;
+      for (let turn = 1; turn <= 16; turn++) {
+        const output = await tui.runCommandAsync([
+          '--home', tui.home, '--model-config', tui.modelFile, 'exec', ...(session ? ['resume', session] : []),
+          '--json', '-p', `history-turn-${String(turn).padStart(2, '0')}`,
+        ]);
+        session ??= output.trim().split('\n').map((line) => JSON.parse(line).params?.sessionId).find(Boolean);
+        assert(session, 'all turns belong to one Session');
+      }
+      const sentinel = 'pre-Dim shell output';
+      const warning = 'Clears terminal output from before Dim started';
+      for (const fullscreen of [true, false]) {
+        const terminal = await tui.launch(['--resume', session, ...(fullscreen ? ['--fullscreen'] : [])], {
+          rows: 40,
+          command: fullscreen ? undefined : ['/bin/sh', '-c', 'printf "%s" "$0"; exec "$@"',
+            sentinel + '\n'.repeat(41), tui.binary, '--home', tui.home, '--model-config', tui.modelFile],
+        });
+        const initial = await terminal.waitFor(/resumed .* messages/, {history: true});
+        assert(initial.includes('history-turn-16') && !initial.includes('history-turn-10'), initial);
+        const hint = 'Earlier messages · /earlier';
+        assert(initial.includes(hint) && initial.indexOf(hint) < initial.search(/┃ history-turn-/), initial);
+        assert.equal(initial.includes(warning), !fullscreen, initial);
+        if (!fullscreen) assert(initial.includes(sentinel), initial);
+        assert(!/earlier|\/timeline/i.test(initial.slice(initial.indexOf('resumed '))), initial);
+        if (fullscreen) {
+          terminal.send('/earlier');
+        } else {
+          terminal.send('draft stays here');
+          terminal.key('C-o');
+          await terminal.waitFor('Suggestions');
+          terminal.send('earlier');
+        }
+        terminal.key('Enter');
+        if (!fullscreen) {
+          const turns = (text) => [...text.matchAll(/┃ history-turn-(\d+)/g)].map((m) => Number(m[1]));
+          let oldest = turns(initial)[0];
+          while (oldest > 1) {
+            const last = String(oldest - 1).padStart(2, '0');
+            const page = await terminal.waitFor(new RegExp(`┃ history-turn-${last}[\\s\\S]*┃ history-turn-16[\\s\\S]*draft stays here`), {history: true});
+            const first = turns(page)[0];
+            assert(!page.includes(sentinel), page);
+            assert(first >= 1 && first < oldest, page);
+            assert.deepEqual(page.match(/┃ history-turn-\d+|The fixture answer is deterministic\./g),
+              Array.from({length: 17 - first}, (_, i) => [`┃ history-turn-${String(first + i).padStart(2, '0')}`, ANSWER]).flat());
+            assert.equal(page.includes(hint), first > 1);
+            oldest = first;
+            terminal.key('C-o');
+            await terminal.waitFor('Suggestions');
+            terminal.send('earlier');
+            terminal.key('Enter');
+          }
+          const beginning = await terminal.waitFor('Beginning of conversation', {history: true});
+          assert.equal(beginning.split(thought).length, 2, beginning);
+          assert(!/\x1b\[\?(?:47|1047|1049)h/.test(terminal.raw()), 'no alternate screen');
+          terminal.key('Enter');
+          const live = await terminal.waitFor(/┃ draft stays here[\s\S]*The fixture answer is deterministic\./, {history: true});
+          assert.deepEqual(turns(live), Array.from({length: 16}, (_, i) => i + 1));
+          assert.equal(live.split('┃ draft stays here').length, 2);
+          await exitWith(terminal);
+          continue;
+        }
+        const join = await terminal.waitFor('history-turn-10');
+        assert(!join.includes('history-turn-01'), `the viewport lands at the join: ${join}`);
+        terminal.key('Home');
+        const oldest = await terminal.waitFor('history-turn-01');
+        assert(oldest.includes('Thought for ') && oldest.includes(thought), oldest);
+        terminal.key('End');
+        const newest = await terminal.waitFor('history-turn-16');
+        for (const page of [oldest, join, newest]) {
+          const turns = [...page.matchAll(/┃ history-turn-(\d+)/g)].map((m) => Number(m[1]));
+          assert(turns.length >= 2 && turns.every((n, i) => !i || n === turns[i - 1] + 1), page);
+        }
+        terminal.key('Home');
+        await terminal.waitFor('history-turn-01');
+        terminal.key('PPage');
+        await terminal.waitFor('Beginning of conversation');
+        await exitWith(terminal);
+      }
+    },
+  },
+  {
     name: 'scrollback_streams_and_exits_cleanly',
     area: 'terminal-modes',
     title: 'The default scrollback mode streams an answer and exits into the same transcript',

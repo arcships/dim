@@ -122,6 +122,8 @@ pub enum EventContent {
     PermissionChanged(PermissionChangedData),
     ModelStart(ModelStartData),
     Thinking(ThinkingData),
+    /// A paged transcript's complete reasoning block and its durable close time.
+    SettledThinking(ThinkingData, u64),
     Text(TextData),
     ToolUse(ToolUseData),
     ToolCall(Box<ToolCallData>),

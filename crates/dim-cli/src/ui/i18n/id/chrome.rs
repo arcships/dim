@@ -36,6 +36,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y confirm · Esc cancel" => "y konfirmasi · Esc batal",
         "Enter save · Esc cancel" => "Enter simpan · Esc batal",
         "Loading…" => "Memuat…",
+        "Beginning of conversation" => "Awal percakapan",
         "Tab / Enter complete" => "Tab / Enter lengkapi",
         "Queue" => "Antrean",
         "Export session" => "Ekspor sesi",
@@ -355,7 +356,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Only in fullscreen (/tui)" => "Hanya di layar penuh (/tui)",
         "new session" => "sesi baru",
         "resumed {id} · {count} messages" => "lanjut {id} · {count} pesan",
-        " · earlier history: /timeline" => " · riwayat lama: /timeline",
+        "Earlier messages · {key}" => "Pesan sebelumnya · {key}",
+        "Clears terminal output from before Dim started" => {
+            "Menghapus keluaran terminal sebelum Dim dimulai"
+        }
         "Error: {message}" => "Error: {message}",
         "working…  {elapsed}" => "bekerja…  {elapsed}",
         "thinking…  {elapsed}" => "berpikir…  {elapsed}",

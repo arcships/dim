@@ -1928,7 +1928,14 @@ impl Connection {
                     }
                 }
                 drop(scoped_admission);
-                Reply::ModelUpdate(ModelUpdateResult { model: id, outcome })
+                let auto_compact_window_elevation = startup_admission
+                    .as_ref()
+                    .and_then(|admission| admission.auto_compact_window_elevation.clone());
+                Reply::ModelUpdate(ModelUpdateResult {
+                    model: id,
+                    outcome,
+                    auto_compact_window_elevation,
+                })
             }
             Call::PromptRefresh(p) => {
                 let branch = match p.branch_id {
@@ -2060,6 +2067,9 @@ impl Connection {
             config.model = admission.model.clone();
             startup_admission = Some(admission);
         }
+        let auto_compact_window_elevation = startup_admission
+            .as_ref()
+            .and_then(|admission| admission.auto_compact_window_elevation.clone());
         if let Some(prompt) = params.system_prompt {
             config.system_prompt = prompt;
         }
@@ -2144,6 +2154,7 @@ impl Connection {
             ),
             sequence: session.sequence(ROOT_BRANCH_ID).map_err(RpcError::from)?,
             worktree: worktree.as_ref().map(|created| created.reply()),
+            auto_compact_window_elevation,
         }))
     }
 
@@ -2633,7 +2644,7 @@ impl RpcService {
         let mut config =
             crate::agents::session_config(&host.profile, &self.config.session_defaults);
         config.cwd = cwd;
-        let _admission = self
+        let admission = self
             .session_model(
                 &mut config,
                 &host.profile,
@@ -2647,6 +2658,9 @@ impl RpcService {
                 config.model.config.as_ref(),
                 config.model.metadata.as_ref(),
             ),
+            auto_compact_window_elevation: admission
+                .as_ref()
+                .and_then(|admission| admission.auto_compact_window_elevation.clone()),
             model: dim_agent_types::ModelId {
                 provider_id: config.model.provider_id,
                 model_id: config.model.model_id,

@@ -788,6 +788,14 @@ pub(crate) fn render_block(
         Block::Failure(message) => vec![tf("Error: {message}", &[("message", message)])],
         Block::Boundary(label) => vec![fg(&boundary_line(label, width), &p.muted)],
         Block::Note(text) => vec![fg(&truncate_cells(text, width), &p.muted)],
+        Block::LoadMore(hidden) if !interactive || *hidden == 0 => {
+            let mut label = tf("Earlier messages · {key}", &[("key", "/earlier")]);
+            if !interactive {
+                label.push_str(" · ");
+                label.push_str(t("Clears terminal output from before Dim started"));
+            }
+            gutter_text(LOAD_MORE_MARK, &label, width, &p.accent)
+        }
         Block::LoadMore(hidden) => {
             let label = tf(
                 "{count} earlier messages · Enter or click to load",

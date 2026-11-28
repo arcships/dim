@@ -100,6 +100,7 @@ daemon. `--keep` leaves the home and raw streams in place for inspection.
 
 | Area | Scenario | Verifies |
 | --- | --- | --- |
+| terminal-modes | `earlier_reveals_resumed_history_in_both_modes` | Scrollback shows the warning above the oldest message. A pre-Dim shell marker is present before paging and absent after redraw; messages stay in order and the draft survives without a screen switch. Fullscreen shows no clearing warning and reveals the page at the join. Both report the beginning |
 | terminal-modes | `scrollback_streams_and_exits_cleanly` | The default scrollback mode, streamed answer, committed history, `/exit`, `Bye!`, exit 0, no alternate screen, cursor restored, OSC 7501 working/clear |
 | terminal-modes | `fullscreen_switches_screens_and_restores_the_terminal` | Fullscreen takes the alternate screen; `/tui` leaves and re-enters it; the multiplexer's `ModifyOtherKeys` enable/reset pair appears and balances; the last screen switch is a leave, so the final exit cannot lean on the first `/tui` |
 | terminal-modes | `fullscreen_tool_body_click_collapses_only_its_node` | Fullscreen opens a tool batch and `exec` call via SGR mouse clicks, verifies drag, double-click, bracketed paste, and a near-deadline resize do not collapse it, and verifies clicking an output row in a scrolled 92×14 pane collapses only that call while re-anchoring its header and the reply below in view |
