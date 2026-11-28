@@ -35,7 +35,7 @@ pub(crate) struct ToolSetAdoption {
 /// ContextPreparation for Prompt.
 pub struct ConfigurationPublisher {
     timeline: Arc<Timeline>,
-    identity: Arc<TimelineContext>,
+    lifecycle: Arc<BranchLifecycle>,
     /// The Session's guide entries: the System it publishes carries the
     /// composition over the entries in force at that adoption.
     guide: Arc<GuideEntries>,
@@ -444,7 +444,7 @@ pub struct ContextPreparation {
         >,
     >,
     timeline: Arc<Timeline>,
-    identity: Arc<TimelineContext>,
+    lifecycle: Arc<BranchLifecycle>,
 }
 impl ContextPreparation {
     pub(crate) fn provide_projection(&self, source: &ContextPrepareData, context: StreamedContext) {
@@ -1007,6 +1007,7 @@ impl DynPlugin for ContextPreparationPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.lifecycle.erase(),
             self.usage.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
@@ -1042,7 +1043,7 @@ impl DynPlugin for ContextPreparationPlugin {
             }
             let publisher = Arc::new(ConfigurationPublisher {
                 timeline: timeline.clone(),
-                identity: Arc::clone(&identity),
+                lifecycle: Arc::clone(&lifecycle),
                 guide: guide.clone(),
                 branch_phase,
             });
@@ -1058,7 +1059,7 @@ impl DynPlugin for ContextPreparationPlugin {
                 policy: ContextPolicy::bind(&timeline, &context, &strategy, &history)
                     .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?,
                 timeline,
-                identity,
+                lifecycle,
             });
             let owner = service.clone();
             ctx.effect(move || async move {

@@ -1503,6 +1503,8 @@ export type BranchStatus = {
  * part (`sessionScope.lineCall`) and a process caller (`sessions.call`).
  */
 export interface TimelineContext {
+  /** This line's identity as data, for parts in other languages. */
+  identity(): Promise<import('./plugin.js').SessionRef>
   /** The Session this line belongs to. */
   sessionId(): Promise<string>
   /** This line's id, which is its branch id. */

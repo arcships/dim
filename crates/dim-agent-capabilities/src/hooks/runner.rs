@@ -999,7 +999,7 @@ impl HooksSessionPlugin {
             sources: names.key()?,
             platform: names.key()?,
             config: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             checks: names.key()?,
             runtime: names.key()?,
         })
@@ -1022,13 +1022,13 @@ impl DynPlugin for HooksSessionPlugin {
             let sources = ctx.require_at(&self.sources)?;
             let platform = ctx.require_at(&self.platform)?;
             let config = ctx.require_at(&self.config)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let checks = ctx.require_at(&self.checks)?;
             let runtime = Arc::new(HooksRuntime {
                 sources,
                 platform,
                 config,
-                session_id: identity.session_id(),
+                session_id: lifecycle.session_id(),
                 cancel: ctx.cancellation_token(),
                 tasks: TaskTracker::new(),
             });
@@ -2235,7 +2235,7 @@ pub struct HooksBranchPlugin {
     dispatcher: Key<Dispatcher>,
     approval: Key<Approval>,
     permission: Key<Permission>,
-    identity: Key<TimelineContext>,
+    lifecycle: Key<BranchLifecycle>,
     lifecycle: Key<BranchLifecycle>,
     registry: Key<ToolRegistry>,
 }
@@ -2247,7 +2247,7 @@ impl HooksBranchPlugin {
             dispatcher: names.key()?,
             approval: names.key()?,
             permission: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             lifecycle: names.key()?,
             registry: names.key()?,
         })
@@ -2275,7 +2275,7 @@ impl DynPlugin for HooksBranchPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let approval = ctx.require_at(&self.approval)?;
             let permission = ctx.require_at(&self.permission)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let registry = ctx.require_at(&self.registry)?;
             let (sender, receiver) = mpsc::unbounded_channel();
@@ -2287,7 +2287,7 @@ impl DynPlugin for HooksBranchPlugin {
                 registry,
                 dispatcher: dispatcher.clone(),
                 lifecycle: lifecycle.clone(),
-                branch_id: identity.branch_id().clone(),
+                branch_id: lifecycle.branch_id().clone(),
                 view: Mutex::new(View::default()),
                 jobs: sender,
                 pending: Pending::default(),

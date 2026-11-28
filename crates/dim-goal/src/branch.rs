@@ -204,6 +204,7 @@ impl DynPlugin for GoalBranch {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.lifecycle.erase(),
             self.dispatcher.erase(),
             self.timeline.erase(),
             self.tree.erase(),

@@ -1205,6 +1205,7 @@ impl DynPlugin for BackgroundExecPlugin {
             self.dispatcher.erase(),
             self.session.erase(),
             self.guide.erase(),
+            self.lifecycle.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {

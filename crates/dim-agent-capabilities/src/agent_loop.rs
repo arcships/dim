@@ -1828,6 +1828,7 @@ impl DynPlugin for LoopPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.lifecycle.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.prepare.erase(),

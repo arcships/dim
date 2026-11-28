@@ -1144,7 +1144,7 @@ pub struct ShellSessionPlugin {
     host: Key<HostPlatform>,
     lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     session_config: Key<dim_agent_runtime::SessionConfig>,
-    identity: Key<dim_agent_runtime::TimelineIdentity>,
+    lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     config: Option<ShellSessionConfig>,
 }
 
@@ -1165,7 +1165,7 @@ impl ShellSessionPlugin {
             host: names.key()?,
             lifecycle: names.key()?,
             session_config: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             config: None,
         })
     }
@@ -1189,7 +1189,7 @@ impl DynPlugin for ShellSessionPlugin {
             let host = ctx.require_at(&self.host)?;
             let background = ctx.require_at(&self.background)?;
             let config = ctx.require_at(&self.session_config)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let owner = ctx.get::<SessionFiles>();
             let mut session = ShellSession::new(
                 self.config.clone().unwrap_or_else(|| ShellSessionConfig {

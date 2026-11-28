@@ -3821,7 +3821,6 @@ struct CollaborationTimelinePlugin {
     service: Key<CollaborationSession>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineContext>,
     phase: Key<BranchLifecycle>,
 }
 impl CollaborationTimelinePlugin {
@@ -3830,7 +3829,6 @@ impl CollaborationTimelinePlugin {
             service: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
-            identity: names.key()?,
             phase: names.key()?,
         })
     }
@@ -3852,9 +3850,8 @@ impl DynPlugin for CollaborationTimelinePlugin {
             let service = ctx.require_at(&self.service)?;
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
-            let identity = ctx.require_at(&self.identity)?;
             let phase = ctx.require_at(&self.phase)?;
-            let branch_id = identity.branch_id().clone();
+            let branch_id = phase.branch_id();
             let owner = service.clone();
             let unloading = branch_id.clone();
             ctx.effect(move || async move {

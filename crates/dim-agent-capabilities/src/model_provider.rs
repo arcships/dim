@@ -93,7 +93,7 @@ struct ModelProvider {
     resolver: Option<Arc<ProviderConnectionResolver>>,
     files: Option<Arc<SessionFiles>>,
     timeline: Arc<Timeline>,
-    identity: Arc<TimelineContext>,
+    lifecycle: Arc<BranchLifecycle>,
     progress: Arc<StateCell<ModelProgress>>,
 }
 impl ModelProvider {
@@ -668,6 +668,7 @@ impl DynPlugin for ModelProviderPlugin {
             self.dispatcher.erase(),
             self.context.erase(),
             self.host.erase(),
+            self.lifecycle.erase(),
         ];
         keys.extend(self.resolver.as_ref().map(Key::erase));
         keys
@@ -693,7 +694,7 @@ impl DynPlugin for ModelProviderPlugin {
                 resolver,
                 files,
                 timeline,
-                identity,
+                lifecycle,
                 progress: Arc::new(StateCell::new(ModelProgress::default())),
             });
             let owner = service.clone();
