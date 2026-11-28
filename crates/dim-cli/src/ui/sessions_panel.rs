@@ -30,6 +30,7 @@ struct DeleteTarget {
 }
 
 pub struct SessionsPanel {
+    pub(super) id: uuid::Uuid,
     list: ListPanel,
     request_id: Option<String>,
     paged: Option<bool>,
@@ -55,6 +56,7 @@ pub struct SessionsPanel {
 impl SessionsPanel {
     pub fn new(show_acp: bool) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             request_id: None,
             paged: None,
             due: Some(Instant::now()),
@@ -148,34 +150,23 @@ impl SessionsPanel {
         })
     }
 
-    /// The launch workspace's git set arrived: the local scope adopts it. A
-    /// set of more than one changes what it lists, so the cursor is dropped
-    /// and the first page is read again; a one-entry set lists exactly the
-    /// launch workspace — canonical `cwd` treats it as the same filter — so
-    /// only the title changes, and a list already read stays. The rows stay
-    /// drawn while the wider page is read, and the selection stays on its
-    /// row.
-    pub fn repository(&mut self, workspaces: Vec<String>) {
+    /// Adopts the resolved Git directories. A changed filter starts a fresh page
+    /// and keeps the current rows visible until the new page arrives.
+    pub fn repository(&mut self, launch_workspace: &str, workspaces: Vec<String>) {
         if workspaces.is_empty() {
-            // A failed git read sends nothing; keep the exact launch
-            // workspace.
             return;
         }
-        self.repository = Some(workspaces.clone());
-        if let SessionsScope::Local(_) = &self.scope {
-            self.scope = SessionsScope::Local(Some(workspaces));
-            if self.names_workspaces() {
-                // A set of more than one changes what the local scope lists:
-                // drop the cursor and read the first page again.
-                self.list.set_title(t(TITLE_REPOSITORY));
+        if matches!(self.scope, SessionsScope::Local(_)) {
+            self.list.set_title(t(TITLE_REPOSITORY));
+            if workspaces.len() > 1 {
                 self.list.set_empty_text(EMPTY_OTHER);
-                self.drop_page();
-            } else {
-                // Only the title changes: a one-entry set lists exactly the
-                // launch workspace, so `cwd` is the filter already under way.
-                self.list.set_title(t(TITLE_REPOSITORY));
             }
+            if workspaces.as_slice() != [launch_workspace] {
+                self.drop_page();
+            }
+            self.scope = SessionsScope::Local(Some(workspaces.clone()));
         }
+        self.repository = Some(workspaces);
     }
 
     pub fn refresh(&mut self) {
@@ -572,7 +563,7 @@ mod tests {
         assert_eq!(ctrl_s(&mut panel), SessionsScope::Local(None));
 
         let mut panel = SessionsPanel::new(false);
-        panel.repository(vec!["/repo".to_owned()]);
+        panel.repository("/repo", vec!["/repo".to_owned()]);
         assert_eq!(ctrl_s(&mut panel), SessionsScope::All);
         assert_eq!(
             ctrl_s(&mut panel),
@@ -581,7 +572,7 @@ mod tests {
 
         let mut panel = SessionsPanel::new(false);
         let set = vec!["/repo".to_owned(), "/repo-fix".to_owned()];
-        panel.repository(set.clone());
+        panel.repository("/repo", set.clone());
         assert_eq!(ctrl_s(&mut panel), SessionsScope::All);
         assert_eq!(ctrl_s(&mut panel), SessionsScope::Local(Some(set)));
 
@@ -590,7 +581,7 @@ mod tests {
         let mut panel = SessionsPanel::new(false);
         ctrl_s(&mut panel);
         let set = vec!["/repo".to_owned(), "/repo-fix".to_owned()];
-        panel.repository(set.clone());
+        panel.repository("/repo", set.clone());
         assert_eq!(ctrl_s(&mut panel), SessionsScope::Local(Some(set)));
     }
 
@@ -606,7 +597,7 @@ mod tests {
         assert!(shown(&panel).contains(TITLE_WORKSPACE));
 
         let mut panel = SessionsPanel::new(false);
-        panel.repository(vec!["/repo".to_owned()]);
+        panel.repository("/repo", vec!["/repo".to_owned()]);
         assert!(shown(&panel).contains(TITLE_REPOSITORY));
         ctrl_s(&mut panel);
         assert!(shown(&panel).contains(TITLE_ALL));
@@ -614,46 +605,71 @@ mod tests {
         assert!(shown(&panel).contains(TITLE_REPOSITORY));
     }
 
-    /// `/resume` opens before git replies: the answer changes the title,
-    /// and only a set of more than one reads the list again.
     #[test]
-    fn a_one_entry_set_changes_only_the_title_and_a_multi_entry_set_reads_again() {
-        for (set, reread) in [
-            (vec!["/repo".to_owned()], false),
-            (vec!["/repo".to_owned(), "/repo-fix".to_owned()], true),
+    fn repository_discovery_replaces_the_page_only_when_the_exact_filter_changes() {
+        for (launch, set, reread) in [
+            ("/repo", vec!["/repo".to_owned()], false),
+            ("/repo/", vec!["/repo".to_owned()], true),
+            (
+                "/repo",
+                vec!["/repo".to_owned(), "/repo-fix".to_owned()],
+                true,
+            ),
         ] {
             let mut panel = SessionsPanel::new(false);
+            panel.paste("Fix");
+            panel.refresh();
             let Some(Command::ListSessions {
                 id,
                 scope: SessionsScope::Local(None),
-                cursor: None,
                 ..
             }) = panel.request()
             else {
-                panic!("the opening read lists the exact launch workspace");
+                panic!("expected the launch workspace page")
             };
-            panel.page(
-                &id,
-                true,
-                Ok((vec![item("a", Some("Fix bug"), None)], None)),
-            );
-            panel.repository(set.clone());
+            let page = |cursor: &str| {
+                Ok((
+                    vec![item("a", Some("Fix bug"), None)],
+                    Some(cursor.to_owned()),
+                ))
+            };
+            panel.page(&id, true, page("original-cursor"));
+            panel.repository(launch, set.clone());
             assert!(shown(&panel).contains(TITLE_REPOSITORY));
-            let next = panel.request();
-            if reread {
-                match next {
-                    Some(Command::ListSessions {
-                        scope: SessionsScope::Local(Some(asked)),
-                        cursor: None,
-                        ..
-                    }) => assert_eq!(asked, set),
-                    _ => panic!("a multi-entry set reads the first page again"),
+            let Some(Command::ListSessions {
+                id,
+                scope,
+                cursor,
+                query,
+                ..
+            }) = panel.request()
+            else {
+                panic!("expected a catalog read")
+            };
+            assert_eq!(scope, SessionsScope::Local(Some(set.clone())));
+            assert_eq!(query, "Fix");
+            assert_eq!(
+                cursor.as_deref(),
+                if reread {
+                    None
+                } else {
+                    Some("original-cursor")
                 }
-            } else {
-                assert!(
-                    next.is_none(),
-                    "a one-entry set lists the filter already read"
-                );
+            );
+            if reread {
+                panel.page(&id, true, page("resolved-cursor"));
+                let Some(Command::ListSessions {
+                    scope,
+                    cursor,
+                    query,
+                    ..
+                }) = panel.request()
+                else {
+                    panic!("expected the next page of the resolved workspace")
+                };
+                assert_eq!(scope, SessionsScope::Local(Some(set)));
+                assert_eq!(cursor.as_deref(), Some("resolved-cursor"));
+                assert_eq!(query, "Fix");
             }
         }
     }
@@ -666,7 +682,7 @@ mod tests {
         let mut panel = SessionsPanel::new(false);
         panel.set_items(Ok(Vec::new()));
         assert!(shown(&panel).contains(EMPTY_WORKSPACE));
-        panel.repository(vec!["/repo".to_owned()]);
+        panel.repository("/repo", vec!["/repo".to_owned()]);
         assert!(shown(&panel).contains(EMPTY_WORKSPACE));
 
         let mut all = SessionsPanel::new(false);
@@ -676,7 +692,7 @@ mod tests {
         assert!(!shown(&all).contains(EMPTY_WORKSPACE));
 
         let mut several = SessionsPanel::new(false);
-        several.repository(vec!["/repo".to_owned(), "/repo-fix".to_owned()]);
+        several.repository("/repo", vec!["/repo".to_owned(), "/repo-fix".to_owned()]);
         several.set_items(Ok(Vec::new()));
         assert!(shown(&several).contains(EMPTY_OTHER));
         assert!(!shown(&several).contains(EMPTY_WORKSPACE));
@@ -692,10 +708,13 @@ mod tests {
         let mut panel = SessionsPanel::new(false);
         panel.set_items(Ok(rows()));
         assert!(!shown(&panel).contains(workspace));
-        panel.repository(vec![workspace.to_owned()]);
+        panel.repository(workspace, vec![workspace.to_owned()]);
         assert!(!shown(&panel).contains(workspace));
 
-        panel.repository(vec![workspace.to_owned(), "/work/beta".to_owned()]);
+        panel.repository(
+            workspace,
+            vec![workspace.to_owned(), "/work/beta".to_owned()],
+        );
         panel.set_items(Ok(rows()));
         assert!(shown(&panel).contains(workspace));
 
@@ -803,7 +822,10 @@ mod tests {
         // repository set arrives while the question waits.
         let mut scoped = two_rows();
         scoped.handle_key(ctrl(KeyCode::Char('x')));
-        scoped.repository(vec!["/work/alpha".to_owned(), "/work/beta".to_owned()]);
+        scoped.repository(
+            "/work/alpha",
+            vec!["/work/alpha".to_owned(), "/work/beta".to_owned()],
+        );
         assert!(shown(&scoped).contains("Delete \"Fix bug\"?"));
         assert_eq!(
             scoped.handle_key(key(KeyCode::Enter)),

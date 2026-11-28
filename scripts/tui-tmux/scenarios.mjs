@@ -1156,6 +1156,7 @@ const scenarios = [
       await tui.setup({respond: () => ({text: ANSWER})});
       const repo = fs.realpathSync(path.join(tui.root, 'workspace'));
       const sibling = path.join(tui.root, 'linked checkout');
+      const single = path.join(tui.root, 'single checkout');
       const targetHome = path.join(tui.root, 'receiver');
       const target = ['--home', targetHome, '--model-config', tui.modelFile];
       const git = (...args) => execFileSync('git', ['-C', repo, ...args], {env: tui.environment({}), stdio: 'pipe'});
@@ -1165,12 +1166,13 @@ const scenarios = [
       git('add', 'sub/seed');
       git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial');
       git('worktree', 'add', '--detach', sibling);
+      git('clone', '-q', repo, single);
       const bin = path.join(tui.root, 'keyboard-bin');
       fs.mkdirSync(bin);
       const marker = path.join(bin, 'called');
       fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\n: > ${quote(marker)}\nexit 1\n`, {mode: 0o700});
       try {
-        for (const [cwd, title] of [[path.join(sibling, 'sub'), 'linked checkout session'], [tui.root, 'unrelated session']]) {
+        for (const [cwd, title] of [[path.join(sibling, 'sub'), 'linked checkout session'], [path.join(single, 'sub'), 'single checkout session']]) {
           const output = await tui.runCommandAsync([...target, '--cwd', cwd, 'exec', '--json', '-p', title]);
           const id = output.trim().split('\n').map(line => JSON.parse(line).params?.sessionId).find(Boolean);
           assert(id, 'the target created a session');
@@ -1182,20 +1184,25 @@ const scenarios = [
           PATH: bin + path.delimiter + process.env.PATH,
         };
         for (const mode of [[], ['--fullscreen']]) {
-          const terminal = await tui.launch([...mode, '--cwd', path.join(repo, 'sub')], {
-            command: [tui.binary, '--home', tui.home], env, cols: 112, rows: 30,
-          });
-          await terminal.untilComposer();
-          terminal.send('/resume');
-          terminal.key('Enter');
-          await terminal.waitFor('Sessions · This repository');
-          const screen = await terminal.waitFor('linked checkout session');
-          assert(!screen.includes('unrelated session'));
-          terminal.key('C-s');
-          await terminal.waitFor('unrelated session');
-          terminal.key('Escape');
-          await terminal.waitForAbsent('Sessions · All workspaces');
-          await exitWith(terminal);
+          for (const [cwd, included, excluded] of [
+            [path.join(repo, 'sub'), 'linked checkout session', 'single checkout session'],
+            [path.join(single, 'sub') + '/', 'single checkout session', 'linked checkout session'],
+          ]) {
+            const terminal = await tui.launch(mode, {
+              command: [tui.binary, '--home', tui.home], env: {...env, DIMCODE_TERMINAL_WORKSPACE: cwd}, cols: 112, rows: 30,
+            });
+            await terminal.untilComposer();
+            terminal.send('/resume');
+            terminal.key('Enter');
+            await terminal.waitFor('Sessions · This repository');
+            const screen = await terminal.waitFor(included);
+            assert(!screen.includes(excluded));
+            terminal.key('C-s');
+            await terminal.waitFor(excluded);
+            terminal.key('Escape');
+            await terminal.waitForAbsent('Sessions · All workspaces');
+            await exitWith(terminal);
+          }
         }
         assert(!fs.existsSync(marker), 'the terminal must never run Git against target paths');
       } finally {

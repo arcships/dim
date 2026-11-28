@@ -343,7 +343,7 @@ struct Worker {
     output: Option<OutputWatch>,
     /// The admitted read can outlive its detail; false discards that old reply.
     output_request: Option<(u64, bool)>,
-    repository_request: Option<u64>,
+    repository_request: Option<(u64, uuid::Uuid)>,
     catalog_request: Option<(u64, String, bool, SessionsScope, bool)>,
     /// When the next snapshot goes out; set by the first unpublished change.
     publish_at: Option<tokio::time::Instant>,
@@ -2133,21 +2133,26 @@ impl Worker {
                     }),
                 }
             }
-            Command::FindRepository => {
+            Command::FindRepository { picker } => {
                 let usable = self.client.offers("session.catalog.workspaces")
                     || !self.client.offers("session.catalog");
                 if usable {
                     let cwd = self.options.workspace().as_str().to_owned();
                     if self.client.offers(native_files::WORKTREES) {
                         let params = serde_json::to_value(native_files::Worktrees { cwd })?;
-                        self.repository_request =
-                            self.client.send(native_files::WORKTREES, params).await.ok();
+                        self.repository_request = self
+                            .client
+                            .send(native_files::WORKTREES, params)
+                            .await
+                            .ok()
+                            .map(|id| (id, picker));
                     } else if self.options.endpoint.is_none() {
                         let updates = self.updates.clone();
                         tokio::spawn(async move {
                             let workspaces = repository_workspaces(&cwd).await;
                             if !workspaces.is_empty() {
-                                let _ = updates.send(Update::RepositoryWorkspaces(workspaces));
+                                let _ = updates
+                                    .send(Update::RepositoryWorkspaces { picker, workspaces });
                             }
                         });
                     }
@@ -5145,13 +5150,15 @@ impl Worker {
         id: u64,
         result: Result<serde_json::Value, client::RpcError>,
     ) -> crate::Result<()> {
-        if self.repository_request == Some(id) {
+        if let Some((request, picker)) = self.repository_request
+            && request == id
+        {
             self.repository_request = None;
             if let Ok(value) = result
                 && let Ok(workspaces) = serde_json::from_value::<Vec<String>>(value)
                 && !workspaces.is_empty()
             {
-                self.send(Update::RepositoryWorkspaces(workspaces));
+                self.send(Update::RepositoryWorkspaces { picker, workspaces });
             }
             return Ok(());
         }
