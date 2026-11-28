@@ -2686,9 +2686,11 @@ fn windows_prefix(text: &str) -> (Prefix, &str) {
 const RESOLUTION_STATES: usize = 16;
 
 /// Advances one Windows resolution state over a segment: exact `.` and `..`
-/// resolve on every platform, a segment trimming to one of them forks into
-/// the resolution reading and the literal one, anything else is a name —
-/// pushed raw, since the comparison normalizes trailing characters.
+/// resolve on every platform, a segment of nothing but dots and spaces
+/// normalizes to one of them once the trailing trim consumes the tail — the
+/// parent when it begins with `..`, the current directory otherwise — and
+/// forks into that resolution reading and the literal one, anything else is a
+/// name — pushed raw, since the comparison normalizes trailing characters.
 fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Vec<Vec<String>> {
     let mut advanced = Vec::new();
     for state in states {
@@ -2703,9 +2705,9 @@ fn advance_windows(states: Vec<Vec<String>>, segment: &str) -> Vec<Vec<String>> 
             continue;
         }
         let trimmed = segment.trim_end_matches(['.', ' ']);
-        if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        if trimmed.is_empty() {
             let mut resolved = state.clone();
-            if trimmed == ".." {
+            if segment.starts_with("..") {
                 resolved.pop();
             }
             advanced.push(resolved);

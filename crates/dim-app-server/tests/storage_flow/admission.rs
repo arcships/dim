@@ -975,11 +975,45 @@ directory_shape!(
     "POSIX resolves abc/../def onto def, the candidate's own directory"
 );
 directory_shape!(
+    trailing_space_parent_segment_resolution_into_the_root_refuses,
+    "abc/.. /def",
+    "def",
+    "Windows trims the trailing space of .. and resolves it onto the parent, so abc/.. /def lands on the candidate def"
+);
+directory_shape!(
+    trailing_space_parent_resolution_lands_on_the_root_and_refuses_every_candidate,
+    "abc/.. ",
+    "def",
+    "Windows trims the trailing space of .. and resolves it onto the parent, so abc/.. lands on the output root every candidate's directory sits inside"
+);
+directory_shape!(
     drive_absolute_parent_segment_resolution_refuses,
     "c:/../abc",
     "abc",
     "POSIX reads c:/../abc as a relative path whose parent segment resolves it into the output root"
 );
+
+/// A trailing-space parent segment keeps both of its readings: the Windows
+/// resolution it normalizes into and the literal name that reading leaves
+/// behind. `abc\.. \def` resolves onto the sibling `def`, which the
+/// candidate `abc` does not cover, but its literal branch passes through
+/// `abc` as a directory, so that candidate is refused on the literal branch
+/// while an unrelated one is admitted on both.
+#[tokio::test]
+async fn trailing_space_parent_segment_keeps_its_literal_branch() {
+    assert_directory_shape_rejected(
+        "abc\\.. \\def",
+        "abc",
+        "the literal branch of the trailing-space parent segment passes through abc, the candidate's own directory",
+    )
+    .await;
+    assert_directory_shape_admitted(
+        "abc\\.. \\def",
+        "ghi",
+        "an unrelated candidate shares no directory with either reading of abc\\.. \\def",
+    )
+    .await;
+}
 
 /// The normal components of a canonical output root, the names a Windows or
 /// POSIX path spelling of that root carries.
