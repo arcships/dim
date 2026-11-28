@@ -28,7 +28,7 @@ use crate::{
 use background::BackgroundExecPlugin;
 use dim_agent_runtime::{
     AgentBuilder, CAPABILITY_RELOADING, CollaborationRole, Names, PartRegistry, PartScope,
-    SessionConfig, SessionIdentity,
+    SessionConfig, SessionScope,
 };
 use dim_agent_types::*;
 use file_reads::{FileReads, FileReadsPlugin};
@@ -326,7 +326,7 @@ struct WorkspaceToolsPlugin {
     host: Key<ToolHost>,
     platform: Key<HostPlatform>,
     session_config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
     /// The owner's one walked index, shared with `workspace.files.search`.

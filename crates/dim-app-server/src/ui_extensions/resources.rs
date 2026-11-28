@@ -3,7 +3,7 @@ use dim_agent_capabilities::{
     file_storage::{FileReader, FileStorage, FileStorageError},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
 };
-use dim_agent_runtime::{Names, PublicService, SessionIdentity, SessionLifecycle, SessionPhase};
+use dim_agent_runtime::{Names, PublicService, SessionScope, SessionLifecycle, SessionPhase};
 use rutis::{
     Ctx,
     host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey},
@@ -369,7 +369,7 @@ pub(super) fn file_error(error: impl std::fmt::Display) -> ResourceError {
 }
 
 pub(super) struct UiResourcesPlugin {
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
     files: Key<FileStorage>,
     methods: Key<SessionMethods>,

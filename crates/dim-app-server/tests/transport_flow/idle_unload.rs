@@ -7,7 +7,7 @@ use super::*;
 use dim_agent_capabilities::file_storage::{FileStorage, testing};
 use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
-use dim_agent_runtime::{SessionIdentity, TimelineTreeControl};
+use dim_agent_runtime::{SessionScope, TimelineTreeControl};
 use dim_app_server::mcp::config::McpSettings;
 use dim_app_server::settings::{SettingsScope, SettingsService};
 use rutis::host::CtxHost;
@@ -148,7 +148,7 @@ impl Loads {
 }
 struct LoadsPart(
     Loads,
-    rutis::host::Key<SessionIdentity>,
+    rutis::host::Key<SessionScope>,
     rutis::host::Key<dyn TimelineTreeControl>,
 );
 impl LoadsPart {

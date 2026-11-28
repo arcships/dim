@@ -5,7 +5,7 @@ use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     session_grants::{ReadSessionGrants, SessionGrantsHost, resolve_grant_path},
 };
-use dim_agent_runtime::{AgentBuilder, Names, SessionConfig, SessionIdentity};
+use dim_agent_runtime::{AgentBuilder, Names, SessionConfig, SessionScope};
 use dim_agent_types::grant::{GrantKind, GrantMode, SessionGrant};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -42,7 +42,7 @@ impl ReadSessionGrants for StoreGrants {
 struct SessionGrantsPlugin {
     host: Key<SessionGrantsHost>,
     store: Key<Store>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     config: Key<SessionConfig>,
     methods: Key<SessionMethods>,
 }

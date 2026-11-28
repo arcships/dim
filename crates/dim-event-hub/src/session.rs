@@ -6,7 +6,7 @@ use dim_agent_capabilities::{
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use dim_agent_runtime::{Names, SessionIdentity};
+use dim_agent_runtime::{Names, SessionScope};
 use dim_agent_types::{InputMode, ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -127,7 +127,7 @@ impl EventsArgs {
 pub struct EventHubSession {
     guide: Key<GuideEntries>,
     tools: Key<ToolRegistry>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     /// The process part's subscription core: injecting it means the tool
     /// exists exactly while that part is active (design §1, §6).
     subscriptions: Key<EventSubscriptions>,

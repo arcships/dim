@@ -8,7 +8,7 @@
 use super::{AgentIndex, builder, config};
 use crate::{RunningServer, ServerConfig, agents::SessionSlot};
 use dim_agent_runtime::testing::chain_events;
-use dim_agent_runtime::{AgentBuilder, Feature, Names, SessionIdentity};
+use dim_agent_runtime::{AgentBuilder, Feature, Names, SessionScope};
 use dim_agent_types::EventKind;
 use futures_util::{SinkExt, StreamExt};
 use rutis::Ctx;
@@ -524,7 +524,7 @@ impl HeldRestore {
 }
 struct HeldRestorePart {
     held: HeldRestore,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
 }
 impl HeldRestorePart {
     fn new(names: &Names<'_>, held: HeldRestore) -> rutis::Result<Self> {

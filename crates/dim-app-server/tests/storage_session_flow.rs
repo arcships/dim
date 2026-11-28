@@ -4,7 +4,7 @@ use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BranchOptions, Dispatcher, Feature, SessionConfig,
-    Timeline, TimelineIdentity, TimelineKey, TimelineStore, testing::MinimalHost,
+    Timeline, TimelineContext, TimelineKey, TimelineStore, testing::MinimalHost,
 };
 use dim_agent_types::*;
 use dim_app_server::storage::{SqliteStorage, SqliteTimelineStore};
@@ -20,7 +20,7 @@ use std::{
 struct CaptureTimeline {
     timelines: Arc<Mutex<BTreeMap<String, Timeline>>>,
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl CaptureTimeline {
     fn new(
@@ -58,7 +58,7 @@ impl DynPlugin for CaptureTimeline {
 struct GenericCleanupFault {
     tree: Arc<Mutex<Option<Arc<TreeCommands>>>>,
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     dispatcher: Key<Dispatcher>,
     commands: Key<TreeCommands>,
 }

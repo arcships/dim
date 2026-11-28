@@ -6,7 +6,7 @@
 //! unloads ([rutis usage R6](../../../docs/design/rutis-usage.md#r6-contributions-register-with-their-owner)).
 use crate::host::*;
 use dim_agent_runtime::{
-    AgentError, Names, Registration, Registrations, SessionConfig, SessionIdentity,
+    AgentError, Names, Registration, Registrations, SessionConfig, SessionScope,
     SessionLifecycle,
 };
 use dim_agent_types::*;
@@ -965,7 +965,7 @@ pub struct ToolRegistryPlugin {
     view: Key<ToolSourcesView>,
     host: Key<ToolHost>,
     config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
 }
 impl ToolRegistryPlugin {

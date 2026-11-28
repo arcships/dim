@@ -33,7 +33,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{
     AgentBuilder, AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryFilter,
     QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, Session,
-    SessionConfig, SessionHold, SessionIdentity, SessionLifecycle, Timeline, TimelineIdentity,
+    SessionConfig, SessionHold, SessionScope, SessionLifecycle, Timeline, TimelineContext,
     TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
@@ -3690,7 +3690,7 @@ const AGENT_MESSAGE_ENTRY: &str = r#"<dim-agent-message agent="leader-3" session
 struct CollaborationSessionPlugin {
     instance: InstanceId,
     collaboration: Key<Collaboration>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     config: Key<SessionConfig>,
     tree: Key<TreeCommands>,
     lifecycle: Key<SessionLifecycle>,
@@ -3821,7 +3821,7 @@ struct CollaborationTimelinePlugin {
     service: Key<CollaborationSession>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     phase: Key<BranchLifecycle>,
 }
 impl CollaborationTimelinePlugin {

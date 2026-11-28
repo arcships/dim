@@ -36,7 +36,7 @@ impl Owner {
     }
 }
 struct OwnerPlugin {
-    identity: rutis::host::Key<SessionIdentity>,
+    identity: rutis::host::Key<SessionScope>,
 }
 impl OwnerPlugin {
     fn new(names: &dim_agent_runtime::Names<'_>) -> rutis::Result<Self> {

@@ -196,7 +196,7 @@ struct ProbePlugin {
     probe: Arc<Probe>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     commands: Key<TreeCommands>,
     registry: Key<ToolRegistry>,
 }
@@ -342,7 +342,7 @@ impl DynPlugin for ProbePlugin {
 struct CleanupWriter {
     probe: Arc<Probe>,
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl CleanupWriter {
     fn new(names: &Names<'_>, probe: Arc<Probe>) -> rutis::Result<Self> {
@@ -1795,7 +1795,7 @@ struct SettleOnActivation {
     ends: Arc<Mutex<Vec<String>>>,
     tree: Key<TreeCommands>,
     session: Key<SessionLifecycle>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl SettleOnActivation {
     fn new(
@@ -8716,7 +8716,7 @@ struct CaptureTreeDispatch {
     ports: Arc<Mutex<Option<TreeDispatch>>>,
     tree: Key<dim_agent_capabilities::timeline_tree::TimelineTree>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl CaptureTreeDispatch {
     fn new(names: &Names<'_>, ports: Arc<Mutex<Option<TreeDispatch>>>) -> rutis::Result<Self> {
@@ -8874,7 +8874,7 @@ struct Gate {
 struct GatePlugin {
     gate: Arc<Gate>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl DynPlugin for GatePlugin {
     fn name(&self) -> &str {

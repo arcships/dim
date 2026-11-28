@@ -45,7 +45,7 @@ impl Delay {
 struct DelayPlugin {
     gate: Arc<Gate>,
 
-    identity: rutis::host::Key<SessionIdentity>,
+    identity: rutis::host::Key<SessionScope>,
 }
 impl DelayPlugin {
     fn new(names: &dim_agent_runtime::Names<'_>, gate: Arc<Gate>) -> rutis::Result<Self> {

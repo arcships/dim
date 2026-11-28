@@ -26,7 +26,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, SessionConfig, SessionIdentity, Timeline, TimelineIdentity, TimelineQuery,
+    QueryValue, SessionConfig, SessionScope, Timeline, TimelineContext, TimelineQuery,
     TimelineQueryScope,
 };
 use dim_agent_types::{
@@ -108,7 +108,7 @@ pub struct HooksRuntime {
     sources: Arc<HookSourcesHost>,
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
-    identity: Arc<SessionIdentity>,
+    identity: Arc<SessionScope>,
     cancel: CancellationToken,
     tasks: TaskTracker,
 }
@@ -989,7 +989,7 @@ pub struct HooksSessionPlugin {
     sources: Key<HookSourcesHost>,
     platform: Key<HostPlatform>,
     config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     checks: Key<SubmitChecks>,
     runtime: Key<HooksRuntime>,
 }
@@ -2236,7 +2236,7 @@ pub struct HooksBranchPlugin {
     dispatcher: Key<Dispatcher>,
     approval: Key<Approval>,
     permission: Key<Permission>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     lifecycle: Key<BranchLifecycle>,
     registry: Key<ToolRegistry>,
 }

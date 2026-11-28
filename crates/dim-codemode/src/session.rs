@@ -3,7 +3,7 @@ use dim_agent_capabilities::{
     host::{HostError, HostFuture, ToolExecutionContext},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use dim_agent_runtime::{Names, SessionIdentity};
+use dim_agent_runtime::{Names, SessionScope};
 use dim_agent_types::{ToolResult, ToolSource};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -31,7 +31,7 @@ Child results never enter the model context.";
 pub struct CodeModeSessionPlugin {
     runs: Key<CodeModeRuns>,
     tools: Key<ToolRegistry>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
 }
 
 impl CodeModeSessionPlugin {

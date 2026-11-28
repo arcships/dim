@@ -1086,7 +1086,7 @@ struct OpeningReads {
     armed: Arc<AtomicBool>,
     reads: Arc<std::sync::Mutex<Option<ContextReads>>>,
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl OpeningReads {
     fn new(

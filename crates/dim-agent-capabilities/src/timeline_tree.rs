@@ -9,8 +9,8 @@ use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
     BranchRefusal, BranchRuntime, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline, TimelineFactory,
-    TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
+    QueryValue, Result, SessionScope, StoredBranch, StoredEvent, Timeline, TimelineFactory,
+    TimelineContext, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
     TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
@@ -3373,7 +3373,7 @@ pub struct TimelineTreePlugin {
     control: Key<dyn TimelineTreeControl>,
     factory: Key<TimelineFactory>,
     store: Key<dyn TimelineStore>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     guide: Key<GuideEntries>,
 }
 impl TimelineTreePlugin {
@@ -3672,7 +3672,7 @@ pub struct BranchLinePlugin {
     line: Key<BranchLine>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     lifecycle: Key<BranchLifecycle>,
     session: Key<dim_agent_runtime::SessionLifecycle>,
     tree: Key<TreeCommands>,

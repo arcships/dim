@@ -9,7 +9,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, BranchPhase, CAPABILITY_RELOADING, Dispatcher, Names,
     QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
-    QuerySpec, QueryValue, Timeline, TimelineIdentity, TimelineQuery, TimelineQueryScope,
+    QuerySpec, QueryValue, Timeline, TimelineContext, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -35,7 +35,7 @@ pub(crate) struct ToolSetAdoption {
 /// ContextPreparation for Prompt.
 pub struct ConfigurationPublisher {
     timeline: Arc<Timeline>,
-    identity: TimelineIdentity,
+    identity: TimelineContext,
     /// The Session's guide entries: the System it publishes carries the
     /// composition over the entries in force at that adoption.
     guide: Arc<GuideEntries>,
@@ -444,7 +444,7 @@ pub struct ContextPreparation {
         >,
     >,
     timeline: Arc<Timeline>,
-    identity: Arc<TimelineIdentity>,
+    identity: Arc<TimelineContext>,
 }
 impl ContextPreparation {
     pub(crate) fn provide_projection(&self, source: &ContextPrepareData, context: StreamedContext) {
@@ -979,7 +979,7 @@ pub struct ContextPreparationPlugin {
     model_context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
     history: Key<HistoryRenderer>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     guide: Key<GuideEntries>,
     branch_phase: Key<BranchLifecycle>,
 }

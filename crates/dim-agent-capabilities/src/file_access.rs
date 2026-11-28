@@ -6,7 +6,7 @@ use crate::{
     workspace_tools::files::canonical_prefix,
 };
 use dim_agent_runtime::{
-    AgentBuilder, Feature, Names, SessionConfig, SessionIdentity, SessionLifecycle, SessionPhase,
+    AgentBuilder, Feature, Names, SessionConfig, SessionScope, SessionLifecycle, SessionPhase,
 };
 use dim_agent_types::{FileAccess, grant::GrantMode};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -217,7 +217,7 @@ struct FileAccessFactsPlugin {
     platform: Key<HostPlatform>,
     files: Key<SessionFiles>,
     grants: Key<SessionGrantsHost>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
     service: Key<FileAccessFacts>,
 }

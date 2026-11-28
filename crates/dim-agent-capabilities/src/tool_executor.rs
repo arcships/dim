@@ -9,7 +9,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, Names, QueryComparison, QueryFilter,
     QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Timeline,
-    TimelineIdentity, TimelineQuery, TimelineQueryScope,
+    TimelineContext, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -250,7 +250,7 @@ pub struct ToolExecutorPlugin {
     dispatcher: Key<Dispatcher>,
     binding: Key<ToolBinding>,
     approval: Key<Approval>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl ToolExecutorPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {

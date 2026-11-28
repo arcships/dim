@@ -13,7 +13,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, ModelProgress, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, StateCell, Timeline, TimelineIdentity, TimelineQuery, TimelineQueryScope,
+    QueryValue, StateCell, Timeline, TimelineContext, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -94,7 +94,7 @@ struct ModelProvider {
     resolver: Option<Arc<ProviderConnectionResolver>>,
     files: Option<Arc<SessionFiles>>,
     timeline: Arc<Timeline>,
-    identity: Arc<TimelineIdentity>,
+    identity: Arc<TimelineContext>,
     progress: Arc<StateCell<ModelProgress>>,
 }
 impl ModelProvider {
@@ -631,7 +631,7 @@ pub struct ModelProviderPlugin {
     resolver: Option<Key<ProviderConnectionResolver>>,
     /// Optional process service, read at load without gating standalone hosts.
     files: Option<Key<SessionFiles>>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl ModelProviderPlugin {
     /// Requests run on the local connection.

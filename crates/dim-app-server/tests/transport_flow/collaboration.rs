@@ -4,7 +4,7 @@ use dim_agent_capabilities::prompt_state::PromptSnapshot;
 use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events, timeline_events};
 use dim_agent_runtime::{
-    Agent, CollaborationRole, Names, Session, SessionIdentity, TimelineQueryScope, TimelineStore,
+    Agent, CollaborationRole, Names, Session, SessionScope, TimelineQueryScope, TimelineStore,
 };
 use dim_agent_types::{
     AgentEvent, CollaborationDelivery, CollaborationOutcome, ContentBlock, EventKind, InputBlock,
@@ -2976,7 +2976,7 @@ impl HeldRestore {
 }
 struct HeldRestorePart {
     held: HeldRestore,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
 }
 impl HeldRestorePart {
     fn new(names: &Names<'_>, held: HeldRestore) -> rutis::Result<Self> {

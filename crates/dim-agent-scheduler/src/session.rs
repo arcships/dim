@@ -14,7 +14,7 @@ use dim_agent_capabilities::{
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionIdentity};
+use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionScope};
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use jiff::Timestamp;
 use rutis::Ctx;
@@ -160,7 +160,7 @@ pub struct SchedulerSession {
     tools: Key<ToolRegistry>,
     guide: Key<GuideEntries>,
     config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     description: String,
 }
 

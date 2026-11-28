@@ -1,6 +1,6 @@
 //! Broadcasts every dispatched event of one branch on its Session channel,
 //! which also carries owners' notices about the Session's process-level state.
-use dim_agent_runtime::{Dispatcher, Names, SessionIdentity, TimelineIdentity};
+use dim_agent_runtime::{Dispatcher, Names, SessionScope, TimelineContext};
 use dim_agent_types::AgentEvent;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Event};
@@ -151,7 +151,7 @@ pub fn notify(ctx: &Ctx, session_id: &str, notice: SessionNotice) {
 
 pub struct SessionBroadcastPlugin {
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl SessionBroadcastPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -190,7 +190,7 @@ impl DynPlugin for SessionBroadcastPlugin {
 /// Ends the Session channel. Session capabilities unload after every branch
 /// closed, so this record follows every broadcast event.
 pub struct SessionBroadcastEndPlugin {
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
 }
 impl SessionBroadcastEndPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {

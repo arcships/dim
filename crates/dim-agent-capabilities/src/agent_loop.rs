@@ -12,7 +12,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, LoopPhase, LoopSnapshot, LoopState, Names,
     QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
-    QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineIdentity, TimelineQuery,
+    QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineContext, TimelineQuery,
     TimelineQueryScope,
 };
 use dim_agent_types::*;
@@ -1802,7 +1802,7 @@ pub struct LoopPlugin {
     context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
     guide: Key<crate::prompt_guide::GuideEntries>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl LoopPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {

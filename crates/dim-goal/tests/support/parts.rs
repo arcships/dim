@@ -22,7 +22,7 @@ use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BoxFuture, BranchOptions, Dispatcher, Feature,
     LoopSnapshot, LoopState, MemoryTimelineStore, Names, PublishCallback, Session, SessionConfig,
-    StoredBranch, StoredEvent, Timeline, TimelineIdentity, TimelineKey, TimelineQueryDirection,
+    StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineKey, TimelineQueryDirection,
     TimelineStore, TimelineTrace,
 };
 use dim_agent_types::{
@@ -173,7 +173,7 @@ struct ProbeBranch {
     timeline: Key<Timeline>,
     commands: Key<TreeCommands>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl ProbeBranch {
     fn new(names: &Names<'_>, probe: Arc<Probe>) -> rutis::Result<Self> {
@@ -311,7 +311,7 @@ impl LoopState for ControllableLoop {
 /// it, so a case that never sets a line's state keeps the idle stub.
 struct ControllableLoopStub {
     key: Key<dyn LoopState>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     watch: tokio::sync::watch::Sender<LoopSnapshot>,
     probe: Arc<Probe>,
 }

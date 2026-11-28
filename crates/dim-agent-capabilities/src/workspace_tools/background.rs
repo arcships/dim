@@ -17,7 +17,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput,
     QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline,
-    TimelineIdentity, TimelineQuery, TimelineQueryScope,
+    TimelineContext, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use rutis::Ctx;
@@ -1180,7 +1180,7 @@ pub struct BackgroundExecPlugin {
     dispatcher: Key<Dispatcher>,
     session: Key<SessionLifecycle>,
     guide: Key<GuideEntries>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl BackgroundExecPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {

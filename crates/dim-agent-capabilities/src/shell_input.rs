@@ -23,7 +23,7 @@ use crate::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    AgentBuilder, Names, SessionConfig, SessionHold, SessionIdentity, SessionLifecycle,
+    AgentBuilder, Names, SessionConfig, SessionHold, SessionScope, SessionLifecycle,
     SessionPhase,
 };
 use dim_agent_types::{InputMessageData, InputMode};
@@ -136,7 +136,7 @@ struct ShellInput {
     cwd: PathBuf,
     tree: Arc<TreeCommands>,
     lifecycle: Arc<SessionLifecycle>,
-    identity: Arc<SessionIdentity>,
+    identity: Arc<SessionScope>,
     /// This generation's cancellation: with the Session's closing, it ends
     /// every run.
     generation: CancellationToken,
@@ -552,7 +552,7 @@ pub struct ShellInputPlugin {
     config: Key<SessionConfig>,
     tree: Key<TreeCommands>,
     lifecycle: Key<SessionLifecycle>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     methods: Key<SessionMethods>,
     guide: Key<GuideEntries>,
 }

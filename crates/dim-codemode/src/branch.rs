@@ -8,7 +8,7 @@ use dim_agent_capabilities::{
     host::{HostError, ToolExecutionContext},
     tool_executor::ToolExecutor,
 };
-use dim_agent_runtime::{Names, TimelineIdentity};
+use dim_agent_runtime::{Names, TimelineContext};
 use dim_agent_types::ToolResult;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 pub struct CodeModeBranchPlugin {
     runs: Key<CodeModeRuns>,
     executor: Key<ToolExecutor>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     config: Arc<CodeModeConfig>,
 }
 

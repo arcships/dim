@@ -7,7 +7,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{
     AgentBuilder, CollaborationRole, Names, PartRegistry, PartScope, QueryFilter, QueryOperand,
     QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionConfig,
-    SessionIdentity, SessionLifecycle, TimelineQuery, TimelineQueryScope,
+    SessionScope, SessionLifecycle, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     ContentBlock, EventKind, InputBlock, Message, ModelId, ROOT_BRANCH_ID, Role, UserInput,
@@ -141,7 +141,7 @@ struct SessionTitle {
     tree: Key<TreeCommands>,
     store: Key<SessionMetadataService>,
     auxiliary: Key<AuxiliaryModel>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     config: Key<SessionConfig>,
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,

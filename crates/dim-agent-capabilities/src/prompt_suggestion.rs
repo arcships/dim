@@ -25,7 +25,7 @@ use crate::session_broadcast::{
 use crate::settings::{SettingsChanged, settings_changes};
 use crate::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    AgentBuilder, CollaborationRole, Feature, Names, SessionConfig, SessionIdentity,
+    AgentBuilder, CollaborationRole, Feature, Names, SessionConfig, SessionScope,
     SessionLifecycle,
 };
 use dim_agent_types::{
@@ -496,7 +496,7 @@ struct Hosts {
 }
 
 struct PromptSuggestionPlugin {
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     config: Key<SessionConfig>,
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,

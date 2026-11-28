@@ -218,7 +218,7 @@ type Tools = Arc<Mutex<HashMap<String, Arc<ToolRegistry>>>>;
 type Histories = Arc<Mutex<HashMap<(String, String), Arc<Timeline>>>>;
 struct CaptureHistory {
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     histories: Histories,
 }
 impl DynPlugin for CaptureHistory {
@@ -241,7 +241,7 @@ impl DynPlugin for CaptureHistory {
 }
 struct Probe {
     registry: Key<ToolRegistry>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     tools: Tools,
 }
 impl DynPlugin for Probe {

@@ -3,7 +3,7 @@ use dim_agent_capabilities::{defaults, session_broadcast::*};
 use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{
     AGENT_GROUP, AgentBuilder, AgentConfig, Feature, Modules, Names, SESSION_GROUP, SessionConfig,
-    SessionIdentity, register_part,
+    SessionScope, register_part,
 };
 use dim_agent_types::{InputMode, ToolCall, ToolDefinition, ToolResult};
 use futures_util::FutureExt;
@@ -104,7 +104,7 @@ struct Loaded {
 struct SessionProbe(
     InstanceId,
     mpsc::UnboundedSender<Loaded>,
-    rutis::host::Key<SessionIdentity>,
+    rutis::host::Key<SessionScope>,
 );
 struct SessionHost(String, Arc<AtomicUsize>);
 impl HostDispatch for SessionHost {

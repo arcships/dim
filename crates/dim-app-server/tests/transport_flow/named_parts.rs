@@ -4,7 +4,7 @@
 //! provides. Each Session's parts see their own Session's copies.
 use super::session_typescript::{fixture, new_session, setup};
 use super::*;
-use dim_agent_runtime::{SESSION_GROUP, SessionIdentity, TimelineIdentity};
+use dim_agent_runtime::{SESSION_GROUP, SessionScope, TimelineContext};
 use rutis::host::{CtxHost, Key};
 use rutis_bridge::session::{HostDispatch, Reply, Value as RpcValue};
 use std::sync::Mutex;
@@ -22,7 +22,7 @@ impl HostDispatch for Greeter {
         Some(json!({"hello":"sync"}))
     }
 }
-struct GreeterPart(Key<dyn HostDispatch>, rutis::host::Key<SessionIdentity>);
+struct GreeterPart(Key<dyn HostDispatch>, rutis::host::Key<SessionScope>);
 impl GreeterPart {
     fn new(names: &dim_agent_runtime::Names<'_>, a0: Key<dyn HostDispatch>) -> rutis::Result<Self> {
         Ok(Self(a0, names.key()?))
@@ -55,7 +55,7 @@ impl rutis::host::DynPlugin for GreeterPart {
 struct MethodsReader {
     log: Log,
     methods: Key<dyn HostDispatch>,
-    branch: Key<TimelineIdentity>,
+    branch: Key<TimelineContext>,
 }
 impl MethodsReader {
     fn new(names: &dim_agent_runtime::Names<'_>, log: Log) -> rutis::Result<Self> {

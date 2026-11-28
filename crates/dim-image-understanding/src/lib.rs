@@ -13,7 +13,7 @@ use dim_agent_capabilities::{
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use dim_agent_runtime::{AgentBuilder, Feature, Names, SessionIdentity};
+use dim_agent_runtime::{AgentBuilder, Feature, Names, SessionScope};
 use dim_agent_types::{
     Message, MessageContent, MessagePart, ModelId, ModelProtocol, Role, ToolCall, ToolResult,
 };
@@ -84,7 +84,7 @@ impl Drop for Flight {
 struct ImageUnderstanding {
     tree: Arc<TreeCommands>,
     files: Arc<SessionFiles>,
-    identity: Arc<SessionIdentity>,
+    identity: Arc<SessionScope>,
     targets: Arc<ModalityTargets>,
     auxiliary: Arc<AuxiliaryModel>,
     selection: Arc<ModelSelectionHost>,
@@ -356,7 +356,7 @@ pub struct ImageUnderstandingPlugin {
     tools: Key<ToolRegistry>,
     tree: Key<TreeCommands>,
     files: Key<SessionFiles>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     targets: Key<ModalityTargets>,
     auxiliary: Key<AuxiliaryModel>,
     selection: Key<ModelSelectionHost>,
