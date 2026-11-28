@@ -1072,9 +1072,11 @@ async fn a_failed_state_record_takes_up_no_interrupt_it_deferred() {
             InputMode::Append,
         )
         .sequence;
+    let arrived = tokio::time::timeout(std::time::Duration::from_secs(30), record.arrived())
+        .await
+        .expect("the failure report's record stage arrives");
     assert_eq!(
-        record.arrived().await,
-        conclusion,
+        arrived, conclusion,
         "the failure report's record writer answers the conclusion at {conclusion}"
     );
 
@@ -1105,17 +1107,20 @@ async fn a_failed_state_record_takes_up_no_interrupt_it_deferred() {
     );
     let failure = env.probe.fail_next_state();
     record.release();
-    failure
+    tokio::time::timeout(std::time::Duration::from_secs(30), failure)
         .await
+        .expect("the writer refuses the failure report")
         .expect("the writer refuses the failure report");
     assert_eq!(
         env.probe.failed_states(),
         1,
         "the writer's own check refuses the failure report at {conclusion}"
     );
+    let released_at = tokio::time::timeout(std::time::Duration::from_secs(30), released.arrived())
+        .await
+        .expect("the writer's released stage arrives");
     assert_eq!(
-        released.arrived().await,
-        conclusion,
+        released_at, conclusion,
         "the writer that failed holds its answer after it released the settlement"
     );
     let taken = tokio::time::timeout(std::time::Duration::from_millis(750), again.arrived()).await;
