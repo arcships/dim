@@ -19,7 +19,7 @@ use dim_agent_capabilities::prompt_suggestion::{
 use dim_agent_capabilities::toolchain::{
     InstalledToolchain, ToolchainSourceHost, ToolchainSourceReply, ToolchainView,
 };
-use dim_agent_types::{ModalityModelSnapshot, ModelId, ModelSelection};
+use dim_agent_types::{ModalityModelSnapshot, ModelId, ModelProtocol, ModelSelection};
 use futures_util::FutureExt;
 use rutis::Ctx;
 use rutis::host::CtxHost;
@@ -184,6 +184,7 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
             model_id: "media".into(),
         },
         operations: vec!["image.generate".into()],
+        protocol: ModelProtocol::OpenaiCompatible,
     };
     let selectable = SelectableModelsHost::new(
         Arc::new(|_| Box::pin(async { Ok(Vec::new()) })),

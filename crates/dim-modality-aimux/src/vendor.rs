@@ -1,10 +1,20 @@
-//! The binding between a catalog provider and the aimux provider that
-//! executes its media models.
+//! The binding between a provider and the aimux package that executes its
+//! media models.
 //!
 //! One row per bundled catalog provider that declares a media operation and
-//! that an aimux vendor package serves. The catalog id is the provider record
-//! a seeded builtin keeps; a created provider's id is a UUID, so it can never
-//! match a row here and its media operations report `adapter` instead.
+//! that an aimux vendor package serves, resolved by the record's own id
+//! first. A provider whose id names no row falls back to the family only
+//! when the whitelist admits it (Modality A.2): a created provider's
+//! canonical lowercase UUID, the Dim account relay, and the two aggregator
+//! gateways this build carries contract tests for (`aihubmix`, `zenmux`).
+//! Every other rowless bundled id reports `adapter`: the vendor documented
+//! neither the endpoints nor the response shape the compatible package can
+//! consume. The whitelist itself resolves by the protocol its media model
+//! routes to (Modality A.2): the OpenAI-compatible family serves video
+//! generation through the openai-compatible package and image generation and
+//! edit, and speech and transcription, through the OpenAI one. A model that
+//! routes to another protocol family, or the family a row does not serve,
+//! reports `adapter`.
 //!
 //! `kinds` is read from each package's `Provider` implementation, not from its
 //! files: xAI ships an image model file whose `image_model` answers
@@ -81,9 +91,11 @@ pub struct Vendor {
     pub base: Base,
     /// The `providerOptions` key the package reads an image output format
     /// from, when it reads one and spells it differently from aimux's
-    /// `outputFormat`. The requested format is the naming fallback for a
-    /// provider that returns bytes with no signature, so a row without one
-    /// still names its files.
+    /// `outputFormat`. A package that forwards its options verbatim reads
+    /// the wire spelling; a package that parses them reads the camelCase it
+    /// maps onto the wire itself. The requested format is the naming
+    /// fallback for a provider that returns bytes with no signature, so a
+    /// row without one still names its files.
     pub format: Option<&'static str>,
 }
 
@@ -112,33 +124,6 @@ impl Vendor {
             statements.push((Operation::Transcription, "speech", "transcribe"));
         }
         statements
-    }
-
-    /// The base URL of one call: the catalog's value, held to the package's
-    /// own path shape.
-    pub fn base_url(&self, operation: Operation, url: &str) -> String {
-        let url = url.trim_end_matches('/');
-        match (self.base, operation) {
-            (Base::FalImage, Operation::Image) => {
-                if let Some(rest) = url.strip_prefix("https://queue.fal.run") {
-                    format!("https://fal.run{rest}")
-                } else {
-                    url.to_owned()
-                }
-            }
-            (Base::Strip(suffix), _) => url
-                .strip_suffix(suffix)
-                .map(str::to_owned)
-                .unwrap_or_else(|| url.to_owned()),
-            (Base::Append(suffix), _) => {
-                if url.ends_with(suffix) {
-                    url.to_owned()
-                } else {
-                    format!("{url}{suffix}")
-                }
-            }
-            (_, _) => url.to_owned(),
-        }
     }
 }
 
@@ -365,18 +350,6 @@ pub static VENDORS: &[Vendor] = &[
         base: Base::AsIs,
         format: None,
     },
-    // The Dim account relay speaks the OpenAI Image API on its `/v1` base:
-    // JSON `/images/generations` and multipart `/images/edits`, with the
-    // account's bearer. The relay names the model, so a model the package
-    // does not know keeps edit.
-    Vendor {
-        catalog: "dimcode-api-oauth",
-        aimux: "openai",
-        options: "openai",
-        kinds: kinds(true, false, false, false),
-        base: Base::AsIs,
-        format: Some("outputFormat"),
-    },
     // The catalog's `/speechtotext/v1` is the prefix the package appends.
     Vendor {
         catalog: "rev-ai",
@@ -391,4 +364,310 @@ pub static VENDORS: &[Vendor] = &[
 /// The row for a provider record, if this build serves its media models.
 pub fn vendor(provider_id: &str) -> Option<&'static Vendor> {
     VENDORS.iter().find(|vendor| vendor.catalog == provider_id)
+}
+
+/// Whether a rowless provider may use the compatible family fallback
+/// (Modality A.2): a created provider's canonical lowercase UUID, the Dim
+/// account relay, and the two aggregator gateways this build carries
+/// contract tests for. Every other rowless bundled id is refused: the
+/// vendors behind them document neither the endpoints nor the response
+/// shapes the compatible packages can consume, so listing them available
+/// would send requests whose results cannot be read.
+fn eligible_for_fallback(provider_id: &str) -> bool {
+    uuid::Uuid::parse_str(provider_id).is_ok_and(|id| id.to_string() == provider_id)
+        || provider_id == "dimcode-api-oauth"
+        || provider_id == "aihubmix"
+        || provider_id == "zenmux"
+}
+
+use dim_agent_types::in_word_family;
+
+/// Whether the model id names the Ark video word family. The Ark video API
+/// is a different route from the compatible family's `/videos`
+/// (`/contents/generations/tasks`, JSON), so the compatible binding cannot
+/// execute these models; they are refused until the per-model route exists.
+fn is_ark_video_model(model_id: &str) -> bool {
+    in_word_family(model_id, "seedance")
+}
+
+/// Whether the model id names the Seedream image word family (`seedream`,
+/// `doubao-seedream`). A Seedream endpoint answers image URLs by default, and
+/// the compatible package reads inline bytes alone, so the compatible
+/// binding cannot execute these models; they are refused until the per-model
+/// route exists.
+fn is_seedream_image_model(model_id: &str) -> bool {
+    in_word_family(model_id, "seedream")
+}
+
+/// The catalog image entries whose endpoint documentation names the inline
+/// response shape the compatible package reads. aihubmix publishes a
+/// per-model endpoint schema (`/call/schema/models/{id}/endpoints`, no
+/// auth): these entries' `/v1/images/generations` schema lists
+/// `response_format` with the inline enum value, so the binding's default
+/// request reads bytes back. Entries absent from this table — a schema that
+/// lists `url` alone, no `/v1/images/generations` endpoint at all, or a
+/// schema the gateway does not publish — document no way to read the bytes,
+/// so the generic fallback refuses them rather than billing a generation
+/// whose answer never reads back.
+const AIHUBMIX_INLINE_IMAGE_MODELS: &[&str] = &[
+    "agnes-image-2.1-flash",
+    "doubao-seedream-4-0",
+    "doubao-seedream-4-5",
+    "doubao-seedream-5-0-flash",
+    "doubao-seedream-5-0-lite",
+    "ernie-image-turbo",
+    "flux-2-flex",
+    "flux-2-pro",
+    "gemini-2.5-flash-image",
+    "gemini-2.5-flash-image-preview",
+    "gemini-3.1-flash-image-preview",
+    "gpt-image-1",
+    "mai-image-2.5",
+    "mai-image-2.5-flash",
+    "mai-image-2.5-pro",
+    "mai-image-2.6",
+    "mai-image-2.6-flash",
+    "musesteamer-air-image",
+    "qwen-image",
+    "qwen-image-2.0",
+    "qwen-image-2.0-pro",
+    "qwen-image-2.1-pro",
+    "qwen-image-2.1-turbo",
+    "qwen-image-edit",
+    "qwen-image-max",
+    "wan2.6-t2i",
+    "wan2.7-image",
+    "wan2.7-image-pro",
+];
+
+/// Whether a cataloged entry on one of the two whitelisted aggregator
+/// gateways documents the inline response shape. An id starting with the
+/// `gpt-image-` or `chatgpt-image-` prefixes after the vendor namespace
+/// answers inline bytes without the field — the OpenAI Image API documents
+/// base64 for those models, and both gateways pass it through — so those
+/// entries need no `response_format` at all. Every other entry must be one
+/// of the schema-verified ids above; zenmux publishes no per-model image
+/// schema, so nothing beyond the prefixes verifies there.
+fn catalog_image_verified(provider_id: &str, model_id: &str) -> bool {
+    // Three aihubmix ids answer `model_not_found` in the gateway's own
+    // endpoint schema service: the entry is stale, and a stale entry reads
+    // nothing whatever its family documents.
+    const AIHUBMIX_NOT_FOUND: &[&str] = &["dall-e-3", "gpt-image-1-mini", "gpt-image-test"];
+    let tail = model_id.rsplit('/').next().unwrap_or(model_id);
+    if provider_id == "aihubmix" && AIHUBMIX_NOT_FOUND.contains(&tail) {
+        return false;
+    }
+    if tail.starts_with("gpt-image-") || tail.starts_with("chatgpt-image-") {
+        return true;
+    }
+    provider_id == "aihubmix" && AIHUBMIX_INLINE_IMAGE_MODELS.contains(&tail)
+}
+
+/// Whether the model id answers inline bytes without being asked. aimux's
+/// openai package omits `response_format` for these prefixes
+/// (aimux-providers 0.7.0 `openai/image/image_model_options.rs`), and the
+/// compatible fallback reads the same rule because the gateways behind it
+/// follow the OpenAI shape.
+pub(crate) fn answers_inline_bytes_by_default(model_id: &str) -> bool {
+    let tail = model_id.rsplit('/').next().unwrap_or(model_id);
+    tail.starts_with("gpt-image-") || tail.starts_with("chatgpt-image-")
+}
+
+/// How a binding builds its aimux provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Package {
+    /// The preset of [`aimux_providers::create_provider`], built with
+    /// [`aimux_providers::PresetSettings`].
+    Preset(&'static str),
+    /// [`aimux_providers::create_openai_compatible`], built with
+    /// [`aimux_providers::OpenAICompatibleProviderSettings`].
+    OpenaiCompatible,
+}
+
+/// What one (provider, operation) pair resolves to, vendor row or protocol
+/// family alike: the package, its `providerOptions` namespace and base
+/// composition, whether its image model reads an edit's input files, and
+/// whether an image create never retries.
+#[derive(Clone, Copy, Debug)]
+pub struct Binding {
+    pub package: Package,
+    /// The `providerOptions` key the package reads its own options from. The
+    /// package names it, not the catalog: Black Forest Labs reads
+    /// `blackForestLabs` whatever its provider is called.
+    pub options: &'static str,
+    pub base: Base,
+    /// Whether the image model reads the bytes an edit sends. The
+    /// openai-compatible package reads `options.files` on every model, so
+    /// the family's image binding keeps edit; [`crate::media::serves_edit`]
+    /// narrows it per model where the package reports one.
+    pub image_edit: bool,
+    /// The `providerOptions` key the package reads an image output format
+    /// from, when it reads one and spells it differently from aimux's
+    /// `outputFormat`. A package that forwards its options verbatim reads
+    /// the wire spelling; a package that parses them reads the camelCase it
+    /// maps onto the wire itself. The requested format is the naming
+    /// fallback for a provider that returns bytes with no signature, so a
+    /// binding without one still names its files.
+    pub format: Option<&'static str>,
+    /// Whether an image create never retries a timed-out POST. Only the Dim
+    /// account relay plays back a request it already accepted, and its media
+    /// models resolve to the OpenAI package in both resolutions.
+    pub no_retry: bool,
+}
+
+impl Vendor {
+    /// The binding the row resolves every operation to: one package serves
+    /// the whole row, and no vendor row's image create is throttled.
+    pub fn binding(&self) -> Binding {
+        Binding {
+            package: Package::Preset(self.aimux),
+            options: self.options,
+            base: self.base,
+            image_edit: self.kinds.image_edit,
+            format: self.format,
+            no_retry: false,
+        }
+    }
+}
+
+/// The binding a model's media `operation` resolves to, or `unavailable`
+/// when nothing in this build serves it.
+///
+/// A provider whose id names a vendor row resolves to it whatever the
+/// protocol says (Modality A.2): the row is its own package's decision, and
+/// xAI's providers route `openai-compatible` while serving their video
+/// through the xAI one. A rowless provider falls back to the family only
+/// when the whitelist admits it — a created provider's canonical lowercase
+/// UUID, the Dim account relay, or one of the two aggregator gateways this
+/// build carries contract tests for (`aihubmix`, `zenmux`); every other
+/// rowless bundled id reports `adapter`, because the vendors behind them
+/// document neither the endpoints nor the response shapes the compatible
+/// packages can consume. Only the OpenAI-compatible family carries media at
+/// all: video generation and image generation and edit go to the
+/// openai-compatible package, and speech and transcription to the OpenAI
+/// one, which is the only aimux package that serves them for this family.
+/// The relay's image generation is the one exception: its gateway answers
+/// the OpenAI Image API itself, so it stays on the OpenAI package with its
+/// image create never retried. The compatible image binding asks its gateway
+/// for inline bytes by default — the call sends `response_format` through
+/// the provider options, and the inline format is the one value a caller's
+/// own `response_format` may carry — so a gateway that honors the field
+/// answers bytes instead of the default URL shape. On the id prefixes that
+/// answer inline bytes without the field, matched after the vendor
+/// namespace, nothing is sent at all — not even the caller's own copy of
+/// the same inline value — because a strict GPT Image endpoint rejects the
+/// field's presence. `None` is startup recovery's
+/// answer for a route it cannot re-read: the family answers as the
+/// compatible one would, and a route that no longer matches is the call's
+/// own failure.
+///
+/// Three word-family exclusions narrow the fallback further. A video model
+/// whose id names the Ark word family (`seedance`, `doubao-seedance`) is
+/// refused: the Ark video API is a different route from the compatible
+/// family's `/videos`, and the per-model binding that serves it is a later
+/// slice (#1927). An image model whose id names the Seedream word family
+/// (`seedream`, `doubao-seedream`) is refused by the generic fallback alone —
+/// the relay stays on the OpenAI package — because a Seedream endpoint
+/// answers image URLs by default while the compatible package reads inline
+/// bytes alone, and the per-model binding is the same later slice. The two
+/// whitelisted gateways answer one check more: a cataloged image entry is
+/// refused unless its endpoint documentation proves the inline shape —
+/// the inline-answering id prefixes, or the schema-verified aihubmix ids —
+/// because the sweep behind this adapter requires every listed-available
+/// image model to read its bytes back (#1927).
+pub fn binding(
+    provider_id: &str,
+    model_id: &str,
+    protocol: Option<dim_agent_types::ModelProtocol>,
+    operation: Operation,
+) -> Result<Binding, dim_modality::AdapterError> {
+    let compatible = matches!(
+        protocol,
+        None | Some(dim_agent_types::ModelProtocol::OpenaiCompatible)
+    );
+    if let Some(vendor) = vendor(provider_id) {
+        return if vendor.kinds.serves(operation) {
+            Ok(vendor.binding())
+        } else {
+            Err(dim_modality::AdapterError::unavailable(format!(
+                "The {provider_id} provider serves no {}",
+                statement(operation)
+            )))
+        };
+    }
+    if !eligible_for_fallback(provider_id) {
+        return Err(dim_modality::AdapterError::unavailable(format!(
+            "The {provider_id} provider serves no {}",
+            statement(operation)
+        )));
+    }
+    if operation == Operation::Video && is_ark_video_model(model_id) {
+        return Err(dim_modality::AdapterError::unavailable(format!(
+            "The `{model_id}` model's video generation needs its provider's own route"
+        )));
+    }
+    let binding = match (compatible, operation) {
+        (true, Operation::Image) if provider_id == "dimcode-api-oauth" => Binding {
+            package: Package::Preset("openai"),
+            options: "openai",
+            base: Base::AsIs,
+            image_edit: true,
+            format: Some("outputFormat"),
+            no_retry: true,
+        },
+        (true, Operation::Image) if is_seedream_image_model(model_id) => {
+            return Err(dim_modality::AdapterError::unavailable(format!(
+                "The `{model_id}` model's image generation needs its provider's own route"
+            )));
+        }
+        (true, Operation::Image)
+            if (provider_id == "aihubmix" || provider_id == "zenmux")
+                && !catalog_image_verified(provider_id, model_id) =>
+        {
+            return Err(dim_modality::AdapterError::unavailable(format!(
+                "The `{model_id}` model's image endpoint does not document the inline response shape this binding reads"
+            )));
+        }
+        (true, Operation::Image) => Binding {
+            package: Package::OpenaiCompatible,
+            options: "openaiCompatible",
+            base: Base::AsIs,
+            image_edit: true,
+            format: Some("output_format"),
+            no_retry: false,
+        },
+        (true, Operation::Video) => Binding {
+            package: Package::OpenaiCompatible,
+            options: "openaiCompatible",
+            base: Base::AsIs,
+            image_edit: false,
+            format: None,
+            no_retry: false,
+        },
+        (true, Operation::Speech) | (true, Operation::Transcription) => Binding {
+            package: Package::Preset("openai"),
+            options: "openai",
+            base: Base::AsIs,
+            image_edit: false,
+            format: None,
+            no_retry: false,
+        },
+        (false, _) => {
+            return Err(dim_modality::AdapterError::unavailable(format!(
+                "No adapter row serves the provider `{provider_id}`"
+            )));
+        }
+    };
+    Ok(binding)
+}
+
+/// The `<category>.<operation>` statement an `Operation` names, for a
+/// refusal.
+fn statement(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Image => "image",
+        Operation::Video => "video.generate",
+        Operation::Speech => "speech.synthesize",
+        Operation::Transcription => "speech.transcribe",
+    }
 }

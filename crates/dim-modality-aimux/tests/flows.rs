@@ -144,6 +144,15 @@ async fn handle(State(state): State<StubState>, request: Request) -> Response {
         ("POST", "/v1/videos/generations") => {
             json_reply(StatusCode::OK, json!({"request_id": "req_1"}))
         }
+        // The openai-compatible package's own shape: a multipart start on
+        // /videos, a poll by id and the gateway's inline content download.
+        ("POST", "/v1/videos") => json_reply(StatusCode::OK, json!({"id": "vid1"})),
+        ("GET", "/v1/videos/vid1") => {
+            json_reply(StatusCode::OK, json!({"id": "vid1", "status": "completed"}))
+        }
+        ("GET", "/v1/videos/vid1/content") => {
+            (StatusCode::OK, [("content-type", "video/mp4")], VIDEO).into_response()
+        }
         ("GET", "/v1/videos/req_1") => {
             let poll = state.polls.fetch_add(1, Ordering::SeqCst) + 1;
             if poll <= state.pending {
@@ -921,7 +930,9 @@ async fn capabilities_show_the_mapped_provider_and_refuse_a_created_one() {
     );
     assert_no_credential(&capabilities);
 
-    // A created provider's id is a UUID, which no row names.
+    // A created provider's id is a UUID, which no vendor row names; a model
+    // that routes outside the OpenAI-compatible family resolves to no media
+    // binding either.
     let created = "018ec73f-0000-7000-8000-00000000c5b0";
     let reply = client
         .rpc(
@@ -929,7 +940,7 @@ async fn capabilities_show_the_mapped_provider_and_refuse_a_created_one() {
             json!({
                 "providerId": created,
                 "displayName": "Created",
-                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "connection": {"driverKind": "gemini", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
                 "models": [{
                     "modelId": "custom-image",
                     "displayName": "custom-image",
@@ -1011,6 +1022,987 @@ async fn a_specialized_adapter_claims_one_provider_beside_the_builtin() {
                 .any(|category| category["category"] == "image")),
         "the assembly with both adapters answers capabilities: {reply}"
     );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_created_providers_media_flows_resolve_by_protocol_family() {
+    let stub = stub(0).await;
+    let home = home("family-flow");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f1";
+    let descriptor = |model_id: &str, operations: Value| {
+        json!({
+            "modelId": model_id,
+            "displayName": model_id,
+            "status": "active",
+            "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata": {"raw": {"modalityCapabilities": operations}}
+        })
+    };
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [
+                    descriptor("custom-video", json!(["video.generate"])),
+                    descriptor("custom-image", json!(["image.generate"])),
+                    descriptor("custom-speech", json!(["speech.synthesize"])),
+                    descriptor("custom-ears", json!(["speech.transcribe"]))
+                ],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    // The created provider's video model runs on the openai-compatible
+    // package: a multipart start on /videos, a poll by id and the gateway's
+    // content download, all with the record's anonymous-no-credential shape.
+    let video = submit(
+        &mut client,
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model(created, "custom-video"),
+    )
+    .await;
+    let task = wait_state(&mut client, &video, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "video/mp4");
+    assert_eq!(read_result(&mut client, &video, "video-1.mp4").await, VIDEO);
+
+    // Speech and transcription stay on the OpenAI package's audio paths.
+    let speech = submit(
+        &mut client,
+        "speech",
+        "synthesize",
+        json!({"text": "hello"}),
+        json!([]),
+        model(created, "custom-speech"),
+    )
+    .await;
+    let task = wait_state(&mut client, &speech, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "audio/mpeg");
+    let transcription = submit(
+        &mut client,
+        "speech",
+        "transcribe",
+        json!({}),
+        json!([{"name": "clip.mp3", "media_type": "audio/mpeg",
+            "data_base64": base64::engine::general_purpose::STANDARD.encode(MP3)}]),
+        model(created, "custom-ears"),
+    )
+    .await;
+    let task = wait_state(&mut client, &transcription, &["succeeded"]).await;
+    assert_eq!(task["result"]["data"]["text"], "hello there");
+
+    // Image generation resolves to the openai-compatible package: the same
+    // /images/generations path, parsed for inline bytes.
+    let image = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a red circle"}),
+        json!([]),
+        model(created, "custom-image"),
+    )
+    .await;
+    let task = wait_state(&mut client, &image, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+
+    let requests = stub.requests();
+    let starts: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == "POST" && request.path == "/v1/videos")
+        .collect();
+    assert_eq!(starts.len(), 1, "one compatible video start");
+    let start_body = String::from_utf8_lossy(&starts[0].body);
+    assert!(
+        start_body.contains("custom-video"),
+        "the multipart start carries the model: {start_body}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.method == "GET" && request.path == "/v1/videos/vid1"),
+        "the job is polled by its id"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.path == "/v1/videos/vid1/content"),
+        "the gateway's content endpoint serves the download"
+    );
+    for path in [
+        "/v1/audio/speech",
+        "/v1/audio/transcriptions",
+        "/v1/images/generations",
+    ] {
+        assert!(
+            requests.iter().any(|request| request.path == path),
+            "the family serves {path}: {:?}",
+            requests
+                .iter()
+                .map(|request| request.path.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capabilities_list_a_created_compatible_providers_media_models() {
+    let stub = stub(0).await;
+    let home = home("family-capabilities");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f2";
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [{
+                    "modelId": "custom-media",
+                    "displayName": "custom-media",
+                    "status": "active",
+                    "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                        "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+                    "metadata": {"raw": {"modalityCapabilities": ["image.generate", "image.edit", "video.generate", "speech.synthesize", "speech.transcribe"]}}
+                }],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let categories = capabilities["result"]["categories"].as_array().unwrap();
+    let find = |category: &str, operation: &str| -> Value {
+        categories
+            .iter()
+            .find(|entry| entry["category"] == category)
+            .unwrap_or_else(|| panic!("no {category} category: {capabilities}"))["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["operation"] == operation)
+            .unwrap_or_else(|| panic!("no {category}.{operation}: {capabilities}"))
+            .clone()
+    };
+    for (category, operation) in [
+        ("image", "generate"),
+        ("image", "edit"),
+        ("video", "generate"),
+        ("speech", "synthesize"),
+        ("speech", "transcribe"),
+    ] {
+        let operation = find(category, operation);
+        let option = operation["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == created && option["modelId"] == "custom-media")
+            .unwrap_or_else(|| panic!("the created model is not an option: {operation}"));
+        assert_eq!(
+            option["available"], true,
+            "the compatible family serves the created provider's {category}: {operation}"
+        );
+    }
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_created_providers_seedance_model_is_unavailable_end_to_end() {
+    // #1927 keeps the Ark route out of this slice: the listing projects the
+    // model as unavailable with the adapter reason, and submit refuses it,
+    // while the same provider's other video model still runs.
+    let stub = stub(0).await;
+    let home = home("seedance-flow");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f3";
+    let descriptor = |model_id: &str, operations: Value| {
+        json!({
+            "modelId": model_id,
+            "displayName": model_id,
+            "status": "active",
+            "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata": {"raw": {"modalityCapabilities": operations}}
+        })
+    };
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [
+                    descriptor("seedance-2.0", json!(["video.generate"])),
+                    descriptor("doubao-seedance-1-0-pro-250528", json!(["video.generate"])),
+                    descriptor("minimax-h3", json!(["video.generate"]))
+                ],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let video = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "video")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let options = video["options"].as_array().unwrap();
+    for model_id in ["seedance-2.0", "doubao-seedance-1-0-pro-250528"] {
+        let option = options
+            .iter()
+            .find(|option| option["providerId"] == created && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("{model_id} is not an option: {video}"));
+        assert_eq!(
+            option["available"], false,
+            "{model_id} is unavailable: {option}"
+        );
+        assert_eq!(
+            option["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {option}"
+        );
+    }
+    let h3 = options
+        .iter()
+        .find(|option| option["modelId"] == "minimax-h3")
+        .expect("minimax-h3 is an option");
+    assert_eq!(h3["available"], true, "minimax-h3 stays available: {h3}");
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "video", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model(created, "seedance-2.0")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the seedance submit is refused before any request: {refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("No available adapter serves the model"),
+        "the refusal names the adapter as the reason: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/videos") == 0,
+        "no video start reaches the gateway"
+    );
+
+    // The same provider's non-Ark video model still runs on the family.
+    let video = submit(
+        &mut client,
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model(created, "minimax-h3"),
+    )
+    .await;
+    let task = wait_state(&mut client, &video, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "video/mp4");
+    assert_eq!(stub.starts("/v1/videos"), 1, "minimax-h3 runs on /videos");
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_created_providers_seedream_model_is_unavailable_end_to_end() {
+    // The generic compatible fallback cannot execute a Seedream image model —
+    // its endpoint answers URLs by default and the compatible package reads
+    // inline b64_json alone — so the listing projects it as unavailable with
+    // the adapter reason and submit refuses it before any request, while the
+    // same provider's other image model still runs.
+    let stub = stub(0).await;
+    let home = home("seedream-flow");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f4";
+    let descriptor = |model_id: &str, operations: Value| {
+        json!({
+            "modelId": model_id,
+            "displayName": model_id,
+            "status": "active",
+            "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata": {"raw": {"modalityCapabilities": operations}}
+        })
+    };
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [
+                    descriptor("seedream-5.0", json!(["image.generate"])),
+                    descriptor("doubao-seedream-4-0-250828", json!(["image.generate"])),
+                    descriptor("custom-image", json!(["image.generate"]))
+                ],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let options = image["options"].as_array().unwrap();
+    for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+        let option = options
+            .iter()
+            .find(|option| option["providerId"] == created && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("{model_id} is not an option: {image}"));
+        assert_eq!(
+            option["available"], false,
+            "{model_id} is unavailable: {option}"
+        );
+        assert_eq!(
+            option["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {option}"
+        );
+    }
+    let custom = options
+        .iter()
+        .find(|option| option["providerId"] == created && option["modelId"] == "custom-image")
+        .expect("custom-image is an option");
+    assert_eq!(
+        custom["available"], true,
+        "a non-seedream compatible image model stays available: {custom}"
+    );
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model(created, "seedream-5.0")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the seedream submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    // The same provider's non-seedream image model still runs on the family.
+    let task_id = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a red circle"}),
+        json!([]),
+        model(created, "custom-image"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+    assert_eq!(
+        stub.starts("/v1/images/generations"),
+        1,
+        "custom-image runs on the compatible image path"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn corrected_catalog_video_entries_list_unavailable_with_the_adapter_reason() {
+    // The corrected aihubmix and zenmux rows declare no modalityCapabilities:
+    // recognition infers video.generate from the entry itself, and the
+    // adapter answer then differs by the model id. A seedance row names the
+    // Ark word family the compatible family cannot execute, so it lists
+    // unavailable with the adapter reason and submit refuses it before any
+    // request; a minimax-h3 row is the family's own shape and stays
+    // available end to end.
+    let stub = stub(0).await;
+    let home = home("catalog-video-availability");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "aihubmix", &stub.base_url).await;
+    point_at_stub(&mut client, "zenmux", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let video = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "video")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let options = video["options"].as_array().unwrap();
+    let option = |provider_id: &str, model_id: &str| -> Value {
+        options
+            .iter()
+            .find(|option| option["providerId"] == provider_id && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("{provider_id}/{model_id} is not a video option: {video}"))
+            .clone()
+    };
+    for (provider_id, model_id) in [
+        ("aihubmix", "doubao-seedance-1-0-pro-250528"),
+        ("zenmux", "bytedance/doubao-seedance-2.0"),
+    ] {
+        let entry = option(provider_id, model_id);
+        assert_eq!(
+            entry["available"], false,
+            "{provider_id}/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+    for (provider_id, model_id) in [
+        ("aihubmix", "minimax-h3-max"),
+        ("zenmux", "minimax/minimax-h3"),
+    ] {
+        let entry = option(provider_id, model_id);
+        assert_eq!(
+            entry["available"], true,
+            "{provider_id}/{model_id} stays available: {entry}"
+        );
+    }
+    assert!(
+        options
+            .iter()
+            .any(|option| option["available"] == true && option["reason"].is_null()),
+        "an available option carries no reason: {video}"
+    );
+
+    for (provider_id, model_id) in [
+        ("aihubmix", "doubao-seedance-1-0-pro-250528"),
+        ("zenmux", "bytedance/doubao-seedance-2.0"),
+    ] {
+        let refused = client
+            .rpc(
+                "modality.task.submit",
+                json!({"category": "video", "operation": "generate", "params": {"prompt": "a cat"},
+                    "files": [], "model": model(provider_id, model_id)}),
+            )
+            .await;
+        assert_eq!(
+            app_error(&refused),
+            "unavailable",
+            "{provider_id}/{model_id} submit is refused before any request: {refused}"
+        );
+    }
+    assert_eq!(
+        stub.starts("/v1/videos"),
+        0,
+        "no video start reaches either gateway"
+    );
+
+    // The same read's positive entries run on the compatible family: one of
+    // the corrected minimax-h3 rows submits and completes on /videos.
+    let task_id = submit(
+        &mut client,
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model("zenmux", "minimax/minimax-h3"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "video/mp4");
+    assert_eq!(stub.starts("/v1/videos"), 1, "minimax-h3 runs on /videos");
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cataloged_seedream_image_entries_list_unavailable_with_the_adapter_reason() {
+    // The catalog's own seedream rows declare no modalityCapabilities either:
+    // recognition infers image.generate and image.edit, and the generic
+    // compatible fallback refuses the seedream word family, so an aggregator
+    // gateway's rows list unavailable with the adapter reason and submit
+    // refuses them before any request.
+    let stub = stub(0).await;
+    let home = home("catalog-seedream-availability");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "aihubmix", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap();
+    let generate = image["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    for model_id in ["doubao-seedream-4-0", "doubao-seedream-5.0-pro"] {
+        let entry = generate["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == "aihubmix" && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("aihubmix/{model_id} is not an image option: {generate}"));
+        assert_eq!(
+            entry["available"], false,
+            "aihubmix/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model("aihubmix", "doubao-seedream-4-0")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the catalog seedream submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undocumented_catalog_image_entries_list_unavailable_while_verified_ones_stay() {
+    // The strict filter is catalog-scoped: an aihubmix or zenmux image entry
+    // whose endpoint documentation proves no inline shape — a schema that
+    // lists `url` alone, no `/v1/images/generations` endpoint, or no schema
+    // at all — lists unavailable with the adapter reason, and a submit is
+    // refused before any request. A schema-verified aihubmix row and a
+    // prefix-answering zenmux row stay available, the verified one runs end
+    // to end, and its start asks the gateway for the inline format.
+    let stub = stub(0).await;
+    let home = home("catalog-image-strict");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "aihubmix", &stub.base_url).await;
+    point_at_stub(&mut client, "zenmux", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap();
+    let generate = image["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let option = |provider_id: &str, model_id: &str| -> Value {
+        generate["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == provider_id && option["modelId"] == model_id)
+            .unwrap_or_else(|| {
+                panic!("{provider_id}/{model_id} is not an image option: {generate}")
+            })
+            .clone()
+    };
+    for (provider_id, model_id) in [
+        // url-only `response_format` enums, and no `/v1` endpoint at all.
+        ("aihubmix", "ideogram-vector-1"),
+        ("aihubmix", "qwen-image-3.0"),
+        ("aihubmix", "grok-imagine-image-2.0"),
+        // no `response_format` documented, and the id answers base64 by no
+        // documented rule either.
+        ("aihubmix", "gemini-3-pro-image"),
+        ("aihubmix", "glm-image"),
+        // the gateway's own schema service answers model_not_found.
+        ("aihubmix", "gpt-image-1-mini"),
+        ("aihubmix", "dall-e-3"),
+        // zenmux publishes no per-model image schema, so its non-prefixed
+        // rows verify nothing — the MiniMax H3 image rows among them.
+        ("zenmux", "minimax/minimax-h3-image"),
+        ("zenmux", "x-ai/grok-imagine-image-2.0"),
+    ] {
+        let entry = option(provider_id, model_id);
+        assert_eq!(
+            entry["available"], false,
+            "{provider_id}/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+    for (provider_id, model_id) in [
+        ("aihubmix", "qwen-image"),
+        ("aihubmix", "gpt-image-2"),
+        ("zenmux", "openai/gpt-image-2"),
+    ] {
+        let entry = option(provider_id, model_id);
+        assert_eq!(
+            entry["available"], true,
+            "{provider_id}/{model_id} stays available: {entry}"
+        );
+    }
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model("aihubmix", "ideogram-vector-1")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the undocumented entry's submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    let task_id = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model("aihubmix", "qwen-image"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+    let starts = stub
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path == "/v1/images/generations")
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1, "the verified row starts one generation");
+    let body: Value = serde_json::from_slice(&starts[0].body).unwrap();
+    assert_eq!(
+        body["response_format"], "b64_json",
+        "the verified row asks its gateway for the inline format: {body}"
+    );
+    assert_eq!(body["model"], "qwen-image");
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prefixed_catalog_image_entry_sends_no_response_format_and_reads_back() {
+    // A vendor-prefixed `gpt-image-` id still names the inline-answering
+    // family, so the binding asks nothing: the zenmux row runs end to end
+    // and its start body carries no `response_format` at all.
+    let stub = stub(0).await;
+    let home = home("catalog-prefixed-image");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "zenmux", &stub.base_url).await;
+
+    let task_id = submit(
+        &mut client,
+        "image",
+        "generate",
+        json!({"prompt": "a cat"}),
+        json!([]),
+        model("zenmux", "openai/gpt-image-2"),
+    )
+    .await;
+    let task = wait_state(&mut client, &task_id, &["succeeded"]).await;
+    assert_eq!(task["result"]["files"][0]["media_type"], "image/png");
+    let starts = stub
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path == "/v1/images/generations")
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1, "the prefixed row starts one generation");
+    let body: Value = serde_json::from_slice(&starts[0].body).unwrap();
+    assert!(
+        body.get("response_format").is_none(),
+        "a `gpt-image-` row sends no response_format: {body}"
+    );
+    assert_eq!(body["model"], "openai/gpt-image-2");
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn siliconflow_image_entries_list_unavailable_with_the_adapter_reason() {
+    // siliconflow is a rowless bundled id outside the fallback whitelist:
+    // its image entries — Kwai-Kolors/Kolors among them — list unavailable
+    // with the adapter reason whatever their response shapes are, and a
+    // submit is refused before any request. The catalog entries themselves
+    // keep their inferred operations; it is the binding that refuses them.
+    let stub = stub(0).await;
+    let home = home("siliconflow-image-availability");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "siliconflow", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap();
+    let generate = image["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    for model_id in [
+        "Kwai-Kolors/Kolors",
+        "Qwen/Qwen-Image",
+        "black-forest-labs/FLUX.1-schnell",
+    ] {
+        let entry = generate["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == "siliconflow" && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("siliconflow/{model_id} is not an image option: {generate}"));
+        assert_eq!(
+            entry["available"], false,
+            "siliconflow/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model("siliconflow", "Kwai-Kolors/Kolors")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the siliconflow image submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_non_whole_word_seedance_id_is_neither_listed_nor_submitted() {
+    // Recognition and routing read the same whole-word families: a neutral
+    // row whose id merely contains `seedance` names no family, so it declares
+    // no video operation and never becomes a video option, and submitting it
+    // is refused before any request; the whole-word spelling of the same
+    // catalog stays an option with the adapter reason.
+    let stub = stub(0).await;
+    let home = home("seedance-word-family");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "openai", &stub.base_url).await;
+
+    let created = "018ec73f-0000-7000-8000-0000000000f5";
+    let descriptor = |model_id: &str| {
+        json!({
+            "modelId": model_id,
+            "displayName": model_id,
+            "status": "active",
+            "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata": {"raw": {"type": "chat",
+                "modalities": {"input": ["text"], "output": ["text"]}}}
+        })
+    };
+    let reply = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId": created,
+                "displayName": "Created",
+                "connection": {"driverKind": "openai-compatible", "baseUrl": stub.base_url, "auth": {"type": "anonymous"}},
+                "models": [descriptor("seedancechat"), descriptor("doubao-seedance-1-0-pro-250528"), descriptor("minimax-h3")],
+                "enabled": true
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let video = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "video")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    let options = video["options"].as_array().unwrap();
+    assert!(
+        !options
+            .iter()
+            .any(|option| option["modelId"] == "seedancechat"),
+        "seedancechat declares no video operation: {video}"
+    );
+    let alias = options
+        .iter()
+        .find(|option| {
+            option["providerId"] == created && option["modelId"] == "doubao-seedance-1-0-pro-250528"
+        })
+        .unwrap_or_else(|| panic!("the whole-word spelling is a video option: {video}"));
+    assert_eq!(
+        alias["available"], false,
+        "the Ark word family is unavailable on the compatible route: {alias}"
+    );
+    assert!(
+        alias["reason"]["detail"]
+            .as_str()
+            .is_some_and(|detail| !detail.is_empty()),
+        "the refusal carries its reason: {alias}"
+    );
+    let served = options
+        .iter()
+        .find(|option| option["providerId"] == created && option["modelId"] == "minimax-h3")
+        .unwrap_or_else(|| panic!("minimax-h3 is a video option: {video}"));
+    assert_eq!(
+        served["available"], true,
+        "the compatible minimax id is served end to end, so the operation itself answers: {served}"
+    );
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "video", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model(created, "seedancechat")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "model_unavailable",
+        "seedancechat is no selectable modality model: {refused}"
+    );
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "video", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model(created, "doubao-seedance-1-0-pro-250528")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the whole-word spelling is refused by the adapter: {refused}"
+    );
+    assert_eq!(
+        stub.starts("/v1/videos"),
+        0,
+        "no video start reaches the gateway"
+    );
+
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

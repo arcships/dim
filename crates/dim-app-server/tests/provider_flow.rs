@@ -2448,6 +2448,289 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// Entries without an explicit `modalityCapabilities` list are recognized for
+/// video, speech and transcription by their kind — normalized as the catalog
+/// normalizes it, so `video_generation` is `video-generation` and `model` is
+/// unspecified — or, when the kind is conversational or absent, by a
+/// video-only or audio-only output or a whole-word `seedance`/`minimax-h3`
+/// id. An explicit generation kind wins over the output and id guesses and
+/// answers by its own rule alone: a malformed row like the zenmux video
+/// entries declares `image-generation` with a video output and serves
+/// nothing, a stale image marker adds no image operation to a transcription
+/// entry, and `imageGeneration: false` wins over every inferred image
+/// operation, an `image-edit` kind's included.
+#[tokio::test]
+async fn selectable_modality_models_recognize_video_speech_and_transcription() {
+    let home =
+        std::env::temp_dir().join(format!("provider-modality-video-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    root.plugin(FileStoragePlugin::new(vec![home.clone()]));
+    root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
+    root.plugin(ManagedProvidersPlugin::new(None));
+    root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
+    let view = root.plugin(provider_part(ProviderPlugin::new));
+    tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
+        .await
+        .unwrap();
+    let provider = root.get::<ProviderService>().unwrap();
+    let selectable = root.get::<SelectableModelsHost>().unwrap();
+    let cancel = CancellationToken::new();
+    const MINE: &str = "00000000-0000-4000-8000-000000000045";
+    let undeclared = |id: &str, raw: Value| -> ModelEntry {
+        serde_json::from_value(json!({
+            "modelId": id, "displayName": id, "status": "active",
+            "capabilities":{"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata":{"raw": raw}
+        }))
+        .unwrap()
+    };
+    let mut mine = input(
+        MINE,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("modality-video-key"),
+        "modality-video",
+        1000,
+    );
+    // One row per recognition rule; the `modalities` object is the
+    // entry's declared inputs and outputs, not a capability of its own.
+    mine.models = vec![
+        // Kind rules, each in every spelling dim's catalogs carry.
+        undeclared(
+            "video-kind",
+            json!({"type":"video","modalities":{"input":["text","image"],"output":["video"]}}),
+        ),
+        undeclared(
+            "video-generation-kind",
+            json!({"type":"video-generation","modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        undeclared("speech-kind", json!({"type":"speech"})),
+        undeclared("speech-synthesis-kind", json!({"type":"speech-synthesis"})),
+        undeclared("tts-kind", json!({"type":"tts"})),
+        undeclared("transcription-kind", json!({"type":"transcription"})),
+        undeclared(
+            "speech-transcription-kind",
+            json!({"type":"speech-transcription"}),
+        ),
+        undeclared("stt-kind", json!({"type":"stt"})),
+        // A kind alone answers, whatever the output says.
+        undeclared(
+            "video-kind-text-output",
+            json!({"type":"video-generation","modalities":{"input":["text"],"output":["text"]}}),
+        ),
+        // Neutral rows: no kind or a conversational kind leaves the output
+        // and the id to speak.
+        undeclared(
+            "video-output-only",
+            json!({"modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        undeclared(
+            "chat-video-output",
+            json!({"type":"chat","modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        undeclared(
+            "audio-output-only",
+            json!({"modalities":{"input":["text"],"output":["audio"]}}),
+        ),
+        undeclared(
+            "minimax-h3-max",
+            json!({"type":"chat","modalities":{"input":["text","image"]}}),
+        ),
+        undeclared(
+            "doubao-seedance-1-0-pro-250528",
+            json!({"type":"chat","modalities":{"input":["text","image"],"output":["text"]}}),
+        ),
+        undeclared(
+            "bytedance/seedance-2.0",
+            json!({"type":"chat","modalities":{"input":["text","image"]}}),
+        ),
+        // `imageGeneration: false` negates the image operations alone,
+        // never the video, speech or transcription ones.
+        undeclared(
+            "video-with-image-off",
+            json!({"type":"video-generation","imageGeneration":false,
+                "modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        // The id rule stops at the image variants, which the output rule
+        // recognizes as image models instead.
+        undeclared(
+            "minimax-h3-image",
+            json!({"modalities":{"input":["text","image"],"output":["image"]}}),
+        ),
+        // An explicit declaration is the whole answer even when it is empty.
+        undeclared(
+            "declared-empty-video-kind",
+            json!({"type":"video-generation","modalityCapabilities":[],
+                "modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        // A declared generation kind wins over the output and the id: the
+        // zenmux video rows state `image-generation` with a video output,
+        // and no rule infers a use that contradicts the row's own kind.
+        undeclared(
+            "zenmux-malformed",
+            json!({"type":"image-generation","modalities":{"input":["text","image","audio","video"],"output":["video"]}}),
+        ),
+        undeclared(
+            "speech-kind-video-output",
+            json!({"type":"speech","modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        undeclared(
+            "audio-kind",
+            json!({"type":"audio","modalities":{"input":["audio"],"output":["audio"]}}),
+        ),
+        undeclared(
+            "plain-chat",
+            json!({"type":"chat","modalities":{"input":["text"],"output":["text"]}}),
+        ),
+        // The catalog's kind normalization (`_` as `-`, `model` as
+        // unspecified) answers for the recognizer too.
+        undeclared(
+            "video-underscore-kind",
+            json!({"type":"video_generation","modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        undeclared(
+            "speech-underscore-kind",
+            json!({"type":"speech_synthesis","modalities":{"input":["text"],"output":["audio"]}}),
+        ),
+        undeclared(
+            "model-kind-image-output",
+            json!({"type":"model","modalities":{"input":["text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "model-kind-video-output",
+            json!({"type":"model","modalities":{"input":["text"],"output":["video"]}}),
+        ),
+        // `imageGeneration: false` opts the entry out of image generation:
+        // it wins over the inferred image operations of a declared image
+        // kind, an `image-edit` one included.
+        undeclared(
+            "image-edit-kind",
+            json!({"type":"image-edit","modalities":{"input":["image","text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "image-edit-optout",
+            json!({"type":"image-edit","imageGeneration":false,
+                "modalities":{"input":["image","text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "image-edit-underscore-optout",
+            json!({"type":"image_edit","imageGeneration":false,
+                "modalities":{"input":["image","text"],"output":["image"]}}),
+        ),
+        undeclared(
+            "image-kind-optout",
+            json!({"type":"image-generation","imageGeneration":false,
+                "modalities":{"input":["text","image"],"output":["image"]}}),
+        ),
+        // A declared non-image kind answers by its own rule alone: a stale
+        // image marker adds no image operation to it.
+        undeclared(
+            "stt-stale-image-flag",
+            json!({"type":"stt","imageGeneration":true,
+                "modalities":{"input":["audio"],"output":["text"]}}),
+        ),
+        undeclared(
+            "doubao-seedream-transcriber",
+            json!({"type":"stt","modalities":{"input":["audio"],"output":["text"]}}),
+        ),
+        undeclared(
+            "stt-with-image-off",
+            json!({"type":"stt","imageGeneration":false,
+                "modalities":{"input":["audio"],"output":["text"]}}),
+        ),
+        // The id rules read whole words: `seedancechat` and `minimax-h3max`
+        // name no family, while the catalog's alias spellings do.
+        undeclared(
+            "seedancechat",
+            json!({"type":"chat","modalities":{"input":["text"],"output":["text"]}}),
+        ),
+        undeclared(
+            "minimax-h3max",
+            json!({"type":"chat","modalities":{"input":["text"],"output":["text"]}}),
+        ),
+        // An explicit non-empty declaration is the whole answer too.
+        undeclared(
+            "video-kind-declares-transcribe",
+            json!({"type":"video-generation","modalityCapabilities":["speech.transcribe"],
+                "modalities":{"input":["text"],"output":["video"]}}),
+        ),
+    ];
+    provider.create(mine, &cancel).await.unwrap();
+
+    let modality = selectable
+        .selectable_for_modality(cancel.clone())
+        .await
+        .unwrap()
+        .models;
+    let operations_of = |id: &str| -> Option<Vec<String>> {
+        modality
+            .iter()
+            .find(|model| model.target.provider_id == MINE && model.target.model_id == id)
+            .map(|model| model.operations.clone())
+    };
+    let cases: &[(&str, Option<&[&str]>)] = &[
+        ("video-kind", Some(&["video.generate"])),
+        ("video-generation-kind", Some(&["video.generate"])),
+        ("video-kind-text-output", Some(&["video.generate"])),
+        ("video-output-only", Some(&["video.generate"])),
+        ("chat-video-output", Some(&["video.generate"])),
+        ("minimax-h3-max", Some(&["video.generate"])),
+        ("doubao-seedance-1-0-pro-250528", Some(&["video.generate"])),
+        ("bytedance/seedance-2.0", Some(&["video.generate"])),
+        ("video-with-image-off", Some(&["video.generate"])),
+        ("speech-kind", Some(&["speech.synthesize"])),
+        ("speech-synthesis-kind", Some(&["speech.synthesize"])),
+        ("tts-kind", Some(&["speech.synthesize"])),
+        ("audio-output-only", Some(&["speech.synthesize"])),
+        ("transcription-kind", Some(&["speech.transcribe"])),
+        ("speech-transcription-kind", Some(&["speech.transcribe"])),
+        ("stt-kind", Some(&["speech.transcribe"])),
+        ("speech-kind-video-output", Some(&["speech.synthesize"])),
+        ("minimax-h3-image", Some(&["image.generate", "image.edit"])),
+        ("declared-empty-video-kind", None),
+        ("zenmux-malformed", None),
+        ("audio-kind", None),
+        ("plain-chat", None),
+        ("video-underscore-kind", Some(&["video.generate"])),
+        ("speech-underscore-kind", Some(&["speech.synthesize"])),
+        ("model-kind-image-output", Some(&["image.generate"])),
+        ("model-kind-video-output", Some(&["video.generate"])),
+        ("image-edit-kind", Some(&["image.edit"])),
+        ("image-edit-optout", None),
+        ("image-edit-underscore-optout", None),
+        ("image-kind-optout", None),
+        ("stt-stale-image-flag", Some(&["speech.transcribe"])),
+        ("doubao-seedream-transcriber", Some(&["speech.transcribe"])),
+        ("stt-with-image-off", Some(&["speech.transcribe"])),
+        ("seedancechat", None),
+        ("minimax-h3max", None),
+        (
+            "video-kind-declares-transcribe",
+            Some(&["speech.transcribe"]),
+        ),
+    ];
+    for (id, expected) in cases {
+        let expected: Option<Vec<String>> = expected.map(|operations| {
+            operations
+                .iter()
+                .map(|operation| (*operation).to_owned())
+                .collect()
+        });
+        assert_eq!(operations_of(id), expected, "{id} declares {expected:?}");
+    }
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// A process adapter resolves one modality model's connection and reaches the
 /// stub with the resolved base URL and credential; a model the modality read
 /// would not serve fails before any request.

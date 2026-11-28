@@ -487,7 +487,7 @@ async fn operations_follow_the_binding_table() {
         model_id: "gpt-image-1".into(),
     };
     let names: Vec<(String, String)> = adapter
-        .operations(&openai)
+        .operations(&openai, None)
         .into_iter()
         .map(|operation| (operation.category, operation.operation))
         .collect();
@@ -504,7 +504,7 @@ async fn operations_follow_the_binding_table() {
     // The relay speaks the transport a catalog entry declares, so it serves
     // a session for any provider; its schema refuses every parameter (D7).
     let voice = adapter
-        .operations(&openai)
+        .operations(&openai, None)
         .into_iter()
         .find(|operation| operation.category == "realtime")
         .unwrap();
@@ -520,7 +520,7 @@ async fn operations_follow_the_binding_table() {
         model_id: "grok-imagine-video".into(),
     };
     let categories: Vec<String> = adapter
-        .operations(&xai)
+        .operations(&xai, None)
         .into_iter()
         .map(|operation| format!("{}.{}", operation.category, operation.operation))
         .collect();
@@ -544,7 +544,7 @@ async fn operations_follow_the_binding_table() {
             model_id: model_id.to_owned(),
         };
         let names: Vec<String> = adapter
-            .operations(&model)
+            .operations(&model, None)
             .into_iter()
             .map(|operation| format!("{}.{}", operation.category, operation.operation))
             .collect();
@@ -560,7 +560,7 @@ async fn operations_follow_the_binding_table() {
         model_id: "dall-e-3".into(),
     };
     let names: Vec<String> = adapter
-        .operations(&dall_e)
+        .operations(&dall_e, None)
         .into_iter()
         .map(|operation| format!("{}.{}", operation.category, operation.operation))
         .collect();
@@ -576,7 +576,7 @@ async fn operations_follow_the_binding_table() {
         model_id: "flux-2-pro".into(),
     };
     let names: Vec<String> = adapter
-        .operations(&flux)
+        .operations(&flux, None)
         .into_iter()
         .map(|operation| format!("{}.{}", operation.category, operation.operation))
         .collect();
@@ -584,14 +584,15 @@ async fn operations_follow_the_binding_table() {
         names,
         vec!["realtime.voice", "image.generate", "image.edit"]
     );
-    // A created provider's UUID matches no row.
+    // A created provider's UUID matches no vendor row: a model that routes
+    // to a protocol family no media binding serves answers realtime alone.
     let created = ModelId {
         provider_id: "6f1c2f9e-0000-4000-8000-000000000000".into(),
         model_id: "anything".into(),
     };
     assert_eq!(
         adapter
-            .operations(&created)
+            .operations(&created, Some(ModelProtocol::Gemini))
             .into_iter()
             .map(|operation| format!("{}.{}", operation.category, operation.operation))
             .collect::<Vec<String>>(),
@@ -603,22 +604,26 @@ async fn operations_follow_the_binding_table() {
 async fn an_unmapped_provider_is_unavailable() {
     let dir = work_dir("unmapped");
     let (adapter, _requests) = scripted(|_| ok_json(json!({})));
-    let error = run(
-        &adapter,
-        job(
-            "6f1c2f9e-0000-4000-8000-000000000000",
-            "anything",
-            "image",
-            "generate",
-            json!({"prompt": "a cat"}),
-            Vec::new(),
-            &dir,
-        ),
-        "https://api.example.test/v1",
+    // A created provider's UUID matches no vendor row, and a route outside
+    // the OpenAI-compatible family carries no media binding either.
+    let mut connection = connection("https://api.example.test/v1", "anything");
+    connection.protocol = ModelProtocol::Gemini;
+    if let ModelConnection::Http(http) = &mut connection.resolved.connection {
+        http.protocol = ModelProtocol::Gemini;
+    }
+    let task = job(
+        "6f1c2f9e-0000-4000-8000-000000000000",
         "anything",
-    )
-    .await
-    .unwrap_err();
+        "image",
+        "generate",
+        json!({"prompt": "a cat"}),
+        Vec::new(),
+        &dir,
+    );
+    let error = adapter
+        .submit(task, connection, CancellationToken::new())
+        .await
+        .unwrap_err();
     assert_eq!(error.code, AdapterErrorCode::Unavailable);
 }
 
@@ -659,7 +664,10 @@ async fn the_dim_account_relay_does_not_retry_a_timed_out_post() {
 }
 
 /// The Dim account relay speaks the OpenAI Image API on its `/v1` base with
-/// the account's bearer, for a model id only the relay knows (#1887).
+/// the account's bearer, for a model id only the relay knows (#1887). The
+/// relay id matches no vendor row, so its listing is the family's — the
+/// video, speech and transcription statements appear beside the images —
+/// while the image exchange itself stays on the OpenAI package.
 #[tokio::test]
 async fn the_dim_account_relay_serves_its_image_models_over_the_openai_image_api() {
     let relay = ModelId {
@@ -667,11 +675,21 @@ async fn the_dim_account_relay_serves_its_image_models_over_the_openai_image_api
         model_id: "arcship-image".into(),
     };
     let names: Vec<String> = MediaAdapter::new()
-        .operations(&relay)
+        .operations(&relay, None)
         .into_iter()
         .map(|operation| format!("{}.{}", operation.category, operation.operation))
         .collect();
-    assert_eq!(names, ["realtime.voice", "image.generate", "image.edit"]);
+    assert_eq!(
+        names,
+        [
+            "realtime.voice",
+            "image.generate",
+            "image.edit",
+            "video.generate",
+            "speech.synthesize",
+            "speech.transcribe"
+        ]
+    );
 
     let dir = work_dir("relay");
     let (adapter, requests) =
@@ -1707,4 +1725,1184 @@ async fn an_image_generation_that_broke_after_sending_is_not_replayed() {
         1,
         "a generation that may have reached the server must not be sent again"
     );
+}
+
+#[tokio::test]
+async fn a_compatible_family_provider_serves_the_media_operations() {
+    // A created provider whose models route to openai-compatible resolves to
+    // the protocol family: every media operation is listed, and the edit
+    // survives because the openai-compatible package reads an edit's files.
+    let created = ModelId {
+        provider_id: "6f1c2f9e-0000-4000-8000-000000000000".into(),
+        model_id: "custom-media".into(),
+    };
+    let names: Vec<String> = MediaAdapter::new()
+        .operations(&created, Some(ModelProtocol::OpenaiCompatible))
+        .into_iter()
+        .map(|operation| format!("{}.{}", operation.category, operation.operation))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "realtime.voice",
+            "image.generate",
+            "image.edit",
+            "video.generate",
+            "speech.synthesize",
+            "speech.transcribe"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_compatible_family_video_runs_on_the_openai_compatible_package() {
+    let dir = work_dir("family-video");
+    let video = b"compatible-video-bytes".to_vec();
+    let (url, downloaded) = video_server(video.clone()).await;
+    let reply_url = url.clone();
+    let (adapter, requests) = scripted(move |request| {
+        if request.method == Method::POST {
+            // The package starts a video with one multipart POST to /videos,
+            // and the gateway answers the provider's job id.
+            return ok_json(json!({"id": "vid1"}));
+        }
+        ok_json(json!({"id": "vid1", "status": "completed", "url": reply_url}))
+    });
+    let task = job(
+        "6f1c2f9e-0000-4000-8000-000000000000",
+        "custom-video",
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        Vec::new(),
+        &dir,
+    );
+    let task_id = task.task_id.clone();
+    let submitted = adapter
+        .submit(
+            task,
+            connection("https://router.example.test/v1", "custom-video"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let handle = submitted.remote_handle.expect("video returns a handle");
+    let output = adapter
+        .wait(
+            &task_id,
+            Some(&handle),
+            connection("https://router.example.test/v1", "custom-video"),
+            ProgressSink::none(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(output.files.len(), 1);
+    assert_eq!(output.files[0].media_type, "video/mp4");
+    assert_eq!(std::fs::read(&output.files[0].path).unwrap(), video);
+
+    let requests = requests.lock().unwrap();
+    let start: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == Method::POST)
+        .collect();
+    assert_eq!(start.len(), 1, "one start call");
+    assert_eq!(start[0].url, "https://router.example.test/v1/videos");
+    let body = String::from_utf8_lossy(&start[0].body);
+    assert!(body.contains("custom-video"), "the model is sent: {body}");
+    let poll = requests
+        .iter()
+        .find(|request| request.url.ends_with("/videos/vid1"))
+        .expect("the job is polled by its id");
+    assert_eq!(poll.header("authorization"), Some("Bearer test-credential"));
+    assert_eq!(
+        downloaded.lock().unwrap().len(),
+        1,
+        "the answer's url is downloaded"
+    );
+}
+
+#[tokio::test]
+async fn a_compatible_family_speech_and_transcription_stay_on_the_openai_package() {
+    let dir = work_dir("family-speech");
+    let (adapter, requests) = scripted(|request| {
+        if request.url.ends_with("/audio/speech") {
+            return Reply {
+                status: StatusCode::OK,
+                body: b"fake-mp3-audio".to_vec(),
+            };
+        }
+        ok_json(json!({"text": "hello there"}))
+    });
+    let provider_id = "6f1c2f9e-0000-4000-8000-000000000000";
+    let speech = run(
+        &adapter,
+        job(
+            provider_id,
+            "custom-tts",
+            "speech",
+            "synthesize",
+            json!({"text": "hello"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://router.example.test/v1",
+        "custom-tts",
+    )
+    .await
+    .unwrap();
+    assert_eq!(speech.files.len(), 1);
+    let clip = input(&dir, "clip.mp3", "audio/mpeg", b"fake-mp3-audio");
+    let transcription = run(
+        &adapter,
+        job(
+            provider_id,
+            "custom-stt",
+            "speech",
+            "transcribe",
+            json!({}),
+            vec![clip],
+            &dir,
+        ),
+        "https://router.example.test/v1",
+        "custom-stt",
+    )
+    .await
+    .unwrap();
+    assert_eq!(transcription.data.as_ref().unwrap()["text"], "hello there");
+
+    let requests = requests.lock().unwrap();
+    let urls: Vec<&str> = requests
+        .iter()
+        .map(|request| request.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://router.example.test/v1/audio/speech",
+            "https://router.example.test/v1/audio/transcriptions"
+        ],
+        "the OpenAI package's audio paths serve the family"
+    );
+    for request in requests.iter() {
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer test-credential")
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_dim_account_relay_splits_video_from_image_by_family() {
+    let dir = work_dir("relay-video");
+    let video = b"relay-video-bytes".to_vec();
+    let (url, _downloaded) = video_server(video.clone()).await;
+    let reply_url = url.clone();
+    let (adapter, requests) = scripted(move |request| {
+        if request.method == Method::POST && request.url.ends_with("/videos") {
+            return ok_json(json!({"id": "vid1"}));
+        }
+        if request.method == Method::POST {
+            return ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]}));
+        }
+        ok_json(json!({"id": "vid1", "status": "completed", "url": reply_url}))
+    });
+    // The image model's resolution never moved: generation and edit stay on
+    // the OpenAI package's paths with the relay's bearer.
+    let generated = run(
+        &adapter,
+        job(
+            "dimcode-api-oauth",
+            "arcship-image",
+            "image",
+            "generate",
+            json!({"prompt": "a red circle"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://relay.example.test/v1",
+        "arcship-image",
+    )
+    .await
+    .unwrap();
+    assert_eq!(generated.files.len(), 1);
+
+    // The relay id matches no vendor row for video, so the model resolves to
+    // the family's openai-compatible binding: a multipart start on /videos,
+    // a poll by id and the gateway's own content download.
+    let task = job(
+        "dimcode-api-oauth",
+        "arcship-video",
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        Vec::new(),
+        &dir,
+    );
+    let task_id = task.task_id.clone();
+    let submitted = adapter
+        .submit(
+            task,
+            connection("https://relay.example.test/v1", "arcship-video"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let handle = submitted.remote_handle.expect("video returns a handle");
+    let output = adapter
+        .wait(
+            &task_id,
+            Some(&handle),
+            connection("https://relay.example.test/v1", "arcship-video"),
+            ProgressSink::none(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(output.files.len(), 1);
+    assert_eq!(std::fs::read(&output.files[0].path).unwrap(), video);
+
+    let requests = requests.lock().unwrap();
+    let generation = requests
+        .iter()
+        .find(|request| request.url.ends_with("/images/generations"))
+        .expect("the image generation stays on the OpenAI image path");
+    assert_eq!(
+        generation.header("authorization"),
+        Some("Bearer test-credential")
+    );
+    let body: Value = serde_json::from_slice(&generation.body).unwrap();
+    assert_eq!(
+        body["response_format"], "b64_json",
+        "the OpenAI package keeps asking the relay for inline bytes"
+    );
+    assert_eq!(body["model"], "arcship-image");
+    let start: Vec<_> = requests
+        .iter()
+        .filter(|request| request.url.ends_with("/videos"))
+        .collect();
+    assert_eq!(start.len(), 1, "one video start");
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.url.ends_with("/videos/vid1")),
+        "the job is polled by its id"
+    );
+    for request in requests.iter() {
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer test-credential"),
+            "every relay call carries the account's bearer"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_compatible_family_image_forwards_the_output_format_to_the_wire() {
+    // The family binding builds the openai-compatible package, which forwards
+    // the caller's provider options to the endpoint under the binding's own
+    // namespace: the format a job asks for reaches the request body under the
+    // documented wire spelling, because the package never rewrites the key.
+    let dir = work_dir("family-image-format");
+    let png = [PNG_HEADER, b"format-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) =
+        scripted(move |_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]})));
+    let output = run(
+        &adapter,
+        job(
+            "6f1c2f9e-0000-4000-8000-000000000000",
+            "custom-image",
+            "image",
+            "generate",
+            json!({"prompt": "a cat", "outputFormat": "webp"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://router.example.test/v1",
+        "custom-image",
+    )
+    .await
+    .unwrap();
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(
+        request.url,
+        "https://router.example.test/v1/images/generations"
+    );
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(
+        body["output_format"], "webp",
+        "the output format the job asked for reaches the request body under the wire spelling: {body}"
+    );
+    assert!(
+        body.get("outputFormat").is_none(),
+        "the compatible package forwards keys verbatim, so the camelCase spelling never appears: {body}"
+    );
+    assert_eq!(output.files.len(), 1);
+    assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+}
+
+#[tokio::test]
+async fn a_compatible_family_image_asks_for_inline_bytes_and_reads_them() {
+    // The compatible package reads data[].b64_json alone, so the family
+    // binding asks its gateway for that shape: without the field the mock
+    // answers the API's default data[].url, which the package cannot read;
+    // with it the gateway answers inline bytes. The relay never resolves
+    // here — `the_dim_account_relay_image_binding_still_serves_seedream`
+    // pins its own openai package — and the Seedream word family is refused
+    // before either path.
+    let dir = work_dir("family-image-inline");
+    let png = [PNG_HEADER, b"inline-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) = scripted(move |request| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if body.get("response_format").and_then(Value::as_str) == Some("b64_json") {
+            ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
+        } else {
+            ok_json(json!({"created": 1, "data": [{"url": "https://router.example.test/img.png"}]}))
+        }
+    });
+    let output = run(
+        &adapter,
+        job(
+            "6f1c2f9e-0000-4000-8000-000000000000",
+            "custom-image",
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://router.example.test/v1",
+        "custom-image",
+    )
+    .await
+    .unwrap();
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["response_format"], "b64_json",
+        "the binding asks the gateway for inline bytes: {body}"
+    );
+    assert_eq!(output.files.len(), 1);
+    assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+}
+
+#[tokio::test]
+async fn a_callers_response_format_wins_over_the_compatible_default() {
+    // A job that names its own response_format passes the binding check with
+    // the inline format alone: any other value, on either the top-level or
+    // the namespaced spelling, is refused by submit itself as invalid input
+    // before the job exists, and no request leaves. The control job asks for
+    // nothing, and without the default it would send no field at all.
+    let dir = work_dir("family-image-caller-format");
+    let (adapter, requests) = scripted(move |_| {
+        ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]}))
+    });
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+
+    // The control job that asks for nothing runs and carries the default.
+    run(
+        &adapter,
+        job(
+            created,
+            "custom-image",
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://router.example.test/v1",
+        "custom-image",
+    )
+    .await
+    .unwrap();
+
+    // An explicit url is refused at submit, on every spelling and every id.
+    for (model_id, provider_options) in [
+        ("custom-image", json!({"response_format": "url"})),
+        ("gpt-image-2", json!({"response_format": "url"})),
+        (
+            "custom-image",
+            json!({"openaiCompatible": {"response_format": "url"}}),
+        ),
+        (
+            "custom-image",
+            json!({"openaiCompatible": {"response_format": 7}}),
+        ),
+    ] {
+        let task = job(
+            created,
+            model_id,
+            "image",
+            "generate",
+            json!({"prompt": "a cat", "providerOptions": provider_options}),
+            Vec::new(),
+            &dir,
+        );
+        let error = adapter
+            .submit(
+                task,
+                connection("https://router.example.test/v1", model_id),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            AdapterErrorCode::InvalidInput,
+            "{model_id} with {provider_options} is refused by submit itself: {error}"
+        );
+        assert!(
+            error.message.contains("response_format"),
+            "the refusal names the field: {error}"
+        );
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "only the control job ever reaches the gateway"
+    );
+    let control: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        control["response_format"], "b64_json",
+        "the job that asked for nothing carries the default: {control}"
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_inline_response_format_reads_the_url_answering_gateway() {
+    // The one explicit value the binding accepts on a plain compatible
+    // route: the caller asks for inline bytes itself, and the mock is the
+    // gateway that answers URLs by default but honors the field — the
+    // default the binding would have sent anyway is the caller's own on the
+    // wire, and the image reads back.
+    let dir = work_dir("family-image-caller-inline");
+    let png = [PNG_HEADER, b"caller-inline-bytes"].concat();
+    let reply = png.clone();
+    let inline = "b64_json".to_owned();
+    let (adapter, requests) = scripted(move |request: &Recorded| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if body["response_format"] == inline {
+            ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
+        } else {
+            ok_json(json!({"created": 1, "data": [{"url": "https://cdn.example.test/image.png"}]}))
+        }
+    });
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    for provider_options in [
+        json!({"response_format": "b64_json"}),
+        json!({"openaiCompatible": {"response_format": "b64_json"}}),
+    ] {
+        let output = run(
+            &adapter,
+            job(
+                created,
+                "custom-image",
+                "image",
+                "generate",
+                json!({"prompt": "a cat", "providerOptions": provider_options}),
+                Vec::new(),
+                &dir,
+            ),
+            "https://router.example.test/v1",
+            "custom-image",
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.files.len(), 1);
+        assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(
+            body["response_format"], "b64_json",
+            "the caller's explicit inline format reaches the wire: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_inline_answering_model_id_sends_no_response_format_through_the_family() {
+    // gpt-image- and chatgpt-image- ids answer inline bytes without being
+    // asked (the OpenAI package's rule), so the compatible fallback omits
+    // the field for them alone; any other model still asks. The mock is the
+    // gateway those ids sit behind: it answers inline bytes whatever the
+    // request says.
+    let dir = work_dir("family-image-inline-ids");
+    let png = [PNG_HEADER, b"inline-id-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) =
+        scripted(move |_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]})));
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    for model_id in ["gpt-image-2", "chatgpt-image-1", "custom-image"] {
+        let output = run(
+            &adapter,
+            job(
+                created,
+                model_id,
+                "image",
+                "generate",
+                json!({"prompt": "a cat"}),
+                Vec::new(),
+                &dir,
+            ),
+            "https://router.example.test/v1",
+            model_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.files.len(), 1);
+        assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for (index, model_id) in ["gpt-image-2", "chatgpt-image-1", "custom-image"]
+        .iter()
+        .enumerate()
+    {
+        let body: Value = serde_json::from_slice(&requests[index].body).unwrap();
+        if model_id.starts_with("custom-") {
+            assert_eq!(
+                body["response_format"], "b64_json",
+                "the control model still asks for inline bytes: {body}"
+            );
+        } else {
+            assert!(
+                body.get("response_format").is_none(),
+                "{model_id} sends no response_format: {body}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_strict_gpt_image_endpoint_never_sees_response_format() {
+    // The strict GPT Image request contract: the endpoint rejects a request
+    // carrying `response_format` at all, because the prefixed models answer
+    // inline bytes without being asked. Every one of the inline-answering
+    // ids — bare or behind the vendor namespace a gateway adds — omits the
+    // field, whether the job asks for nothing or names the inline format
+    // itself in either spelling: the explicit value is redundant, so it is
+    // dropped with the default rather than forwarded into a 400.
+    let dir = work_dir("family-image-strict-gpt");
+    let png = [PNG_HEADER, b"strict-gpt-bytes"].concat();
+    let reply = png.clone();
+    let (adapter, requests) = scripted(move |request: &Recorded| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if body.get("response_format").is_some() {
+            return Reply {
+                status: StatusCode::BAD_REQUEST,
+                body: br#"{"error":{"message":"Unrecognized request argument: response_format"}}"#
+                    .to_vec(),
+            };
+        }
+        ok_json(json!({"created": 1, "data": [{"b64_json": base64(&reply)}]}))
+    });
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    let mut combinations = Vec::new();
+    for model_id in ["gpt-image-2", "chatgpt-image-1", "openai/gpt-image-2"] {
+        combinations.push((model_id, json!({})));
+        combinations.push((model_id, json!({"response_format": "b64_json"})));
+        combinations.push((
+            model_id,
+            json!({"openaiCompatible": {"response_format": "b64_json"}}),
+        ));
+    }
+    for (model_id, provider_options) in &combinations {
+        let output = run(
+            &adapter,
+            job(
+                created,
+                model_id,
+                "image",
+                "generate",
+                json!({"prompt": "a cat", "outputFormat": "webp", "providerOptions": provider_options}),
+                Vec::new(),
+                &dir,
+            ),
+            "https://router.example.test/v1",
+            model_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.files.len(), 1, "{model_id} with {provider_options}");
+        assert_eq!(std::fs::read(&output.files[0].path).unwrap(), png);
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), combinations.len());
+    for (index, (model_id, provider_options)) in combinations.iter().enumerate() {
+        let body: Value = serde_json::from_slice(&requests[index].body).unwrap();
+        assert!(
+            body.get("response_format").is_none(),
+            "{model_id} with {provider_options} sends no response_format: {body}"
+        );
+        assert_eq!(
+            body["output_format"], "webp",
+            "the output format reaches the wire under the documented spelling: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_dim_account_relay_listing_comes_from_the_compatible_family() {
+    // The relay id matches no vendor row, so its listing is the family's:
+    // image stays (with the OpenAI package serving it), and the video,
+    // speech and transcription statements the family serves appear beside it.
+    let relay = ModelId {
+        provider_id: "dimcode-api-oauth".into(),
+        model_id: "arcship-image".into(),
+    };
+    let names: Vec<String> = MediaAdapter::new()
+        .operations(&relay, Some(ModelProtocol::OpenaiCompatible))
+        .into_iter()
+        .map(|operation| format!("{}.{}", operation.category, operation.operation))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "realtime.voice",
+            "image.generate",
+            "image.edit",
+            "video.generate",
+            "speech.synthesize",
+            "speech.transcribe"
+        ],
+        "the family answers every operation for a compatible route"
+    );
+}
+
+/// The operation names one adapter listing carries, in `<category>.<operation>`
+/// form.
+fn operation_names(
+    adapter: &MediaAdapter,
+    model: &ModelId,
+    protocol: Option<ModelProtocol>,
+) -> Vec<String> {
+    adapter
+        .operations(model, protocol)
+        .into_iter()
+        .map(|operation| format!("{}.{}", operation.category, operation.operation))
+        .collect()
+}
+
+#[tokio::test]
+async fn the_ark_video_word_family_carries_no_compatible_binding() {
+    // #1927 keeps the Ark route out of this slice: the compatible family's
+    // multipart /videos cannot execute a Seedance model, so listing and
+    // submit refuse it together, on the relay and on a created provider.
+    let adapter = MediaAdapter::new();
+    for (provider_id, model_id) in [
+        ("dimcode-api-oauth", "seedance-2.0"),
+        ("dimcode-api-oauth", "doubao-seedance-1-0-pro-250528"),
+        ("6f1c2f9e-0000-4000-8000-000000000000", "seedance-2.0"),
+        (
+            "6f1c2f9e-0000-4000-8000-000000000000",
+            "doubao-seedance-1-0-pro-250528",
+        ),
+    ] {
+        let model = ModelId {
+            provider_id: provider_id.to_owned(),
+            model_id: model_id.to_owned(),
+        };
+        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+            let names = operation_names(&adapter, &model, protocol);
+            assert!(
+                !names.contains(&"video.generate".to_owned()),
+                "{provider_id}/{model_id} ({protocol:?}) lists no video.generate: {names:?}"
+            );
+            assert!(
+                names.contains(&"image.generate".to_owned()),
+                "the exclusion is the video operation alone: {names:?}"
+            );
+        }
+
+        let dir = work_dir("ark-video");
+        let (scripted_adapter, requests) = scripted(|_| ok_json(json!({})));
+        let task = job(
+            provider_id,
+            model_id,
+            "video",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let error = scripted_adapter
+            .submit(
+                task,
+                connection("https://router.example.test/v1", model_id),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            AdapterErrorCode::Unavailable,
+            "{provider_id}/{model_id} submit is refused: {error}"
+        );
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "a refused submit sends no request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_non_ark_compatible_video_model_still_runs_on_the_family() {
+    // minimax-h3 is the compatible family's own shape, so the exclusion does
+    // not reach it: video.generate stays listed and submit still starts the
+    // job, on the relay and on a created provider.
+    let adapter = MediaAdapter::new();
+    for provider_id in ["dimcode-api-oauth", "6f1c2f9e-0000-4000-8000-000000000000"] {
+        let model = ModelId {
+            provider_id: provider_id.to_owned(),
+            model_id: "minimax-h3".into(),
+        };
+        let names = operation_names(&adapter, &model, Some(ModelProtocol::OpenaiCompatible));
+        assert!(
+            names.contains(&"video.generate".to_owned()),
+            "{provider_id}/minimax-h3 keeps video.generate: {names:?}"
+        );
+
+        let dir = work_dir("h3-video");
+        let (scripted_adapter, _) = scripted(|request| {
+            if request.method == Method::POST {
+                return ok_json(json!({"id": "vid1"}));
+            }
+            ok_json(json!({}))
+        });
+        let task = job(
+            provider_id,
+            "minimax-h3",
+            "video",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let submitted = scripted_adapter
+            .submit(
+                task,
+                connection("https://router.example.test/v1", "minimax-h3"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            submitted.remote_handle.is_some(),
+            "{provider_id}/minimax-h3 submit starts the job"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_bundled_provider_outside_the_whitelist_serves_no_media() {
+    // A rowless bundled provider id is no created provider: the fallback
+    // whitelist refuses every one of them — the media vendors the catalog
+    // carries without a row, and the gateways whose image API nothing in
+    // this build can read — so they report adapter rather than answering
+    // generic endpoints the vendor never documented.
+    let adapter = MediaAdapter::new();
+    for provider_id in [
+        "adobe-firefly",
+        "alibaba-dashscope",
+        "amazon-speech",
+        "beatoven",
+        "bytedance",
+        "d-id",
+        "fish-audio",
+        "heygen",
+        "ibm-watson-speech",
+        "ideogram",
+        "mubert",
+        "musicapi-ai",
+        "pika",
+        "pixverse",
+        "playht",
+        "reve-ai",
+        "sarvam-ai",
+        "soniox",
+        "speechmatics",
+        "step-plan",
+        "stepfun",
+        "suno",
+        "synthesia",
+        "tavus",
+        "vidu",
+    ] {
+        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+            let names = operation_names(
+                &adapter,
+                &ModelId {
+                    provider_id: provider_id.to_owned(),
+                    model_id: "vendor-media".into(),
+                },
+                protocol,
+            );
+            assert_eq!(
+                names,
+                vec!["realtime.voice"],
+                "{provider_id} ({protocol:?}) serves no media operation"
+            );
+        }
+    }
+    // The gateways with image entries the compatible package cannot read are
+    // the same refusal, whatever the model id spells.
+    for provider_id in [
+        "siliconflow",
+        "siliconflow-com",
+        "openrouter",
+        "together-ai",
+        "vercel-ai-gateway",
+        "runware",
+        "piapi",
+        "eachlabs",
+        "apiframe",
+        "atlas-cloud-ai",
+        "azure-speech",
+        "nvidia",
+        "302-ai",
+        "qiniu",
+        "jiekou",
+        "dmxapi",
+    ] {
+        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+            let names = operation_names(
+                &adapter,
+                &ModelId {
+                    provider_id: provider_id.to_owned(),
+                    model_id: "Kwai-Kolors/Kolors".into(),
+                },
+                protocol,
+            );
+            assert_eq!(
+                names,
+                vec!["realtime.voice"],
+                "{provider_id} ({protocol:?}) serves no media operation"
+            );
+        }
+
+        let dir = work_dir("bundled-outside-whitelist");
+        let (scripted_adapter, requests) = scripted(|_| ok_json(json!({})));
+        let task = job(
+            provider_id,
+            "Kwai-Kolors/Kolors",
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let error = scripted_adapter
+            .submit(
+                task,
+                connection("https://gateway.example.test/v1", "Kwai-Kolors/Kolors"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            AdapterErrorCode::Unavailable,
+            "{provider_id} submit is refused: {error}"
+        );
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "{provider_id}: a refused submit sends no request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_whitelisted_providers_keep_the_family_fallback() {
+    // The fallback's only admissions: a created provider's canonical
+    // lowercase UUID, the Dim account relay, and the two aggregator gateways
+    // this build carries contract tests for. A UUID that is not canonical
+    // is no created provider either.
+    let adapter = MediaAdapter::new();
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    for provider_id in [created, "aihubmix", "zenmux"] {
+        let names = operation_names(
+            &adapter,
+            &ModelId {
+                provider_id: provider_id.to_owned(),
+                model_id: "vendor-media".into(),
+            },
+            Some(ModelProtocol::OpenaiCompatible),
+        );
+        assert!(
+            names.contains(&"video.generate".to_owned()),
+            "{provider_id} keeps the family fallback: {names:?}"
+        );
+    }
+    let relay = ModelId {
+        provider_id: "dimcode-api-oauth".into(),
+        model_id: "vendor-media".into(),
+    };
+    let names = operation_names(&adapter, &relay, Some(ModelProtocol::OpenaiCompatible));
+    assert!(
+        names.contains(&"image.generate".to_owned()),
+        "the relay keeps its image fallback: {names:?}"
+    );
+
+    // Uppercase letters in an otherwise-UUID id are no canonical created
+    // provider, and the workaround of a created provider's id colliding
+    // with a bundled one does not exist either.
+    for provider_id in [
+        "6F1C2F9E-0000-4000-8000-000000000000",
+        "custom-provider",
+        "openai-codex",
+    ] {
+        let names = operation_names(
+            &adapter,
+            &ModelId {
+                provider_id: provider_id.to_owned(),
+                model_id: "vendor-media".into(),
+            },
+            Some(ModelProtocol::OpenaiCompatible),
+        );
+        assert_eq!(
+            names,
+            vec!["realtime.voice"],
+            "{provider_id} serves no media operation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_seedream_image_word_family_carries_no_compatible_binding() {
+    // The generic image fallback is the exclusion's only reach: a Seedream
+    // endpoint answers image URLs by default and the compatible package reads
+    // inline b64_json alone, so listing and submit refuse the model together
+    // on a created provider. The Dim account relay is not the generic
+    // fallback: its image generation stays on the OpenAI package.
+    let adapter = MediaAdapter::new();
+    let created = "6f1c2f9e-0000-4000-8000-000000000000";
+    for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+        let model = ModelId {
+            provider_id: created.to_owned(),
+            model_id: model_id.to_owned(),
+        };
+        for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+            let names = operation_names(&adapter, &model, protocol);
+            assert!(
+                !names.contains(&"image.generate".to_owned())
+                    && !names.contains(&"image.edit".to_owned()),
+                "{model_id} ({protocol:?}) lists no image operation: {names:?}"
+            );
+            assert!(
+                names.contains(&"video.generate".to_owned()),
+                "the exclusion is the image operations alone: {names:?}"
+            );
+        }
+    }
+    for model_id in ["seedream5", "seedreaming"] {
+        let model = ModelId {
+            provider_id: created.to_owned(),
+            model_id: model_id.to_owned(),
+        };
+        let names = operation_names(&adapter, &model, Some(ModelProtocol::OpenaiCompatible));
+        assert!(
+            names.contains(&"image.generate".to_owned()),
+            "only a whole seedream word is refused: {names:?}"
+        );
+    }
+    let relay = ModelId {
+        provider_id: "dimcode-api-oauth".into(),
+        model_id: "seedream-5.0".into(),
+    };
+    for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+        let names = operation_names(&adapter, &relay, protocol);
+        assert!(
+            names.contains(&"image.generate".to_owned())
+                && names.contains(&"image.edit".to_owned()),
+            "the relay's seedream stays on the OpenAI package ({protocol:?}): {names:?}"
+        );
+    }
+
+    for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+        let dir = work_dir("seedream-image");
+        let (scripted_adapter, requests) = scripted(|_| {
+            ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]}))
+        });
+        let task = job(
+            created,
+            model_id,
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        );
+        let error = scripted_adapter
+            .submit(
+                task,
+                connection("https://router.example.test/v1", model_id),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            AdapterErrorCode::Unavailable,
+            "{model_id} submit is refused: {error}"
+        );
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "a refused image submit sends no request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_ark_video_exclusion_reaches_the_video_wait_binding() {
+    // wait re-resolves the binding on the way to a video poll, through the
+    // same check submit applies: the Ark video exclusion is the one this
+    // exercises. The Seedream image exclusion has no public wait path —
+    // submit refuses the model before a job exists — so the video handle is
+    // the structure the wait path offers.
+    let dir = work_dir("seedream-wait");
+    let (adapter, requests) = scripted(|_| ok_json(json!({})));
+    let video_job = job(
+        "6f1c2f9e-0000-4000-8000-000000000000",
+        "seedance-2.0",
+        "video",
+        "generate",
+        json!({"prompt": "a cat"}),
+        Vec::new(),
+        &dir,
+    );
+    let handle = json!({
+        "operation": {"id": "vid1"},
+        "job": serde_json::to_value(&video_job).unwrap(),
+        "started_at": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+    });
+    let error = adapter
+        .wait(
+            &video_job.task_id,
+            Some(&handle.to_string()),
+            connection("https://router.example.test/v1", "seedance-2.0"),
+            ProgressSink::none(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        AdapterErrorCode::Unavailable,
+        "wait refuses the model through the same binding check: {error}"
+    );
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "a refused wait sends no request"
+    );
+}
+
+#[tokio::test]
+async fn the_dim_account_relay_image_binding_still_serves_seedream() {
+    // The relay resolves image generation to the OpenAI package, whose
+    // requests ask for inline bytes; a seedream model id does not leave that
+    // resolution, so the call pins the OpenAI image path as before.
+    let dir = work_dir("relay-seedream");
+    let (adapter, requests) =
+        scripted(|_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]})));
+    let output = run(
+        &adapter,
+        job(
+            "dimcode-api-oauth",
+            "seedream-5.0",
+            "image",
+            "generate",
+            json!({"prompt": "a cat"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://relay.example.test/v1",
+        "seedream-5.0",
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.files.len(), 1);
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "the relay image generation runs");
+    let request = &requests[0];
+    assert!(
+        request.url.ends_with("/images/generations"),
+        "the relay keeps the OpenAI image path: {}",
+        request.url
+    );
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(
+        body["response_format"], "b64_json",
+        "the OpenAI package keeps asking the relay for inline bytes: {body}"
+    );
+    assert_eq!(body["model"], "seedream-5.0");
+}
+
+#[tokio::test]
+async fn the_relay_keeps_serving_the_models_the_catalog_recognizes_as_media() {
+    // The catalog recognition answers operations alone; the binding answers
+    // availability. The relay's seedream image ids stay served on the OpenAI
+    // package — the seedream exclusion reaches the generic fallback alone —
+    // while the Ark video ids the recognition pins stay refused, and
+    // minimax-h3 stays served on the family.
+    let adapter = MediaAdapter::new();
+    for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+        for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+            let names = operation_names(
+                &adapter,
+                &ModelId {
+                    provider_id: "dimcode-api-oauth".into(),
+                    model_id: model_id.into(),
+                },
+                protocol,
+            );
+            assert!(
+                names.contains(&"image.generate".to_owned())
+                    && names.contains(&"image.edit".to_owned()),
+                "the relay's {model_id} image operations stay served ({protocol:?}): {names:?}"
+            );
+        }
+        for model_id in ["seedance-2.0", "doubao-seedance-1-0-pro-250528"] {
+            let names = operation_names(
+                &adapter,
+                &ModelId {
+                    provider_id: "dimcode-api-oauth".into(),
+                    model_id: model_id.into(),
+                },
+                protocol,
+            );
+            assert!(
+                !names.contains(&"video.generate".to_owned()),
+                "the relay's {model_id} stays refused ({protocol:?}): {names:?}"
+            );
+        }
+        let names = operation_names(
+            &adapter,
+            &ModelId {
+                provider_id: "dimcode-api-oauth".into(),
+                model_id: "minimax-h3-max".into(),
+            },
+            protocol,
+        );
+        assert!(
+            names.contains(&"video.generate".to_owned()),
+            "the relay's minimax-h3-max stays served ({protocol:?}): {names:?}"
+        );
+    }
 }

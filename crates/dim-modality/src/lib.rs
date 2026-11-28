@@ -47,7 +47,7 @@ use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
-use dim_agent_types::{ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId};
+use dim_agent_types::{ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId, ModelProtocol};
 use dim_app_server::{
     methods::ManagementMethods,
     protocol::Empty,
@@ -660,14 +660,21 @@ impl Evaluation {
         };
         reason("adapter", detail)
     }
-    /// Whether the adapter of some candidate model serves this category; its
+    /// The route `declared` names for one target, when it names the target
+    /// at all. A target the chat read alone selects is a candidate only for
+    /// the adapter-presence questions and answers no protocol.
+    fn declared_protocol(&self, model: &ModelId) -> Option<ModelProtocol> {
+        self.declared_for(&model.provider_id, &model.model_id)
+            .map(|declared| declared.protocol)
+    }
+    /// Whether the adapter of some candidate model serves this category;
     /// `operations` then decides the category's options.
     fn adapter_serves(&self, category: &str) -> bool {
         self.candidates().any(|model| {
             self.adapter(&model.provider_id).is_some_and(|adapter| {
                 adapter
                     .0
-                    .operations(model)
+                    .operations(model, self.declared_protocol(model))
                     .iter()
                     .any(|served| served.category == category)
             })
@@ -702,7 +709,7 @@ impl Evaluation {
         if let Some(adapter) = self.adapter(&model.provider_id)
             && let Some(spec) = adapter
                 .0
-                .operations(model)
+                .operations(model, self.declared_protocol(model))
                 .into_iter()
                 .find(|spec| spec.category == category && spec.operation == operation)
         {

@@ -1111,20 +1111,45 @@ read. Errors use the public codes stated below.
 process read, for non-conversational uses (Modality §9.2): operation
 `selectableForModality`, asynchronous, request `{}`, reply
 `{models: ModalityModelSnapshot[]}` with each element
-`{target: {providerId, modelId}, operations: string[]}`. `operations` holds the
+`{target: {providerId, modelId}, operations: string[], protocol: ModelProtocol}`.
+`protocol` is the model's route: the consumer resolves the adapter binding of a
+provider no vendor row names from it (Modality A.2). `operations` holds the
 `<category>.<operation>` ids the model's catalog entry declares, in that entry's
 order; a model that declares none is omitted. An entry declares its operations
 in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
-included, is the whole answer. An entry with no list is recognized as an image
-model, because relay and account catalogs list such models without media
-metadata: its id is `arcship-image`, a known ID in the `gpt-image-2` or
-`grok-imagine-image` family, or names `seedream`, or its `type` is
-`image`/`image-generation` with image or no stated output, or `imageGeneration`
-is true, or its only output is `image`. Such a model declares
-`image.generate`, and `image.edit` too when it also reads images or is a known
-model; a `type` of `image-edit` declares `image.edit` alone, and
-`imageGeneration: false` recognizes nothing. The connection rule below reads
-the same declaration. The read applies the same provider, account, model,
+included, is the whole answer. An entry with no list is recognized for each
+operation from its kind, its output or its id, because relay and account
+catalogs list such models without media metadata. The kind is read the way
+the catalog reads every `type` — lowercased, `_` as `-`, `model` and empty as
+unspecified — so equivalent spellings answer alike. A kind of `video` or
+`video-generation` declares `video.generate`, `speech`, `speech-synthesis` or
+`tts` declares `speech.synthesize`, `transcription`, `speech-transcription`
+or `stt` declares `speech.transcribe`, `image` or `image-generation` with
+image or no stated output declares the image operations, and `image-edit`
+declares `image.edit` alone. `imageGeneration: false` opts the entry out of
+image generation and wins over every inferred image operation, a declared
+image kind included, so an `image-edit` entry that carries it serves nothing;
+the opt-out negates the image operations alone, not the video, speech or
+transcription ones. A declared kind answers by its own rule alone, so no
+output, id or `imageGeneration` marker adds a use it contradicts: a
+transcription entry with a stale image marker transcribes alone, and a
+gateway row typed `image-generation` with a video output serves nothing
+until its declaration is corrected. Only a conversational or unspecified
+kind (`chat`, `other` or no `type`) is neutral about generation, so the
+output and the id speak there alone: an output of `video` alone, or an id
+naming the `seedance` word family or both `minimax` and `h3` words without
+`image` — a whole-word recognition this table answers alone, sharing no
+family table with the adapter routing and free to disagree with it, a
+recognized seedance video stays refused there; `seedancechat` names
+none and `minimax-h3-image` is an image model —
+declares `video.generate`, and an output of `audio` alone declares
+`speech.synthesize`. On a neutral kind the entry is recognized as an image
+model when its id is `arcship-image`, a known ID in the `gpt-image-2` or
+`grok-imagine-image` family, or names `seedream`, or `imageGeneration` is
+true, or the output is `image` alone, always subject to the opt-out. Such a
+model declares `image.generate`, and `image.edit` too when it also reads
+images or is a known model. The connection rule below reads the same
+declaration. The read applies the same provider, account, model,
 route, credential and status rules as `selectableModels`, without its
 text-modality, chat-kind and declared-text-limit requirements: a model without
 a `text` modality, a non-chat model and a model with `limits_undeclared`

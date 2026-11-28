@@ -17,7 +17,7 @@ use dim_modality::{AdapterError, Job, JobFile};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
-use crate::vendor::Vendor;
+use crate::vendor::Binding;
 
 /// The `data` a transcription puts on its task result, and the file that
 /// carries the same text (A.1).
@@ -47,11 +47,46 @@ fn milliseconds(seconds: f64) -> i64 {
     (seconds * 1000.0).round() as i64
 }
 
+/// The inline format the compatible image binding asks its gateway for by
+/// default, and the only `response_format` an image job may carry on it:
+/// the package reads `data[].b64_json` alone. On the routes that answer
+/// inline bytes without the field even this value is stripped before the
+/// wire (see `image_options`).
+pub(crate) const INLINE_FORMAT: &str = "b64_json";
+
+/// Whether an image job's caller-chosen response format is one the binding
+/// can consume. A caller's `response_format` on the compatible binding is
+/// refused unless it names the inline format itself: any other answer — `url`
+/// above all — is a shape the package cannot read, so the refusal happens
+/// before the request rather than after a billed generation.
+pub(crate) fn check_image_response_format(
+    job: &Job,
+    binding: &Binding,
+) -> Result<(), AdapterError> {
+    if binding.package != crate::vendor::Package::OpenaiCompatible {
+        return Ok(());
+    }
+    let options = provider_options(&job.params, binding);
+    let Some(value) = options
+        .get(binding.options)
+        .and_then(|object| object.get("response_format"))
+    else {
+        return Ok(());
+    };
+    if value.as_str() == Some(INLINE_FORMAT) {
+        return Ok(());
+    }
+    Err(AdapterError::invalid_input(format!(
+        "`response_format` may only request the inline format on this binding: the compatible package reads `data[].{INLINE_FORMAT}` alone"
+    )))
+}
+
 /// One image call's options.
-pub fn image_options(job: &Job, vendor: &Vendor) -> Result<ImageCallOptions, AdapterError> {
+pub fn image_options(job: &Job, binding: &Binding) -> Result<ImageCallOptions, AdapterError> {
+    check_image_response_format(job, binding)?;
     let params = &job.params;
     let mut options = ImageCallOptions::new(text(params, "prompt").unwrap_or_default());
-    if vendor.catalog == "dimcode-api-oauth" {
+    if binding.no_retry {
         options.max_retries = Some(0);
     }
     if text(params, "prompt").is_none() {
@@ -67,13 +102,42 @@ pub fn image_options(job: &Job, vendor: &Vendor) -> Result<ImageCallOptions, Ada
         .transpose()
         .map_err(invalid_input)?;
     options.seed = integer(params, "seed")?;
-    options.provider_options = provider_options(params, vendor);
-    if let (Some(key), Some(format)) = (vendor.format, text(params, "outputFormat")) {
+    options.provider_options = provider_options(params, binding);
+    if let (Some(key), Some(format)) = (binding.format, text(params, "outputFormat")) {
         options
             .provider_options
-            .entry(vendor.options.to_owned())
+            .entry(binding.options.to_owned())
             .or_default()
             .insert(key.into(), Value::String(format.into()));
+    }
+    // The compatible fallback's package reads inline bytes alone, so the
+    // binding asks its gateway for them by default: the field travels in the
+    // provider options the package forwards, and a caller's own
+    // `response_format` — the inline format alone passes the check above —
+    // wins over the default on every other route. The inline-answering ids
+    // send nothing instead (the OpenAI package's rule, applied after the
+    // vendor namespace): they answer bytes without the field, and a strict
+    // GPT Image endpoint rejects its presence, so the caller's own copy of
+    // the redundant inline value is stripped with the default — the answer
+    // is the same bytes. The relay never reaches here because its image
+    // binding is the openai one, which asks on its own. A gateway that
+    // ignores the field and answers `data[].url` alone stays unreadable:
+    // the upstream package has no download for it.
+    if binding.package == crate::vendor::Package::OpenaiCompatible {
+        if crate::vendor::answers_inline_bytes_by_default(&job.model.model_id) {
+            options
+                .provider_options
+                .entry(binding.options.to_owned())
+                .or_default()
+                .remove("response_format");
+        } else {
+            options
+                .provider_options
+                .entry(binding.options.to_owned())
+                .or_default()
+                .entry("response_format")
+                .or_insert(Value::String(INLINE_FORMAT.into()));
+        }
     }
     let mut files = Vec::new();
     for file in &job.files {
@@ -101,7 +165,7 @@ pub fn requested_format(job: &Job) -> Option<&str> {
 }
 
 /// One video call's options.
-pub fn video_options(job: &Job, vendor: &Vendor) -> Result<VideoCallOptions, AdapterError> {
+pub fn video_options(job: &Job, binding: &Binding) -> Result<VideoCallOptions, AdapterError> {
     let params = &job.params;
     let mut options = VideoCallOptions::new(text(params, "prompt").unwrap_or_default());
     if text(params, "prompt").is_none() {
@@ -120,7 +184,7 @@ pub fn video_options(job: &Job, vendor: &Vendor) -> Result<VideoCallOptions, Ada
     options.fps = integer(params, "fps")?.map(|value| value as u32);
     options.seed = integer(params, "seed")?;
     options.generate_audio = boolean(params, "generateAudio")?;
-    options.provider_options = provider_options(params, vendor);
+    options.provider_options = provider_options(params, binding);
     if let Some(file) = job.files.first() {
         options.image = Some(VideoFile::File {
             media_type: file.media_type.clone(),
@@ -131,7 +195,7 @@ pub fn video_options(job: &Job, vendor: &Vendor) -> Result<VideoCallOptions, Ada
 }
 
 /// One speech call's options.
-pub fn speech_options(job: &Job, vendor: &Vendor) -> Result<SpeechCallOptions, AdapterError> {
+pub fn speech_options(job: &Job, binding: &Binding) -> Result<SpeechCallOptions, AdapterError> {
     let params = &job.params;
     let text_body =
         text(params, "text").ok_or_else(|| AdapterError::invalid_input("`text` is required"))?;
@@ -141,10 +205,10 @@ pub fn speech_options(job: &Job, vendor: &Vendor) -> Result<SpeechCallOptions, A
     options.instructions = text(params, "instructions").map(str::to_owned);
     options.speed = number(params, "speed")?;
     options.language = text(params, "language").map(str::to_owned);
-    let mut provider = provider_options(params, vendor);
+    let mut provider = provider_options(params, binding);
     if let Some(language) = &options.language {
         provider
-            .entry(vendor.options.to_owned())
+            .entry(binding.options.to_owned())
             .or_default()
             .insert("language".into(), Value::String(language.clone()));
     }
@@ -157,7 +221,7 @@ pub fn speech_options(job: &Job, vendor: &Vendor) -> Result<SpeechCallOptions, A
 /// One transcription call's options.
 pub fn transcription_options(
     job: &Job,
-    vendor: &Vendor,
+    binding: &Binding,
 ) -> Result<TranscriptionCallOptions, AdapterError> {
     let params = &job.params;
     let file = job
@@ -173,11 +237,11 @@ pub fn transcription_options(
         AudioInput::Binary(read(file.path.as_path())?),
         file.media_type.clone(),
     );
-    let mut provider = provider_options(params, vendor);
+    let mut provider = provider_options(params, binding);
     for key in ["language", "prompt"] {
         if let Some(value) = text(params, key) {
             provider
-                .entry(vendor.options.to_owned())
+                .entry(binding.options.to_owned())
                 .or_default()
                 .insert(key.into(), Value::String(value.into()));
         }
@@ -193,17 +257,17 @@ pub fn transcription_options(
 /// `params.providerOptions` is aimux's namespaced map when it carries the
 /// package's key, and otherwise the package's own options: a caller never has
 /// to know that Black Forest Labs calls its namespace `blackForestLabs`.
-fn provider_options(params: &Value, vendor: &Vendor) -> SharedProviderOptions {
+fn provider_options(params: &Value, binding: &Binding) -> SharedProviderOptions {
     let mut options = SharedProviderOptions::new();
     let Some(object) = params.get("providerOptions").and_then(Value::as_object) else {
         return options;
     };
-    match object.get(vendor.options).and_then(Value::as_object) {
+    match object.get(binding.options).and_then(Value::as_object) {
         Some(namespaced) => {
-            options.insert(vendor.options.to_owned(), namespaced.clone());
+            options.insert(binding.options.to_owned(), namespaced.clone());
         }
         None if !object.is_empty() => {
-            options.insert(vendor.options.to_owned(), object.clone());
+            options.insert(binding.options.to_owned(), object.clone());
         }
         None => {}
     }
