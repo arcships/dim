@@ -978,6 +978,27 @@ async fn catalog_workspaces_is_not_advertised_without_native_storage() {
 /// A store holding three Sessions in each of `workspaces`, in the activity
 /// order `workspaces` gives: the later workspace's Sessions come first.
 async fn seeded_workspace_store(workspaces: &[(&str, i64)]) -> Store {
+    let rows = workspaces
+        .iter()
+        .flat_map(|(workspace, created)| {
+            (0..3).map(move |index| {
+                (
+                    format!(
+                        "{}-{index}",
+                        workspace.rsplit('/').next().unwrap_or_default()
+                    ),
+                    (*workspace).to_owned(),
+                    created + i64::from(index),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    seeded_store(&rows).await
+}
+
+/// A store holding one Session per `(id, workspace, activity)` row, in the
+/// activity order the rows give: the later time lists first.
+async fn seeded_store(rows: &[(String, String, i64)]) -> Store {
     let store = Store::new();
     let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
     let mut client = Client::new_version(&server, false, 3).await;
@@ -990,35 +1011,28 @@ async fn seeded_workspace_store(workspaces: &[(&str, i64)]) -> Store {
     server.join().await.unwrap();
     let mut connection = store.connection();
     let tx = connection.transaction().unwrap();
-    for (workspace, created) in workspaces {
-        for index in 0..3 {
-            let id = format!(
-                "{}-{index}",
-                workspace.rsplit('/').next().unwrap_or_default()
-            );
-            let created = created + i64::from(index);
-            tx.execute(
-                "INSERT INTO agent_sessions (session_id, config, created_at_ms) SELECT ?1, config, ?3 FROM agent_sessions WHERE session_id=?2",
-                params![id, seed, created],
-            )
-            .unwrap();
-            tx.execute(
-                "INSERT INTO session_owners SELECT ?1, agent_id, protocol_version FROM session_owners WHERE session_id=?2",
-                params![id, seed],
-            )
-            .unwrap();
-            tx.execute(
-                "INSERT INTO timeline_branches VALUES (?1,'main','{\"id\":\"main\"}',0)",
-                [&id],
-            )
-            .unwrap();
-            initialize_session_catalog(&tx, &id).unwrap();
-            tx.execute(
-                "UPDATE session_catalog SET cwd=?2 WHERE session_id=?1",
-                params![id, workspace],
-            )
-            .unwrap();
-        }
+    for (id, workspace, activity) in rows {
+        tx.execute(
+            "INSERT INTO agent_sessions (session_id, config, created_at_ms) SELECT ?1, config, ?3 FROM agent_sessions WHERE session_id=?2",
+            params![id, seed, activity],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO session_owners SELECT ?1, agent_id, protocol_version FROM session_owners WHERE session_id=?2",
+            params![id, seed],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO timeline_branches VALUES (?1,'main','{\"id\":\"main\"}',0)",
+            [id],
+        )
+        .unwrap();
+        initialize_session_catalog(&tx, id).unwrap();
+        tx.execute(
+            "UPDATE session_catalog SET cwd=?2 WHERE session_id=?1",
+            params![id, workspace],
+        )
+        .unwrap();
     }
     tx.commit().unwrap();
     store
@@ -1390,6 +1404,260 @@ async fn catalog_cursor_belongs_to_one_include_closed_filter() {
             )
             .await,
     );
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// #2246: `sessionIds` is one more condition of the catalog query, so a
+/// client that knows the rows it needs reads them in one bounded read — in
+/// the catalog's own order, with the ids it hides or the store does not hold
+/// absent — instead of walking pages and indexing them itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_lists_named_session_ids_in_catalog_order() {
+    let rows = (0..60)
+        .map(|index| {
+            (
+                format!("s-{index:02}"),
+                "/workspace/a".to_owned(),
+                1000 + i64::from(index),
+            )
+        })
+        .collect::<Vec<_>>();
+    let store = seeded_store(&rows).await;
+    store
+        .connection()
+        .execute(
+            "UPDATE agent_sessions SET origin='internal' WHERE session_id='s-00'",
+            [],
+        )
+        .unwrap();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.catalog.sessionIds")),
+        "the feature is advertised: {:?}",
+        client.features
+    );
+    let listed = |value: &Value| -> Vec<String> {
+        value["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    let page = client
+        .rpc("session.catalog", json!({"sessionIds":["s-01","s-00","s-58"]}))
+        .await;
+    assert_ok(&page);
+    assert_eq!(
+        listed(&page),
+        ["s-58", "s-01"],
+        "the rows come in catalog order, past the first page of 50, and the internal id stays hidden: {page}"
+    );
+
+    let missing = client
+        .rpc(
+            "session.catalog",
+            json!({"sessionIds":["s-58","absent","s-01"]}),
+        )
+        .await;
+    assert_ok(&missing);
+    assert_eq!(
+        listed(&missing),
+        ["s-58", "s-01"],
+        "an id the store does not hold is absent: {missing}"
+    );
+
+    let hidden = client.rpc("session.catalog", json!({"sessionIds":["s-00"]})).await;
+    assert_ok(&hidden);
+    assert!(
+        listed(&hidden).is_empty(),
+        "the default read hides the internal id: {hidden}"
+    );
+    let with_internal = client
+        .rpc(
+            "session.catalog",
+            json!({"sessionIds":["s-00","s-01"],"withInternal":true}),
+        )
+        .await;
+    assert_ok(&with_internal);
+    assert_eq!(
+        listed(&with_internal),
+        ["s-01", "s-00"],
+        "the ids it asks for join the filters it sends: {with_internal}"
+    );
+
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// #2246: a named id this daemon closed stays out of a default read, and
+/// `includeClosed` lists it beside the open ids.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_lists_a_named_closed_session_only_when_asked() {
+    use super::deletion;
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let open = deletion::session(&mut client).await;
+    let closed = deletion::session(&mut client).await;
+    assert_ok(
+        &client
+            .rpc("session.close", json!({"sessionId":closed}))
+            .await,
+    );
+
+    let page = client
+        .rpc("session.catalog", json!({"sessionIds":[&open, &closed]}))
+        .await;
+    assert_ok(&page);
+    let rows = page["result"]["sessions"].as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["sessionId"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [open.as_str()],
+        "the closed id is absent unless the read asks for it: {page}"
+    );
+
+    let including = client
+        .rpc(
+            "session.catalog",
+            json!({"sessionIds":[&open, &closed],"includeClosed":true}),
+        )
+        .await;
+    assert_ok(&including);
+    let rows = including["result"]["sessions"].as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["sessionId"] == closed.as_str())
+        .unwrap_or_else(|| panic!("the closed id is listed: {including}"));
+    assert_eq!(row["closed"], true, "{including}");
+    assert!(
+        rows.iter()
+            .any(|row| row["sessionId"] == open.as_str() && row["closed"] == false),
+        "the open id is listed unclosed: {including}"
+    );
+
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// #2246: the id set is bounded at the page limit's maximum and refused, not
+/// clamped, above it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_refuses_an_unbounded_or_malformed_session_id_set() {
+    let store = seeded_store(&[("s-00".to_owned(), "/workspace/a".to_owned(), 1000)]).await;
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let ids = |count: usize| -> Vec<String> {
+        (0..count).map(|index| format!("cap-{index:03}")).collect()
+    };
+
+    let accepted = client
+        .rpc("session.catalog", json!({"sessionIds":ids(200)}))
+        .await;
+    assert_ok(&accepted);
+    assert!(
+        accepted["result"]["sessions"].as_array().unwrap().is_empty(),
+        "ids the store does not hold answer no rows: {accepted}"
+    );
+
+    let refused = client
+        .rpc("session.catalog", json!({"sessionIds":ids(201)}))
+        .await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    assert_eq!(
+        refused["error"]["data"]["appError"], "invalid_params",
+        "{refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("200"),
+        "the refusal names the bound: {refused}"
+    );
+
+    for session_ids in [json!([]), json!(["s-00", 7]), json!("s-00")] {
+        let reply = client
+            .rpc("session.catalog", json!({"sessionIds":session_ids}))
+            .await;
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert_eq!(
+            reply["error"]["data"]["appError"], "invalid_params",
+            "{reply}"
+        );
+    }
+
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// #2246: the id set is part of the cursor's filter set and compares as a
+/// set, so a reordered or repeated list continues its page and another set
+/// does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_cursor_belongs_to_one_set_of_session_ids() {
+    let rows = (0..3)
+        .map(|index| {
+            (
+                format!("s-{index:02}"),
+                "/workspace/a".to_owned(),
+                1000 + i64::from(index),
+            )
+        })
+        .collect::<Vec<_>>();
+    let store = seeded_store(&rows).await;
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let first = client
+        .rpc(
+            "session.catalog",
+            json!({"sessionIds":["s-00","s-01","s-02"],"limit":1}),
+        )
+        .await;
+    assert_ok(&first);
+    let cursor = first["result"]["nextCursor"].as_str().unwrap().to_owned();
+
+    for params in [
+        json!({"sessionIds":["s-00","s-02"],"limit":1,"cursor":cursor}),
+        json!({"limit":1,"cursor":cursor}),
+    ] {
+        let reply = client.rpc("session.catalog", params).await;
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert_eq!(
+            reply["error"]["data"]["appError"], "invalid_params",
+            "{reply}"
+        );
+    }
+
+    let reordered = client
+        .rpc(
+            "session.catalog",
+            json!({"sessionIds":["s-02","s-00","s-01","s-00"],"limit":1,"cursor":cursor}),
+        )
+        .await;
+    assert_ok(&reordered);
+    assert_eq!(
+        reordered["result"]["sessions"][0]["sessionId"], "s-01",
+        "the same set in another order continues the page: {reordered}"
+    );
+
     drop(client);
     drop(agent);
     server.shutdown();
