@@ -203,7 +203,14 @@ impl DynPlugin for SchedulerSession {
             let loops = ctx.require_at(&self.loops)?;
             let methods = ctx.require_at(&self.methods)?;
             let tools = ctx.require_at(&self.tools)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let identity = ctx.require_at(&self.identity)?;
             let closing = ctx.cancellation_token();
             ctx.require_at(&self.guide)?.register(

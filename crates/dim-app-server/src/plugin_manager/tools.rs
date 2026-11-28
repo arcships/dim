@@ -7,7 +7,7 @@ use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use dim_agent_runtime::{Names, SessionConfig};
+use dim_agent_runtime::{Names, SessionConfig, SessionScope};
 use dim_agent_types::{ToolCall, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -395,7 +395,14 @@ impl DynPlugin for PluginTools {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let registry = ctx.require_at(&self.tools)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let mut definition = definition(
                 "plugin",
                 &format!("Manage Dim plugins. {}", commands()),

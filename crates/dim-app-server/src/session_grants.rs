@@ -73,7 +73,14 @@ impl DynPlugin for SessionGrantsPlugin {
         Box::pin(async move {
             let store = ctx.require_at(&self.store)?;
             let identity = ctx.require_at(&self.identity)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let methods = ctx.require_at(&self.methods)?;
             let session_id = identity.session_id().clone();
             let cwd = PathBuf::from(&config.cwd);

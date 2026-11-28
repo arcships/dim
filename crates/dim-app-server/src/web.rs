@@ -14,8 +14,7 @@ use dim_agent_capabilities::{
     },
 };
 use dim_agent_runtime::{
-    Names, PartRegistry, PartScope, SESSION_GROUP, SessionConfig, SessionLifecycle,
-};
+    Names, PartRegistry, PartScope, SESSION_GROUP, SessionConfig, SessionLifecycle, SessionScope};
 use dim_agent_types::{ToolCall, ToolContent, ToolDefinition, ToolResult, ToolSource};
 use network::{
     DOWNLOAD_LIMIT, Diagnostic, NetworkConfig, WebError, domain, get, hostname, parse_url,
@@ -231,7 +230,14 @@ impl DynPlugin for WebSessionPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let tools = ctx.require_at(&self.tools)?;
             let managed = ctx.require_at(&self.managed)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let cancel = ctx.cancellation_token();
             let mounted = config

@@ -1,5 +1,5 @@
 use super::*;
-use dim_agent_runtime::SessionConfig;
+use dim_agent_runtime::{SessionConfig, SessionScope};
 use dim_agent_runtime::SessionLines;
 use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, oneshot};
@@ -40,7 +40,14 @@ impl rutis::host::DynPlugin for CreationGate {
         ctx: &'a rutis::Ctx,
     ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
         Box::pin(async move {
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let cwd = PathBuf::from(&config.cwd);
             if cwd.starts_with(&self.control.root) {
                 let (sender, receiver) = oneshot::channel();

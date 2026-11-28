@@ -292,7 +292,7 @@ impl ResolveModalityConnection for ConfiguredConnection {
 pub struct ConfiguredModelPlugin {
     prepare: Key<PrepareModelHost>,
     models: Key<AimuxModels>,
-    config: Key<SessionScope>,
+    scope: Key<SessionScope>,
     identity: Key<SessionScope>,
 }
 impl ConfiguredModelPlugin {
@@ -300,7 +300,7 @@ impl ConfiguredModelPlugin {
         Ok(Self {
             prepare: names.key()?,
             models: names.key()?,
-            config: names.key()?,
+            scope: names.key()?,
             identity: names.key()?,
         })
     }
@@ -312,17 +312,22 @@ impl DynPlugin for ConfiguredModelPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.models.erase(),
-            self.config.erase(),
+            self.scope.erase(),
             self.identity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let models = ctx.require_at(&self.models)?;
-            let config = ctx.require_at(&self.config)?;
+            let scope = ctx.require_at(&self.scope)?;
             let identity = ctx.require_at(&self.identity)?;
+            let description = scope.describe().map_err(|error| {
+                rutis::Error::msg(format!("Session description unavailable: {error}"))
+            })?;
+            let agent_model = description.agent.model;
+            let config = Arc::new(description.config);
             let defaults = models
-                .get(&config.model.provider_id, &config.model.model_id)
+                .get(&agent_model.provider_id, &agent_model.model_id)
                 .map_err(|error| {
                     rutis::Error::from(ErrorKind::Validation {
                         issues: vec![error.to_string()],

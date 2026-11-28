@@ -13,8 +13,7 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::{
     AgentBuilder, Names, PublicService, SESSION_GROUP, SessionConfig, SessionLifecycle,
-    SessionLoader, StateCell,
-};
+    SessionLoader, StateCell, SessionScope};
 use dim_agent_types::{
     ToolCall, ToolContent, ToolDefinition, ToolMetadata, ToolResult, ToolSource,
 };
@@ -476,7 +475,14 @@ impl DynPlugin for McpSessionPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let directory = ctx.require_at(&self.directory)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let loader = ctx.require_at(&self.loader)?;
             let session = ctx.require_at(&self.lifecycle)?;
             let tools = ctx.require_at(&self.tools)?;

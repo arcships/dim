@@ -12,7 +12,7 @@ its `ToolResult`, so Questions writes no events. Design:
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionConfig` | `interactive`, read on each call: a non-interactive Session gets an error result at once. |
+| `S:SessionScope` | `interactive`, read on each call: a non-interactive Session gets an error result at once. |
 | `S:ToolRegistry` | Register `ask_user`, until this part unloads. |
 | `S:SessionMethods` | Register the `session.question` namespace, until this part unloads. |
 | `S:TreeCommands` | Resolve the branch facade for pending-question queries. |

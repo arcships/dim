@@ -12,7 +12,7 @@ use dim_agent_capabilities::{
         ToolProvider, ToolProviderChanged, ToolRegistry, ToolSourceSet, tool_provider_changes,
     },
 };
-use dim_agent_runtime::{Names, SESSION_GROUP, SessionConfig, SessionLifecycle};
+use dim_agent_runtime::{Names, SESSION_GROUP, SessionConfig, SessionLifecycle, SessionScope};
 use futures_util::future::{select_all, try_join_all};
 use rutis::Ctx;
 use rutis::host::{
@@ -128,7 +128,14 @@ impl DynPlugin for TemporaryMcp {
         Box::pin(async move {
             let methods = ctx.require_at(&self.methods)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let bindings: Bindings = Arc::default();
             let changed = Arc::new(Notify::new());
             let mutation = Arc::new(tokio::sync::Mutex::new(()));

@@ -179,7 +179,14 @@ impl DynPlugin for SessionTitle {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let identity = ctx.require_at(&self.identity)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let owner = Arc::new(Owner {
                 ctx: ctx.clone(),

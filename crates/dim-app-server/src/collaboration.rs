@@ -3747,7 +3747,14 @@ impl DynPlugin for CollaborationSessionPlugin {
         Box::pin(async move {
             let collaboration = ctx.require_at(&self.collaboration)?;
             let identity = ctx.require_at(&self.identity)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let tree = ctx.require_at(&self.tree)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let tools = ctx.require_at(&self.tools)?;
