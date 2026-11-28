@@ -1,4 +1,5 @@
 mod content;
+mod tags;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -19,8 +20,8 @@ use dim_agent_capabilities::host::{
     ModelStream,
 };
 use dim_agent_types::{
-    FAILURE_CAUSE_CHARS, FAILURE_CAUSE_FRAMES, FAILURE_REASON_CHARS, MessagePart, ModelFailureKind,
-    ToolCall, Usage, one_line,
+    ContentMetadata, FAILURE_CAUSE_CHARS, FAILURE_CAUSE_FRAMES, FAILURE_REASON_CHARS, MessagePart,
+    ModelFailureKind, ToolCall, Usage, one_line,
 };
 use futures_util::{StreamExt, future::poll_immediate};
 use serde_json::Value;
@@ -47,10 +48,18 @@ use crate::request::ToolNames;
 /// idle bound would let a trickle of bytes extend it.
 pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// `scan_thinking_tags` converts the `<thinking>` sections the managed
+/// openai-codex provider writes into its text stream; every other provider
+/// streams text verbatim.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per stream or cancellation handle the conversion is assembled from"
+)]
 pub(crate) fn convert(
     result: StreamResult,
     tool_names: ToolNames,
     protocol: ModelProtocol,
+    scan_thinking_tags: bool,
     cancel: CancellationToken,
     abort: AbortSignal,
     generation: CancellationToken,
@@ -72,6 +81,10 @@ pub(crate) fn convert(
         let mut ended_inputs = HashSet::new();
         let mut completed_calls = HashSet::new();
         let mut thinking = HashMap::<String, String>::new();
+        // Per text block, the `<thinking>` scan and the metadata held back
+        // from a converted part; both stay empty without the scan.
+        let mut tag_scans = HashMap::<String, tags::TagScan>::new();
+        let mut scan_metadata = HashMap::<String, Option<ContentMetadata>>::new();
         let mut answered = false;
         let mut unfinished_call = None;
         let terminal = loop {
@@ -171,6 +184,9 @@ pub(crate) fn convert(
                 }
                 StreamPart::TextStart { id, provider_metadata } => {
                     block_active.insert((false, id.clone()));
+                    if scan_thinking_tags {
+                        tag_scans.insert(id.clone(), tags::TagScan::new());
+                    }
                     if preserve {
                         let metadata =
                             match content::metadata(protocol, provider_metadata.as_ref()) {
@@ -205,28 +221,80 @@ pub(crate) fn convert(
                     }
                 }
                 StreamPart::TextDelta { id, delta, provider_metadata } => {
-                    if preserve {
-                        let metadata =
+                    if scan_thinking_tags && tag_scans.contains_key(&id) {
+                        let metadata = if preserve {
                             match content::metadata(protocol, provider_metadata.as_ref()) {
                                 Ok(metadata) => metadata,
                                 Err(error) => break Some(Err(error)),
-                            };
-                        let Some(part) = blocks
-                            .get(&(false, id))
-                            .and_then(|index| parts.get_mut(*index))
-                        else {
+                            }
+                        } else {
+                            None
+                        };
+                        let Some(scan) = tag_scans.get_mut(&id) else {
                             break Some(Err(error(
                                 AiMuxError::invalid_response_data("Missing text block"),
                                 &cancel,
                             )));
                         };
-                        if let MessagePart::Text { text, .. } = part {
-                            text.push_str(&delta);
+                        let outputs = scan.feed(&delta);
+                        let chunks = match apply_scan_outputs(
+                            outputs,
+                            &id,
+                            preserve,
+                            &mut parts,
+                            &mut blocks,
+                            &mut scan_metadata,
+                            &mut answered,
+                        ) {
+                            Ok(chunks) => chunks,
+                            Err(error) => break Some(Err(error)),
+                        };
+                        for chunk in chunks {
+                            yield Ok(chunk);
                         }
-                        content::update(part, metadata);
+                        // While the scan holds the block inside the tag, the
+                        // metadata folds into the trailing text part instead
+                        // of the converted thinking part.
+                        if preserve && let Some(incoming) = metadata {
+                            if let Some(held) = scan_metadata.get_mut(&id) {
+                                content::merge(held, incoming);
+                            } else {
+                                let Some(part) = blocks
+                                    .get(&(false, id.clone()))
+                                    .and_then(|index| parts.get_mut(*index))
+                                else {
+                                    break Some(Err(error(
+                                        AiMuxError::invalid_response_data("Missing text block"),
+                                        &cancel,
+                                    )));
+                                };
+                                content::update(part, Some(incoming));
+                            }
+                        }
+                    } else {
+                        if preserve {
+                            let metadata =
+                                match content::metadata(protocol, provider_metadata.as_ref()) {
+                                    Ok(metadata) => metadata,
+                                    Err(error) => break Some(Err(error)),
+                                };
+                            let Some(part) = blocks
+                                .get(&(false, id))
+                                .and_then(|index| parts.get_mut(*index))
+                            else {
+                                break Some(Err(error(
+                                    AiMuxError::invalid_response_data("Missing text block"),
+                                    &cancel,
+                                )));
+                            };
+                            if let MessagePart::Text { text, .. } = part {
+                                text.push_str(&delta);
+                            }
+                            content::update(part, metadata);
+                        }
+                        if !delta.trim().is_empty() { answered = true; }
+                        if !delta.is_empty() { yield Ok(ModelChunk::Text(delta)); }
                     }
-                    if !delta.trim().is_empty() { answered = true; }
-                    if !delta.is_empty() { yield Ok(ModelChunk::Text(delta)); }
                 }
                 StreamPart::ReasoningDelta { id, delta, provider_metadata } => {
                     let Some(thought) = thinking.get_mut(&id) else {
@@ -266,6 +334,27 @@ pub(crate) fn convert(
                         _ => unreachable!(),
                     };
                     block_active.remove(&(reasoning, id.clone()));
+                    if !reasoning
+                        && scan_thinking_tags
+                        && let Some(mut scan) = tag_scans.remove(&id)
+                    {
+                        let outputs = scan.end();
+                        let chunks = match apply_scan_outputs(
+                            outputs,
+                            &id,
+                            preserve,
+                            &mut parts,
+                            &mut blocks,
+                            &mut scan_metadata,
+                            &mut answered,
+                        ) {
+                            Ok(chunks) => chunks,
+                            Err(error) => break Some(Err(error)),
+                        };
+                        for chunk in chunks {
+                            yield Ok(chunk);
+                        }
+                    }
                     if preserve {
                         let metadata =
                             match content::metadata(protocol, provider_metadata.as_ref()) {
@@ -484,6 +573,91 @@ pub(crate) fn convert(
             None => {}
         }
     })
+}
+
+/// Applies one batch of scan decisions of the text block `id` to the reply's
+/// parts and returns the chunks they stream, in order. `Opened` converts the
+/// block's part in place: the scan never decides before the open tag
+/// completed, so the part is still empty. `ThinkingEnd` ends that part and
+/// starts the block's trailing text part, which receives what follows the
+/// close tag and carries the continuation metadata the thinking part must
+/// not keep.
+fn apply_scan_outputs(
+    outputs: Vec<tags::ScanOutput>,
+    id: &str,
+    preserve: bool,
+    parts: &mut Vec<MessagePart>,
+    blocks: &mut HashMap<(bool, String), usize>,
+    scan_metadata: &mut HashMap<String, Option<ContentMetadata>>,
+    answered: &mut bool,
+) -> Result<Vec<ModelChunk>, HostError> {
+    let mut chunks = Vec::new();
+    for output in outputs {
+        match output {
+            tags::ScanOutput::Opened => {
+                scan_metadata.entry(id.to_owned()).or_insert(None);
+                if preserve {
+                    let Some(part) = blocks
+                        .get(&(false, id.to_owned()))
+                        .and_then(|index| parts.get_mut(*index))
+                    else {
+                        return Err(HostError::failed("Missing scanned text block"));
+                    };
+                    if let MessagePart::Text {
+                        provider_metadata, ..
+                    } = part
+                        && let Some(held) = scan_metadata.get_mut(id)
+                    {
+                        *held = provider_metadata.take();
+                    }
+                    *part = MessagePart::Thinking {
+                        thinking: String::new(),
+                        start_time: None,
+                        end_time: None,
+                        provider_metadata: None,
+                    };
+                }
+            }
+            tags::ScanOutput::Thinking(delta) => {
+                if preserve
+                    && let Some(index) = blocks.get(&(false, id.to_owned()))
+                    && let Some(MessagePart::Thinking { thinking, .. }) = parts.get_mut(*index)
+                {
+                    thinking.push_str(&delta);
+                }
+                if !delta.trim().is_empty() {
+                    *answered = true;
+                }
+                chunks.push(ModelChunk::Thinking(delta));
+            }
+            tags::ScanOutput::ThinkingEnd(total) => {
+                if preserve {
+                    let metadata = scan_metadata.remove(id).unwrap_or(None);
+                    blocks.insert((false, id.to_owned()), parts.len());
+                    parts.push(MessagePart::Text {
+                        text: String::new(),
+                        start_time: None,
+                        end_time: None,
+                        provider_metadata: metadata,
+                    });
+                }
+                chunks.push(ModelChunk::ThinkingEnd { thinking: total });
+            }
+            tags::ScanOutput::Text(text) => {
+                if preserve
+                    && let Some(index) = blocks.get(&(false, id.to_owned()))
+                    && let Some(MessagePart::Text { text: part, .. }) = parts.get_mut(*index)
+                {
+                    part.push_str(&text);
+                }
+                if !text.trim().is_empty() {
+                    *answered = true;
+                }
+                chunks.push(ModelChunk::Text(text));
+            }
+        }
+    }
+    Ok(chunks)
 }
 
 /// The metadata of a reasoning block. A Bedrock reasoning block without a

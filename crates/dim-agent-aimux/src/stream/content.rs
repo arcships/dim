@@ -125,27 +125,34 @@ pub(super) fn update(part: &mut MessagePart, incoming: Option<ContentMetadata>) 
         } => provider_metadata,
         _ => unreachable!(),
     };
-    if let Some(mut incoming) = incoming {
-        if let (
-            Some(ContentMetadata::OpenaiResponses {
-                item_id: old_id,
-                encrypted_content: old_encrypted,
-                summary_index: old_index,
-                phase: old_phase,
-            }),
-            ContentMetadata::OpenaiResponses {
-                item_id,
-                encrypted_content,
-                summary_index,
-                phase,
-            },
-        ) = (target.as_ref(), &mut incoming)
-            && old_id == item_id
-        {
-            *encrypted_content = encrypted_content.take().or_else(|| old_encrypted.clone());
-            *summary_index = summary_index.or(*old_index);
-            *phase = phase.take().or_else(|| old_phase.clone());
-        }
-        *target = Some(incoming);
+    if let Some(incoming) = incoming {
+        merge(target, incoming);
     }
+}
+
+/// Folds one metadata event into the accumulated continuation fields. Later
+/// events replace the value, except within one OpenAI Responses item, where a
+/// field the event leaves out keeps what the item already carried.
+pub(super) fn merge(target: &mut Option<ContentMetadata>, mut incoming: ContentMetadata) {
+    if let (
+        Some(ContentMetadata::OpenaiResponses {
+            item_id: old_id,
+            encrypted_content: old_encrypted,
+            summary_index: old_index,
+            phase: old_phase,
+        }),
+        ContentMetadata::OpenaiResponses {
+            item_id,
+            encrypted_content,
+            summary_index,
+            phase,
+        },
+    ) = (target.as_ref(), &mut incoming)
+        && old_id == item_id
+    {
+        *encrypted_content = encrypted_content.take().or_else(|| old_encrypted.clone());
+        *summary_index = summary_index.or(*old_index);
+        *phase = phase.take().or_else(|| old_phase.clone());
+    }
+    *target = Some(incoming);
 }
