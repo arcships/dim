@@ -215,6 +215,33 @@ test('a remembered shared link carries independent native streams, large frames 
   assert.deepEqual((await share('disable')).addresses, []);
 });
 
+test('a native file receipt arrives before the client closes the socket or named pipe', { timeout: 30_000 }, async (t) => {
+  const { temp, b, start } = await environment(t);
+  const native = path.join(b, 'rust');
+  const endpoint = windows ? String.raw`\\.\pipe\dim-test-${randomUUID()}` : path.join(native, 'daemon.sock');
+  await mkdir(native, { recursive: true, mode: 0o700 });
+  const server = start(['app-server', '--home', native, '--model-config', model,
+    windows ? '--pipe' : '--unix', endpoint, '--no-ws']);
+  await once(server.stdout, 'data');
+  const control = await rpc(endpoint);
+  const binary = await rpc(endpoint);
+  try {
+    const { result: session } = await control.call('session.create', { cwd: temp });
+    const bytes = Buffer.from([0, 10, 255, 0, 128]);
+    const method = 'native.uploadSessionFile';
+    const params = { sessionId: session.sessionId, name: '记录 1.bin', byteLength: bytes.length, image: false };
+    binary.stream.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method, params }) + '\n');
+    await binary.receive(message => message.method === method + '.ready');
+    binary.stream.write(bytes);
+    const receipt = await binary.receive(message => message.id === 2);
+    assert.ok(receipt.result, JSON.stringify(receipt.error));
+    assert.deepEqual(await readFile(receipt.result.path), bytes);
+  } finally {
+    binary.stream.destroy();
+    control.stream.destroy();
+  }
+});
+
 test('daemon stop reports the same cleanup result through direct and shared connections', { timeout: 90_000 }, async (t) => {
   const { temp, a, start, run } = await environment(t);
   for (const fail of [false, true]) {
