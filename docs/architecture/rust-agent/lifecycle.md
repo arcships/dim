@@ -52,7 +52,7 @@ flowchart TB
 
 插件调用的 panic 由 rutis 在注册元数据、apply 构造与 poll 边界捕获并转为失败；平台捕获自身工厂构造。业务 Dispatcher 和受管操作回调的构造/poll 由对应组件的故障边界处理。
 
-同步 before 的执行、失败与重入约定见[单树事件合同](single-tree.md#同步-before)。`TimelineContext::close` 先完成作用域清理，再关闭 Timeline，保留清理任务提交终态的窗口。
+同步 before 的执行、失败与重入约定见[单树事件合同](single-tree.md#同步-before)。`BranchRuntime::close` 先完成作用域清理，再关闭 Timeline，保留清理任务提交终态的窗口。
 
 ## 3. 初始化与失败回滚
 
@@ -63,7 +63,7 @@ flowchart TB
 | 装配 | 挂载器用已登记的生成器为本实例建立部件；rutis 按依赖状态调用 apply |
 | 取得资源 | 在下一次可取消 await 前登记清理；部分初始化失败同样释放 |
 | 等待 | 观察插件状态、取消和本次打开范围内的无进展期限；一行的首次 Active、打开派发序号前进或回执完成会重置间隔；不以 settle 代替 Active。部件在 `apply` 中挂载的子插件也一样：用 `mount_active` 等到 `Active`——创建期间整次打开受上述无进展期限约束，到期时报告子插件的名字和它缺的依赖；创建之后该部件与任何缺依赖的行一样保持 `Loading`，直到子插件 `Active` 或本代被取消 |
-| 发布 | 全部 Active、订阅齐全、Loop 状态端口可解析后由 `TimelineContext::start` 启动 Dispatcher；子分支还须完成 branch/start 和首输入接纳，才出现在公共分支列表与操作入口。发布时 TimelineTree 调用 `TimelineContext::activate`，分支生命周期 `BranchLifecycle` 进入 Active；能力在 apply 中派生的后台业务等它才开始，分支装配失败时它直接进入 Closed，后台业务从不开始。分支进入 Closing 时 `BranchLifecycle::closing()` 返回，后台业务随即结束，不等所属能力卸载。Session 同理：`Agent` 在 entries 锁内裁决发布与关闭准入，登记为可用时 `SessionLifecycle` 进入 Active；Session 能力在 apply 中派生的后台业务（替换 Session 自有实例、联系外部服务）等它才开始，装配失败时它直接进入 Closed，后台业务从不开始，Session 就绪检查也就不会看到装配期间被替换或关闭的实例。装配本身需要的初始实例（如 Skills 的初始内容）在 apply 内同步创建，属于装配而非后台业务。Session 的关闭 token 一被取消（`Session::close`、`Agent::close` 或装配期间），`SessionLifecycle` 即为 Closing，`closing()` 返回，后台业务随即结束；`Agent::close` 依次关闭各 Session，但它们都在关闭开始时同时看到 Closing。初始化内部可持有句柄，不等于公开发布；发布与关闭准入在树锁内裁决，不持锁运行 before 或异步构建 |
+| 发布 | 全部 Active、订阅齐全、Loop 状态端口可解析后由 `BranchRuntime::start` 启动 Dispatcher；子分支还须完成 branch/start 和首输入接纳，才出现在公共分支列表与操作入口。发布时 TimelineTree 调用 `BranchRuntime::activate`，分支生命周期 `BranchLifecycle` 进入 Active；能力在 apply 中派生的后台业务等它才开始，分支装配失败时它直接进入 Closed，后台业务从不开始。分支进入 Closing 时 `BranchLifecycle::closing()` 返回，后台业务随即结束，不等所属能力卸载。Session 同理：`Agent` 在 entries 锁内裁决发布与关闭准入，登记为可用时 `SessionLifecycle` 进入 Active；Session 能力在 apply 中派生的后台业务（替换 Session 自有实例、联系外部服务）等它才开始，装配失败时它直接进入 Closed，后台业务从不开始，Session 就绪检查也就不会看到装配期间被替换或关闭的实例。装配本身需要的初始实例（如 Skills 的初始内容）在 apply 内同步创建，属于装配而非后台业务。Session 的关闭 token 一被取消（`Session::close`、`Agent::close` 或装配期间），`SessionLifecycle` 即为 Closing，`closing()` 返回，后台业务随即结束；`Agent::close` 依次关闭各 Session，但它们都在关闭开始时同时看到 Closing。初始化内部可持有句柄，不等于公开发布；发布与关闭准入在树锁内裁决，不持锁运行 before 或异步构建 |
 | 回滚 | 禁止继续装配，取消初始化，等待已开始的 apply 和所有清理；永久卸载该作用域子树 |
 | 返回错误 | 包含初始化原因、未就绪插件/服务与清理错误；不发布半成品句柄 |
 

@@ -8,6 +8,7 @@ use super::session_typescript::{
     ControlledGate, fixture, new_session, session_copies, setup, submit,
 };
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_app_server::session_typescript::{PythonConfig, SessionTypeScriptConfig};
 use std::path::PathBuf;
 

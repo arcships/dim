@@ -8,6 +8,7 @@
 //! builds this file.
 
 use dim_agent_capabilities::defaults;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use rutis::Ctx;

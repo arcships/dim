@@ -1,5 +1,6 @@
 #![cfg(unix)]
 use dim_agent_capabilities::defaults;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_agent_types::EventKind;

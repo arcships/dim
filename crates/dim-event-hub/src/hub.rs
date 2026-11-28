@@ -68,12 +68,15 @@ impl Shared {
         )
         .await
         {
-            Ok(Ok(value)) => value["defaultBranchId"]
+            Ok(Ok(Some(value))) => value["defaultBranchId"]
                 .as_str()
                 .map(str::to_owned)
                 .ok_or_else(|| {
                     EventHubError::transport("the sessions service answered no default branch")
                 }),
+            Ok(Ok(None)) => Err(EventHubError::transport(
+                "the sessions service answered no default branch",
+            )),
             Ok(Err(failure)) => Err(EventHubError::new(
                 crate::error::sessions_code(&failure.code),
                 failure.message,

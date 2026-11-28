@@ -18,7 +18,7 @@ export default definePlugin({
       async (call): Promise<MethodReply> => {
         try {
           const at = call.params as unknown as SessionRef
-          if (call.method === 'permissions.legacy') return { kind: 'value', value: JSON.stringify(await sessions.idle(at)) }
+          if (call.method === 'permissions.legacy') return { kind: 'value', value: JSON.stringify(await sessions.call({ sessionId: at.sessionId, lineId: at.branchId, service: 'timelineContext', method: 'idle', args: [] })) }
           if (call.method === 'permissions.defaults') {
             const policy = await permissions.permissionDefaults({})
             return { kind: 'value', value: { generation: applied, policy: JSON.stringify(policy) } }

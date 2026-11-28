@@ -4,7 +4,7 @@
 //! transaction after its deliveries settle.
 use crate::{
     catalog::Declaration,
-    error::{EventHubError, SessionsFailure, TRANSPORT},
+    error::{EventHubError, SessionsFailure, TRANSPORT, sessions_code},
     hub::Shared,
     model::{BODY_LIMIT, PREVIEW_BYTES, PublishRequest, Target, validate_publish},
     state::{InstanceState, KeyedLock, MAX_DELIVERIES_IN_FLIGHT},
@@ -497,19 +497,21 @@ async fn lookup_branch(
     submission: String,
 ) -> Lookup {
     let _permit = shared.state.delivery_permit().await;
-    let args = json!({
-        "sessionId": session_id,
-        "branchId": branch_id,
-        "submissionId": submission,
-    });
-    match sessions(shared.sessions.as_ref(), "lookup", args).await {
-        Ok(Ok(value)) if value["status"] == json!("accepted") => {
-            match (value["inputId"].as_str(), value["sequence"].as_u64()) {
-                (Some(input_id), Some(sequence)) => Lookup::Held(input_id.to_owned(), sequence),
-                _ => Lookup::NotHeld,
-            }
-        }
-        Ok(Ok(_)) => Lookup::NotHeld,
+    let answer = line(
+        shared.sessions.as_ref(),
+        &session_id,
+        &branch_id,
+        "lookup",
+        vec![json!(submission)],
+    )
+    .await;
+    match answer {
+        Ok(Ok(Some(Value::Null))) => Lookup::NotHeld,
+        Ok(Ok(Some(event))) => match (event["id"].as_str(), event["sequence"].as_u64()) {
+            (Some(input_id), Some(sequence)) => Lookup::Held(input_id.to_owned(), sequence),
+            _ => Lookup::NotHeld,
+        },
+        Ok(Ok(None)) => Lookup::Failed,
         _ => Lookup::Failed,
     }
 }
@@ -628,47 +630,42 @@ async fn deliver(
         job.subscription_ids.clone(),
     );
     let write = json!({
-        "sessionId": session_id.clone(),
-        "branchId": branch_id.clone(),
+        "submission_id": job.submission_id,
         "mode": job.mode,
-        "submissionId": job.submission_id,
-        "rawBlocks": [{ "text": job.marker }],
-        "content": [],
+        "blocks": [{ "type": "raw", "text": job.marker }],
     });
-    let delivery = match sessions(service.as_ref(), "input", write).await {
-        Ok(Ok(value)) => match (value["inputId"].as_str(), value["sequence"].as_u64()) {
-            (Some(input_id), Some(sequence)) => Delivery::Delivered {
-                session_id: session_id.clone(),
-                branch_id: branch_id.clone(),
-                subscription_ids: subscription_ids.clone(),
-                input_id: input_id.to_owned(),
-                sequence,
-                truncated: job.truncated.then_some(true),
-                repeated: None,
-            },
-            _ => Delivery::Failed {
-                session_id: session_id.clone(),
-                branch_id: Some(branch_id.clone()),
-                subscription_ids: subscription_ids.clone(),
-                code: TRANSPORT.into(),
-                message: "sessions.input answered without an input".into(),
-            },
+    let delivery = match write_published(service.as_ref(), &session_id, &branch_id, write).await {
+        Ok(Ok((input_id, sequence))) => Delivery::Delivered {
+            session_id: session_id.clone(),
+            branch_id: branch_id.clone(),
+            subscription_ids: subscription_ids.clone(),
+            input_id,
+            sequence,
+            truncated: job.truncated.then_some(true),
+            repeated: None,
         },
         Ok(Err(failure)) => {
-            let gone = matches!(failure.code.as_str(), "branch_missing" | "branch_ended");
+            // A closed Session is not gone: it keeps its rows and restores, so
+            // its subscription stays and the failure is recorded as
+            // `session_closed`; `sessions.exists` then decides
+            // (design §Delivery). Only a line that is missing or ended is gone.
+            let gone = matches!(
+                sessions_code(&failure.code),
+                "branch_missing" | "branch_ended"
+            );
             if gone {
                 Delivery::Gone {
                     session_id: session_id.clone(),
                     branch_id: branch_id.clone(),
                     subscription_ids: subscription_ids.clone(),
-                    code: failure.code,
+                    code: sessions_code(&failure.code).to_owned(),
                 }
             } else {
                 Delivery::Failed {
                     session_id: session_id.clone(),
                     branch_id: Some(branch_id.clone()),
                     subscription_ids: subscription_ids.clone(),
-                    code: failure.code,
+                    code: sessions_code(&failure.code).to_owned(),
                     message: failure.message,
                 }
             }
@@ -861,7 +858,7 @@ async fn session_exists(shared: &Shared, session_id: &str) -> Option<bool> {
     )
     .await
     {
-        Ok(Ok(value)) => value["exists"].as_bool(),
+        Ok(Ok(Some(value))) => value["exists"].as_bool(),
         _ => None,
     }
 }
@@ -929,7 +926,7 @@ pub(crate) async fn sessions(
     service: &dyn HostDispatch,
     method: &str,
     args: Value,
-) -> Result<Result<Value, SessionsFailure>, String> {
+) -> Result<Result<Option<Value>, SessionsFailure>, String> {
     let call = service
         .invoke(method, json!([args]).into())
         .map_err(|error| error.to_string())?;
@@ -939,17 +936,81 @@ pub(crate) async fn sessions(
         .json()
         .map_err(|error| error.to_string())?;
     if envelope["ok"] == json!(true) {
-        Ok(Ok(envelope["value"].clone()))
-    } else {
-        Ok(Err(SessionsFailure::new(
-            envelope["error"]["code"]
-                .as_str()
-                .unwrap_or("failed")
-                .to_owned(),
-            envelope["error"]["message"]
-                .as_str()
-                .unwrap_or("the sessions service refused the input")
-                .to_owned(),
-        )))
+        return Ok(Ok(envelope.get("value").cloned()));
+    }
+    // A failure the target owner wrote is reported under the owner's own
+    // code: that is the code a delivery record keeps.
+    let error = &envelope["error"];
+    let code = error["owner_code"]
+        .as_str()
+        .or_else(|| error["code"].as_str())
+        .unwrap_or("failed");
+    Ok(Err(SessionsFailure::new(
+        code,
+        error["message"]
+            .as_str()
+            .unwrap_or("the sessions service refused the input"),
+    )))
+}
+
+/// One `timelineContext` operation on a line, by `(session, line)`.
+async fn line(
+    service: &dyn HostDispatch,
+    session_id: &str,
+    branch_id: &str,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Result<Option<Value>, SessionsFailure>, String> {
+    sessions(
+        service,
+        "call",
+        json!({
+            "sessionId": session_id,
+            "lineId": branch_id,
+            "service": "timelineContext",
+            "method": method,
+            "args": args,
+        }),
+    )
+    .await
+}
+
+/// Writes one input on a line and answers its id and sequence once the line
+/// published it. A publication that was not confirmed is an unknown outcome.
+pub(crate) async fn write_published(
+    service: &dyn HostDispatch,
+    session_id: &str,
+    branch_id: &str,
+    input: Value,
+) -> Result<Result<(String, u64), SessionsFailure>, String> {
+    let reply = match line(service, session_id, branch_id, "input", vec![input]).await? {
+        Ok(Some(reply)) => reply,
+        Ok(None) => return Err("input answered no write".to_owned()),
+        Err(failure) => return Ok(Err(failure)),
+    };
+    let event = &reply["event"];
+    let (Some(input_id), Some(sequence)) = (event["id"].as_str(), event["sequence"].as_u64())
+    else {
+        return Err("input reply has no committed event".to_owned());
+    };
+    match line(
+        service,
+        session_id,
+        branch_id,
+        "waitPublished",
+        vec![json!(sequence)],
+    )
+    .await?
+    {
+        Ok(_) => Ok(Ok((input_id.to_owned(), sequence))),
+        // The input committed and only its publication is unconfirmed: that is
+        // `publication_unknown`, not a transport failure (design Appendix C).
+        Err(failure) => Ok(Err(SessionsFailure {
+            code: "publication_unknown".to_owned(),
+            message: format!(
+                "the input's publication was not confirmed: {}",
+                failure.message
+            ),
+        })),
     }
 }

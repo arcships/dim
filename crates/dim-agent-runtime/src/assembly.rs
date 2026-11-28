@@ -1165,13 +1165,26 @@ impl SessionAssembly {
     /// published, has ended, or is already closing. The tree's own view decides
     /// publication, so the process path and a Session part see the same state
     /// (ADR 027 D2).
-    pub(crate) fn line(&self, id: &str) -> Option<Arc<TimelineContext>> {
+    pub(crate) fn line(&self, id: &str) -> Option<Arc<BranchRuntime>> {
+        let line = self.published_line(id)?;
+        (!line.is_closing()).then_some(line)
+    }
+
+    /// The published line `id` of this Session, closing or not: the holder
+    /// keeps reading and observing a line until its close settles and the
+    /// tree records its ended head ([#2227]). `None` once the line has left
+    /// the tree, or when the Session's loaded scope is gone.
+    ///
+    /// [#2227]: https://github.com/arcships/dim/pull/2227
+    pub(crate) fn published_line(&self, id: &str) -> Option<Arc<BranchRuntime>> {
+        // The one tree lookup a selection makes, where a flow test holds it.
+        #[cfg(feature = "testing")]
+        crate::testing::lifecycle(&self.id, id);
         let loaded = self.loaded().ok()?;
         let tree = loaded
             .ctx
             .get_at::<dyn TimelineTreeControl>(&loaded.scope.key::<dyn TimelineTreeControl>())?;
-        let line = tree.published(id).ok()?.0;
-        (!line.is_closing()).then_some(line)
+        Some(tree.published(id).ok()?.0)
     }
 
     /// What a route reads of this Session's assembly to decide whether it may
@@ -1465,7 +1478,7 @@ impl TimelineFactory {
         id: String,
         ancestors: Vec<(String, u64)>,
         cancel: CancellationToken,
-    ) -> BoxFuture<'_, std::result::Result<Arc<TimelineContext>, TimelineBuildError>> {
+    ) -> BoxFuture<'_, std::result::Result<Arc<BranchRuntime>, TimelineBuildError>> {
         Box::pin(async move {
             let parent = self
                 .0
@@ -1538,7 +1551,7 @@ impl TimelineFactory {
                 let ctx = &branch.scope.ctx;
                 let scope = branch.scope.scope;
                 required::<dyn LoopState>(ctx, scope.key::<dyn LoopState>())?;
-                let context = TimelineContext::start(
+                let context = BranchRuntime::start(
                     id.clone(),
                     ctx.clone(),
                     created.view.clone(),
@@ -1560,6 +1573,11 @@ impl TimelineFactory {
                     parent.assembly.catalog.clone(),
                     parent.assembly.faces.clone(),
                 );
+                ctx.provide_at(
+                    scope.key::<crate::TimelineContext>(),
+                    Arc::new(context.face()),
+                )
+                .map_err(|error| AgentError::fault("branch scope", error.to_string()))?;
                 Ok(context)
             })
             .catch_unwind()

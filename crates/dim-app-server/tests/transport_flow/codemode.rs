@@ -10,6 +10,7 @@ use dim_agent_capabilities::{
     },
 };
 use dim_agent_runtime::SessionConfig;
+use dim_agent_runtime::SessionLines;
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -247,9 +248,8 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
         .await;
     assert_ok(&usage);
     let context = dim_agent_capabilities::history::HistoryRenderer::default()
-        .context_in(
-            &loaded,
-            "main",
+        .context(
+            loaded.line_of("main").unwrap().timeline(),
             usage["result"]["through"].as_u64().unwrap(),
         )
         .await
@@ -306,9 +306,8 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
         .await;
     assert_ok(&usage);
     let context = dim_agent_capabilities::history::HistoryRenderer::default()
-        .context_in(
-            &loaded,
-            "main",
+        .context(
+            loaded.line_of("main").unwrap().timeline(),
             usage["result"]["through"].as_u64().unwrap(),
         )
         .await

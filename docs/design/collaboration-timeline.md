@@ -29,7 +29,7 @@ relation alone does not prove that a new bus is necessary.
 | --- | --- | --- |
 | Leader branch Timeline | Ordered Collaboration request, delivery and result receipts | Lifetime and history belong to that Agent Session |
 | Process-owned records and typed services | Durable state independent of a Session | Do not themselves supply a Dispatcher-consumed sequence of work |
-| `sessions.input` / `sessions.lookup` | Published Agent input and lookup of its submission correlation | Operate on Agent Sessions; do not create an independent owner |
+| `timelineContext.input` / `timelineContext.lookup` | Published Agent input and lookup of its submission correlation | Operate on Agent Sessions; do not create an independent owner |
 | Existing notifications and subscriptions | Observe lifecycle and configuration owners | Notifications are not durable business history |
 
 A no-Loop Session is not an existing assembly option: branch publication requires
@@ -157,7 +157,7 @@ The current implementation cannot be reused unchanged merely by changing an id.
 | --- | --- |
 | `TimelineKey` / `TimelineStore` | Replace Session-only root ownership with a common root identity; keep one event/branch/trace/snapshot store implementation |
 | `TimelineFactory` / `BranchAssembly` / part registry | Separate neutral bus assembly from SessionConfig and Agent lifecycle; the independent instance mounts its owner's registered parts under its own profile, without fake Agent services |
-| `TimelineContext` | Separate ordered dispatch and storage failure handling from LoopState, model/input processing and Agent stop behavior |
+| `BranchRuntime` | Separate ordered dispatch and storage failure handling from LoopState, model/input processing and Agent stop behavior |
 | Timeline / Dispatcher | Reuse sequence, commit/publication and dispatch algorithms; construct them with the new root's storage and failure owner |
 | TimelineTree | Keep Agent creation, first prompt adoption and `branch/create` / `branch/start` receipts unchanged; no claim that a no-Loop root can call these methods |
 | Process assembly | Register an instanced `timeline` group alongside `agent` in the same loader, owned by `timelineInstances` |

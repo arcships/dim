@@ -433,22 +433,7 @@
     {
       "kind": "session-forwarding",
       "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::batch_end"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::branch_diagnostics"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
       "item": "Session::configure"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::dispatch_watch"
     },
     {
       "kind": "session-forwarding",
@@ -468,52 +453,7 @@
     {
       "kind": "session-forwarding",
       "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::idle"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::input"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::input_commit"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::inputs"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::interrupt"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::lookup"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
       "item": "Session::on"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::publication"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::query"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::sequence"
     },
     {
       "kind": "session-forwarding",
@@ -524,26 +464,6 @@
       "kind": "session-forwarding",
       "file": "crates/dim-agent-runtime/src/agent.rs",
       "item": "Session::set_default_branch"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::state"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::stop"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::submit"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::watch"
     },
     {
       "kind": "branch-type",

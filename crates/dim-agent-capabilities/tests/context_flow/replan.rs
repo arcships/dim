@@ -204,7 +204,10 @@ async fn rejected_candidates_keep_their_size_and_report_the_failed_condition() {
         let calls_before = strategy.cuts().len();
         let events = chain_events(&session, "main", ..).await.unwrap();
         let before = dim_agent_capabilities::history::HistoryRenderer::default()
-            .context_in(&session, "main", events.last().unwrap().sequence)
+            .context(
+                session.line_of("main").unwrap().timeline(),
+                events.last().unwrap().sequence,
+            )
             .await
             .unwrap();
         let history = project_context_history(&before).unwrap();
@@ -235,7 +238,10 @@ async fn rejected_candidates_keep_their_size_and_report_the_failed_condition() {
             assert_eq!(diagnostics.entries_replaced, 0);
             assert_eq!(diagnostics.model_call_count, 1);
             let context = dim_agent_capabilities::history::HistoryRenderer::default()
-                .context_in(&session, "main", events.last().unwrap().sequence)
+                .context(
+                    session.line_of("main").unwrap().timeline(),
+                    events.last().unwrap().sequence,
+                )
                 .await
                 .unwrap();
             let history = project_context_history(&context).unwrap();

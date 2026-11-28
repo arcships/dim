@@ -1,10 +1,14 @@
 # Session access: Agents and Session public-interface supplement
 
+`timelineContext` is a line's own data face: a process caller reaches it as
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })`
+([ADR 027](../../adr/027-cross-scope-access-by-id.md)).
+
 Status: Draft. Overall design: [overview §3 integration](../overview.md#3-integration-by-existing-mechanisms), [Appendix B Agents and InputQueue](../overview.md#appendix-b-supplements-to-existing-plugins); rules: [ADR 002](../../adr/002-plugin-scope.md) D1–D3, D5. Phase: P0. Language: neutral contract; Rust binding in [Appendix E](#appendix-e-rust-binding).
 
 > **Offline resource nodes.** Rows about an offline resource node describe P3 multi-node behaviour. #5 is withdrawn (rutis is an external dependency, and it withdraws imported services when a link drops), so these rows are redesigned in P3 following overview §6.3: node services are looked up on each call by the Session's resource node, which P3 adds to `SessionConfig` ([A.3](#a3-sessionconfig-fields)). In P1/P2 every Session uses the control node.
 
-Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `pending`, `stop`, `idle` and `delete`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload ends cancellable calls, retains own-outcome calls, and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
+Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `exists`, `history`, `withdraw`, `pending`, `delete` and `call`; a line's input, lookup, stop and idle are that line's own operations, reached through `call`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload ends cancellable calls, retains own-outcome calls, and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
 
 | Supplement | Owner | Used by |
 | --- | --- | --- |
@@ -152,16 +156,18 @@ Queue inputs are consumed when Loop starts the turn they drive. Steer inputs are
 | Interface | Mode | Purpose |
 | --- | --- | --- |
 | `sessions.launch(LaunchRequest) -> {sessionId, policy, worktree?}` | async | Create a non-interactive Session for automation with a capped policy |
-| `sessions.input(InputWrite) -> {inputId, sequence}` | async | Write input with source raw blocks |
-| `sessions.lookup({sessionId, branchId, submissionId}) -> LookupReply` | async | Find a committed input after an uncertain outcome |
+| `timelineContext.input(InputMessageData) -> InputWrite {event, written}` | async | Write input with source raw blocks; `written` is false when the line already held the submission id and `event` is that first input. The reply does not wait for publication: a caller that reads history next calls `timelineContext.waitPublished(event.sequence)` first. `submissionId` is optional and must not be empty when present |
+| `timelineContext.lookup(submissionId) -> BranchEvent \| null` | async | Find a committed input after an uncertain outcome; waits for its publication |
 | `sessions.history(HistoryRequest) -> HistoryPage` | async | Read history, optionally as a fixed prefix bounded by the published head |
 | `session.input.withdraw {sessionId, branchId, inputId, reason?}` | RPC | Client withdrawal; InputQueue's `sessionMethods` (namespace `session.input`) |
 | `sessions.withdraw(WithdrawRequest) -> WithdrawReply` | async | Write `input/withdraw` for an input the caller wrote, by its `input_id`, and return InputQueue's decision |
-| `sessions.stop({sessionId, branchId, reason?}) -> {sequence}` | async | Interrupt the branch's turn |
-| `sessions.idle({sessionId, branchId}) -> {sequence}` | async | Wait until the branch is idle; the returned sequence is the last committed one, a whole-batch boundary |
+| `timelineContext.stop(reason) -> sequence` | async | Interrupt the branch's turn and answer its confirmed dispatched sequence |
+| `timelineContext.idle() -> sequence` | async | Wait until the branch is idle; the returned sequence is the last committed one, a whole-batch boundary |
 | `sessions.delete({sessionId}) -> {}` | async | Delete a Session: Agents closes it and removes its rows and files ([session deletion](../appserver/session-deletion-and-fork.md#3-deletion)) |
 | `SessionConfig.interactive` | data | Creation-time configuration |
 | `session.create {interactive}` | RPC | Non-interactive creation |
+
+The `timelineContext` rows are operations of the line's data face, not methods of `sessions`: a process caller reaches them as `sessions.call({sessionId, lineId, service: "timelineContext", method, args})`, and a Session part as `sessionScope.lineCall({lineId, service: "timelineContext", method, args})`. The call names the Session and the line, so the operations take neither ([ADR 027](../../adr/027-cross-scope-access-by-id.md), [#2027](https://github.com/arcships/dim/issues/2027)).
 
 ## 7. Security
 
@@ -228,15 +234,15 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
 | Method | Mode | Request | Reply | Errors |
 | --- | --- | --- | --- | --- |
 | `launch` | async | `LaunchRequest` | `{sessionId, policy, worktree?}` | `rejected`, `agent_unknown`, `session_closed`, `branch_missing` (the starter), `branch_ended` (the starter), `reloading`, `failed` |
-| `input` | async | `InputWrite` | `{inputId, sequence}` | `rejected`, `ambiguous`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `publication_unknown`, `failed` |
-| `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`, `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
 | `exists` | async | `{sessionId}` | `{exists}` | `rejected`, `reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`, `future_sequence`, `session_closed`, `branch_missing`, `reloading` |
 | `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | [S2 §6.10](../appserver/sessions-service.md#610-pending) |
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `publication_unknown` |
-| `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
-| `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
 | `delete` | async | `{sessionId}` | `{}` | `rejected`, `reloading`, `failed` |
+| `defaultBranchId` | async | `{sessionId}` | `{defaultBranchId}` | `session_closed`, `reloading` |
+| `call` | async | `{sessionId, lineId?, service, method, args}` | the target operation's own reply | Selection: `no_session`, `session_closing`, `session_reloading` (retryable), `session_unavailable`, `no_line`, `no_service`, `not_data_face`, `method_not_routable`, `wrong_scope`. The target owner's failure: `routed`, with the owner's `name`, `message`, `owner_code` and `retryable` |
+
+Input, lookup, stop and idle on a line are that line's own operations, not `sessions` methods: `call` reaches them as `timelineContext.input`, `lookup`, `stop` and `idle` (§6). `call` selects the target by id at each call and holds no result of the selection ([ADR 027](../../adr/027-cross-scope-access-by-id.md), [#2127](https://github.com/arcships/dim/issues/2127)).
 
 ```text
 // LaunchRequest
@@ -246,16 +252,15 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
   "policy?": { /* PermissionPolicy data */ },  // narrowed request; absent: starter's or read-only default
   "starter?": { "sessionId": "string", "branchId": "string" }, // upper bound; absent: host configuration bound
   "worktree?": { /* managed worktrees §3 request */ } }
-// InputWrite
-{ "sessionId": "string", "branchId": "string",
-  "mode": "queue" | "steer" | "append",
-  "submissionId": "<source>:<uuid>",
-  "rawBlocks": [ RawBlock ],         // first block is the caller's marker (A.2)
-  "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] }
-// RawBlock
-{ "text": "string", "key?": { "use": "live" | "retire", "name": "string" } }
-// LookupReply
-{ "status": "accepted", "inputId": "string", "sequence": 0 } | { "status": "unknown" }
+// timelineContext.input argument: InputMessageData
+{ "mode": "queue" | "steer" | "append",
+  "submission_id?": "<source>:<uuid>",   // optional; not empty when present
+  "blocks": [ { "type": "raw", "text": "string", "key?": "string", "retire?": true } ],
+                                        // first block is the caller's marker (A.2)
+  "user?": { "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] } }
+// timelineContext.input reply: InputWrite
+{ "event": { /* the committed input/message event */ }, "written": true | false }
+// timelineContext.lookup(submissionId) reply: the published input/message event, or null
 // HistoryRequest
 { "sessionId": "string", "branchId": "string",
   "after?": 0,                        // exclusive lower bound; absent: from the start of the branch
@@ -296,7 +301,7 @@ The optional `worktree` request and reply members follow [managed worktrees §3]
 
 `delete` is Agents' Session delete (S5c): it closes the Session if it is loaded, then removes its rows and files. An absent or already deleted Session replies `{}`, so a caller deletes again after any error ([sessions service §6.8](../appserver/sessions-service.md#68-delete)). The caller that launched a Session deletes it when it drops the last record that names it ([§8.7](../appserver/sessions-service.md#87-deleting-run-sessions)).
 
-Implemented: every method above, served by Agents' directory part (S2, [#98](https://github.com/arcships/dim/pull/98); `delete` after S5c, [#97](https://github.com/arcships/dim/pull/97)). `input` and a `withdraw` that deletes reply once their event is published.
+Implemented: every method above, served by Agents' directory part (S2, [#98](https://github.com/arcships/dim/pull/98); `delete` after S5c, [#97](https://github.com/arcships/dim/pull/97)). A `withdraw` that deletes replies once its event is published. A line's `timelineContext.input`, reached through `call`, replies once its input is committed, before publication: a caller that must not record a delivery ahead of the store confirms publication with `timelineContext.waitPublished(event.sequence)` or `timelineContext.lookup(submissionId)` first.
 
 ### A.2 Source input conventions
 
@@ -304,7 +309,7 @@ Implemented: every method above, served by Agents' directory part (S2, [#98](htt
 | --- | --- |
 | Marker | The first raw block is the element `<dim-<source> kind="..." ...>body</dim-<source>>` in the existing context-block format. It is model-facing text written by the producing plugin; shared components never parse it, and only the producing plugin may interpret its own content (for example Goal folding its own blocks) |
 | Keys | `RawBlock.key` with `use: live` or `retire`, per branch Timeline. The writer chooses the full key; by convention it starts with the writer's own prefix (overview constraint 14), and nothing checks it |
-| Submission identity | `<source>:<uuid>`, generated per logical submission. A branch accepts each identity once: a resubmission writes nothing and replies the first input's receipt, also after the input is consumed or withdrawn. `sessions.lookup` (same semantics as `session.input_lookup`) finds a committed input (`accepted`, `unknown`) without writing. Error `ambiguous` (from `input` or `lookup`) means several inputs share the identity, written before branches accepted each once. The identity is the `submission_id` field of the committed `input/message`, so it commits, forks and is deleted with the input; no separate record exists ([sessions service §6.3](../appserver/sessions-service.md#where-the-submission-identity-lives), #32) |
+| Submission identity | `<source>:<uuid>`, generated per logical submission. A branch accepts each identity once: a resubmission writes nothing and replies the first input's receipt, also after the input is consumed or withdrawn. `timelineContext.lookup` (same semantics as `session.input_lookup`) finds a committed input (`accepted`, `unknown`) without writing. Error `ambiguous` (from `input` or `lookup`) means several inputs share the identity, written before branches accepted each once. The identity is the `submission_id` field of the committed `input/message`, so it commits, forks and is deleted with the input; no separate record exists ([sessions service §6.3](../appserver/sessions-service.md#where-the-submission-identity-lives), #32) |
 | Never possible | Writing events other than `input/message`, `input/withdraw` through `withdraw` and `stop/interrupt` through `stop`; writing `input/deleted`; editing history |
 
 ### A.3 SessionConfig fields
@@ -434,7 +439,7 @@ previous wire shape, and the frozen v1 projection remains unchanged.
 
 ### A.5 Fixed-prefix read
 
-`sessions.history` acquires and holds the Session, restoring it when unloaded. With `atLeast` it fixes `through` as the published head at call time. It fails with `future_sequence` if that head is below `atLeast`, and otherwise returns the branch's own events through that head, paged by `after` and `limit`. It is composed from the existing facade: read the head with `Session::sequence(branch)`, then page with `AgentIndex::history_page`. A live line pages through its query; an ended line pages through `TimelineTree` at its fixed head and batch boundaries. This entry has no store-read fallback for a Session the process does not hold. A branch part that needs the ancestor prefix reads the chain with the same query (§9.2). Every event delivered by the branch Dispatcher or the Session broadcast is published, so `atLeast = event.sequence` succeeds while the branch exists.
+`sessions.history` acquires and holds the Session, restoring it when unloaded. With `atLeast` it fixes `through` as the published head at call time. It fails with `future_sequence` if that head is below `atLeast`, and otherwise returns the branch's own events through that head, paged by `after` and `limit`. It is composed from the holder's line handle: read the head with `RoutedSession::line(branch).sequence()`, then page with `AgentIndex::history_page`. A live line pages through its query; an ended line pages through `TimelineTree` at its fixed head and batch boundaries. This entry has no store-read fallback for a Session the process does not hold. A branch part that needs the ancestor prefix reads the chain with the same query (§9.2). Every event delivered by the branch Dispatcher or the Session broadcast is published, so `atLeast = event.sequence` succeeds while the branch exists.
 
 ### A.6 Errors
 
@@ -527,15 +532,15 @@ while the first write is still unpublished.
 
 | Neutral | Rust |
 | --- | --- |
-| `sessions` | Typed `AgentIndex` methods (Agents) over the `Session` facade ([agent.rs](../../../crates/dim-agent-runtime/src/agent.rs), [branch.rs](../../../crates/dim-agent-runtime/src/branch.rs)); Agents' directory part exposes them by name ([sessions service, Appendix A](../appserver/sessions-service.md#appendix-a-rust-binding)) |
+| `sessions` | Typed `AgentIndex` methods (Agents) over the holder's line handle `RoutedSession::line` ([route.rs](../../../crates/dim-agent-runtime/src/route.rs)); Agents' directory part exposes them by name ([sessions service, Appendix A](../appserver/sessions-service.md#appendix-a-rust-binding)) |
 | `launch` | `AgentIndex::launch(LaunchRequest) -> Result<LaunchReply, SessionsError>` |
 | per-call acquire | `AgentIndex::acquire(id)` (existing, crate-internal) returning a `SessionUse` lease |
-| `input` | `Session::input(InputMessageData, branch)` (existing; returns the committed input for an id the branch already holds); a key is `InputBlock::Raw { key: Some(name), retire }` |
-| `lookup` | `Session::lookup(branch, submission_id)`, shared with `session.input_lookup`: a query of the branch's committed input identities; waits for the found input's publication |
-| `history` | `Session::sequence(branch)`, failing `future_sequence` below `at_least`, then `AgentIndex::history_page(id, branch, after, limit, through)` |
-| `withdraw` | `Session::service::<InputQueue>(branch)` then `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`. The data face permits only plain withdrawal and returns `Deleted { sequence }` or `NotHeld`. `InputMethods` uses the Rust-only `withdraw_checked` for an already checked Steer candidate, retains its committed event, and confirms publication before returning the receipt (A.4). |
-| `pending` | Capture `Session::publication(branch).sequence()`, wait through it with `Session::dispatch_watch(branch)` while observing publication closure, then `Session::service::<InputQueue>(branch)` and `InputQueue::pending(input_id) -> bool`: the branch's queue answers §2's rule; an id it does not hold is `false` |
-| `stop`, `idle` | `Session::stop`, `Session::idle` (existing) |
+| `input` | `timelineContext.input(InputMessageData)` on the line's face, answering `InputWrite { event, written }` (the committed input for an id the line already holds, with `written: false`); a key is `InputBlock::Raw { key: Some(name), retire }` |
+| `lookup` | `timelineContext.lookup(submission_id)`, shared with `session.input_lookup`: a query of the line's committed input identities; waits for the found input's publication |
+| `history` | `RoutedSession::line(branch).sequence()`, failing `future_sequence` below `at_least`, then `AgentIndex::history_page(id, branch, after, limit, through)` |
+| `withdraw` | The line's `InputQueue` then `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`. The data face permits only plain withdrawal and returns `Deleted { sequence }` or `NotHeld`. `InputMethods` uses the Rust-only `withdraw_checked` for an already checked Steer candidate, retains its committed event, and confirms publication before returning the receipt (A.4). |
+| `pending` | Capture `line.publication().sequence()` on the holder's handle, wait through it with `line.dispatch_watch()` while observing publication closure, then the line's `InputQueue` and `InputQueue::pending(input_id) -> bool`: the branch's queue answers §2's rule; an id it does not hold is `false` |
+| `stop`, `idle` | `timelineContext.stop(reason)`, `timelineContext.idle()` on the line's face |
 | `delete` | `AgentIndex::delete(id)` (S5c, crate-internal): admission gate, close, `SessionStore::delete_session`, forget |
 | `SessionConfig` | Rust struct below |
 | Errors | `SessionsError` with the codes of A.6, mapped from `AgentError`: `Closed` → `session_closed`, `UnknownBranch` → `branch_missing`, `BranchEnded` → `branch_ended`, `Reloading` → `reloading`, `InvalidInput` → `rejected`, others → `failed` |

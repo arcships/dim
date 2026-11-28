@@ -847,18 +847,22 @@ async fn reads() -> std::result::Result<(), Error> {
         for _ in 0..20 {
             let reader = active.clone();
             let context = session.clone();
+            let line = agent
+                .routed_session(context.id())
+                .and_then(|routed| routed.line("main").ok())
+                .ok_or_else(|| AgentError::Closed(context.id().into()))?;
             let (started, running) = tokio::sync::oneshot::channel();
             let read = tokio::spawn(async move {
                 let through = reader.sequence();
                 let _ = started.send(());
                 drop(
                     dim_agent_capabilities::history::HistoryRenderer::default()
-                        .context_in(&context, "main", through)
+                        .context(line.timeline(), through)
                         .await?,
                 );
                 drop(
                     dim_agent_capabilities::history::HistoryRenderer::default()
-                        .context_in(&context, "main", through)
+                        .context(line.timeline(), through)
                         .await?,
                 );
                 Ok::<_, AgentError>(())

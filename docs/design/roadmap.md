@@ -224,7 +224,7 @@ P6/P7 的[公开 TS 进程装配与管理方法绑定](process-typescript.md)合
 
 P6/P7 的[功能依赖绑定](process-typescript.md#51-p6p7-access-through-declared-feature-dependencies)已由维护者在 [#237 评审](https://github.com/arcships/dim/pull/237#pullrequestreview-5584479437)确认：仅可选工具行注入进程业务服务，不让 Session 核心依赖该服务；进程 owner 保持稳定依赖边界，新增高频重载依赖须重新决定可用性代价。真实 Node 流程验证 owner 重载时原生工作继续、新 Session 取得新 owner，以及旧工具绑定返回明确的不可重试错误。恢复使用服务端重启后还原，或 #126 尚待实现的空闲卸载后还原；后者也是该恢复路径的交付前置。#35 的访问选择已确定，不增加热接入、可选查找 API、事件协议或 rutis 升级前置；Workflow 可选包与业务验收已实现（#306），Scheduler Ready #283 已合入，包可开始实施；交付边界见各自所有者文档。
 
-P6/P7 的[原生接入合同](p6-p7-bindings.md) #256、实时权限读取 #259 与受限文件访问 #265 已合入。sessions.input 已实现准入后自持任务，分支对每个 submissionId 只接受一次，并以真实 Node 崩溃、重载及 Session 恢复流程验证；Workflow 可选包已提供用户、项目与安装包三类定义来源、阶段引擎和后台报告；SDK 与真实 Node 验收对应关系见包 README 和 Workflow 附录 D。合同复用 rutis 的生成导出与 caller row，不增加 rutis 前置。Scheduler Ready #283 已合入，包可开始实施；Workflow 可选包与业务验收已实现（#306），显式产品安装及反复创建 Session 发布前的 #126 仍单独处理。
+P6/P7 的[原生接入合同](p6-p7-bindings.md) #256、实时权限读取 #259 与受限文件访问 #265 已合入。timelineContext.input 已实现准入后自持任务，分支对每个 submissionId 只接受一次，并以真实 Node 崩溃、重载及 Session 恢复流程验证；Workflow 可选包已提供用户、项目与安装包三类定义来源、阶段引擎和后台报告；SDK 与真实 Node 验收对应关系见包 README 和 Workflow 附录 D。合同复用 rutis 的生成导出与 caller row，不增加 rutis 前置。Scheduler Ready #283 已合入，包可开始实施；Workflow 可选包与业务验收已实现（#306），显式产品安装及反复创建 Session 发布前的 #126 仍单独处理。
 
 P6/P7 的每秒历史跟踪及现有停止边界已确认：按分支停止可能遇到后续轮次，已采用输入不能撤回，运行记录终结后仍可能被复用会话的后续轮次消费。这些是接受的首版限制，后续统一设计，不增加 core、条件停止协议或锁；不再作为待确认项；两项设计状态见各自所有者文档。
 

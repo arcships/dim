@@ -1,5 +1,9 @@
 # EventHub
 
+`timelineContext` 是线自己的数据面：进程调用方经
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })` 到达
+（[ADR 027](../../adr/027-cross-scope-access-by-id.md)）。
+
 状态：草案。总体设计：[overview §3](../overview.md#3-基于现有机制的集成)。规则：[设计规则](../../../architecture/rust-agent/principles.md) §1 与 §4、[ADR 002](../../adr/002-plugin-scope.md)、[插件契约](../plugin-contract.md)，后者由 [ADR 006](../../adr/006-plugin-contract.md) 定义。作用域：进程与 Session。语言：Rust。English: [English](../../../design/plugins/EventHub.md)。
 
 EventHub 把事件从插件和其他生产方交给应该看到它们的 Session。生产方发布一条有类型的轻量事件：一条 IM 消息、一条 SaaS 或 CI 通知、一个定时器、另一个 agent 的消息。Session 订阅事件类型，模型经工具订阅，客户端经管理方法订阅；EventHub 把每条匹配的事件作为一条普通分支输入投递给它，模式沿用已有的 `queue`、`steer` 或 `append`，见 `crates/dim-agent-types/src/events.rs:7`。每次发布都返回一份回执，说明什么到达了哪条分支、什么没有到达以及原因。
@@ -16,7 +20,7 @@ flowchart LR
     Ready["通知行：eventhub/ready，每代一个"]
     MM["managementMethods：命名空间 eventhub"]
     Rpc["Rpc"]
-    Agents["Agents：sessions.input、sessions.exists"]
+    Agents["Agents：timelineContext.input、sessions.exists"]
     Files["pluginFiles：eventhub/subscriptions.json"]
     SF["SessionStore：sessionFiles.put"]
   end
@@ -49,7 +53,7 @@ EventHub 是一个内置原生插件，位于新 crate `crates/dim-event-hub`。
 
 进程部件注入 `pluginFiles`，所以没有订阅文件根目录时它不装载：此时宿主没有 `eventHub` 服务、没有 `eventhub.*` 方法，也没有指南条目。EventHub 不保存内存订阅，因此不会有任何东西被静默丢失。想要 EventHub 的宿主提供它为 Scheduler 已经提供的同一个根目录(`crates/dim-app-server/src/cli.rs:519-522`)。
 
-**接收方不是新组件。** 替 agent 接收一条事件并激活其 Session 的层次，是 Agents 的 `sessions.input`：它取得 Session，未加载的就地恢复，用给定模式写入 `input/message`，再由 InputQueue 与 Loop 决定这条输入变成什么，见 [session access A.1](../contracts/session-access.md#a1-sessions-服务) 与 [sessions 服务 §6.2](../appserver/sessions-service.md#62-input)。EventHub 从不打开、保持或关闭 Session。生命周期仍归 Agents。EventHub 不保留心跳、没有未投递事件的队列，也不重试。
+**接收方不是新组件。** 替 agent 接收一条事件并激活其 Session 的层次，是 Agents 的 `timelineContext.input`：它取得 Session，未加载的就地恢复，用给定模式写入 `input/message`，再由 InputQueue 与 Loop 决定这条输入变成什么，见 [session access A.1](../contracts/session-access.md#a1-sessions-服务) 与 [sessions 服务 §6.2](../appserver/sessions-service.md#62-input)。EventHub 从不打开、保持或关闭 Session。生命周期仍归 Agents。EventHub 不保留心跳、没有未投递事件的队列，也不重试。
 
 ## 2. 数据与状态
 
@@ -99,7 +103,7 @@ GuideRecord {
 - 时间戳使用规范 UTC 形式 `YYYY-MM-DDTHH:mm:ss.sssZ`，固定三位小数，见 `crates/dim-agent-scheduler/src/document.rs:137-148`。
 - **上限。** 每个 Session 至多 32 条订阅，整机至多 1024 条；超过任一条，创建返回 `limit_reached`。
 - **创建检查。** 创建时，每个精确类型所命的类型、或每个 `<source>.*` 模式所命来源，必须在当下已声明，否则为 `unknown_type`。已存储的订阅不管之后声明了什么都被保留，所以订阅能挺过生产方关闭，来源的指南也留在分支里，见 3.3。
-- **存活。** 订阅在重启后仍在，因此事件能到达一个未加载的被订阅 Session：`sessions.input` 会恢复它。
+- **存活。** 订阅在重启后仍在，因此事件能到达一个未加载的被订阅 Session：`timelineContext.input` 会恢复它。
 - **移除。** 只有三件事移除订阅：`unsubscribe`、回执为 `gone` 的投递，见 2.3，以及目标 Session 被删除，见 3.4。
 
 **策略就是订阅的数据**：它的 `types`、`match` 与 `mode`，默认取类型的声明模式。门控、合并、限流和经判定的路由是生产方自己的事；需要它们的生产方在调用 `publish` 之前自行决定。EventHub 只投递匹配的东西，来一件投一件。
@@ -111,7 +115,7 @@ GuideRecord {
 | 状态 | 内容 | 对订阅的影响 |
 | --- | --- | --- |
 | `delivered` | `{sessionId, branchId, subscriptionIds, inputId, sequence, truncated?, repeated?}` | 保留 |
-| `gone` | `{sessionId, branchId, subscriptionIds, code}`，`code` 为 `branch_missing` 或 `branch_ended` | 每条列出的订阅都被移除，因为该目标分支不会再接受输入；仅由 `to` 到达的分支，列表为空 |
+| `gone` | `{sessionId, branchId, subscriptionIds, code}`，`code` 为 `branch_missing` 或 `branch_ended`。`sessions.call` 的路由对已结束的线和 Session 从未有过的线都回答 `no_line`（[#2127](https://github.com/arcships/dim/issues/2127)），所以投递到已结束的线时为 `branch_missing`；所有者自己回答 `branch_ended` 时仍为 `branch_ended` | 每条列出的订阅都被移除，因为该目标分支不会再接受输入；仅由 `to` 到达的分支，列表为空 |
 | `failed` | `{sessionId, branchId?, subscriptionIds, code, message}`，`code` 为其他任何 `sessions` 错误或 `transport`：`session_closed`、`reloading`、`rejected`、`ambiguous`、`publication_unknown`、`transport`、`failed` | 每条列出的订阅都保留，并由 `lastFailure` 记录该码 |
 
 - `subscriptionIds` 列出所有导致这条分支被投递的匹配订阅；仅由 `to` 到达的分支为空。表中的效果作用于每一条列出的订阅。
@@ -124,7 +128,7 @@ GuideRecord {
 
 同一条事件的每次投递都使用同一个 `submissionId`，即 `eventhub:<source>:<eventId>`，而一条分支对每个 `submissionId` 只接受一次，见 [session access A.2](../contracts/session-access.md#a2-来源输入约定) 与 [sessions 服务 §6.2](../appserver/sessions-service.md#62-input)。因此被两次命中的分支只收到一次事件，用同一个 `id` 重新发布的生产方在每条分支上都是幂等的：第二次 `publish` 什么也不写，回复第一次输入的 `inputId` 与 `sequence`。输入被消费或被撤回之后，这个 id 仍然占用。
 
-每次发布从第一次查找到最后一次投递，持有以该提交 id 为键的进程内锁，即 `eventhub:<source>:<eventId>`(即 2.5 的实例状态)。这把锁把按分支的保证延伸到文件(3.2)：每次发布都先按 id 在每条目标分支上查找，已经持有该输入的分支直接回答 `repeated: true`，不写文件，也不写第二个输入。查找失败的分支继续走 `sessions.input`，由它保证该 id 只被接受一次；正文超过上限时，该分支不写文件，它的输入带预览并标 `truncated: true`。发布结束时释放锁，映射项随最后一个持有者消失。
+每次发布从第一次查找到最后一次投递，持有以该提交 id 为键的进程内锁，即 `eventhub:<source>:<eventId>`(即 2.5 的实例状态)。这把锁把按分支的保证延伸到文件(3.2)：每次发布都先按 id 在每条目标分支上查找，已经持有该输入的分支直接回答 `repeated: true`，不写文件，也不写第二个输入。查找失败的分支继续走 `timelineContext.input`，由它保证该 id 只被接受一次；正文超过上限时，该分支不写文件，它的输入带预览并标 `truncated: true`。发布结束时释放锁，映射项随最后一个持有者消失。
 
 发布一旦持有它的事件锁，就在 EventHub 自己拥有的任务里运行到完成。丢弃回复的调用方或一次重载，都既不会停止它，也不会释放那把锁，所以用同一个 `id` 的重试会等它结束，然后找到该输入并回答 `repeated`。
 
@@ -134,7 +138,7 @@ GuideRecord {
 
 ### 2.5 EventHub 不保留什么
 
-没有队列、没有未投递事件、没有重试、没有定时器、没有心跳。`publish` 只在每个目标都有了结果之后才回复，所以需要顺序的生产方逐次等待每个调用；并发的发布之间没有顺序。没能完成的投递由生产方根据回执自行决定。发布持有一份属于整个安装的投递预算，所有发布合计至多同时运行 8 个调用。这份预算同时约束 `sessions.lookup` 与 `sessions.input` 调用：二十个并发发布合起来仍然至多同时进行 8 个调用，发布给许多冷 Session 时会分批恢复它们，而不是一次全部恢复，一次发布也挤不掉另一次；一次恢复需要数秒 (一个 10 万事件、十条打开分支的 Session 约 4 秒，为 #1113 测得)。`publish` 自己没有超时：不能等待的生产方不要 await 它，那样做的同时也就放弃了顺序。
+没有队列、没有未投递事件、没有重试、没有定时器、没有心跳。`publish` 只在每个目标都有了结果之后才回复，所以需要顺序的生产方逐次等待每个调用；并发的发布之间没有顺序。没能完成的投递由生产方根据回执自行决定。发布持有一份属于整个安装的投递预算，所有发布合计至多同时运行 8 个调用。这份预算同时约束 `timelineContext.lookup` 与 `timelineContext.input` 调用：二十个并发发布合起来仍然至多同时进行 8 个调用，发布给许多冷 Session 时会分批恢复它们，而不是一次全部恢复，一次发布也挤不掉另一次；一次恢复需要数秒 (一个 10 万事件、十条打开分支的 Session 约 4 秒，为 #1113 测得)。`publish` 自己没有超时：不能等待的生产方不要 await 它，那样做的同时也就放弃了顺序。
 
 实例状态(2.1)就是锁与预算所在：事件锁(2.4)、Session 锁(3.3)与投递预算。它们全是进程内存，所以重启后从空开始，每张映射在最后一个持有者释放时删除对应项。它们只按一个顺序获取：事件锁、投递许可、目标 Session 的锁，最后是订阅文件的变更锁；因此没有任何一条路径会持有一把锁去等待另一把已经在等它的锁。投递在投递许可下等指南刷新所需的 Session 锁(3.3)；省略分支的 `subscribe` 先在一次许可下解析该分支，再取这把锁，两者因此不会互相等待，也没有哪次订阅会把整个安装的许可堵在身后。
 
@@ -187,7 +191,7 @@ sequenceDiagram
 
 文件原样保存正文，不含标题，标题留在标记里。put 按目标 Session 各做一次，所以订阅了同一事件的两个 Session 得到两个文件：Session 文件属于一个 Session，并随它删除。
 
-**重试不会为已持有该输入的分支写文件。** 发布持有事件锁(2.4)，所以同一个 id 的两次发布不会交错。在存任何东西之前，它在每条目标分支上 `sessions.lookup` 该提交 id：已经持有该输入的分支直接回答 `delivered`，带上那个输入的 id 与 sequence 以及 `repeated: true`，不写文件，也不写第二个输入。只有没有该输入的分支才得到文件与输入。等待仍在运行的发布之锁的重试，会复用那次发布存下的文件。如果重试发生在该发布结束之后，则每个 Session 里、它命中的是第一次发布错过的分支时，会多存一个文件：`sessionFiles.put` 每次调用都存一个新文件，每个输入引用自己的那份，随该 Session 删除。第一次发布的 put 可能失败而已投递了预览；此时重试对这些分支回答 `repeated: true` 且不含 `truncated`，因为带预览的是第一个输入，新文件从未被引用。put 成功而输入未写之间崩溃，只留下一个未被引用的文件，它随该 Session 删除。
+**重试不会为已持有该输入的分支写文件。** 发布持有事件锁(2.4)，所以同一个 id 的两次发布不会交错。在存任何东西之前，它在每条目标分支上 `timelineContext.lookup` 该提交 id：已经持有该输入的分支直接回答 `delivered`，带上那个输入的 id 与 sequence 以及 `repeated: true`，不写文件，也不写第二个输入。只有没有该输入的分支才得到文件与输入。等待仍在运行的发布之锁的重试，会复用那次发布存下的文件。如果重试发生在该发布结束之后，则每个 Session 里、它命中的是第一次发布错过的分支时，会多存一个文件：`sessionFiles.put` 每次调用都存一个新文件，每个输入引用自己的那份，随该 Session 删除。第一次发布的 put 可能失败而已投递了预览；此时重试对这些分支回答 `repeated: true` 且不含 `truncated`，因为带预览的是第一个输入，新文件从未被引用。put 成功而输入未写之间崩溃，只留下一个未被引用的文件，它随该 Session 删除。
 
 标记与条目不变。
 
@@ -199,7 +203,7 @@ sequenceDiagram
 2. 为订阅命名的每个来源向目标分支各写一条 `append` 输入，提交 id 为 `eventhub-guide:<subscriptionId>:<source>`，它的唯一原始块是 `<dim-event-guide source="im">guide</dim-event-guide>`，键为 `eventhub:guide:<source>`，`use: live`。这次写入同时校验目标：分支不存在或已结束、Session 已关闭或任何其他 `sessions` 错误都会拒绝创建、什么也不存；`publication_unknown` 是例外，因为它说明输入已经提交，所以订阅会被存储，见 A.3。
 3. 存储订阅并带上它的 `origin`，同时为它写出的每个来源把该指南的 digest 存入该分支的 `GuideRecord`：由 `events` 工具发起时为 `tool`，由管理方法发起时为 `client`(2.2)。
 
-每次 `subscribe` 与 `unsubscribe` 都取目标 Session 的一把锁，并从那把锁下的第一次检查一直持有到最后一次写指南或撤回；省略分支的 `subscribe` 在拿这把锁之前，先在一次投递许可下解析该分支(2.5，timeline branches §20.22)。`agent/session-deleted` 处理与 3.4 的对账拿同一把锁。没有它，同一条分支上同一来源的两次变更可以交错：一条订阅写出它的指南，旧记录的取消订阅在新记录尚未存储时移除旧记录、撤回该键，然后订阅才存储新记录——已生效的指南被撤回。按 Session 加锁保留这个顺序，又不至于让宿主机上的每次订阅变更都被卡住：持锁时间由该 Session 自己的 `sessions.input` 调用决定，所以一次冷恢复只会堵住对该 Session 的变更。`gone` 移除不拿这把锁：该分支上的订阅会以同一个码在写指南时失败。每 Session 与总数上限仍在存储的变更里、文件锁之下执行。
+每次 `subscribe` 与 `unsubscribe` 都取目标 Session 的一把锁，并从那把锁下的第一次检查一直持有到最后一次写指南或撤回；省略分支的 `subscribe` 在拿这把锁之前，先在一次投递许可下解析该分支(2.5，timeline branches §20.22)。`agent/session-deleted` 处理与 3.4 的对账拿同一把锁。没有它，同一条分支上同一来源的两次变更可以交错：一条订阅写出它的指南，旧记录的取消订阅在新记录尚未存储时移除旧记录、撤回该键，然后订阅才存储新记录——已生效的指南被撤回。按 Session 加锁保留这个顺序，又不至于让宿主机上的每次订阅变更都被卡住：持锁时间由该 Session 自己的 `timelineContext.input` 调用决定，所以一次冷恢复只会堵住对该 Session 的变更。`gone` 移除不拿这把锁：该分支上的订阅会以同一个码在写指南时失败。每 Session 与总数上限仍在存储的变更里、文件锁之下执行。
 
 带键块在压缩之后会被重放，所以只要分支还订阅着，来源的手册就一直留在上下文里，跨重启、生产方关闭时也一样。对分支上已经生效的来源再建一条订阅，会以同样的文字写一次同一个键，覆盖该块而不改变模型读到的内容。`append` 从不启动一轮，见 `crates/dim-agent-capabilities/src/agent_loop.rs:149-157` 与 `crates/dim-agent-capabilities/src/input_queue.rs:167-180`。
 
@@ -229,7 +233,7 @@ sequenceDiagram
 | 同一生产方的两次发布 | — | 两者之间没有顺序；各自在自己的目标结算后回复；需要顺序的生产方逐次等待 | EventHub、生产方 |
 | 发布进行中创建订阅 | — | 发布按开始时的内存集合匹配；在这之后提交的订阅不会收到该事件 | EventHub |
 | 投递进行中 `unsubscribe` | — | 已投递的输入照常保留，回执会列出它；记录被移除 | EventHub |
-| 投递给空闲卸载的 Session | — | `sessions.input` 取得并恢复它；回执为 `delivered` | Agents |
+| 投递给空闲卸载的 Session | — | `timelineContext.input` 取得并恢复它；回执为 `delivered` | Agents |
 | 投递给已删除的 Session | — | `failed: session_closed`；订阅保留到通知将其移除，或到某次 `apply` / 第一次失败投递完成对账(3.4) | EventHub、Agents |
 | 投递进行中 Session 被删除 | — | 写入以 `session_closed` 失败，或者已提交并发布；两种结果都是回执 | Agents |
 | 正文超过 5120 字节 | — | 每个目标 Session 一个文件，没有 `sessionFiles` 时为 `truncated` | EventHub |
@@ -282,7 +286,7 @@ EventHub 占有的名字：服务名 `eventSubscriptions`、标记元素、键�
 
 | 规则 | 本设计如何满足 |
 | --- | --- |
-| §4.1 改别人的状态要写指令事件 | EventHub 只经 Agents 的 `sessions.input` 写输入；InputQueue 与 Loop 决定它们变成什么。订阅是 EventHub 自己的状态，只由它自己的方法改动 |
+| §4.1 改别人的状态要写指令事件 | EventHub 只经 Agents 的 `timelineContext.input` 写输入；InputQueue 与 Loop 决定它们变成什么。订阅是 EventHub 自己的状态，只由它自己的方法改动 |
 | §4.2 交接后不能收回 | 已投递的输入归 InputQueue；EventHub 无法撤回它、不保留副本、从不重试。生产方的决定依据是回执 |
 | §4.3 只在写入前经 before 回调干预 | 不适用：EventHub 不登记 before 回调，也不登记入口检查；`publish` 在服务边界上校验自己的参数 |
 | §4.4 核心机制不带业务含义 | Timeline、Dispatcher、InputQueue、Loop 与 Rpc 都不增加任何东西。标记是 EventHub 写出的文字，只有 EventHub 的条目解释它；核心从不解析它 |
@@ -304,14 +308,14 @@ EventHub 占有的名字：服务名 `eventSubscriptions`、标记元素、键�
 ### 9.1 Agents 宣布每一次移除了数据行的删除
 
 - **被什么挡住：** EventHub 必须移除被删除 Session 的订阅，而一个保留数据行的关闭不能移除它们。`session_closed` 同时回答这两种情况，见 `crates/dim-app-server/src/agents.rs:817-830` 与 [session access A.6](../contracts/session-access.md#a6-错误)；今天唯一的删除通知是 `agent/unloaded-session-deleted`，且只为未加载的 Session 发出，见 `crates/dim-app-server/src/agents.rs:97-109,1399-1415` 与 [插件契约 §5.3](../plugin-contract.md#53-总线事件)。
-- **考虑过的现有机制：** Session 广播的 `closed` 事件只说明一个 Session 关闭了，不说明它的数据行是否被移除，而 EventHub 不能因关闭而移除；用 `sessions.lookup` 轮询每个被订阅的 Session 时，对一个存在但从未收到输入的 Session 回答 `unknown`，区分不出已删除与可恢复，而且会引入 EventHub 设计明确排除的周期性读取者；`history` 对两种情况以同样的方式失败。
+- **考虑过的现有机制：** Session 广播的 `closed` 事件只说明一个 Session 关闭了，不说明它的数据行是否被移除，而 EventHub 不能因关闭而移除；用 `timelineContext.lookup` 轮询每个被订阅的 Session 时，对一个存在但从未收到输入的 Session 回答 `unknown`，区分不出已删除与可恢复，而且会引入 EventHub 设计明确排除的周期性读取者；`history` 对两种情况以同样的方式失败。
 - **需要什么：** 一条宿主内部的进程通知 `agent/session-deleted {agentId, sessionId}`，在 SessionStore 移除数据行之后发出，覆盖每一次移除了该 Session 数据行的删除，无论 Session 是否已加载。它的 `agentId` 是记录下来的 Session 所有者，来自已加载的索引或 `session_owners`，两者都没有记录时为空。Collaboration 现有的通知保持原样。两条删除通知都保留，直到 Collaboration 迁移到 `agent/session-deleted`；那次迁移是 Collaboration 的改动。
 - **对顺序、批次、中断、重载的影响：** 对 Timeline 没有影响；这条通知是总线事件，不是事实。错过的通知由 3.4 的对账修复，在下一次 `apply` 或第一次失败的投递上。
 - **所有者：** Agents，`crates/dim-app-server/src/agents.rs`；它自己的文档陈述这条通知，见 [Sessions 服务](../appserver/sessions-service.md) 与 [删除与分叉](../appserver/session-deletion-and-fork.md)。
 
 ### 9.2 Agents 回答一个 Session 是否仍然存在
 
-- **被什么挡住：** EventHub 要对账在它关闭期间被删除的 Session 的订阅(3.4)。它不能把已关闭但仍可恢复的 Session 当成已删除，而 `sessions.lookup` 对一个存在但从未收到该输入的 Session 回答 `unknown`，区分不出已删除与可恢复。
+- **被什么挡住：** EventHub 要对账在它关闭期间被删除的 Session 的订阅(3.4)。它不能把已关闭但仍可恢复的 Session 当成已删除，而 `timelineContext.lookup` 对一个存在但从未收到该输入的 Session 回答 `unknown`，区分不出已删除与可恢复。
 - **需要什么：** `sessions.exists {sessionId} → {exists}`，位于 `sessions` 服务与宿主 dispatch 中，紧邻 `lookup`：一次从不取得、也不恢复 Session 的读取。`false` 表示该 Session 已被删除；已关闭但仍可恢复的 Session 为 `true`。回答它读取的正是 `acquire` 已经在读的东西：该 id 是否有所有者或 SessionStore 记录。
 - **对顺序、批次、中断与重载的影响：** 对 Timeline 没有影响；这次读取不写事件，也不取得任何东西，因此不恢复任何 Session。Agents 重载时回答 `reloading`，EventHub 把它当作错误并保留订阅。
 - **所有者：** Agents，`crates/dim-app-server/src/agents/sessions.rs`；它自己的文档陈述这个方法，见 [Sessions 服务](../appserver/sessions-service.md) 与 [session access](../contracts/session-access.md)。
@@ -566,7 +570,7 @@ Session 部件为标记 `dim-event` 与 `dim-event-guide` 在 Session 作用域�
 13. 删除与订阅竞争：订阅持有 Session 锁期间到达的删除，在记录存储之后移除它，该 Session 不留下任何订阅。EventHub 关闭期间被删除的 Session 的已存储订阅，在下一次 `apply` 被移除；已关闭但仍可恢复的 Session 的订阅保留。
 14. put 失败后的重试：第一次发布的预览以 `truncated` 投递；用同一个 `id` 重试回答 `repeated: true`、原来的 id、不含 `truncated`，且不写文件。
 15. 指南刷新：订阅、以新的指南再次声明、然后发布，会在事件之前把新指南写到分支上，第二次发布不写指南。
-16. 共享投递预算：两次各 8 个目标的并发发布，合起来从不超过 8 次同时进行的 `sessions.input`。
+16. 共享投递预算：两次各 8 个目标的并发发布，合起来从不超过 8 次同时进行的 `timelineContext.input`。
 
 ## 附录 E. 假设与待定问题
 
@@ -574,7 +578,7 @@ Session 部件为标记 `dim-event` 与 `dim-event-guide` 在 Session 作用域�
 | --- | --- | --- | --- |
 | A1 | 只要分支上还有订阅命名某来源，该来源的指南块就保持生效，空指南将其撤回 | Goal 的带键块与 retire 约定 | 订阅在压缩后丢失手册，或已撤回的手册仍然留着 |
 | A2 | 订阅在创建之后无论生产方怎样都被保留 | 2.2 中已存储订阅保留的规则 | 生产方一次重载就会静默丢掉订阅 |
-| A3 | 订阅会恢复未加载的目标 Session，因为指南输入先写 | `sessions.input` 会取得并恢复 | 需要另做存在性检查，而且对冷 Session 的订阅投不进手册 |
+| A3 | 订阅会恢复未加载的目标 Session，因为指南输入先写 | `timelineContext.input` 会取得并恢复 | 需要另做存在性检查，而且对冷 Session 的订阅投不进手册 |
 | 待定 | 客户端是否应不必轮询就能知道订阅变化 | 本设计没有客户端 UI | 会像 Scheduler 为一次性唤醒那样增加 Session 通知 |
 | 待定 | 订阅是否应带按来源的速率或数量上限 | 今天由生产方决定自己的速率 | 生产方可能淹没已订阅的分支；出现真实案例之前，生产方自己的限制就是答案 |
 
@@ -587,7 +591,7 @@ Session 部件为标记 `dim-event` 与 `dim-event-guide` 在 Session 作用域�
 - **身份。** `declare` 与 `publish` 接收调用方的 `ctx`，即 `EventHub::declare(&self, ctx: &Ctx, request)`。dispatch 在 `invoke` 内读取 `rutis_bridge::session::caller_row()` 并使用该行的上下文，与 `ForeignGuideEntries` 相同，见 `crates/dim-agent-capabilities/src/prompt_guide.rs:266-298`；取不到行的调用是 `no_caller_row`。声明登记为调用方上下文的一个 effect，因此随该行结束。
 - **可选读取。** Rust 生产方持有 `Key<EventHub>`，每次调用用 `ctx.get_at(&key)` 读取；EventHub 未安装、Pending 或重载时它回答 `None`，所以依赖不门控任何东西，见 [rutis 用法 A.3](../rutis-usage.md#a3-已定的问题)。`definePlugin` 行则 inject 该名字，见 2.1。同一形式用于读取 `sessionFiles`，即 `Key<SessionFiles>`，见 `crates/dim-agent-capabilities/src/host.rs:1002-1038`，以及 `sessions`，即在 `host_key("sessions")` 上的 `Key<dyn HostDispatch>`，见 `crates/dim-agent-scheduler/src/methods.rs:44,56`。
 - **声明通知。** Rust 或 Cordis 生产方先监听再读取：`ctx.listen::<dim_event_hub::Ready>()`，即名字为 `eventhub/ready` 的公开 `Event` 类型，然后 `ctx.get_at(&key)`；收到通知时再次读取该 key 并声明，见 2.1。`definePlugin` 行不需要这条通知：它 inject 该名字并在 `apply` 里声明，见 2.1。监听器持有一个类型，而不是一个运行中的 EventHub，所以在 EventHub 之前装载的生产方也能听到第一次提供它的那次 `apply`。通知本身由进程部件的一个依赖行发出，而不是在它的 `apply` 里：一行的服务只在部件活跃时才可被其他行读取，而部件在 `apply` 返回时才变为活跃。每次通知都声明不会增加 effect，因为重复声明是原地替换，见 A.1。
-- **投递。** `sessions.input` 就是在 `Key<dyn HostDispatch>` 上的一次 `invoke("input", json!([args]))`，见 `crates/dim-agent-scheduler/src/engine.rs:611-633`；回复是 `{inputId, sequence}`，错误码见 [session access A.6](../contracts/session-access.md#a6-错误)。
+- **投递。** `timelineContext.input` 就是在 `Key<dyn HostDispatch>` 上的一次 `invoke("call", json!([{sessionId, lineId, service: "timelineContext", method: "input", args}]))`；提交时回复 `InputWrite {event, written}`，随后调 `timelineContext.waitPublished(event.sequence)`，提交后等待失败即为 `publication_unknown`。错误码见 [session access A.6](../contracts/session-access.md#a6-错误)。
 - **存储。** 订阅更新通过调用方持有的 pluginFiles scope 调用 `scope.withLock`。已经受理的发布持有该 scope 直到结算完成，即使期间发生行重启。
 - **Session 部件** 注入 `guideEntries`、`toolRegistry`、`sessionIdentity` 与 `eventSubscriptions`，并在 `apply` 中登记条目与 `events` 工具，与 Scheduler 的部件相同，见 `crates/dim-agent-scheduler/src/session.rs:147-201`。
 - **TypeScript。** `npm/plugin.d.ts` 在 `sessions` 旁边声明这个服务：`EventHub`(`declare` 与 `publish`)、A.1 与 A.2 的请求和回复类型，以及列出附录 C 全部码的 `EventHubErrorThrown`。用 `definePlugin` 写成的行 inject `eventHub`，并用 `ctx.use<EventHub>('eventHub')` 读取它，在 `apply` 里声明；原始 Cordis 行则用 `ctx.get('eventHub')` 读取，见 [rutis 用法 §3.5](../rutis-usage.md#35-各运行时如何解析名字)。

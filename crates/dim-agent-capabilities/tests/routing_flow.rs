@@ -6,7 +6,7 @@
 use dim_agent_capabilities::defaults;
 use dim_agent_runtime::testing::{MinimalHost, hold_close};
 use dim_agent_runtime::*;
-use dim_agent_types::BranchSource;
+use dim_agent_types::{BranchSource, InputMessageData, InputMode};
 use rutis::Ctx;
 use rutis::host::{CtxHost, DynPlugin, Effect, InstanceId, TypeKey};
 use rutis_bridge::session::{
@@ -64,6 +64,7 @@ impl Rig {
             ("inputQueue", "branch"),
             ("permission", "branch"),
             ("timeline", "branch"),
+            ("timelineContext", "branch"),
             ("sessionConfig", "session"),
             ("treeCommands", "session"),
             ("uiResources", "session"),
@@ -213,6 +214,110 @@ async fn a_session_part_reaches_its_own_line_and_its_own_faces() {
         config,
         Some(serde_json::to_value(session.config()).unwrap())
     );
+
+    rig.host.close().await.unwrap();
+}
+
+/// A wait admitted for a sequence the line never dispatches ends with the
+/// line instead of holding its close open ([#2227](https://github.com/arcships/dim/issues/2227),
+/// design rule 8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dispatched_wait_settles_when_the_line_ends() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let child = session
+        .branch(
+            "main".into(),
+            0,
+            BranchOptions {
+                prompt: String::new(),
+                source: BranchSource::Tool {
+                    turn_id: "wait-ends".into(),
+                    request_id: "wait-ends".into(),
+                    call_id: "wait-ends".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let beyond = session.sequence(&child).unwrap() + 1000;
+    let line = child.clone();
+    let waiting = tokio::spawn(async move {
+        scope
+            .line_call(LineCall::new(
+                line,
+                "timelineContext",
+                "waitDispatched",
+                vec![serde_json::json!(beyond)],
+            ))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    session
+        .end_branch(
+            &child,
+            BranchSource::Host {
+                operation_id: "wait-ends".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let settled = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the wait settles with the line")
+        .unwrap();
+    assert!(
+        settled.is_err(),
+        "a line that ended before the sequence fails the wait: {settled:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_answers_its_own_operations_through_a_routed_call() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let input = || {
+        let mut data = InputMessageData::text("routed input", Some(InputMode::Queue));
+        data.submission_id = Some("routing-input".into());
+        data
+    };
+    let call = |method: &str, args: Vec<serde_json::Value>| {
+        scope.line_call(LineCall::new("main", "timelineContext", method, args))
+    };
+
+    let first = call("input", vec![serde_json::to_value(input()).unwrap()])
+        .await
+        .unwrap()
+        .expect("input answers its write");
+    assert_eq!(first["written"], serde_json::json!(true), "{first}");
+    let sequence = first["event"]["sequence"]
+        .as_u64()
+        .expect("a committed event carries its sequence");
+
+    let again = call("input", vec![serde_json::to_value(input()).unwrap()])
+        .await
+        .unwrap()
+        .expect("input answers its write");
+    assert_eq!(
+        again["written"],
+        serde_json::json!(false),
+        "the line holds a submission id once: {again}"
+    );
+    assert_eq!(again["event"], first["event"]);
+
+    call("waitPublished", vec![serde_json::json!(sequence)])
+        .await
+        .unwrap();
+    call("waitDispatched", vec![serde_json::json!(sequence)])
+        .await
+        .unwrap();
+    let state = call("state", vec![])
+        .await
+        .unwrap()
+        .expect("state answers the line's status");
+    assert!(state.get("running").is_some(), "{state}");
 
     rig.host.close().await.unwrap();
 }
@@ -630,5 +735,355 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     };
     assert_eq!(name, "no-method", "the owner's own failure keeps its name");
     assert!(message.contains("absent"), "{message}");
+    rig.host.close().await.unwrap();
+}
+
+/// A submission id is optional, but one that is present must not be empty:
+/// the face refuses an empty id on every input operation and on lookup,
+/// and still writes an input that carries none ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_submission_id_is_refused_and_an_absent_one_writes() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let empty = serde_json::json!({
+        "mode": "queue",
+        "submission_id": "",
+        "blocks": [{"type": "raw", "text": "<dim-test></dim-test>"}],
+    });
+    for (method, args) in [
+        ("input", vec![empty.clone()]),
+        ("inputIfHead", vec![empty.clone(), serde_json::json!(0)]),
+        ("inputs", vec![serde_json::json!([empty.clone()])]),
+        ("lookup", vec![serde_json::json!("")]),
+    ] {
+        let refused = scope
+            .line_call(LineCall::new("main", "timelineContext", method, args))
+            .await;
+        let error = refused.expect_err(method);
+        assert!(
+            error.to_string().contains("submissionId must not be empty"),
+            "{method} refuses the empty id: {error}"
+        );
+    }
+    let absent = serde_json::json!({
+        "mode": "queue",
+        "blocks": [{"type": "raw", "text": "<dim-test></dim-test>"}],
+    });
+    for _ in 0..2 {
+        let written = scope
+            .line_call(LineCall::new(
+                "main",
+                "timelineContext",
+                "input",
+                vec![absent.clone()],
+            ))
+            .await
+            .expect("an input without an id writes")
+            .expect("input answers its write");
+        assert_eq!(written["written"], serde_json::json!(true), "{written}");
+    }
+    rig.host.close().await.unwrap();
+}
+
+/// `inputIfHead` writes only while the line's last sequence is still the head
+/// the caller read, and answers `null` without writing once a fact committed
+/// behind it ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn input_if_head_writes_only_at_the_head_it_read() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let call = |method: &str, args: Vec<serde_json::Value>| {
+        scope.line_call(LineCall::new("main", "timelineContext", method, args))
+    };
+    let message = |id: &str| {
+        let mut data = InputMessageData::text("conditional input", Some(InputMode::Append));
+        data.submission_id = Some(id.into());
+        serde_json::to_value(data).unwrap()
+    };
+    let head = || async {
+        scope
+            .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
+            .await
+            .unwrap()
+            .and_then(|value| value.as_u64())
+            .expect("the line answers its head")
+    };
+
+    let at = head().await;
+    let written = call(
+        "inputIfHead",
+        vec![message("head:first"), serde_json::json!(at)],
+    )
+    .await
+    .unwrap()
+    .expect("inputIfHead answers");
+    assert_eq!(written["data"]["submission_id"], "head:first", "{written}");
+    let stale = call(
+        "inputIfHead",
+        vec![message("head:stale"), serde_json::json!(at)],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stale,
+        Some(serde_json::Value::Null),
+        "a fact behind the head writes nothing"
+    );
+    let found = call("lookup", vec![serde_json::json!("head:stale")])
+        .await
+        .unwrap();
+    assert_eq!(found, Some(serde_json::Value::Null), "nothing was written");
+    rig.host.close().await.unwrap();
+}
+
+/// `inputs` commits a batch at once and answers a resubmission of the whole
+/// batch with the first inputs; a batch that only partly repeats writes
+/// nothing ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inputs_commit_a_batch_once_and_refuse_a_partial_repeat() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let call = |args: Vec<serde_json::Value>| {
+        scope.line_call(LineCall::new("main", "timelineContext", "inputs", args))
+    };
+    let message = |id: &str| {
+        let mut data = InputMessageData::text("batch input", Some(InputMode::Append));
+        data.submission_id = Some(id.into());
+        serde_json::to_value(data).unwrap()
+    };
+
+    let batch = serde_json::json!([message("batch:a"), message("batch:b")]);
+    let first = call(vec![batch.clone()])
+        .await
+        .unwrap()
+        .expect("inputs answers its events");
+    let events = first.as_array().expect("one event per input");
+    assert_eq!(events.len(), 2, "{first}");
+    assert_eq!(
+        events[1]["sequence"].as_u64(),
+        events[0]["sequence"].as_u64().map(|sequence| sequence + 1),
+        "one commit, in order: {first}"
+    );
+    let again = call(vec![batch]).await.unwrap();
+    assert_eq!(
+        again,
+        Some(first.clone()),
+        "a repeated batch answers the first"
+    );
+    let partial = call(vec![serde_json::json!([
+        message("batch:a"),
+        message("batch:c")
+    ])])
+    .await;
+    assert!(partial.is_err(), "a partial repeat is refused: {partial:?}");
+    let found = scope
+        .line_call(LineCall::new(
+            "main",
+            "timelineContext",
+            "lookup",
+            vec![serde_json::json!("batch:c")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(found, Some(serde_json::Value::Null), "nothing was written");
+    rig.host.close().await.unwrap();
+}
+
+/// `interrupt` commits a turn interrupt and answers its sequence without
+/// waiting for a turn to settle ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_answers_the_sequence_it_committed() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let before = scope
+        .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
+        .await
+        .unwrap()
+        .and_then(|value| value.as_u64())
+        .unwrap();
+    let interrupt = scope
+        .line_call(LineCall::new(
+            "main",
+            "timelineContext",
+            "interrupt",
+            vec![serde_json::json!("routing interrupt")],
+        ))
+        .await
+        .unwrap()
+        .and_then(|value| value.as_u64())
+        .expect("interrupt answers a sequence");
+    assert!(
+        interrupt > before,
+        "the interrupt is a new fact: {interrupt} > {before}"
+    );
+    rig.host.close().await.unwrap();
+}
+
+/// An input that reaches a line after its close started is refused `Closed`
+/// by the line itself and writes nothing, while the holder can still select
+/// the closing line; the route answers `no_line` for it
+/// ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_input_racing_a_close_is_refused_by_the_line() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let id = session.id().to_owned();
+    let scope = rig.scope(&session);
+    let source = || BranchSource::Host {
+        operation_id: "close-race".into(),
+    };
+    let line_id = session
+        .branch(
+            "main".into(),
+            0,
+            BranchOptions {
+                prompt: "a line that closes".into(),
+                source: source(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut held = hold_close(&id, &line_id);
+    let ending = {
+        let session = session.clone();
+        let line_id = line_id.clone();
+        tokio::spawn(async move { session.end_branch(&line_id, source()).await })
+    };
+    held.arrived().await;
+
+    let line = rig
+        .host
+        .routed_session(&id)
+        .expect("the owning instance serves its scope")
+        .line(&line_id)
+        .expect("the holder still selects a closing line");
+    let mut data = InputMessageData::text("too late", Some(InputMode::Append));
+    data.submission_id = Some("close:late".into());
+    let refused = line.context().input(data).await;
+    assert!(
+        matches!(refused, Err(AgentError::Closed(_))),
+        "the closing line refuses the input: {refused:?}"
+    );
+    assert!(
+        matches!(
+            scope
+                .line_call(LineCall::new(&line_id, "timeline", "sequence", vec![]))
+                .await,
+            Err(RouteError::NoLine { .. })
+        ),
+        "the route does not select a closing line"
+    );
+    held.release();
+    ending.await.unwrap().unwrap();
+    rig.host.close().await.unwrap();
+}
+
+/// A wait whose target the close drain reaches is answered by where dispatch
+/// finally got, also when the close finishes between the wait's read of the
+/// dispatch position and its look at the close: it succeeds, and never
+/// answers `Closed` for a target the drain dispatched
+/// ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wait_reached_by_the_close_drain_succeeds_when_the_close_finishes_first() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let id = session.id().to_owned();
+    let source = || BranchSource::Host {
+        operation_id: "wait-race".into(),
+    };
+    let line_id = session
+        .branch(
+            "main".into(),
+            0,
+            BranchOptions {
+                prompt: "a line that ends".into(),
+                source: source(),
+            },
+        )
+        .await
+        .unwrap();
+    let line = rig
+        .host
+        .routed_session(&id)
+        .expect("the owning instance serves its scope")
+        .line(&line_id)
+        .unwrap();
+    // The line's first turn settles first; then the close's own interrupt is
+    // the next fact, and only the close drain dispatches it.
+    line.context().idle().await.unwrap();
+    let through = line.sequence() + 1;
+    let mut held = dim_agent_runtime::testing::hold_dispatch_wait(&id, &line_id);
+    let waiting = {
+        let line = line.clone();
+        tokio::spawn(async move { line.context().wait_dispatched(through).await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), held.arrived())
+        .await
+        .expect("the wait reads a position short of its target");
+    session.end_branch(&line_id, source()).await.unwrap();
+    held.release();
+    let answer = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the wait settles with the line")
+        .unwrap();
+    assert!(
+        answer.is_ok(),
+        "the drain reached the target before the close finished: {answer:?}"
+    );
+    rig.host.close().await.unwrap();
+}
+
+/// A wait admitted for an input that the line committed before its close is
+/// answered by where dispatch finally got: the close drain dispatches through
+/// its interrupt, past the input, so the wait succeeds however the drain and
+/// the close's completion interleave with it, and never answers `Closed` for
+/// a consumed input ([#2227](https://github.com/arcships/dim/pull/2227)).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wait_for_a_committed_input_succeeds_across_the_close() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let id = session.id().to_owned();
+    let source = || BranchSource::Host {
+        operation_id: "wait-close".into(),
+    };
+    for round in 0..20 {
+        let line_id = session
+            .branch(
+                "main".into(),
+                0,
+                BranchOptions {
+                    prompt: "a line that ends".into(),
+                    source: source(),
+                },
+            )
+            .await
+            .unwrap();
+        let line = rig
+            .host
+            .routed_session(&id)
+            .expect("the owning instance serves its scope")
+            .line(&line_id)
+            .unwrap();
+        let mut data = InputMessageData::text("consumed before the end", Some(InputMode::Append));
+        data.submission_id = Some(format!("wait-close:{round}"));
+        let sequence = line.context().input(data).await.unwrap().event.sequence;
+        let waiting = {
+            let line = line.clone();
+            tokio::spawn(async move { line.context().wait_dispatched(sequence).await })
+        };
+        session.end_branch(&line_id, source()).await.unwrap();
+        let answer = tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the wait settles with the line")
+            .unwrap();
+        assert!(
+            answer.is_ok(),
+            "round {round}: the drain dispatched the input, so the wait succeeds: {answer:?}"
+        );
+    }
     rig.host.close().await.unwrap();
 }

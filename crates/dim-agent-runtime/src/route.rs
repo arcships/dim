@@ -262,10 +262,28 @@ impl SessionScope {
         Ok(session)
     }
 
+    /// The line `line_id` as its holder selects it: closing or not, while the
+    /// Session's loaded scope is there ([`RoutedSession::line`]).
+    fn held_line(&self, line_id: &str) -> Routed<Arc<BranchRuntime>> {
+        let session = self
+            .session
+            .upgrade()
+            .ok_or_else(|| RouteError::SessionClosing(self.session_id.clone()))?;
+        if session.loaded().is_err() {
+            return Err(RouteError::SessionClosing(self.session_id.clone()));
+        }
+        session
+            .published_line(line_id)
+            .ok_or_else(|| RouteError::NoLine {
+                session: self.session_id.clone(),
+                line: line_id.to_owned(),
+            })
+    }
+
     /// The live line `line_id` of this Session. A Session that started closing
     /// while the line was being resolved answers `SessionClosing`, not
     /// `NoLine`: closing the Session closes its lines.
-    fn line_context(&self, line_id: &str) -> Routed<Arc<TimelineContext>> {
+    fn line_context(&self, line_id: &str) -> Routed<Arc<BranchRuntime>> {
         let session = self.live()?;
         let line = session.line(line_id);
         // A Session that started closing while the line was being selected —
@@ -329,6 +347,98 @@ impl RoutedSession {
     }
     pub fn scope(&self) -> &Arc<SessionScope> {
         &self.scope
+    }
+    /// One of this Session's lines, for the mechanism caller that holds the
+    /// Session.
+    ///
+    /// Unlike `sessionScope.lineCall`, the holder still selects a line that
+    /// is closing, and a line of a Session that is closing: it reads and
+    /// observes the line until its close settles, so a client watching or
+    /// reading it gets the line's last state and its fixed head instead of an
+    /// error ([#2227]). The face's own operations answer for a closing line
+    /// (a write is refused there). The selection answers
+    /// [`RouteError::NoLine`] once the line has left the tree, when the
+    /// caller reads its ended head instead, and [`RouteError::SessionClosing`]
+    /// once the Session's loaded scope is gone.
+    ///
+    /// The handle carries the line's data face ([`Line::context`]) and the
+    /// reads and observations only the holder has. It is built from a
+    /// `RoutedSession`, which only the runtime constructs, so a crate holding a
+    /// bare [`Session`] has no path to it (ADR 027 appendix F).
+    ///
+    /// [#2227]: https://github.com/arcships/dim/pull/2227
+    pub fn line(&self, line_id: &str) -> Routed<Line> {
+        self.scope.held_line(line_id).map(Line)
+    }
+}
+
+/// One line of a Session, for the mechanism caller that holds the Session
+/// (ADR 027 D2): the line's data face, and the reads and observations a caller
+/// inside the owning instance makes.
+///
+/// The face is what every other scope reaches by `(session, line)`; the reads
+/// and observations here are the holder's own, and another language's observer
+/// gets an operation instead ([#2027](https://github.com/arcships/dim/issues/2027)).
+#[derive(Clone)]
+pub struct Line(Arc<crate::BranchRuntime>);
+
+impl Line {
+    #[cfg(feature = "testing")]
+    pub(crate) fn of(branch: crate::Branch) -> Self {
+        Self(branch.0)
+    }
+    /// A face object for this line: the same operations the branch scope
+    /// serves by name, as the branch scope's own copy. Built per call so the
+    /// handle keeps no cycle with it.
+    pub fn context(&self) -> crate::TimelineContext {
+        self.0.face()
+    }
+    pub fn id(&self) -> &str {
+        self.0.id()
+    }
+    /// The published head of this line.
+    pub fn sequence(&self) -> u64 {
+        self.0.timeline().sequence()
+    }
+    /// Reads this line's own facts, as `timeline.query` does.
+    pub async fn query(
+        &self,
+        query: crate::TimelineQuery,
+    ) -> crate::Result<crate::TimelineQueryReply> {
+        self.0.timeline().query(query).await
+    }
+    /// Confirms that `sequence` ends an atomic batch.
+    pub async fn batch_end(&self, sequence: u64) -> crate::Result<()> {
+        self.0.timeline().batch_end(sequence).await
+    }
+    /// The line's Timeline, for the capability reads that are defined on it
+    /// (`validate_context_boundary_at`). The handle itself offers no write;
+    /// this is the one escape, kept for those reads' own contract.
+    pub fn timeline(&self) -> &Timeline {
+        self.0.timeline()
+    }
+    pub fn is_closing(&self) -> bool {
+        self.0.is_closing()
+    }
+    /// Whether this line's own `branch/end` has committed.
+    pub fn ended(&self) -> bool {
+        self.0.ended()
+    }
+    /// Changes when the line's status may read differently.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<()> {
+        self.0.watch()
+    }
+    /// Dispatch progress: its dispatched sequence and failure.
+    pub fn dispatch_watch(&self) -> tokio::sync::watch::Receiver<crate::core::DispatchState> {
+        self.0.dispatch_watch()
+    }
+    /// Publication progress of the line's Timeline.
+    pub fn publication(&self) -> Publication {
+        Publication(self.0.timeline().clone())
+    }
+    /// The line scope and the capabilities it installed.
+    pub fn diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics {
+        self.0.diagnostics()
     }
 }
 

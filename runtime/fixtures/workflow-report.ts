@@ -89,16 +89,30 @@ export default definePlugin({
             await pause('opened')
             progress({ phase: 'input' })
             const text = `<dim-workflow kind="report" run_id="${run.run_id}">completed</dim-workflow>`
-            const reply = await sessions.input({ ...target, submissionId, mode: 'steer',
-              rawBlocks: [{ text }], content: [{ type: 'text', text }] })
-            if (!reply.ok && reply.error.code === 'ambiguous') {
+            const written = await sessions.call({ sessionId: target.sessionId, lineId: target.branchId,
+              service: 'timelineContext', method: 'input',
+              args: [{ submission_id: submissionId, mode: 'steer', blocks: [{ type: 'raw', text }],
+                user: { content: [{ type: 'text', text }] } }] })
+            // The write answers its commit; the record must not outrun the
+            // store, so the report waits for the input's publication first.
+            let settled: typeof written | Awaited<ReturnType<typeof sessions.call>> = written
+            while (written.ok) {
+              const published = await sessions.call({ sessionId: target.sessionId, lineId: target.branchId,
+                service: 'timelineContext', method: 'waitPublished', args: [written.value.event.sequence] })
+              if (published.ok || published.error.retryable !== true) { settled = published.ok ? written : published; break }
+              await new Promise(resolve => setTimeout(resolve, 10))
+            }
+            const code = settled.ok ? undefined : settled.error.owner_code ?? settled.error.code
+            const reply = settled.ok ? settled : { ok: false as const, error: { code: code!, retryable: settled.error.retryable === true } }
+            if (!reply.ok && reply.error.code === 'AmbiguousSubmission') {
               const delivered = await store(run => { run.report = { state: 'delivered' } })
               progress({ phase: 'duplicate_report_violation' })
               return delivered
             }
             return store(run => {
+              const gone = ['no_session', 'no_line', 'Closed', 'UnknownBranch', 'BranchEnded']
               if (reply.ok) run.report = { state: 'delivered' }
-              else if (['session_closed', 'branch_missing', 'branch_ended', 'rejected'].includes(reply.error.code)) {
+              else if (gone.includes(reply.error.code) || reply.error.code === 'InvalidInput') {
                 run.report = { state: 'undeliverable', reason: reply.error.code }
               } else if (run.report.state === 'pending') run.report.attempt_open = false
             }, () => pause('reply_write'))

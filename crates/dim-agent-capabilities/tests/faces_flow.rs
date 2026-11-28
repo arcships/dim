@@ -286,7 +286,7 @@ async fn permission_check_returns_the_typed_decision() {
 }
 
 #[tokio::test]
-async fn input_queue_submits_and_withdraws_as_the_typed_service_does() {
+async fn input_queue_withdraws_as_the_typed_service_does() {
     let Fixture {
         host,
         session,
@@ -295,32 +295,6 @@ async fn input_queue_submits_and_withdraws_as_the_typed_service_does() {
         ..
     } = fixture(Arc::new(MockTools)).await;
     let queue = session.service::<InputQueue>("main").unwrap();
-    let mut input = InputMessageData::text("faces submit", Some(InputMode::Append));
-    input.submission_id = Some("faces-submit".into());
-    let typed = queue.submit(input.clone()).await.unwrap();
-    let wire = call(
-        &branch_ctx,
-        branch_instance,
-        "inputQueue",
-        "submit",
-        vec![json!(&input).into()],
-    )
-    .await;
-    assert_eq!(
-        serde_json::to_value(&typed).unwrap(),
-        wire,
-        "the same submission id is one committed input"
-    );
-    assert_eq!(
-        session
-            .lookup("main", "faces-submit")
-            .await
-            .unwrap()
-            .unwrap()
-            .id,
-        typed.input_id
-    );
-
     let missing = InputWithdrawData {
         input_id: "not-held".into(),
         reason: None,
@@ -341,7 +315,7 @@ async fn input_queue_submits_and_withdraws_as_the_typed_service_does() {
         "neither call writes for an input the queue does not hold"
     );
     assert_eq!(wire, json!({"status": "notHeld"}));
-    for submission_id in ["faces-submit", "rejected-steer"] {
+    for submission_id in ["faces-unknown", "rejected-steer"] {
         let mut replacement = InputMessageData::text("unchecked", Some(InputMode::Steer));
         replacement.submission_id = Some(submission_id.into());
         let command = InputWithdrawData {

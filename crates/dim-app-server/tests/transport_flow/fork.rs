@@ -3,6 +3,7 @@
 use super::deletion::{Store, eventually, session, turn};
 use super::*;
 use dim_agent_runtime::Session;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_types::AgentEvent;
 

@@ -1,5 +1,6 @@
 //! Rust parts that depend on names only (plugin contract P2): no layer type,
 //! no scope, no group in the part. Where the row is placed decides.
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, Feature, Modules, Names, SessionConfig, SessionIdentity, Timeline,

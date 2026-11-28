@@ -1,5 +1,6 @@
 use super::deletion::Store;
 use super::*;
+use dim_agent_runtime::SessionLines;
 
 fn create_with_branch() -> Value {
     json!({

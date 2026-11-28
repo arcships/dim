@@ -615,7 +615,7 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
         })
         .unwrap();
     let history = HistoryRenderer::default()
-        .context_in(&session, "main", source)
+        .context(session.line_of("main").unwrap().timeline(), source)
         .await
         .unwrap();
     assert_eq!(
@@ -911,7 +911,7 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
             EventKind::ContextCompaction(data) if matches!(data.outcome, ContextCompactionResult::Completed { .. }))));
         }
         let history = HistoryRenderer::default()
-            .context_in(&session, "main", first.through)
+            .context(session.line_of("main").unwrap().timeline(), first.through)
             .await
             .unwrap();
         let rendered = project_context_history(&history).unwrap();
@@ -3565,7 +3565,10 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
         .await
         .unwrap();
     let context = HistoryRenderer::default()
-        .context_in(&restored, "main", reading.through)
+        .context(
+            restored.line_of("main").unwrap().timeline(),
+            reading.through,
+        )
         .await
         .unwrap();
     let rendered = project_context_history(&context).unwrap();
@@ -4122,7 +4125,7 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                 .await
                 .unwrap();
             let context = HistoryRenderer::default()
-                .context_in(&session, "main", usage.through)
+                .context(session.line_of("main").unwrap().timeline(), usage.through)
                 .await
                 .unwrap();
             let messages = dim_agent_capabilities::history::context_messages(
@@ -4321,7 +4324,7 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
         .await
         .unwrap();
     let context = HistoryRenderer::default()
-        .context_in(&session, "main", usage.through)
+        .context(session.line_of("main").unwrap().timeline(), usage.through)
         .await
         .unwrap();
     let messages = dim_agent_capabilities::history::context_messages(

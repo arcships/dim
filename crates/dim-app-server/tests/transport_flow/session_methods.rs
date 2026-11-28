@@ -1,5 +1,6 @@
 use super::*;
 use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl, SessionMethods};
+use dim_agent_runtime::SessionLines;
 use dim_agent_types::InputMode;
 use rutis::host::CtxHost;
 

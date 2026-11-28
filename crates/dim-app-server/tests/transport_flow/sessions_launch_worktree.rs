@@ -1,5 +1,6 @@
 use super::*;
 use dim_agent_runtime::SessionConfig;
+use dim_agent_runtime::SessionLines;
 use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, oneshot};
 

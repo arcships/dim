@@ -1,5 +1,6 @@
 use super::*;
 use dim_agent_runtime::InputSnapshot;
+use dim_agent_runtime::SessionLines;
 use serde_json::json;
 use std::sync::Arc;
 

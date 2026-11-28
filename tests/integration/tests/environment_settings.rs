@@ -7,6 +7,7 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::BranchOptions;
 use dim_agent_runtime::Session;
+use dim_agent_runtime::SessionLines;
 use dim_agent_types::{BranchSource, EventKind, InputBlock};
 use local_support::*;
 use std::sync::{Arc, Mutex};

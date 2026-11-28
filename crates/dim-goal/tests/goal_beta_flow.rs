@@ -2,6 +2,7 @@
 //! arrives while a driving input is pending is kept, and evaluated at the turn
 //! end that consumes the last of them (Pursuit §4.1, §5, acceptance 11).
 use crate::support;
+use dim_agent_runtime::SessionLines;
 
 use std::collections::VecDeque;
 use std::sync::Arc;

@@ -169,12 +169,15 @@ void settings.update({ source: 'web', scope: 'user', document: {} });
 // @ts-expect-error Settings documents are JSON objects.
 void settings.update({ source: 'web', scope: 'user', expectedRevision: 'opaque', document: [] });
 void sessions.launch({ cwd: '/workspace', policy: { preset: 'read-only' } });
-void sessions.input({ ...at, submissionId: 'notebook:unique', mode: 'queue', rawBlocks: [{ text: 'notebook' }], content: [] });
-void sessions.lookup({ ...at, submissionId: 'notebook:unique' });
+void sessions.call({ sessionId: at.sessionId, lineId: at.branchId, service: 'timelineContext', method: 'input',
+  args: [{ submission_id: 'notebook:unique', mode: 'queue', blocks: [{ type: 'raw', text: 'notebook' }] }] });
+void sessions.call({ sessionId: at.sessionId, lineId: at.branchId, service: 'timelineContext', method: 'lookup',
+  args: ['notebook:unique'] });
 void sessions.history({ ...at, atLeast: 1, limit: 10 });
 void sessions.withdraw({ ...at, inputId: 'input' });
-void sessions.stop(at);
-void sessions.idle(at);
+void sessions.call({ sessionId: at.sessionId, lineId: at.branchId, service: 'timelineContext', method: 'stop',
+  args: ['Stopped by automation'] });
+void sessions.call({ sessionId: at.sessionId, lineId: at.branchId, service: 'timelineContext', method: 'idle', args: [] });
 void sessions.delete({ sessionId: at.sessionId });
 const exists: Promise<{ ok: true; value: { exists: boolean } } | { ok: false; error: { code: string } }> = sessions.exists({ sessionId: at.sessionId });
 void exists;
@@ -229,10 +232,8 @@ const quiesced: null = files.quiesce();
 const closed: Promise<null> = files.close();
 const transaction: Promise<FileResult<FileResult<string | null>>> = files.withLock('notebook/state', file => file.read());
 void quiesced; void closed; void transaction;
-// @ts-expect-error branch identity is required.
-void sessions.idle({ sessionId: 'session' });
-// @ts-expect-error input mode is part of the wire contract.
-void sessions.input({ ...at, submissionId: 'id', mode: 'replace', rawBlocks: [], content: [] });
+// @ts-expect-error a line call names the line it reaches.
+void sessions.call({ sessionId: at.sessionId, service: 'timelineContext', method: 'idle', args: [] });
 // @ts-expect-error policy field spelling follows PermissionPolicy.
 void sessions.launch({ cwd: '/workspace', policy: { allowed_tools: [] } });
 // @ts-expect-error lease replacement accepts text, not a host storage envelope.

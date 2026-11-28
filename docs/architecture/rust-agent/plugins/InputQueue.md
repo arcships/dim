@@ -73,8 +73,6 @@ observable input queue.
 | --- | --- |
 | `B:Dispatcher` | Hand off restored queue state to live input/turn/interrupt transitions. |
 | `B:Timeline` | Commit withdrawal commands and atomic application or withdrawal results. |
-| `S:TreeCommands` | Reach the validating branch input entry for `submit`. |
-| `B:TimelineIdentity` | Identify the branch for `submit`. |
 
 ### Data face
 
@@ -82,15 +80,13 @@ observable input queue.
 operations ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id)).
 
 ```text
-inputQueue.submit(input: InputMessageData) -> {inputId, sequence}
 inputQueue.withdraw(command: {input_id, reason?})
   -> {status: "deleted", sequence} | {status: "notHeld"}
   -> error {code, message}
 ```
 
-`submit` uses the branch input entry and its submission-id admission. Like
-`sessions.input`, it does not run operator SubmitChecks; operator input uses
-`session.input` above. `withdraw`
+Writing input is the line's own operation (`timelineContext.input`); a queue
+only decides when a held input is released. `withdraw`
 only withdraws: it rejects any `steer` candidate before writing a command, including
 one carrying a submission id. Operator Steer uses `session.input.withdraw` above,
 which validates content, runs submit checks and admits the conditional replacement.

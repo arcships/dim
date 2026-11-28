@@ -6,7 +6,6 @@ use crate::{
     error::{EventHubError, TRANSPORT, sessions_code},
     hub::Shared,
     model::{Origin, SubscribeRequest, Target, source_of, validate_subscribe},
-    publish::sessions,
     store::Subscription,
     text::{digest, stamp},
 };
@@ -288,17 +287,17 @@ pub(crate) async fn write_live_guide(
     guide: &str,
 ) -> Result<(), EventHubError> {
     let write = json!({
-        "sessionId": target.session_id,
-        "branchId": target.branch_id,
         "mode": "append",
-        "submissionId": submission_id,
-        "rawBlocks": [{
+        "submission_id": submission_id,
+        "blocks": [{
+            "type": "raw",
             "text": guide_block(source, Some(guide)),
-            "key": { "use": "live", "name": guide_key(source) },
+            "key": guide_key(source),
         }],
-        "content": [],
     });
-    match sessions(service, "input", write).await {
+    match crate::publish::write_published(service, &target.session_id, &target.branch_id, write)
+        .await
+    {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(failure)) => Err(EventHubError::new(
             sessions_code(&failure.code),
@@ -314,17 +313,22 @@ pub(crate) async fn write_live_guide(
 /// (design §3.3). A retire that cannot be written is skipped.
 async fn retire_guide(shared: &Shared, target: &Target, subscription_id: &str, source: &str) {
     let write = json!({
-        "sessionId": target.session_id,
-        "branchId": target.branch_id,
         "mode": "append",
-        "submissionId": retire_submission(subscription_id, source),
-        "rawBlocks": [{
+        "submission_id": retire_submission(subscription_id, source),
+        "blocks": [{
+            "type": "raw",
             "text": guide_block(source, None),
-            "key": { "use": "retire", "name": guide_key(source) },
+            "key": guide_key(source),
+            "retire": true,
         }],
-        "content": [],
     });
-    let _ = sessions(shared.sessions.as_ref(), "input", write).await;
+    let _ = crate::publish::write_published(
+        shared.sessions.as_ref(),
+        &target.session_id,
+        &target.branch_id,
+        write,
+    )
+    .await;
 }
 
 /// Retires the guide of each source a failed creation named that no stored

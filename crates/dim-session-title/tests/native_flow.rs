@@ -1,6 +1,7 @@
 use crate::support;
 use axum::{Router, routing::post};
 use dim_agent_capabilities::{adapters::MockTools, defaults};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_agent_types::EventKind;

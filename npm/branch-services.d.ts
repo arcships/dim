@@ -560,12 +560,6 @@ export type InputMessageData = {
   handover?: InputHandover | null
 }
 
-/** The identity of one committed input. */
-export type InputRef = {
-  inputId: string
-  sequence: number | bigint
-}
-
 /**
  * A command to withdraw an input InputQueue still holds unapplied. It is
  * never a fact about the input by itself: only `input/deleted` is.
@@ -595,11 +589,6 @@ export type Withdrawal =
  * writes `input/deleted` for an input it still holds unapplied.
  */
 export interface InputQueue {
-  /**
-   * Commits an input through the branch entry, accepting each submission id once.
-   * @throws {AgentErrorThrown}
-   */
-  submit(input: InputMessageData): Promise<InputRef>
   /**
    * Withdraws a held input without replacing it. Steer candidates must enter
    * through `session.input.withdraw`, which validates and checks them first.
@@ -1468,6 +1457,101 @@ export interface SessionLoader {
   remove(instance: SessionInstance): Promise<void>
 }
 
+/**
+ * One input write as the append under the commit lock decided it: a line
+ * holds a submission id once, so only the call that wrote it answers
+ * `written`.
+ */
+export type InputWrite = {
+  event: import('./plugin.js').BranchEvent
+  written: boolean
+}
+
+/**
+ * Facade view of one branch, read on query: Loop's execution phase plus
+ * branch lifecycle.
+ */
+export type BranchStatus = {
+  running: boolean
+  stopping: boolean
+  closed: boolean
+  failure?: string | null
+}
+
+/**
+ * The data face of one line ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md)
+ * D1): what a caller that names `(Session, line)` reaches, with every
+ * operation answering data. The runtime owner behind it ([`BranchRuntime`])
+ * stays with the branch tree, which opens, publishes and closes the line.
+ *
+ * `TimelineFactory::build` provides it in the branch scope, and the catalog
+ * shares the name across languages, so the same operations serve a Session
+ * part (`sessionScope.lineCall`) and a process caller (`sessions.call`).
+ */
+export interface TimelineContext {
+  /**
+   * Commits validated input ([`Timeline::input_checked`]), and says whether
+   * this call wrote it. Whether it starts a turn is Loop's decision when
+   * the input is dispatched.
+   * @throws {AgentErrorThrown}
+   */
+  input(data: InputMessageData): Promise<InputWrite>
+  /**
+   * [`Self::input`] only while the line's last assigned sequence is still
+   * `head`: a fact behind `head` writes nothing and answers `null`, even
+   * for a submission id already committed.
+   * @throws {AgentErrorThrown}
+   */
+  inputIfHead(data: InputMessageData, head: number | bigint): Promise<import('./plugin.js').BranchEvent | null>
+  /**
+   * Commits a batch of input as one atomic commit; see
+   * [`BranchRuntime::inputs`] for the contract.
+   * @throws {AgentErrorThrown}
+   */
+  inputs(inputs: InputMessageData[]): Promise<import('./plugin.js').BranchEvent[]>
+  /**
+   * The published input with submission id `id`; `null` when the line
+   * holds none.
+   * @throws {AgentErrorThrown}
+   */
+  lookup(id: string): Promise<import('./plugin.js').BranchEvent | null>
+  /**
+   * Commits a turn interrupt and answers its sequence without waiting for
+   * dispatch or settlement.
+   * @throws {AgentErrorThrown}
+   */
+  interrupt(reason: string): Promise<number | bigint>
+  /**
+   * Stops the line and answers its confirmed dispatched sequence.
+   * @throws {AgentErrorThrown}
+   */
+  stop(reason: string): Promise<number | bigint>
+  /**
+   * Waits until dispatch has consumed the line's tail with no unclosed
+   * turn, and answers that dispatched sequence.
+   * @throws {AgentErrorThrown}
+   */
+  idle(): Promise<number | bigint>
+  /**
+   * The line's status as it stands: execution from Loop, failure from
+   * dispatch or the owner, closure from the branch lifecycle.
+   * @throws {AgentErrorThrown}
+   */
+  state(): Promise<BranchStatus>
+  /**
+   * Waits until dispatch has consumed through `through`; a capability that
+   * reloads is a restart, so this waits for its successor.
+   * @throws {AgentErrorThrown}
+   */
+  waitDispatched(through: number | bigint): Promise<void>
+  /**
+   * Waits until the Timeline published `sequence`; a Timeline that closed
+   * answers its failure, or `Closed`.
+   * @throws {AgentErrorThrown}
+   */
+  waitPublished(sequence: number | bigint): Promise<void>
+}
+
 /** A branch of a Session. */
 export type SessionRef = {
   sessionId: string
@@ -1883,6 +1967,7 @@ export interface Services {
   partRegistry: PartRegistry
   sessionScope: SessionScope
   sessionLoader: SessionLoader
+  timelineContext: TimelineContext
   sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig
   collaborationDirectory: CollaborationDirectory
@@ -1902,6 +1987,7 @@ export type LineFaces = {
   inputQueue: InputQueue
   permission: Omit<Permission, 'check'>
   timeline: Timeline
+  timelineContext: TimelineContext
   timelineIdentity: TimelineIdentity
   wait: Omit<Wait, 'wait'>
 }

@@ -8,6 +8,7 @@ use dim_agent_capabilities::{
     },
     recall::{self, testing::Narrative},
 };
+use dim_agent_runtime::SessionLines;
 use futures_util::StreamExt;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;

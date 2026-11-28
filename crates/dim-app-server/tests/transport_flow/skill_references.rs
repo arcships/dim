@@ -10,6 +10,7 @@ use dim_agent_capabilities::{
     skills::{self, MemorySkillSettings, SkillsCatalog, SkillsCatalogBinding},
 };
 use dim_agent_runtime::PartRegistry;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_types::{
     ContentBlock, InputMessageData, InputMode, MessageContent, MessagePart, ModelRequest,

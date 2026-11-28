@@ -363,15 +363,6 @@ impl RunningServer {
     ) {
         dim_agent_capabilities::session_broadcast::notify(&self.root, session_id, notice);
     }
-    /// The `sessions.idle` admission signal of the current Agents
-    /// generation, notified once a call is waiting on its branch. Feature
-    /// `testing` only.
-    #[cfg(feature = "testing")]
-    pub fn idle_admitted(&self) -> Option<Arc<tokio::sync::Notify>> {
-        self.root
-            .get::<AgentIndex>()
-            .map(|index| index.idle_admitted())
-    }
     /// Holds the next unregistered worktree removal after its content check,
     /// so a test can create a Session before the store's final check. Feature
     /// `testing` only.

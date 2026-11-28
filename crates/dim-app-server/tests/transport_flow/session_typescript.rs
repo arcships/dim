@@ -10,6 +10,7 @@ use dim_agent_capabilities::{
     tool_registry::definition,
 };
 use dim_agent_runtime::SESSION_GROUP;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_types::{MessageContent, MessagePart, ModelRequest, Role};
 use dim_app_server::session_typescript::SessionTypeScriptConfig;

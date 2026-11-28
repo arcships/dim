@@ -35,19 +35,31 @@ export default definePlugin({
         for await (const _ of socket) break
       } finally { phase = null; socket.destroy() }
     }
+    let steerWritten = false
     const observed: Sessions = {
       async launch(request) { await pause('before_launch'); return native.launch(request) },
-      async input(request) {
-        if (request.mode === 'steer') await pause('before_input')
-        else await pause('stage_input')
-        const reply = await native.input(request)
-        if (request.mode === 'steer') await pause('reply_write')
-        return reply
+      exists: request => native.exists(request),
+      defaultBranchId: request => native.defaultBranchId(request),
+      // A line's input is its own operation, reached through `call` (#2027):
+      // the fixture pauses around the `timelineContext.input` calls.
+      // A write answers its commit and Workflow then waits for publication:
+      // the `reply_write` pause follows that wait, where the old write replied.
+      async call(request: Parameters<Sessions['call']>[0]) {
+        const line = request.service === 'timelineContext'
+        const input = line && request.method === 'input'
+        const mode = input ? (request.args?.[0] as { mode?: string } | undefined)?.mode : undefined
+        if (input) await pause(mode === 'steer' ? 'before_input' : 'stage_input')
+        const reply = await native.call(request as never) as { ok: boolean }
+        if (input && mode === 'steer' && reply.ok) steerWritten = true
+        if (line && request.method === 'waitPublished' && steerWritten && reply.ok) {
+          steerWritten = false
+          await pause('reply_write')
+        }
+        return reply as never
       },
-      lookup: request => native.lookup(request),
       async history(request) { await pause('stage_history'); return native.history(request) },
-      withdraw: request => native.withdraw(request), stop: request => native.stop(request),
-      idle: request => native.idle(request),
+      withdraw: request => native.withdraw(request),
+      pending: request => native.pending(request),
       async delete(request) {
         const reply = await native.delete(request)
         await pause('delete_reply')

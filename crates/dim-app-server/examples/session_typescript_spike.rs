@@ -1,5 +1,6 @@
 //! C4 transport probe. This example installs no product bridge or protocol.
 use dim_agent_capabilities::{defaults, session_broadcast::*};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{
     AGENT_GROUP, AgentBuilder, AgentConfig, Feature, Modules, Names, SESSION_GROUP, SessionConfig,
     SessionIdentity, register_part,

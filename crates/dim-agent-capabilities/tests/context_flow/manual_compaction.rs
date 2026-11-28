@@ -673,7 +673,10 @@ pub(crate) fn assert_paired(events: &[Arc<AgentEvent>]) {
 async fn projected(timeline_session: &Session, branch: &str) -> Vec<Message> {
     let through = timeline_session.sequence(branch).unwrap();
     let context = dim_agent_capabilities::history::HistoryRenderer::default()
-        .context_in(timeline_session, branch, through)
+        .context(
+            timeline_session.line_of(branch).unwrap().timeline(),
+            through,
+        )
         .await
         .unwrap();
     let history = project_context_history(&context).unwrap();
@@ -1235,7 +1238,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         session.idle(&child).await.unwrap();
     }
     let context = dim_agent_capabilities::history::HistoryRenderer::default()
-        .context_in(&session, "main", fact)
+        .context(session.line_of("main").unwrap().timeline(), fact)
         .await
         .unwrap();
     let renamed = renamed_history(&context).unwrap();
@@ -1340,7 +1343,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
             .contains(&("main".into(), 1..=published))
     );
     let timeline_context = dim_agent_capabilities::history::HistoryRenderer::default()
-        .context_in(&session, "main", fact)
+        .context(session.line_of("main").unwrap().timeline(), fact)
         .await
         .unwrap();
     let history = renamed_history(&timeline_context).unwrap();

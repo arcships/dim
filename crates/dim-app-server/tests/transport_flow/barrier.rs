@@ -3,6 +3,7 @@ use dim_agent_capabilities::session_broadcast::{
     SessionBroadcast, SessionBroadcastEvent, session_channel,
 };
 use dim_agent_runtime::SessionIdentity;
+use dim_agent_runtime::SessionLines;
 use rutis::host::CtxHost;
 use std::collections::HashMap;
 use tokio::sync::Notify;

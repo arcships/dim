@@ -32,7 +32,7 @@ This is a historical audit of that base, not the current query API. The replacem
 
 `Branch` (`branch.rs`): `history` :126, `page_cursor` :132, `page` :138, `local` :146, `context` :164, `compaction_cut` :170, `context_page` :176, `trace` :188.
 `Session` (`agent.rs`): `context` :524, `compaction_cut` :528, `context_page` :532, `history` :543, `local` :550, `local_page` :562, `trace` :659.
-Submission lookup: `Branch::lookup` (`branch.rs:73`) to `Session::lookup` (`agent.rs:490`) to `TimelineContext::lookup` (`timeline_context.rs:392`) to a point read at :411; callers `connection/tree.rs:99` and `agents/sessions.rs:569`.
+Submission lookup: the line's `timelineContext.lookup` face operation (`TimelineContext::lookup` in `timeline_context.rs`, reached through `sessions.call` or the holder's `RoutedSession::line`) to `BranchRuntime::lookup` and a point read; callers `connection/tree.rs:99` and `agents/sessions.rs:569`.
 Deleting a `Timeline` method alone leaves these reachable.
 
 ### 1.3 Dispatcher reads exported to TypeScript (`core/dispatcher.rs`)
@@ -288,7 +288,7 @@ The request carries no read point. The service passes each segment its bound: an
 
 - Capability parts declare a dependency on the branch's Timeline service and call `query` on it. The facades are not in their path.
 - The goal plugin injects the Timeline service instead of `dispatcher` for reads and calls `Timeline.query`. `npm/branch-services.d.ts` already declares `query` on `Timeline`. The `Services` interface in `npm/branch-services.d.ts` lists `timeline: Timeline`, so the name exists. Goal injects dispatcher, timelineIdentity, treeCommands, settings, branchLifecycle and sessionLifecycle today; whether the binding resolves `timeline` for a branch part was not verified. Goal also reads to the committed position (`dispatcher.committed()` :104, `local(turnStart, through)` :176), so it belongs to the same open question as file reads and the collaboration rebuild.
-- The App Server reads a loaded session through `Session::query(branch, query)`, which forwards to `Branch::query` and then to the Timeline service.
+- The App Server reads a loaded session through the holder's line handle, `RoutedSession::line(branch).query(query)`, which reads the line's Timeline service.
 - The App Server reads an unloaded session through `SessionStore`, because no Timeline service exists for it. The page shape matches `query`, so loading a session does not change the protocol.
 - After the reads are deleted, `xtask types` regenerates `npm/branch-services.d.ts`. Only declarations for the affected reads may change.
 

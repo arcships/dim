@@ -337,7 +337,14 @@ impl Job {
         if let Some(reason) = &self.disabled_reason
             && (!matches!(
                 reason.code.as_str(),
-                "session_closed" | "branch_missing" | "branch_ended"
+                "session_closed"
+                    | "branch_missing"
+                    | "branch_ended"
+                    | "no_session"
+                    | "no_line"
+                    | "Closed"
+                    | "UnknownBranch"
+                    | "BranchEnded"
             ) || canonical_instant(&reason.at).is_none())
         {
             return Err(SettingsError::Invalid(

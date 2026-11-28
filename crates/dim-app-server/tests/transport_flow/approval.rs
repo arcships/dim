@@ -2,6 +2,7 @@ use super::*;
 use dim_agent_capabilities::approval::{AdmitCall, Approval};
 use dim_agent_capabilities::permission::{CommandRules, ReadCommandRules};
 use dim_agent_capabilities::tool_executor::ToolExecutor;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::{Dispatcher, Session, Timeline, TimelineKey, TimelineStore};
 use dim_agent_types::{

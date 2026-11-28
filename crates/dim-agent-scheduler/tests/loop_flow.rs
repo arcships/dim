@@ -8,6 +8,7 @@
 //! hour out and crosses it with the clock; one that waits for a pass crosses a tick
 //! (#1536).
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_agent_types::*;
 use dim_app_server::{RunningServer, ServerConfig, serve};

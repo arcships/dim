@@ -12,17 +12,12 @@ use dim_agent_capabilities::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{AgentError, Publication};
-use dim_agent_types::{
-    AgentEvent, ContentBlock, InputBlock, InputMessageData, InputMode, InputWithdrawData, ModelId,
-    ModelSelection, PermissionPolicy, UserInput,
-};
+use dim_agent_types::{AgentEvent, InputWithdrawData, ModelId, ModelSelection, PermissionPolicy};
 use rutis::Ctx;
-use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, Reply, Value, caller_row};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{future::Future, sync::Arc, sync::atomic::Ordering};
-use tokio_util::sync::CancellationToken;
 
 /// A call by id to a data face of a Session, or of one of its lines.
 #[derive(Debug, Clone, Deserialize)]
@@ -145,65 +140,6 @@ pub struct LaunchReply {
     pub worktree: Option<crate::worktrees::CreatedWorktreeReply>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct InputWrite {
-    pub session_id: String,
-    pub branch_id: String,
-    pub mode: InputMode,
-    /// `<source>:<uuid>` by convention; the branch accepts each id once.
-    pub submission_id: String,
-    /// Model-facing blocks; the first is the caller's marker.
-    pub raw_blocks: Vec<RawBlock>,
-    /// The user part, placed after the blocks; empty: none.
-    pub content: Vec<ContentBlock>,
-}
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawBlock {
-    pub text: String,
-    #[serde(default)]
-    pub key: Option<BlockKey>,
-}
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BlockKey {
-    pub r#use: KeyUse,
-    pub name: String,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum KeyUse {
-    /// Stays in effect until a later block with the same key.
-    Live,
-    /// Delivered once; the key leaves effect.
-    Retire,
-}
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InputReceipt {
-    pub input_id: String,
-    pub sequence: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LookupRequest {
-    pub session_id: String,
-    pub branch_id: String,
-    pub submission_id: String,
-}
-#[derive(Debug, Serialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
-pub enum LookupReply {
-    #[serde(rename_all = "camelCase")]
-    Accepted {
-        input_id: String,
-        sequence: u64,
-    },
-    Unknown,
-}
-
 /// One Session named by its id: `exists` (§6.9) and `defaultBranchId`
 /// (§6.11).
 #[derive(Debug, Deserialize)]
@@ -276,16 +212,6 @@ pub struct WithdrawRequest {
     /// The `inputId` the caller received when it wrote the input.
     pub input_id: String,
     /// Copied into `input/withdraw` for clients to show.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StopRequest {
-    pub session_id: String,
-    pub branch_id: String,
-    /// Default: "Stopped by automation".
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -573,97 +499,6 @@ impl AgentIndex {
         })
     }
 
-    /// Writes input, or replies the receipt of the input the branch already
-    /// holds with this `submissionId`. Admitted append/publication work runs
-    /// to its own outcome if the caller leaves.
-    pub async fn input(&self, write: InputWrite) -> Result<InputReceipt, SessionsError> {
-        self.input_from(write, None).await
-    }
-
-    /// [`Self::input`] for a call from runtime row `row`: a row that stops
-    /// before the handoff writes nothing (`reloading`).
-    async fn input_from(
-        &self,
-        write: InputWrite,
-        row: Option<&CancellationToken>,
-    ) -> Result<InputReceipt, SessionsError> {
-        let (lease, publication, input, branch) = self
-            .until_unloaded(async {
-                if write.submission_id.is_empty() {
-                    return Err(SessionsError::rejected("submissionId must not be empty"));
-                }
-                let lease = self.acquire(&write.session_id).await?;
-                let publication = lease.session.publication(&write.branch_id)?;
-                let blocks = write
-                    .raw_blocks
-                    .into_iter()
-                    .map(|block| InputBlock::Raw {
-                        text: block.text,
-                        retire: block
-                            .key
-                            .as_ref()
-                            .is_some_and(|key| key.r#use == KeyUse::Retire),
-                        key: block.key.map(|key| key.name),
-                    })
-                    .collect();
-                let input = InputMessageData {
-                    submission_id: Some(write.submission_id),
-                    user: (!write.content.is_empty()).then_some(UserInput {
-                        content: write.content,
-                    }),
-                    blocks,
-                    mode: Some(write.mode),
-                    // A client's input cannot address a handover: only a
-                    // capability writing in-process can.
-                    handover: None,
-                };
-                Ok((lease, publication, input, write.branch_id))
-            })
-            .await?;
-        if self.stopping.is_cancelled() {
-            return Err(SessionsError::reloading("the Agents index"));
-        }
-        if row.is_some_and(CancellationToken::is_cancelled) {
-            return Err(SessionsError::reloading("the calling row"));
-        }
-        tokio::spawn(async move {
-            let event = lease.session.input(input, &branch).await?;
-            published(&publication, event.sequence).await?;
-            Ok(InputReceipt {
-                input_id: event.id.clone(),
-                sequence: event.sequence,
-            })
-        })
-        .await
-        .map_err(|error| SessionsError::Failed {
-            message: error.to_string(),
-        })?
-    }
-
-    /// Finds a committed input by its `submissionId` after an uncertain write.
-    pub async fn lookup(&self, request: LookupRequest) -> Result<LookupReply, SessionsError> {
-        self.until_unloaded(async {
-            if request.submission_id.is_empty() {
-                return Err(SessionsError::rejected("submissionId must not be empty"));
-            }
-            let lease = self.acquire(&request.session_id).await?;
-            Ok(
-                match lease
-                    .session
-                    .lookup(&request.branch_id, &request.submission_id)
-                    .await?
-                {
-                    Some(event) => LookupReply::Accepted {
-                        input_id: event.id.clone(),
-                        sequence: event.sequence,
-                    },
-                    None => LookupReply::Unknown,
-                },
-            )
-        })
-        .await
-    }
-
     /// Answers whether Session `id` still exists (§6.9): it has an owner or
     /// SessionStore records, the facts `acquire` reads before it restores
     /// anything. A read: it creates no slot, takes no lease, acquires
@@ -732,8 +567,26 @@ impl AgentIndex {
                     "atLeast and through are mutually exclusive",
                 ));
             }
-            let lease = self.acquire(&request.session_id).await?;
-            let head = lease.session.sequence(&request.branch_id)?;
+            self.acquire(&request.session_id).await?;
+            // An ended line is paged at its fixed head, from the archive the
+            // tree keeps for it ([#2227]).
+            let head = match self.line(&request.session_id, &request.branch_id) {
+                Ok(line) => line.sequence(),
+                Err(error) => {
+                    let (_, session) = self
+                        .session(&request.session_id)
+                        .ok_or_else(|| SessionsError::from(error.clone()))?;
+                    session
+                        .ended_head(&request.branch_id)
+                        .or_else(|| {
+                            session
+                                .session_service::<TreeCommands>()
+                                .ok()?
+                                .head(&request.branch_id)
+                        })
+                        .ok_or_else(|| SessionsError::from(error))?
+                }
+            };
             let through = match (request.at_least, request.through) {
                 (Some(bound), _) | (_, Some(bound)) if bound > head => {
                     return Err(SessionsError::FutureSequence {
@@ -773,9 +626,10 @@ impl AgentIndex {
                 return Err(SessionsError::rejected("inputId must not be empty"));
             }
             let lease = self.acquire(&request.session_id).await?;
-            let publication = lease.session.publication(&request.branch_id)?;
+            let line = self.line(&request.session_id, &request.branch_id)?;
+            let publication = line.publication();
             let through = publication.sequence();
-            let mut dispatch = lease.session.dispatch_watch(&request.branch_id)?;
+            let mut dispatch = line.dispatch_watch();
             let mut published = publication.watch();
             tokio::select! {
                 result = async {
@@ -810,7 +664,9 @@ impl AgentIndex {
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError> {
         self.until_unloaded(async {
             let lease = self.acquire(&request.session_id).await?;
-            let publication = lease.session.publication(&request.branch_id)?;
+            let publication = self
+                .line(&request.session_id, &request.branch_id)?
+                .publication();
             let answer = lease
                 .session
                 .service::<InputQueue>(&request.branch_id)?
@@ -827,54 +683,6 @@ impl AgentIndex {
         })
         .await
     }
-
-    /// Interrupts the branch's turn and replies once it has settled, with
-    /// the dispatched sequence.
-    pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError> {
-        self.until_unloaded(async {
-            let lease = self.acquire(&request.session_id).await?;
-            lease
-                .session
-                .stop(
-                    &request.branch_id,
-                    request
-                        .reason
-                        .unwrap_or_else(|| "Stopped by automation".into()),
-                )
-                .await
-                .map_err(settlement)
-        })
-        .await
-    }
-
-    /// Waits for the branch's first idle point after the call starts and
-    /// returns its dispatched sequence. A pending approval or question keeps
-    /// the turn open, so the wait lasts until it is answered or `stop` ends
-    /// the turn; there is no timeout.
-    pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError> {
-        self.until_unloaded(async {
-            let lease = self.acquire(&at.session_id).await?;
-            let session = &lease.session;
-            #[cfg(feature = "testing")]
-            self.idle_admitted.notify_one();
-            let idle = tokio::select! {
-                idle = session.idle(&at.branch_id) => idle,
-                _ = session.closed() => Err(AgentError::Closed(session.id().into())),
-            };
-            if let Some(fault) = session.failure() {
-                return Err(SessionsError::Failed {
-                    message: fault.to_string(),
-                });
-            }
-            if session.is_closing() {
-                return Err(SessionsError::SessionClosed {
-                    message: format!("{} is closed", session.id()),
-                });
-            }
-            idle.map_err(settlement)
-        })
-        .await
-    }
 }
 
 /// `sessions` by name for every language: each call decodes one request
@@ -884,23 +692,28 @@ pub(crate) struct SessionsService(pub(crate) Ctx);
 impl HostDispatch for SessionsService {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({
-            "launch": "async", "input": "async", "lookup": "async", "exists": "async",
-            "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async", "defaultBranchId": "async", "call": "async",
+            "launch": "async", "exists": "async", "history": "async", "withdraw": "async",
+            "pending": "async", "delete": "async", "defaultBranchId": "async", "call": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
-        let row = (method == "input")
+        // A routed call from a runtime row is admitted only while that row
+        // lives (S2 §6.2).
+        let row = (method == "call")
             .then(caller_row)
             .flatten()
-            .map(|caller| caller.ctx().cancellation_token());
+            .map(|caller| rutis::host::CtxHost::cancellation_token(caller.ctx()));
         let index = self.0.get::<AgentIndex>();
+        let directory = self.0.get::<crate::agents::AgentDirectory>();
         let method = method.to_owned();
         let args = args.json();
         let operation = async move {
             match (index, args) {
                 // A routed call to a Session whose index is being replaced is
                 // transient: the caller retries the Session it knows (#2127).
+                // A read or a wait on a Session that stays loaded across the
+                // reload is served by the directory meanwhile (#2227).
+                (None, Ok(args)) if method == "call" => held_read(&directory, args).await,
                 (None, _) if method == "call" => Err(index_reloading()),
                 (None, _) => Err(SessionsError::reloading("the Agents index")),
                 (_, Err(error)) => Err(SessionsError::rejected(error.to_string())),
@@ -916,6 +729,27 @@ impl HostDispatch for SessionsService {
     }
 }
 
+/// A routed call while the Agents index is being replaced: a read or a wait on
+/// a Session the directory still holds loaded runs there; anything else, or a
+/// Session that is not loaded, answers the transient `session_reloading`.
+async fn held_read(
+    directory: &Option<Arc<crate::agents::AgentDirectory>>,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, SessionsError> {
+    let request: CallRequest = request(args)?;
+    let routed = directory
+        .as_ref()
+        .filter(|_| crate::agents::changes_nothing(&request))
+        .and_then(|directory| directory.routed_session(&request.session_id));
+    let Some(routed) = routed else {
+        return Err(index_reloading());
+    };
+    crate::agents::route_call(routed.scope(), request)
+        .await
+        .map_err(routed_error)
+        .map(call_reply)
+}
+
 /// What a routed call answers while the Agents index is being replaced: the
 /// one transient answer, so a caller retries instead of treating the Session as
 /// gone.
@@ -927,7 +761,7 @@ fn index_reloading() -> SessionsError {
 
 /// The routing answer as this face reports it: its own kind for a target that
 /// could not be selected, and the owner's failure as the owner wrote it.
-fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
+fn routed_error(error: dim_agent_runtime::RouteError) -> SessionsError {
     use dim_agent_runtime::RouteError;
     let message = error.to_string();
     match error {
@@ -991,22 +825,26 @@ fn reply(value: impl Serialize) -> Result<serde_json::Value, SessionsError> {
     Ok(serde_json::to_value(value).expect("sessions replies are JSON data"))
 }
 
+/// A routed call's success envelope. A method that answers nothing leaves
+/// `value` out: a caller reads absent as `undefined`, while `null` stays the
+/// owner's reply.
+fn call_reply(value: Option<serde_json::Value>) -> serde_json::Value {
+    let mut reply = serde_json::Map::new();
+    reply.insert("ok".into(), serde_json::Value::Bool(true));
+    if let Some(value) = value {
+        reply.insert("value".into(), value);
+    }
+    serde_json::Value::Object(reply)
+}
+
 async fn call(
     index: &Arc<AgentIndex>,
     method: &str,
     args: serde_json::Value,
-    row: Option<&CancellationToken>,
+    row: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<serde_json::Value, SessionsError> {
     match method {
         "launch" => reply(index.launch(request(args)?).await?),
-        "input" => {
-            let write = request(args)?;
-            reply(match row {
-                Some(row) => index.input_from(write, Some(row)).await?,
-                None => index.input(write).await?,
-            })
-        }
-        "lookup" => reply(index.lookup(request(args)?).await?),
         "exists" => reply(index.exists(request(args)?).await?),
         "defaultBranchId" => reply(index.default_branch_id(request(args)?).await?),
         "history" => reply(index.history(request(args)?).await?),
@@ -1015,27 +853,16 @@ async fn call(
             Withdrawal::Deleted { sequence } => json!({"status": "deleted", "sequence": sequence}),
             Withdrawal::NotHeld => json!({"status": "notHeld"}),
         }),
-        "stop" => reply(json!({"sequence": index.stop(request(args)?).await?})),
-        "idle" => reply(json!({"sequence": index.idle(request(args)?).await?})),
         "delete" => {
             let SessionId { session_id } = request(args)?;
             index.delete(&session_id).await?;
             reply(json!({}))
         }
         "call" => index
-            .call(request(args)?)
+            .call(request(args)?, row)
             .await
-            .map_err(routed)
-            .map(|value| {
-                let mut reply = serde_json::Map::new();
-                reply.insert("ok".into(), serde_json::Value::Bool(true));
-                // A method that answers nothing leaves `value` out: a caller reads
-                // absent as `undefined`, while `null` stays the owner's reply.
-                if let Some(value) = value {
-                    reply.insert("value".into(), value);
-                }
-                serde_json::Value::Object(reply)
-            }),
+            .map_err(routed_error)
+            .map(call_reply),
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"
         ))),

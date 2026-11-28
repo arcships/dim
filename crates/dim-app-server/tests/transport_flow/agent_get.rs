@@ -1,5 +1,6 @@
 use super::deletion::Store;
 use super::*;
+use dim_agent_runtime::SessionLines;
 
 /// A Session that can open lines through the `branch` tool.
 fn with_branch() -> Value {

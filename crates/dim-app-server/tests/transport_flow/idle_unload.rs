@@ -5,6 +5,7 @@
 use super::super::deletion::eventually;
 use super::*;
 use dim_agent_capabilities::file_storage::{FileStorage, testing};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{SessionIdentity, TimelineTreeControl};
 use dim_app_server::mcp::config::McpSettings;
@@ -256,11 +257,9 @@ async fn fifty_dropped_runs_unload_and_the_next_input_restores_one() {
     for run in 0..50 {
         let id = launch(&sessions).await;
         sessions
-            .ok("input", text_input(&id, &format!("test:{run}"), "hello"))
+            .input(text_input(&id, &format!("test:{run}"), "hello"))
             .await;
-        let through = sessions.ok("idle", at(&id)).await["sequence"]
-            .as_u64()
-            .unwrap();
+        let through = sessions.idle(&at(&id)).await;
         let events = pages(&sessions, &id, through, 4).await;
         runs.push((id, through, events));
     }
@@ -284,12 +283,10 @@ async fn fifty_dropped_runs_unload_and_the_next_input_restores_one() {
 
     let (first, through, _) = &runs[0];
     let receipt = sessions
-        .ok("input", text_input(first, "test:again", "again"))
+        .input(text_input(first, "test:again", "again"))
         .await;
     assert_eq!(loads.of(first), (2, true));
-    let idle = sessions.ok("idle", at(first)).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let idle = sessions.idle(&at(first)).await;
     let after = pages(&sessions, first, idle, 256).await;
     let after: Vec<_> = after
         .iter()
@@ -300,7 +297,7 @@ async fn fifty_dropped_runs_unload_and_the_next_input_restores_one() {
     assert!(
         after
             .iter()
-            .skip_while(|event| event["id"] != receipt["inputId"])
+            .skip_while(|event| event["id"] != receipt["id"])
             .any(|event| event["type"] == "turn" && event["name"] == "end"),
         "the restored Session ran its turn: {after:?}"
     );
@@ -333,13 +330,9 @@ async fn a_run_is_not_restored_between_its_calls() {
     let session = agent.get_session(&id).unwrap();
     let gap = || tokio::time::sleep(GRACE / 4);
     gap().await;
-    sessions
-        .ok("input", text_input(&id, "test:run", "hello"))
-        .await;
+    sessions.input(text_input(&id, "test:run", "hello")).await;
     gap().await;
-    let through = sessions.ok("idle", at(&id)).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let through = sessions.idle(&at(&id)).await;
     let mut events = vec![];
     let mut after = 0;
     while after < through {
@@ -388,10 +381,8 @@ async fn nothing_is_unloaded_without_a_native_store() {
     .await;
     client_session(&mut client, &agent, host_policy()).await;
     let id = launch(&sessions).await;
-    sessions
-        .ok("input", text_input(&id, "test:run", "hello"))
-        .await;
-    sessions.ok("idle", at(&id)).await;
+    sessions.input(text_input(&id, "test:run", "hello")).await;
+    sessions.idle(&at(&id)).await;
     tokio::time::sleep(GRACE * 5).await;
     assert_eq!(loaded(&mut client).await, 2);
     assert!(agent.get_session(&id).is_some());
@@ -423,10 +414,8 @@ async fn a_zero_grace_is_refused() {
 /// A launched Session, idle after one turn: the loaded instance.
 async fn idle_run(sessions: &Sessions, agent: &Agent) -> Session {
     let id = launch(sessions).await;
-    sessions
-        .ok("input", text_input(&id, "test:run", "hello"))
-        .await;
-    sessions.ok("idle", at(&id)).await;
+    sessions.input(text_input(&id, "test:run", "hello")).await;
+    sessions.idle(&at(&id)).await;
     agent.get_session(&id).unwrap()
 }
 
@@ -496,12 +485,8 @@ async fn a_client_history_read_acquires_an_unloaded_session() {
     } = serve_unloading(&store, &loads, GRACE).await;
     client_session(&mut client, &agent, host_policy()).await;
     let id = launch(&sessions).await;
-    sessions
-        .ok("input", text_input(&id, "test:read", "hello"))
-        .await;
-    let through = sessions.ok("idle", at(&id)).await["sequence"]
-        .as_u64()
-        .unwrap();
+    sessions.input(text_input(&id, "test:read", "hello")).await;
+    let through = sessions.idle(&at(&id)).await;
     let history = json!({"sessionId":id,"branchId":"main","after":0,"limit":256,
         "through":through});
     let before = client.rpc("session.history", history.clone()).await;
@@ -669,7 +654,7 @@ async fn a_pending_approval_keeps_a_launched_session_until_stop() {
     passes(&sessions, &agent).await;
     passes(&sessions, &agent).await;
     assert!(!session.is_unloading());
-    sessions.ok("stop", at(session.id())).await;
+    sessions.stop(&at(session.id())).await;
     let id = session.id().to_owned();
     unloaded(session).await;
     assert_eq!(loads.of(&id), (1, false));
@@ -763,7 +748,7 @@ async fn a_refused_unload_leaves_a_streaming_response_intact() {
     let id = launch(&sessions).await;
     let session = agent.get_session(&id).unwrap();
     let receipt = sessions
-        .ok("input", text_input(&id, "test:stream", "a streamed reply"))
+        .input(text_input(&id, "test:stream", "a streamed reply"))
         .await;
     tokio::time::timeout(DEADLINE, entered.notified())
         .await
@@ -772,13 +757,11 @@ async fn a_refused_unload_leaves_a_streaming_response_intact() {
     passes(&sessions, &agent).await;
     assert!(!session.is_unloading());
     release.notify_one();
-    let through = sessions.ok("idle", at(&id)).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let through = sessions.idle(&at(&id)).await;
     let events = branch_events(&session, "main", ..=through).await.unwrap();
     let turn: Vec<_> = events
         .iter()
-        .skip_while(|event| event.id != receipt["inputId"])
+        .skip_while(|event| event.id != receipt["id"])
         .collect();
     let text: String = turn
         .iter()
@@ -853,9 +836,7 @@ async fn an_unload_writes_nothing_and_the_restore_only_records_housekeeping() {
     let mut heads = std::collections::BTreeMap::new();
     for branch in ["main", child.as_str()] {
         let request = json!({"sessionId":id,"branchId":branch});
-        let idle = sessions.ok("idle", request).await["sequence"]
-            .as_u64()
-            .unwrap();
+        let idle = sessions.idle(&request).await;
         heads.insert(branch.to_owned(), idle);
     }
     assert_eq!(stored_heads(&store, &id), heads);
@@ -889,9 +870,7 @@ async fn an_unload_writes_nothing_and_the_restore_only_records_housekeeping() {
     assert_eq!(updated_at(&store, &id), steady);
     for (branch, head) in &heads {
         let at = json!({"sessionId":id,"branchId":branch});
-        let idle = sessions.ok("idle", at.clone()).await["sequence"]
-            .as_u64()
-            .unwrap();
+        let idle = sessions.idle(&at.clone()).await;
         let mut request = at;
         request["after"] = json!(head);
         request["through"] = json!(idle);
@@ -938,10 +917,8 @@ async fn listing_while_sessions_unload_never_fails_or_omits_one() {
         let id = launch(&sessions).await;
         last.clone_from(&id);
         let text = format!("run {run}");
-        sessions
-            .ok("input", text_input(&id, "test:run", &text))
-            .await;
-        let head = sessions.ok("idle", at(&id)).await["sequence"].clone();
+        sessions.input(text_input(&id, "test:run", &text)).await;
+        let head = sessions.idle(&at(&id)).await;
         runs.insert(id, (head, text));
     }
     let check = async |client: &mut Client| {
@@ -1106,19 +1083,16 @@ async fn the_catalog_sequence_stays_the_roots_across_an_idle_unload() {
         .to_owned();
     // The line runs two turns, so its head passes the root's.
     sessions
-        .ok("idle", json!({"sessionId":id,"branchId":child}))
+        .idle(&json!({"sessionId":id,"branchId":"main"}))
         .await;
     for (submission, text) in [("test:one", "one"), ("test:two", "two")] {
         sessions
-            .ok(
-                "input",
-                json!({"sessionId":id,"branchId":child,"mode":"queue",
+            .write_published(json!({"sessionId":id,"branchId":child,"mode":"queue",
                     "submissionId":submission,"rawBlocks":[],
-                    "content":[{"type":"text","text":text}]}),
-            )
+                    "content":[{"type":"text","text":text}]}))
             .await;
         sessions
-            .ok("idle", json!({"sessionId":id,"branchId":child}))
+            .idle(&json!({"sessionId":id,"branchId":child}))
             .await;
     }
     assert_ok(

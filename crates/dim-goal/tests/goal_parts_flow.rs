@@ -3,6 +3,7 @@
 //! storage and Settings, with the facts the Loop would write supplied by the
 //! test. Every expectation is a literal text or a written input.
 use crate::support;
+use dim_agent_runtime::SessionLines;
 
 use dim_agent_types::{BranchSource, EventKind, InputMode, ToolContent, ToolResult};
 use serde_json::json;

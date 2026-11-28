@@ -36,10 +36,12 @@ pub use memory_timeline_store::*;
 pub use names::Names;
 pub use parts::{Feature, Generator, Mount, PartRegistry, PartScope};
 pub use registrations::{Registration, Registrations};
-pub use route::{LineCall, RouteError, RoutedSession, SessionCall, SessionScope, resolves};
+pub use route::{Line, LineCall, RouteError, RoutedSession, SessionCall, SessionScope, resolves};
 pub use rutis::host::BoxFuture;
 pub use scope::*;
 pub use state::*;
+#[cfg(feature = "testing")]
+pub use testing::SessionLines;
 pub use timeline_context::*;
 pub use timeline_query::*;
 pub use timeline_store::*;
