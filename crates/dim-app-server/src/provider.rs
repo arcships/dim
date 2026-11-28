@@ -578,6 +578,7 @@ impl ProviderRecord {
                     None => source.entry.clone(),
                 };
                 bundled.identify_entry(&projection, &mut entry);
+                entry.resolve_service_tier();
                 let missing_limits = entry.capabilities.missing_limits();
                 let unavailable = if source.excluded_from_every_use() {
                     // A stored limits reason is the weaker derived fact and

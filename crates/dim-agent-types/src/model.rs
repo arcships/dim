@@ -248,6 +248,43 @@ pub struct ModelServiceTier {
     pub options: Vec<String>,
 }
 
+impl ModelServiceTier {
+    /// The capability this declaration states: `supported` means a usable set.
+    /// A declaration that supports tiers without listing any is unavailable,
+    /// and a default the options do not offer gives way to the option named
+    /// `default`, else the first one, so a named default is always one the
+    /// model offers. A declaration that names no default keeps none, exactly
+    /// as one that lists no options has none to offer.
+    pub fn usable(self) -> Self {
+        let Self {
+            supported,
+            default,
+            options,
+        } = self;
+        if !supported || options.is_empty() {
+            return Self {
+                supported: false,
+                default: None,
+                options: Vec::new(),
+            };
+        }
+        let default = match default {
+            Some(default) if options.contains(&default) => Some(default),
+            Some(_) => options
+                .iter()
+                .find(|option| *option == "default")
+                .cloned()
+                .or_else(|| options.first().cloned()),
+            None => None,
+        };
+        Self {
+            supported: true,
+            default,
+            options,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelCapabilitySnapshot {

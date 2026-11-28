@@ -1,6 +1,6 @@
 use dim_app_server::model_catalog::{
-    BundledCatalog, CatalogCapabilities, ModelEdit, ModelEntry, ModelIdentification, ModelSource,
-    ProviderProjection, infer_capability_edits, rebase_override,
+    BundledCatalog, CatalogCapabilities, ModelEdit, ModelEntry, ModelIdentification,
+    ModelServiceTier, ModelSource, ProviderProjection, infer_capability_edits, rebase_override,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -214,6 +214,89 @@ fn media_lookup_and_explicit_capabilities_survive_editing() {
         },
     );
     assert_eq!(edited.metadata, model.metadata);
+}
+
+/// A service-tier declaration is a capability: `supported: true` states a
+/// usable set, and a declaration that names none of its own is filled by the
+/// row it is identified with before the capability is read (#2248).
+#[test]
+fn a_service_tier_declaration_states_only_a_usable_set() {
+    let catalog = BundledCatalog::load().unwrap();
+    let codex = ProviderProjection {
+        provider_id: "openai-codex".into(),
+        ..Default::default()
+    };
+    let declared =
+        Some(json!({"supported": true, "default": "default", "options": ["default", "priority"]}));
+    assert_eq!(
+        tier(&bundled(&catalog, "openai-codex", "gpt-5.5")),
+        declared,
+        "the row states the set this case reads"
+    );
+    let filled = catalog
+        .project(&codex, &json!({"id": "gpt-5.5", "serviceTier": true}))
+        .unwrap();
+    assert_eq!(
+        tier(&filled),
+        declared,
+        "the row a declaration is identified with enumerates its options"
+    );
+    let mut stored = catalog.project(&codex, &json!({"id": "gpt-5.5"})).unwrap();
+    stored.metadata.get_or_insert_default().service_tier = Some(ModelServiceTier {
+        supported: true,
+        default: None,
+        options: Vec::new(),
+    });
+    let effective = catalog.effective_models(&codex, &[stored], &[]);
+    assert_eq!(
+        tier(&effective[0]),
+        declared,
+        "a stored declaration is filled the same way"
+    );
+
+    let custom = ProviderProjection {
+        provider_id: "custom".into(),
+        source: Some(ModelSource::Custom),
+        ..Default::default()
+    };
+    for declaration in [
+        json!(true),
+        json!({"supported": true, "options": []}),
+        json!({"supported": true, "default": "priority", "options": []}),
+        json!(false),
+    ] {
+        let entry = catalog
+            .project(
+                &custom,
+                &json!({"id": "zzzz-private-tier", "serviceTier": declaration}),
+            )
+            .unwrap();
+        assert_eq!(
+            tier(&entry),
+            Some(json!({"supported": false})),
+            "a declaration whose options nothing enumerates is no capability: {declaration}"
+        );
+        let effective = catalog.effective_models(&custom, &[entry], &[]);
+        assert_eq!(
+            tier(&effective[0]),
+            Some(json!({"supported": false})),
+            "the effective entry states the same capability: {declaration}"
+        );
+    }
+    let outside = catalog
+        .project(
+            &custom,
+            &json!({
+                "id": "zzzz-private-tier",
+                "serviceTier": {"supported": true, "default": "flex", "options": ["default", "priority"]}
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        tier(&outside),
+        Some(json!({"supported": true, "default": "default", "options": ["default", "priority"]})),
+        "a default outside the options gives way to one of them"
+    );
 }
 
 #[test]
@@ -818,6 +901,12 @@ fn bundled(catalog: &BundledCatalog, provider_id: &str, model_id: &str) -> Model
         .find(|row| row.model_id == model_id)
         .unwrap_or_else(|| panic!("{provider_id} lists no {model_id}"))
         .clone()
+}
+
+/// The service-tier capability a model entry states, in the shape a reply
+/// carries.
+fn tier(entry: &ModelEntry) -> Option<serde_json::Value> {
+    Some(serde_json::to_value(entry.metadata.as_ref()?.service_tier.as_ref()?).unwrap())
 }
 
 /// The identification an entry earned.

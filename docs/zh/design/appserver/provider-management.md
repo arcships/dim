@@ -321,6 +321,12 @@ driver、auth、默认模型只读。custom 的 driverKind/auth 创建后同样�
 描述、路由编辑和刷新都不自动删除不再受支持的用户偏好。显式采用失败时标明保存的偏好，
 由用户分别设置或清除字段。
 
+serviceTier 声明是能力而非提示：`supported:true` 表示一套可用的档位，因此 `options` 非空，
+声明给出 `default` 时它必属于该集合。描述本身与为之识别出的行都无法枚举选项的声明为
+`supported:false`，且不带 `default` 与 `options`，此时偏好 patch 拒绝任何档位。集合之外的
+`default` 让位于名为 `default` 的选项，没有该选项则让位于第一个；未声明 `default` 的声明
+在采用时也不给出默认档位。
+
 已有 delete 保持内置禁用/自定义删除。models.edit 保留 `ModelEdit`，只为静态 New API
 模型增加 `endpoint:{action:"set",value:NewApiEndpoint}|{action:"clear"}`，限 §6 可执行子集。
 override 优先，clear 回到发现结果，不删除 metadata；未知上游字符串仅作描述。

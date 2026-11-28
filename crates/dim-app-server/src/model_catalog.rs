@@ -95,6 +95,15 @@ impl ModelEntry {
             .get("max_context_window")?
             .as_u64()
     }
+
+    /// The entry as a catalog read serves it: its service-tier declaration
+    /// states a usable set or no capability at all. Identification fills a
+    /// declaration that lists no options first, so this runs after a merge.
+    pub(crate) fn resolve_service_tier(&mut self) {
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.service_tier = metadata.service_tier.take().map(ModelServiceTier::usable);
+        }
+    }
 }
 
 /// The editable surface excludes model identity, lookup diagnostics and raw
@@ -624,6 +633,7 @@ impl BundledCatalog {
         if !limits_valid(&entry.capabilities) {
             return Err(ProjectionError::InvalidLimits);
         }
+        entry.resolve_service_tier();
         Ok(entry)
     }
 
@@ -889,6 +899,9 @@ impl BundledCatalog {
             for model in &mut models {
                 model.capabilities.context_window = Some(window);
             }
+        }
+        for model in &mut models {
+            model.resolve_service_tier();
         }
         models
     }
