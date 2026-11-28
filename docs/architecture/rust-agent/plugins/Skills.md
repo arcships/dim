@@ -173,7 +173,7 @@ protocol, and the loaded body is the skill author's own text.
 | Service | Purpose |
 | --- | --- |
 | `P:SkillsCatalog#dim/skills/catalog-owner` | Query user/project skills; its `skills.catalog_changed` events drive replacement. |
-| `S:SessionConfig` | Select the Session working directory. |
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionLoader` | Lock-free creation of Session-owned content instances. |
 | `S:SessionLifecycle` | Start catalog-driven replacement only after the Session is published. |
 | `S:SkillsConfig` | The factory configuration of this plugin, registered and provided by `skills::install_with_config`; its `instructions` text replaces the built-in skill instructions when set, `skillsConfig.get` exposes it as data, and a profile that registers the parts without the install declares and reads none. |

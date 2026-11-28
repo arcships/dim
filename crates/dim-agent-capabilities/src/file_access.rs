@@ -213,7 +213,7 @@ impl ReadFileAccessFacts for Facts {
 }
 
 struct FileAccessFactsPlugin {
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     platform: Key<HostPlatform>,
     files: Key<SessionFiles>,
     grants: Key<SessionGrantsHost>,
@@ -250,7 +250,14 @@ impl DynPlugin for FileAccessFactsPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let platform = ctx.require_at(&self.platform)?;
             let worktrees = Worktrees::new(
                 ctx.clone(),

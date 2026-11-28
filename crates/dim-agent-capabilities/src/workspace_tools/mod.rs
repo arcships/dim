@@ -28,7 +28,7 @@ use crate::{
 use background::BackgroundExecPlugin;
 use dim_agent_runtime::{
     AgentBuilder, CAPABILITY_RELOADING, CollaborationRole, Names, PartRegistry, PartScope,
-    SessionConfig, SessionScope,
+    SessionScope,
 };
 use dim_agent_types::*;
 use file_reads::{FileReads, FileReadsPlugin};
@@ -392,7 +392,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
             let tree = ctx.require_at(&self.tree)?;
             let methods = ctx.require_at(&self.methods)?;
             let cwd = PathBuf::from(&config.cwd);
-            let output_dir = self.config.output_root.join(&identity.session_id());
+            let output_dir = self.config.output_root.join(identity.session_id());
             // A configured boundary is the file tools' home too: `~`
             // resolves against it, never against the platform home.
             let home = self

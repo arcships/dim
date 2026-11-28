@@ -25,7 +25,7 @@ use crate::session_broadcast::{
 use crate::settings::{SettingsChanged, settings_changes};
 use crate::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    AgentBuilder, CollaborationRole, Feature, Names, SessionConfig, SessionLifecycle, SessionScope,
+    AgentBuilder, CollaborationRole, Feature, Names, SessionLifecycle, SessionScope,
 };
 use dim_agent_types::{
     EventKind, Message, MessageContent, MessagePart, ModelRequest, Role, TurnOutcome,
@@ -496,7 +496,7 @@ struct Hosts {
 
 struct PromptSuggestionPlugin {
     identity: Key<SessionScope>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,
     tree: Key<TreeCommands>,
@@ -549,7 +549,14 @@ impl DynPlugin for PromptSuggestionPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let identity = ctx.require_at(&self.identity)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let methods = ctx.require_at(&self.methods)?;
             let tree = ctx.require_at(&self.tree)?;

@@ -105,8 +105,8 @@ enter.
 | --- | --- |
 | `P:HostPlatform` | Home, shell, environment and process supervision. |
 | `S:TreeCommands` | Resolve the calling branch per call. |
-| `S:SessionConfig` | cwd and collaboration role. |
-| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionMethods` | Register the `session.exec.output` namespace, until this part unloads. |
 | `P:MentionIndex` | The owner's walked index, shared with `workspace.files.search`. |
 

@@ -20,7 +20,7 @@ the same branch's `BackgroundExec`.
 | `B:BackgroundExec` | Hand off background tasks and recover a shell task whose facts were committed but whose owner is gone. |
 | `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `P:HostPlatform` | The shell executable and platform dialect. |
-| `S:SessionConfig` | The Session's cwd and execution preferences. |
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 
 ### Tests

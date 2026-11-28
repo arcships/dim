@@ -1400,8 +1400,7 @@ impl DynPlugin for BranchScopePlugin {
             let dispatcher = Dispatcher::new(scope.instance, owner.sequence, timeline.clone());
             ctx.provide_at(scope.key::<Timeline>(), Arc::new(timeline.clone()))?;
             ctx.provide_at(scope.key::<Dispatcher>(), Arc::new(dispatcher.clone()))?;
-            let lifecycle =
-                BranchLifecycle::new(session.id.clone(), owner.id.clone());
+            let lifecycle = BranchLifecycle::new(session.id.clone(), owner.id.clone());
             ctx.provide_at(scope.key::<BranchLifecycle>(), Arc::new(lifecycle.clone()))?;
             let opening = BranchOpening::new(session.assembly.startup_timeout);
             ctx.provide_at(scope.key::<BranchOpening>(), Arc::new(opening.clone()))?;

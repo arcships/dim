@@ -6,8 +6,8 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::{
     AgentBuilder, CollaborationRole, Names, PartRegistry, PartScope, QueryFilter, QueryOperand,
-    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionConfig,
-    SessionLifecycle, SessionScope, TimelineQuery, TimelineQueryScope,
+    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionLifecycle,
+    SessionScope, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     ContentBlock, EventKind, InputBlock, Message, ModelId, ROOT_BRANCH_ID, Role, UserInput,

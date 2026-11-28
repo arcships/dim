@@ -23,7 +23,7 @@ use crate::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    AgentBuilder, Names, SessionConfig, SessionHold, SessionLifecycle, SessionPhase, SessionScope,
+    AgentBuilder, Names, SessionHold, SessionLifecycle, SessionPhase, SessionScope,
 };
 use dim_agent_types::{InputMessageData, InputMode};
 use rutis::Ctx;

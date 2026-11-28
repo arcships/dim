@@ -15,9 +15,10 @@ use crate::{
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
 };
 use dim_agent_runtime::{
-    AgentError, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput,
-    QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline,
-    TimelineContext, TimelineQuery, TimelineQueryScope, BranchLifecycle};
+    AgentError, BranchLifecycle, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand,
+    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionLifecycle,
+    Timeline, TimelineQuery, TimelineQueryScope,
+};
 use dim_agent_types::*;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};

@@ -10,7 +10,8 @@ use crate::{
 };
 use dim_agent_runtime::{
     BRANCH_GROUP, BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget,
-    SESSION_GROUP, SessionConfig, SessionLifecycle, SessionLoader, SessionScope};
+    SESSION_GROUP, SessionLifecycle, SessionLoader, SessionScope,
+};
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Error};

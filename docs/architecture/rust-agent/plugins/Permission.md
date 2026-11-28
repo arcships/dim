@@ -58,9 +58,9 @@ rules are unchanged. A client updating the preset sends the tool lists it read, 
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionConfig` | Seed the initial permission policy. |
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:CommandRules` | Read the user's command rules when deciding a command call. |
-| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `B:Dispatcher` | Replay local policies, apply committed policy changes and settle update waiters. |
 | `B:Timeline` | Write changes and read ancestor policies. |
 

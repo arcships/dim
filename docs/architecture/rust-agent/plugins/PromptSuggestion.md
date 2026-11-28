@@ -23,8 +23,8 @@ storage, no replay, no `model/usage` event.
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
-| `S:SessionConfig` | `interactive` and `collaboration_role`: only a root interactive Session offers. |
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionLifecycle` | `closing()` clears the offer before the channel ends. |
 | `S:SessionMethods` | Registers `session.suggestion` from `apply`, until this generation unloads. |
 | `S:TreeCommands` | The line the conversation is on: read once for the admission, the context gate and the completion's publication recheck, whose `ContextPreparation::usage` decides `compaction_due`. |

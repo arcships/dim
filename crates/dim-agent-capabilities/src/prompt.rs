@@ -774,7 +774,7 @@ impl DynPlugin for PromptPlugin {
             let host = ctx.require_at(&self.host)?;
             let initial = ctx.require_at(&self.initial)?;
             let publisher = ctx.require_at(&self.publisher)?;
-            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let _lifecycle = ctx.require_at(&self.lifecycle)?;
             let session_lifecycle = ctx.require_at(&self.session_lifecycle)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
             let opening = ctx.require_at(&self.opening)?;
@@ -1078,12 +1078,20 @@ impl Prompt {
     pub async fn adopted_configuration(&self) -> Result<(Option<ModelConfiguration>, u64)> {
         let captured = self.timeline.committed();
         #[cfg(feature = "testing")]
-        testing::read_captured(&self.branch_phase.session_id(), &self.branch_phase.branch_id()).await;
+        testing::read_captured(
+            &self.branch_phase.session_id(),
+            &self.branch_phase.branch_id(),
+        )
+        .await;
         if self.branch_phase.phase() >= BranchPhase::Closing {
             return Err(AgentError::Cancelled("prompt adoption".into()));
         }
         #[cfg(feature = "testing")]
-        testing::read_checked(&self.branch_phase.session_id(), &self.branch_phase.branch_id()).await;
+        testing::read_checked(
+            &self.branch_phase.session_id(),
+            &self.branch_phase.branch_id(),
+        )
+        .await;
         let through = self.advance_active(captured).await?;
         let projection = self.projection.lock().unwrap();
         let configuration = projection

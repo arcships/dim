@@ -121,57 +121,8 @@ async fn a_worktree_association_failure_crosses_as_a_code_and_a_message() {
     assert!(error.to_string().contains("session is closed"));
 }
 
-struct AgentConfigReader {
-    binding: rutis::host::Key<SessionScope>,
-    face: rutis::host::Key<dyn rutis_bridge::session::HostDispatch>,
-    reads: Arc<AtomicUsize>,
-}
-
-impl rutis::host::DynPlugin for AgentConfigReader {
-    fn name(&self) -> &str {
-        "test.agent-config-face"
-    }
-
-    fn injects(&self) -> Vec<rutis::host::TypeKey> {
-        vec![self.binding.erase(), self.face.erase()]
-    }
-
-    fn apply<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
-        Box::pin(async move {
-            let binding = ctx.require_at(&self.binding)?;
-            let face = ctx.require_at(&self.face)?;
-            let reply = face
-                .invoke("get", rutis_bridge::session::Value::List(vec![]))
-                .unwrap();
-            let reply = rutis_bridge::session::settle(reply)
-                .await
-                .unwrap()
-                .json()
-                .unwrap();
-            // The scope answers the same data the three faces used to.
-            let description = binding.describe().expect("the Session is live");
-            assert_eq!(
-                reply,
-                serde_json::to_value(serde_json::json!({
-                    "sessionId": description.session_id,
-                    "restored": description.restored,
-                    "config": description.config,
-                    "agent": description.agent,
-                }))
-                .unwrap(),
-                "the agent config is the owner's own value"
-            );
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(rutis::host::Effect::Done)
-        })
-    }
-}
-
 #[tokio::test]
-async fn the_agent_config_face_resolves_inside_each_session_instance() {
+async fn the_session_scope_describes_what_three_faces_used_to() {
     use dim_agent_runtime::{AgentBuilder, Feature, SessionConfig, testing::MinimalHost};
 
     let mut builder = AgentBuilder::new(AgentConfig::default());
@@ -179,12 +130,11 @@ async fn the_agent_config_face_resolves_inside_each_session_instance() {
     dim_agent_capabilities::defaults::install(&mut builder);
     let reads = Arc::new(AtomicUsize::new(0));
     let observed = reads.clone();
-    builder.require_feature(Feature::new("test.agent-config-face").session(
-        "test.agent-config-face",
+    builder.require_feature(Feature::new("test.session-description").session(
+        "test.session-description",
         move |names| {
-            Ok(Box::new(AgentConfigReader {
+            Ok(Box::new(SessionDescriber {
                 binding: names.key()?,
-                face: names.named("agentConfig")?,
                 reads: observed.clone(),
             }))
         },
@@ -198,4 +148,34 @@ async fn the_agent_config_face_resolves_inside_each_session_instance() {
         .unwrap();
     assert_eq!(reads.load(Ordering::SeqCst), 2);
     host.close().await.unwrap();
+}
+
+struct SessionDescriber {
+    binding: rutis::host::Key<SessionScope>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl rutis::host::DynPlugin for SessionDescriber {
+    fn name(&self) -> &str {
+        "test.session-description"
+    }
+
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        vec![self.binding.erase()]
+    }
+
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            let scope = ctx.require_at(&self.binding)?;
+            let description = scope.describe().map_err(|error| {
+                rutis::Error::msg(format!("Session description unavailable: {error}"))
+            })?;
+            assert_eq!(description.session_id, scope.session_id());
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(rutis::host::Effect::Done)
+        })
+    }
 }

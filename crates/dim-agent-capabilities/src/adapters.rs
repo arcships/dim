@@ -1,6 +1,6 @@
 //! Deterministic in-process hosts for prototype and transport tests.
 use crate::{host::*, tool_registry::definition};
-use dim_agent_runtime::{Names, SessionConfig};
+use dim_agent_runtime::{Names, SessionConfig, SessionScope};
 use dim_agent_types::*;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -250,7 +250,7 @@ impl PrepareModel for DefaultPrepareModel {
 }
 pub struct DefaultPrepareModelPlugin {
     host: Key<PrepareModelHost>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
 }
 impl DefaultPrepareModelPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -269,7 +269,14 @@ impl DynPlugin for DefaultPrepareModelPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             ctx.provide_at(
                 self.host.clone(),
                 Arc::new(PrepareModelHost(Arc::new(DefaultPrepareModel { config }))),

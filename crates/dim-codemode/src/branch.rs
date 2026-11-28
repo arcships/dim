@@ -8,7 +8,7 @@ use dim_agent_capabilities::{
     host::{HostError, ToolExecutionContext},
     tool_executor::ToolExecutor,
 };
-use dim_agent_runtime::{Names, TimelineContext, BranchLifecycle};
+use dim_agent_runtime::{BranchLifecycle, Names};
 use dim_agent_types::ToolResult;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -53,8 +53,10 @@ impl DynPlugin for CodeModeBranchPlugin {
                 config: self.config.clone(),
                 runs: runs.clone(),
             });
-            let key =
-                CodeModeRunKey::new(lifecycle.session_id().clone(), lifecycle.branch_id().clone());
+            let key = CodeModeRunKey::new(
+                lifecycle.session_id().clone(),
+                lifecycle.branch_id().clone(),
+            );
             runs.insert(key.clone(), branch);
             let cleanup = runs.clone();
             ctx.effect(move || async move {

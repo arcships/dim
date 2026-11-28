@@ -9,8 +9,8 @@ use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QueryPick,
-    QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline, TimelineContext, TimelineKey,
-    TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
+    QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline, TimelineKey, TimelineQuery,
+    TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, BranchSource, EventDraft, EventKind, ExecStatus, GoalRead, InputBlock,

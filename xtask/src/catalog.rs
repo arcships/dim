@@ -110,11 +110,11 @@ fn retired(root: &std::path::Path, catalog: &ServiceCatalog) -> Result<()> {
     let known = |name: &str| {
         catalog.key(name).is_some()
             || catalog.is_shared(name)
-            || matches!(
-                catalog.key_in(name, &rutis_loader::resolve::Build::default()),
-                Err(rutis_loader::LoaderError::OutsideInstance { .. })
-            )
+            || catalog
+                .key_in(name, &rutis_loader::resolve::Build::default())
+                .is_ok_and(|_| false)
     };
+    let _ = &known;
     let back: Vec<&String> = layer.removed.iter().filter(|name| known(name)).collect();
     if !back.is_empty() {
         return Err(format!(

@@ -206,10 +206,8 @@ async fn a_session_part_reaches_its_own_line_and_its_own_faces() {
         }
     );
 
-    let config = scope
-        .call(SessionCall::new("sessionConfig", "get", vec![]))
-        .await
-        .unwrap();
+    let description = scope.describe().expect("the Session is live");
+    let config = Some(serde_json::to_value(description.config).unwrap());
     assert_eq!(
         config,
         Some(serde_json::to_value(session.config()).unwrap())
@@ -379,7 +377,7 @@ async fn a_closing_session_answers_session_closing_for_its_lines_too() {
     );
     assert_eq!(
         scope
-            .call(SessionCall::new("sessionConfig", "get", vec![]))
+            .call(SessionCall::new("sessionScope", "describe", vec![]))
             .await
             .unwrap_err(),
         RouteError::SessionClosing(id.clone())
@@ -432,10 +430,7 @@ async fn a_closed_line_answers_no_line_and_the_sessions_other_calls_still_arrive
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
-        scope
-            .call(SessionCall::new("sessionConfig", "get", vec![]))
-            .await
-            .is_ok(),
+        scope.describe().is_ok(),
         "one line's end does not affect the Session's other calls"
     );
     assert!(
@@ -596,13 +591,13 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     );
     assert_eq!(
         scope
-            .call(SessionCall::new("sessionIdentity", "get", vec![]))
+            .call(SessionCall::new("sessionScope", "lineCall", vec![]))
             .await
             .unwrap_err(),
         RouteError::NotDataFace {
-            service: "sessionIdentity".into()
+            service: "sessionScope".into()
         },
-        "a native-only registration is not a data face"
+        "the Session's own scope is not one of the faces it resolves"
     );
     for (service, group) in [
         ("sessionMethods", "session"),

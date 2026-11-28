@@ -7,7 +7,7 @@ use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use dim_agent_runtime::{Names, SessionConfig, SessionScope};
+use dim_agent_runtime::{Names, SessionScope};
 use dim_agent_types::{ToolCall, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};

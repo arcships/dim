@@ -1429,7 +1429,10 @@ impl Prompt {
         let mut progress = self.dispatcher.watch();
         while self.dispatcher.sequence() < through {
             #[cfg(feature = "testing")]
-            super::testing::read_waiting(&self.branch_phase.session_id(), &self.branch_phase.branch_id());
+            super::testing::read_waiting(
+                &self.branch_phase.session_id(),
+                &self.branch_phase.branch_id(),
+            );
             if let Some(error) = self.dispatcher.failure() {
                 return Err(error);
             }
@@ -1451,7 +1454,10 @@ impl Prompt {
         }
         let written = self.projection.lock().unwrap().written_result;
         #[cfg(feature = "testing")]
-        super::testing::read_publishing(&self.branch_phase.session_id(), &self.branch_phase.branch_id());
+        super::testing::read_publishing(
+            &self.branch_phase.session_id(),
+            &self.branch_phase.branch_id(),
+        );
         self.await_written(written).await?;
         self.projection.lock().unwrap().publish(self, written);
         Ok(through)
@@ -1519,8 +1525,13 @@ impl Prompt {
                     .await?;
                     let delivered = match &kind {
                         EventKind::PromptChanged(data) => {
-                            delivered(&self.timeline, &self.branch_phase.branch_id(), data, through)
-                                .await?
+                            delivered(
+                                &self.timeline,
+                                &self.branch_phase.branch_id(),
+                                data,
+                                through,
+                            )
+                            .await?
                         }
                         _ => true,
                     };
@@ -1540,7 +1551,10 @@ impl Prompt {
         }
         let written = self.projection.lock().unwrap().written_result;
         #[cfg(feature = "testing")]
-        super::testing::read_publishing(&self.branch_phase.session_id(), &self.branch_phase.branch_id());
+        super::testing::read_publishing(
+            &self.branch_phase.session_id(),
+            &self.branch_phase.branch_id(),
+        );
         self.await_written(written).await?;
         self.projection.lock().unwrap().publish(self, written);
         Ok(())

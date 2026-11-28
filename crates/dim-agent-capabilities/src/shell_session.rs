@@ -18,7 +18,7 @@ use crate::{
     },
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use dim_agent_runtime::Names;
+use dim_agent_runtime::{Names, SessionScope};
 use dim_agent_types::{ExecEndedData, JsonObject, ToolContent, ToolEffect, ToolResult};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -1142,7 +1142,7 @@ pub struct ShellSessionPlugin {
     facts: Key<crate::file_access::FileAccessFacts>,
     session: Key<ShellSession>,
     host: Key<HostPlatform>,
-    session_config: Key<dim_agent_runtime::SessionConfig>,
+    session_config: Key<SessionScope>,
     branch_lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     config: Option<ShellSessionConfig>,
 }
@@ -1185,7 +1185,14 @@ impl DynPlugin for ShellSessionPlugin {
         Box::pin(async move {
             let host = ctx.require_at(&self.host)?;
             let background = ctx.require_at(&self.background)?;
-            let config = ctx.require_at(&self.session_config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.session_config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let branch_lifecycle = ctx.require_at(&self.branch_lifecycle)?;
             let owner = ctx.get::<SessionFiles>();
             let mut session = ShellSession::new(
@@ -1196,8 +1203,8 @@ impl DynPlugin for ShellSessionPlugin {
                     output_dir: host
                         .home
                         .join(".dim/exec")
-                        .join(&branch_lifecycle.session_id())
-                        .join(&branch_lifecycle.branch_id()),
+                        .join(branch_lifecycle.session_id())
+                        .join(branch_lifecycle.branch_id()),
                 }),
                 host,
                 owner,

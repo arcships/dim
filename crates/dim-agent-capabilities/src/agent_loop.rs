@@ -10,10 +10,11 @@ use crate::{
     tool_binding::ToolBinding,
 };
 use dim_agent_runtime::{
-    AgentError, CAPABILITY_RELOADING, Dispatcher, LoopPhase, LoopSnapshot, LoopState, Names,
-    QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
-    QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineContext, TimelineQuery,
-    TimelineQueryScope, BranchLifecycle};
+    AgentError, BranchLifecycle, CAPABILITY_RELOADING, Dispatcher, LoopPhase, LoopSnapshot,
+    LoopState, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage,
+    QueryPick, QuerySelect, QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineQuery,
+    TimelineQueryScope,
+};
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::Ctx;

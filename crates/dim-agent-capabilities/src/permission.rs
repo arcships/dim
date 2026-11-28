@@ -20,7 +20,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput,
     QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Registration, Registrations,
-    SessionConfig, SessionScope, StateCell, Timeline, TimelineQuery, TimelineQueryScope,
+    SessionScope, StateCell, Timeline, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, ApprovalCallData, BranchSource, COMMAND_SEPARATORS, CommandMatch, CommandRule,
@@ -835,7 +835,7 @@ fn decide(policy: &PermissionPolicy, name: &str, risk: Option<&str>) -> Decision
 pub struct PermissionPlugin {
     state: Key<StateCell<PermissionState>>,
     permission: Key<Permission>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     rules: Key<CommandRules>,
     facts: Key<FileAccessFacts>,
     identity: Key<SessionScope>,
@@ -873,7 +873,14 @@ impl DynPlugin for PermissionPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let rules = ctx.require_at(&self.rules)?;
             let identity = ctx.require_at(&self.identity)?;
             let timeline = ctx.require_at(&self.timeline)?;

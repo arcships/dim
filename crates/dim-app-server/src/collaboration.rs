@@ -32,9 +32,8 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::{
     AgentBuilder, AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryFilter,
-    QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, Session,
-    SessionConfig, SessionHold, SessionLifecycle, SessionScope, Timeline, TimelineContext,
-    TimelineQuery, TimelineQueryScope,
+    QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, Session, SessionHold,
+    SessionLifecycle, SessionScope, Timeline, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::{

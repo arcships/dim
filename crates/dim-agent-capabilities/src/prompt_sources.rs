@@ -16,7 +16,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentBuilder, BranchLifecycle, BranchPhase, ConfigureUpdate, Names, PromptSourceTarget,
-    ReplyLanguage, SessionConfig, StateCell,
+    ReplyLanguage, SessionConfig, SessionScope, StateCell,
 };
 use dim_agent_types::*;
 use rutis::Ctx;
@@ -569,7 +569,7 @@ impl LoadPrompt for Sources {
 /// Session part: registers each of its sources with the prompt registry.
 pub struct PromptSourcesPlugin {
     platform: Key<HostPlatform>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     tools: Key<ToolRegistry>,
     registry: Key<PromptRegistry>,
     language: Key<SessionLanguage>,
@@ -618,7 +618,14 @@ impl DynPlugin for PromptSourcesPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let platform = ctx.require_at(&self.platform)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let tools = ctx.require_at(&self.tools)?;
             let registry = ctx.require_at(&self.registry)?;
             // Apply runs once per Session instance: builder rows cannot

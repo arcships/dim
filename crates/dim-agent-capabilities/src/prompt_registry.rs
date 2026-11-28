@@ -6,7 +6,7 @@ use crate::{
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
     prompt::InitialPromptConfiguration,
 };
-use dim_agent_runtime::{ConfigureUpdate, Names, PromptSourceTarget, Registrations, SessionConfig};
+use dim_agent_runtime::{ConfigureUpdate, Names, PromptSourceTarget, Registrations, SessionScope};
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -166,7 +166,7 @@ pub fn targets<'a>(sources: impl IntoIterator<Item = &'a str>) -> Vec<PromptSour
 }
 
 pub struct PromptRegistryPlugin {
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     registry: Key<PromptRegistry>,
     registry_face: Key<dyn HostDispatch>,
     host: Key<PromptHost>,
@@ -194,7 +194,14 @@ impl DynPlugin for PromptRegistryPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let registry = Arc::new(PromptRegistry::default());
             let sources = registry.clone();
             let initial = InitialPromptConfiguration::read(move || {

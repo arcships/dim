@@ -12,8 +12,9 @@ use dim_agent_capabilities::{
     },
 };
 use dim_agent_runtime::{
-    AgentBuilder, Names, PublicService, SESSION_GROUP, SessionConfig, SessionLifecycle,
-    SessionLoader, StateCell, SessionScope};
+    AgentBuilder, Names, PublicService, SESSION_GROUP, SessionLifecycle, SessionLoader,
+    SessionScope, StateCell,
+};
 use dim_agent_types::{
     ToolCall, ToolContent, ToolDefinition, ToolMetadata, ToolResult, ToolSource,
 };
@@ -434,7 +435,7 @@ impl ToolProvider for Sources {
 
 pub struct McpSessionPlugin {
     files: Key<dim_agent_capabilities::host::SessionFiles>,
-    identity: Key<dim_agent_runtime::SessionIdentity>,
+    identity: Key<dim_agent_runtime::SessionScope>,
     session: InstanceId,
     mcp: Key<McpSession>,
     directory: Key<McpService>,
@@ -492,7 +493,7 @@ impl DynPlugin for McpSessionPlugin {
             let stopped = ctx.cancellation_token();
             let owner = Arc::new(McpSession {
                 files: ctx.get_at(&self.files),
-                session_id: ctx.require_at(&self.identity)?.session_id.clone(),
+                session_id: ctx.require_at(&self.identity)?.session_id(),
                 connections: super::McpOwner::in_session(
                     ctx.clone(),
                     loader,

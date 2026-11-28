@@ -12,11 +12,11 @@ working directory, through the Session methods `shell.run`, `shell.stop` and
 | Service | Purpose |
 | --- | --- |
 | `P:HostPlatform` | Build each command as `exec` does (`build_process_spec`) and spawn its process tree. |
-| `S:SessionConfig` | The Session working directory. |
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:GuideEntries` | Register the shell-input marker's guide entry at Session scope, until this plugin unloads. |
 | `S:TreeCommands` | Check `branchId` at start; write a recorded run's input on that branch. |
 | `S:SessionLifecycle` | `closing()` ends a run without writing; `hold()` keeps the Session from an idle unload while a run is registered. |
-| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionMethods` | Register the `shell` namespace from `apply`, until this generation unloads. |
 
 ## Methods

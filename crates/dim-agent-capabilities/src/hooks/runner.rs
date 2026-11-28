@@ -26,8 +26,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, SessionConfig, SessionScope, Timeline, TimelineContext, TimelineQuery,
-    TimelineQueryScope,
+    QueryValue, SessionConfig, SessionScope, Timeline, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, ApprovalDecision, ApprovalRequestData, BranchSource, ContentBlock, EventKind,
@@ -988,7 +987,7 @@ impl CheckSubmission for PromptSubmitCheck {
 pub struct HooksSessionPlugin {
     sources: Key<HookSourcesHost>,
     platform: Key<HostPlatform>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     lifecycle: Key<SessionScope>,
     checks: Key<SubmitChecks>,
     runtime: Key<HooksRuntime>,
@@ -1022,7 +1021,14 @@ impl DynPlugin for HooksSessionPlugin {
         Box::pin(async move {
             let sources = ctx.require_at(&self.sources)?;
             let platform = ctx.require_at(&self.platform)?;
-            let config = ctx.require_at(&self.config)?;
+            let config = Arc::new(
+                ctx.require_at(&self.config)?
+                    .describe()
+                    .map_err(|error| {
+                        rutis::Error::msg(format!("Session description unavailable: {error}"))
+                    })?
+                    .config,
+            );
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let checks = ctx.require_at(&self.checks)?;
             let runtime = Arc::new(HooksRuntime {
@@ -2274,7 +2280,7 @@ impl DynPlugin for HooksBranchPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let approval = ctx.require_at(&self.approval)?;
             let permission = ctx.require_at(&self.permission)?;
-            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let _lifecycle = ctx.require_at(&self.lifecycle)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let registry = ctx.require_at(&self.registry)?;
             let (sender, receiver) = mpsc::unbounded_channel();

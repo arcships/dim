@@ -13,7 +13,7 @@ adopts every registered source plus the Session-selected model.
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionConfig` | Initial model selection. |
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 
 ### Events and lifetime
 
@@ -89,7 +89,7 @@ from branch adoption.
 | --- | --- |
 | `P:HostPlatform` | Home, environment and shell/platform context. |
 | `S:ToolRegistry` | The effective tool mode: `shell` drops the Windows file-encoding guidance. |
-| `S:SessionConfig` | Working directory, Session context and the reply language a record carries. |
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:PromptRegistry` | Register each of its sources by name, until this part unloads. |
 
 The Session's live reply-language cell is `S:SessionLanguage`; its `get` is the `sessionLanguage`

@@ -7,9 +7,10 @@ use crate::{
     tool_registry::{ToolClaim, ToolConcurrency, ToolContribution},
 };
 use dim_agent_runtime::{
-    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, QueryComparison, QueryFilter,
-    QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Timeline,
-    TimelineContext, TimelineQuery, TimelineQueryScope, BranchLifecycle};
+    AgentError, BranchLifecycle, CAPABILITY_RELOADING, Dispatcher, Names, QueryComparison,
+    QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
+    QueryValue, Timeline, TimelineQuery, TimelineQueryScope,
+};
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -402,7 +403,7 @@ impl DynPlugin for ToolExecutorPlugin {
                         let faults = faults.clone();
                         let binding = binding.clone();
                         let approval = approval.clone();
-                        let lifecycle = lifecycle.clone();
+                        let _lifecycle = lifecycle.clone();
                         owner.tasks.spawn(async move {
                             let outcome = AssertUnwindSafe(async {
                                 if cancel.is_cancelled() {

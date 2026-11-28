@@ -9,9 +9,9 @@ use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
     BranchRefusal, BranchRuntime, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Result, SessionScope, StoredBranch, StoredEvent, Timeline, TimelineContext,
-    TimelineFactory, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
-    TimelineQueryScope, TimelineStore, TimelineTreeControl,
+    QueryValue, Result, SessionScope, StoredBranch, StoredEvent, Timeline, TimelineFactory,
+    TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply, TimelineQueryScope,
+    TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
 use futures_util::{FutureExt, future::join_all};
@@ -3716,7 +3716,7 @@ impl DynPlugin for BranchLinePlugin {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
-            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let _lifecycle = ctx.require_at(&self.lifecycle)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let session = ctx.require_at(&self.session)?;
             let tree = ctx.require_at(&self.tree)?;

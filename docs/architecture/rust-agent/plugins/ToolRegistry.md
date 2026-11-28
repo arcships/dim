@@ -26,8 +26,8 @@ with the flow test that asserts it.
 | Service | Purpose |
 | --- | --- |
 | `S:ToolHost` | Host definitions and execution handlers. |
-| `S:SessionConfig` | The mount list (`tools`): which host and registered tools are declared, and in which order; the Session's `tool_mode`, the chosen working style. |
-| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionLifecycle` | `activated()` starts the background refresh task once the Session is published; `closing()` ends it. |
 
 ## Tool modes

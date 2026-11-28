@@ -60,8 +60,8 @@ cancellation token terminates its process tree on close.
 | --- | --- |
 | `S:HookSourcesHost` | Read the effective documents of the user, the workspace and the plugins. |
 | `P:HostPlatform` | Build each command's process spec, environment and process tree. |
-| `S:SessionConfig` | Pass the working directory, permission and collaboration-role facts to the payload. |
-| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
+| `S:SessionScope` | The Session's own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SubmitChecks` | Register `hooks`, the `UserPromptSubmit` check the operator-input entries call. |
 
 ## HooksBranch

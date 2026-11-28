@@ -12,7 +12,7 @@ use dim_agent_capabilities::{
         ToolProvider, ToolProviderChanged, ToolRegistry, ToolSourceSet, tool_provider_changes,
     },
 };
-use dim_agent_runtime::{Names, SESSION_GROUP, SessionConfig, SessionLifecycle, SessionScope};
+use dim_agent_runtime::{Names, SESSION_GROUP, SessionLifecycle, SessionScope};
 use futures_util::future::{select_all, try_join_all};
 use rutis::Ctx;
 use rutis::host::{

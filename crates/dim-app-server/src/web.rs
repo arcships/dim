@@ -14,7 +14,8 @@ use dim_agent_capabilities::{
     },
 };
 use dim_agent_runtime::{
-    Names, PartRegistry, PartScope, SESSION_GROUP, SessionConfig, SessionLifecycle, SessionScope};
+    Names, PartRegistry, PartScope, SESSION_GROUP, SessionLifecycle, SessionScope,
+};
 use dim_agent_types::{ToolCall, ToolContent, ToolDefinition, ToolResult, ToolSource};
 use network::{
     DOWNLOAD_LIMIT, Diagnostic, NetworkConfig, WebError, domain, get, hostname, parse_url,
