@@ -17,7 +17,7 @@ use dim_agent_runtime::SessionLines;
 pub use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{
     Agent, AgentBuilder, AgentConfig, AgentError, BoxFuture, Feature, Names, Session, Timeline,
-    TimelineIdentity, testing::chain_events,
+    TimelineContext, testing::chain_events,
 };
 use dim_agent_types::{BranchCreateData, EventKind, ModelRequest, SystemPrompt, SystemPromptPart};
 use dim_app_server::{RunningServer, ServerConfig, serve};
@@ -62,7 +62,7 @@ impl Probe {
 struct ProbePart {
     probe: Arc<Probe>,
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 
 impl ProbePart {
@@ -90,7 +90,7 @@ impl DynPlugin for ProbePart {
                 .timelines
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), timeline);
+                .insert(identity.branch_id().clone(), timeline);
             Ok(Effect::Done)
         })
     }

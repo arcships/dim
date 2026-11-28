@@ -16,7 +16,7 @@ working directory, through the Session methods `shell.run`, `shell.stop` and
 | `S:GuideEntries` | Register the shell-input marker's guide entry at Session scope, until this plugin unloads. |
 | `S:TreeCommands` | Check `branchId` at start; write a recorded run's input on that branch. |
 | `S:SessionLifecycle` | `closing()` ends a run without writing; `hold()` keeps the Session from an idle unload while a run is registered. |
-| `S:SessionIdentity` | Session id of the `shell.run` span, one per started run. |
+| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionMethods` | Register the `shell` namespace from `apply`, until this generation unloads. |
 
 ## Methods

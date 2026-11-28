@@ -9,8 +9,8 @@ use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
     BranchRefusal, BranchRuntime, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline, TimelineFactory,
-    TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
+    QueryValue, Result, SessionScope, StoredBranch, StoredEvent, Timeline, TimelineContext,
+    TimelineFactory, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
     TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
@@ -3294,7 +3294,7 @@ pub struct TreeTimelinePlugin {
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     commands: Key<TreeCommands>,
-    identity: Key<dim_agent_runtime::TimelineIdentity>,
+    lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
 }
 impl TreeTimelinePlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -3302,7 +3302,7 @@ impl TreeTimelinePlugin {
             timeline: names.key()?,
             dispatcher: names.key()?,
             commands: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
         })
     }
 }
@@ -3315,7 +3315,7 @@ impl DynPlugin for TreeTimelinePlugin {
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.commands.erase(),
-            self.identity.erase(),
+            self.lifecycle.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -3323,9 +3323,9 @@ impl DynPlugin for TreeTimelinePlugin {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let commands = ctx.require_at(&self.commands)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let cleanup = commands.clone();
-            let parent = identity.branch_id.clone();
+            let parent = lifecycle.branch_id();
             ctx.effect(move || async move {
                 if let Some(tree) = cleanup.tree.upgrade() {
                     let cancelled = TimelineTree::cancel_pending(
@@ -3341,7 +3341,7 @@ impl DynPlugin for TreeTimelinePlugin {
                 "TreeTimeline",
                 &["branch/create", "branch/end", "turn/end"],
                 move |event| {
-                    let branch = &identity.branch_id;
+                    let branch = &lifecycle.branch_id();
                     let result = match &event.kind {
                         EventKind::BranchCreate(_) => commands
                             .tree
@@ -3373,7 +3373,7 @@ pub struct TimelineTreePlugin {
     control: Key<dyn TimelineTreeControl>,
     factory: Key<TimelineFactory>,
     store: Key<dyn TimelineStore>,
-    identity: Key<SessionIdentity>,
+    lifecycle: Key<SessionScope>,
     guide: Key<GuideEntries>,
 }
 impl TimelineTreePlugin {
@@ -3384,7 +3384,7 @@ impl TimelineTreePlugin {
             control: names.key()?,
             factory: names.key()?,
             store: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             guide: names.key()?,
         })
     }
@@ -3397,7 +3397,7 @@ impl DynPlugin for TimelineTreePlugin {
         vec![
             self.factory.erase(),
             self.store.erase(),
-            self.identity.erase(),
+            self.lifecycle.erase(),
             self.guide.erase(),
         ]
     }
@@ -3405,7 +3405,7 @@ impl DynPlugin for TimelineTreePlugin {
         Box::pin(async move {
             let factory = ctx.require_at(&self.factory)?;
             let store = ctx.require_at(&self.store)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let guide = ctx.require_at(&self.guide)?;
             guide.register(
                 ctx,
@@ -3425,7 +3425,8 @@ impl DynPlugin for TimelineTreePlugin {
                     text: PARENT_ENTRY.into(),
                 },
             )?;
-            let tree = TimelineTree::new(factory, store, identity.session_id.clone(), ctx.clone());
+            let tree =
+                TimelineTree::new(factory, store, lifecycle.session_id().clone(), ctx.clone());
             let owner = tree.clone();
             ctx.effect(move || async move { owner.close().await.map_err(Into::into) })?;
             let commands = Arc::new(TreeCommands {
@@ -3672,7 +3673,6 @@ pub struct BranchLinePlugin {
     line: Key<BranchLine>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
     lifecycle: Key<BranchLifecycle>,
     session: Key<dim_agent_runtime::SessionLifecycle>,
     tree: Key<TreeCommands>,
@@ -3690,7 +3690,6 @@ impl BranchLinePlugin {
             line: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
-            identity: names.key()?,
             lifecycle: names.key()?,
             session: names.key()?,
             tree: names.key()?,
@@ -3707,7 +3706,6 @@ impl DynPlugin for BranchLinePlugin {
         vec![
             self.timeline.erase(),
             self.dispatcher.erase(),
-            self.identity.erase(),
             self.lifecycle.erase(),
             self.session.erase(),
             self.tree.erase(),
@@ -3718,12 +3716,12 @@ impl DynPlugin for BranchLinePlugin {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let session = ctx.require_at(&self.session)?;
             let tree = ctx.require_at(&self.tree)?;
             let guide = ctx.require_at(&self.guide)?;
-            let scope = GuideScope::Branch(identity.branch_id.clone());
+            let scope = GuideScope::Branch(lifecycle.branch_id().clone());
             for (markers, order, text) in [
                 (vec!["dim-branch-lines"], 40, ROSTER_ENTRY),
                 (
@@ -3743,7 +3741,7 @@ impl DynPlugin for BranchLinePlugin {
                 )?;
             }
             let line = Arc::new(BranchLine {
-                own: identity.branch_id.clone(),
+                own: lifecycle.branch_id().clone(),
                 tree,
                 timeline: timeline.clone(),
                 config: self.config.clone(),
@@ -3803,7 +3801,7 @@ impl DynPlugin for BranchLinePlugin {
                     return;
                 }
                 #[cfg(feature = "testing")]
-                testing::writers(&identity.session_id, &identity.branch_id).await;
+                testing::writers(&lifecycle.session_id(), &lifecycle.branch_id()).await;
                 writer.run().await;
             });
             let stop = line.stop.clone();

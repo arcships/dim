@@ -439,7 +439,7 @@ pub struct McpSessionPlugin {
     session: InstanceId,
     mcp: Key<McpSession>,
     directory: Key<McpService>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     loader: Key<SessionLoader>,
     lifecycle: Key<SessionLifecycle>,
     tools: Key<ToolRegistry>,

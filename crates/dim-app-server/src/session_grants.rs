@@ -5,7 +5,7 @@ use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     session_grants::{ReadSessionGrants, SessionGrantsHost, resolve_grant_path},
 };
-use dim_agent_runtime::{AgentBuilder, Names, SessionConfig, SessionIdentity};
+use dim_agent_runtime::{AgentBuilder, Names, SessionConfig, SessionScope};
 use dim_agent_types::grant::{GrantKind, GrantMode, SessionGrant};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -42,8 +42,8 @@ impl ReadSessionGrants for StoreGrants {
 struct SessionGrantsPlugin {
     host: Key<SessionGrantsHost>,
     store: Key<Store>,
-    identity: Key<SessionIdentity>,
-    config: Key<SessionConfig>,
+    identity: Key<SessionScope>,
+    config: Key<SessionScope>,
     methods: Key<SessionMethods>,
 }
 impl SessionGrantsPlugin {
@@ -75,7 +75,7 @@ impl DynPlugin for SessionGrantsPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let config = ctx.require_at(&self.config)?;
             let methods = ctx.require_at(&self.methods)?;
-            let session_id = identity.session_id.clone();
+            let session_id = identity.session_id().clone();
             let cwd = PathBuf::from(&config.cwd);
             ctx.provide_at(
                 self.host.clone(),

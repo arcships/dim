@@ -17,8 +17,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput,
     QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline,
-    TimelineIdentity, TimelineQuery, TimelineQueryScope,
-};
+    TimelineContext, TimelineQuery, TimelineQueryScope, BranchLifecycle};
 use dim_agent_types::*;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -1180,7 +1179,7 @@ pub struct BackgroundExecPlugin {
     dispatcher: Key<Dispatcher>,
     session: Key<SessionLifecycle>,
     guide: Key<GuideEntries>,
-    identity: Key<TimelineIdentity>,
+    lifecycle: Key<BranchLifecycle>,
 }
 impl BackgroundExecPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -1191,7 +1190,7 @@ impl BackgroundExecPlugin {
             dispatcher: names.key()?,
             session: names.key()?,
             guide: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
         })
     }
 }
@@ -1206,7 +1205,7 @@ impl DynPlugin for BackgroundExecPlugin {
             self.dispatcher.erase(),
             self.session.erase(),
             self.guide.erase(),
-            self.identity.erase(),
+            self.lifecycle.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1215,10 +1214,10 @@ impl DynPlugin for BackgroundExecPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let session = ctx.require_at(&self.session)?;
             let guide = ctx.require_at(&self.guide)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             guide.register(
                 ctx,
-                GuideScope::Branch(identity.branch_id.clone()),
+                GuideScope::Branch(lifecycle.branch_id().clone()),
                 GuideEntry {
                     markers: vec!["dim-notification".into()],
                     order: 10,

@@ -9,7 +9,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, BranchPhase, CAPABILITY_RELOADING, Dispatcher, Names,
     QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
-    QuerySpec, QueryValue, Timeline, TimelineIdentity, TimelineQuery, TimelineQueryScope,
+    QuerySpec, QueryValue, Timeline, TimelineContext, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -35,7 +35,7 @@ pub(crate) struct ToolSetAdoption {
 /// ContextPreparation for Prompt.
 pub struct ConfigurationPublisher {
     timeline: Arc<Timeline>,
-    identity: TimelineIdentity,
+    lifecycle: Arc<BranchLifecycle>,
     /// The Session's guide entries: the System it publishes carries the
     /// composition over the entries in force at that adoption.
     guide: Arc<GuideEntries>,
@@ -98,7 +98,7 @@ impl ConfigurationPublisher {
                 PromptChange::Set { entry } => &entry.scope,
                 PromptChange::Revoke { scope, .. } => scope,
             };
-            if !scope_is_visible(scope, &self.identity.branch_id, &ancestry) {
+            if !scope_is_visible(scope, &self.lifecycle.branch_id(), &ancestry) {
                 return Err(AgentError::InvalidInput(
                     "prompt scope is outside branch ancestry".into(),
                 ));
@@ -191,7 +191,7 @@ impl ConfigurationPublisher {
                 })
                 .collect();
             let data = PromptChangedData {
-                timeline: self.identity.branch_id.clone(),
+                timeline: self.lifecycle.branch_id().clone(),
                 revision: revision.clone(),
                 previous: before.revision.clone(),
                 reason: if before.revision.is_some() {
@@ -214,19 +214,19 @@ impl ConfigurationPublisher {
                 })?;
                 drafts.push(
                     EventKind::ContextConfigured(ContextConfiguredData {
-                        timeline: self.identity.branch_id.clone(),
+                        timeline: self.lifecycle.branch_id().clone(),
                         revision: Uuid::new_v4().to_string(),
                         previous: previous_configuration.map(|data| PromptReference {
                             timeline: data.timeline.clone(),
                             revision: data.revision.clone(),
                         }),
                         prompt: Some(PromptReference {
-                            timeline: self.identity.branch_id.clone(),
+                            timeline: self.lifecycle.branch_id().clone(),
                             revision,
                         }),
                         settings: Box::new(settings),
                         system: Some(self.guide.compose_system(
-                            &self.identity.branch_id,
+                            &self.lifecycle.branch_id(),
                             Some(SystemPrompt::Text(system.clone())),
                         )),
                         system_source: Some(system),
@@ -319,7 +319,7 @@ impl ConfigurationPublisher {
     ) -> ContextConfiguredData {
         let (system, system_source) = self.rerendered(before, previous);
         ContextConfiguredData {
-            timeline: self.identity.branch_id.clone(),
+            timeline: self.lifecycle.branch_id().clone(),
             revision: Uuid::new_v4().to_string(),
             previous: previous.map(|data| PromptReference {
                 timeline: data.timeline.clone(),
@@ -366,7 +366,7 @@ impl ConfigurationPublisher {
             None => before.system.clone(),
         };
         let system = Some(self.guide.compose_system(
-            &self.identity.branch_id,
+            &self.lifecycle.branch_id(),
             Some(SystemPrompt::Text(source.clone())),
         ));
         (system, Some(source))
@@ -444,7 +444,7 @@ pub struct ContextPreparation {
         >,
     >,
     timeline: Arc<Timeline>,
-    identity: Arc<TimelineIdentity>,
+    lifecycle: Arc<BranchLifecycle>,
 }
 impl ContextPreparation {
     pub(crate) fn provide_projection(&self, source: &ContextPrepareData, context: StreamedContext) {
@@ -782,8 +782,8 @@ impl ContextPreparation {
     ) -> dim_agent_runtime::Result<()> {
         let span = tracing::info_span!(
             "context.prepare",
-            session_id = %self.identity.session_id,
-            branch_id = %self.identity.branch_id,
+            session_id = %self.lifecycle.session_id(),
+            branch_id = %self.lifecycle.branch_id(),
             turn_id = %source.turn_id,
             request_id = %source.request_id,
             outcome = tracing::field::Empty,
@@ -979,7 +979,7 @@ pub struct ContextPreparationPlugin {
     model_context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
     history: Key<HistoryRenderer>,
-    identity: Key<TimelineIdentity>,
+    lifecycle: Key<BranchLifecycle>,
     guide: Key<GuideEntries>,
     branch_phase: Key<BranchLifecycle>,
 }
@@ -995,7 +995,7 @@ impl ContextPreparationPlugin {
             model_context: names.key()?,
             strategy: names.key()?,
             history: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             guide: names.key()?,
             branch_phase: names.key()?,
         })
@@ -1007,6 +1007,7 @@ impl DynPlugin for ContextPreparationPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.lifecycle.erase(),
             self.usage.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
@@ -1014,7 +1015,6 @@ impl DynPlugin for ContextPreparationPlugin {
             self.model_context.erase(),
             self.strategy.erase(),
             self.history.erase(),
-            self.identity.erase(),
             self.guide.erase(),
             self.branch_phase.erase(),
         ]
@@ -1027,13 +1027,13 @@ impl DynPlugin for ContextPreparationPlugin {
             let context = ctx.require_at(&self.model_context)?;
             let strategy = ctx.require_at(&self.strategy)?;
             let history = ctx.require_at(&self.history)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let guide = ctx.require_at(&self.guide)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
             if strategy.0.is_some() {
                 guide.register(
                     ctx,
-                    GuideScope::Branch(identity.branch_id.clone()),
+                    GuideScope::Branch(lifecycle.branch_id().clone()),
                     GuideEntry {
                         markers: vec!["dim-digest".into()],
                         order: 90,
@@ -1043,7 +1043,7 @@ impl DynPlugin for ContextPreparationPlugin {
             }
             let publisher = Arc::new(ConfigurationPublisher {
                 timeline: timeline.clone(),
-                identity: (*identity).clone(),
+                lifecycle: Arc::clone(&lifecycle),
                 guide: guide.clone(),
                 branch_phase,
             });
@@ -1059,7 +1059,7 @@ impl DynPlugin for ContextPreparationPlugin {
                 policy: ContextPolicy::bind(&timeline, &context, &strategy, &history)
                     .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?,
                 timeline,
-                identity,
+                lifecycle,
             });
             let owner = service.clone();
             ctx.effect(move || async move {

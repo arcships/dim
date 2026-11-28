@@ -33,7 +33,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{
     AgentBuilder, AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryFilter,
     QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, Session,
-    SessionConfig, SessionHold, SessionIdentity, SessionLifecycle, Timeline, TimelineIdentity,
+    SessionConfig, SessionHold, SessionLifecycle, SessionScope, Timeline, TimelineContext,
     TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
@@ -3690,8 +3690,8 @@ const AGENT_MESSAGE_ENTRY: &str = r#"<dim-agent-message agent="leader-3" session
 struct CollaborationSessionPlugin {
     instance: InstanceId,
     collaboration: Key<Collaboration>,
-    identity: Key<SessionIdentity>,
-    config: Key<SessionConfig>,
+    identity: Key<SessionScope>,
+    config: Key<SessionScope>,
     tree: Key<TreeCommands>,
     lifecycle: Key<SessionLifecycle>,
     tools: Key<ToolRegistry>,
@@ -3732,13 +3732,13 @@ impl DynPlugin for CollaborationSessionPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         let mut keys = vec![
             self.collaboration.erase(),
-            self.identity.erase(),
             self.config.erase(),
             self.tree.erase(),
             self.lifecycle.erase(),
             self.tools.erase(),
             self.guide.erase(),
             self.methods.erase(),
+            self.identity.erase(),
         ];
         keys.extend(self.factory.iter().map(Key::erase));
         keys
@@ -3772,7 +3772,7 @@ impl DynPlugin for CollaborationSessionPlugin {
             }
             let service = Arc::new(CollaborationSession {
                 collaboration,
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 role: config.collaboration_role,
                 tree,
                 lifecycle,
@@ -3821,7 +3821,6 @@ struct CollaborationTimelinePlugin {
     service: Key<CollaborationSession>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
     phase: Key<BranchLifecycle>,
 }
 impl CollaborationTimelinePlugin {
@@ -3830,7 +3829,6 @@ impl CollaborationTimelinePlugin {
             service: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
-            identity: names.key()?,
             phase: names.key()?,
         })
     }
@@ -3844,7 +3842,6 @@ impl DynPlugin for CollaborationTimelinePlugin {
             self.service.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
-            self.identity.erase(),
             self.phase.erase(),
         ]
     }
@@ -3853,9 +3850,8 @@ impl DynPlugin for CollaborationTimelinePlugin {
             let service = ctx.require_at(&self.service)?;
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
-            let identity = ctx.require_at(&self.identity)?;
             let phase = ctx.require_at(&self.phase)?;
-            let branch_id = identity.branch_id.clone();
+            let branch_id = phase.branch_id();
             let owner = service.clone();
             let unloading = branch_id.clone();
             ctx.effect(move || async move {

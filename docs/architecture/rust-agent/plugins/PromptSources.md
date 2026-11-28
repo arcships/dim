@@ -165,7 +165,7 @@ differences, and re-exposes the Session's reply-language cell on the branch.
 | Service | Purpose |
 | --- | --- |
 | `S:PromptHost` | Load the current source contents. |
-| `B:BranchLifecycle` | Activation and closing gates. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:StateCell<PromptSnapshot>` | Compare with already adopted entries. |
 | `B:Prompt` | Adopt already loaded changed source values through the existing Prompt owner. |
 | `S:SessionLanguage` | The Session's reply-language cell, re-exposed on this branch. |

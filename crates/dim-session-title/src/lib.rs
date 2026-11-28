@@ -7,7 +7,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{
     AgentBuilder, CollaborationRole, Names, PartRegistry, PartScope, QueryFilter, QueryOperand,
     QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionConfig,
-    SessionIdentity, SessionLifecycle, TimelineQuery, TimelineQueryScope,
+    SessionLifecycle, SessionScope, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     ContentBlock, EventKind, InputBlock, Message, ModelId, ROOT_BRANCH_ID, Role, UserInput,
@@ -141,8 +141,8 @@ struct SessionTitle {
     tree: Key<TreeCommands>,
     store: Key<SessionMetadataService>,
     auxiliary: Key<AuxiliaryModel>,
-    identity: Key<SessionIdentity>,
-    config: Key<SessionConfig>,
+    identity: Key<SessionScope>,
+    config: Key<SessionScope>,
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,
 }
@@ -183,7 +183,7 @@ impl DynPlugin for SessionTitle {
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let owner = Arc::new(Owner {
                 ctx: ctx.clone(),
-                id: identity.session_id.clone(),
+                id: identity.session_id().clone(),
                 settings: ctx.require_at(&self.settings)?,
                 tree: ctx.require_at(&self.tree)?,
                 store: ctx.require_at(&self.store)?,

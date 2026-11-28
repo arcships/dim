@@ -140,7 +140,7 @@ async fn a_worktree_association_failure_crosses_as_a_code_and_a_message() {
 }
 
 struct AgentConfigReader {
-    binding: rutis::host::Key<AgentConfig>,
+    binding: rutis::host::Key<SessionScope>,
     face: rutis::host::Key<dyn rutis_bridge::session::HostDispatch>,
     reads: Arc<AtomicUsize>,
 }

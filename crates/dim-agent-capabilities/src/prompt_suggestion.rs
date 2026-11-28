@@ -25,8 +25,7 @@ use crate::session_broadcast::{
 use crate::settings::{SettingsChanged, settings_changes};
 use crate::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    AgentBuilder, CollaborationRole, Feature, Names, SessionConfig, SessionIdentity,
-    SessionLifecycle,
+    AgentBuilder, CollaborationRole, Feature, Names, SessionConfig, SessionLifecycle, SessionScope,
 };
 use dim_agent_types::{
     EventKind, Message, MessageContent, MessagePart, ModelRequest, Role, TurnOutcome,
@@ -496,7 +495,7 @@ struct Hosts {
 }
 
 struct PromptSuggestionPlugin {
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     config: Key<SessionConfig>,
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,
@@ -564,7 +563,7 @@ impl DynPlugin for PromptSuggestionPlugin {
                 None => None,
             };
             let part = Arc::new(Part {
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 root: config.interactive && config.collaboration_role == CollaborationRole::Leader,
                 state: Mutex::new(State::default()),
                 hosts: Hosts {

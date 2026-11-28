@@ -131,7 +131,6 @@ pub struct Prompt {
     timeline: Arc<Timeline>,
     dispatcher: Arc<Dispatcher>,
     session_lifecycle: Arc<SessionLifecycle>,
-    identity: Arc<TimelineIdentity>,
     lifecycle: CancellationToken,
     branch_phase: Arc<BranchLifecycle>,
     opening: Arc<BranchOpening>,
@@ -232,8 +231,8 @@ impl Prompt {
             }
             let span = tracing::info_span!(
                 "prompt.load",
-                session_id = %self.identity.session_id,
-                branch_id = %self.identity.branch_id,
+                session_id = %self.branch_phase.session_id(),
+                branch_id = %self.branch_phase.branch_id(),
                 prompt_source = %target.source,
                 prompt_scope = match target.scope {
                     PromptScope::Branch { .. } => "branch",
@@ -447,7 +446,7 @@ impl Prompt {
     fn guide_watch(&self) -> (watch::Receiver<u64>, String) {
         (
             self.guide.changes(),
-            self.guide.compose(&self.identity.branch_id),
+            self.guide.compose(&self.branch_phase.branch_id()),
         )
     }
 
@@ -462,7 +461,7 @@ impl Prompt {
     /// that withdraws only because the branch is shutting down must not
     /// move its System.
     fn listen_guide(self: &Arc<Self>, mut changes: watch::Receiver<u64>, mut composed: String) {
-        let branch_id = self.identity.branch_id.clone();
+        let branch_id = self.branch_phase.branch_id().clone();
         let branch_phase = self.branch_phase.clone();
         let owner = self.clone();
         self.tasks.spawn(async move {
@@ -722,7 +721,7 @@ pub struct PromptPlugin {
     host: rutis::host::Key<PromptHost>,
     initial: rutis::host::Key<InitialPromptConfiguration>,
     publisher: rutis::host::Key<ConfigurationPublisher>,
-    identity: rutis::host::Key<TimelineIdentity>,
+    lifecycle: rutis::host::Key<BranchLifecycle>,
     session_lifecycle: rutis::host::Key<SessionLifecycle>,
     branch_phase: rutis::host::Key<BranchLifecycle>,
     opening: rutis::host::Key<BranchOpening>,
@@ -739,7 +738,7 @@ impl PromptPlugin {
             host: names.key()?,
             initial: names.key()?,
             publisher: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             session_lifecycle: names.key()?,
             branch_phase: names.key()?,
             opening: rutis::host::Key::of().instance(names.instance(BRANCH_GROUP)?),
@@ -756,12 +755,12 @@ impl DynPlugin for PromptPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.lifecycle.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.host.erase(),
             self.initial.erase(),
             self.publisher.erase(),
-            self.identity.erase(),
             self.session_lifecycle.erase(),
             self.branch_phase.erase(),
             self.opening.erase(),
@@ -775,7 +774,7 @@ impl DynPlugin for PromptPlugin {
             let host = ctx.require_at(&self.host)?;
             let initial = ctx.require_at(&self.initial)?;
             let publisher = ctx.require_at(&self.publisher)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let session_lifecycle = ctx.require_at(&self.session_lifecycle)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
             let opening = ctx.require_at(&self.opening)?;
@@ -792,7 +791,6 @@ impl DynPlugin for PromptPlugin {
                 timeline: timeline.clone(),
                 dispatcher: dispatcher.clone(),
                 session_lifecycle,
-                identity,
                 lifecycle: ctx.cancellation_token(),
                 branch_phase,
                 opening,
@@ -893,7 +891,7 @@ impl DynPlugin for PromptPlugin {
                             EventKind::PromptChanged(data) => {
                                 recovery::delivered(
                                     &prompt.timeline,
-                                    &prompt.identity.branch_id,
+                                    &prompt.branch_phase.branch_id(),
                                     data,
                                     event.sequence,
                                 )
@@ -1080,12 +1078,12 @@ impl Prompt {
     pub async fn adopted_configuration(&self) -> Result<(Option<ModelConfiguration>, u64)> {
         let captured = self.timeline.committed();
         #[cfg(feature = "testing")]
-        testing::read_captured(&self.identity.session_id, &self.identity.branch_id).await;
+        testing::read_captured(&self.branch_phase.session_id(), &self.branch_phase.branch_id()).await;
         if self.branch_phase.phase() >= BranchPhase::Closing {
             return Err(AgentError::Cancelled("prompt adoption".into()));
         }
         #[cfg(feature = "testing")]
-        testing::read_checked(&self.identity.session_id, &self.identity.branch_id).await;
+        testing::read_checked(&self.branch_phase.session_id(), &self.branch_phase.branch_id()).await;
         let through = self.advance_active(captured).await?;
         let projection = self.projection.lock().unwrap();
         let configuration = projection

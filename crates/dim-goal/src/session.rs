@@ -13,7 +13,7 @@ use dim_agent_capabilities::{
     timeline_tree::TreeCommands,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
-use dim_agent_runtime::{Names, SessionIdentity, TimelineKey};
+use dim_agent_runtime::{Names, SessionScope, TimelineKey};
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -26,7 +26,7 @@ pub struct GoalSession {
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
     guide: Key<GuideEntries>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     changes: Changes,
 }
 
@@ -120,7 +120,7 @@ impl DynPlugin for GoalSession {
                                     match owner.tree.get(&id) {
                                         Ok(_) => {
                                             let key = TimelineKey {
-                                                session_id: owner.identity.session_id.clone(),
+                                                session_id: owner.identity.session_id().clone(),
                                                 branch_id: id,
                                             };
                                             owner.changes.current(&key).await
@@ -145,7 +145,7 @@ impl DynPlugin for GoalSession {
 
 struct Owner {
     tree: Arc<TreeCommands>,
-    identity: Arc<SessionIdentity>,
+    identity: Arc<SessionScope>,
     changes: Changes,
 }
 
@@ -210,7 +210,7 @@ impl Owner {
             .changes
             .change(
                 &TimelineKey {
-                    session_id: self.identity.session_id.clone(),
+                    session_id: self.identity.session_id().clone(),
                     branch_id: branch,
                 },
                 change,
@@ -243,7 +243,7 @@ fn text_value(value: Option<&Value>, limit: usize) -> Option<String> {
 /// write.
 struct GoalUpdate {
     changes: Changes,
-    identity: Arc<SessionIdentity>,
+    identity: Arc<SessionScope>,
 }
 
 impl ToolHandler for GoalUpdate {
@@ -270,7 +270,7 @@ impl ToolHandler for GoalUpdate {
                 .changes
                 .change(
                     &TimelineKey {
-                        session_id: self.identity.session_id.clone(),
+                        session_id: self.identity.session_id().clone(),
                         branch_id: context.branch_id,
                     },
                     change,

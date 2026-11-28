@@ -56,7 +56,7 @@ async fn source(
     cancel: &CancellationToken,
 ) -> Result<ImageSource, HostError> {
     if source.source_type == ImageSourceType::File {
-        session_files::image(&owner.files, &owner.identity.session_id, source, cancel).await
+        session_files::image(&owner.files, &owner.identity.session_id(), source, cancel).await
     } else {
         Ok(source.clone())
     }

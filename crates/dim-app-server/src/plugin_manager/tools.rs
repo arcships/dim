@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) struct PluginTools {
     tools: Key<ToolRegistry>,
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     manager: Manager,
 }
 

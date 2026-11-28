@@ -1,5 +1,5 @@
 use dim_agent_capabilities::{adapters::MockTools, defaults};
-use dim_agent_runtime::{AgentBuilder, AgentConfig, Feature, Names, SessionIdentity};
+use dim_agent_runtime::{AgentBuilder, AgentConfig, Feature, Names, SessionScope};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use futures_util::{SinkExt, StreamExt};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -136,7 +136,7 @@ async fn boundary_frames_and_oversized_frames_on_both_transports() {
 struct HoldCleanup {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
 }
 impl HoldCleanup {
     fn new(

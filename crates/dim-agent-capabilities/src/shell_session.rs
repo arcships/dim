@@ -1142,9 +1142,8 @@ pub struct ShellSessionPlugin {
     facts: Key<crate::file_access::FileAccessFacts>,
     session: Key<ShellSession>,
     host: Key<HostPlatform>,
-    lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     session_config: Key<dim_agent_runtime::SessionConfig>,
-    identity: Key<dim_agent_runtime::TimelineIdentity>,
+    branch_lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     config: Option<ShellSessionConfig>,
 }
 
@@ -1163,9 +1162,8 @@ impl ShellSessionPlugin {
             facts: names.key()?,
             session: names.key()?,
             host: names.key()?,
-            lifecycle: names.key()?,
             session_config: names.key()?,
-            identity: names.key()?,
+            branch_lifecycle: names.key()?,
             config: None,
         })
     }
@@ -1179,9 +1177,8 @@ impl DynPlugin for ShellSessionPlugin {
         vec![
             self.background.erase(),
             self.host.erase(),
-            self.lifecycle.erase(),
             self.session_config.erase(),
-            self.identity.erase(),
+            self.branch_lifecycle.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1189,7 +1186,7 @@ impl DynPlugin for ShellSessionPlugin {
             let host = ctx.require_at(&self.host)?;
             let background = ctx.require_at(&self.background)?;
             let config = ctx.require_at(&self.session_config)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let branch_lifecycle = ctx.require_at(&self.branch_lifecycle)?;
             let owner = ctx.get::<SessionFiles>();
             let mut session = ShellSession::new(
                 self.config.clone().unwrap_or_else(|| ShellSessionConfig {
@@ -1199,12 +1196,12 @@ impl DynPlugin for ShellSessionPlugin {
                     output_dir: host
                         .home
                         .join(".dim/exec")
-                        .join(&identity.session_id)
-                        .join(&identity.branch_id),
+                        .join(&branch_lifecycle.session_id())
+                        .join(&branch_lifecycle.branch_id()),
                 }),
                 host,
                 owner,
-                identity.session_id.clone(),
+                branch_lifecycle.session_id().clone(),
                 background,
             );
             session.facts = Some((ctx.clone(), self.facts.clone()));

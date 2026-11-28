@@ -473,7 +473,17 @@
     {
       "kind": "service-skip",
       "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::branch_id"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
       "item": "BranchLifecycle::phase"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::session_id"
     },
     {
       "kind": "service-skip",

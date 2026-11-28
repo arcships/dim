@@ -8,7 +8,7 @@ use dim_agent_capabilities::{
     host::{HostError, ToolExecutionContext},
     tool_executor::ToolExecutor,
 };
-use dim_agent_runtime::{Names, TimelineIdentity};
+use dim_agent_runtime::{Names, TimelineContext, BranchLifecycle};
 use dim_agent_types::ToolResult;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 pub struct CodeModeBranchPlugin {
     runs: Key<CodeModeRuns>,
     executor: Key<ToolExecutor>,
-    identity: Key<TimelineIdentity>,
+    lifecycle: Key<BranchLifecycle>,
     config: Arc<CodeModeConfig>,
 }
 
@@ -27,7 +27,7 @@ impl CodeModeBranchPlugin {
         Ok(Self {
             runs: names.key()?,
             executor: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             config,
         })
     }
@@ -39,11 +39,7 @@ impl DynPlugin for CodeModeBranchPlugin {
     }
 
     fn injects(&self) -> Vec<TypeKey> {
-        vec![
-            self.runs.erase(),
-            self.executor.erase(),
-            self.identity.erase(),
-        ]
+        vec![self.runs.erase(), self.executor.erase()]
     }
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -51,13 +47,14 @@ impl DynPlugin for CodeModeBranchPlugin {
             let runs = ctx.require_at(&self.runs)?;
             let executor: Arc<dyn NestedToolHost> =
                 Arc::new(ToolExecutorHost::new(ctx.require_at(&self.executor)?));
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let branch = Arc::new(CodeModeBranch {
                 executor,
                 config: self.config.clone(),
                 runs: runs.clone(),
             });
-            let key = CodeModeRunKey::new(identity.session_id.clone(), identity.branch_id.clone());
+            let key =
+                CodeModeRunKey::new(lifecycle.session_id().clone(), lifecycle.branch_id().clone());
             runs.insert(key.clone(), branch);
             let cleanup = runs.clone();
             ctx.effect(move || async move {

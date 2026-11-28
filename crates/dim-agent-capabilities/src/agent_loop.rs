@@ -12,9 +12,8 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, LoopPhase, LoopSnapshot, LoopState, Names,
     QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
-    QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineIdentity, TimelineQuery,
-    TimelineQueryScope,
-};
+    QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineContext, TimelineQuery,
+    TimelineQueryScope, BranchLifecycle};
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::Ctx;
@@ -1802,7 +1801,7 @@ pub struct LoopPlugin {
     context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
     guide: Key<crate::prompt_guide::GuideEntries>,
-    identity: Key<TimelineIdentity>,
+    lifecycle: Key<BranchLifecycle>,
 }
 impl LoopPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -1819,7 +1818,7 @@ impl LoopPlugin {
             context: names.key()?,
             strategy: names.key()?,
             guide: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
         })
     }
 }
@@ -1829,6 +1828,7 @@ impl DynPlugin for LoopPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.lifecycle.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.prepare.erase(),
@@ -1838,7 +1838,6 @@ impl DynPlugin for LoopPlugin {
             self.context.erase(),
             self.strategy.erase(),
             self.guide.erase(),
-            self.identity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1851,7 +1850,7 @@ impl DynPlugin for LoopPlugin {
             let context = ctx.require_at(&self.context)?;
             let strategy = ctx.require_at(&self.strategy)?;
             let guide = ctx.require_at(&self.guide)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let policy = ContextPolicy::bind(&timeline, &context, &strategy, &history)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
             let service = Arc::new(AgentLoop {
@@ -1867,8 +1866,8 @@ impl DynPlugin for LoopPlugin {
                 history,
                 preparation: ctx.require_at(&self.preparation)?,
                 guide,
-                branch: identity.branch_id.clone(),
-                session_id: identity.session_id.clone(),
+                branch: lifecycle.branch_id().clone(),
+                session_id: lifecycle.session_id().clone(),
                 policy,
                 tasks: TaskTracker::new(),
                 lifecycle: ctx.cancellation_token(),

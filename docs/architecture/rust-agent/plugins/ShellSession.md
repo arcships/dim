@@ -18,10 +18,10 @@ the same branch's `BackgroundExec`.
 | Service | Purpose |
 | --- | --- |
 | `B:BackgroundExec` | Hand off background tasks and recover a shell task whose facts were committed but whose owner is gone. |
-| `B:BranchLifecycle` | Wait for the branch to be published and stop the shell on closing. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `P:HostPlatform` | The shell executable and platform dialect. |
 | `S:SessionConfig` | The Session's cwd and execution preferences. |
-| `B:TimelineIdentity` | Identify the branch in its facts and notices. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 
 ### Tests
 

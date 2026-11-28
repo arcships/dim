@@ -1188,11 +1188,6 @@ export interface SessionConfig {
   get(): Promise<import('./plugin.js').SessionConfig>
 }
 
-export interface TimelineIdentity {
-  /** The identity as data, for parts in other languages. */
-  get(): Promise<import('./plugin.js').SessionRef>
-}
-
 export interface SessionIdentity {
   /**
    * The identity as data, `{sessionId, restored}`, for parts in other
@@ -1273,6 +1268,11 @@ export type FaultQuery = {
  * parts in other languages use [`Self::hold`].
  */
 export interface SessionLifecycle {
+  /**
+   * Whether this Session is leaving by idle instance release rather than by
+   * a business close. A part reads it instead of a flag on the identity.
+   */
+  unloading(): Promise<boolean>
   reportFault(error: SessionFault): Promise<void>
   failure(request: FaultQuery): Promise<SessionFault | null>
   /**
@@ -1391,6 +1391,17 @@ export interface PartRegistry {
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
 }
 
+/**
+ * One Session as its own scope describes it: its identity, whether it was
+ * restored, the configuration it was created with, and the Agent that owns it.
+ */
+export type SessionDescription = {
+  sessionId: string
+  /** True when this Session was loaded from storage rather than newly created. */
+  restored: boolean
+  config: import('./plugin.js').SessionConfig
+  agent: AgentConfig2
+}
 
 /** Why a routed call did not reach a reply. */
 export type RouteError =
@@ -1406,6 +1417,7 @@ export type RouteError =
   | /** The owner's own failure, with the name, the code it reported and the message it wrote; routing does not restate them. `reloading` is that code's "try again later", so a caller retries exactly what the owner says it may retry. */ { owner: { name: string; code?: string | null; message: string; data?: import('./plugin.js').BridgeJsonValue | null; reloading: boolean } }
 
 
+
 /**
  * One Session's own lines and data faces, provided to the Session's parts and
  * their runtimes as the Session name `sessionScope`.
@@ -1414,6 +1426,16 @@ export type RouteError =
  * Session's lines only. `describe` joins it with base-3.
  */
 export interface SessionScope {
+  /** This Session's id. */
+  sessionId(): Promise<string>
+  /**
+   * This Session as its own scope describes it: identity, whether it was
+   * restored, the configuration it was created with, and the Agent that owns
+   * it. The values are the ones the Session was assembled from, so a part
+   * reads them without a second lookup.
+   * @throws {RouteErrorThrown}
+   */
+  describe(): Promise<SessionDescription>
   /**
    * Calls one of this Session's own data faces.
    * @throws {RouteErrorThrown}
@@ -1476,6 +1498,12 @@ export type BranchStatus = {
  * part (`sessionScope.lineCall`) and a process caller (`sessions.call`).
  */
 export interface TimelineContext {
+  /** This line's identity as data, for parts in other languages. */
+  identity(): Promise<import('./plugin.js').SessionRef>
+  /** The Session this line belongs to. */
+  sessionId(): Promise<string>
+  /** This line's id, which is its branch id. */
+  branchId(): Promise<string>
   /**
    * Commits validated input ([`Timeline::input_checked`]), and says whether
    * this call wrote it. Whether it starts a turn is Loop's decision when
@@ -1944,7 +1972,6 @@ export interface Services {
   backgroundExec: BackgroundExec
   agentConfig: AgentConfig
   sessionConfig: SessionConfig
-  timelineIdentity: TimelineIdentity
   sessionIdentity: SessionIdentity
   branchLifecycle: BranchLifecycle
   sessionLifecycle: SessionLifecycle
@@ -1974,7 +2001,6 @@ export type LineFaces = {
   permission: Omit<Permission, 'check'>
   timeline: Timeline
   timelineContext: TimelineContext
-  timelineIdentity: TimelineIdentity
   wait: Omit<Wait, 'wait'>
 }
 

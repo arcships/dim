@@ -4,7 +4,7 @@ use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BranchOptions, Dispatcher, Feature, SessionConfig,
-    Timeline, TimelineIdentity, TimelineKey, TimelineStore, testing::MinimalHost,
+    Timeline, TimelineContext, TimelineKey, TimelineStore, testing::MinimalHost,
 };
 use dim_agent_types::*;
 use dim_app_server::storage::{SqliteStorage, SqliteTimelineStore};
@@ -20,7 +20,7 @@ use std::{
 struct CaptureTimeline {
     timelines: Arc<Mutex<BTreeMap<String, Timeline>>>,
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl CaptureTimeline {
     fn new(
@@ -49,7 +49,7 @@ impl DynPlugin for CaptureTimeline {
             self.timelines
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), timeline.as_ref().clone());
+                .insert(identity.branch_id().clone(), timeline.as_ref().clone());
             Ok(Effect::Done)
         })
     }
@@ -58,7 +58,7 @@ impl DynPlugin for CaptureTimeline {
 struct GenericCleanupFault {
     tree: Arc<Mutex<Option<Arc<TreeCommands>>>>,
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     dispatcher: Key<Dispatcher>,
     commands: Key<TreeCommands>,
 }
@@ -91,7 +91,7 @@ impl DynPlugin for GenericCleanupFault {
             let identity = ctx.require_at(&self.identity)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let tree = ctx.require_at(&self.commands)?;
-            if identity.branch_id != "main" {
+            if identity.branch_id() != "main" {
                 return Ok(Effect::Done);
             }
             *self.tree.lock().unwrap() = Some(tree);

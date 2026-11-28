@@ -60,7 +60,7 @@ rules are unchanged. A client updating the preset sends the tool lists it read, 
 | --- | --- |
 | `S:SessionConfig` | Seed the initial permission policy. |
 | `S:CommandRules` | Read the user's command rules when deciding a command call. |
-| `S:SessionIdentity` | Name the Session in the facts query. |
+| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `B:Dispatcher` | Replay local policies, apply committed policy changes and settle update waiters. |
 | `B:Timeline` | Write changes and read ancestor policies. |
 

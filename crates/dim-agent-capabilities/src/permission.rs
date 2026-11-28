@@ -20,7 +20,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput,
     QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Registration, Registrations,
-    SessionConfig, SessionIdentity, StateCell, Timeline, TimelineQuery, TimelineQueryScope,
+    SessionConfig, SessionScope, StateCell, Timeline, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, ApprovalCallData, BranchSource, COMMAND_SEPARATORS, CommandMatch, CommandRule,
@@ -838,7 +838,7 @@ pub struct PermissionPlugin {
     config: Key<SessionConfig>,
     rules: Key<CommandRules>,
     facts: Key<FileAccessFacts>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     platform: Key<HostPlatform>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
@@ -888,7 +888,7 @@ impl DynPlugin for PermissionPlugin {
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
                 platform: self.platform.clone(),
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 cwd: PathBuf::from(&config.cwd),
                 inner: Mutex::new(Inner::default()),
                 advisors: Arc::new(Registrations::default()),

@@ -7,7 +7,7 @@ use super::*;
 use dim_agent_capabilities::file_storage::{FileStorage, testing};
 use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
-use dim_agent_runtime::{SessionIdentity, TimelineTreeControl};
+use dim_agent_runtime::{SessionScope, TimelineTreeControl};
 use dim_app_server::mcp::config::McpSettings;
 use dim_app_server::settings::{SettingsScope, SettingsService};
 use rutis::host::CtxHost;
@@ -148,7 +148,7 @@ impl Loads {
 }
 struct LoadsPart(
     Loads,
-    rutis::host::Key<SessionIdentity>,
+    rutis::host::Key<SessionScope>,
     rutis::host::Key<dyn TimelineTreeControl>,
 );
 impl LoadsPart {
@@ -172,17 +172,20 @@ impl rutis::host::DynPlugin for LoadsPart {
             let tree = ctx.require_at(&self.2)?;
             let state = self.0.0.clone();
             state.loads.lock().unwrap().push((
-                identity.session_id.clone(),
-                identity.restored,
+                identity.session_id(),
+                identity.describe().expect("the Session is live").restored,
                 Arc::downgrade(&tree),
             ));
             ctx.effect(move || async move {
-                let held = identity.unloading.is_cancelled()
+                let held = identity
+                    .describe()
+                    .map(|description| description.restored)
+                    .unwrap_or(false)
                     && state
                         .held
                         .lock()
                         .unwrap()
-                        .take_if(|id| *id == identity.session_id)
+                        .take_if(|id| *id == identity.session_id())
                         .is_some();
                 if held {
                     state.entered.notify_one();

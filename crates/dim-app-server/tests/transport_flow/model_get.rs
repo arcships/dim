@@ -3,7 +3,7 @@
 use super::*;
 use dim_agent_capabilities::prompt_state::PromptSnapshot;
 use dim_agent_runtime::SessionLines;
-use dim_agent_runtime::{ConfigureUpdate, Dispatcher, Timeline, TimelineIdentity};
+use dim_agent_runtime::{ConfigureUpdate, Dispatcher, Timeline, TimelineContext};
 use dim_agent_types::{
     ContextConfiguredData, EventKind, ModelConfiguration, PromptChange, PromptChangeReason,
     PromptChangedData, PromptDelivery, PromptEntry, PromptScope,
@@ -273,7 +273,7 @@ async fn an_ended_line_reads_at_its_fixed_head_and_an_unknown_line_is_an_error()
 /// can commit facts without waiting for a producer.
 struct TimelineProbePart {
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     probe: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Arc<Timeline>>>>,
 }
 impl DynPlugin for TimelineProbePart {
@@ -286,7 +286,7 @@ impl DynPlugin for TimelineProbePart {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
-            let branch = ctx.require_at(&self.identity)?.branch_id.clone();
+            let branch = ctx.require_at(&self.identity)?.branch_id().clone();
             self.probe.lock().unwrap().insert(branch, timeline);
             Ok(Effect::Done)
         })

@@ -9,7 +9,7 @@ use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QueryPick,
-    QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline, TimelineIdentity, TimelineKey,
+    QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline, TimelineContext, TimelineKey,
     TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::{
@@ -175,7 +175,7 @@ pub struct GoalBranch {
     timeline: Key<Timeline>,
     tree: Key<TreeCommands>,
     settings: Key<Settings>,
-    identity: Key<TimelineIdentity>,
+    lifecycle: Key<BranchLifecycle>,
     phase: Key<BranchLifecycle>,
     session: Key<SessionLifecycle>,
     texts: Arc<GoalTexts>,
@@ -189,7 +189,7 @@ impl GoalBranch {
             timeline: names.key()?,
             tree: names.key()?,
             settings: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             phase: names.key()?,
             session: names.key()?,
             texts,
@@ -204,11 +204,11 @@ impl DynPlugin for GoalBranch {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.lifecycle.erase(),
             self.dispatcher.erase(),
             self.timeline.erase(),
             self.tree.erase(),
             self.settings.erase(),
-            self.identity.erase(),
             self.phase.erase(),
             self.session.erase(),
         ]
@@ -219,7 +219,7 @@ impl DynPlugin for GoalBranch {
             let timeline = ctx.require_at(&self.timeline)?;
             let tree = ctx.require_at(&self.tree)?;
             let settings = ctx.require_at(&self.settings)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let phase = ctx.require_at(&self.phase)?;
             let session = ctx.require_at(&self.session)?;
             let stop = CancellationToken::new();
@@ -228,9 +228,9 @@ impl DynPlugin for GoalBranch {
             let (ready, _) = watch::channel(false);
             let (write_status, _) = watch::channel(Ok(()));
             let owner = Arc::new(Owner {
-                branch_id: identity.branch_id.clone(),
+                branch_id: lifecycle.branch_id().clone(),
                 #[cfg(feature = "testing")]
-                session_id: identity.session_id.clone(),
+                session_id: lifecycle.session_id().clone(),
                 timeline,
                 dispatcher: dispatcher.clone(),
                 tree,
@@ -249,8 +249,8 @@ impl DynPlugin for GoalBranch {
                 write: tokio::sync::Mutex::new(()),
             });
             let key = TimelineKey {
-                session_id: identity.session_id.clone(),
-                branch_id: identity.branch_id.clone(),
+                session_id: lifecycle.session_id().clone(),
+                branch_id: lifecycle.branch_id().clone(),
             };
             let registered = self.changes.register(key.clone(), &owner);
             let cleanup = owner.clone();

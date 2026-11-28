@@ -14,7 +14,7 @@ use dim_agent_capabilities::{
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionIdentity};
+use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionScope};
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use jiff::Timestamp;
 use rutis::Ctx;
@@ -159,8 +159,8 @@ pub struct SchedulerSession {
     methods: Key<SessionMethods>,
     tools: Key<ToolRegistry>,
     guide: Key<GuideEntries>,
-    config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    config: Key<SessionScope>,
+    identity: Key<SessionScope>,
     description: String,
 }
 
@@ -222,7 +222,7 @@ impl DynPlugin for SchedulerSession {
                     handler: Arc::new(ScheduleTool {
                         jobs,
                         config: config.clone(),
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                         closing: closing.clone(),
                     }),
                 },
@@ -234,7 +234,7 @@ impl DynPlugin for SchedulerSession {
                     handler: Arc::new(WakeupTool {
                         wakeups: wakeups.clone(),
                         config: config.clone(),
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                         closing: closing.clone(),
                     }),
                 },
@@ -246,7 +246,7 @@ impl DynPlugin for SchedulerSession {
                     handler: Arc::new(LoopTool {
                         loops: loops.clone(),
                         config: config.clone(),
-                        session_id: identity.session_id.clone(),
+                        session_id: identity.session_id().clone(),
                         closing: closing.clone(),
                     }),
                 },

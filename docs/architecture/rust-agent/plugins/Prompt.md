@@ -20,9 +20,9 @@ The publisher receives explicit adopted state instead of rebuilding history.
 | `B:ConfigurationPublisher` | Atomically publish configuration and final input content. |
 | `S:PromptHost` | Load named prompt sources. |
 | `S:InitialPromptConfiguration` | Initial source/model selection. |
-| `B:BranchLifecycle` | Coordinate opening and closing. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:BranchOpening` | Queue the initial adoption receipt the opening waits for. |
-| `B:TimelineIdentity` | Session and branch ids of the `prompt.load` span. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:Dispatcher` | Order configuration adoption and state projection. |
 | `B:Timeline` | Write controls and query adopted prompt/configuration properties. |
 | `S:SessionLifecycle` | Report owned work failures. |

@@ -33,7 +33,7 @@ block and the branch markers — with their classes are listed on
 | Service | Purpose |
 | --- | --- |
 | `S:TimelineFactory` | Build branch capability scopes. |
-| `S:SessionIdentity` | Identify the persisted Session. |
+| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:dyn TimelineStore` | Native binding of the Session [`timelineStore` data face](../../../design/resource-faces.md#5-store-and-timelinestore); persist/load branch directories and Timeline facts through the same backend operations. |
 | `S:GuideEntries` | Register the `<dim-branch-line>` and `<dim-branch-parent>` entries for the Session, until this part unloads. |
 
@@ -110,7 +110,7 @@ identity, and releases pending child reservations when the parent unloads.
 | Service | Purpose |
 | --- | --- |
 | `S:TreeCommands` | Reach the owning Session tree through its command port. |
-| `B:TimelineIdentity` | Identify the parent branch. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:Dispatcher` | Consume creation events. |
 | `B:Timeline` | Parent history, creation and end settlement location. |
 

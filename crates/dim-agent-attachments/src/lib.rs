@@ -5,7 +5,7 @@ use dim_agent_capabilities::{
     host::{SessionFileError, SessionFileErrorCode, SessionFiles},
     methods::{self, Interruption, MethodCall, MethodDecl, RpcError, SessionMethods},
 };
-use dim_agent_runtime::{AgentBuilder, Names, SessionIdentity};
+use dim_agent_runtime::{AgentBuilder, Names, SessionScope};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{path::PathBuf, sync::Arc};
@@ -114,7 +114,7 @@ fn prepare_image(path: String) -> Result<(tempfile::NamedTempFile, &'static str)
 }
 
 pub struct AttachmentsPlugin {
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     files: Key<SessionFiles>,
     methods: Key<SessionMethods>,
 }
@@ -143,7 +143,7 @@ impl DynPlugin for AttachmentsPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let files = ctx.require_at(&self.files)?;
             let methods = ctx.require_at(&self.methods)?;
-            let session_id = identity.session_id.clone();
+            let session_id = identity.session_id().clone();
             methods.register(
                 ctx,
                 NAMESPACE,

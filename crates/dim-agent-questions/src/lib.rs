@@ -509,7 +509,7 @@ fn ask_user_definition() -> ToolDefinition {
 /// The Questions Session part: `ask_user` registered with `toolRegistry` and
 /// `session.question` with `sessionMethods`.
 pub struct QuestionsPlugin {
-    config: Key<SessionConfig>,
+    config: Key<SessionScope>,
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
     tree: Key<TreeCommands>,

@@ -19,11 +19,11 @@ cannot fit the request fails terminally without requesting another recovery.
 | `S:CompactionStrategyHost` | Optional compaction strategy; the policy exists when both hosts are bound. |
 | `S:PrepareContextHost` | Host preparation hook. |
 | `S:GuideEntries` | Register the digest entry while a strategy is bound. |
-| `B:TimelineIdentity` | Identify configuration publication scope; Session and branch ids of the `context.prepare` span. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:Dispatcher` | Hand off recovery to live preparation/steer/interrupt transitions and report faults. |
 | `B:Timeline` | Read fixed context, publish handoff and configuration facts. |
 | `B:ContextUsage` | Read persisted statistics and capture the exact request boundary for estimate reuse. |
-| `B:BranchLifecycle` | Refuse a guide adoption on a closing branch. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 
 ## Events and lifetime
 

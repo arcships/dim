@@ -218,7 +218,7 @@ type Tools = Arc<Mutex<HashMap<String, Arc<ToolRegistry>>>>;
 type Histories = Arc<Mutex<HashMap<(String, String), Arc<Timeline>>>>;
 struct CaptureHistory {
     timeline: Key<Timeline>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     histories: Histories,
 }
 impl DynPlugin for CaptureHistory {
@@ -232,7 +232,7 @@ impl DynPlugin for CaptureHistory {
         Box::pin(async move {
             let identity = ctx.require_at(&self.identity)?;
             self.histories.lock().unwrap().insert(
-                (identity.session_id.clone(), identity.branch_id.clone()),
+                (identity.session_id().clone(), identity.branch_id().clone()),
                 ctx.require_at(&self.timeline)?,
             );
             Ok(Effect::Done)
@@ -241,7 +241,7 @@ impl DynPlugin for CaptureHistory {
 }
 struct Probe {
     registry: Key<ToolRegistry>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     tools: Tools,
 }
 impl DynPlugin for Probe {
@@ -254,7 +254,7 @@ impl DynPlugin for Probe {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             self.tools.lock().unwrap().insert(
-                ctx.require_at(&self.identity)?.session_id.clone(),
+                ctx.require_at(&self.identity)?.session_id(),
                 ctx.require_at(&self.registry)?,
             );
             Ok(Effect::Done)

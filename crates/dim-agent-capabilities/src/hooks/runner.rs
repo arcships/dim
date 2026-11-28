@@ -26,7 +26,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, SessionConfig, SessionIdentity, Timeline, TimelineIdentity, TimelineQuery,
+    QueryValue, SessionConfig, SessionScope, Timeline, TimelineContext, TimelineQuery,
     TimelineQueryScope,
 };
 use dim_agent_types::{
@@ -108,7 +108,7 @@ pub struct HooksRuntime {
     sources: Arc<HookSourcesHost>,
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
-    identity: Arc<SessionIdentity>,
+    session_id: String,
     cancel: CancellationToken,
     tasks: TaskTracker,
 }
@@ -139,7 +139,7 @@ impl HooksRuntime {
         };
         json!({
             "hook_event_name": event.name(),
-            "session_id": self.identity.session_id,
+            "session_id": self.session_id,
             "cwd": self.config.cwd,
             "permission_mode": preset,
             "branch_id": branch,
@@ -506,7 +506,7 @@ impl HooksRuntime {
         for (key, value) in [
             ("DIM_PROJECT_DIR", Some(self.config.cwd.clone())),
             ("DIM_HOOK_EVENT", Some(handler.event.name().to_owned())),
-            ("DIM_SESSION_ID", Some(self.identity.session_id.clone())),
+            ("DIM_SESSION_ID", Some(self.session_id.clone())),
             ("DIMCODE_HOME", home),
             ("DIM_PLUGIN_ROOT", plugin_root),
         ] {
@@ -989,7 +989,7 @@ pub struct HooksSessionPlugin {
     sources: Key<HookSourcesHost>,
     platform: Key<HostPlatform>,
     config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    lifecycle: Key<SessionScope>,
     checks: Key<SubmitChecks>,
     runtime: Key<HooksRuntime>,
 }
@@ -999,7 +999,7 @@ impl HooksSessionPlugin {
             sources: names.key()?,
             platform: names.key()?,
             config: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
             checks: names.key()?,
             runtime: names.key()?,
         })
@@ -1014,7 +1014,7 @@ impl DynPlugin for HooksSessionPlugin {
             self.sources.erase(),
             self.platform.erase(),
             self.config.erase(),
-            self.identity.erase(),
+            self.lifecycle.erase(),
             self.checks.erase(),
         ]
     }
@@ -1023,13 +1023,13 @@ impl DynPlugin for HooksSessionPlugin {
             let sources = ctx.require_at(&self.sources)?;
             let platform = ctx.require_at(&self.platform)?;
             let config = ctx.require_at(&self.config)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let checks = ctx.require_at(&self.checks)?;
             let runtime = Arc::new(HooksRuntime {
                 sources,
                 platform,
                 config,
-                identity,
+                session_id: lifecycle.session_id(),
                 cancel: ctx.cancellation_token(),
                 tasks: TaskTracker::new(),
             });
@@ -2236,7 +2236,6 @@ pub struct HooksBranchPlugin {
     dispatcher: Key<Dispatcher>,
     approval: Key<Approval>,
     permission: Key<Permission>,
-    identity: Key<TimelineIdentity>,
     lifecycle: Key<BranchLifecycle>,
     registry: Key<ToolRegistry>,
 }
@@ -2248,7 +2247,6 @@ impl HooksBranchPlugin {
             dispatcher: names.key()?,
             approval: names.key()?,
             permission: names.key()?,
-            identity: names.key()?,
             lifecycle: names.key()?,
             registry: names.key()?,
         })
@@ -2265,7 +2263,6 @@ impl DynPlugin for HooksBranchPlugin {
             self.dispatcher.erase(),
             self.approval.erase(),
             self.permission.erase(),
-            self.identity.erase(),
             self.lifecycle.erase(),
             self.registry.erase(),
         ]
@@ -2277,7 +2274,7 @@ impl DynPlugin for HooksBranchPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let approval = ctx.require_at(&self.approval)?;
             let permission = ctx.require_at(&self.permission)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let registry = ctx.require_at(&self.registry)?;
             let (sender, receiver) = mpsc::unbounded_channel();
@@ -2289,7 +2286,7 @@ impl DynPlugin for HooksBranchPlugin {
                 registry,
                 dispatcher: dispatcher.clone(),
                 lifecycle: lifecycle.clone(),
-                branch_id: identity.branch_id.clone(),
+                branch_id: lifecycle.branch_id().clone(),
                 view: Mutex::new(View::default()),
                 jobs: sender,
                 pending: Pending::default(),
@@ -2841,11 +2838,7 @@ mod tests {
                 cwd: dir.to_string_lossy().into_owned(),
                 ..SessionConfig::default()
             }),
-            identity: Arc::new(SessionIdentity {
-                unloading: CancellationToken::new(),
-                session_id: "session".into(),
-                restored: false,
-            }),
+            session_id: "session".into(),
             cancel: CancellationToken::new(),
             tasks: TaskTracker::new(),
         })

@@ -23,7 +23,7 @@ storage, no replay, no `model/usage` event.
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionIdentity` | The Session's id: the broadcast channel, and the `sessionId` of the notices. |
+| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionConfig` | `interactive` and `collaboration_role`: only a root interactive Session offers. |
 | `S:SessionLifecycle` | `closing()` clears the offer before the channel ends. |
 | `S:SessionMethods` | Registers `session.suggestion` from `apply`, until this generation unloads. |

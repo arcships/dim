@@ -1,6 +1,6 @@
 //! Broadcasts every dispatched event of one branch on its Session channel,
 //! which also carries owners' notices about the Session's process-level state.
-use dim_agent_runtime::{Dispatcher, Names, SessionIdentity, TimelineIdentity};
+use dim_agent_runtime::{BranchLifecycle, Dispatcher, Names, SessionLifecycle, SessionScope};
 use dim_agent_types::AgentEvent;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Event};
@@ -151,13 +151,13 @@ pub fn notify(ctx: &Ctx, session_id: &str, notice: SessionNotice) {
 
 pub struct SessionBroadcastPlugin {
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    lifecycle: Key<BranchLifecycle>,
 }
 impl SessionBroadcastPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
             dispatcher: names.key()?,
-            identity: names.key()?,
+            lifecycle: names.key()?,
         })
     }
 }
@@ -166,14 +166,14 @@ impl DynPlugin for SessionBroadcastPlugin {
         "SessionBroadcast"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.dispatcher.erase(), self.identity.erase()]
+        vec![self.dispatcher.erase(), self.lifecycle.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
-            let identity = ctx.require_at(&self.identity)?;
-            let session_id = identity.session_id.clone();
-            let branch_id = identity.branch_id.clone();
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let session_id = lifecycle.session_id();
+            let branch_id = lifecycle.branch_id().clone();
             let emitter = ctx.clone();
             dispatcher.subscribe_all(ctx, "SessionBroadcast", move |event| {
                 let record = SessionBroadcastEvent::Event {
@@ -190,12 +190,14 @@ impl DynPlugin for SessionBroadcastPlugin {
 /// Ends the Session channel. Session capabilities unload after every branch
 /// closed, so this record follows every broadcast event.
 pub struct SessionBroadcastEndPlugin {
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
+    lifecycle: Key<SessionLifecycle>,
 }
 impl SessionBroadcastEndPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
             identity: names.key()?,
+            lifecycle: names.key()?,
         })
     }
 }
@@ -204,16 +206,17 @@ impl DynPlugin for SessionBroadcastEndPlugin {
         "SessionBroadcastEnd"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.identity.erase()]
+        vec![self.identity.erase(), self.lifecycle.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let identity = ctx.require_at(&self.identity)?;
+            let lifecycle = ctx.require_at(&self.lifecycle)?;
             let emitter = ctx.clone();
             ctx.effect(move || async move {
-                if !identity.unloading.is_cancelled() {
+                if !lifecycle.unloading() {
                     let record = SessionBroadcastEvent::Closed;
-                    let _ = emitter.emit(SessionBroadcast::new(&identity.session_id, record));
+                    let _ = emitter.emit(SessionBroadcast::new(&identity.session_id(), record));
                 }
                 Ok(())
             })?;

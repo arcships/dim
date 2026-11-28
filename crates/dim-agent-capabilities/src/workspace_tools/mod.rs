@@ -28,7 +28,7 @@ use crate::{
 use background::BackgroundExecPlugin;
 use dim_agent_runtime::{
     AgentBuilder, CAPABILITY_RELOADING, CollaborationRole, Names, PartRegistry, PartScope,
-    SessionConfig, SessionIdentity,
+    SessionConfig, SessionScope,
 };
 use dim_agent_types::*;
 use file_reads::{FileReads, FileReadsPlugin};
@@ -326,7 +326,7 @@ struct WorkspaceToolsPlugin {
     host: Key<ToolHost>,
     platform: Key<HostPlatform>,
     session_config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
     /// The owner's one walked index, shared with `workspace.files.search`.
@@ -385,7 +385,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
             let tree = ctx.require_at(&self.tree)?;
             let methods = ctx.require_at(&self.methods)?;
             let cwd = PathBuf::from(&config.cwd);
-            let output_dir = self.config.output_root.join(&identity.session_id);
+            let output_dir = self.config.output_root.join(&identity.session_id());
             // A configured boundary is the file tools' home too: `~`
             // resolves against it, never against the platform home.
             let home = self
@@ -405,7 +405,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 ),
                 output_dir,
                 owner: ctx.get::<SessionFiles>(),
-                session_id: identity.session_id.clone(),
+                session_id: identity.session_id().clone(),
                 member: config.collaboration_role == CollaborationRole::Member,
                 cwd,
                 platform,

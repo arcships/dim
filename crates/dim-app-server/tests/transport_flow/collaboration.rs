@@ -4,7 +4,7 @@ use dim_agent_capabilities::prompt_state::PromptSnapshot;
 use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events, timeline_events};
 use dim_agent_runtime::{
-    Agent, CollaborationRole, Names, Session, SessionIdentity, TimelineQueryScope, TimelineStore,
+    Agent, CollaborationRole, Names, Session, SessionScope, TimelineQueryScope, TimelineStore,
 };
 use dim_agent_types::{
     AgentEvent, CollaborationDelivery, CollaborationOutcome, ContentBlock, EventKind, InputBlock,
@@ -2976,7 +2976,7 @@ impl HeldRestore {
 }
 struct HeldRestorePart {
     held: HeldRestore,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
 }
 impl HeldRestorePart {
     fn new(names: &Names<'_>, held: HeldRestore) -> rutis::Result<Self> {
@@ -2997,12 +2997,12 @@ impl DynPlugin for HeldRestorePart {
         Box::pin(async move {
             let identity = ctx.require_at(&self.identity)?;
             let state = &self.held.0;
-            let held = identity.restored
+            let held = identity.describe().expect("the Session is live").restored
                 && state
                     .held
                     .lock()
                     .unwrap()
-                    .take_if(|id| *id == identity.session_id)
+                    .take_if(|id| *id == identity.session_id())
                     .is_some();
             if held {
                 state.entered.notify_one();

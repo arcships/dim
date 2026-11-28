@@ -231,13 +231,6 @@ pub struct TimelineIdentity {
     pub session_id: String,
     pub branch_id: String,
 }
-#[service]
-impl TimelineIdentity {
-    /// The identity as data, for parts in other languages.
-    pub fn get(&self) -> TimelineIdentity {
-        self.clone()
-    }
-}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionIdentity {
@@ -255,6 +248,18 @@ impl SessionIdentity {
     pub fn get(&self) -> SessionIdentity {
         self.clone()
     }
+}
+
+/// One Session as its own scope describes it: its identity, whether it was
+/// restored, the configuration it was created with, and the Agent that owns it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDescription {
+    pub session_id: String,
+    /// True when this Session was loaded from storage rather than newly created.
+    pub restored: bool,
+    pub config: SessionConfig,
+    pub agent: AgentConfig,
 }
 
 /// Phase of one branch's lifecycle.
@@ -330,6 +335,8 @@ pub enum OpeningKind {
 #[derive(Clone)]
 pub struct BranchLifecycle {
     phases: Phases<BranchPhase>,
+    session_id: String,
+    branch_id: String,
 }
 
 /// One branch opening's receipt collection and budget, a private key of the
@@ -400,10 +407,24 @@ impl BranchOpening {
 
 #[service]
 impl BranchLifecycle {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(session_id: String, branch_id: String) -> Self {
         Self {
             phases: Phases::new(),
+            session_id,
+            branch_id,
         }
+    }
+    /// The Session this branch belongs to. Rust-only: a part that needs the
+    /// ids reads them here instead of taking a `TimelineContext`, which the
+    /// branch's own timeline row provides only after the parts are assembled.
+    #[service(skip)]
+    pub fn session_id(&self) -> String {
+        self.session_id.clone()
+    }
+    /// This branch's id, which is its line id.
+    #[service(skip)]
+    pub fn branch_id(&self) -> String {
+        self.branch_id.clone()
     }
     #[service(skip)]
     pub fn phase(&self) -> BranchPhase {
@@ -453,6 +474,7 @@ pub struct SessionLifecycle {
     pub(crate) faults: crate::FaultReporter,
     phases: Phases<SessionPhase>,
     closing: tokio_util::sync::CancellationToken,
+    unloading: tokio_util::sync::CancellationToken,
     /// Live holds, with [`RELEASING`] set once an idle release is decided.
     holds: Arc<AtomicUsize>,
     foreign: Arc<Mutex<ForeignResources>>,
@@ -474,14 +496,23 @@ type FaultListener = Arc<
 const RELEASING: usize = 1 << (usize::BITS - 1);
 #[service]
 impl SessionLifecycle {
-    pub(crate) fn new(closing: tokio_util::sync::CancellationToken) -> Self {
+    pub(crate) fn new(
+        closing: tokio_util::sync::CancellationToken,
+        unloading: tokio_util::sync::CancellationToken,
+    ) -> Self {
         Self {
             phases: Phases::new(),
             faults: crate::FaultReporter::default(),
             closing,
+            unloading,
             holds: Arc::default(),
             foreign: Arc::default(),
         }
+    }
+    /// Whether this Session is leaving by idle instance release rather than by
+    /// a business close. A part reads it instead of a flag on the identity.
+    pub fn unloading(&self) -> bool {
+        self.unloading.is_cancelled()
     }
     pub fn report_fault(&self, error: crate::SessionFault) {
         self.faults.report(error.into());

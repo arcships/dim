@@ -9,7 +9,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     BRANCH_GROUP, BranchLifecycle, BranchOpening, BranchPhase, Dispatcher, Names, OpeningKind,
-    PartRegistry, PartScope, SessionIdentity, Timeline,
+    PartRegistry, PartScope, SessionScope, Timeline,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -211,7 +211,7 @@ fn input(body: String) -> InputMessageData {
 
 struct ClientsBranchPlugin {
     clients: Key<SessionClientsHost>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     timeline: Key<Timeline>,
     phase: Key<BranchLifecycle>,
     opening: Key<BranchOpening>,
@@ -253,7 +253,7 @@ impl DynPlugin for ClientsBranchPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let wake = Arc::new(Notify::new());
             let listener_wake = wake.clone();
-            let session = identity.session_id.clone();
+            let session = identity.session_id().clone();
             ctx.listen::<ClientsChanged>()
                 .name(clients_changes(&session))
                 .on(move |_, _| {

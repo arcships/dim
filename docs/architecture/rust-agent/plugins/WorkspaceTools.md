@@ -106,7 +106,7 @@ enter.
 | `P:HostPlatform` | Home, shell, environment and process supervision. |
 | `S:TreeCommands` | Resolve the calling branch per call. |
 | `S:SessionConfig` | cwd and collaboration role. |
-| `S:SessionIdentity` | Session-specific output directory. |
+| `S:SessionScope` | The Session\'s own scope: `describe()` gives its id, restoration, configuration and owning Agent.
 | `S:SessionMethods` | Register the `session.exec.output` namespace, until this part unloads. |
 | `P:MentionIndex` | The owner's walked index, shared with `workspace.files.search`. |
 
@@ -716,7 +716,7 @@ releases no lock across a read: the page opens the registered file itself.
 | --- | --- |
 | `B:Dispatcher` | Replay commands, then consume command ends and interrupts in dispatch order. |
 | `B:Timeline` | Commit ends/notices, recovered ones included. |
-| `B:TimelineIdentity` | The branch whose entry this part registers. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `P:HostPlatform` | Read retained task output and stop a running task. |
 | `S:GuideEntries` | Register the exec notification's entry for this branch, until this part unloads. |
 | `S:SessionLifecycle` | `hold()`: each running task holds the Session, so an idle unload waits for it. |

@@ -1,6 +1,6 @@
 use crate::{AimuxModels, driver::AimuxDriver, identity::ModelIdentity};
 use dim_agent_capabilities::host::*;
-use dim_agent_runtime::{Names, SessionConfig, SessionIdentity};
+use dim_agent_runtime::{Names, SessionConfig, SessionScope};
 use dim_agent_types::{Message, SystemPrompt, ToolDefinition};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use rutis::{Ctx, Plugin};
@@ -292,8 +292,8 @@ impl ResolveModalityConnection for ConfiguredConnection {
 pub struct ConfiguredModelPlugin {
     prepare: Key<PrepareModelHost>,
     models: Key<AimuxModels>,
-    config: Key<SessionConfig>,
-    identity: Key<SessionIdentity>,
+    config: Key<SessionScope>,
+    identity: Key<SessionScope>,
 }
 impl ConfiguredModelPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -349,7 +349,7 @@ pub(crate) const REQUEST_ID_EXTENSION: &str = "requestId";
 
 struct Prepare {
     config: Arc<SessionConfig>,
-    identity: Arc<SessionIdentity>,
+    identity: Arc<SessionScope>,
     defaults: dim_agent_types::ModelConfig,
 }
 impl PrepareModel for Prepare {
@@ -371,7 +371,7 @@ impl PrepareModel for Prepare {
             .then(|| SystemPrompt::Text(self.config.system_prompt.clone()));
         settings.tools = Some(available_tools.to_vec());
         let mut metadata = self.config.model.metadata.clone().unwrap_or_default();
-        metadata.session_id = Some(self.identity.session_id.clone());
+        metadata.session_id = Some(self.identity.session_id().clone());
         metadata.turn_id = Some(turn_id.into());
         metadata
             .extensions

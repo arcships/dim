@@ -22,7 +22,7 @@ use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BoxFuture, BranchOptions, Dispatcher, Feature,
     LoopSnapshot, LoopState, MemoryTimelineStore, Names, PublishCallback, Session, SessionConfig,
-    StoredBranch, StoredEvent, Timeline, TimelineIdentity, TimelineKey, TimelineQueryDirection,
+    StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineKey, TimelineQueryDirection,
     TimelineStore, TimelineTrace,
 };
 use dim_agent_types::{
@@ -173,7 +173,7 @@ struct ProbeBranch {
     timeline: Key<Timeline>,
     commands: Key<TreeCommands>,
     dispatcher: Key<Dispatcher>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
 }
 impl ProbeBranch {
     fn new(names: &Names<'_>, probe: Arc<Probe>) -> rutis::Result<Self> {
@@ -235,17 +235,17 @@ impl DynPlugin for ProbeBranch {
                 },
             )?;
             let mut timelines = self.probe.timelines.lock().unwrap();
-            timelines.insert(identity.branch_id.clone(), timeline);
+            timelines.insert(identity.branch_id().clone(), timeline);
             self.probe
                 .commands
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), commands);
+                .insert(identity.branch_id().clone(), commands);
             self.probe
                 .dispatchers
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), dispatcher);
+                .insert(identity.branch_id().clone(), dispatcher);
             Ok(Effect::Done)
         })
     }
@@ -311,7 +311,7 @@ impl LoopState for ControllableLoop {
 /// it, so a case that never sets a line's state keeps the idle stub.
 struct ControllableLoopStub {
     key: Key<dyn LoopState>,
-    identity: Key<TimelineIdentity>,
+    identity: Key<TimelineContext>,
     watch: tokio::sync::watch::Sender<LoopSnapshot>,
     probe: Arc<Probe>,
 }
@@ -339,7 +339,7 @@ impl DynPlugin for ControllableLoopStub {
                 .loops
                 .lock()
                 .unwrap()
-                .insert(identity.branch_id.clone(), self.watch.clone());
+                .insert(identity.branch_id().clone(), self.watch.clone());
             ctx.provide_at(
                 self.key.clone(),
                 Arc::new(ControllableLoop(self.watch.clone())) as Arc<dyn LoopState>,

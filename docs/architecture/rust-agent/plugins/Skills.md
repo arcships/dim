@@ -283,7 +283,7 @@ dispatched face is not an entry in the generated `Services` map.
 | Service | Purpose |
 | --- | --- |
 | `S:SessionSkills` | Private typed key for the current view and change watch within the Skills owner. |
-| `B:BranchLifecycle` | Wait for activation; stop on closing. |
+| `B:BranchLifecycle` | This branch\'s phase, and its `session_id`/`branch_id` for Rust-only reads.
 | `B:dyn ConfigureControl` | Adopt the changed list as prompt configuration. |
 
 ### Events and lifetime

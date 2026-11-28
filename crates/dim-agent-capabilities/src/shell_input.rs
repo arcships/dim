@@ -23,8 +23,7 @@ use crate::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    AgentBuilder, Names, SessionConfig, SessionHold, SessionIdentity, SessionLifecycle,
-    SessionPhase,
+    AgentBuilder, Names, SessionConfig, SessionHold, SessionLifecycle, SessionPhase, SessionScope,
 };
 use dim_agent_types::{InputMessageData, InputMode};
 use rutis::Ctx;
@@ -136,7 +135,7 @@ struct ShellInput {
     cwd: PathBuf,
     tree: Arc<TreeCommands>,
     lifecycle: Arc<SessionLifecycle>,
-    identity: Arc<SessionIdentity>,
+    identity: Arc<SessionScope>,
     /// This generation's cancellation: with the Session's closing, it ends
     /// every run.
     generation: CancellationToken,
@@ -308,7 +307,7 @@ impl ShellInput {
     ) {
         let span = tracing::info_span!(
             "shell.run",
-            session_id = %self.identity.session_id,
+            session_id = %self.identity.session_id(),
             branch_id = %run.branch_id,
             run_id = %run.run_id,
             outcome = tracing::field::Empty,
@@ -552,7 +551,7 @@ pub struct ShellInputPlugin {
     config: Key<SessionConfig>,
     tree: Key<TreeCommands>,
     lifecycle: Key<SessionLifecycle>,
-    identity: Key<SessionIdentity>,
+    identity: Key<SessionScope>,
     methods: Key<SessionMethods>,
     guide: Key<GuideEntries>,
 }
