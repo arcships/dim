@@ -257,6 +257,18 @@ impl SessionIdentity {
     }
 }
 
+/// One Session as its own scope describes it: its identity, whether it was
+/// restored, the configuration it was created with, and the Agent that owns it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDescription {
+    pub session_id: String,
+    /// True when this Session was loaded from storage rather than newly created.
+    pub restored: bool,
+    pub config: SessionConfig,
+    pub agent: AgentConfig,
+}
+
 /// Phase of one branch's lifecycle.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BranchPhase {
@@ -453,6 +465,7 @@ pub struct SessionLifecycle {
     pub(crate) faults: crate::FaultReporter,
     phases: Phases<SessionPhase>,
     closing: tokio_util::sync::CancellationToken,
+    unloading: tokio_util::sync::CancellationToken,
     /// Live holds, with [`RELEASING`] set once an idle release is decided.
     holds: Arc<AtomicUsize>,
     foreign: Arc<Mutex<ForeignResources>>,
@@ -474,14 +487,23 @@ type FaultListener = Arc<
 const RELEASING: usize = 1 << (usize::BITS - 1);
 #[service]
 impl SessionLifecycle {
-    pub(crate) fn new(closing: tokio_util::sync::CancellationToken) -> Self {
+    pub(crate) fn new(
+        closing: tokio_util::sync::CancellationToken,
+        unloading: tokio_util::sync::CancellationToken,
+    ) -> Self {
         Self {
             phases: Phases::new(),
             faults: crate::FaultReporter::default(),
             closing,
+            unloading,
             holds: Arc::default(),
             foreign: Arc::default(),
         }
+    }
+    /// Whether this Session is leaving by idle instance release rather than by
+    /// a business close. A part reads it instead of a flag on the identity.
+    pub fn unloading(&self) -> bool {
+        self.unloading.is_cancelled()
     }
     pub fn report_fault(&self, error: crate::SessionFault) {
         self.faults.report(error.into());

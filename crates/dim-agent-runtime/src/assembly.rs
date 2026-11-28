@@ -1929,6 +1929,7 @@ pub(crate) async fn build_session(
     }
     let startup_timeout = assembly.startup_timeout;
     let host = &placement.anchor;
+    let unloading = CancellationToken::new();
     let owner = Arc::new(SessionAssembly {
         assembly,
         extension: Mutex::new(extension),
@@ -1937,8 +1938,8 @@ pub(crate) async fn build_session(
         config,
         id,
         restored: matches!(initialization, SessionInitialization::Restore(_)),
-        unloading: CancellationToken::new(),
-        lifecycle: SessionLifecycle::new(closing.clone()),
+        unloading: unloading.clone(),
+        lifecycle: SessionLifecycle::new(closing.clone(), unloading),
         closing,
         loaded: Mutex::new(None),
         mounted: Arc::default(),

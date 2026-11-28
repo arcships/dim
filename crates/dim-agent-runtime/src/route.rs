@@ -444,6 +444,20 @@ impl Line {
 
 #[rutis::service]
 impl SessionScope {
+    /// This Session as its own scope describes it: identity, whether it was
+    /// restored, the configuration it was created with, and the Agent that owns
+    /// it. The values are the ones the Session was assembled from, so a part
+    /// reads them without a second lookup.
+    pub fn describe(&self) -> Routed<crate::config::SessionDescription> {
+        let session = self.live()?;
+        Ok(crate::config::SessionDescription {
+            session_id: session.id.clone(),
+            restored: session.restored,
+            config: session.config.clone(),
+            agent: session.assembly.config.clone(),
+        })
+    }
+
     /// Calls one of this Session's own data faces.
     pub async fn call(&self, call: SessionCall) -> Routed<Option<serde_json::Value>> {
         let session = self.live()?;
