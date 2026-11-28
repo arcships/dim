@@ -1014,7 +1014,6 @@ impl DynPlugin for HooksSessionPlugin {
             self.sources.erase(),
             self.platform.erase(),
             self.config.erase(),
-            self.identity.erase(),
             self.checks.erase(),
         ]
     }
@@ -2265,7 +2264,6 @@ impl DynPlugin for HooksBranchPlugin {
             self.dispatcher.erase(),
             self.approval.erase(),
             self.permission.erase(),
-            self.identity.erase(),
             self.lifecycle.erase(),
             self.registry.erase(),
         ]

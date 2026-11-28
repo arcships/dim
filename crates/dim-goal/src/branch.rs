@@ -208,7 +208,6 @@ impl DynPlugin for GoalBranch {
             self.timeline.erase(),
             self.tree.erase(),
             self.settings.erase(),
-            self.identity.erase(),
             self.phase.erase(),
             self.session.erase(),
         ]
@@ -219,7 +218,9 @@ impl DynPlugin for GoalBranch {
             let timeline = ctx.require_at(&self.timeline)?;
             let tree = ctx.require_at(&self.tree)?;
             let settings = ctx.require_at(&self.settings)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             let phase = ctx.require_at(&self.phase)?;
             let session = ctx.require_at(&self.session)?;
             let stop = CancellationToken::new();

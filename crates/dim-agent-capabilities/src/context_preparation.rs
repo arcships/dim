@@ -1014,7 +1014,6 @@ impl DynPlugin for ContextPreparationPlugin {
             self.model_context.erase(),
             self.strategy.erase(),
             self.history.erase(),
-            self.identity.erase(),
             self.guide.erase(),
             self.branch_phase.erase(),
         ]
@@ -1027,7 +1026,9 @@ impl DynPlugin for ContextPreparationPlugin {
             let context = ctx.require_at(&self.model_context)?;
             let strategy = ctx.require_at(&self.strategy)?;
             let history = ctx.require_at(&self.history)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             let guide = ctx.require_at(&self.guide)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
             if strategy.0.is_some() {

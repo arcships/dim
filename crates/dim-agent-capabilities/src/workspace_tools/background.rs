@@ -1206,7 +1206,6 @@ impl DynPlugin for BackgroundExecPlugin {
             self.dispatcher.erase(),
             self.session.erase(),
             self.guide.erase(),
-            self.identity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1215,7 +1214,9 @@ impl DynPlugin for BackgroundExecPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let session = ctx.require_at(&self.session)?;
             let guide = ctx.require_at(&self.guide)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             guide.register(
                 ctx,
                 GuideScope::Branch(identity.branch_id().clone()),

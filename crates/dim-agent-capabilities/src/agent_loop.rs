@@ -1838,7 +1838,6 @@ impl DynPlugin for LoopPlugin {
             self.context.erase(),
             self.strategy.erase(),
             self.guide.erase(),
-            self.identity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1851,7 +1850,9 @@ impl DynPlugin for LoopPlugin {
             let context = ctx.require_at(&self.context)?;
             let strategy = ctx.require_at(&self.strategy)?;
             let guide = ctx.require_at(&self.guide)?;
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             let policy = ContextPolicy::bind(&timeline, &context, &strategy, &history)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
             let service = Arc::new(AgentLoop {

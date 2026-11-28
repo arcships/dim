@@ -39,11 +39,7 @@ impl DynPlugin for CodeModeBranchPlugin {
     }
 
     fn injects(&self) -> Vec<TypeKey> {
-        vec![
-            self.runs.erase(),
-            self.executor.erase(),
-            self.identity.erase(),
-        ]
+        vec![self.runs.erase(), self.executor.erase()]
     }
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -51,7 +47,9 @@ impl DynPlugin for CodeModeBranchPlugin {
             let runs = ctx.require_at(&self.runs)?;
             let executor: Arc<dyn NestedToolHost> =
                 Arc::new(ToolExecutorHost::new(ctx.require_at(&self.executor)?));
-            let identity = ctx.require_at(&self.identity)?;
+            let identity = ctx
+                .get_at::<TimelineContext>(&self.identity)
+                .ok_or_else(|| rutis::Error::msg("timeline context unavailable"))?;
             let branch = Arc::new(CodeModeBranch {
                 executor,
                 config: self.config.clone(),

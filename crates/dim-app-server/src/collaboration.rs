@@ -3732,13 +3732,13 @@ impl DynPlugin for CollaborationSessionPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         let mut keys = vec![
             self.collaboration.erase(),
-            self.identity.erase(),
             self.config.erase(),
             self.tree.erase(),
             self.lifecycle.erase(),
             self.tools.erase(),
             self.guide.erase(),
             self.methods.erase(),
+            self.identity.erase(),
         ];
         keys.extend(self.factory.iter().map(Key::erase));
         keys
@@ -3844,7 +3844,6 @@ impl DynPlugin for CollaborationTimelinePlugin {
             self.service.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
-            self.identity.erase(),
             self.phase.erase(),
         ]
     }
