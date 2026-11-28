@@ -2,6 +2,19 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// Whether the model id names `word` as a whole word: case-insensitively, on
+/// the `.`, `/`, `_` and `-` boundaries the Provider layer recognizes. The
+/// operation recognizer and the adapter router read the same word families
+/// through this one predicate, so an id the recognizer serves and an id the
+/// router refuses cannot disagree about what a family is: `seedancechat`
+/// names no family, and `doubao-seedance` names `seedance`.
+pub fn in_word_family(model_id: &str, word: &str) -> bool {
+    model_id
+        .to_ascii_lowercase()
+        .split(['.', '/', '_', '-'])
+        .any(|part| part == word)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModelProtocol {
     #[serde(rename = "openai-chat")]

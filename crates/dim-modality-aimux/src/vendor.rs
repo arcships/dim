@@ -393,15 +393,7 @@ static BUNDLED_WITHOUT_ROWS: &[&str] = &[
     "vidu",
 ];
 
-/// Whether the model id names `word` after the provider-resolution
-/// splitting: case-insensitively, on the `.`, `/`, `_` and `-` boundaries the
-/// Provider layer recognizes.
-fn in_word_family(model_id: &str, word: &str) -> bool {
-    model_id
-        .to_ascii_lowercase()
-        .split(['.', '/', '_', '-'])
-        .any(|part| part == word)
-}
+use dim_agent_types::in_word_family;
 
 /// Whether the model id names the Ark video word family. The Ark video API
 /// is a different route from the compatible family's `/videos`

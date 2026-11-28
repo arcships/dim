@@ -2456,3 +2456,56 @@ async fn the_dim_account_relay_image_binding_still_serves_seedream() {
     );
     assert_eq!(body["model"], "seedream-5.0");
 }
+
+#[tokio::test]
+async fn the_relay_keeps_serving_the_models_the_catalog_recognizes_as_media() {
+    // The catalog recognition answers operations alone; the binding answers
+    // availability. The relay's seedream image ids stay served on the OpenAI
+    // package — the seedream exclusion reaches the generic fallback alone —
+    // while the Ark video ids the recognition pins stay refused, and
+    // minimax-h3 stays served on the family.
+    let adapter = MediaAdapter::new();
+    for protocol in [Some(ModelProtocol::OpenaiCompatible), None] {
+        for model_id in ["seedream-5.0", "doubao-seedream-4-0-250828"] {
+            let names = operation_names(
+                &adapter,
+                &ModelId {
+                    provider_id: "dimcode-api-oauth".into(),
+                    model_id: model_id.into(),
+                },
+                protocol,
+            );
+            assert!(
+                names.contains(&"image.generate".to_owned())
+                    && names.contains(&"image.edit".to_owned()),
+                "the relay's {model_id} image operations stay served ({protocol:?}): {names:?}"
+            );
+        }
+        for model_id in ["seedance-2.0", "doubao-seedance-1-0-pro-250528"] {
+            let names = operation_names(
+                &adapter,
+                &ModelId {
+                    provider_id: "dimcode-api-oauth".into(),
+                    model_id: model_id.into(),
+                },
+                protocol,
+            );
+            assert!(
+                !names.contains(&"video.generate".to_owned()),
+                "the relay's {model_id} stays refused ({protocol:?}): {names:?}"
+            );
+        }
+        let names = operation_names(
+            &adapter,
+            &ModelId {
+                provider_id: "dimcode-api-oauth".into(),
+                model_id: "minimax-h3-max".into(),
+            },
+            protocol,
+        );
+        assert!(
+            names.contains(&"video.generate".to_owned()),
+            "the relay's minimax-h3-max stays served ({protocol:?}): {names:?}"
+        );
+    }
+}
