@@ -75,7 +75,7 @@ const en = {
   "composer.command.models": "Choose a model",
   "composer.command.new": "New session",
   "composer.command.scheduled": "Manage scheduled tasks on the CLI host",
-  "composer.commandKeys": "↑↓ select · Enter confirm · Esc close",
+  "composer.commandKeys": "↑↓ select · Enter confirm · Esc back · / closes",
   "composer.command.toolMode": "Show or change the session tool mode",
   "composer.toolMode.label": "Tool mode",
   "composer.toolMode.name.normal": "Normal",

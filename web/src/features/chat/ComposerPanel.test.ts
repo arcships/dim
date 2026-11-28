@@ -36,12 +36,12 @@ vi.mock("./ComposerPermissionMenu.vue", async () => {
     default: defineComponent({
       name: "ComposerPermissionMenu",
       emits: ["select", "close"],
-      setup(_, { expose }) {
+      setup(_, { emit, expose }) {
         const open = ref(false)
         expose({ open: () => { open.value = true } })
         return () => open.value
           ? h("div", { class: "stub-permission-panel" }, [
-              h("button", { class: "stub-permission-close", onClick: () => open.value = false }, "close"),
+              h("button", { class: "stub-permission-close", onClick: () => { open.value = false; emit("close") } }, "close"),
             ])
           : null
       },
@@ -169,11 +169,21 @@ describe("ComposerPanel command menu Escape", () => {
     await press(field, "Escape")
     expect(field.value, "the filter is cleared and the draft kept").toBe("/")
     expect(menu(root), "the unfiltered list stays open").not.toBeNull()
-    expect(rowNamed(root, "/settings"), "the parent list shows every command").toBeDefined()
+    expect(rowNamed(root, "/new"), "the parent list shows every command").toBeDefined()
 
     await press(field, "Escape")
     expect(menu(root), "the unfiltered root closes the menu").toBeNull()
     expect(field.value, "closing the menu keeps the draft").toBe("/")
+  })
+
+  it("keeps an unknown slash draft literal", async () => {
+    const { root, field } = mountComposer()
+    await setText(field, "/unknown")
+    expect(menu(root), "an unmatched query shows no command list").toBeNull()
+
+    await press(field, "Escape")
+    expect(field.value, "the literal draft is kept").toBe("/unknown")
+    expect(menu(root)).toBeNull()
   })
 
   it("returns from a panel root to the list and its selected row", async () => {

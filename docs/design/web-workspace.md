@@ -333,9 +333,10 @@ never submit a recognized branch command as model input unless explicitly escape
 Only successful creation clears the submitted draft. The existing transcript
 actions and new-child buttons retain their point-based dialogs. `/btw` is not an
 alternate command name.
-Unknown slash-prefixed text remains ordinary input. Escape marks the current
-slash-prefixed draft as literal and preserves its text, including after the
-menu closes while typing `/branch <prompt>`; Enter then sends it as a message.
+Unknown slash-prefixed text remains ordinary input. When the menu has no
+command to filter, Escape marks the current slash-prefixed draft as literal and
+preserves its text, including after the menu closes while typing
+`/branch <prompt>`; Enter then sends it as a message.
 
 ```text
 ┌──────────────────────────────────────────────────┐
@@ -343,7 +344,7 @@ menu closes while typing `/branch <prompt>`; Enter then sends it as a message.
 │ session   /branch <prompt>    Open a line here    │
 │           /lines             Show Session lines  │
 │           /new               New Session         │
-│ ↑↓ select · Enter confirm · Esc close            │
+│ ↑↓ select · Enter confirm · Esc back · / closes  │
 ├──────────────────────────────────────────────────┤
 │ /branch review the patch                         │
 │                                 [model] [send]   │

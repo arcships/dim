@@ -15,7 +15,7 @@ import { useModels } from "../../stores/models"
 type Option = { providerId: string; providerName: string; modelId: string; name: string }
 
 const props = defineProps<{ model: ModelId | undefined; preview?: ModelMenuPreview; selectable: boolean; disabled: boolean }>()
-const emit = defineEmits<{ select: [model: ModelId]; follow: []; retry: [] }>()
+const emit = defineEmits<{ select: [model: ModelId]; follow: []; retry: []; close: [] }>()
 const { t } = useI18n()
 const models = useModels()
 const adopted = useModels()
@@ -76,8 +76,19 @@ watch(open, async (isOpen) => {
   await nextTick()
   if (!matchMedia("(pointer: coarse)").matches) searchInput.value?.inputRef?.focus()
 })
+watch(open, (isOpen, wasOpen) => { if (wasOpen && !isOpen) emit("close") })
 
 watch(query, (value) => { if (open.value) void models.load({ query: value }) })
+
+function escape(): void {
+  if (query.value.trim() !== "") {
+    query.value = ""
+    activeIndex.value = 0
+    return
+  }
+  open.value = false
+  triggerRef.value?.$el?.focus()
+}
 
 function select(option: Option): void {
   if (models.loading) return
@@ -89,8 +100,8 @@ function onSearchKey(event: KeyboardEvent): void {
   if (event.isComposing || event.keyCode === 229) return
   if (event.key === "Escape") {
     event.preventDefault()
-    open.value = false
-    triggerRef.value?.$el?.focus()
+    event.stopPropagation()
+    escape()
     return
   }
   if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !searching.value && providers.value.length > 1) {
@@ -132,7 +143,7 @@ defineExpose({ open: () => {
       </UButton>
     </UTooltip>
     <template #content>
-      <div class="model-content">
+      <div class="model-content" @keydown.esc.stop.prevent="escape">
         <p v-if="preview?.state === 'failed'" class="preview-failure" role="alert">
           <UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" aria-hidden="true" />
           <span class="model-name">{{ preview.message }}</span>

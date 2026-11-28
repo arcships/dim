@@ -111,6 +111,8 @@ const error = ref("")
 const composing = ref(false)
 const focused = ref(false)
 const dismissed = ref(false)
+/** The command list a picker keeps behind it: its query and selected row. */
+const commandReturn = ref<{ text: string; selected: number } | undefined>()
 /** The draft's words, with each `/skill:<name>` token marked for the highlight layer. */
 const highlight = computed(() => skillSegments(text.value))
 /** The files inserted into the draft; each sends as a Markdown link to its path. */
@@ -638,6 +640,7 @@ async function stop(): Promise<void> {
 }
 
 async function onModel(model: ModelId): Promise<void> {
+  commandReturn.value = undefined
   changingModel.value = true
   error.value = ""
   try {
@@ -651,6 +654,7 @@ async function onModel(model: ModelId): Promise<void> {
 
 /** Fills `/skill:<name> ` into the draft and sends nothing; the token is part of the message. */
 function completeSkill(name: string): void {
+  commandReturn.value = undefined
   text.value = `${SKILL_TOKEN_PREFIX}${name} `
   dismissed.value = true
   void nextTick(() => {
@@ -669,6 +673,8 @@ async function runCommand(name: typeof availableCommands.value[number]["name"]):
   // while the command opens cannot retarget it (design §14).
   const line = props.branchId ?? ""
   const argument = name === "branch" || name === "goal" || name === "loop" || name === "effort"
+  const picker = name === "models" || name === "permissions" || name === "toolMode"
+  commandReturn.value = picker ? { text: text.value, selected: activeIndex.value } : undefined
   text.value = argument ? `/${name} ` : ""
   await nextTick()
   resize()
@@ -689,6 +695,32 @@ async function runCommand(name: typeof availableCommands.value[number]["name"]):
   else if (name === "toolMode") toolModeMenu.value?.open()
   else if (name === "compact" || name === "usage") await props.sessionCommands?.[name]?.(line)
   else if (name === "fork") await props.sessionCommands?.fork?.()
+}
+
+/** Puts the command list a picker was opened from back, with its query and row. */
+function returnToCommands(): void {
+  const state = commandReturn.value
+  if (state === undefined) return
+  commandReturn.value = undefined
+  text.value = state.text
+  dismissed.value = false
+  activeIndex.value = Math.min(state.selected, Math.max(0, menuRows.value.length - 1))
+  void nextTick(() => {
+    resize()
+    const element = field.value
+    element?.focus()
+    element?.setSelectionRange(text.value.length, text.value.length)
+  })
+}
+
+async function choosePermission(preset: PermissionPreset): Promise<void> {
+  commandReturn.value = undefined
+  await props.permission?.select(preset)
+}
+
+async function chooseToolMode(mode: ToolMode): Promise<void> {
+  commandReturn.value = undefined
+  await props.toolMode?.select(mode)
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -714,7 +746,14 @@ function onKeydown(event: KeyboardEvent): void {
   if (event.key === "Escape" && text.value.startsWith("/") && !dismissed.value) {
     event.preventDefault()
     event.stopPropagation()
-    dismissed.value = true
+    const prefix = commandPrefix.value
+    if (menuRows.value.length > 0 && prefix !== undefined && prefix !== "") {
+      text.value = "/"
+      activeIndex.value = 0
+      void nextTick(() => field.value?.setSelectionRange(1, 1))
+    } else {
+      dismissed.value = true
+    }
     return
   }
   if (menuOpen.value && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
@@ -848,12 +887,12 @@ defineExpose({ focus: () => field.value?.focus(), quote })
       </div>
       <footer class="composer-toolbar">
         <div class="composer-tool-group">
-          <ComposerPermissionMenu v-if="permission && variant !== 'panel'" ref="permissionMenu" :policy="permission.policy" @select="permission.select" />
-          <ComposerToolModeMenu v-if="toolMode && variant !== 'panel'" ref="toolModeMenu" :state="toolMode.state" :available="toolMode.available" @select="toolMode.select" />
+          <ComposerPermissionMenu v-if="permission && variant !== 'panel'" ref="permissionMenu" :policy="permission.policy" @select="choosePermission" @close="returnToCommands" />
+          <ComposerToolModeMenu v-if="toolMode && variant !== 'panel'" ref="toolModeMenu" :state="toolMode.state" :available="toolMode.available" @select="chooseToolMode" @close="returnToCommands" />
         </div>
         <div class="composer-run-group">
           <progress v-if="uploadProgress !== undefined" :value="uploadProgress" max="100" aria-label="File upload" />
-          <ComposerModelMenu v-if="variant !== 'panel'" ref="modelMenu" :model="model" :preview="modelPreview" :selectable="modelSelectable" :disabled="changingModel" @select="onModel" @follow="modelPreview?.follow()" @retry="modelPreview?.retry()" />
+          <ComposerModelMenu v-if="variant !== 'panel'" ref="modelMenu" :model="model" :preview="modelPreview" :selectable="modelSelectable" :disabled="changingModel" @select="onModel" @follow="modelPreview?.follow()" @retry="modelPreview?.retry()" @close="returnToCommands" />
           <UTooltip v-if="sendNow" :text="t('composer.stopping')">
             <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-loader-circle" :aria-label="t('composer.stopping')" disabled />
           </UTooltip>
