@@ -2206,10 +2206,12 @@ the selection down.
   cursor and reads the first page again; the query stays and applies within the
   new scope.
 - The local scope is the launch workspace and the same relative directory in
-  every worktree of its git repository, read with `git rev-parse` and `git
-  worktree list --porcelain` in the background when the picker opens. The first
-  page does not wait for git, and both reads share a two-second bound. A git
-  that succeeds names the scope `This repository`; when the picker is showing
+  every worktree of its Git repository. When the picker opens it asks the selected
+  App Server for [the worktree directories](../architecture/rust-agent/plugins/WorkspaceTools.md).
+  With an older remote server, the picker keeps `This workspace` and still offers
+  `All workspaces`. With an older local daemon, the TUI reads Git on the same computer.
+  The first page does not wait for Git. Discovery has a two-second budget.
+  Successful discovery names the scope `This repository`; when the picker is showing
   the local scope and the set holds more than one entry, the title changes and
   the first page is read again, and a one-entry set changes only the title,
   since the catalog's canonical `cwd` treats the single workspace as the same

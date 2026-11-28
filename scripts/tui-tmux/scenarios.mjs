@@ -1149,6 +1149,61 @@ const scenarios = [
     },
   },
   {
+    name: 'remote_resume_lists_sibling_worktree_sessions',
+    area: 'commands',
+    title: 'List sessions in sibling worktrees of the selected App Server',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const repo = fs.realpathSync(path.join(tui.root, 'workspace'));
+      const sibling = path.join(tui.root, 'linked checkout');
+      const targetHome = path.join(tui.root, 'receiver');
+      const target = ['--home', targetHome, '--model-config', tui.modelFile];
+      const git = (...args) => execFileSync('git', ['-C', repo, ...args], {env: tui.environment({}), stdio: 'pipe'});
+      git('init', '-q');
+      fs.mkdirSync(path.join(repo, 'sub'));
+      fs.writeFileSync(path.join(repo, 'sub', 'seed'), 'fixture');
+      git('add', 'sub/seed');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial');
+      git('worktree', 'add', '--detach', sibling);
+      const bin = path.join(tui.root, 'keyboard-bin');
+      fs.mkdirSync(bin);
+      const marker = path.join(bin, 'called');
+      fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\n: > ${quote(marker)}\nexit 1\n`, {mode: 0o700});
+      try {
+        for (const [cwd, title] of [[path.join(sibling, 'sub'), 'linked checkout session'], [tui.root, 'unrelated session']]) {
+          const output = await tui.runCommandAsync([...target, '--cwd', cwd, 'exec', '--json', '-p', title]);
+          const id = output.trim().split('\n').map(line => JSON.parse(line).params?.sessionId).find(Boolean);
+          assert(id, 'the target created a session');
+          tui.runCommand([...target, 'session', 'rename', id, title]);
+        }
+        const env = {
+          DIMCODE_TERMINAL_PROXY: path.join(targetHome, 'rust', 'daemon.sock'),
+          DIMCODE_TERMINAL_NAME: 'Build host', DIMCODE_TERMINAL_ID: 'fixture', DIMCODE_TERMINAL_ADDRESS: '127.0.0.1:1',
+          PATH: bin + path.delimiter + process.env.PATH,
+        };
+        for (const mode of [[], ['--fullscreen']]) {
+          const terminal = await tui.launch([...mode, '--cwd', path.join(repo, 'sub')], {
+            command: [tui.binary, '--home', tui.home], env, cols: 112, rows: 30,
+          });
+          await terminal.untilComposer();
+          terminal.send('/resume');
+          terminal.key('Enter');
+          await terminal.waitFor('Sessions · This repository');
+          const screen = await terminal.waitFor('linked checkout session');
+          assert(!screen.includes('unrelated session'));
+          terminal.key('C-s');
+          await terminal.waitFor('unrelated session');
+          terminal.key('Escape');
+          await terminal.waitForAbsent('Sessions · All workspaces');
+          await exitWith(terminal);
+        }
+        assert(!fs.existsSync(marker), 'the terminal must never run Git against target paths');
+      } finally {
+        tui.runCommand([...target, 'daemon', 'stop']);
+      }
+    },
+  },
+  {
     name: 'devices_open_remote_directory_and_return_to_local',
     area: 'commands',
     title: 'Switch targets from Home, pair once, browse the target and return in both layouts',

@@ -9,8 +9,12 @@
 use crate::methods::ManagementMethods;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
-    workspace_tools::mentions::{self, MentionIndex},
+    workspace_tools::{
+        mentions::{self, MentionIndex},
+        repository::repository_workspaces,
+    },
 };
+use dim_agent_types::native_files;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::json;
@@ -56,6 +60,7 @@ impl DynPlugin for WorkspaceFilesPlugin {
                 vec![
                     MethodDecl::new(SEARCH_METHOD, false, Interruption::Report),
                     MethodDecl::new("workspace.files.complete", false, Interruption::Report),
+                    MethodDecl::new(native_files::WORKTREES, false, Interruption::Report),
                     MethodDecl::new(DIRECTORIES, false, Interruption::Report),
                 ],
                 Arc::new(move |call, _, _| {
@@ -66,6 +71,11 @@ impl DynPlugin for WorkspaceFilesPlugin {
                     } = call;
                     let index = index.clone();
                     Box::pin(async move {
+                        if method == native_files::WORKTREES {
+                            let native_files::Worktrees { cwd } = params(value)?;
+                            let cwd = crate::protocol::session_cwd(&cwd).await?;
+                            return reply(repository_workspaces(&cwd).await);
+                        }
                         if method == "workspace.files.complete" {
                             let request = params(value)?;
                             return reply(
