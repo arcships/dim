@@ -2024,7 +2024,17 @@ pub(crate) async fn build_session(
                 Err(AgentError::Cancelled("session initialization".into()))
             }
         };
-        if let Err(error) = initialize {
+        // A fault a part reported before the Session publishes ends its
+        // assembly rather than handing back a Session that is already failed
+        // (#1955).
+        let failure = match initialize {
+            Err(error) => Some(error),
+            Ok(()) => owner.lifecycle.faults.failure(),
+        };
+        if let Some(error) = failure {
+            // The Session never publishes, so it is closing for the parts that
+            // wait on it before its tree closes, as `Session::close` has it.
+            owner.closing.cancel();
             return match tree.close().await {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(error.with_cleanup(cleanup)),
