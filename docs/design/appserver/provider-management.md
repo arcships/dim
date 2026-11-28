@@ -1134,8 +1134,10 @@ until its declaration is corrected. Only a conversational or unspecified
 kind (`chat`, `other` or no `type`) is neutral about generation, so the
 output and the id speak there alone: an output of `video` alone, or an id
 naming the `seedance` word family or both `minimax` and `h3` words without
-`image` — the same whole-word families the adapter routing reads, so
-`seedancechat` names none and `minimax-h3-image` is an image model —
+`image` — a whole-word recognition this table answers alone, sharing no
+family table with the adapter routing and free to disagree with it, a
+recognized seedance video stays refused there; `seedancechat` names
+none and `minimax-h3-image` is an image model —
 declares `video.generate`, and an output of `audio` alone declares
 `speech.synthesize`. On a neutral kind the entry is recognized as an image
 model when its id is `arcship-image`, a known ID in the `gpt-image-2` or

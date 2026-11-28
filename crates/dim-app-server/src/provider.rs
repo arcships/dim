@@ -793,7 +793,10 @@ impl ProviderModel {
     /// stated output declares the image operations, and `image-edit` declares
     /// `image.edit` alone. `imageGeneration: false` opts the entry out of
     /// image generation, and the opt-out wins over every inferred image
-    /// operation, a declared image kind included. Only a conversational or
+    /// operation, a declared image kind included. The legacy flag says the
+    /// model is not an image model at all, so `image.edit` falls with the
+    /// generation it serves through; an edit-only model declares
+    /// `modalityCapabilities: ["image.edit"]` instead. Only a conversational or
     /// unspecified kind (`chat`, `other` or no `type`) is neutral about
     /// generation, so no output, id or `imageGeneration` marker adds a use a
     /// declared kind contradicts: a transcription entry with a stale image
@@ -834,11 +837,8 @@ impl ProviderModel {
             .and_then(serde_json::Value::as_str)
             .and_then(crate::model_catalog::kind_of);
         let image_opt_out = field("imageGeneration") == Some(&serde_json::Value::Bool(false));
-        let image_operations = |generate: bool| -> Vec<&'static str> {
-            let mut operations = Vec::new();
-            if generate {
-                operations.push("image.generate");
-            }
+        let image_operations = || -> Vec<&'static str> {
+            let mut operations = vec!["image.generate"];
             if input.contains(&"image")
                 || KNOWN_IMAGE_MODELS.contains(&self.id.as_str())
                 || in_word_family(&self.id, "seedream")
@@ -858,13 +858,13 @@ impl ProviderModel {
             Some("image" | "image-generation")
                 if output.is_empty() || output.contains(&"image") =>
             {
-                (!image_opt_out).then(|| {
-                    image_operations(true)
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect()
-                })
+                (!image_opt_out)
+                    .then(|| image_operations().into_iter().map(str::to_owned).collect())
             }
+            // The opt-out swallows this arm too: the legacy
+            // `imageGeneration: false` says the model is no image model at
+            // all, and an edit-only model declares
+            // `modalityCapabilities: ["image.edit"]` instead.
             Some("image-edit") => (!image_opt_out).then_some(vec!["image.edit".to_owned()]),
             // `chat`, `other` and an absent or `model` kind are neutral about
             // generation: the output and the id speak here.
@@ -876,12 +876,14 @@ impl ProviderModel {
                         || field("imageGeneration") == Some(&serde_json::Value::Bool(true))
                         || output == ["image"];
                     if image {
-                        operations.extend(image_operations(true));
+                        operations.extend(image_operations());
                     }
                 }
-                // The `minimax-h3` family reads the same whole words the
-                // adapter router's families read; `minimax-h3max` names no
-                // h3 word, and the `image` variants are image models.
+                // Recognition reads its own whole-word table: it shares no
+                // family table with the adapter routing, and the two layers
+                // can disagree — a recognized seedance video stays refused
+                // there. `minimax-h3max` names no h3 word, and the `image`
+                // variants are image models.
                 let minimax_h3 = in_word_family(&self.id, "minimax")
                     && in_word_family(&self.id, "h3")
                     && !in_word_family(&self.id, "image");

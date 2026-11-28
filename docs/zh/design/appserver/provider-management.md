@@ -645,8 +645,9 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 它自己的规则回答，任何输出、id 或 `imageGeneration` 标记都不会为它加上与之矛盾的用途：带着陈旧图像标记的
 转写条目只做转写，类型为 `image-generation` 而输出为视频的网关条目在其声明修正之前不提供任何操作。只有
 会话型或未指定的类型（`chat`、`other` 或无 `type`）对生成用途是中性的，输出与 id 只在那里说话：唯一输出为
-`video`、或 id 属于 `seedance` 词族、或同时带有 `minimax` 与 `h3` 两个整词而不带 `image`——与适配器路由读的
-是同一套整词词族，所以 `seedancechat` 不属于任何词族，`minimax-h3-image` 是图像模型——时声明
+`video`、或 id 属于 `seedance` 词族、或同时带有 `minimax` 与 `h3` 两个整词而不带 `image`——这套整词识别只服务于识别
+自己，不与适配器路由共用族表，两层可以不一致，被识别的 seedance 视频在路由一侧仍然被拒绝；`seedancechat`
+不属于任何词族，`minimax-h3-image` 是图像模型——时声明
 `video.generate`；唯一输出为 `audio` 时声明 `speech.synthesize`。中性类型下，id 是已知图像模型之一
 （`arcship-image`、`gpt-image-2` 和 `grok-imagine-image` 系列中的已知 ID）或包含 `seedream`、或 `imageGeneration`
 为 true、或唯一输出为 `image` 的条目被识别为图像模型，始终以退出声明为准。这样的模型声明
