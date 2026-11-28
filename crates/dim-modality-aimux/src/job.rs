@@ -47,8 +47,41 @@ fn milliseconds(seconds: f64) -> i64 {
     (seconds * 1000.0).round() as i64
 }
 
+/// The inline format the compatible image binding asks its gateway for by
+/// default, and the only `response_format` an image job may carry on it:
+/// the package reads `data[].b64_json` alone.
+pub(crate) const INLINE_FORMAT: &str = "b64_json";
+
+/// Whether an image job's caller-chosen response format is one the binding
+/// can consume. A caller's `response_format` on the compatible binding is
+/// refused unless it names the inline format itself: any other answer — `url`
+/// above all — is a shape the package cannot read, so the refusal happens
+/// before the request rather than after a billed generation.
+pub(crate) fn check_image_response_format(
+    job: &Job,
+    binding: &Binding,
+) -> Result<(), AdapterError> {
+    if binding.package != crate::vendor::Package::OpenaiCompatible {
+        return Ok(());
+    }
+    let options = provider_options(&job.params, binding);
+    let Some(value) = options
+        .get(binding.options)
+        .and_then(|object| object.get("response_format"))
+    else {
+        return Ok(());
+    };
+    if value.as_str() == Some(INLINE_FORMAT) {
+        return Ok(());
+    }
+    Err(AdapterError::invalid_input(format!(
+        "`response_format` may only request the inline format on this binding: the compatible package reads `data[].{INLINE_FORMAT}` alone"
+    )))
+}
+
 /// One image call's options.
 pub fn image_options(job: &Job, binding: &Binding) -> Result<ImageCallOptions, AdapterError> {
+    check_image_response_format(job, binding)?;
     let params = &job.params;
     let mut options = ImageCallOptions::new(text(params, "prompt").unwrap_or_default());
     if binding.no_retry {
@@ -78,12 +111,12 @@ pub fn image_options(job: &Job, binding: &Binding) -> Result<ImageCallOptions, A
     // The compatible fallback's package reads inline bytes alone, so the
     // binding asks its gateway for them by default: the field travels in the
     // provider options the package forwards, and a caller's own
-    // `response_format` wins over the default. Model ids that answer inline
-    // bytes without the field send nothing (the OpenAI package's rule); the
-    // relay never reaches here because its image binding is the openai one,
-    // which asks on its own. A gateway that ignores the field and answers
-    // `data[].url` alone stays unreadable: the upstream package has no
-    // download for it.
+    // `response_format` — the inline format alone passes the check above —
+    // wins over the default. Model ids that answer inline bytes without the
+    // field send nothing (the OpenAI package's rule); the relay never
+    // reaches here because its image binding is the openai one, which asks
+    // on its own. A gateway that ignores the field and answers `data[].url`
+    // alone stays unreadable: the upstream package has no download for it.
     if binding.package == crate::vendor::Package::OpenaiCompatible
         && !crate::vendor::answers_inline_bytes_by_default(&job.model.model_id)
     {
@@ -92,7 +125,7 @@ pub fn image_options(job: &Job, binding: &Binding) -> Result<ImageCallOptions, A
             .entry(binding.options.to_owned())
             .or_default()
             .entry("response_format")
-            .or_insert(Value::String("b64_json".into()));
+            .or_insert(Value::String(INLINE_FORMAT.into()));
     }
     let mut files = Vec::new();
     for file in &job.files {

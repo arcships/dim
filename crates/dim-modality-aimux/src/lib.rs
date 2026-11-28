@@ -231,6 +231,9 @@ impl ModalityAdapter for MediaAdapter {
                     job.model.provider_id, job.model.model_id
                 )));
             }
+            if kind == Operation::Image {
+                job::check_image_response_format(&job, &binding)?;
+            }
             if kind != Operation::Video {
                 self.keep(job, Instant::now());
                 return Ok(Submitted::default());
@@ -291,16 +294,17 @@ impl ModalityAdapter for MediaAdapter {
             let secrets = Secrets::of(&connection);
             match kind_of(&job)? {
                 Operation::Image => {
-                    progress.send(AdapterProgress {
-                        fraction: None,
-                        message: Some("Generating the image".into()),
-                    });
                     let binding = vendor::binding(
                         &job.model.provider_id,
                         &job.model.model_id,
                         Some(connection.protocol),
                         Operation::Image,
                     )?;
+                    job::check_image_response_format(&job, &binding)?;
+                    progress.send(AdapterProgress {
+                        fraction: None,
+                        message: Some("Generating the image".into()),
+                    });
                     let provider = media::provider(
                         &connection,
                         &binding,

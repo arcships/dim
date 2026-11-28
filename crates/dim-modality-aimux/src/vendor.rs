@@ -3,13 +3,18 @@
 //!
 //! One row per bundled catalog provider that declares a media operation and
 //! that an aimux vendor package serves, resolved by the record's own id
-//! first. A provider whose id names no row — a created provider's UUID, or
-//! the Dim account relay — resolves by the protocol its media model routes
-//! to (Modality A.2): the OpenAI-compatible family serves video generation
-//! through the openai-compatible package and image generation and edit, and
-//! speech and transcription, through the OpenAI one. A model that routes to
-//! another protocol family, or the family a row does not serve, reports
-//! `adapter`.
+//! first. A provider whose id names no row falls back to the family only
+//! when the whitelist admits it (Modality A.2): a created provider's
+//! canonical lowercase UUID, the Dim account relay, and the two aggregator
+//! gateways this build carries contract tests for (`aihubmix`, `zenmux`).
+//! Every other rowless bundled id reports `adapter`: the vendor documented
+//! neither the endpoints nor the response shape the compatible package can
+//! consume. The whitelist itself resolves by the protocol its media model
+//! routes to (Modality A.2): the OpenAI-compatible family serves video
+//! generation through the openai-compatible package and image generation and
+//! edit, and speech and transcription, through the OpenAI one. A model that
+//! routes to another protocol family, or the family a row does not serve,
+//! reports `adapter`.
 //!
 //! `kinds` is read from each package's `Provider` implementation, not from its
 //! files: xAI ships an image model file whose `image_model` answers
@@ -359,39 +364,20 @@ pub fn vendor(provider_id: &str) -> Option<&'static Vendor> {
     VENDORS.iter().find(|vendor| vendor.catalog == provider_id)
 }
 
-/// The bundled vendor-role catalog providers whose media models no aimux
-/// package serves: they carry the `openai-compatible` placeholder driver
-/// kind, so their ids would pass for a created provider's compatible family
-/// if the family fallback did not name them. Extracted from
-/// `crates/dim-app-server/resources/default-catalog.json`; a new bundled
-/// entry of this shape joins the table until its package arrives.
-static BUNDLED_WITHOUT_ROWS: &[&str] = &[
-    "adobe-firefly",
-    "alibaba-dashscope",
-    "amazon-speech",
-    "beatoven",
-    "bytedance",
-    "d-id",
-    "fish-audio",
-    "heygen",
-    "ibm-watson-speech",
-    "ideogram",
-    "mubert",
-    "musicapi-ai",
-    "pika",
-    "pixverse",
-    "playht",
-    "reve-ai",
-    "sarvam-ai",
-    "soniox",
-    "speechmatics",
-    "step-plan",
-    "stepfun",
-    "suno",
-    "synthesia",
-    "tavus",
-    "vidu",
-];
+/// Whether a rowless provider may use the compatible family fallback
+/// (Modality A.2): a created provider's canonical lowercase UUID, the Dim
+/// account relay, and the two aggregator gateways this build carries
+/// contract tests for. Every other rowless bundled id is refused: the
+/// vendors behind them document neither the endpoints nor the response
+/// shapes the compatible packages can consume, so listing them available
+/// would send requests whose results cannot be read.
+fn eligible_for_fallback(provider_id: &str) -> bool {
+    uuid::Uuid::parse_str(provider_id)
+        .is_ok_and(|id| id.to_string() == provider_id)
+        || provider_id == "dimcode-api-oauth"
+        || provider_id == "aihubmix"
+        || provider_id == "zenmux"
+}
 
 use dim_agent_types::in_word_family;
 
@@ -405,11 +391,22 @@ fn is_ark_video_model(model_id: &str) -> bool {
 
 /// Whether the model id names the Seedream image word family (`seedream`,
 /// `doubao-seedream`). A Seedream endpoint answers image URLs by default, and
-/// the compatible package reads inline `b64_json` alone, so the compatible
+/// the compatible package reads inline bytes alone, so the compatible
 /// binding cannot execute these models; they are refused until the per-model
 /// route exists.
 fn is_seedream_image_model(model_id: &str) -> bool {
     in_word_family(model_id, "seedream")
+}
+
+/// Whether the model id names the MiniMax H3 image family: the `minimax`,
+/// `h3` and `image` words all present. The MiniMax image API answers
+/// `data[].url` alone (https://platform.minimax.io/docs/api-reference/image-generation),
+/// which the compatible package cannot read either, so these models are
+/// refused the same way the Seedream family is.
+fn is_minimax_h3_image_model(model_id: &str) -> bool {
+    in_word_family(model_id, "minimax")
+        && in_word_family(model_id, "h3")
+        && in_word_family(model_id, "image")
 }
 
 /// Whether the model id answers inline bytes without being asked. aimux's
@@ -482,36 +479,40 @@ impl Vendor {
 /// A provider whose id names a vendor row resolves to it whatever the
 /// protocol says (Modality A.2): the row is its own package's decision, and
 /// xAI's providers route `openai-compatible` while serving their video
-/// through the xAI one. Only a rowless provider — a created one's UUID, or
-/// the Dim account relay — falls back to the family, and only the
-/// OpenAI-compatible family carries media at all: video generation and
-/// image generation and edit go to the openai-compatible package, and
-/// speech and transcription to the OpenAI one, which is the only aimux
-/// package that serves them for this family. The relay's image generation
-/// is the one exception: its gateway answers the OpenAI Image API itself,
-/// so it stays on the OpenAI package with its image create never retried.
-/// The compatible image binding asks its gateway for the same inline bytes
-/// by default — the call sends `response_format` through the provider
-/// options, a caller's own value wins, and the id prefixes the OpenAI
-/// package omits the field for send nothing — so a gateway that honors the
-/// field answers bytes instead of the default URL shape. `None` is
-/// startup recovery's answer for a route it cannot re-read: the family
-/// answers as the compatible one would, and a route that no longer matches
-/// is the call's own failure.
+/// through the xAI one. A rowless provider falls back to the family only
+/// when the whitelist admits it — a created provider's canonical lowercase
+/// UUID, the Dim account relay, or one of the two aggregator gateways this
+/// build carries contract tests for (`aihubmix`, `zenmux`); every other
+/// rowless bundled id reports `adapter`, because the vendors behind them
+/// document neither the endpoints nor the response shapes the compatible
+/// packages can consume. Only the OpenAI-compatible family carries media at
+/// all: video generation and image generation and edit go to the
+/// openai-compatible package, and speech and transcription to the OpenAI
+/// one, which is the only aimux package that serves them for this family.
+/// The relay's image generation is the one exception: its gateway answers
+/// the OpenAI Image API itself, so it stays on the OpenAI package with its
+/// image create never retried. The compatible image binding asks its gateway
+/// for inline bytes by default — the call sends `response_format` through
+/// the provider options, the inline format is the one value a caller's own
+/// `response_format` may carry, and the id prefixes the OpenAI package omits
+/// the field for send nothing — so a gateway that honors the field answers
+/// bytes instead of the default URL shape. `None` is startup recovery's
+/// answer for a route it cannot re-read: the family answers as the
+/// compatible one would, and a route that no longer matches is the call's
+/// own failure.
 ///
-/// Three exclusions narrow the fallback. A bundled vendor-role provider whose
-/// media models no package serves ([`BUNDLED_WITHOUT_ROWS`]) carries the
-/// `openai-compatible` placeholder driver kind for its chat models alone:
-/// it is not a created provider, and its media models stay unserved rather
-/// than answering generic endpoints the vendor never documented. A video
-/// model whose id names the Ark word family (`seedance`, `doubao-seedance`)
-/// is refused: the Ark video API is a different route from the compatible
+/// Three word-family exclusions narrow the fallback further. A video model
+/// whose id names the Ark word family (`seedance`, `doubao-seedance`) is
+/// refused: the Ark video API is a different route from the compatible
 /// family's `/videos`, and the per-model binding that serves it is a later
-/// slice (#1927). And an image model whose id names the Seedream word family
+/// slice (#1927). An image model whose id names the Seedream word family
 /// (`seedream`, `doubao-seedream`) is refused by the generic fallback alone —
 /// the relay stays on the OpenAI package — because a Seedream endpoint
 /// answers image URLs by default while the compatible package reads inline
-/// `b64_json` alone, and the per-model binding is the same later slice.
+/// bytes alone, and the per-model binding is the same later slice. And an
+/// image model whose id names the MiniMax H3 image family (`minimax`, `h3`
+/// and `image` as words) is refused the same way: its documented response
+/// is `data[].url` alone, which the compatible package cannot read either.
 pub fn binding(
     provider_id: &str,
     model_id: &str,
@@ -532,7 +533,7 @@ pub fn binding(
             )))
         };
     }
-    if BUNDLED_WITHOUT_ROWS.contains(&provider_id) {
+    if !eligible_for_fallback(provider_id) {
         return Err(dim_modality::AdapterError::unavailable(format!(
             "The {provider_id} provider serves no {}",
             statement(operation)
@@ -552,7 +553,9 @@ pub fn binding(
             format: Some("outputFormat"),
             no_retry: true,
         },
-        (true, Operation::Image) if is_seedream_image_model(model_id) => {
+        (true, Operation::Image)
+            if is_seedream_image_model(model_id) || is_minimax_h3_image_model(model_id) =>
+        {
             return Err(dim_modality::AdapterError::unavailable(format!(
                 "The `{model_id}` model's image generation needs its provider's own route"
             )));

@@ -1651,6 +1651,153 @@ async fn cataloged_seedream_image_entries_list_unavailable_with_the_adapter_reas
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cataloged_minimax_h3_image_entries_list_unavailable_with_the_adapter_reason() {
+    // zenmux carries the MiniMax H3 image rows as plain image-generation
+    // entries, and recognition infers image.generate and image.edit from
+    // them. The MiniMax image API's documented response is `data[].url`
+    // alone (https://platform.minimax.io/docs/api-reference/image-generation),
+    // which the compatible package cannot read — the same shape the seedream
+    // rows are refused for — so the entries list unavailable with the
+    // adapter reason and submit refuses them before any request. The video
+    // `minimax/minimax-h3` rows are a different family and stay served.
+    let stub = stub(0).await;
+    let home = home("catalog-minimax-image-availability");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "zenmux", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap();
+    let generate = image["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    for model_id in ["minimax/minimax-h3-image", "minimax/minimax-h3-image-highspeed"] {
+        let entry = generate["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == "zenmux" && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("zenmux/{model_id} is not an image option: {generate}"));
+        assert_eq!(
+            entry["available"], false,
+            "zenmux/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+    let gpt_image = generate["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["providerId"] == "zenmux" && option["modelId"] == "openai/gpt-image-2")
+        .unwrap_or_else(|| panic!("zenmux/openai/gpt-image-2 is not an image option: {generate}"));
+    assert_eq!(
+        gpt_image["available"], true,
+        "a whitelisted gateway's ordinary image entry stays available: {gpt_image}"
+    );
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model("zenmux", "minimax/minimax-h3-image")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the catalog minimax image submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn siliconflow_image_entries_list_unavailable_with_the_adapter_reason() {
+    // siliconflow is a rowless bundled id outside the fallback whitelist:
+    // its image entries — Kwai-Kolors/Kolors among them — list unavailable
+    // with the adapter reason whatever their response shapes are, and a
+    // submit is refused before any request. The catalog entries themselves
+    // keep their inferred operations; it is the binding that refuses them.
+    let stub = stub(0).await;
+    let home = home("siliconflow-image-availability");
+    let server = start_in(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    point_at_stub(&mut client, "siliconflow", &stub.base_url).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let image = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap();
+    let generate = image["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap()
+        .clone();
+    for model_id in ["Kwai-Kolors/Kolors", "Qwen/Qwen-Image", "black-forest-labs/FLUX.1-schnell"] {
+        let entry = generate["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["providerId"] == "siliconflow" && option["modelId"] == model_id)
+            .unwrap_or_else(|| panic!("siliconflow/{model_id} is not an image option: {generate}"));
+        assert_eq!(
+            entry["available"], false,
+            "siliconflow/{model_id} is unavailable: {entry}"
+        );
+        assert_eq!(
+            entry["reason"]["dimension"], "adapter",
+            "the refusal names the adapter: {entry}"
+        );
+    }
+
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            json!({"category": "image", "operation": "generate", "params": {"prompt": "a cat"},
+                "files": [], "model": model("siliconflow", "Kwai-Kolors/Kolors")}),
+        )
+        .await;
+    assert_eq!(
+        app_error(&refused),
+        "unavailable",
+        "the siliconflow image submit is refused before any request: {refused}"
+    );
+    assert!(
+        stub.starts("/v1/images/generations") == 0,
+        "no image generation reaches the gateway"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_non_whole_word_seedance_id_is_neither_listed_nor_submitted() {
     // Recognition and routing read the same whole-word families: a neutral
     // row whose id merely contains `seedance` names no family, so it declares
