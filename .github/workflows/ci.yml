@@ -15,10 +15,11 @@ concurrency:
 env:
   # CI only needs pass/fail; skipping debug info shortens compiling and linking.
   CARGO_PROFILE_DEV_DEBUG: "0"
-# Self-hosted runners reuse their workspace. A cancelled job can leave a
-# .git/*.lock file that fails the next checkout, so every self-hosted job clears
-# stale locks before its first checkout. One job runs per workspace at a time,
-# so a lock seen there is stale.
+# Self-hosted runners reuse their workspace. A cancelled checkout can leave
+# .git/config.lock from its temporary credential config and fail the next
+# checkout, so each self-hosted job clears that lock in its own checkout before
+# using it. A runner instance runs one job at a time in its own work directory;
+# do not run Git maintenance in a workspace that may accept a job.
 jobs:
   changes:
     # Pull requests run only the groups their paths need; scripts/ci-changes.mjs holds the rules.
@@ -44,16 +45,34 @@ jobs:
       dependencies: ${{ steps.groups.outputs.dependencies }}
       platforms: ${{ steps.groups.outputs.platforms }}
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: bash
         run: |
+          if [ -e "$GITHUB_WORKSPACE" ] || [ -L "$GITHUB_WORKSPACE" ]; then
+            if [ ! -d "$GITHUB_WORKSPACE" ] ||
+               [ ! -r "$GITHUB_WORKSPACE" ] ||
+               [ ! -x "$GITHUB_WORKSPACE" ]; then
+              echo "::error::Workspace is not a readable directory: $GITHUB_WORKSPACE" >&2
+              exit 1
+            fi
+          fi
           git_dir="$GITHUB_WORKSPACE/.git"
-          [ -d "$git_dir" ] || exit 0
-          find "$git_dir" -type f -name '*.lock' -delete || true
-          remaining=$(find "$git_dir" -type f -name '*.lock')
-          if [ -n "$remaining" ]; then
-            printf 'Stale git lock remains:\n%s\n' "$remaining" >&2
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          if [ ! -d "$git_dir" ] ||
+             [ ! -r "$git_dir" ] ||
+             [ ! -x "$git_dir" ]; then
+            echo "::error::Git metadata is not a readable directory: $git_dir" >&2
             exit 1
+          fi
+          lock_file="$git_dir/config.lock"
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            rm -f "$lock_file" || true
+            if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+              echo "::error::Stale git lock remains: $lock_file" >&2
+              exit 1
+            fi
           fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -83,16 +102,57 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: powershell
         run: |
-          $gitDir = Join-Path $env:GITHUB_WORKSPACE '.git'
-          if (-not (Test-Path -LiteralPath $gitDir)) { exit 0 }
-          Get-ChildItem -LiteralPath $gitDir -File -Filter *.lock -Recurse -Force |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-          $remaining = @(Get-ChildItem -LiteralPath $gitDir -File -Filter *.lock -Recurse -Force)
-          if ($remaining.Count -gt 0) {
-            $remaining | ForEach-Object { Write-Host "::error::Stale git lock remains: $($_.FullName)" }
+          $workspace = $env:GITHUB_WORKSPACE
+          try {
+            $workspaceItem = Get-Item -LiteralPath $workspace -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect workspace: $($_.Exception.Message)"
+            exit 1
+          }
+          if (-not $workspaceItem.PSIsContainer) {
+            Write-Host "::error::Workspace is not a directory: $workspace"
+            exit 1
+          }
+          $gitDir = Join-Path $workspace '.git'
+          try {
+            $gitItem = Get-Item -LiteralPath $gitDir -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect git metadata: $($_.Exception.Message)"
+            exit 1
+          }
+          if (-not $gitItem.PSIsContainer) {
+            Write-Host "::error::Git metadata is not a directory: $gitDir"
+            exit 1
+          }
+          try {
+            $null = Get-ChildItem -LiteralPath $gitDir -Force -ErrorAction Stop
+          } catch {
+            Write-Host "::error::Cannot read git metadata: $($_.Exception.Message)"
+            exit 1
+          }
+          $lockFile = Join-Path $gitDir 'config.lock'
+          try {
+            $lockItem = Get-Item -LiteralPath $lockFile -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect git lock: $($_.Exception.Message)"
+            exit 1
+          }
+          if ($lockItem.PSIsContainer) {
+            Write-Host "::error::Git lock path is a directory: $lockFile"
+            exit 1
+          }
+          Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $lockFile) {
+            Write-Host "::error::Stale git lock remains: $lockFile"
             exit 1
           }
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -116,16 +176,34 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: bash
         run: |
+          if [ -e "$GITHUB_WORKSPACE" ] || [ -L "$GITHUB_WORKSPACE" ]; then
+            if [ ! -d "$GITHUB_WORKSPACE" ] ||
+               [ ! -r "$GITHUB_WORKSPACE" ] ||
+               [ ! -x "$GITHUB_WORKSPACE" ]; then
+              echo "::error::Workspace is not a readable directory: $GITHUB_WORKSPACE" >&2
+              exit 1
+            fi
+          fi
           git_dir="$GITHUB_WORKSPACE/.git"
-          [ -d "$git_dir" ] || exit 0
-          find "$git_dir" -type f -name '*.lock' -delete || true
-          remaining=$(find "$git_dir" -type f -name '*.lock')
-          if [ -n "$remaining" ]; then
-            printf 'Stale git lock remains:\n%s\n' "$remaining" >&2
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          if [ ! -d "$git_dir" ] ||
+             [ ! -r "$git_dir" ] ||
+             [ ! -x "$git_dir" ]; then
+            echo "::error::Git metadata is not a readable directory: $git_dir" >&2
             exit 1
+          fi
+          lock_file="$git_dir/config.lock"
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            rm -f "$lock_file" || true
+            if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+              echo "::error::Stale git lock remains: $lock_file" >&2
+              exit 1
+            fi
           fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -150,16 +228,57 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../.dim-windows-cli-target
       RUSTC_WRAPPER: ""
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: powershell
         run: |
-          $gitDir = Join-Path $env:GITHUB_WORKSPACE '.git'
-          if (-not (Test-Path -LiteralPath $gitDir)) { exit 0 }
-          Get-ChildItem -LiteralPath $gitDir -File -Filter *.lock -Recurse -Force |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-          $remaining = @(Get-ChildItem -LiteralPath $gitDir -File -Filter *.lock -Recurse -Force)
-          if ($remaining.Count -gt 0) {
-            $remaining | ForEach-Object { Write-Host "::error::Stale git lock remains: $($_.FullName)" }
+          $workspace = $env:GITHUB_WORKSPACE
+          try {
+            $workspaceItem = Get-Item -LiteralPath $workspace -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect workspace: $($_.Exception.Message)"
+            exit 1
+          }
+          if (-not $workspaceItem.PSIsContainer) {
+            Write-Host "::error::Workspace is not a directory: $workspace"
+            exit 1
+          }
+          $gitDir = Join-Path $workspace '.git'
+          try {
+            $gitItem = Get-Item -LiteralPath $gitDir -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect git metadata: $($_.Exception.Message)"
+            exit 1
+          }
+          if (-not $gitItem.PSIsContainer) {
+            Write-Host "::error::Git metadata is not a directory: $gitDir"
+            exit 1
+          }
+          try {
+            $null = Get-ChildItem -LiteralPath $gitDir -Force -ErrorAction Stop
+          } catch {
+            Write-Host "::error::Cannot read git metadata: $($_.Exception.Message)"
+            exit 1
+          }
+          $lockFile = Join-Path $gitDir 'config.lock'
+          try {
+            $lockItem = Get-Item -LiteralPath $lockFile -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect git lock: $($_.Exception.Message)"
+            exit 1
+          }
+          if ($lockItem.PSIsContainer) {
+            Write-Host "::error::Git lock path is a directory: $lockFile"
+            exit 1
+          }
+          Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $lockFile) {
+            Write-Host "::error::Stale git lock remains: $lockFile"
             exit 1
           }
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -228,16 +347,57 @@ jobs:
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: powershell
         run: |
-          $gitDir = Join-Path $env:GITHUB_WORKSPACE '.git'
-          if (-not (Test-Path -LiteralPath $gitDir)) { exit 0 }
-          Get-ChildItem -LiteralPath $gitDir -File -Filter *.lock -Recurse -Force |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-          $remaining = @(Get-ChildItem -LiteralPath $gitDir -File -Filter *.lock -Recurse -Force)
-          if ($remaining.Count -gt 0) {
-            $remaining | ForEach-Object { Write-Host "::error::Stale git lock remains: $($_.FullName)" }
+          $workspace = $env:GITHUB_WORKSPACE
+          try {
+            $workspaceItem = Get-Item -LiteralPath $workspace -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect workspace: $($_.Exception.Message)"
+            exit 1
+          }
+          if (-not $workspaceItem.PSIsContainer) {
+            Write-Host "::error::Workspace is not a directory: $workspace"
+            exit 1
+          }
+          $gitDir = Join-Path $workspace '.git'
+          try {
+            $gitItem = Get-Item -LiteralPath $gitDir -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect git metadata: $($_.Exception.Message)"
+            exit 1
+          }
+          if (-not $gitItem.PSIsContainer) {
+            Write-Host "::error::Git metadata is not a directory: $gitDir"
+            exit 1
+          }
+          try {
+            $null = Get-ChildItem -LiteralPath $gitDir -Force -ErrorAction Stop
+          } catch {
+            Write-Host "::error::Cannot read git metadata: $($_.Exception.Message)"
+            exit 1
+          }
+          $lockFile = Join-Path $gitDir 'config.lock'
+          try {
+            $lockItem = Get-Item -LiteralPath $lockFile -Force -ErrorAction Stop
+          } catch [System.Management.Automation.ItemNotFoundException] {
+            exit 0
+          } catch {
+            Write-Host "::error::Cannot inspect git lock: $($_.Exception.Message)"
+            exit 1
+          }
+          if ($lockItem.PSIsContainer) {
+            Write-Host "::error::Git lock path is a directory: $lockFile"
+            exit 1
+          }
+          Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $lockFile) {
+            Write-Host "::error::Stale git lock remains: $lockFile"
             exit 1
           }
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -270,16 +430,34 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: bash
         run: |
+          if [ -e "$GITHUB_WORKSPACE" ] || [ -L "$GITHUB_WORKSPACE" ]; then
+            if [ ! -d "$GITHUB_WORKSPACE" ] ||
+               [ ! -r "$GITHUB_WORKSPACE" ] ||
+               [ ! -x "$GITHUB_WORKSPACE" ]; then
+              echo "::error::Workspace is not a readable directory: $GITHUB_WORKSPACE" >&2
+              exit 1
+            fi
+          fi
           git_dir="$GITHUB_WORKSPACE/.git"
-          [ -d "$git_dir" ] || exit 0
-          find "$git_dir" -type f -name '*.lock' -delete || true
-          remaining=$(find "$git_dir" -type f -name '*.lock')
-          if [ -n "$remaining" ]; then
-            printf 'Stale git lock remains:\n%s\n' "$remaining" >&2
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          if [ ! -d "$git_dir" ] ||
+             [ ! -r "$git_dir" ] ||
+             [ ! -x "$git_dir" ]; then
+            echo "::error::Git metadata is not a readable directory: $git_dir" >&2
             exit 1
+          fi
+          lock_file="$git_dir/config.lock"
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            rm -f "$lock_file" || true
+            if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+              echo "::error::Stale git lock remains: $lock_file" >&2
+              exit 1
+            fi
           fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -312,16 +490,34 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: bash
         run: |
+          if [ -e "$GITHUB_WORKSPACE" ] || [ -L "$GITHUB_WORKSPACE" ]; then
+            if [ ! -d "$GITHUB_WORKSPACE" ] ||
+               [ ! -r "$GITHUB_WORKSPACE" ] ||
+               [ ! -x "$GITHUB_WORKSPACE" ]; then
+              echo "::error::Workspace is not a readable directory: $GITHUB_WORKSPACE" >&2
+              exit 1
+            fi
+          fi
           git_dir="$GITHUB_WORKSPACE/.git"
-          [ -d "$git_dir" ] || exit 0
-          find "$git_dir" -type f -name '*.lock' -delete || true
-          remaining=$(find "$git_dir" -type f -name '*.lock')
-          if [ -n "$remaining" ]; then
-            printf 'Stale git lock remains:\n%s\n' "$remaining" >&2
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          if [ ! -d "$git_dir" ] ||
+             [ ! -r "$git_dir" ] ||
+             [ ! -x "$git_dir" ]; then
+            echo "::error::Git metadata is not a readable directory: $git_dir" >&2
             exit 1
+          fi
+          lock_file="$git_dir/config.lock"
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            rm -f "$lock_file" || true
+            if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+              echo "::error::Stale git lock remains: $lock_file" >&2
+              exit 1
+            fi
           fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -511,16 +707,34 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: bash
         run: |
+          if [ -e "$GITHUB_WORKSPACE" ] || [ -L "$GITHUB_WORKSPACE" ]; then
+            if [ ! -d "$GITHUB_WORKSPACE" ] ||
+               [ ! -r "$GITHUB_WORKSPACE" ] ||
+               [ ! -x "$GITHUB_WORKSPACE" ]; then
+              echo "::error::Workspace is not a readable directory: $GITHUB_WORKSPACE" >&2
+              exit 1
+            fi
+          fi
           git_dir="$GITHUB_WORKSPACE/.git"
-          [ -d "$git_dir" ] || exit 0
-          find "$git_dir" -type f -name '*.lock' -delete || true
-          remaining=$(find "$git_dir" -type f -name '*.lock')
-          if [ -n "$remaining" ]; then
-            printf 'Stale git lock remains:\n%s\n' "$remaining" >&2
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          if [ ! -d "$git_dir" ] ||
+             [ ! -r "$git_dir" ] ||
+             [ ! -x "$git_dir" ]; then
+            echo "::error::Git metadata is not a readable directory: $git_dir" >&2
             exit 1
+          fi
+          lock_file="$git_dir/config.lock"
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            rm -f "$lock_file" || true
+            if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+              echo "::error::Stale git lock remains: $lock_file" >&2
+              exit 1
+            fi
           fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -547,17 +761,38 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
-      - name: Clear stale git locks
+      - name: Clear stale git config lock
         shell: bash
         run: |
-          git_dir="$GITHUB_WORKSPACE/.git"
-          [ -d "$git_dir" ] || exit 0
-          find "$git_dir" -type f -name '*.lock' -delete || true
-          remaining=$(find "$git_dir" -type f -name '*.lock')
-          if [ -n "$remaining" ]; then
-            printf 'Stale git lock remains:\n%s\n' "$remaining" >&2
-            exit 1
+          if [ -e "$GITHUB_WORKSPACE" ] || [ -L "$GITHUB_WORKSPACE" ]; then
+            if [ ! -d "$GITHUB_WORKSPACE" ] ||
+               [ ! -r "$GITHUB_WORKSPACE" ] ||
+               [ ! -x "$GITHUB_WORKSPACE" ]; then
+              echo "::error::Workspace is not a readable directory: $GITHUB_WORKSPACE" >&2
+              exit 1
+            fi
           fi
+          for git_dir in \
+            "$GITHUB_WORKSPACE/.git" \
+            "$GITHUB_WORKSPACE/.acp-registry/.git"; do
+            if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+              continue
+            fi
+            if [ ! -d "$git_dir" ] ||
+               [ ! -r "$git_dir" ] ||
+               [ ! -x "$git_dir" ]; then
+              echo "::error::Git metadata is not a readable directory: $git_dir" >&2
+              exit 1
+            fi
+            lock_file="$git_dir/config.lock"
+            if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+              rm -f "$lock_file" || true
+              if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+                echo "::error::Stale git lock remains: $lock_file" >&2
+                exit 1
+              fi
+            fi
+          done
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
