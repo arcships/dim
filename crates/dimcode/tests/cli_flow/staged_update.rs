@@ -1030,7 +1030,6 @@ mod recovery {
         }
         let mut terminal = Terminal::launch_tui(command);
         let shown = format!("Store format: v{future}");
-        terminal.until_plain(&shown);
         let status = terminal.wait();
         let output = strip_ansi(&terminal.transcript);
         assert!(
