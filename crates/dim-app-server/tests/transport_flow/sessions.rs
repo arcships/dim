@@ -2383,7 +2383,7 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
     server.join().await.unwrap();
 }
 
-#[path = "../../src/agents/sessions/tests/deferred_inputs.rs"]
+#[path = "sessions/deferred_inputs.rs"]
 mod deferred_inputs;
 use deferred_inputs::DeferredInputs;
 

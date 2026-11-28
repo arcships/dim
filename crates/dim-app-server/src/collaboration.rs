@@ -179,6 +179,10 @@ pub(crate) struct CollaborationDirectory {
     ///
     /// [#2227]: https://github.com/arcships/dim/pull/2227
     member_stops: Mutex<BTreeMap<String, MemberStop>>,
+    /// Leader inputs still to write, by submission id. An approval's
+    /// terminal input written while Agents reloads is refused, so it is
+    /// recorded here and the next generation writes it on load.
+    leader_writes: Mutex<BTreeMap<String, LeaderWrite>>,
     /// Member stops a generation carried out from a record an earlier one
     /// left. Feature `testing` only.
     #[cfg(feature = "testing")]
@@ -198,6 +202,15 @@ struct MemberStop {
     line: String,
     input: String,
     reason: String,
+}
+
+/// One input to write on a leader's line. Its submission id keys the record,
+/// so a write that reached the line before a reload is not written twice.
+#[derive(Clone)]
+struct LeaderWrite {
+    session_id: String,
+    line: String,
+    input: dim_agent_types::InputMessageData,
 }
 
 /// How a member stop ended.
@@ -471,6 +484,63 @@ impl Collaboration {
                 tracing::warn!(member = %member, %error, "a member stop could not be carried out");
             }
         });
+    }
+
+    /// Writes `input` on a leader's line. A write refused because Agents
+    /// reloads is recorded, and the next generation writes it on load
+    /// ([`Self::carry_out_leader_write`]).
+    async fn write_across_reloads(
+        &self,
+        session: &Session,
+        line: &str,
+        input: dim_agent_types::InputMessageData,
+    ) {
+        let Some(key) = input.submission_id.clone() else {
+            let _ = line_input(self.sessions.as_ref(), session, line, input).await;
+            return;
+        };
+        self.directory.leader_writes.lock().unwrap().insert(
+            key.clone(),
+            LeaderWrite {
+                session_id: session.id().to_owned(),
+                line: line.to_owned(),
+                input,
+            },
+        );
+        self.carry_out_leader_write(&key).await;
+    }
+
+    /// Writes one recorded leader input. The record ends unless Agents
+    /// reloads under the write.
+    async fn carry_out_leader_write(&self, key: &str) {
+        let Some(write) = self
+            .directory
+            .leader_writes
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+        else {
+            return;
+        };
+        let result = match self.index.session(&write.session_id) {
+            Some((_, session)) => {
+                line_input(self.sessions.as_ref(), &session, &write.line, write.input).await
+            }
+            None => Err(AgentError::Closed(write.session_id.clone())),
+        };
+        match result {
+            Err(AgentError::Reloading(_)) => {}
+            outcome => {
+                self.directory.leader_writes.lock().unwrap().remove(key);
+                // A leader that closed has no line to write on.
+                if let Err(error) = outcome
+                    && !matches!(error, AgentError::Closed(_))
+                {
+                    tracing::warn!(session = %write.session_id, %error, "a leader input could not be written");
+                }
+            }
+        }
     }
 }
 
@@ -1063,6 +1133,22 @@ impl DynPlugin for CollaborationPlugin {
                         ),
                     }
                 });
+            }
+            // A leader input the previous generation could not write is
+            // written by this one.
+            let writes: Vec<String> = service
+                .directory
+                .leader_writes
+                .lock()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            for key in writes {
+                let resumed = service.clone();
+                service
+                    .tasks
+                    .spawn(async move { resumed.carry_out_leader_write(&key).await });
             }
             ctx.provide_as::<Collaboration>(service)?;
             use dim_agent_runtime::PartScope;
@@ -2208,7 +2294,9 @@ impl CollaborationSession {
                     .delivered_branch(&data.session_id)
                     .or_else(|| peer.session.default_branch().ok())
                 {
-                    let _ = line_call(
+                    // A stop refused because Agents reloads did not run: the
+                    // delivery is refused rather than reported done.
+                    if let Err(AgentError::Reloading(_)) = line_call(
                         self.collaboration.sessions.as_ref(),
                         &peer.session,
                         &line,
@@ -2216,7 +2304,10 @@ impl CollaborationSession {
                         "stop",
                         vec![serde_json::json!(CANCELLED)],
                     )
-                    .await;
+                    .await
+                    {
+                        return Err(Refusal::Closed.into());
+                    }
                 }
                 Ok(delivered(&peer, None, Some(cancel)))
             }
@@ -2230,7 +2321,9 @@ impl CollaborationSession {
                     .delivered_branch(&data.session_id)
                     .or_else(|| peer.session.default_branch().ok())
                 {
-                    let _ = line_call(
+                    // A stop refused because Agents reloads did not run: the
+                    // delivery is refused rather than reported done.
+                    if let Err(AgentError::Reloading(_)) = line_call(
                         self.collaboration.sessions.as_ref(),
                         &peer.session,
                         &line,
@@ -2238,7 +2331,10 @@ impl CollaborationSession {
                         "stop",
                         vec![serde_json::json!(CANCELLED)],
                     )
-                    .await;
+                    .await
+                    {
+                        return Err(Refusal::Closed.into());
+                    }
                 }
                 if let Some(mut done) = working {
                     let abort = self.with_abort(branch_id);
