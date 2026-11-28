@@ -138,7 +138,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | `toolHost` | `execute(call, caller, cancelled)` | ToolDriver、工具声明 |
 | `approval` | `pending()`、`decide(requestId, decision)` | 待处理请求、批次准入 |
 | `permission` | `check(call, risk, cancelled)` | 预设、权限状态、advisor |
-| `inputQueue` | `submit(input)`、`withdraw(command)` | 排序、恢复、InputSnapshot |
+| `inputQueue` | `withdraw(command)` | 排序、恢复、InputSnapshot |
 | `wait` | `wait(taskId, timeoutMs, cancelled)` | 到达记录、单次等待槽 |
 
 形状与错误见所有者：[Permission](../architecture/rust-agent/plugins/Permission.md#permission-data-face)、

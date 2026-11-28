@@ -7,9 +7,9 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
-    BranchRefusal, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison, QueryFilter,
-    QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result,
-    SessionIdentity, StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineFactory,
+    BranchRefusal, BranchRuntime, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison,
+    QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
+    QueryValue, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline, TimelineFactory,
     TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
     TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
@@ -310,7 +310,7 @@ struct Node {
     info: TimelineInfo,
     opening_idle_notice: IdleNotice,
     /// The built branch, before and after publication.
-    context: Option<Arc<TimelineContext>>,
+    context: Option<Arc<BranchRuntime>>,
     ready: watch::Sender<Option<Result<Branch>>>,
     /// The sequence of the line's latest `turn/end`, 0 before the first.
     turn_end: watch::Sender<u64>,
@@ -653,7 +653,7 @@ impl TreeCommands {
     /// The head a read of `id` ends at: fixed once ended, published while
     /// open.
     #[service(skip)]
-    fn head(&self, id: &str) -> Option<u64> {
+    pub fn head(&self, id: &str) -> Option<u64> {
         self.tree.upgrade()?.head(id)
     }
     /// Checks that `sequence` ends an atomic batch of line `id`, forwarding to
@@ -1182,7 +1182,7 @@ impl TimelineTree {
             admitted: tokio::sync::Notify::new(),
         })
     }
-    fn owned_context(&self, id: &str) -> Option<Arc<TimelineContext>> {
+    fn owned_context(&self, id: &str) -> Option<Arc<BranchRuntime>> {
         self.state
             .lock()
             .unwrap()
@@ -1923,7 +1923,7 @@ impl TimelineTree {
     /// guards are the target's alone: the root, a line that already ended, a
     /// line still opening, the current default branch, and every ancestor of
     /// it, because ending a line ends every line below it (design §10).
-    fn end_admission(&self, id: &str) -> Result<Arc<TimelineContext>> {
+    fn end_admission(&self, id: &str) -> Result<Arc<BranchRuntime>> {
         let state = self.state.lock().unwrap();
         if state.closing {
             return Err(AgentError::Closed("TimelineTree".into()));

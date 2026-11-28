@@ -236,7 +236,7 @@ async fn gone_and_failed_deliveries_change_the_subscriptions() {
     let receipt = producer.publish(im_event("gone")).await.unwrap();
     let delivery = delivery_for(&receipt, &ended);
     assert_eq!(delivery["status"], json!("gone"), "{receipt}");
-    assert_eq!(delivery["code"], json!("branch_ended"), "{receipt}");
+    assert_eq!(delivery["code"], json!("branch_missing"), "{receipt}");
     assert_eq!(delivery["branchId"], json!(child), "{receipt}");
     assert!(listed(&mut client, &ended).await.is_empty());
 
@@ -360,7 +360,7 @@ async fn subscribing_writes_and_retires_the_sources_guide() {
         )
         .await
         .unwrap_err();
-    assert_eq!(dim_client::app_error(&error), Some("branch_ended"));
+    assert_eq!(dim_client::app_error(&error), Some("branch_missing"));
     assert!(listed(&mut client, &ended).await.is_empty());
 
     // Unsubscribing the last subscription of the source retires its guide.

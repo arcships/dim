@@ -11,6 +11,7 @@ use dim_agent_capabilities::{
     workspace_tools::WorkspaceToolsConfig,
 };
 use dim_agent_runtime::Feature;
+use dim_agent_runtime::SessionLines;
 use dim_app_server::{
     managed_provider::{
         AccountSnapshot, AccountView, CredentialLease, LeaseOwner, ManagedCatalog, ManagedError,

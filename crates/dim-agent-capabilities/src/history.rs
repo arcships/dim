@@ -1,8 +1,8 @@
 use crate::prompt_state::PromptSnapshot;
 use dim_agent_runtime::{
     AgentError, ContextHistory, QueryCursor, QueryEvent, QueryFilter, QueryOperand, QueryOutput,
-    QueryPage, QuerySelect, QuerySpec, QueryValue, Session, Timeline, TimelineQuery,
-    TimelineQueryReply, TimelineQueryScope,
+    QueryPage, QuerySelect, QuerySpec, QueryValue, Timeline, TimelineQuery, TimelineQueryReply,
+    TimelineQueryScope,
 };
 use dim_agent_types::*;
 use serde::{Deserialize, Serialize};
@@ -108,15 +108,6 @@ impl<'a> FoldRead<'a> {
             exhausted: sequence > through,
             ..Self::new(ContextReads::Timeline(timeline), None, through)
         }
-    }
-
-    pub(crate) fn in_session(
-        session: &'a Session,
-        branch: &'a str,
-        begin: Option<String>,
-        through: u64,
-    ) -> Self {
-        Self::new(ContextReads::Session(session, branch), begin, through)
     }
 
     pub(crate) fn tail(mut self) -> Self {
@@ -784,33 +775,7 @@ pub struct StreamedContext {
     pub compaction_cut: Option<dim_agent_types::TimelinePosition>,
 }
 
-impl HistoryRenderer {
-    /// [`Self::replay_context`] through the Session facade, for callers that do not hold
-    /// the branch's Timeline. A Session exposes no recovery snapshot, so the fold
-    /// begins at the chain's start, and the branches it covered are the ones the
-    /// reply placed facts in.
-    pub async fn context_in(
-        &self,
-        session: &Session,
-        branch: &str,
-        through: u64,
-    ) -> dim_agent_runtime::Result<ContextHistory> {
-        if through > session.sequence(branch)? {
-            return Err(AgentError::InvalidInput(format!(
-                "future timeline sequence {through}"
-            )));
-        }
-        let mut context = FoldRead::in_session(session, branch, None, through)
-            .collect(None, Vec::new())
-            .await?;
-        for position in &context.positions {
-            if context.ancestry.last() != Some(&position.branch_id) {
-                context.ancestry.push(position.branch_id.clone());
-            }
-        }
-        Ok(context)
-    }
-}
+impl HistoryRenderer {}
 
 /// One message an input or the projection places, with the in-effect
 /// state it changes: `Some((key, None))` ends a key.
@@ -1375,11 +1340,9 @@ pub fn fold_output_parts(parts: &mut Vec<MessagePart>, kind: &EventKind) -> Resu
 /// The event limit one page of a context fold asks for.
 const FOLD_PAGE: u64 = 256;
 
-/// The paged read a context fold takes: one branch's Timeline, or that branch
-/// through the Session facade.
+/// The paged read a context fold takes: one branch's Timeline.
 enum ContextReads<'a> {
     Timeline(&'a Timeline),
-    Session(&'a Session, &'a str),
 }
 
 impl ContextReads<'_> {
@@ -1459,13 +1422,11 @@ impl ContextReads<'_> {
     async fn batch_end(&self, through: u64) -> dim_agent_runtime::Result<()> {
         match self {
             Self::Timeline(timeline) => timeline.batch_end(through).await,
-            Self::Session(session, branch) => session.batch_end(branch, through).await,
         }
     }
     async fn query(&self, request: TimelineQuery) -> dim_agent_runtime::Result<TimelineQueryReply> {
         match self {
             Self::Timeline(timeline) => timeline.query(request).await,
-            Self::Session(session, branch) => session.query(branch, request).await,
         }
     }
     /// The latest completed compaction at or below `through`, when its cut is
@@ -1580,7 +1541,6 @@ impl ContextReads<'_> {
     fn head(&self) -> dim_agent_runtime::Result<u64> {
         match self {
             Self::Timeline(timeline) => Ok(timeline.sequence()),
-            Self::Session(session, branch) => session.sequence(branch),
         }
     }
     /// One page of the branch's context events from `from`.
@@ -1620,7 +1580,6 @@ impl ContextReads<'_> {
     fn branch(&self) -> String {
         match self {
             Self::Timeline(timeline) => timeline.branch_id(),
-            Self::Session(_, branch) => (*branch).to_owned(),
         }
     }
 }
@@ -1694,16 +1653,6 @@ pub async fn validate_context_boundary_at(
     through: u64,
 ) -> dim_agent_runtime::Result<Result<(), String>> {
     boundary_at(ContextReads::Timeline(timeline), through).await
-}
-
-/// [`validate_context_boundary_at`] through the Session facade, for callers
-/// that do not hold the branch's Timeline.
-pub async fn validate_context_boundary_in(
-    session: &Session,
-    branch: &str,
-    through: u64,
-) -> dim_agent_runtime::Result<Result<(), String>> {
-    boundary_at(ContextReads::Session(session, branch), through).await
 }
 
 /// Completed output keeps all parts, including an empty assistant message.

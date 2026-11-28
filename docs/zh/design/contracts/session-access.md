@@ -1,10 +1,14 @@
 # Session 访问：Agents 与 Session 公共接口补充
 
+`timelineContext` 是线自己的数据面：进程调用方经
+`sessions.call({ sessionId, lineId, service: "timelineContext", method, args })` 到达
+（[ADR 027](../../adr/027-cross-scope-access-by-id.md)）。
+
 状态：草案。总体设计：[总览 §3 集成](../overview.md#3-基于现有机制的集成)、[附录 B Agents 与 InputQueue](../overview.md#附录-b-现有插件的补充)；规则：[ADR 002](../../adr/002-plugin-scope.md) D1–D3、D5。阶段：P0。语言：语言中立合同；Rust 绑定见[附录 E](#附录-e-rust-绑定)。
 
 > **离线资源节点。** 关于资源节点离线的各行描述的是 P3 多节点行为。#5 已撤回（rutis 是外部依赖，链接断开时会撤掉导入的服务），这些行在 P3 按总览 §6.3 重新设计：节点服务在每次调用时按 Session 的资源节点查找，该字段在 P3 加入 `SessionConfig`（[A.3](#a3-sessionconfig-字段)）。P1/P2 中每个 Session 都使用控制节点。
 
-进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`pending`、`stop`、`idle` 和 `delete`，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
+进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`exists`、`history`、`withdraw`、`pending`、`delete` 和 `call`；线上的输入、查找、停止与空闲是该线自己的操作，经 `call` 到达，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
 
 | 补充 | 所有者 | 使用方 |
 | --- | --- | --- |
@@ -148,17 +152,19 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | 接口 | 模式 | 用途 |
 | --- | --- | --- |
 | `sessions.launch(LaunchRequest) -> {sessionId, policy, worktree?}` | async | 为自动化创建非交互 Session，策略受上限约束 |
-| `sessions.input(InputWrite) -> {inputId, sequence}` | async | 写入带来源 raw 块的输入 |
-| `sessions.lookup({sessionId, branchId, submissionId}) -> LookupReply` | async | 在结果不确定后查找已提交的输入 |
+| `timelineContext.input(InputMessageData) -> InputWrite {event, written}` | async | 写入带来源 raw 块的输入；线已持有该 submission id 时 `written` 为 false，`event` 是第一条输入。回复不等待发布：接着读历史的调用方先调 `timelineContext.waitPublished(event.sequence)`。`submissionId` 可省略，给出时不能为空 |
+| `timelineContext.lookup(submissionId) -> BranchEvent \| null` | async | 在结果不确定后查找已提交的输入；等待它发布 |
 | `sessions.history(HistoryRequest) -> HistoryPage` | async | 读取历史，可选为以已发布 head 为界的固定前缀 |
 | `session.input.withdraw {sessionId, branchId, inputId, reason?}` | RPC | 客户端撤回；InputQueue 的 `sessionMethods`（命名空间 `session.input`） |
 | `sessions.withdraw(WithdrawRequest) -> WithdrawReply` | async | 按 `input_id` 为调用方写入的输入写入 `input/withdraw`，并返回 InputQueue 的决定 |
 | `sessions.pending(PendingRequest) -> PendingReply` | async | 回答 `input_id` 在该分支上是否仍待处理（§2）；分支不持有的 id 为 `false` |
-| `sessions.stop({sessionId, branchId, reason?}) -> {sequence}` | async | 中断该分支的 turn |
-| `sessions.idle({sessionId, branchId}) -> {sequence}` | async | 等待分支空闲；返回的序号是最后提交的序号，位于整批次边界 |
+| `timelineContext.stop(reason) -> sequence` | async | 中断该分支的 turn，返回已确认的分发序号 |
+| `timelineContext.idle() -> sequence` | async | 等待分支空闲；返回的序号是最后提交的序号，位于整批次边界 |
 | `sessions.delete({sessionId}) -> {}` | async | 删除一个 Session：Agents 关闭它，并删除它的行与文件（[Session 删除](../appserver/session-deletion-and-fork.md#3-删除)） |
 | `SessionConfig.interactive` | 数据 | 创建时配置 |
 | `session.create {interactive}` | RPC | 非交互创建 |
+
+`timelineContext` 各行是线的数据面操作，不是 `sessions` 的方法：进程调用方用 `sessions.call({sessionId, lineId, service: "timelineContext", method, args})` 调用，Session 部件用 `sessionScope.lineCall({lineId, service: "timelineContext", method, args})` 调用。调用本身指明 Session 和线，所以这些操作不再带这两个参数（[ADR 027](../../../adr/027-cross-scope-access-by-id.md)、[#2027](https://github.com/arcships/dim/issues/2027)）。
 
 ## 7. 安全
 
@@ -225,15 +231,15 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | 方法 | 模式 | 请求 | 回复 | 错误 |
 | --- | --- | --- | --- | --- |
 | `launch` | async | `LaunchRequest` | `{sessionId, policy, worktree?}` | `rejected`、`agent_unknown`、`session_closed`、`branch_missing`（启动方）、`branch_ended`（启动方）、`reloading`、`failed` |
-| `input` | async | `InputWrite` | `{inputId, sequence}` | `rejected`、`ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown`、`failed` |
-| `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `exists` | async | `{sessionId}` | `{exists}` | `rejected`、`reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |
 | `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | [S2 §6.10](../appserver/sessions-service.md#610-pending) |
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown` |
-| `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
-| `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `delete` | async | `{sessionId}` | `{}` | `rejected`、`reloading`、`failed` |
+| `defaultBranchId` | async | `{sessionId}` | `{defaultBranchId}` | `session_closed`、`reloading` |
+| `call` | async | `{sessionId, lineId?, service, method, args}` | 目标操作自己的回复 | 选不中：`no_session`、`session_closing`、`session_reloading`（可重试）、`session_unavailable`、`no_line`、`no_service`、`not_data_face`、`method_not_routable`、`wrong_scope`。目标所有者自己的失败：`routed`，带所有者的 `name`、`message`、`owner_code` 与 `retryable` |
+
+线上的输入、查找、停止与空闲是该线自己的操作，不是 `sessions` 的方法：`call` 以 `timelineContext.input`、`lookup`、`stop`、`idle` 调用它们（§6）。`call` 每次调用时按 id 选目标，不保存选择结果（[ADR 027](../../../adr/027-cross-scope-access-by-id.md)、[#2127](https://github.com/arcships/dim/issues/2127)）。
 
 ```text
 // LaunchRequest
@@ -243,16 +249,15 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
   "policy?": { /* PermissionPolicy 数据 */ },  // 收窄后的请求；缺省：启动方策略或只读默认值
   "starter?": { "sessionId": "string", "branchId": "string" }, // 上限；缺省：以宿主配置为界
   "worktree?": { /* 托管 worktree §3 的请求 */ } }
-// InputWrite
-{ "sessionId": "string", "branchId": "string",
-  "mode": "queue" | "steer" | "append",
-  "submissionId": "<source>:<uuid>",
-  "rawBlocks": [ RawBlock ],         // 第一个块是调用方的标记（A.2）
-  "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] }
-// RawBlock
-{ "text": "string", "key?": { "use": "live" | "retire", "name": "string" } }
-// LookupReply
-{ "status": "accepted", "inputId": "string", "sequence": 0 } | { "status": "unknown" }
+// timelineContext.input 的参数：InputMessageData
+{ "mode": "queue" | "steer" | "append",
+  "submission_id?": "<source>:<uuid>",   // 可省略；给出时不能为空
+  "blocks": [ { "type": "raw", "text": "string", "key?": "string", "retire?": true } ],
+                                        // 第一个块是调用方的标记（A.2）
+  "user?": { "content": [ { "type": "text", "text": "..." } | { "type": "image", "...": "..." } ] } }
+// timelineContext.input 的回复：InputWrite
+{ "event": { /* 已提交的 input/message 事件 */ }, "written": true | false }
+// timelineContext.lookup(submissionId) 的回复：已发布的 input/message 事件，或 null
 // HistoryRequest
 { "sessionId": "string", "branchId": "string",
   "after?": 0,                        // 不含的下界；缺省：从分支开头
@@ -292,7 +297,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 
 `delete` 即 Agents 的 Session 删除（S5c）：Session 已装载时先关闭它，再删除它的行与文件。不存在或已删除的 Session 回复 `{}`，因此调用方在任何错误后都可再次删除（[sessions 服务 §6.8](../appserver/sessions-service.md#68-delete)）。启动 Session 的调用方在删掉最后一条指向它的记录时删除它（[§8.7](../appserver/sessions-service.md#87-删除运行用的-session)）。
 
-已实现：上表全部方法，由 Agents 的目录部分提供（S2，[#98](https://github.com/arcships/dim/pull/98)；`delete` 在 S5c 之后加入，[#97](https://github.com/arcships/dim/pull/97)）。`input` 和删除成功的 `withdraw` 都在其事件发布后才回复。
+已实现：上表全部方法，由 Agents 的目录部分提供（S2，[#98](https://github.com/arcships/dim/pull/98)；`delete` 在 S5c 之后加入，[#97](https://github.com/arcships/dim/pull/97)）。删除成功的 `withdraw` 在其事件发布后才回复。线的 `timelineContext.input` 经 `call` 调用，在输入提交后、发布前就回复：不能让投递记录先于存储的调用方，要先用 `timelineContext.waitPublished(event.sequence)` 或 `timelineContext.lookup(submissionId)` 确认已发布。
 
 ### A.2 来源输入约定
 
@@ -300,7 +305,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | --- | --- |
 | 标记 | 第一个 raw 块是现有上下文块格式中的元素 `<dim-<source> kind="..." ...>body</dim-<source>>`。它是生产方插件写给模型看的文本；共享组件从不解析它，只有生产方插件可以解释自己写的内容（例如 Goal 折叠自己的块） |
 | Key | `RawBlock.key`，`use` 为 `live` 或 `retire`，按分支 Timeline 区分。完整的 key 由写入方自己起；按约定以写入方自己的前缀开头（总览约束 14），不做检查 |
-| 提交标识 | `<source>:<uuid>`，每次逻辑提交生成一个。分支对每个标识只接受一次：重复提交不写入，回复第一条输入的回执，输入被消费或撤回后也是如此。`sessions.lookup`（与 `session.input_lookup` 语义相同）查找已提交的输入（`accepted`、`unknown`），不写入。错误 `ambiguous`（来自 `input` 或 `lookup`）表示多条输入共用该标识，写于分支只接受一次之前。标识是已提交 `input/message` 的 `submission_id` 字段，随输入一起提交、分叉和删除，没有单独的记录（[sessions 服务 §6.3](../appserver/sessions-service.md#提交标识存放在哪里)，#32） |
+| 提交标识 | `<source>:<uuid>`，每次逻辑提交生成一个。分支对每个标识只接受一次：重复提交不写入，回复第一条输入的回执，输入被消费或撤回后也是如此。`timelineContext.lookup`（与 `session.input_lookup` 语义相同）查找已提交的输入（`accepted`、`unknown`），不写入。错误 `ambiguous`（来自 `input` 或 `lookup`）表示多条输入共用该标识，写于分支只接受一次之前。标识是已提交 `input/message` 的 `submission_id` 字段，随输入一起提交、分叉和删除，没有单独的记录（[sessions 服务 §6.3](../appserver/sessions-service.md#提交标识存放在哪里)，#32） |
 | 绝不可能 | 写入 `input/message`、经 `withdraw` 的 `input/withdraw` 和经 `stop` 的 `stop/interrupt` 之外的事件；写入 `input/deleted`；编辑历史 |
 
 ### A.3 SessionConfig 字段
@@ -373,7 +378,7 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 
 ### A.5 固定前缀读取
 
-`sessions.history` 取得并持有 Session；未装载时先恢复它。带 `atLeast` 时把 `through` 固定为调用时的已发布 head。若该 head 低于 `atLeast`，则以 `future_sequence` 失败，否则返回该分支自己截至该 head 的事件，按 `after` 与 `limit` 分页。它由现有门面组合实现：先用 `Session::sequence(branch)` 读 head，再用 `AgentIndex::history_page` 分页读取。活跃线经自身 query 分页；已结束的线经 `TimelineTree` 按固定 head 和批次边界分页。此入口不会为本进程未持有的 Session 回退到存储读取。需要祖先前缀的分支部分用同一个 query 读祖先链（§9.2）。分支 Dispatcher 或 Session 广播投递的每个事件都已发布，因此只要分支存在，`atLeast = event.sequence` 就会成功。
+`sessions.history` 取得并持有 Session；未装载时先恢复它。带 `atLeast` 时把 `through` 固定为调用时的已发布 head。若该 head 低于 `atLeast`，则以 `future_sequence` 失败，否则返回该分支自己截至该 head 的事件，按 `after` 与 `limit` 分页。它由持有者的线句柄组合实现：先用 `RoutedSession::line(branch).sequence()` 读 head，再用 `AgentIndex::history_page` 分页读取。活跃线经自身 query 分页；已结束的线经 `TimelineTree` 按固定 head 和批次边界分页。此入口不会为本进程未持有的 Session 回退到存储读取。需要祖先前缀的分支部分用同一个 query 读祖先链（§9.2）。分支 Dispatcher 或 Session 广播投递的每个事件都已发布，因此只要分支存在，`atLeast = event.sequence` 就会成功。
 
 ### A.6 错误
 
@@ -449,15 +454,15 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 
 | 语言中立 | Rust |
 | --- | --- |
-| `sessions` | 基于 `Session` 门面的 `AgentIndex`（Agents）类型化方法（[agent.rs](../../../../crates/dim-agent-runtime/src/agent.rs)、[branch.rs](../../../../crates/dim-agent-runtime/src/branch.rs)）；由 Agents 的目录部分按名称暴露（[sessions 服务附录 A](../appserver/sessions-service.md#附录-a-rust-绑定)） |
+| `sessions` | 基于持有者线句柄 `RoutedSession::line` 的 `AgentIndex`（Agents）类型化方法（[route.rs](../../../../crates/dim-agent-runtime/src/route.rs)）；由 Agents 的目录部分按名称暴露（[sessions 服务附录 A](../appserver/sessions-service.md#附录-a-rust-绑定)） |
 | `launch` | `AgentIndex::launch(LaunchRequest) -> Result<LaunchReply, SessionsError>` |
 | 逐次调用的 acquire | `AgentIndex::acquire(id)`（已有，crate 内部使用），返回 `SessionUse` 租约 |
-| `input` | `Session::input(InputMessageData, branch)`（已有；对分支已持有的标识返回已提交的输入）；key 为 `InputBlock::Raw { key: Some(name), retire }` |
-| `lookup` | `Session::lookup(branch, submission_id)`，与 `session.input_lookup` 共用：读分支的提交标识索引，等待找到的输入发布 |
-| `history` | `Session::sequence(branch)`，低于 `at_least` 时以 `future_sequence` 失败，然后 `AgentIndex::history_page(id, branch, after, limit, through)` |
+| `input` | 线数据面的 `timelineContext.input(InputMessageData)`，返回 `InputWrite { event, written }`（线已持有该标识时返回已提交的输入，`written: false`）；key 为 `InputBlock::Raw { key: Some(name), retire }` |
+| `lookup` | `timelineContext.lookup(submission_id)`，与 `session.input_lookup` 共用：读线的提交标识索引，等待找到的输入发布 |
+| `history` | `RoutedSession::line(branch).sequence()`，低于 `at_least` 时以 `future_sequence` 失败，然后 `AgentIndex::history_page(id, branch, after, limit, through)` |
 | `withdraw` | `Session::service::<InputQueue>(branch)` 后调用 `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`。数据面只允许普通撤回，返回 `Deleted { sequence }` 或 `NotHeld`。`InputMethods` 为已检查的 Steer 候选调用仅限 Rust 的 `withdraw_checked`，保留提交事件并确认发布后才返回回执（A.4）。 |
-| `pending` | 捕获 `Session::publication(branch).sequence()`，通过 `Session::dispatch_watch(branch)` 等待分发达到该序号并观察发布关闭，再调用 `Session::service::<InputQueue>(branch)` 和 `InputQueue::pending(input_id) -> bool`：该分支自己的队列回答 §2 的规则；它不持有的 id 为 `false` |
-| `stop`、`idle` | `Session::stop`、`Session::idle`（已有） |
+| `pending` | 在持有者的线句柄上捕获 `line.publication().sequence()`，通过 `line.dispatch_watch()` 等待分发达到该序号并观察发布关闭，再调用该线的 `InputQueue` 和 `InputQueue::pending(input_id) -> bool`：该分支自己的队列回答 §2 的规则；它不持有的 id 为 `false` |
+| `stop`、`idle` | 线数据面的 `timelineContext.stop(reason)`、`timelineContext.idle()` |
 | `delete` | `AgentIndex::delete(id)`（S5c，crate 内部使用）：准入闸门、关闭、`SessionStore::delete_session`、遗忘 |
 | `SessionConfig` | 下方的 Rust 结构体 |
 | 错误 | 带 A.6 错误码的 `SessionsError`，由 `AgentError` 映射：`Closed` → `session_closed`，`UnknownBranch` → `branch_missing`，`BranchEnded` → `branch_ended`，`Reloading` → `reloading`，`InvalidInput` → `rejected`，其余 → `failed` |

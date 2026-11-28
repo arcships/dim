@@ -13,6 +13,7 @@ use dim_agent_capabilities::{
     prompt_state::PromptSnapshot,
     summary_strategy::ProductSummaryStrategyConfig,
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use std::{path::Path, sync::Mutex as StdMutex};
 

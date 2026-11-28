@@ -2,6 +2,7 @@
 //! §20.10, §20.17, §20.21, §20.22, §20.23, §20.27).
 use super::deletion::Store;
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_agent_types::{ModelConfig, ModelSelection, ProviderReasoningConfig, RequestMetadata};
 
 fn error_name(value: &Value) -> &str {

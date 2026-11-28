@@ -5,6 +5,7 @@ use dim_agent_capabilities::{
     host::{SessionFileErrorCode, SessionFiles, StoredSessionFile},
 };
 use dim_agent_runtime::SessionConfig;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{TimelineStore, testing::chain_events};
 use dim_app_server::storage::{SessionStore, SessionStorePlugin, SqliteStoragePlugin};
 use rusqlite::Connection;

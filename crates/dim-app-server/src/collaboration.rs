@@ -43,6 +43,7 @@ use futures_util::{
 };
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{HostDispatch, host_key, settle};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -171,6 +172,45 @@ pub(crate) struct CollaborationDirectory {
     /// Watched Session ids and their Agents: closure (treated as deletion)
     /// removes their relations and may release an owned Agent.
     watched: Mutex<BTreeMap<String, Arc<WatchedSession>>>,
+    /// Member stops still to carry out, by member Session id. A stop that
+    /// waits for its input's `input/consumed` is recorded here, which no
+    /// reload rebuilds: a generation that stops first leaves the record, and
+    /// the next generation carries it out (design rule 8, [#2227]).
+    ///
+    /// [#2227]: https://github.com/arcships/dim/pull/2227
+    member_stops: Mutex<BTreeMap<String, MemberStop>>,
+    /// Member stops a generation carried out from a record an earlier one
+    /// left. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    resumed_stops: std::sync::atomic::AtomicUsize,
+    /// While set, a stop recorded at a reload unload is left to the next
+    /// generation instead of being tried by the one that recorded it, so a
+    /// test reaches the resume path deterministically. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    defer_stops: std::sync::atomic::AtomicBool,
+}
+
+/// One member stop to carry out: the input a request delivered, on the line it
+/// was delivered to. Its fate decides what is stopped, so the record never
+/// reaches a turn that did not consume that input.
+#[derive(Clone)]
+struct MemberStop {
+    line: String,
+    input: String,
+    reason: String,
+}
+
+/// How a member stop ended.
+enum StopEnd {
+    /// The consuming turn was stopped, the input withdrawn, or nothing was
+    /// left to stop: the record is done.
+    Done,
+    /// This generation stopped first, or the owner reloads: the record stays
+    /// for the next attempt.
+    Kept,
+    /// The member's line or Session is gone, or a read failed: the record is
+    /// dropped and the error reported.
+    Failed(AgentError),
 }
 
 impl CollaborationDirectory {
@@ -225,6 +265,14 @@ impl Plugin for CollaborationDirectoryPlugin {
 /// [`SessionRestored`] and [`UnloadedSessionDeleted`].
 pub struct Collaboration {
     index: Arc<AgentIndex>,
+    /// The `sessions` face: provided by the directory, which outlives an
+    /// `Agents` reload, and each call reads the index of the generation that
+    /// holds the Session now. A fixed `index` is the previous one after a
+    /// reload and answers `session_reloading` for good ([ADR 027][027],
+    /// [#2027]).
+    ///
+    /// [027]: ../../../docs/adr/027-cross-scope-access-by-id.md
+    sessions: Arc<dyn HostDispatch>,
     directory: Arc<CollaborationDirectory>,
     /// The subagent model policy's source; local execution only.
     settings: Option<Arc<SettingsService>>,
@@ -247,6 +295,185 @@ struct Participant {
     name: String,
     status: &'static str,
 }
+impl Collaboration {
+    /// The member stops a generation carried out from a record an earlier one
+    /// left, and the members whose stop is still recorded. Feature `testing`
+    /// only.
+    #[cfg(feature = "testing")]
+    pub fn resumed_stops(&self) -> usize {
+        self.directory
+            .resumed_stops
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// Leaves the stops recorded from now on to the next generation. Feature
+    /// `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn defer_stops(&self) {
+        self.directory
+            .defer_stops
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    #[cfg(feature = "testing")]
+    pub fn recorded_stops(&self) -> Vec<String> {
+        self.directory
+            .member_stops
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Carries out the stop recorded for `member`: the turn that consumed the
+    /// recorded input is stopped, an input still queued is withdrawn, and an
+    /// input already handed to Loop is waited for until its `input/consumed`
+    /// names the turn. The record ends with the carry-out; a reloading owner
+    /// is waited out, and this generation stopping first leaves the record for
+    /// the next one (design rule 8, [#2227]).
+    ///
+    /// [#2227]: https://github.com/arcships/dim/pull/2227
+    async fn carry_out_member_stop(self: &Arc<Self>, member: &str) -> StopEnd {
+        let mut wait = std::time::Duration::from_millis(20);
+        let end = loop {
+            let Some(record) = self
+                .directory
+                .member_stops
+                .lock()
+                .unwrap()
+                .get(member)
+                .cloned()
+            else {
+                return StopEnd::Done;
+            };
+            let Some((_, session)) = self.index.session(member) else {
+                // The member is not loaded: no turn of it runs.
+                break StopEnd::Done;
+            };
+            match self.member_stop_once(&session, &record).await {
+                Err(AgentError::Reloading(_)) => {}
+                Ok(end) => break end,
+                Err(error) => break StopEnd::Failed(error),
+            }
+            tokio::select! {
+                _ = self.stop.cancelled() => return StopEnd::Kept,
+                _ = tokio::time::sleep(wait) => {}
+            }
+            wait = (wait * 2).min(std::time::Duration::from_secs(1));
+        };
+        if !matches!(end, StopEnd::Kept) {
+            self.directory.member_stops.lock().unwrap().remove(member);
+        }
+        end
+    }
+
+    /// One pass of a member stop, from the input's fate on: `Kept` when this
+    /// generation stops while it waits for `input/consumed`.
+    async fn member_stop_once(
+        &self,
+        session: &Session,
+        record: &MemberStop,
+    ) -> dim_agent_runtime::Result<StopEnd> {
+        let (mut after, mut open) = (0, None);
+        let line = record.line.as_str();
+        match input_fate(
+            self.sessions.as_ref(),
+            session,
+            line,
+            &record.input,
+            &mut after,
+            &mut open,
+        )
+        .await?
+        {
+            InputFate::Consumed(Some(turn)) => {
+                stop_member_turn(session, line, &turn, &record.reason)?;
+                return Ok(StopEnd::Done);
+            }
+            InputFate::Consumed(None) | InputFate::Deleted => return Ok(StopEnd::Done),
+            InputFate::Pending => {}
+        }
+        match session
+            .service::<dim_agent_capabilities::input_queue::InputQueue>(line)?
+            .withdraw(InputWithdrawData {
+                input_id: record.input.clone(),
+                reason: Some(record.reason.clone()),
+                steer: None,
+            })
+            .await?
+        {
+            dim_agent_capabilities::input_queue::Withdrawal::Deleted { .. } => {
+                return Ok(StopEnd::Done);
+            }
+            dim_agent_capabilities::input_queue::Withdrawal::NotHeld => {}
+        }
+        // The published head is read before each check and the wait names the
+        // next sequence, so a consumption that lands between the check and the
+        // wait is seen by the next check ([#2027]).
+        loop {
+            let head = line_head(self.sessions.as_ref(), session, line).await?;
+            match input_fate(
+                self.sessions.as_ref(),
+                session,
+                line,
+                &record.input,
+                &mut after,
+                &mut open,
+            )
+            .await?
+            {
+                InputFate::Consumed(Some(turn)) => {
+                    stop_member_turn(session, line, &turn, &record.reason)?;
+                    return Ok(StopEnd::Done);
+                }
+                InputFate::Consumed(None) | InputFate::Deleted => return Ok(StopEnd::Done),
+                InputFate::Pending => {}
+            }
+            tokio::select! {
+                _ = self.stop.cancelled() => return Ok(StopEnd::Kept),
+                _ = session.closed() => return Ok(StopEnd::Done),
+                result = line_call(
+                    self.sessions.as_ref(),
+                    session,
+                    line,
+                    "timelineContext",
+                    "waitPublished",
+                    vec![serde_json::json!(head + 1)],
+                ) => match result {
+                    Ok(_) | Err(AgentError::Reloading(_)) => {}
+                    // A line that closed ends the wait: its close stopped the turn.
+                    Err(_) => return Ok(StopEnd::Done),
+                },
+            }
+        }
+    }
+
+    /// Records the stop of `member`'s turn that consumes `input` and carries
+    /// it out on this generation's tracker; a generation that stops first
+    /// leaves it for the next ([`Self::carry_out_member_stop`]).
+    fn stop_member_across_reloads(self: &Arc<Self>, member: &str, record: MemberStop) {
+        self.directory
+            .member_stops
+            .lock()
+            .unwrap()
+            .insert(member.to_owned(), record);
+        #[cfg(feature = "testing")]
+        if self
+            .directory
+            .defer_stops
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let this = self.clone();
+        let member = member.to_owned();
+        self.tasks.spawn(async move {
+            if let StopEnd::Failed(error) = this.carry_out_member_stop(&member).await {
+                tracing::warn!(member = %member, %error, "a member stop could not be carried out");
+            }
+        });
+    }
+}
+
 impl Collaboration {
     /// Creates a member Session under the target Agent (created first when
     /// temporary) and records the relation. `adopted` is the requesting
@@ -619,26 +846,28 @@ impl Collaboration {
         })
     }
     /// Every participant of the caller's Team; empty outside a Team.
-    fn team(&self, from: &str) -> Vec<Participant> {
-        let relations = self.directory.relations.lock().unwrap();
-        let leader = relations
-            .get(from)
-            .map_or(from, |relation| relation.leader.as_str())
-            .to_owned();
-        let mut members: Vec<(CollaborationRole, String, String)> = relations
-            .iter()
-            .filter(|(member, relation)| {
-                relation.leader == leader && self.index.host_by_session(member).is_some()
-            })
-            .map(|(member, relation)| {
-                (
-                    CollaborationRole::Member,
-                    member.clone(),
-                    relation.member_agent.clone(),
-                )
-            })
-            .collect();
-        drop(relations);
+    async fn team(&self, from: &str) -> Vec<Participant> {
+        let (leader, mut members) = {
+            let relations = self.directory.relations.lock().unwrap();
+            let leader = relations
+                .get(from)
+                .map_or(from, |relation| relation.leader.as_str())
+                .to_owned();
+            let members: Vec<(CollaborationRole, String, String)> = relations
+                .iter()
+                .filter(|(member, relation)| {
+                    relation.leader == leader && self.index.host_by_session(member).is_some()
+                })
+                .map(|(member, relation)| {
+                    (
+                        CollaborationRole::Member,
+                        member.clone(),
+                        relation.member_agent.clone(),
+                    )
+                })
+                .collect();
+            (leader, members)
+        };
         if members.is_empty() {
             return vec![];
         }
@@ -648,45 +877,45 @@ impl Collaboration {
             .map(|host| host.agent_id.clone())
             .unwrap_or_default();
         members.insert(0, (CollaborationRole::Leader, leader, leader_agent));
-        members
-            .into_iter()
-            .map(|(role, session_id, agent_id)| {
-                let (name, status) = match self.index.session(&session_id) {
-                    Some((host, session)) if !session.is_closing() => {
-                        // A member is a Session like any other: its own
-                        // defaults follow its own default branch (design §9,
-                        // §15).
-                        let working = session
-                            .default_branch()
-                            .ok()
-                            .and_then(|line| session.state(&line).ok())
-                            .is_some_and(|state| state.running);
-                        (
-                            host.profile.name.clone(),
-                            if working { "working" } else { "idle" },
-                        )
-                    }
-                    _ => (
-                        self.index
-                            .host(Some(&agent_id))
-                            .map(|host| host.profile.name.clone())
-                            .unwrap_or_default(),
-                        if self.index.session_available(&session_id) {
-                            "idle"
-                        } else {
-                            "closed"
-                        },
-                    ),
-                };
-                Participant {
-                    role,
-                    agent_id,
-                    session_id,
-                    name,
-                    status,
+        let mut listed = Vec::with_capacity(members.len());
+        for (role, session_id, agent_id) in members {
+            let (name, status) = match self.index.session(&session_id) {
+                Some((host, session)) if !session.is_closing() => {
+                    // A member is a Session like any other: its own
+                    // defaults follow its own default branch (design §9,
+                    // §15).
+                    let working = match session.default_branch() {
+                        Ok(line) => line_status(self.sessions.as_ref(), &session, &line)
+                            .await
+                            .is_some_and(|state| state.running),
+                        Err(_) => false,
+                    };
+                    (
+                        host.profile.name.clone(),
+                        if working { "working" } else { "idle" },
+                    )
                 }
-            })
-            .collect()
+                _ => (
+                    self.index
+                        .host(Some(&agent_id))
+                        .map(|host| host.profile.name.clone())
+                        .unwrap_or_default(),
+                    if self.index.session_available(&session_id) {
+                        "idle"
+                    } else {
+                        "closed"
+                    },
+                ),
+            };
+            listed.push(Participant {
+                role,
+                agent_id,
+                session_id,
+                name,
+                status,
+            });
+        }
+        listed
     }
 }
 
@@ -727,6 +956,7 @@ pub(crate) struct CollaborationPlugin {
     /// The subagent model policy's source; local execution only, as Agents.
     settings: Option<Key<SettingsService>>,
     index: Key<AgentIndex>,
+    sessions: Key<dyn HostDispatch>,
     directory: Key<CollaborationDirectory>,
     parts: Key<dim_agent_runtime::PartRegistry>,
 }
@@ -737,6 +967,7 @@ impl CollaborationPlugin {
                 .then(|| names.key::<SettingsService>())
                 .transpose()?,
             index: names.key()?,
+            sessions: host_key("sessions"),
             directory: names.key()?,
             parts: names.key()?,
         })
@@ -750,6 +981,7 @@ impl DynPlugin for CollaborationPlugin {
         let mut injects: Vec<_> = self.settings.iter().map(Key::erase).collect();
         injects.extend([
             self.index.erase(),
+            self.sessions.erase(),
             self.directory.erase(),
             self.parts.erase(),
         ]);
@@ -758,6 +990,7 @@ impl DynPlugin for CollaborationPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let index = ctx.require_at(&self.index)?;
+            let sessions = ctx.require_at(&self.sessions)?;
             let directory = ctx.require_at(&self.directory)?;
             let parts = ctx.require_at(&self.parts)?;
             let settings = match &self.settings {
@@ -766,6 +999,7 @@ impl DynPlugin for CollaborationPlugin {
             };
             let service = Arc::new(Collaboration {
                 index,
+                sessions,
                 directory,
                 settings,
                 tasks: TaskTracker::new(),
@@ -800,6 +1034,36 @@ impl DynPlugin for CollaborationPlugin {
                 service.observe(watched);
             }
             service.reconcile().await;
+            // A stop the previous generation did not finish is carried out by
+            // this one (design rule 8, [#2227]).
+            let recorded: Vec<String> = service
+                .directory
+                .member_stops
+                .lock()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            for member in recorded {
+                let resumed = service.clone();
+                service.tasks.spawn(async move {
+                    match resumed.carry_out_member_stop(&member).await {
+                        StopEnd::Done => {
+                            #[cfg(feature = "testing")]
+                            resumed
+                                .directory
+                                .resumed_stops
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        StopEnd::Kept => {}
+                        StopEnd::Failed(error) => tracing::warn!(
+                            member = %member,
+                            %error,
+                            "a member stop could not be carried out"
+                        ),
+                    }
+                });
+            }
             ctx.provide_as::<Collaboration>(service)?;
             use dim_agent_runtime::PartScope;
             parts.register(ctx, PartScope::Session, "CollaborationSession", |mount| {
@@ -1384,6 +1648,7 @@ impl CollaborationSession {
         let participants: Vec<Value> = self
             .collaboration
             .team(&self.session_id)
+            .await
             .into_iter()
             .map(|participant| {
                 json!({"role": participant.role, "agentId": participant.agent_id,
@@ -1919,19 +2184,19 @@ impl CollaborationSession {
                     .session
                     .default_branch()
                     .map_err(|_| Refusal::MemberClosed)?;
-                let input = peer
-                    .session
-                    .input(
-                        self.message_input(
-                            &sender,
-                            self.message_relation(&data.session_id),
-                            data.content.clone(),
-                            mode,
-                        ),
-                        &line,
-                    )
-                    .await
-                    .map_err(|_| Refusal::MemberClosed)?;
+                let input = line_input(
+                    self.collaboration.sessions.as_ref(),
+                    &peer.session,
+                    &line,
+                    self.message_input(
+                        &sender,
+                        self.message_relation(&data.session_id),
+                        data.content.clone(),
+                        mode,
+                    ),
+                )
+                .await
+                .map_err(|_| Refusal::MemberClosed)?;
                 Ok(delivered(&peer, Some(input.id.clone()), None))
             }
             EventKind::CollaborationCancel(data) => {
@@ -1943,7 +2208,15 @@ impl CollaborationSession {
                     .delivered_branch(&data.session_id)
                     .or_else(|| peer.session.default_branch().ok())
                 {
-                    let _ = peer.session.stop(&line, CANCELLED.into()).await;
+                    let _ = line_call(
+                        self.collaboration.sessions.as_ref(),
+                        &peer.session,
+                        &line,
+                        "timelineContext",
+                        "stop",
+                        vec![serde_json::json!(CANCELLED)],
+                    )
+                    .await;
                 }
                 Ok(delivered(&peer, None, Some(cancel)))
             }
@@ -1957,7 +2230,15 @@ impl CollaborationSession {
                     .delivered_branch(&data.session_id)
                     .or_else(|| peer.session.default_branch().ok())
                 {
-                    let _ = peer.session.stop(&line, CANCELLED.into()).await;
+                    let _ = line_call(
+                        self.collaboration.sessions.as_ref(),
+                        &peer.session,
+                        &line,
+                        "timelineContext",
+                        "stop",
+                        vec![serde_json::json!(CANCELLED)],
+                    )
+                    .await;
                 }
                 if let Some(mut done) = working {
                     let abort = self.with_abort(branch_id);
@@ -2086,12 +2367,15 @@ impl CollaborationSession {
             }
             return Err(covered.unwrap_or(Refusal::Closed).into());
         };
+        let working = line_status(self.collaboration.sessions.as_ref(), &peer.session, &line)
+            .await
+            .is_some_and(|state| state.running);
         {
             let mut state = self.state.lock().unwrap();
             if !new
                 && (state.requests.contains_key(&member)
                     || state.stopping.contains_key(&member)
-                    || peer.session.state(&line).is_ok_and(|state| state.running))
+                    || working)
             {
                 return Err(Refusal::Busy.into());
             }
@@ -2116,18 +2400,18 @@ impl CollaborationSession {
                 },
             );
         }
-        let input = match peer
-            .session
-            .input(
-                self.message_input(
-                    &sender,
-                    "your team leader, assigned you this work",
-                    data.prompt.clone(),
-                    InputMode::Queue,
-                ),
-                &line,
-            )
-            .await
+        let input = match line_input(
+            self.collaboration.sessions.as_ref(),
+            &peer.session,
+            &line,
+            self.message_input(
+                &sender,
+                "your team leader, assigned you this work",
+                data.prompt.clone(),
+                InputMode::Queue,
+            ),
+        )
+        .await
         {
             Ok(input) => input,
             Err(error) => {
@@ -2238,14 +2522,36 @@ impl CollaborationSession {
         let member = member.clone();
         let abort = branch.abort.clone();
         let this = self.clone();
+        let sessions = self.collaboration.sessions.clone();
         let branch_id = branch_id.to_owned();
         branch.tasks.spawn(async move {
             // The idle wait follows the line the delivery wrote, held on the
             // request rather than re-read: a member move does not redirect it
             // (design §9, §15).
-            let idle = tokio::select! {
-                result = session.idle(&line) => result,
-                _ = abort.cancelled() => return,
+            // An owner that reloads did not run the wait: it is asked again,
+            // and the branch's unload settles the request if this generation
+            // goes first ([#2227]).
+            let mut wait = std::time::Duration::from_millis(20);
+            let idle = loop {
+                let result = tokio::select! {
+                    result = line_read::<u64>(
+                        sessions.as_ref(),
+                        &session,
+                        &line,
+                        "timelineContext",
+                        "idle",
+                        vec![],
+                    ) => result,
+                    _ = abort.cancelled() => return,
+                };
+                if !matches!(result, Err(AgentError::Reloading(_))) {
+                    break result;
+                }
+                tokio::select! {
+                    _ = abort.cancelled() => return,
+                    _ = tokio::time::sleep(wait) => {}
+                }
+                wait = (wait * 2).min(std::time::Duration::from_secs(1));
             };
             this.settle(&branch_id, &member, Some(idle)).await;
         });
@@ -2294,8 +2600,14 @@ impl CollaborationSession {
         };
         // The result is read from the line the delivery wrote, not from the
         // member's current default (design §9, §15).
-        let (last_turn_id, text, derived) =
-            outcome(&session, &member_branch, input.as_deref(), through).await;
+        let (last_turn_id, text, derived) = outcome(
+            self.collaboration.sessions.as_ref(),
+            &session,
+            &member_branch,
+            input.as_deref(),
+            through,
+        )
+        .await;
         let settle = self
             .state
             .lock()
@@ -2381,12 +2693,20 @@ impl CollaborationSession {
         // default branch does not redirect the withdrawal or the stop to a
         // line that never held the input (design §9, §15).
         let line = branch.to_owned();
-        // Subscribed before the first check, so a consumption or a deletion
-        // published while it reads, or between it and the withdrawal, still
-        // wakes the wait below: whatever the check cannot see happened after
-        // this subscription, and the wait checks after every change.
-        let mut published = session.publication(&line)?.watch();
-        match input_fate(session, &line, input, &mut after, &mut open).await? {
+        // The published head is read before the check and the wait names the
+        // next sequence: whatever the check cannot see happened after that
+        // head, so waiting for it to be passed cannot miss a change
+        // ([#2027](https://github.com/arcships/dim/issues/2027)).
+        match input_fate(
+            self.collaboration.sessions.as_ref(),
+            session,
+            &line,
+            input,
+            &mut after,
+            &mut open,
+        )
+        .await?
+        {
             InputFate::Consumed(Some(turn)) => {
                 stop_member_turn(session, &line, &turn, reason)?;
                 return Ok(());
@@ -2418,47 +2738,33 @@ impl CollaborationSession {
         // when Collaboration stops: not on the branch's abort and not on the
         // request's settle, because a branch close settles the request while
         // the member may not have consumed yet.
-        let stop = self.collaboration.stop.clone();
-        let tasks = self.collaboration.tasks.clone();
-        let session = session.clone();
-        let line = line.clone();
+        //
+        // The wait is recorded where no reload rebuilds it, so a generation
+        // that stops first leaves it for the next ([#2227]); this generation
+        // carries it out under the mark, and a failure clears the request's
+        // flag before the mark goes.
+        let member = session.id().to_owned();
+        self.collaboration
+            .directory
+            .member_stops
+            .lock()
+            .unwrap()
+            .insert(
+                member.clone(),
+                MemberStop {
+                    line,
+                    input: input.to_owned(),
+                    reason: reason.to_owned(),
+                },
+            );
+        let collaboration = self.collaboration.clone();
         let input = input.to_owned();
-        let reason = reason.to_owned();
-        let wait = async move {
-            // The mark lives until this block ends, and a failure of the loop
-            // below clears the request's flag before it goes.
-            let result: dim_agent_runtime::Result<()> = async {
-                loop {
-                    tokio::select! {
-                        _ = stop.cancelled() => return Ok(()),
-                        _ = session.closed() => {
-                            return Err(AgentError::Closed(session.id().into()));
-                        }
-                        result = published.changed() => {
-                            if result.is_err() {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    match input_fate(&session, &line, &input, &mut after, &mut open).await? {
-                        InputFate::Consumed(Some(turn)) => {
-                            stop_member_turn(&session, &line, &turn, &reason)?;
-                            return Ok(());
-                        }
-                        // The member deleted the input first: no turn will
-                        // consume it, so the wait ends with nothing to stop.
-                        InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
-                        InputFate::Pending => {}
-                    }
-                }
-            }
-            .await;
-            if result.is_err() {
+        self.collaboration.tasks.spawn(async move {
+            if let StopEnd::Failed(error) = collaboration.carry_out_member_stop(&member).await {
+                tracing::warn!(member = %member, %error, "a member stop could not be carried out");
                 stopping.failed(&input);
             }
-            result
-        };
-        tasks.spawn(wait);
+        });
         Ok(())
     }
 
@@ -2621,7 +2927,7 @@ impl CollaborationSession {
             );
         }
         for member in members {
-            let (session, branch, start) = {
+            let (session, branch, start, delivered_input) = {
                 let mut state = self.state.lock().unwrap();
                 let Some(request) = state.requests.get_mut(&member) else {
                     continue;
@@ -2651,10 +2957,16 @@ impl CollaborationSession {
                 };
                 let session = request.session.clone();
                 let branch = request.member_branch.clone();
+                let delivered_input = request.input_event_id.clone();
                 let stopping = input
                     .as_ref()
                     .map(|_| Stopping::mark(self, &mut state, &member));
-                (session, branch, input.map(|input| (input, stopping)))
+                (
+                    session,
+                    branch,
+                    input.map(|input| (input, stopping)),
+                    delivered_input,
+                )
             };
             if closing {
                 if let Some((input, Some(stopping))) = start {
@@ -2667,13 +2979,157 @@ impl CollaborationSession {
                             .await;
                     });
                 }
-            } else {
-                let _ = session.interrupt(&branch, INTERRUPTED.into());
+            } else if let Some(input) = delivered_input {
+                // Agents may be reloading under this unload, so the `sessions`
+                // face cannot stop the member now. The stop is recorded where
+                // no reload rebuilds it and carried out by whichever
+                // generation reaches the member first (design rule 8,
+                // [#2227]).
+                let _ = &session;
+                self.collaboration.stop_member_across_reloads(
+                    &member,
+                    MemberStop {
+                        line: branch.clone(),
+                        input,
+                        reason: INTERRUPTED.into(),
+                    },
+                );
             }
             self.settle(branch_id, &member, None).await;
         }
         self.state.lock().unwrap().branches.remove(branch_id);
     }
+}
+
+/// One input written on a member's line, as the line committed it.
+#[derive(serde::Deserialize)]
+struct LineWrite {
+    event: Arc<dim_agent_types::AgentEvent>,
+}
+
+/// Writes one input on a member's line through the process face.
+async fn line_input(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    data: dim_agent_types::InputMessageData,
+) -> dim_agent_runtime::Result<Arc<dim_agent_types::AgentEvent>> {
+    let args = serde_json::to_value(data)
+        .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))?;
+    Ok(line_read::<LineWrite>(
+        sessions,
+        session,
+        line,
+        "timelineContext",
+        "input",
+        vec![args],
+    )
+    .await?
+    .event)
+}
+
+/// A member line's status, or `None` when it cannot be read now.
+async fn line_status(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+) -> Option<dim_agent_runtime::BranchStatus> {
+    line_read(sessions, session, line, "timelineContext", "state", vec![])
+        .await
+        .ok()
+}
+
+/// A member line's published head.
+async fn line_head(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+) -> dim_agent_runtime::Result<u64> {
+    line_read(sessions, session, line, "timeline", "sequence", vec![]).await
+}
+
+/// One page of a line's own facts.
+async fn line_page(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    query: dim_agent_runtime::TimelineQuery,
+) -> dim_agent_runtime::Result<dim_agent_runtime::TimelineQueryReply> {
+    line_read(
+        sessions,
+        session,
+        line,
+        "timeline",
+        "query",
+        vec![
+            serde_json::to_value(query)
+                .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))?,
+        ],
+    )
+    .await
+}
+
+/// One line operation for a member Session, through the process face: a
+/// collaboration owner is a process plugin, not the Session's holder
+/// ([#2027](https://github.com/arcships/dim/issues/2027)), so it names the line
+/// and the operation as data and reads the line's own answer back.
+async fn line_call(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    service: &str,
+    method: &str,
+    args: Vec<serde_json::Value>,
+) -> dim_agent_runtime::Result<Option<serde_json::Value>> {
+    let request = serde_json::json!({
+        "sessionId": session.id(),
+        "lineId": line,
+        "service": service,
+        "method": method,
+        "args": args,
+    });
+    let call = sessions
+        .invoke("call", serde_json::json!([request]).into())
+        .map_err(|error| AgentError::Closed(error.to_string()))?;
+    let envelope = settle(call)
+        .await
+        .map_err(|error| AgentError::Closed(error.to_string()))?
+        .json()
+        .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))?;
+    if envelope["ok"] == serde_json::json!(true) {
+        return Ok(envelope.get("value").cloned());
+    }
+    let error = &envelope["error"];
+    let code = error["code"].as_str().unwrap_or("failed");
+    Err(match code {
+        // The Session or the line is gone: final for this request.
+        "no_session" | "session_closing" => AgentError::Closed(session.id().into()),
+        "no_line" => AgentError::UnknownBranch(line.to_owned()),
+        // The owner is reloading: the operation did not run, so it is retried.
+        "session_reloading" => AgentError::Reloading(session.id().into()),
+        _ => AgentError::fault(
+            "collaboration.lineCall",
+            error["message"]
+                .as_str()
+                .unwrap_or("the line refused the call"),
+        ),
+    })
+}
+
+/// One decoded operation on a member's line.
+async fn line_read<T: serde::de::DeserializeOwned>(
+    sessions: &dyn HostDispatch,
+    session: &Session,
+    line: &str,
+    service: &str,
+    method: &str,
+    args: Vec<serde_json::Value>,
+) -> dim_agent_runtime::Result<T> {
+    let reply = line_call(sessions, session, line, service, method, args)
+        .await?
+        .ok_or_else(|| AgentError::Closed(format!("{service}.{method} answered nothing")))?;
+    serde_json::from_value(reply)
+        .map_err(|error| AgentError::fault("collaboration.lineCall", error.to_string()))
 }
 
 fn close_request(open: &mut BTreeMap<String, BTreeSet<String>>, request: &str) {
@@ -2711,6 +3167,7 @@ enum InputFate {
 /// them yet. The open turn is tracked across pages and checks, so a page
 /// that begins inside a turn still names it.
 async fn input_fate(
+    sessions: &dyn HostDispatch,
     session: &Session,
     branch: &str,
     input: &str,
@@ -2721,9 +3178,10 @@ async fn input_fate(
     // under the reader while it pages: a check answers for the moment it
     // starts, and the caller's next check sees whatever has been published
     // since.
-    let through = Some(session.sequence(branch)?);
+    let through = Some(line_head(sessions, session, branch).await?);
     loop {
         let (next, events) = read_page(
+            sessions,
             session,
             branch,
             *after,
@@ -2757,6 +3215,7 @@ async fn input_fate(
 }
 
 async fn read_page(
+    sessions: &dyn HostDispatch,
     session: &Session,
     branch: &str,
     after: u64,
@@ -2764,54 +3223,50 @@ async fn read_page(
     through: Option<u64>,
     kinds: &[&str],
 ) -> dim_agent_runtime::Result<(u64, Vec<Arc<AgentEvent>>)> {
-    let head = session.sequence(branch)?;
+    let head = line_head(sessions, session, branch).await?;
     let through = through.unwrap_or(head);
     if through > head || after > through {
         return Err(AgentError::InvalidInput("future Timeline cursor".into()));
     }
-    session.batch_end(branch, after).await?;
-    session.batch_end(branch, through).await?;
+    // A page ends at `after + limit` or at `through`, whichever comes first;
+    // it does not look for an atomic batch boundary. Its readers (the input's
+    // fate and a request's outcome) read facts one by one and page on from
+    // where the last page ended, so a cut inside a batch loses nothing.
     if after == through {
         return Ok((after, Vec::new()));
     }
-    let mut next = through.min(after.saturating_add(limit as u64));
-    while next < through {
-        match session.batch_end(branch, next).await {
-            Ok(()) => break,
-            Err(AgentError::InvalidInput(_)) => next += 1,
-            Err(error) => return Err(error),
-        }
-    }
-    let reply = session
-        .query(
-            branch,
-            TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                include_publishing: false,
-                from: Some(TimelinePosition {
-                    branch_id: branch.into(),
-                    sequence: after + 1,
+    let next = through.min(after.saturating_add(limit as u64));
+    let reply = line_page(
+        sessions,
+        session,
+        branch,
+        TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            include_publishing: false,
+            from: Some(TimelinePosition {
+                branch_id: branch.into(),
+                sequence: after + 1,
+            }),
+            through: Some(next),
+            query: QuerySpec {
+                filter: (!kinds.is_empty()).then(|| QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: kinds.iter().map(|kind| (*kind).into()).collect(),
                 }),
-                through: Some(next),
-                query: QuerySpec {
-                    filter: (!kinds.is_empty()).then(|| QueryFilter::In {
-                        value: QueryOperand::Field {
-                            path: "kind".into(),
-                        },
-                        values: kinds.iter().map(|kind| (*kind).into()).collect(),
-                    }),
-                    select: QuerySelect::Events,
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::new(next - after).expect("a page keeps at least one fact"),
-                    after: None,
-                }),
+                select: QuerySelect::Events,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
             },
-        )
-        .await?;
+            page: Some(QueryPage {
+                limit: NonZeroU64::new(next - after).expect("a page keeps at least one fact"),
+                after: None,
+            }),
+        },
+    )
+    .await?;
     let QueryOutput::Events { events } = reply.result else {
         unreachable!("event selection returns events")
     };
@@ -2821,12 +3276,16 @@ async fn read_page(
 /// Result of a request's work range: from the member's `input/consumed` of
 /// the request input to its idle point; the last `turn/end` decides.
 async fn outcome(
+    sessions: &dyn HostDispatch,
     session: &Session,
     branch: &str,
     input: Option<&str>,
     cutoff: Option<u64>,
 ) -> (Option<String>, String, CollaborationOutcome) {
-    let through = match cutoff.map_or_else(|| session.sequence(branch), Ok) {
+    let through = match match cutoff {
+        Some(cutoff) => Ok(cutoff),
+        None => line_head(sessions, session, branch).await,
+    } {
         Ok(sequence) => sequence,
         Err(error) => {
             return (
@@ -2845,6 +3304,7 @@ async fn outcome(
     let mut last = None;
     while after < through {
         let (next, events) = match read_page(
+            sessions,
             session,
             branch,
             after,
@@ -3542,7 +4002,11 @@ async fn stopped_turn(
 /// names. A recovered request has no stored branch, so the input's own line is
 /// the only evidence of where it was delivered; `None` when the fact names no
 /// input or no open line holds it (timeline branches §20.22).
-async fn delivered_input_line(member: &Session, input: Option<&str>) -> Option<String> {
+async fn delivered_input_line(
+    sessions: &dyn HostDispatch,
+    member: &Session,
+    input: Option<&str>,
+) -> Option<String> {
     let input = input?;
     for branch in member.branches() {
         let query = TimelineQuery {
@@ -3562,7 +4026,7 @@ async fn delivered_input_line(member: &Session, input: Option<&str>) -> Option<S
             },
             page: None,
         };
-        if let Ok(reply) = member.query(&branch.id, query).await
+        if let Ok(reply) = line_page(sessions, member, &branch.id, query).await
             && matches!(reply.result, QueryOutput::Exists { exists: true })
         {
             return Some(branch.id);
@@ -3877,6 +4341,7 @@ async fn restore(
             .flatten()
             .map(|(_, member)| member);
         let (timeline, phase) = (timeline.clone(), phase.clone());
+        let sessions = service.collaboration.sessions.clone();
         tasks.spawn(async move {
             if !phase.activated().await {
                 return;
@@ -3886,13 +4351,23 @@ async fn restore(
             // that evidence the recovery stops nothing, because a stop on the
             // default could end an unrelated turn the member moved to.
             let line = match &member {
-                Some(member) => delivered_input_line(member, input.as_deref()).await,
+                Some(member) => {
+                    delivered_input_line(sessions.as_ref(), member, input.as_deref()).await
+                }
                 None => None,
             };
             match line {
                 Some(line) => {
                     if let Some(member) = &member {
-                        let _ = member.stop(&line, INTERRUPTED.into()).await;
+                        let _ = line_call(
+                            sessions.as_ref(),
+                            member,
+                            &line,
+                            "timelineContext",
+                            "stop",
+                            vec![serde_json::json!(INTERRUPTED)],
+                        )
+                        .await;
                     }
                 }
                 None => tracing::warn!(

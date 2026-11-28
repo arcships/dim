@@ -75,10 +75,14 @@ pub(super) async fn collect() -> Result<Table> {
                 Default::default(),
             )
             .await?;
+        let branch = agent
+            .routed_session(session.id())
+            .and_then(|routed| routed.line("main").ok())
+            .ok_or("the Session's main line is not selectable")?;
         let layers = [
             ("process", app_server::process_layer(server.diagnostics())),
             ("session", session.diagnostics()?),
-            ("branch", session.branch_diagnostics("main")?),
+            ("branch", branch.diagnostics()),
         ];
         let ctx = probe.0.lock().unwrap().take();
         let ctx = ctx.ok_or("the catalog probe did not load")?;
@@ -556,10 +560,14 @@ mod face_tests {
                 )
                 .await
                 .unwrap();
+            let branch = agent
+                .routed_session(session.id())
+                .and_then(|routed| routed.line("main").ok())
+                .unwrap();
             let layers = [
                 ("process", app_server::process_layer(server.diagnostics())),
                 ("session", session.diagnostics().unwrap()),
-                ("branch", session.branch_diagnostics("main").unwrap()),
+                ("branch", branch.diagnostics()),
             ];
             let ctx = probe.0.lock().unwrap().take().unwrap();
             if missing {

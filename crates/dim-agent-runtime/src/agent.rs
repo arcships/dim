@@ -7,7 +7,7 @@ use crate::{
     core::TailLock,
     lifecycle::{CloseOnce, guarded},
 };
-use dim_agent_types::{AgentEvent, BranchSource, InputMessageData, InputMode};
+use dim_agent_types::BranchSource;
 use rutis::host::{CtxHost, FiberView};
 use std::{
     collections::BTreeMap,
@@ -538,59 +538,6 @@ impl Session {
         crate::testing::lifecycle(self.id(), id);
         self.0.tree.published(id)
     }
-    /// Text input shorthand for [`Self::input`].
-    pub async fn submit(
-        &self,
-        text: String,
-        mode: InputMode,
-        branch: &str,
-    ) -> Result<Arc<AgentEvent>> {
-        self.input(InputMessageData::text(text, Some(mode)), branch)
-            .await
-    }
-    pub async fn input(&self, data: InputMessageData, branch: &str) -> Result<Arc<AgentEvent>> {
-        if let Some(error) = self.0.owner.lifecycle.faults.failure() {
-            return Err(error);
-        }
-        if self.0.owner.closing.is_cancelled() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        self.published(branch)?.input(data).await
-    }
-    /// [`Self::input`], also saying whether this call wrote the input; see
-    /// [`Branch::input_commit`].
-    pub async fn input_commit(
-        &self,
-        data: InputMessageData,
-        branch: &str,
-    ) -> Result<(Arc<AgentEvent>, InputCommit)> {
-        if let Some(error) = self.0.owner.lifecycle.faults.failure() {
-            return Err(error);
-        }
-        if self.0.owner.closing.is_cancelled() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        self.published(branch)?.input_commit(data).await
-    }
-    /// Appends a validated batch of input to `branch` as one atomic commit;
-    /// see [`Branch::inputs`] for the contract.
-    pub async fn inputs(
-        &self,
-        inputs: Vec<InputMessageData>,
-        branch: &str,
-    ) -> Result<Vec<Arc<AgentEvent>>> {
-        if let Some(error) = self.0.owner.lifecycle.faults.failure() {
-            return Err(error);
-        }
-        if self.0.owner.closing.is_cancelled() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        self.published(branch)?.inputs(inputs).await
-    }
-    /// See [`Branch::lookup`].
-    pub async fn lookup(&self, branch: &str, id: &str) -> Result<Option<Arc<AgentEvent>>> {
-        self.published(branch)?.lookup(id).await
-    }
     pub async fn configure(
         &self,
         update: ConfigureUpdate,
@@ -603,44 +550,6 @@ impl Session {
             return Err(AgentError::Closed(self.id().into()));
         }
         self.published(branch)?.configure(update).await
-    }
-    /// Commits a turn interrupt without waiting for dispatch or settlement.
-    /// The returned sequence precedes any input submitted after this call.
-    pub fn interrupt(&self, branch: &str, reason: String) -> Result<u64> {
-        self.published(branch)?.interrupt(reason)
-    }
-    /// Stops branch execution and returns its confirmed dispatched sequence.
-    /// This does not wait for host subscriptions to deliver notifications.
-    pub async fn stop(&self, branch: &str, reason: String) -> Result<u64> {
-        self.published(branch)?.stop(reason).await
-    }
-    /// Waits for branch execution to idle and returns its dispatched cutoff.
-    /// Later input may advance the Timeline without changing this cutoff.
-    pub async fn idle(&self, branch: &str) -> Result<u64> {
-        let idle = self.published(branch)?.idle().await;
-        if idle.is_ok() {
-            crate::memory::trim_if_large();
-        }
-        idle
-    }
-    /// See [`Branch::query`].
-    pub async fn query(&self, branch: &str, query: TimelineQuery) -> Result<TimelineQueryReply> {
-        self.published(branch)?.query(query).await
-    }
-    /// See [`Branch::batch_end`].
-    pub async fn batch_end(&self, branch: &str, sequence: u64) -> Result<()> {
-        self.published(branch)?.batch_end(sequence).await
-    }
-    pub fn sequence(&self, branch: &str) -> Result<u64> {
-        match self.published(branch) {
-            Ok(line) => Ok(line.sequence()),
-            Err(AgentError::BranchEnded(_)) => self
-                .0
-                .tree
-                .ended_head(branch)
-                .ok_or_else(|| AgentError::BranchEnded(branch.into())),
-            Err(error) => Err(error),
-        }
     }
     /// The fixed head of an ended line, `None` for an open or unknown one.
     pub fn ended_head(&self, branch: &str) -> Option<u64> {
@@ -667,20 +576,6 @@ impl Session {
             .tree
             .set_default_branch(branch.to_owned(), source)
             .await
-    }
-    pub fn state(&self, branch: &str) -> Result<BranchStatus> {
-        self.published(branch)?.state()
-    }
-    /// Changes when [`Self::state`] may read differently.
-    pub fn watch(&self, branch: &str) -> Result<watch::Receiver<()>> {
-        Ok(self.published(branch)?.watch())
-    }
-    /// Dispatch progress of one branch: its dispatched sequence and failure.
-    pub fn dispatch_watch(
-        &self,
-        branch: &str,
-    ) -> Result<watch::Receiver<crate::core::DispatchState>> {
-        Ok(self.published(branch)?.dispatch_watch())
     }
     pub fn branches(&self) -> Vec<TimelineInfo> {
         self.0.tree.list()
@@ -728,12 +623,6 @@ impl Session {
             &loaded.children,
         ))
     }
-    pub fn branch_diagnostics(
-        &self,
-        branch: &str,
-    ) -> Result<rutis::host::diagnostics::RuntimeDiagnostics> {
-        Ok(self.published(branch)?.diagnostics())
-    }
     pub fn get<S: Clone + Send + Sync + 'static>(&self, branch: &str) -> Result<Option<S>> {
         Ok(self.published(branch)?.get::<S>())
     }
@@ -741,19 +630,23 @@ impl Session {
     pub fn service<T: ?Sized + PublicService>(&self, branch: &str) -> Result<Arc<T>> {
         self.published(branch)?.service::<T>()
     }
-    /// Observes publication progress without exposing Timeline mutation.
-    pub fn publication(&self, branch: &str) -> Result<Publication> {
-        Ok(self.published(branch)?.publication())
-    }
     /// Reads a service of the Session group from the currently loaded
     /// Session subtree.
     pub fn session_service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
         self.0.owner.session_face::<T>()
     }
+    /// The line `id` as the facade read it, for the flow-test fixture: the
+    /// tree answers an ended line with `BranchEnded` and an unknown one with
+    /// `UnknownBranch`, and a line that is closing stays readable until it is
+    /// gone.
+    #[cfg(feature = "testing")]
+    pub(crate) fn line_for_test(&self, id: &str) -> Result<crate::route::Line> {
+        self.published(id).map(crate::route::Line::of)
+    }
     /// This Session with its router, when its owning instance provides one:
     /// the runtime alone builds the handle, so a bare [`Session`] has no path
     /// to it.
-    fn routed(&self) -> Option<crate::route::RoutedSession> {
+    pub(crate) fn routed(&self) -> Option<crate::route::RoutedSession> {
         let loaded = self.0.owner.loaded().ok()?;
         let scope = loaded.ctx.get_at::<crate::route::SessionScope>(
             &loaded.scope.key::<crate::route::SessionScope>(),

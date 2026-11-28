@@ -1,15 +1,14 @@
 use dim_agent_capabilities::workspace_tools::background::unposted_filter;
 use dim_agent_runtime::{
     AgentError, QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
-    QuerySelect, QuerySpec, Result, Session, TimelineQuery, TimelineQueryScope,
+    QuerySelect, QuerySpec, Result, TimelineQuery, TimelineQueryScope,
 };
-use dim_agent_types::{AgentEvent, EventKind, ROOT_BRANCH_ID};
+use dim_agent_types::{AgentEvent, EventKind};
 use std::{num::NonZeroU64, sync::Arc};
 
-pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()> {
+pub(super) async fn validate_rest_point(line: &dim_agent_runtime::Line, at: u64) -> Result<()> {
     if read_one(
-        session,
-        ROOT_BRANCH_ID,
+        line,
         TimelineQueryScope::Branch,
         at,
         in_field("kind", &["turn/start", "turn/end"]),
@@ -21,8 +20,7 @@ pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()
         return reject("a turn is open");
     }
     let interrupted_at = read_one(
-        session,
-        ROOT_BRANCH_ID,
+        line,
         TimelineQueryScope::Branch,
         at,
         in_field("kind", &["stop/interrupt"]),
@@ -117,8 +115,7 @@ pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()
             .collect(),
     };
     if read_one(
-        session,
-        ROOT_BRANCH_ID,
+        line,
         TimelineQueryScope::Branch,
         at,
         pending,
@@ -153,8 +150,7 @@ pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()
         ],
     };
     if read_one(
-        session,
-        ROOT_BRANCH_ID,
+        line,
         TimelineQueryScope::Branch,
         at,
         running,
@@ -166,8 +162,7 @@ pub(super) async fn validate_rest_point(session: &Session, at: u64) -> Result<()
         return reject("a background task is running");
     }
     if read_one(
-        session,
-        ROOT_BRANCH_ID,
+        line,
         TimelineQueryScope::Branch,
         at,
         unposted_filter(),
@@ -238,16 +233,13 @@ fn input_relation(kinds: &[&str]) -> QueryFilter {
 }
 
 pub(super) async fn read_one(
-    session: &Session,
-    branch: &str,
+    line: &dim_agent_runtime::Line,
     scope: TimelineQueryScope,
     at: u64,
     filter: QueryFilter,
     pick: QueryPick,
 ) -> Result<Option<Arc<AgentEvent>>> {
-    let reply = session
-        .query(branch, one_event(scope, at, filter, pick))
-        .await?;
+    let reply = line.query(one_event(scope, at, filter, pick)).await?;
     let QueryOutput::Events { events } = reply.result else {
         unreachable!("event selection returns events")
     };

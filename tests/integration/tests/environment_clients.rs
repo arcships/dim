@@ -14,6 +14,7 @@ use dim_agent_capabilities::execution_settings::{
 use dim_agent_capabilities::host_platform::HostPlatform;
 use dim_agent_runtime::Session;
 use dim_agent_runtime::SessionConfig;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, MemoryTimelineStore, Names, PartRegistry, PublishCallback,

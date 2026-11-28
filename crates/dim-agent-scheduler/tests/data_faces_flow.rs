@@ -1,4 +1,5 @@
 use dim_agent_capabilities::defaults;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_agent_scheduler::{Loops, ScheduleJobs, Wakeups};
 use dim_app_server::{RunningServer, ServerConfig, serve};

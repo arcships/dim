@@ -1,6 +1,7 @@
 //! `dimcode hooks list|enable|disable`: the effective catalog and this
 //! workspace's enablement over the public wire (Hooks design A.7).
 use super::*;
+use dim_agent_runtime::SessionLines;
 
 fn hello(wire: &mut Wire) {
     wire.hello(&["hooks.catalog", "hooks.set_enabled", "hooks.save"]);

@@ -5,6 +5,7 @@ use dim_agent_capabilities::{
     defaults,
     host::{HostFuture, ToolDriver, ToolExecutionContext},
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Feature};
 use dim_agent_types::{EventKind, ToolCall, ToolDefinition, ToolResult};

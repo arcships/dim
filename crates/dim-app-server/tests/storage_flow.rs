@@ -12,6 +12,7 @@ mod property_queries;
 
 use dim_agent_capabilities::file_storage::FileStoragePlugin;
 use dim_agent_capabilities::history::HistoryRenderer;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{chain_events, timeline_events};
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BranchOptions, Feature, MemoryTimelineStore,

@@ -43,11 +43,11 @@ Agent::restore_session(id, options)
           BranchScope：Timeline(b, 祖先链, h)；Dispatcher 尚未运行               ─┐
           能力按依赖分波 apply；各自从一次读取重建                                │ b 的打开期间
             （见下表）；部分能力追加结算终态                                      │（BranchLifecycle
-          TimelineContext::start：开始分发                                        │  Loading）
+          BranchRuntime::start：开始分发                                        │  Loading）
         追加 branch/resume，等它分发完                                            │
           打开处理器：ToolBinding 对齐工具，Prompt 采用初始配置；各读一次上下文   │
         finish_opening：打开回执，然后是已提交位置的围栏                          │
-        TimelineContext::activate：分支发布                                      ─┘
+        BranchRuntime::activate：分支发布                                      ─┘
     Session::start，entries 置为 Ready，Session::activate：Session 发布
 ```
 
@@ -92,7 +92,7 @@ v17
 
 - **串行还是并发。** rutis 在依赖都 Active 后才 apply 一个能力，所以重建读取分成四波，一波接一波。同一波的读取在时间上重叠，但按段轮流使用存储的连接：三个重叠的读取每个约 111 ms，单独一次是 38 ms。分支也是一个接一个打开：TimelineTree 等前一个分支完成后才读取下一个分支的事件。
 - **`h` 之前的 `S` 相同。** Timeline 以最后存储的序号 `h` 构建；没有追加时 `committed()` 就是 `h`。重启前留有未完成的工作时，部分能力在 `apply` 中追加结算终态（ToolExecutor、ContextPreparation、ModelProvider、InputQueue 欠写的决定、BackgroundExec 的唤醒输入；[单树装配](../../../architecture/rust-agent/single-tree.md#能力重载协议)“装载：失败判定”），于是后面几波的读者固定的 `S` 更大。并非每个读者都读到 `committed()`：ToolBinding 和 Prompt 的发布读到 `sequence()`，即已发布序号，终态尚未发布时它小于 `committed()`；Prompt 的采用读到 `branch/resume` 事件；上表逐一列出。这些位置都不小于 `h`，所以每个读者的范围都以同一段 `1..=h` 开头，只在打开期间写入的短尾上不同。
-- **热窗口还是存储。** 构建时热窗口为空，已发布序号就是 `h`，所以 `1..=h` 来自存储。打开期间追加的事件进入热窗口（Dispatcher 在 `TimelineContext::start` 之前不运行），写入任务提交后它们也在存储中。Dispatcher 自己只读热窗口。
+- **热窗口还是存储。** 构建时热窗口为空，已发布序号就是 `h`，所以 `1..=h` 来自存储。打开期间追加的事件进入热窗口（Dispatcher 在 `BranchRuntime::start` 之前不运行），写入任务提交后它们也在存储中。Dispatcher 自己只读热窗口。
 
 上表中点名 `read_context` 的行自 #942 起由事件查询的页满足，不再经过副本：`Timeline::query`（界为已发布或已提交）直接读取存储的页，上下文投影经它折叠（`history::read_context`，从检查点的 `resume` 或从祖先链起点）。副本服务剩下仍按区间读取的读取——`local`、`history`、检查点选取的锚点读取（`Timeline::checkpoint`）以及它们在 `Dispatcher`、`Branch`、`Session` 上的包装。
 
@@ -130,7 +130,7 @@ v17
 | 时点 | 位置 | 效果 |
 | --- | --- | --- |
 | 分支作用域以 `h` 构建 Timeline（`BranchScopePlugin::apply`） | assembly.rs | 打开期间开始，带着分支的祖先链和 `h`，由该分支的 `BranchLifecycle` 持有；此时不读取任何东西。`h` 为 0 且没有祖先链的分支没有可共用的内容，不开始打开期间 |
-| 分支离开 `Loading`（`BranchLifecycle` 推进到 `Active` 或 `Closing`） | config.rs | 生命周期丢弃打开期间。一个信号覆盖所有出口：`TimelineContext::activate`（发布）、`TimelineContext::finish` 开始时（关闭或卸载：失败、取消、恢复期间关闭 Session），以及 `TimelineContext` 建立之前就失败的构建的回滚 |
+| 分支离开 `Loading`（`BranchLifecycle` 推进到 `Active` 或 `Closing`） | config.rs | 生命周期丢弃打开期间。一个信号覆盖所有出口：`BranchRuntime::activate`（发布）、`BranchRuntime::finish` 开始时（关闭或卸载：失败、取消、恢复期间关闭 Session），以及 `BranchRuntime` 建立之前就失败的构建的回滚 |
 
 Timeline 只持有打开期间的弱引用，所以打开期间随阶段变化结束，不需要自己的调用点；生命周期随作用域一起丢弃时也会丢弃它。
 
@@ -318,7 +318,7 @@ release 构建，同一台 Apple M4，一次性存储放在隔离的 home 下，
 | 模块或内容 | 改动 | 理由 |
 | --- | --- | --- |
 | `dim-agent-runtime` `core/timeline.rs` | 在已提交历史读取路径中加入打开期间的副本：两个接缝（本分支部分、祖先链）和开始打开期间的函数（crate 私有） | 读取成本是 Timeline 自己的 |
-| `dim-agent-runtime` `assembly.rs`、`config.rs` | `BranchScopePlugin` 开始打开期间；`BranchLifecycle` 持有它，分支离开 `Loading` 时丢弃 | 分支生命周期已划定 `Loading`；`TimelineContext` 不变 |
+| `dim-agent-runtime` `assembly.rs`、`config.rs` | `BranchScopePlugin` 开始打开期间；`BranchLifecycle` 持有它，分支离开 `Loading` 时丢弃 | 分支生命周期已划定 `Loading`；`BranchRuntime` 不变 |
 | `testing` 特性 | `Agent::live_openings`：该 Agent 存活的分支打开期间数，无论是否已有副本，供 §14 的释放检查使用，类似 #224 的节点加载计数；发布构建不计数 | 构建失败或取消后没有公开调用能触及该 Timeline，否则无法观察它是否释放；读取次数不需要钩子（用计数存储即可） |
 | `dim-app-server` `examples/restore_cost.rs` | 堆峰值与存活字节、带范围的存储调用、可选的子分支和创建前的可选暂停、首次 idle 时存活的打开期间 | §8 以及 §14 第 8、9 条的测量；不做断言 |
 | Dispatcher、热窗口、`TimelineStore`、存储、事件类型、样本、能力、插件、协议 | 无 | §3 |

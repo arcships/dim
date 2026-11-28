@@ -4,6 +4,7 @@ use super::*;
 use dim_agent_capabilities::permission::{
     CommandRules, NoCommandRules, Permission, PermissionState,
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::{Agent, Session};
 use dim_agent_types::{
@@ -99,13 +100,145 @@ impl Sessions {
         assert_eq!(reply["ok"], false, "{reply}");
         assert!(reply["error"]["message"].is_string(), "{reply}");
         let code = reply["error"]["code"].as_str().unwrap().to_owned();
-        assert_eq!(
-            reply["error"]["retryable"],
-            matches!(code.as_str(), "reloading" | "publication_unknown"),
-            "{reply}"
-        );
+        let retryable = reply["error"]["retryable"]
+            .as_bool()
+            .expect("a failure says whether it may be retried");
+        if code != "routed" {
+            assert_eq!(
+                retryable,
+                matches!(
+                    code.as_str(),
+                    "reloading" | "session_reloading" | "publication_unknown"
+                ),
+                "{reply}"
+            );
+        }
         code
     }
+    /// A routed call to the line `at.branchId` names, under the Session
+    /// `at.sessionId` names.
+    pub(super) async fn line(&self, at: &Value, method: &str, args: Value) -> Value {
+        self.call(
+            "call",
+            json!({
+                "sessionId": at["sessionId"],
+                "lineId": at["branchId"],
+                "service": "timelineContext",
+                "method": method,
+                "args": args,
+            }),
+        )
+        .await
+    }
+    /// `timelineContext.idle` on the line, and its dispatched cutoff.
+    pub(super) async fn idle(&self, at: &Value) -> u64 {
+        let reply = self.line(at, "idle", json!([])).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["value"].as_u64().expect("idle answers its cutoff")
+    }
+    /// `timelineContext.stop` on the line, and its dispatched cutoff.
+    pub(super) async fn stop(&self, at: &Value) -> u64 {
+        let reply = self
+            .line(at, "stop", json!(["Stopped by automation"]))
+            .await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["value"].as_u64().expect("stop answers its cutoff")
+    }
+    /// `timelineContext.input` on the line the write names, answering the
+    /// committed event.
+    pub(super) async fn input(&self, write: Value) -> Value {
+        let reply = self
+            .line(
+                &json!({"sessionId": write["sessionId"], "branchId": write["branchId"]}),
+                "input",
+                json!([input_message(&write)]),
+            )
+            .await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["value"]["event"].clone()
+    }
+    /// The error code of a routed input, asserting the envelope's shape.
+    pub(super) async fn input_error(&self, write: Value) -> String {
+        let reply = self
+            .line(
+                &json!({"sessionId": write["sessionId"], "branchId": write["branchId"]}),
+                "input",
+                json!([input_message(&write)]),
+            )
+            .await;
+        assert_eq!(reply["ok"], false, "{reply}");
+        reply["error"]["code"]
+            .as_str()
+            .expect("a failure carries its code")
+            .to_owned()
+    }
+    /// The line's answer to the submission id `request.submissionId` names:
+    /// the committed event, or null.
+    pub(super) async fn lookup(&self, request: Value) -> Value {
+        let reply = self
+            .line(
+                &request,
+                "lookup",
+                json!([request["submissionId"].as_str().unwrap_or_default()]),
+            )
+            .await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["value"].clone()
+    }
+    /// Writes one input and waits for the line to publish it, which is the
+    /// pair a caller writes when its record must not outrun the store.
+    pub(super) async fn write_published(&self, write: Value) -> Value {
+        let at = json!({"sessionId": write["sessionId"], "branchId": write["branchId"]});
+        let event = self.input(write).await;
+        let sequence = event["sequence"]
+            .as_u64()
+            .expect("an event carries its sequence");
+        // The write is committed; the publication is a second operation, and a
+        // reloading index answers it retryably.
+        loop {
+            let reply = self.line(&at, "waitPublished", json!([sequence])).await;
+            if reply["ok"] == json!(true) {
+                return event;
+            }
+            assert_eq!(
+                reply["error"]["retryable"],
+                json!(true),
+                "a publication wait answers retryably while the index reloads: {reply}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+/// The `InputMessageData` a write's test shape names: the marker blocks and
+/// the user content, under the submission id and mode.
+fn input_message(write: &Value) -> Value {
+    let blocks: Vec<Value> = write["rawBlocks"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|block| {
+            let mut typed = json!({"type": "raw", "text": block["text"]});
+            if let Some(key) = block.get("key").filter(|key| key.is_object()) {
+                typed["key"] = key["name"].clone();
+                typed["retire"] = json!(key["use"] == json!("retire"));
+            }
+            typed
+        })
+        .collect();
+    let mut message = json!({
+        "submission_id": write["submissionId"],
+        "mode": write["mode"],
+        "blocks": blocks,
+    });
+    if write["content"]
+        .as_array()
+        .is_some_and(|content| !content.is_empty())
+    {
+        message["user"] = json!({"content": write["content"]});
+    }
+    message
 }
 
 /// Host Session defaults of these tests: the bound of a launch without a
@@ -760,7 +893,7 @@ async fn input_replies_after_publication_and_lookup_waits_for_committed_inputs()
         json!({"text":"live","key":{"use":"live","name":"test/live"}}),
         json!({"text":"retire","key":{"use":"retire","name":"test/old"}}),
     ]);
-    let receipt = sessions.ok("input", request).await;
+    let receipt = sessions.write_published(request).await;
     let sequence = receipt["sequence"].as_u64().unwrap();
     assert!(session.sequence("main").unwrap() >= sequence);
     let event = branch_events(&session, "main", sequence..=sequence)
@@ -768,7 +901,7 @@ async fn input_replies_after_publication_and_lookup_waits_for_committed_inputs()
         .unwrap()
         .pop()
         .unwrap();
-    assert_eq!(event.id, receipt["inputId"].as_str().unwrap());
+    assert_eq!(event.id, receipt["id"].as_str().unwrap());
     let EventKind::InputMessage(data) = &event.kind else {
         panic!("{event:?}")
     };
@@ -803,63 +936,55 @@ async fn input_replies_after_publication_and_lookup_waits_for_committed_inputs()
         }
     );
     let at = |submission: &str| json!({"sessionId":session.id(),"branchId":"main","submissionId":submission});
+    let found = sessions.lookup(at(&submission)).await;
+    assert_eq!(found["id"], json!(event.id), "{found}");
+    assert_eq!(found["sequence"], json!(sequence), "{found}");
     assert_eq!(
-        sessions.ok("lookup", at(&submission)).await,
-        json!({"status":"accepted","inputId":event.id,"sequence":sequence})
-    );
-    assert_eq!(
-        sessions.ok("lookup", at("test:other")).await,
-        json!({"status":"unknown"})
+        sessions.lookup(at("test:other")).await,
+        Value::Null,
+        "a submission the line does not hold is null"
     );
     let first = sessions
-        .ok("input", input(&session, "test:twice", json!([])))
+        .write_published(input(&session, "test:twice", json!([])))
         .await;
     assert_eq!(
         sessions
-            .ok("input", input(&session, "test:twice", json!([])))
+            .write_published(input(&session, "test:twice", json!([])))
             .await,
-        first
+        first,
+        "the line holds a submission id once"
     );
     let other = sessions
-        .ok("input", input(&session, "test:once", json!([])))
+        .write_published(input(&session, "test:once", json!([])))
         .await;
-    assert_ne!(other["inputId"], first["inputId"]);
+    assert_ne!(other["id"], first["id"]);
     let history = branch_events(&session, "main", ..).await.unwrap();
     for id in ["test:twice", "test:once"] {
         assert_eq!(history.iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some(id))).count(), 1);
     }
-    assert_eq!(
-        sessions.ok("lookup", at("test:twice")).await,
-        json!({"status":"accepted","inputId":first["inputId"],"sequence":first["sequence"]})
-    );
-    let mut missing_mode = input(&session, "test:invalid", json!([]));
-    missing_mode.as_object_mut().unwrap().remove("mode");
+    let found = sessions.lookup(at("test:twice")).await;
+    assert_eq!(found["id"], first["id"], "{found}");
+    assert_eq!(found["sequence"], first["sequence"], "{found}");
     let mut empty = input(&session, "test:invalid", json!([{"type":"text","text":""}]));
     empty["rawBlocks"] = json!([]);
-    let mut bad_key = input(&session, "test:invalid", json!([]));
-    bad_key["rawBlocks"][0]["key"] = json!({"use":"forever","name":"test/key"});
     let mut no_branch = input(&session, "test:invalid", json!([]));
     no_branch["branchId"] = json!("missing");
     let mut no_session = input(&session, "test:invalid", json!([]));
     no_session["sessionId"] = json!("missing");
     for (request, code) in [
-        (input(&session, "", json!([])), "rejected"),
-        (missing_mode, "rejected"),
-        (empty, "rejected"),
-        (bad_key, "rejected"),
-        (no_branch, "branch_missing"),
-        (no_session, "session_closed"),
+        (empty, "routed"),
+        (no_branch, "no_line"),
+        (no_session, "no_session"),
     ] {
         assert_eq!(
-            sessions.error("input", request.clone()).await,
+            sessions.input_error(request.clone()).await,
             code,
             "{request}"
         );
     }
-    assert_eq!(sessions.error("lookup", at("")).await, "rejected");
     assert_eq!(
-        sessions.ok("lookup", at("test:invalid")).await,
-        json!({"status":"unknown"}),
+        sessions.lookup(at("test:invalid")).await,
+        Value::Null,
         "rejected inputs write nothing"
     );
 
@@ -871,7 +996,7 @@ async fn input_replies_after_publication_and_lookup_waits_for_committed_inputs()
     let write = tokio::spawn({
         let sessions = sessions.clone();
         let request = input(&session, &pending, json!([]));
-        async move { sessions.call("input", request).await }
+        async move { sessions.input(request).await }
     });
     tokio::time::timeout(Duration::from_secs(5), async {
         while !publication.has_pending() {
@@ -880,20 +1005,22 @@ async fn input_replies_after_publication_and_lookup_waits_for_committed_inputs()
     })
     .await
     .unwrap();
+    // The write answers its commit; the publication is the store's, and the
+    // lookup waits for it.
+    let receipt = write.await.unwrap();
+    assert!(
+        publication.has_pending(),
+        "the commit waits for the publication"
+    );
     let found = tokio::spawn({
         let sessions = sessions.clone();
         let request = at(&pending);
-        async move { sessions.call("lookup", request).await }
+        async move { sessions.lookup(request).await }
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!write.is_finished() && !found.is_finished());
+    assert!(!found.is_finished(), "a lookup waits for the publication");
     lock.execute_batch("COMMIT").unwrap();
-    let receipt = write.await.unwrap();
-    assert_eq!(receipt["ok"], true, "{receipt}");
-    assert_eq!(
-        found.await.unwrap()["value"],
-        json!({"status":"accepted","inputId":receipt["value"]["inputId"],"sequence":receipt["value"]["sequence"]})
-    );
+    assert_eq!(found.await.unwrap(), receipt);
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -918,14 +1045,11 @@ async fn event_written(session: &Session, key: &str) {
 async fn awaiting_approval(sessions: &Sessions, agent: &Agent) -> Session {
     let session = launched(sessions, agent, json!({"preset":"workspace-write"})).await;
     sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:confirm",
-                json!([{"type":"text","text":"tool:confirm {}"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:confirm",
+            json!([{"type":"text","text":"tool:confirm {}"}]),
+        ))
         .await;
     event_written(&session, "approval/request").await;
     session
@@ -944,22 +1068,17 @@ async fn idle_covers_written_turns_and_waits_on_a_pending_approval_until_stop() 
     let session = launched(&sessions, &agent, json!({})).await;
     let at = json!({"sessionId":session.id(),"branchId":"main"});
     let receipt = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:hello",
-                json!([{"type":"text","text":"hello"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:hello",
+            json!([{"type":"text","text":"hello"}]),
+        ))
         .await;
-    let cutoff = sessions.ok("idle", at.clone()).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let cutoff = sessions.idle(&at.clone()).await;
     let history = branch_events(&session, "main", ..=cutoff).await.unwrap();
     let consumed = history
         .iter()
-        .position(|event| matches!(&event.kind, EventKind::InputConsumed(data) if data.input_id == receipt["inputId"]))
+        .position(|event| matches!(&event.kind, EventKind::InputConsumed(data) if data.input_id == receipt["id"]))
         .expect("the input was consumed by the cutoff");
     assert!(
         history[consumed..]
@@ -967,9 +1086,7 @@ async fn idle_covers_written_turns_and_waits_on_a_pending_approval_until_stop() 
             .any(|event| matches!(event.kind, EventKind::TurnEnd(_))),
         "its turn ended by the cutoff"
     );
-    let second = sessions.ok("idle", at.clone()).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let second = sessions.idle(&at.clone()).await;
     assert!(
         second >= cutoff,
         "the idle branch never goes back: {second} < {cutoff}"
@@ -1004,19 +1121,17 @@ async fn idle_covers_written_turns_and_waits_on_a_pending_approval_until_stop() 
     let idle = tokio::spawn({
         let sessions = sessions.clone();
         let at = at.clone();
-        async move { sessions.call("idle", at).await }
+        async move { sessions.line(&at, "idle", json!([])).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !idle.is_finished(),
         "a pending approval keeps the turn open"
     );
-    let stopped = sessions.ok("stop", at.clone()).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let stopped = sessions.stop(&at.clone()).await;
     let idle = idle.await.unwrap();
     assert_eq!(idle["ok"], true, "{idle}");
-    let cutoff = idle["value"]["sequence"].as_u64().unwrap();
+    let cutoff = idle["value"].as_u64().unwrap();
     assert!(cutoff >= stopped);
     let history = branch_events(&session, "main", ..=cutoff).await.unwrap();
     let interrupt = history
@@ -1030,24 +1145,22 @@ async fn idle_covers_written_turns_and_waits_on_a_pending_approval_until_stop() 
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0, "the asked tool never ran");
 
-    for (method, request, code) in [
+    for (at, method, args, code) in [
         (
-            "idle",
             json!({"sessionId":session.id(),"branchId":"missing"}),
-            "branch_missing",
-        ),
-        (
-            "stop",
-            json!({"sessionId":"missing","branchId":"main"}),
-            "session_closed",
-        ),
-        (
             "idle",
-            json!({"sessionId":session.id(),"branchId":"main","timeoutMs":10}),
-            "rejected",
+            json!([]),
+            "no_line",
+        ),
+        (
+            json!({"sessionId":"missing","branchId":"main"}),
+            "stop",
+            json!(["Stopped by automation"]),
+            "no_session",
         ),
     ] {
-        assert_eq!(sessions.error(method, request).await, code);
+        let reply = sessions.line(&at, method, args).await;
+        assert_eq!(reply["error"]["code"], code, "{reply}");
     }
     server.shutdown();
     server.join().await.unwrap();
@@ -1096,16 +1209,9 @@ async fn launch_admitted_before_an_index_reload_replies_the_created_session() {
     server.join().await.unwrap();
 }
 
-/// Waits until an `idle` call is admitted and waiting on its branch.
-async fn admitted(server: &RunningServer) {
-    let signal = server.idle_admitted().expect("an Agents index");
-    tokio::time::timeout(Duration::from_secs(5), signal.notified())
-        .await
-        .expect("idle was not admitted");
-}
-
-/// A cancelled idle or stop wait re-checks `reached >= token`, because `session.close` can
-/// acknowledge and retire the subscription in the same scheduling turn.
+/// A routed idle wait on a line with a pending approval keeps waiting across
+/// an Agents index reload, which replaces the index and not the Session, and
+/// ends when the Session closes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_ends_reloading_on_an_index_reload_and_session_closed_on_close() {
     let Served {
@@ -1121,32 +1227,33 @@ async fn idle_ends_reloading_on_an_index_reload_and_session_closed_on_close() {
     let waiting = || {
         let sessions = sessions.clone();
         let at = at.clone();
-        tokio::spawn(async move { sessions.call("idle", at).await })
+        tokio::spawn(async move { sessions.line(&at, "idle", json!([])).await })
     };
 
-    let applied = sessions.applied.load(Ordering::SeqCst);
     let idle = waiting();
-    admitted(&server).await;
-    assert!(!idle.is_finished());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!idle.is_finished(), "the approval keeps the line open");
     server.restart("Agents").await.unwrap();
-    let ended = tokio::time::timeout(Duration::from_secs(5), idle)
-        .await
-        .expect("idle did not end after the index reload")
-        .unwrap();
-    assert_eq!(ended["error"]["code"], "reloading", "{ended}");
-    assert_eq!(ended["error"]["retryable"], true);
-    assert_eq!(sessions.applied.load(Ordering::SeqCst), applied);
-    let idle = waiting();
-    admitted(&server).await;
-    assert!(!idle.is_finished(), "the approval is still pending");
-
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !idle.is_finished(),
+        "the reload replaces the index, not the Session the wait holds"
+    );
     session.close().await.unwrap();
     let ended = tokio::time::timeout(Duration::from_secs(5), idle)
         .await
         .expect("idle did not end after the close")
         .unwrap();
-    assert_eq!(ended["error"]["code"], "session_closed", "{ended}");
-    assert_eq!(sessions.error("idle", at.clone()).await, "session_closed");
+    assert_eq!(
+        ended["ok"],
+        json!(true),
+        "the close settles the line, so the wait answers its cutoff: {ended}"
+    );
+    let refused = sessions.line(&at, "idle", json!([])).await;
+    assert_eq!(
+        refused["error"]["code"], "no_session",
+        "a closed Session cannot load again: {refused}"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -1166,24 +1273,18 @@ async fn a_consumer_launches_writes_waits_and_withdraws_by_input_id() {
     let session = awaiting_approval(&sessions, &agent).await;
     let at = json!({"sessionId":session.id(),"branchId":"main"});
     let first = sessions
-        .ok(
-            "lookup",
-            json!({"sessionId":session.id(),"branchId":"main","submissionId":"test:confirm"}),
-        )
+        .lookup(json!({"sessionId":session.id(),"branchId":"main","submissionId":"test:confirm"}))
         .await;
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:held",
-                json!([{"type":"text","text":"later"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:held",
+            json!([{"type":"text","text":"later"}]),
+        ))
         .await;
     let withdraw = |input: &Value, reason: Option<&str>| {
         let mut request = at.clone();
-        request["inputId"] = input["inputId"].clone();
+        request["inputId"] = input["id"].clone();
         if let Some(reason) = reason {
             request["reason"] = json!(reason);
         }
@@ -1198,7 +1299,7 @@ async fn a_consumer_launches_writes_waits_and_withdraws_by_input_id() {
     for request in [
         withdraw(&held, None),
         withdraw(&first, None),
-        withdraw(&json!({"inputId":"unknown"}), None),
+        withdraw(&json!({"id":"unknown"}), None),
     ] {
         assert_eq!(
             sessions.ok("withdraw", request).await,
@@ -1215,11 +1316,11 @@ async fn a_consumer_launches_writes_waits_and_withdraws_by_input_id() {
         assert_eq!(sessions.error("withdraw", request).await, code);
     }
 
-    sessions.ok("stop", at.clone()).await;
-    let cutoff = sessions.ok("idle", at).await["sequence"].as_u64().unwrap();
+    sessions.stop(&at.clone()).await;
+    let cutoff = sessions.idle(&at).await;
     let history = branch_events(&session, "main", ..=cutoff).await.unwrap();
-    let held = held["inputId"].as_str().unwrap();
-    let first = first["inputId"].as_str().unwrap();
+    let held = held["id"].as_str().unwrap();
+    let first = first["id"].as_str().unwrap();
     assert!(history.iter().any(|event| matches!(&event.kind,
         EventKind::InputWithdraw(data) if data.input_id == held && data.reason.as_deref() == Some("superseded"))));
     assert!(history.iter().any(|event| event.sequence == sequence
@@ -1308,31 +1409,25 @@ async fn withdraw_is_decided_when_its_command_precedes_a_close() {
     client_session(&mut client, &agent, host_policy()).await;
     let session = awaiting_approval(&sessions, &agent).await;
     sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "pending:dispatch-gate",
-                json!([{"type":"text","text":"hold dispatch"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "pending:dispatch-gate",
+            json!([{"type":"text","text":"hold dispatch"}]),
+        ))
         .await;
     tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
         .await
         .unwrap();
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:held",
-                json!([{"type":"text","text":"later"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:held",
+            json!([{"type":"text","text":"later"}]),
+        ))
         .await;
     let written = held["sequence"].as_u64().unwrap();
-    let input_id = held["inputId"].as_str().unwrap();
-    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]});
+    let input_id = held["id"].as_str().unwrap();
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["id"]});
     let dispatch = session.dispatch_watch("main").unwrap();
     let waiting = tokio::spawn({
         let sessions = sessions.clone();
@@ -1409,26 +1504,20 @@ async fn withdraw_replies_not_held_when_its_command_precedes_a_close() {
     client_session(&mut client, &agent, host_policy()).await;
     let session = awaiting_approval(&sessions, &agent).await;
     let applied = sessions
-        .ok(
-            "lookup",
-            json!({"sessionId":session.id(),"branchId":"main","submissionId":"test:confirm"}),
-        )
+        .lookup(json!({"sessionId":session.id(),"branchId":"main","submissionId":"test:confirm"}))
         .await;
     sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "pending:dispatch-gate",
-                json!([{"type":"text","text":"hold dispatch"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "pending:dispatch-gate",
+            json!([{"type":"text","text":"hold dispatch"}]),
+        ))
         .await;
     tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
         .await
         .unwrap();
     let written = session.sequence("main").unwrap();
-    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":applied["inputId"]});
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":applied["id"]});
     let dispatch = session.dispatch_watch("main").unwrap();
     let waiting = tokio::spawn({
         let sessions = sessions.clone();
@@ -1489,31 +1578,25 @@ async fn withdraw_replies_reloading_when_the_index_unloads_after_its_command() {
     client_session(&mut client, &agent, host_policy()).await;
     let session = awaiting_approval(&sessions, &agent).await;
     sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "pending:dispatch-gate",
-                json!([{"type":"text","text":"hold dispatch"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "pending:dispatch-gate",
+            json!([{"type":"text","text":"hold dispatch"}]),
+        ))
         .await;
     tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
         .await
         .unwrap();
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:held",
-                json!([{"type":"text","text":"later"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:held",
+            json!([{"type":"text","text":"later"}]),
+        ))
         .await;
     let written = held["sequence"].as_u64().unwrap();
-    let input_id = held["inputId"].as_str().unwrap();
-    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]});
+    let input_id = held["id"].as_str().unwrap();
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["id"]});
     let dispatch = session.dispatch_watch("main").unwrap();
     let waiting = tokio::spawn({
         let sessions = sessions.clone();
@@ -1569,22 +1652,17 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
         request
     };
     let receipt = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:hello",
-                json!([{"type":"text","text":"hello"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:hello",
+            json!([{"type":"text","text":"hello"}]),
+        ))
         .await;
     let page = sessions
         .ok("history", at(json!({"atLeast":receipt["sequence"]})))
         .await;
     assert!(page["through"].as_u64().unwrap() >= receipt["sequence"].as_u64().unwrap());
-    let first = sessions.ok("idle", at(json!({}))).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let first = sessions.idle(&at(json!({}))).await;
     let batch = session
         .inputs(
             ["first", "second"]
@@ -1599,9 +1677,7 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
         .await
         .unwrap();
     let inside = batch[0].sequence;
-    let head = sessions.ok("idle", at(json!({}))).await["sequence"]
-        .as_u64()
-        .unwrap();
+    let head = sessions.idle(&at(json!({}))).await;
     let page = sessions
         .ok("history", at(json!({"after":inside - 1,"limit":1})))
         .await;
@@ -1697,18 +1773,31 @@ async fn a_consumer_deletes_its_launched_session_and_retries_a_failed_delete() {
     let idle = tokio::spawn({
         let sessions = sessions.clone();
         let at = at.clone();
-        async move { sessions.call("idle", at).await }
+        async move { sessions.line(&at, "idle", json!([])).await }
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!idle.is_finished());
     assert_eq!(sessions.ok("delete", delete(&id)).await, json!({}));
     let ended = idle.await.unwrap();
-    assert_eq!(ended["error"]["code"], "session_closed", "{ended}");
+    assert_eq!(
+        ended["ok"],
+        json!(true),
+        "the delete settles the line, so the wait answers its cutoff: {ended}"
+    );
     assert!(agent.get_session(&id).is_none() && !stored(&id));
+    for (started, method, args) in [
+        (at.clone(), "idle", json!([])),
+        (
+            at.clone(),
+            "input",
+            json!([input_message(&input(&session, "test:after", json!([])))]),
+        ),
+    ] {
+        let reply = sessions.line(&started, method, args).await;
+        assert_eq!(reply["error"]["code"], "no_session", "{method}: {reply}");
+    }
     for (method, request) in [
-        ("idle", at.clone()),
         ("history", at.clone()),
-        ("input", input(&session, "test:after", json!([]))),
         (
             "launch",
             json!({"cwd":std::env::temp_dir(),"starter":at.clone()}),
@@ -1771,11 +1860,16 @@ async fn a_consumer_deletes_its_launched_session_and_retries_a_failed_delete() {
     assert_eq!(failed, "failed");
     // Closed in this process with its rows kept (S5c D5).
     assert!(stored(&id));
+    let closed = sessions
+        .line(
+            &json!({"sessionId":id,"branchId":"main"}),
+            "idle",
+            json!([]),
+        )
+        .await;
     assert_eq!(
-        sessions
-            .error("idle", json!({"sessionId":id,"branchId":"main"}))
-            .await,
-        "session_closed"
+        closed["error"]["code"], "no_session",
+        "a Session closed in this process cannot load again: {closed}"
     );
     assert_eq!(sessions.ok("delete", delete(&id)).await, json!({}));
     assert!(!stored(&id) && !store.0.join("command-output").join(&id).exists());
@@ -1971,11 +2065,11 @@ async fn a_dropped_launch_still_registers_its_session() {
     server.join().await.unwrap();
 }
 
-/// Sessions §6.2 and §6.6, §17 #1: `input` and a deleting `withdraw` reply
-/// only once their event is published. When the store fails that write,
-/// the event stays committed but unpublished, and the reply is the
-/// retryable `publication_unknown`, not a receipt that a read right after
-/// it could not find.
+/// Sessions §6.2 and §6.6, §17 #1: a `withdraw` replies only once its event
+/// is published; when the store fails that write, the reply is the
+/// retryable `publication_unknown`. An input write answers its commit, and
+/// the publication is a second operation on the line: a publication the
+/// store cannot write closes the Session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_write() {
     let store = Store::new();
@@ -2007,25 +2101,47 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
         "test:lost",
         json!([{"type":"text","text":"lost"}]),
     );
-    assert_eq!(sessions.error("input", lost).await, "publication_unknown");
+    // The write is one operation and its publication another: the store that
+    // refuses the write leaves the event committed and unpublished, so the
+    // write answers its commit and the publication wait is what fails.
+    let at = json!({"sessionId":session.id(),"branchId":"main"});
+    let written = sessions
+        .line(&at, "input", json!([input_message(&lost)]))
+        .await;
+    assert_eq!(written["ok"], json!(true), "{written}");
+    let sequence = written["value"]["event"]["sequence"].as_u64().unwrap();
+    let publication = sessions.line(&at, "waitPublished", json!([sequence])).await;
+    assert_eq!(
+        publication["error"]["owner_code"], "Storage",
+        "the publication is not confirmed: {publication}"
+    );
+    assert!(
+        !written["value"]["event"]["id"].as_str().unwrap().is_empty(),
+        "the write committed before the publication failed"
+    );
+    let after = sessions.line(&at, "idle", json!([])).await;
+    assert!(
+        matches!(
+            after["error"]["code"].as_str(),
+            Some("session_closing" | "no_session" | "session_unavailable")
+        ),
+        "a publication the store cannot write closes the Session: {after}"
+    );
 
     let session = awaiting_approval(&sessions, &agent).await;
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:held",
-                json!([{"type":"text","text":"later"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:held",
+            json!([{"type":"text","text":"later"}]),
+        ))
         .await;
     fail(&session, "input/deleted");
     assert_eq!(
         sessions
             .error(
                 "withdraw",
-                json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
+                json!({"sessionId":session.id(),"branchId":"main","inputId":held["id"]}),
             )
             .await,
         "publication_unknown"
@@ -2041,21 +2157,18 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
         .unwrap();
     event_written(&session, "approval/request").await;
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:wire-held",
-                json!([{"type":"text","text":"later"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:wire-held",
+            json!([{"type":"text","text":"later"}]),
+        ))
         .await;
     fail(&session, "input/deleted");
     assert_eq!(
         client
             .rpc(
                 "session.input.withdraw",
-                json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
+                json!({"sessionId":session.id(),"branchId":"main","inputId":held["id"]}),
             )
             .await["error"]["data"]["appError"],
         "publication_unknown"
@@ -2071,21 +2184,18 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
         .unwrap();
     event_written(&session, "approval/request").await;
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:steer-held",
-                json!([{"type":"text","text":"replace me"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:steer-held",
+            json!([{"type":"text","text":"replace me"}]),
+        ))
         .await;
     fail(&session, "input/deleted");
     let reply = client
         .rpc(
             "session.input.withdraw",
             json!({
-                "sessionId":session.id(),"branchId":"main","inputId":held["inputId"],
+                "sessionId":session.id(),"branchId":"main","inputId":held["id"],
                 "steer":{"content":[{"type":"text","text":"replacement"}]}
             }),
         )
@@ -2192,14 +2302,18 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
         starter.config().permission_policy.preset,
         dim_agent_types::PermissionPreset::FullAccess
     );
-    for (request, code) in [
+    // `sessionPermissions` answers its own `SessionsError` codes; the routed
+    // `sessions.call` answers its selection codes (#2127).
+    for (request, code, routed) in [
         (
             json!({"sessionId":"missing","branchId":"main"}),
             "session_closed",
+            "no_session",
         ),
         (
             json!({"sessionId":starter.id(),"branchId":"missing"}),
             "branch_missing",
+            "no_line",
         ),
     ] {
         let read = client.rpc("permissions.branch", request.clone()).await;
@@ -2214,7 +2328,7 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
         assert_ok(&legacy);
         let legacy: Value = serde_json::from_str(legacy["result"].as_str().unwrap()).unwrap();
         assert_eq!(legacy["ok"], false);
-        assert_eq!(legacy["error"]["code"], code);
+        assert_eq!(legacy["error"]["code"], routed, "{legacy}");
         assert_eq!(legacy["error"]["retryable"], false);
     }
     rules.hold.send_replace(true);
@@ -2334,8 +2448,11 @@ async fn node_input_settlement_outlives_reloads_and_a_resubmission_gets_its_rece
     let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
+                // `history` acquires its Session as the removed `idle` did, so
+                // it answers `session_closed` for a missing one until the index
+                // stops, and `reloading` from then on.
                 let probe = sessions
-                    .call("idle", json!({"sessionId":"missing","branchId":"main"}))
+                    .call("history", json!({"sessionId":"missing","branchId":"main"}))
                     .await;
                 if probe["error"]["code"] == "reloading" {
                     break;
@@ -2386,7 +2503,7 @@ async fn node_input_settlement_outlives_reloads_and_a_resubmission_gets_its_rece
         .unwrap();
         let caller = sessions.clone();
         let request = write("settlement:row:append");
-        let resubmitted = tokio::spawn(async move { caller.ok("input", request).await });
+        let resubmitted = tokio::spawn(async move { caller.write_published(request).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!resubmitted.is_finished());
         waiting.release.send(()).unwrap();
@@ -2409,10 +2526,10 @@ async fn node_input_settlement_outlives_reloads_and_a_resubmission_gets_its_rece
     assert!(held.try_recv().is_err(), "resubmissions write nothing");
     assert_ne!(after["generation"], before["generation"]);
     assert_eq!(
-        after["cleanup"]["error"]["code"], "reloading",
+        after["cleanup"]["error"]["code"], "session_reloading",
         "a stopping row's late cleanup writes no input"
     );
-    assert_eq!(sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:late-row-call"})).await, json!({"status":"unknown"}));
+    assert_eq!(sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:late-row-call"})).await, Value::Null);
     let history = branch_events(&target, "main", ..).await.unwrap();
     for id in ["settlement:index:publication", "settlement:row:append"] {
         assert_eq!(history.iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some(id))).count(), 1);
@@ -2443,7 +2560,7 @@ async fn rust_named_input_keeps_its_outcome_across_reload_and_a_dropped_result()
         write
     };
     let request = write("settlement:rust:publication");
-    let call = tokio::spawn(async move { caller.ok("input", request).await });
+    let call = tokio::spawn(async move { caller.write_published(request).await });
     let waiting = tokio::time::timeout(Duration::from_secs(5), held.recv())
         .await
         .unwrap()
@@ -2461,7 +2578,7 @@ async fn rust_named_input_keeps_its_outcome_across_reload_and_a_dropped_result()
 
     let caller = sessions.clone();
     let request = write("settlement:rust:dropped");
-    let call = tokio::spawn(async move { caller.ok("input", request).await });
+    let call = tokio::spawn(async move { caller.write_published(request).await });
     let waiting = tokio::time::timeout(Duration::from_secs(5), held.recv())
         .await
         .unwrap()
@@ -2469,10 +2586,10 @@ async fn rust_named_input_keeps_its_outcome_across_reload_and_a_dropped_result()
     call.abort();
     assert!(call.await.unwrap_err().is_cancelled());
     waiting.release.send(()).unwrap();
-    let recovered = sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:rust:dropped"})).await;
-    assert_eq!(
-        recovered["status"], "accepted",
-        "dropping a result does not end its admitted writer"
+    let recovered = sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:rust:dropped"})).await;
+    assert!(
+        recovered["id"].is_string(),
+        "dropping a result does not end its admitted writer: {recovered}"
     );
     let history = branch_events(&target, "main", ..).await.unwrap();
     for id in ["settlement:rust:publication", "settlement:rust:dropped"] {
@@ -2509,7 +2626,7 @@ async fn submission_ids_survive_restart_and_legacy_duplicates_stay_ambiguous() {
         write["mode"] = json!("append");
         write
     };
-    let first = sessions.ok("input", write("test:durable")).await;
+    let first = sessions.input(write("test:durable")).await;
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
@@ -2568,12 +2685,19 @@ async fn submission_ids_survive_restart_and_legacy_duplicates_stay_ambiguous() {
         ..
     } = serve_with(setup()).await;
     client_session(&mut client, &agent, host_policy()).await;
-    assert_eq!(sessions.ok("input", write("test:durable")).await, first);
+    assert_eq!(sessions.input(write("test:durable")).await, first);
     let at = json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:legacy"});
-    assert_eq!(sessions.error("lookup", at).await, "ambiguous");
+    let reply = sessions.line(&at, "lookup", json!(["test:legacy"])).await;
     assert_eq!(
-        sessions.error("input", write("test:legacy")).await,
-        "ambiguous"
+        reply["error"]["owner_code"], "AmbiguousSubmission",
+        "legacy duplicates stay ambiguous: {reply}"
+    );
+    let reply = sessions
+        .line(&at, "input", json!([input_message(&write("test:legacy"))]))
+        .await;
+    assert_eq!(
+        reply["error"]["owner_code"], "AmbiguousSubmission",
+        "{reply}"
     );
     let history = branch_events(&agent.get_session(target.id()).unwrap(), "main", ..)
         .await
@@ -2636,8 +2760,9 @@ async fn node_input_preparation_refuses_a_retired_row_before_handoff() {
     let reply = client.response(call).await;
     assert_ok(&reply);
     let reply: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
-    assert_eq!(reply["error"]["code"], "reloading", "{reply}");
-    assert_eq!(sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:retired-before-handoff"})).await, json!({"status":"unknown"}));
+    // The routed call answers a retired row with its transient selection code.
+    assert_eq!(reply["error"]["code"], "session_reloading", "{reply}");
+    assert_eq!(sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:retired-before-handoff"})).await, Value::Null);
     assert_ne!(
         settlement_status(&mut client).await["generation"],
         before["generation"]
@@ -2707,8 +2832,8 @@ async fn node_crash_resubmission_gets_the_original_receipt() {
     assert_ok(&reply);
     let receipt: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!(receipt["value"]["sequence"], waiting.sequence, "{receipt}");
-    let recovered = sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:crash:append"})).await;
-    assert_eq!(recovered["inputId"], receipt["value"]["inputId"]);
+    let recovered = sessions.lookup(json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:crash:append"})).await;
+    assert_eq!(recovered["id"], receipt["value"]["id"]);
     assert_eq!(branch_events(&target, "main", ..).await.unwrap().iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some("settlement:crash:append"))).count(), 1);
     server.shutdown();
     server.join().await.unwrap();
@@ -2751,7 +2876,7 @@ async fn temporary_route_adoption_requires_inputs_to_finish_dispatching() {
         json!([{"type":"text","text":"Wait for dispatch"}]),
     );
     queued["mode"] = json!("append");
-    sessions.ok("input", queued).await;
+    sessions.input(queued).await;
     tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
         .await
         .unwrap();
@@ -3093,32 +3218,26 @@ async fn pending_waits_for_published_input_dispatch_and_abandonment_is_local() {
     client_session(&mut client, &agent, host_policy()).await;
     let session = awaiting_approval(&sessions, &agent).await;
     sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "pending:dispatch-gate",
-                json!([{"type":"text","text":"hold dispatch"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "pending:dispatch-gate",
+            json!([{"type":"text","text":"hold dispatch"}]),
+        ))
         .await;
     tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
         .await
         .unwrap();
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "pending:behind-dispatch",
-                json!([{"type":"text","text":"later"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "pending:behind-dispatch",
+            json!([{"type":"text","text":"later"}]),
+        ))
         .await;
     let sequence = held["sequence"].as_u64().unwrap();
     assert!(session.sequence("main").unwrap() >= sequence);
     assert!(session.dispatch_watch("main").unwrap().borrow().sequence < sequence);
-    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]});
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["id"]});
     {
         let waiting = sessions.ok("pending", request.clone());
         tokio::pin!(waiting);
@@ -3192,21 +3311,18 @@ async fn pending_follows_the_queue_until_an_input_is_consumed_or_deleted() {
     let at = json!({"sessionId":session.id(),"branchId":"main"});
     let ask = |input: &Value| {
         let mut request = at.clone();
-        request["inputId"] = input["inputId"].clone();
+        request["inputId"] = input["id"].clone();
         request
     };
 
     // The turn stays open on its approval, so a Queue input waits behind it
     // and is pending.
     let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:pending",
-                json!([{"type":"text","text":"later"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:pending",
+            json!([{"type":"text","text":"later"}]),
+        ))
         .await;
     assert_eq!(
         sessions.ok("pending", ask(&held)).await,
@@ -3218,17 +3334,14 @@ async fn pending_follows_the_queue_until_an_input_is_consumed_or_deleted() {
     // runs: a Queue input written into an idle branch is applied at once and can
     // then only be consumed, while one written behind a running turn is held
     // unapplied (session access A.4). Only the held one can be withdrawn.
-    sessions.ok("stop", at.clone()).await;
-    sessions.ok("idle", at.clone()).await;
+    sessions.stop(&at.clone()).await;
+    sessions.idle(&at.clone()).await;
     let drain = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:drain",
-                json!([{"type":"text","text":"tool:confirm {}"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:drain",
+            json!([{"type":"text","text":"tool:confirm {}"}]),
+        ))
         .await;
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -3260,14 +3373,11 @@ async fn pending_follows_the_queue_until_an_input_is_consumed_or_deleted() {
     // A withdrawn input is not pending, and neither is an id the branch never
     // held.
     let deleted = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:deleted",
-                json!([{"type":"text","text":"drop me"}]),
-            ),
-        )
+        .write_published(input(
+            &session,
+            "test:deleted",
+            json!([{"type":"text","text":"drop me"}]),
+        ))
         .await;
     let withdrawal = sessions.ok("withdraw", ask(&deleted)).await;
     assert_eq!(withdrawal["status"], "deleted", "{withdrawal}");
@@ -3298,7 +3408,7 @@ async fn pending_follows_the_queue_until_an_input_is_consumed_or_deleted() {
         "rejected"
     );
 
-    sessions.ok("stop", at).await;
+    sessions.stop(&at).await;
     server.shutdown();
     server.join().await.unwrap();
 }

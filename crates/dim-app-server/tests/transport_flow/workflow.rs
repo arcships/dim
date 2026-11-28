@@ -1,6 +1,7 @@
 //! Workflow's actual row, which registers its Session part, through Settings,
 //! files, S2 and C1.
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use dim_app_server::protocol::PROTOCOL_VERSION;
 use std::path::{Path, PathBuf};

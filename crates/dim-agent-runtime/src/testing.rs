@@ -314,6 +314,90 @@ pub(crate) async fn closing(session_id: &str, branch: &str) {
     }
 }
 
+/// One dispatch wait, stopped after it read a dispatch position short of its
+/// target and before it looks at the line's close.
+struct WaitHold {
+    session: String,
+    branch: String,
+    arrived: mpsc::UnboundedSender<()>,
+    release: watch::Receiver<bool>,
+}
+static WAITS: Mutex<Vec<WaitHold>> = Mutex::new(Vec::new());
+
+/// The next dispatch wait on `branch` in `session_id` that reads a position
+/// short of its target, held before it looks at the line's close, so a test
+/// can finish the close in between.
+pub struct HeldWait {
+    session: String,
+    branch: String,
+    arrived: mpsc::UnboundedReceiver<()>,
+    release: watch::Sender<bool>,
+}
+impl HeldWait {
+    /// Resolves once the wait has stopped.
+    pub async fn arrived(&mut self) {
+        let _ = self.arrived.recv().await;
+    }
+    /// Lets the wait continue.
+    pub fn release(&self) {
+        self.release.send_replace(true);
+    }
+}
+impl Drop for HeldWait {
+    fn drop(&mut self) {
+        self.release();
+        let (session, branch) = (
+            std::mem::take(&mut self.session),
+            std::mem::take(&mut self.branch),
+        );
+        WAITS
+            .lock()
+            .unwrap()
+            .retain(|hold| hold.session != session || hold.branch != branch);
+    }
+}
+
+/// Holds the next dispatch wait on `branch` in `session_id` between its read
+/// of the dispatch position and its look at the close.
+pub fn hold_dispatch_wait(session_id: &str, branch: &str) -> HeldWait {
+    let (arrived, wait) = mpsc::unbounded_channel();
+    let (release, released) = watch::channel(false);
+    WAITS.lock().unwrap().push(WaitHold {
+        session: session_id.to_owned(),
+        branch: branch.to_owned(),
+        arrived,
+        release: released,
+    });
+    HeldWait {
+        session: session_id.to_owned(),
+        branch: branch.to_owned(),
+        arrived: wait,
+        release,
+    }
+}
+
+/// The hook [`hold_dispatch_wait`] installs: no hold, no wait. A hold stops
+/// one wait.
+pub(crate) async fn dispatch_wait(session_id: &str, branch: &str) {
+    let (arrived, mut release) = {
+        let mut holds = WAITS.lock().unwrap();
+        let Some(index) = holds
+            .iter()
+            .position(|hold| hold.session == session_id && hold.branch == branch)
+        else {
+            return;
+        };
+        let hold = holds.remove(index);
+        (hold.arrived, hold.release)
+    };
+    let _ = arrived.send(());
+    while !*release.borrow_and_update() {
+        if release.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Mounts the loader on `root`, reconciles the assembly and creates the
 /// Agent instance, then builds the Agent in it.
 async fn assemble(
@@ -546,4 +630,151 @@ async fn read<R: std::ops::RangeBounds<u64> + Send>(
         }
     }
     Ok(events)
+}
+
+/// The line operations a flow test drives, now that a [`Session`] carries
+/// none: each resolves the line through the same route production uses, and
+/// answers the operation's own result.
+///
+/// A test names the line it drives, as a caller does. Feature `testing` only:
+/// a build without it has no such entry, which is the point of moving tests
+/// off the facade.
+#[allow(
+    async_fn_in_trait,
+    reason = "flow tests await these directly; the trait is a fixture, never a dyn object"
+)]
+pub trait SessionLines {
+    /// The line, resolved as the route resolves it.
+    fn line_of(&self, line: &str) -> Result<crate::route::Line>;
+    /// The answer a write gets before its line is selected, as the facade
+    /// gave it: the runtime fault that stopped the Session first, then
+    /// `Closed` once the Session is closing.
+    fn admit_write(&self) -> Result<()>;
+    async fn submit(
+        &self,
+        text: String,
+        mode: dim_agent_types::InputMode,
+        line: &str,
+    ) -> Result<Arc<dim_agent_types::AgentEvent>> {
+        self.input(
+            dim_agent_types::InputMessageData::text(text, Some(mode)),
+            line,
+        )
+        .await
+    }
+    async fn input(
+        &self,
+        data: dim_agent_types::InputMessageData,
+        line: &str,
+    ) -> Result<Arc<dim_agent_types::AgentEvent>> {
+        self.admit_write()?;
+        Ok(self.line_of(line)?.context().input(data).await?.event)
+    }
+    async fn input_commit(
+        &self,
+        data: dim_agent_types::InputMessageData,
+        line: &str,
+    ) -> Result<(Arc<dim_agent_types::AgentEvent>, crate::InputCommit)> {
+        self.admit_write()?;
+        let reply = self.line_of(line)?.context().input(data).await?;
+        Ok((
+            reply.event,
+            if reply.written {
+                crate::InputCommit::Written
+            } else {
+                crate::InputCommit::Existing
+            },
+        ))
+    }
+    async fn inputs(
+        &self,
+        inputs: Vec<dim_agent_types::InputMessageData>,
+        line: &str,
+    ) -> Result<Vec<Arc<dim_agent_types::AgentEvent>>> {
+        self.admit_write()?;
+        self.line_of(line)?.context().inputs(inputs).await
+    }
+    async fn lookup(
+        &self,
+        line: &str,
+        id: &str,
+    ) -> Result<Option<Arc<dim_agent_types::AgentEvent>>> {
+        self.line_of(line)?.context().lookup(id.to_owned()).await
+    }
+    fn interrupt(&self, line: &str, reason: String) -> Result<u64> {
+        self.line_of(line)?.context().interrupt(reason)
+    }
+    async fn stop(&self, line: &str, reason: String) -> Result<u64> {
+        self.line_of(line)?.context().stop(reason).await
+    }
+    async fn idle(&self, line: &str) -> Result<u64> {
+        let idle = self.line_of(line)?.context().idle().await;
+        if idle.is_ok() {
+            crate::memory::trim_if_large();
+        }
+        idle
+    }
+    fn state(&self, line: &str) -> Result<crate::BranchStatus> {
+        self.line_of(line)?.context().state()
+    }
+    fn sequence(&self, line: &str) -> Result<u64> {
+        match self.line_of(line) {
+            Ok(line) => Ok(line.timeline().sequence()),
+            Err(error) => self.ended_head(line).ok_or(error),
+        }
+    }
+    /// The fixed head of an ended line, `None` for an open or unknown one.
+    fn ended_head(&self, line: &str) -> Option<u64>;
+    async fn query(
+        &self,
+        line: &str,
+        query: crate::TimelineQuery,
+    ) -> Result<crate::TimelineQueryReply> {
+        if query.include_publishing {
+            return Err(AgentError::InvalidInput(
+                "a facade read stops at the published head".into(),
+            ));
+        }
+        self.line_of(line)?.timeline().query(query).await
+    }
+    async fn batch_end(&self, line: &str, sequence: u64) -> Result<()> {
+        self.line_of(line)?.timeline().batch_end(sequence).await
+    }
+    fn watch(&self, line: &str) -> Result<watch::Receiver<()>> {
+        Ok(self.line_of(line)?.watch())
+    }
+    fn dispatch_watch(&self, line: &str) -> Result<watch::Receiver<crate::core::DispatchState>> {
+        Ok(self.line_of(line)?.dispatch_watch())
+    }
+    fn publication(&self, line: &str) -> Result<Publication> {
+        Ok(self.line_of(line)?.publication())
+    }
+    fn branch_diagnostics(
+        &self,
+        line: &str,
+    ) -> Result<rutis::host::diagnostics::RuntimeDiagnostics> {
+        Ok(self.line_of(line)?.diagnostics())
+    }
+}
+
+impl SessionLines for crate::Session {
+    /// The line a flow test drives, selected as the facade selected it: a
+    /// line the tree still holds is served even while it closes, so a test
+    /// reads the last state a client could read. An unknown line and an ended
+    /// one answer as they did before the handle existed.
+    fn line_of(&self, line: &str) -> Result<crate::route::Line> {
+        self.line_for_test(line)
+    }
+    fn admit_write(&self) -> Result<()> {
+        if let Some(error) = self.failure() {
+            return Err(error);
+        }
+        if self.is_closing() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        Ok(())
+    }
+    fn ended_head(&self, line: &str) -> Option<u64> {
+        crate::Session::ended_head(self, line)
+    }
 }

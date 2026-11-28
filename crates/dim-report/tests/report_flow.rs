@@ -9,6 +9,7 @@ use dim_agent_capabilities::{
         ModelStream,
     },
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{AgentBuilder, AgentConfig, ConfigureUpdate, testing::branch_events};
 use dim_agent_types::{
     ContentBlock, EventKind, InputMessageData, InputMode, ModelOutputOutcome, ModelRequest,

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises'
-import type { InputWrite, PermissionPolicy, ProcessActivity, SessionRef, Sessions } from '../../../npm/plugin.js'
+import type { PermissionPolicy, ProcessActivity, SessionRef, Sessions } from '../../../npm/plugin.js'
+import type { InputMessageData } from '../../../npm/branch-services.js'
 import { Catalog, select } from './catalog.ts'
 import { parameters, payloadBytes, policy, render, stages, WorkflowError, type Source, type StageDefinition } from './definition.ts'
 import { StageHistory } from './history.ts'
@@ -22,6 +23,20 @@ const need = (runs: Run[], id: string, sessionId?: string): Run => {
 }
 const failed = (run: Run) => run.stages.some(stage => ['failed', 'stopped', 'lost'].includes(stage.state))
 const escaped = (text: string) => text.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]!)
+
+/** What one line operation answered, as the workflow reads it: the value it
+ * needs, or the code to record and whether the caller may retry. */
+type LineAnswer<T> = { ok: true; value: T } | { ok: false; code: string; retryable: boolean }
+
+/** A refusal in the workflow's own terms: the target owner's code when the
+ * owner wrote one, else the route's. */
+const refusal = (error: { code: string; retryable?: boolean; owner_code?: string | null }) =>
+  ({ code: error.owner_code ?? error.code, retryable: error.retryable === true })
+
+/** The targets a route reports as gone: the Session or the line is not there,
+ * or the owner closed it. */
+const gone = (code: string) =>
+  ['no_session', 'no_line', 'Closed', 'UnknownBranch', 'BranchEnded'].includes(code)
 
 /** One fixed process row owns runs, native operations and store writes. */
 export class Workflow {
@@ -277,16 +292,16 @@ export class Workflow {
       return true
     })
     if (!accepted) return
-    const input: InputWrite = { sessionId, branchId: 'main', mode: 'queue', submissionId,
-      rawBlocks: [{ text: `<dim-workflow kind="stage" run="${escaped(id)}" stage="${escaped(stageId)}"></dim-workflow>` }],
-      content: [{ type: 'text', text: prompt }],
+    const input: InputMessageData = { mode: 'queue', submission_id: submissionId,
+      blocks: [{ type: 'raw', text: `<dim-workflow kind="stage" run="${escaped(id)}" stage="${escaped(stageId)}"></dim-workflow>` }],
+      user: { content: [{ type: 'text', text: prompt }] },
     }
-    let receipt = await this.sessions.input(input)
+    let receipt = await this.deliver(sessionId, 'main', input)
     let inputId: string | undefined
     while (inputId === undefined) {
       if (receipt.ok) { inputId = receipt.value.inputId; break }
-      const code = receipt.error.code
-      if (!['reloading', 'publication_unknown'].includes(code)) {
+      const code = receipt.code
+      if (!receipt.retryable && !gone(code)) {
         await this.store.update(runs => {
           const stage = need(runs, id).stages.find(stage => stage.id === stageId)!
           stage.state = 'failed'; stage.reason = code
@@ -295,23 +310,23 @@ export class Workflow {
       }
       for (;;) {
         if (this.fault) return
-        const lookup = await this.sessions.lookup({ sessionId, branchId: 'main', submissionId })
-        if (lookup.ok && lookup.value.status === 'accepted') { inputId = lookup.value.inputId; break }
-        if (!lookup.ok && lookup.error.code !== 'reloading') {
+        const lookup = await this.lookup(sessionId, 'main', submissionId)
+        if (lookup.ok && lookup.value) { inputId = lookup.value.inputId; break }
+        if (!lookup.ok && !lookup.retryable) {
           await this.store.update(runs => {
             const stage = need(runs, id).stages.find(stage => stage.id === stageId)!
-            stage.state = 'failed'; stage.reason = lookup.error.code
+            stage.state = 'failed'; stage.reason = lookup.code
           })
           return
         }
-        if (lookup.ok && lookup.value.status === 'unknown') {
+        if (lookup.ok) {
           const run = await this.current(id)
           if (this.closing || run.state === 'stopping' || failed(run)) {
             await this.store.update(runs => { need(runs, id).stages.find(stage => stage.id === stageId)!.state = 'stopped' })
             return
           }
           await this.pause()
-          receipt = await this.sessions.input(input)
+          receipt = await this.deliver(sessionId, 'main', input)
           break
         }
         if (this.closing && Date.now() - this.closingAt! >= 10_000) {
@@ -369,12 +384,12 @@ export class Workflow {
             return
           }
         } else if (!stopSent) {
-          const reply = await this.sessions.stop({ sessionId, branchId: 'main', reason: 'workflow stopping' })
+          const reply = await this.stopLine(sessionId, 'main', 'workflow stopping')
           if (reply.ok) stopSent = true
-          else if (!['reloading', 'session_closed', 'branch_missing'].includes(reply.error.code)) {
+          else if (!reply.retryable && !gone(reply.code)) {
             await this.store.update(runs => {
               const stage = need(runs, id).stages.find(stage => stage.id === stageId)!
-              stage.state = 'failed'; stage.reason = reply.error.code
+              stage.state = 'failed'; stage.reason = reply.code
             })
             return
           }
@@ -382,6 +397,46 @@ export class Workflow {
       }
       await this.pause()
     }
+  }
+
+  /** Commits one input on `branchId` and waits for its publication: a delivery
+   * record must not outrun the store. Once the input committed, a publication
+   * wait that fails for any reason but a gone line answers the retryable
+   * `publication_unknown`: the caller resubmits the same submission id, which
+   * the line accepts once and answers with the first input. */
+  private async deliver(sessionId: string, branchId: string, message: InputMessageData):
+    Promise<LineAnswer<{ inputId: string; sequence: number }>> {
+    const written = await this.sessions.call({ sessionId, lineId: branchId, service: 'timelineContext',
+      method: 'input', args: [message] })
+    if (!written.ok) return { ok: false, ...refusal(written.error) }
+    const event = written.value.event
+    for (;;) {
+      const published = await this.sessions.call({ sessionId, lineId: branchId, service: 'timelineContext',
+        method: 'waitPublished', args: [event.sequence] })
+      if (published.ok) return { ok: true, value: { inputId: event.id, sequence: Number(event.sequence) } }
+      const failed = refusal(published.error)
+      if (gone(failed.code)) return { ok: false, ...failed }
+      if (!failed.retryable) return { ok: false, code: 'publication_unknown', retryable: true }
+      await this.pause()
+    }
+  }
+
+  /** The line's answer to a submission id: the committed input, nothing, or a
+   * failure. */
+  private async lookup(sessionId: string, branchId: string, submissionId: string):
+    Promise<LineAnswer<{ inputId: string } | null>> {
+    const reply = await this.sessions.call({ sessionId, lineId: branchId, service: 'timelineContext',
+      method: 'lookup', args: [submissionId] })
+    if (!reply.ok) return { ok: false, ...refusal(reply.error) }
+    return { ok: true, value: reply.value === null ? null : { inputId: reply.value.id } }
+  }
+
+  /** Stops the line's turn and answers its confirmed cutoff. */
+  private async stopLine(sessionId: string, branchId: string, reason: string):
+    Promise<LineAnswer<{ sequence: number | bigint }>> {
+    const reply = await this.sessions.call({ sessionId, lineId: branchId, service: 'timelineContext',
+      method: 'stop', args: [reason] })
+    return reply.ok ? { ok: true, value: { sequence: reply.value } } : { ok: false, ...refusal(reply.error) }
   }
 
   private async pause() {
@@ -412,25 +467,24 @@ export class Workflow {
         if (pending.state === 'pending') pending.attempt_open = true
       })
       const text = this.reportText(run)
-      const reply = await this.sessions.input({ ...address, submissionId: report.submission_id, mode: 'steer',
-        rawBlocks: [{ text }], content: [],
-      })
+      const reply = await this.deliver(address.sessionId, address.branchId,
+        { submission_id: report.submission_id, mode: 'steer', blocks: [{ type: 'raw', text }] })
       await this.store.update(runs => {
         const run = need(runs, id)
         if (reply.ok) run.report = { state: 'delivered' }
-        else if (reply.error.code === 'ambiguous') {
+        else if (reply.code === 'AmbiguousSubmission') {
           run.report = { state: 'delivered' }
           log(run, 'Duplicate report violation: input ambiguous')
-        } else if (['session_closed', 'branch_missing', 'branch_ended', 'rejected'].includes(reply.error.code)) {
-          run.report = { state: 'undeliverable', reason: reply.error.code }
-          if (reply.error.code === 'rejected') log(run, 'Invalid report rejected')
+        } else if (gone(reply.code) || reply.code === 'InvalidInput') {
+          run.report = { state: 'undeliverable', reason: reply.code }
+          if (reply.code === 'InvalidInput') log(run, 'Invalid report rejected')
         } else {
           const pending = run.report
           if (pending.state === 'pending') pending.attempt_open = false
-          log(run, `Report input failed: ${reply.error.code}`)
+          log(run, `Report input failed: ${reply.code}`)
         }
       })
-      if (reply.ok || !['publication_unknown', 'reloading'].includes(reply.error.code)) return
+      if (reply.ok || !reply.retryable) return
       await this.pause()
     }
   }

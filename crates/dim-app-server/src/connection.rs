@@ -49,6 +49,16 @@ const CONTROL_RESERVE: usize = 8;
 /// branch when a concurrent move ends the line it started on.
 const SUMMARY_READ_ATTEMPTS: usize = 2;
 
+/// The line `session` names, for a holder in this connection's code: the
+/// route's answer becomes the protocol's own failure.
+fn rpc_line(
+    index: &crate::agents::AgentIndex,
+    session: &str,
+    line: &str,
+) -> Result<dim_agent_runtime::Line, RpcError> {
+    index.line(session, line).map_err(RpcError::from)
+}
+
 /// One storeless listing row's snapshot: the Session's default branch, its
 /// running state and the cutoffs both reads of the row use (session catalog
 /// §3.3). The line can end under the read, which only a move off it allows
@@ -59,10 +69,12 @@ fn summary_record(
     session: &Session,
 ) -> dim_agent_runtime::Result<(SessionInfo, crate::agents::SummaryCutoff)> {
     let default = session.default_branch()?;
-    let status = session.state(&default)?;
+    let line = crate::agents::AgentIndex::host_line(host, session.id(), &default)?;
+    let status = line.context().state()?;
     let cutoff = crate::agents::SummaryCutoff {
-        preview_through: session.sequence(ROOT_BRANCH_ID)?,
-        activity_through: session.sequence(&default)?,
+        preview_through: crate::agents::AgentIndex::host_line(host, session.id(), ROOT_BRANCH_ID)?
+            .sequence(),
+        activity_through: line.sequence(),
         default,
     };
     Ok((
@@ -320,6 +332,7 @@ impl Connection {
     }
     async fn scoped_route_admission(
         &self,
+        rpc: &RpcService,
         usage: &SessionUse,
     ) -> Result<tokio::sync::OwnedMutexGuard<()>, RpcError> {
         let admission = usage.admission().await;
@@ -334,12 +347,13 @@ impl Connection {
             return Err(conflict());
         }
         for branch in session.branches() {
-            let dispatched = session.dispatch_watch(&branch.id)?.borrow().clone();
-            let publication = session.publication(&branch.id)?;
+            let line = rpc_line(rpc.index.as_ref(), session.id(), &branch.id)?;
+            let dispatched = line.dispatch_watch().borrow().clone();
+            let publication = line.publication();
             if dispatched.failure.is_some()
                 || publication.has_pending()
                 || dispatched.sequence < publication.sequence()
-                || session.state(&branch.id)?.running
+                || line.context().state()?.running
             {
                 return Err(conflict());
             }
@@ -1370,9 +1384,12 @@ impl Connection {
                             Err(error) => return Some(Err(error.into())),
                         },
                     };
-                    let result = session
+                    let stopped = match self.line_ended_aware(&session, &branch) {
+                        Ok(line) => line.context(),
+                        Err(error) => return Some(Err(error)),
+                    };
+                    let result = stopped
                         .stop(
-                            &branch,
                             params
                                 .reason
                                 .unwrap_or_else(|| "User requested stop".into()),
@@ -1402,7 +1419,17 @@ impl Connection {
                         biased;
                         _ = self.closed.cancelled() => return None,
                         _ = rpc.unloading.cancelled() => Err(RpcError::reloading()),
-                        result = session.idle(&branch) => result.map_err(RpcError::from),
+                        result = async {
+                            // A line the user ended has no idle to wait for:
+                            // the answer is the end itself ([#2227]).
+                            if session.ended_head(&branch).is_some() {
+                                return Err(RpcError::from(
+                                    dim_agent_runtime::AgentError::BranchEnded(branch.clone()),
+                                ));
+                            }
+                            let line = rpc_line(rpc.index.as_ref(), session.id(), &branch)?;
+                            line.context().idle().await.map_err(RpcError::from)
+                        } => result,
                     };
                     match result {
                         Ok(sequence) => self.barrier(sequence, delivery, &rpc.unloading).await,
@@ -1456,15 +1483,14 @@ impl Connection {
                 )
                 .await
             {
-                Ok(fork) => fork
-                    .sequence(ROOT_BRANCH_ID)
+                Ok(fork) => rpc_line(rpc.index.as_ref(), fork.id(), ROOT_BRANCH_ID)
+                    .map(|line| line.sequence())
                     .map(|sequence| {
                         Reply::Fork(ForkResult {
                             session_id: fork.id().to_owned(),
                             sequence,
                         })
-                    })
-                    .map_err(RpcError::from),
+                    }),
                 Err(error) => Err(error),
             },
             Call::ApprovalRespond(params) => {
@@ -1486,8 +1512,9 @@ impl Connection {
                 result.map_err(|error| {
                     let live = rpc
                         .index
-                        .session(&params.session_id)
-                        .and_then(|(_, session)| session.state(&branch).ok())
+                        .line(&params.session_id, &branch)
+                        .ok()
+                        .and_then(|line| line.context().state().ok())
                         .is_some_and(|state| !state.closed);
                     if error.is_closed() && live {
                         RpcError::reloading()
@@ -1564,10 +1591,11 @@ impl Connection {
                 {
                     continue;
                 }
-                let running = session
-                    .branches()
-                    .iter()
-                    .any(|branch| session.state(&branch.id).is_ok_and(|state| state.running));
+                let running = session.branches().iter().any(|branch| {
+                    AgentIndex::host_line(&host, session.id(), &branch.id)
+                        .and_then(|line| line.context().state())
+                        .is_ok_and(|state| state.running)
+                });
                 if !running && self.hub.attached_clients(session.id()) == 0 {
                     continue;
                 }
@@ -1752,7 +1780,7 @@ impl Connection {
                     ));
                 }
                 let mut scoped_admission = if recover_shared {
-                    Some(self.scoped_route_admission(usage).await?)
+                    Some(self.scoped_route_admission(rpc, usage).await?)
                 } else {
                     None
                 };
@@ -1857,7 +1885,7 @@ impl Connection {
                     && let Some(provider) = route_owner
                     && let Some(admission) = provider.scoped_model(&self.id, &model)?
                 {
-                    scoped_admission = Some(self.scoped_route_admission(usage).await?);
+                    scoped_admission = Some(self.scoped_route_admission(rpc, usage).await?);
                     model = admission.model.clone();
                     startup_admission = Some(admission);
                 }
@@ -2152,7 +2180,7 @@ impl Connection {
                 session.config().model.config.as_ref(),
                 session.config().model.metadata.as_ref(),
             ),
-            sequence: session.sequence(ROOT_BRANCH_ID).map_err(RpcError::from)?,
+            sequence: rpc_line(rpc.index.as_ref(), session.id(), ROOT_BRANCH_ID)?.sequence(),
             worktree: worktree.as_ref().map(|created| created.reply()),
             auto_compact_window_elevation,
         }))

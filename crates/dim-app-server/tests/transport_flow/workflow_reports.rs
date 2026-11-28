@@ -1,5 +1,6 @@
 //! Public report/store binding acceptance; no Workflow stage engine is installed.
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::branch_events;
 use std::path::{Path, PathBuf};
 
@@ -120,12 +121,14 @@ async fn node_workflow_report_crash_recovery_resubmits_and_gets_the_first_input(
     );
     assert_eq!(count(&target).await, 1);
     let lookup = sessions
-        .ok(
-            "lookup",
+        .lookup(
             json!({"sessionId":target.id(),"branchId":"main","submissionId":"workflow:report:binding-report"}),
         )
         .await;
-    assert_eq!(lookup["status"], "accepted");
+    assert!(
+        lookup["id"].is_string(),
+        "the line holds the report's input: {lookup}"
+    );
     loader.restart("workflow-report").await.unwrap();
     ready(&mut client).await;
     assert_ok(&client.rpc("report.recover", json!({})).await);
@@ -133,10 +136,7 @@ async fn node_workflow_report_crash_recovery_resubmits_and_gets_the_first_input(
     let holder = client_session(&mut client, &agent, host_policy()).await;
     seed(&home, holder.id());
     let first = sessions
-        .ok(
-            "input",
-            input(&holder, "workflow:report:binding-report", json!([])),
-        )
+        .write_published(input(&holder, "workflow:report:binding-report", json!([])))
         .await;
     loader.restart("workflow-report").await.unwrap();
     ready(&mut client).await;
@@ -148,10 +148,7 @@ async fn node_workflow_report_crash_recovery_resubmits_and_gets_the_first_input(
     assert_eq!(count(&holder).await, 1);
     assert_eq!(
         sessions
-            .ok(
-                "input",
-                input(&holder, "workflow:report:binding-report", json!([]))
-            )
+            .write_published(input(&holder, "workflow:report:binding-report", json!([])))
             .await,
         first
     );

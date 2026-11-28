@@ -3,6 +3,7 @@
 //! branch, follows its committed events in order and writes input through
 //! `treeCommands`.
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::Timeline;
 use dim_agent_runtime::testing::branch_events;
 use dim_app_server::session_typescript::SessionTypeScriptConfig;

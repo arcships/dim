@@ -5,6 +5,7 @@
 //! disposable native stores.
 use super::deletion::{Store, session, turn};
 use super::*;
+use dim_agent_runtime::SessionLines;
 use dim_app_server::{
     session_typescript::SessionTypeScriptConfig, storage::testing::hold_title_write,
 };

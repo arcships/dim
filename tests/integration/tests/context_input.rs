@@ -1,3 +1,4 @@
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::{AgentBuilder, AgentConfig, SessionConfig, testing::MinimalHost};
 use dim_agent_types::{EventKind, InputMessageData, InputMode};

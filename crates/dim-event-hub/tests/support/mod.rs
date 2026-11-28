@@ -4,6 +4,7 @@ pub mod fixture;
 use dim_agent_capabilities::{
     defaults, history::HistoryRenderer, host::*, workspace_tools::WorkspaceToolsConfig,
 };
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Names};
 use dim_agent_types::*;
 use dim_app_server::session_typescript::SessionTypeScriptConfig;

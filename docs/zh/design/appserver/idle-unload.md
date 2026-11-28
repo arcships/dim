@@ -84,7 +84,7 @@ Session，卸载并恢复七次；创建在同一存储上测量以便对比；�
 | D2 | 单有 Collaboration 关系不持有成员；未结束的请求持有（它已经持有成员的租约） | 关系钉住成员 | 长期存在的 Team 的成员会一直装载到 leader 关闭：正是本设计要消除的泄漏。关系是进程内存，卸载后仍在，下一次请求会恢复成员 |
 | D3 | 已接纳的脱离工作阻止自动卸载 | 照样卸载，即今天 `unload_if_idle()` 的行为、ShellInput §4 接受的结果 | 断开的用户会丢掉 `!` 运行或后台命令，BackgroundExec 的结束会被写成 `cancelled`、永远不唤醒模型，Collaboration 请求会失败、成员被中断。断开客户端不是关闭 Session（AGENTS.md 第 8 条），卸载也不能表现得像关闭 |
 | D4 | 由工作所有者取得运行时活动持有来识别脱离工作；只要有持有，`unload_if_idle()` 就拒绝，并且与它的分支检查在同一步完成（R1） | (a) Agents 读所有者的事实，例如没有 `exec/ended` 的 `exec/started`；(b) S3 原先的句柄，由 Agents 提供；(c) 所有者持有 `SessionUse`；(d) 所有者让 Loop 保持忙碌 | (a) ShellInput 的运行不写任何事实，宿主还得解读插件事件。(b)、(c) dim-agent-capabilities 不能依赖 App Server 的类型，其他调用 `unload_if_idle()` 的宿主得不到保护，检查也落在运行时的提交锁步骤之外。(d) 会改变 `idle`，而按合同 `idle` 不包含脱离工作（S2 D10） |
-| D5 | 每隔 `G` 一轮、按状态触发的检查来决定；卸载自上一轮以来没有租约、且 `unload_if_idle()` 成功的 Session | (a) 按边沿触发：最后一个租约释放时启动计时器，加上运行时的“已静止”通知；(b) 最后一个租约释放时立即卸载 | (a) 需要新的门面通知，每个没有租约的 Session 一个观察任务，漏掉一次边沿就让 Session 永远装载；仍然需要宽限计时器。(b) 漏掉最后一个租约释放之后才变空闲的 Session（提交后离开、只调 `sessions.input` 不调 `idle`），并且在连续调用之间来回装卸。[Orleans 的 activation collection](https://learn.microsoft.com/en-us/dotnet/orleans/host/configuration-guide/activation-collection) 也是这样：空闲时长由周期扫描检查，调用算作活动，`DelayDeactivation` 相当于持有 |
+| D5 | 每隔 `G` 一轮、按状态触发的检查来决定；卸载自上一轮以来没有租约、且 `unload_if_idle()` 成功的 Session | (a) 按边沿触发：最后一个租约释放时启动计时器，加上运行时的“已静止”通知；(b) 最后一个租约释放时立即卸载 | (a) 需要新的门面通知，每个没有租约的 Session 一个观察任务，漏掉一次边沿就让 Session 永远装载；仍然需要宽限计时器。(b) 漏掉最后一个租约释放之后才变空闲的 Session（提交后离开、只调 `timelineContext.input` 不调 `idle`），并且在连续调用之间来回装卸。[Orleans 的 activation collection](https://learn.microsoft.com/en-us/dotnet/orleans/host/configuration-guide/activation-collection) 也是这样：空闲时长由周期扫描检查，调用算作活动，`DelayDeactivation` 相当于持有 |
 | D6 | 宽限期 `G` = 60 s，`ServerConfig.idle_unload_after` | 没有宽限期；按数量约束（保留最近 N 个没有租约的 Session）；用户设置 | 没有宽限期时，一次 S2 运行几乎每次调用都要恢复它的 Session（§6.2）。按数量约束会让 N 个 Session 永远装载，而 N 和时间一样是随意选的。没有已知的用户需求（ADR 002 D4）；测试需要短的取值，所以作为宿主配置放在 `startup_timeout` 旁边 |
 | D7 | 卸载在该 Session 的准入闸门下进行；检查从不等待闸门 | 单独的卸载锁，或 `acquire` 检查的“正在卸载”标志 | 闸门已经为 `acquire` 的恢复、预备创建和删除排序（S5c §7）。第二把锁容易与它们产生锁顺序问题，标志又需要自己的等待 |
 | D8 | 不取租约的元数据读取（`session.summaries`）在找到的已装载 Session 被卸载时，改读存储；Collaboration 对端历史读取按[读取归属](../../../design/timeline-read-ownership.md)取得对端 Session | 为列出的每个 Session 取租约 | 租约会恢复并钉住每个列出的 Session；对端历史读取只针对一个已授权的 Session |
@@ -136,7 +136,7 @@ pub struct SessionHold { /* private */ }
 
 所有者为每一项已接纳的脱离工作取得一个持有，时机在接纳这项工作的 turn 或租约结束之前；在工作的最后一个事实提交之后释放。持有不带身份、结果或取消；任务仍归所有者，
 符合生命周期 §4 的要求。只要还有持有，`unload_if_idle()` 就拒绝。持有检查与释放决定在同一步完成：决定之前取得的持有让它拒绝，决定之后请求的持有得到
-`None`，与正在关闭的 Session 一样。`Session::close()` 不理会持有，照旧结束工作。`Session::idle()`、`session.idle` 和 `sessions.idle` 不变：
+`None`，与正在关闭的 Session 一样。`Session::close()` 不理会持有，照旧结束工作。`Session::idle()`、`session.idle` 和 `timelineContext.idle` 不变：
 它们仍不包含脱离工作（S2 D10）。
 
 | 所有者 | 取得持有 | 释放持有 | 释放之后 |
@@ -428,7 +428,7 @@ C4、SessionTitle、Scheduler 和 Workflow 不需要改动。不向 rutis 提需
 `Session::closed()`、`agent.list` 中的已装载数、某次调用的回复）并设超时，从不只靠 sleep。
 
 1. **#126 的测量场景。** 一个测试插件经 `sessions` 启动 50 个 Session，每个运行一次输入、`idle` 和 `history` 分页，然后释放。宽限期过后，
-   `session.summaries` 列出全部 50 个 Session 及其已存储的 head，此时 `agent.list` 显示已装载数为 0。随后对其中一个调用 `sessions.input` 会恢复它并运行其 turn。
+   `session.summaries` 列出全部 50 个 Session 及其已存储的 head，此时 `agent.list` 显示已装载数为 0。随后对其中一个调用 `timelineContext.input` 会恢复它并运行其 turn。
    `sessions.history` 每读一页都会取得对应的 Session，若已卸载则先恢复。读到各次运行原有的截止序号，所得事件与卸载前相同。
    实现 PR 还要给出前后的 `xtask measure` 数据、已装载数和任务数。
 2. **一次运行之内不恢复。** 若 `input`、`idle` 和三页 `history` 的相邻调用间隔均短于宽限期，每次调用都取得同一个已装载的 Session，`main` 上没有新增 `branch/resume`。

@@ -254,7 +254,13 @@ impl CollaborationSession {
                     );
                     if let Some((_, member)) = owner.collaboration.index.session(&owner.session_id)
                     {
-                        let _ = member.input(input, &branch_id).await;
+                        let _ = super::line_input(
+                            owner.collaboration.sessions.as_ref(),
+                            &member,
+                            &branch_id,
+                            input,
+                        )
+                        .await;
                     }
                 }
                 owner.deny(&branch_id, &request_id);
@@ -292,11 +298,17 @@ impl CollaborationSession {
         let branch_id = branch_id.to_owned();
         tasks.spawn(async move {
             let input = source.input(false);
-            let committed = leader.input(input.clone(), &leader_branch).await;
+            let committed = super::line_input(
+                owner.collaboration.sessions.as_ref(),
+                &leader,
+                &leader_branch,
+                input.clone(),
+            )
+            .await;
             let accepted = matches!(
                 committed,
                 Ok(ref event)
-                    if matches!(&event.kind, EventKind::InputMessage(data) if data == &input)
+                    if matches!(&event.kind, EventKind::InputMessage(data) if *data == input)
             );
             if !accepted {
                 owner.end_approval(&branch_id, &source.descriptor.request_id);
@@ -307,7 +319,13 @@ impl CollaborationSession {
                 _ = ended.cancelled() => {},
                 _ = abort.cancelled() => {},
             }
-            let _ = leader.input(source.input(true), &leader_branch).await;
+            let _ = super::line_input(
+                owner.collaboration.sessions.as_ref(),
+                &leader,
+                &leader_branch,
+                source.input(true),
+            )
+            .await;
         });
     }
 

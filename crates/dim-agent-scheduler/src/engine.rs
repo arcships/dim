@@ -41,14 +41,41 @@ pub(crate) const PREVIOUS_DELIVERY_UNSETTLED: &str = "previous_delivery_unsettle
 /// settles it by lookup.
 pub(crate) const UNLOADING: &str = "service_reloading";
 
-fn is_reloading(code: &str) -> bool {
-    code.ends_with("reloading")
+/// A failure of one `sessions` call: the code the face answered, whether the
+/// face says the caller may retry, and the target owner's own code when the
+/// failure came from the owner.
+pub(crate) struct Refusal {
+    pub code: String,
+    pub retryable: bool,
+    pub owner_code: Option<String>,
+}
+impl Refusal {
+    /// The code to record for a run, in the Scheduler's own vocabulary: the
+    /// Session lifecycle codes keep the names its records and clients already
+    /// read, a reload reads as `reloading`, and a target that answers nothing
+    /// else is `failed`.
+    pub(crate) fn recorded(&self) -> &str {
+        match self.owner_code.as_deref().unwrap_or(&self.code) {
+            "no_session" | "Closed" => "session_closed",
+            "no_line" | "UnknownBranch" => "branch_missing",
+            "BranchEnded" => "branch_ended",
+            "session_reloading" | "session_closing" => "reloading",
+            "AmbiguousSubmission" => "ambiguous",
+            "InvalidInput" => "rejected",
+            code => code,
+        }
+    }
 }
 
 /// A reply that carries no fact about the write: the record stays
 /// `delivering` and the lookup settles it (A.5, A.6).
-pub(crate) fn uncertain(code: &str) -> bool {
-    is_reloading(code) || matches!(code, "publication_unknown" | "ambiguous")
+pub(crate) fn uncertain(refusal: &Refusal) -> bool {
+    refusal.retryable
+        || refusal.code == "session_unavailable"
+        || matches!(
+            refusal.owner_code.as_deref(),
+            Some("PublicationUnknown" | "AmbiguousSubmission")
+        )
 }
 
 /// Applies the flow tests' seam to one write's reply (A.5, A.6): it spends the
@@ -59,8 +86,8 @@ pub(crate) fn uncertain(code: &str) -> bool {
 /// a refusal the target gave. Feature `testing` only.
 fn lose_input_reply(
     shared: &Shared,
-    reply: Result<Result<Value, String>, String>,
-) -> Result<Result<Value, String>, String> {
+    reply: Result<Result<(String, u64), Refusal>, String>,
+) -> Result<Result<(String, u64), Refusal>, String> {
     #[cfg(feature = "testing")]
     {
         let armed = shared
@@ -82,8 +109,25 @@ fn lose_input_reply(
 /// branch is gone. A `session` delivery settles `failed` on these and the job
 /// is disabled with the reason (A.3); any other failure says nothing about
 /// the target.
-pub(crate) fn target_gone(code: &str) -> bool {
-    matches!(code, "session_closed" | "branch_missing" | "branch_ended")
+pub(crate) fn target_gone(refusal: &Refusal) -> bool {
+    target_gone_code(&refusal.code) || refusal.owner_code.as_deref().is_some_and(target_gone_code)
+}
+
+/// The code that means the target is gone, whichever layer wrote it: the
+/// route's own answers, the owner's codes behind a routed failure, and the
+/// codes a record written before the routed call kept.
+pub(crate) fn target_gone_code(code: &str) -> bool {
+    matches!(
+        code,
+        "no_session"
+            | "no_line"
+            | "Closed"
+            | "UnknownBranch"
+            | "BranchEnded"
+            | "session_closed"
+            | "branch_missing"
+            | "branch_ended"
+    )
 }
 
 /// Whether the record carries the launch ownership A.7's deletion reads: a
@@ -258,7 +302,7 @@ pub async fn tick(shared: &Arc<Shared>) -> Result<(), SchedulerError> {
         // the claim back from the job's newest terminal delivery (A.3).
         if let Some(run) = latest_terminal(&history, &job.id)
             && run.state == DeliveryState::Failed
-            && target_gone(&run.detail)
+            && target_gone_code(&run.detail)
             && claim_current(job, run)
         {
             let at = run
@@ -742,11 +786,12 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
             ended(&shared);
             return;
         }
-        match sessions(
+        match line(
             shared.sessions.as_ref(),
+            &session_id,
+            DEFAULT_BRANCH_ID,
             "stop",
-            json!({"sessionId": session_id, "branchId": DEFAULT_BRANCH_ID,
-                "reason": "scheduled run reached its stop time"}),
+            vec![json!("scheduled run reached its stop time")],
         )
         .await
         {
@@ -754,7 +799,7 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
                 ended(&shared);
                 return;
             }
-            Ok(Err(code)) if target_gone(&code) => {
+            Ok(Err(refusal)) if target_gone(&refusal) => {
                 ended(&shared);
                 return;
             }
@@ -800,24 +845,27 @@ pub(crate) async fn lookup_input(
     branch_id: &str,
     submission_id: &str,
 ) -> Result<Option<(String, u64)>, String> {
-    let args =
-        json!({"sessionId": session_id, "branchId": branch_id, "submissionId": submission_id});
     loop {
-        match sessions(shared.sessions.as_ref(), "lookup", args.clone()).await {
-            Ok(Ok(value)) => {
-                return match value["status"].as_str() {
-                    Some("accepted") => {
-                        match (value["inputId"].as_str(), value["sequence"].as_u64()) {
-                            (Some(input_id), Some(sequence)) => {
-                                Ok(Some((input_id.to_owned(), sequence)))
-                            }
-                            _ => Err("invalid_data".to_owned()),
-                        }
-                    }
-                    _ => Ok(None),
+        let answer = line(
+            shared.sessions.as_ref(),
+            session_id,
+            branch_id,
+            "lookup",
+            vec![json!(submission_id)],
+        )
+        .await;
+        match answer {
+            Ok(Ok(Some(Value::Null))) => return Ok(None),
+            Ok(Ok(Some(event))) => {
+                return match (event["id"].as_str(), event["sequence"].as_u64()) {
+                    (Some(input_id), Some(sequence)) => Ok(Some((input_id.to_owned(), sequence))),
+                    _ => Err("lookup reply has no committed event".to_owned()),
                 };
             }
-            Ok(Err(code)) if !is_reloading(&code) => return Err(code),
+            Ok(Ok(None)) => return Err("lookup answered nothing".to_owned()),
+            Ok(Err(refusal)) if !refusal.retryable => {
+                return Err(refusal.recorded().to_owned());
+            }
             Ok(Err(_)) | Err(_) => {
                 if !shared.pause(POLL).await {
                     return Err(UNLOADING.to_owned());
@@ -828,12 +876,13 @@ pub(crate) async fn lookup_input(
 }
 
 /// A `sessions` call. The outer error is a transport failure, whose outcome
-/// is unknown; the inner error is the service's own code.
+/// is unknown; the inner error is the service's own answer. A reply that
+/// answers nothing has no `value`, while an owner's `null` stays a value.
 pub(crate) async fn sessions(
     service: &dyn HostDispatch,
     method: &str,
     args: Value,
-) -> Result<Result<Value, String>, String> {
+) -> Result<Result<Option<Value>, Refusal>, String> {
     let call = service
         .invoke(method, json!([args]).into())
         .map_err(|error| error.to_string())?;
@@ -843,12 +892,71 @@ pub(crate) async fn sessions(
         .json()
         .map_err(|error| error.to_string())?;
     if envelope["ok"] == json!(true) {
-        Ok(Ok(envelope["value"].clone()))
-    } else {
-        Ok(Err(envelope["error"]["code"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_owned()))
+        return Ok(Ok(envelope.get("value").cloned()));
+    }
+    let error = &envelope["error"];
+    Ok(Err(Refusal {
+        code: error["code"].as_str().unwrap_or("unknown").to_owned(),
+        retryable: error["retryable"] == json!(true),
+        owner_code: error["owner_code"].as_str().map(str::to_owned),
+    }))
+}
+
+/// One `timelineContext` operation on a line, by `(session, line)`.
+pub(crate) async fn line(
+    service: &dyn HostDispatch,
+    session_id: &str,
+    line_id: &str,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Result<Option<Value>, Refusal>, String> {
+    sessions(
+        service,
+        "call",
+        json!({
+            "sessionId": session_id,
+            "lineId": line_id,
+            "service": "timelineContext",
+            "method": method,
+            "args": args,
+        }),
+    )
+    .await
+}
+
+/// Writes one input on a line and answers its id and sequence once the line
+/// published it: the write is one operation and the publication wait is
+/// another. A publication that was not confirmed is an unknown outcome, so
+/// the caller settles the write by its submission id.
+pub(crate) async fn write_published(
+    service: &dyn HostDispatch,
+    session_id: &str,
+    line_id: &str,
+    input: Value,
+) -> Result<Result<(String, u64), Refusal>, String> {
+    let reply = match line(service, session_id, line_id, "input", vec![input]).await? {
+        Ok(Some(reply)) => reply,
+        Ok(None) => return Err("input answered no write".to_owned()),
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let event = &reply["event"];
+    let (Some(input_id), Some(sequence)) = (event["id"].as_str(), event["sequence"].as_u64())
+    else {
+        return Err("input reply has no committed event".to_owned());
+    };
+    match line(
+        service,
+        session_id,
+        line_id,
+        "waitPublished",
+        vec![json!(sequence)],
+    )
+    .await?
+    {
+        Ok(_) => Ok(Ok((input_id.to_owned(), sequence))),
+        // The write committed and the publication was not confirmed: a lookup
+        // by the submission id is what settles it.
+        Err(_) => Err("the input's publication was not confirmed".to_owned()),
     }
 }
 
@@ -875,7 +983,7 @@ async fn deliver(shared: Arc<Shared>, job: Job, run: Delivery) {
 /// Settles a `session` delivery `failed` with the code; a target-gone code
 /// also disables the job (A.3, A.6).
 async fn failed(shared: &Arc<Shared>, run: &Delivery, code: &str) -> Result<(), SchedulerError> {
-    if target_gone(code) {
+    if target_gone_code(code) {
         return settle_target_gone(shared, run, code).await;
     }
     finish(shared, &run.run_id, DeliveryState::Failed, code.into()).await
@@ -999,36 +1107,43 @@ async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), Scheduler
                 .as_ref()
                 .is_some_and(|holds| holds.take_reloading_lookup())
             {
-                Ok(Err("reloading".to_owned()))
+                Ok(Err(Refusal {
+                    code: "reloading".into(),
+                    retryable: true,
+                    owner_code: None,
+                }))
             } else {
-                sessions(
+                line(
                     shared.sessions.as_ref(),
+                    &session_id,
+                    &branch_id,
                     "lookup",
-                    json!({"sessionId": session_id, "branchId": branch_id,
-                        "submissionId": run.submission_id}),
+                    vec![json!(run.submission_id)],
                 )
                 .await
             };
             #[cfg(not(feature = "testing"))]
-            let lookup = sessions(
+            let lookup = line(
                 shared.sessions.as_ref(),
+                &session_id,
+                &branch_id,
                 "lookup",
-                json!({"sessionId": session_id, "branchId": branch_id,
-                    "submissionId": run.submission_id}),
+                vec![json!(run.submission_id)],
             )
             .await;
             let answer = match lookup {
-                Ok(Ok(value)) if value["status"] == json!("accepted") => {
-                    let input_id = value["inputId"].as_str().ok_or_else(|| {
+                Ok(Ok(Some(Value::Null))) => "unknown".to_owned(),
+                Ok(Ok(Some(event))) => {
+                    let input_id = event["id"].as_str().ok_or_else(|| {
                         SchedulerError::invalid_data("lookup reply has no inputId")
                     })?;
                     return settle_delivered(shared, &run.run_id, input_id).await;
                 }
-                Ok(Ok(_)) => "unknown".to_owned(),
-                Ok(Err(code)) if target_gone(&code) => {
-                    return settle_target_gone(shared, &run, &code).await;
+                Ok(Ok(None)) => "unknown".to_owned(),
+                Ok(Err(refusal)) if target_gone(&refusal) => {
+                    return settle_target_gone(shared, &run, refusal.recorded()).await;
                 }
-                Ok(Err(code)) => code,
+                Ok(Err(refusal)) => refusal.recorded().to_owned(),
                 Err(_) => "transport".to_owned(),
             };
             if attempt >= LOOKUP_BOUND {
@@ -1167,8 +1282,25 @@ async fn launch_target(
             )
             .await;
         }
-        Ok(Err(code)) => return finish(shared, &run.run_id, DeliveryState::Failed, code).await,
-        Ok(Ok(value)) => value,
+        Ok(Err(refusal)) => {
+            return finish(
+                shared,
+                &run.run_id,
+                DeliveryState::Failed,
+                refusal.recorded().to_owned(),
+            )
+            .await;
+        }
+        Ok(Ok(Some(value))) => value,
+        Ok(Ok(None)) => {
+            return finish(
+                shared,
+                &run.run_id,
+                DeliveryState::Failed,
+                "launch answered nothing".into(),
+            )
+            .await;
+        }
     };
     let session_id = launched["sessionId"]
         .as_str()
@@ -1212,29 +1344,22 @@ async fn write_input(
         None => return Err(SchedulerError::invalid_data("job has no target")),
     };
     let input = json!({
-        "sessionId": session_id,
-        "branchId": branch_id,
+        "submission_id": run.submission_id,
         "mode": mode,
-        "submissionId": run.submission_id,
-        "rawBlocks": [{"text": marker(job, &run.run_id)}],
-        "content": [{"type": "text", "text": job.prompt}],
+        "blocks": [{"type": "raw", "text": marker(job, &run.run_id)}],
+        "user": {"content": [{"type": "text", "text": job.prompt}]},
     });
     let reply = lose_input_reply(
         shared,
-        sessions(shared.sessions.as_ref(), "input", input).await,
+        write_published(shared.sessions.as_ref(), session_id, &branch_id, input).await,
     );
     match reply {
-        Ok(Ok(receipt)) => {
-            let input_id = receipt["inputId"]
-                .as_str()
-                .ok_or_else(|| SchedulerError::invalid_data("input reply has no inputId"))?;
-            settle_delivered(shared, &run.run_id, input_id).await
-        }
-        Ok(Err(code)) if uncertain(&code) => {
+        Ok(Ok((input_id, _sequence))) => settle_delivered(shared, &run.run_id, &input_id).await,
+        Ok(Err(refusal)) if uncertain(&refusal) => {
             lookup_now(shared, &run.run_id).await;
             Ok(())
         }
-        Ok(Err(code)) => failed(shared, run, &code).await,
+        Ok(Err(refusal)) => failed(shared, run, refusal.recorded()).await,
         Err(_) => {
             lookup_now(shared, &run.run_id).await;
             Ok(())

@@ -1,5 +1,6 @@
 use super::*;
 use dim_agent_capabilities::{defaults, prompt::Prompt, prompt_state::PromptSnapshot};
+use dim_agent_runtime::SessionLines;
 use dim_agent_runtime::{ConfigureOutcome, PromptSourceTarget};
 use serde_json::Value;
 

@@ -1181,7 +1181,7 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
                 })
                 .unwrap();
             let history = HistoryRenderer::default()
-                .context_in(&session, "main", through)
+                .context(session.line_of("main").unwrap().timeline(), through)
                 .await
                 .unwrap();
             let expected = project_context_history(&history)
@@ -1208,7 +1208,7 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
             .await
             .unwrap();
         let history = HistoryRenderer::default()
-            .context_in(&session, "main", usage.through)
+            .context(session.line_of("main").unwrap().timeline(), usage.through)
             .await
             .unwrap();
         let rendered = project_context_history(&history).unwrap();

@@ -397,6 +397,18 @@ pub(crate) struct AgentDirectory {
     server_instance_id: String,
 }
 impl AgentDirectory {
+    /// The router of a Session an Agent in this directory still holds loaded.
+    /// The directory outlives an `Agents` reload and so do its Sessions, so a
+    /// call that only reads or waits is served here while the next generation
+    /// of the index loads ([`changes_nothing`]).
+    pub(crate) fn routed_session(&self, id: &str) -> Option<dim_agent_runtime::RoutedSession> {
+        let inner = self.inner.lock().expect("agent index");
+        inner
+            .agents
+            .values()
+            .find_map(|entry| entry.host.agent.get_session(id).map(|_| entry.host.clone()))
+            .and_then(|host| host.agent.routed_session(id))
+    }
     /// Registration of a scope that finished apply. A first load completes
     /// the entry with the instance it created; a scope that applies again
     /// in an existing instance enters directly.
@@ -567,25 +579,94 @@ pub struct AgentIndex {
     /// Notified once an `idle` call on this generation is admitted and
     /// waiting on its branch. Feature `testing` only.
     #[cfg(feature = "testing")]
-    idle_admitted: Arc<tokio::sync::Notify>,
     /// The hold the next business close of a Session takes. Feature
     /// `testing` only.
     #[cfg(feature = "testing")]
     close_hold: Arc<Mutex<Option<Arc<crate::CloseHold>>>>,
 }
+/// Whether a routed call only reads or waits: it changes nothing, so a caller
+/// may ask it again, and a Session that stays loaded across an Agents reload
+/// can serve it while the next generation loads ([#2227]). The methods are
+/// listed one by one: `timeline.append` and every write stay refused.
+///
+/// [#2227]: https://github.com/arcships/dim/pull/2227
+pub(crate) fn changes_nothing(request: &crate::agents::sessions::CallRequest) -> bool {
+    matches!(
+        (request.service.as_str(), request.method.as_str()),
+        (
+            "timelineContext",
+            "waitPublished" | "waitDispatched" | "idle" | "lookup" | "state"
+        ) | (
+            "timeline",
+            "branchId" | "ancestors" | "sequence" | "committed" | "hasPending" | "query"
+        )
+    )
+}
+
+/// Runs a routed call on the Session scope it was selected in.
+pub(crate) async fn route_call(
+    scope: &dim_agent_runtime::SessionScope,
+    request: crate::agents::sessions::CallRequest,
+) -> std::result::Result<Option<serde_json::Value>, RouteError> {
+    match request.line_id {
+        Some(line_id) => {
+            scope
+                .line_call(dim_agent_runtime::LineCall::new(
+                    line_id,
+                    request.service,
+                    request.method,
+                    request.args,
+                ))
+                .await
+        }
+        None => {
+            scope
+                .call(dim_agent_runtime::SessionCall::new(
+                    request.service,
+                    request.method,
+                    request.args,
+                ))
+                .await
+        }
+    }
+}
+
+/// The holder's line `line` of `routed`, answered as the Session facade
+/// answered it: a line that has left the tree with a recorded ended head is
+/// `BranchEnded`, so the callers' ended-line paths serve its fixed head; one the
+/// Session never had is `UnknownBranch`; a Session whose scope is gone is
+/// `Closed` ([#2227]).
+///
+/// [#2227]: https://github.com/arcships/dim/pull/2227
+fn held_line(
+    routed: &dim_agent_runtime::RoutedSession,
+    line: &str,
+) -> dim_agent_runtime::Result<dim_agent_runtime::Line> {
+    routed.line(line).map_err(|error| match error {
+        dim_agent_runtime::RouteError::NoLine { line, .. } => {
+            if routed.session().ended_head(&line).is_some() {
+                AgentError::BranchEnded(line)
+            } else {
+                AgentError::UnknownBranch(line)
+            }
+        }
+        other => AgentError::Closed(other.to_string()),
+    })
+}
+
 /// One page of `branch`'s own facts after `after` through its Session's query:
 /// at most `limit`, never past `through`, ending on an atomic batch.
 async fn session_history_page(
-    session: &Session,
+    line: &dim_agent_runtime::Line,
     branch: &str,
     after: u64,
     limit: usize,
     through: u64,
 ) -> dim_agent_runtime::Result<Vec<Arc<dim_agent_types::AgentEvent>>> {
     if after > 0 {
-        session.batch_end(branch, after).await?;
+        line.batch_end(after).await?;
     }
-    session.batch_end(branch, through).await?;
+    line.batch_end(through).await?;
     if after >= through || limit == 0 {
         return Ok(vec![]);
     }
@@ -593,8 +674,8 @@ async fn session_history_page(
     let mut wanted = limit;
     let mut events = Vec::new();
     loop {
-        let reply = session
-            .query(branch, history_page_query(branch, from, through, wanted))
+        let reply = line
+            .query(history_page_query(branch, from, through, wanted))
             .await?;
         let QueryOutput::Events { events: rows } = reply.result else {
             unreachable!("event selection returns events")
@@ -607,7 +688,7 @@ async fn session_history_page(
         if sequence >= through {
             break;
         }
-        match session.batch_end(branch, sequence).await {
+        match line.batch_end(sequence).await {
             Ok(()) => break,
             Err(AgentError::InvalidInput(_)) => {}
             Err(error) => return Err(error),
@@ -687,12 +768,6 @@ impl AgentIndex {
             .default_agent_id
             .get()
             .expect("AgentsPlugin apply fixed the default id")
-    }
-    /// The signal an `idle` admission notifies, so a test knows the wait is
-    /// in flight before it reloads or closes. Feature `testing` only.
-    #[cfg(feature = "testing")]
-    pub(crate) fn idle_admitted(&self) -> Arc<tokio::sync::Notify> {
-        self.idle_admitted.clone()
     }
     /// The hold the next business close of a Session takes. Feature `testing`
     /// only.
@@ -777,6 +852,39 @@ impl AgentIndex {
             }
         }
         None
+    }
+    /// The line router of Session `id`: the holder's entry to that Session's
+    /// lines ([ADR 027 D2](../../../docs/adr/027-cross-scope-access-by-id.md),
+    /// [#2027](https://github.com/arcships/dim/issues/2027)). Only the crate
+    /// that holds the Agent gets one, and a bare `Session` has no path to it.
+    pub(crate) fn routed_session(&self, id: &str) -> Option<dim_agent_runtime::RoutedSession> {
+        self.session(id)
+            .and_then(|(host, _)| host.agent.routed_session(id))
+    }
+    /// The line `line` of Session `id` held by `host`, for code that reached
+    /// the Session through [`Self::session`] and keeps its host.
+    pub(crate) fn host_line(
+        host: &AgentHost,
+        id: &str,
+        line: &str,
+    ) -> dim_agent_runtime::Result<dim_agent_runtime::Line> {
+        let routed = host
+            .agent
+            .routed_session(id)
+            .ok_or_else(|| AgentError::Closed(id.into()))?;
+        held_line(&routed, line)
+    }
+    /// The line `line` of Session `id`, resolved as the route resolves it: the
+    /// holder reads and drives the line through the returned handle.
+    pub(crate) fn line(
+        &self,
+        id: &str,
+        line: &str,
+    ) -> dim_agent_runtime::Result<dim_agent_runtime::Line> {
+        let routed = self
+            .routed_session(id)
+            .ok_or_else(|| AgentError::Closed(id.into()))?;
+        held_line(&routed, line)
     }
     /// The Agent owning a Session, also after the Session itself closed and
     /// while its Agent is closing; its archives may still be finishing.
@@ -1038,11 +1146,20 @@ impl AgentIndex {
         if session.is_unloading() {
             return Err(AgentError::Storage("Session is unloading".into()));
         }
-        if session.ended_head(branch).is_some() {
+        // The line is selected once: a line the user ended, one that leaves
+        // the tree before the selection, and one that ends during the read are
+        // all served from the archive at the fixed cutoff ([#2227]).
+        let line = match session.ended_head(branch) {
+            Some(_) => None,
+            None => self.line(id, branch).ok(),
+        };
+        let Some(line) = line else {
             return ended_page(&session, branch, after, limit, through).await;
-        }
-        match session_history_page(&session, branch, after, limit, through).await {
-            Err(AgentError::BranchEnded(_)) => {
+        };
+        match session_history_page(&line, branch, after, limit, through).await {
+            // The line ended between the check above and the read: the tree
+            // serves it at its fixed head.
+            Err(AgentError::UnknownBranch(_) | AgentError::BranchEnded(_)) => {
                 ended_page(&session, branch, after, limit, through).await
             }
             page => page,
@@ -1099,9 +1216,28 @@ impl AgentIndex {
             }
             return Err(AgentError::Closed(id.into()));
         };
-        let gate = slot.gate.clone().lock_owned().await;
-        if slot.closed.load(Ordering::Acquire) || self.stopping.is_cancelled() {
+        // The slot's gate is held for a whole operation and for a close, so
+        // waiting for it is waiting on the Session. A closed Session answers
+        // `Closed` as before; one that is still closing is admitted as before,
+        // so a concurrent close waits for that close's cleanup instead of
+        // answering first. An index that is stopping answers a reload the
+        // caller retries once the next generation holds the Session
+        // ([#2027]).
+        if self.stopping.is_cancelled() {
+            return Err(AgentError::Reloading("process admission".into()));
+        }
+        let gate = tokio::select! {
+            biased;
+            _ = self.stopping.cancelled() => {
+                return Err(AgentError::Reloading("process admission".into()));
+            }
+            gate = slot.gate.clone().lock_owned() => gate,
+        };
+        if slot.closed.load(Ordering::Acquire) {
             return Err(AgentError::Closed(id.into()));
+        }
+        if self.stopping.is_cancelled() {
+            return Err(AgentError::Reloading("process admission".into()));
         }
         let (session, _gate, activity) = match host.agent.get_session(id) {
             Some(session) => {
@@ -1305,10 +1441,10 @@ impl AgentIndex {
                 // stores it, so loading or unloading never changes it; the
                 // running state follows the line the conversation is on
                 // (design §14, §15).
-                match session
-                    .default_branch()
-                    .and_then(|default| session.state(&default))
-                {
+                match session.default_branch().and_then(|default| {
+                    self.line(&summary.session.session_id, &default)
+                        .and_then(|line| line.context().state())
+                }) {
                     Ok(state) => summary.session.running = state.running,
                     Err(_) if session.is_unloading() => {}
                     Err(error) => {
@@ -1359,6 +1495,7 @@ impl AgentIndex {
         // conversation is on, read once; the record's own sequence stays the
         // root's (design §14, §15).
         let default = session.default_branch()?;
+        let line = self.line(session.id(), &default)?;
         Ok(crate::protocol::SessionRecord {
             info: crate::protocol::SessionInfo {
                 session_id: session.id().to_owned(),
@@ -1368,8 +1505,8 @@ impl AgentIndex {
                     model_id: session.config().model.model_id.clone(),
                 },
                 created_at: session.created_at(),
-                running: session.state(&default).is_ok_and(|state| state.running),
-                sequence: session.sequence(ROOT_BRANCH_ID)?,
+                running: line.context().state().is_ok_and(|state| state.running),
+                sequence: self.line(session.id(), ROOT_BRANCH_ID)?.sequence(),
                 attached_clients: 0,
                 agent_id: (version >= 3).then(|| host.agent_id.clone()),
                 origin,
@@ -1377,7 +1514,7 @@ impl AgentIndex {
                 title,
             },
             default_branch: crate::protocol::BranchCursor {
-                sequence: session.sequence(&default)?,
+                sequence: line.sequence(),
                 branch_id: default,
             },
         })
@@ -1579,8 +1716,12 @@ impl AgentIndex {
         query: TimelineQuery,
     ) -> dim_agent_runtime::Result<QueryOutput> {
         let loaded = match self.session(id) {
-            Some((_, session)) => match session.query(branch, query.clone()).await {
-                Ok(reply) => Some(reply.result),
+            Some((_, session)) => match self.line(id, branch) {
+                Ok(line) => match line.query(query.clone()).await {
+                    Ok(reply) => Some(reply.result),
+                    Err(_) if session.is_unloading() => None,
+                    Err(error) => return Err(error),
+                },
                 Err(_) if session.is_unloading() => None,
                 Err(error) => return Err(error),
             },
@@ -1825,9 +1966,15 @@ impl AgentIndex {
     /// A target that cannot be selected answers `NoSession`,
     /// `SessionClosing`, `SessionReloading`, `SessionUnavailable`, `NoLine` or
     /// `NoService` before the target's operation runs.
+    ///
+    /// A call from a runtime row carries that row's cancellation `row`: an
+    /// input from a row that retires while the Session is acquired writes
+    /// nothing and answers `SessionReloading`, as `sessions.input` refused a
+    /// retired row before its handoff (S2 §6.2).
     pub(crate) async fn call(
         &self,
         request: crate::agents::sessions::CallRequest,
+        row: Option<&tokio_util::sync::CancellationToken>,
     ) -> std::result::Result<Option<serde_json::Value>, RouteError> {
         let id = request.session_id.clone();
         // A replaced or stopping index is transient: the caller retries the
@@ -1852,6 +1999,18 @@ impl AgentIndex {
         if session.is_closing() {
             return Err(RouteError::SessionClosing(id));
         }
+        // The last admission check of a write before the target runs, with no
+        // await in between: an index that stopped or a calling row that retired
+        // while the Session was acquired writes nothing. Reads and waits are
+        // not refused, so a retiring row can still settle what it wrote.
+        let writes = request.service == "timelineContext"
+            && matches!(request.method.as_str(), "input" | "inputIfHead" | "inputs");
+        if writes
+            && (self.stopping.is_cancelled()
+                || row.is_some_and(tokio_util::sync::CancellationToken::is_cancelled))
+        {
+            return Err(RouteError::SessionReloading(id));
+        }
         // The router comes from the owning instance: the runtime hands out a
         // handle it alone can build, so a bare `Session` has no path to it.
         let Some(routed) = used.host.agent.routed_session(&id) else {
@@ -1867,27 +2026,9 @@ impl AgentIndex {
             });
         };
         let scope = routed.scope().clone();
-        match request.line_id {
-            Some(line_id) => {
-                scope
-                    .line_call(dim_agent_runtime::LineCall::new(
-                        line_id,
-                        request.service,
-                        request.method,
-                        request.args,
-                    ))
-                    .await
-            }
-            None => {
-                scope
-                    .call(dim_agent_runtime::SessionCall::new(
-                        request.service,
-                        request.method,
-                        request.args,
-                    ))
-                    .await
-            }
-        }
+        // An admitted call runs to its own outcome: the reload replaces the
+        // index, not the Session the call holds.
+        route_call(&scope, request).await
     }
     /// `session.delete` ([S5c §3.2](../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)):
     /// holds S's admission gate, so nothing loads or builds S meanwhile,
@@ -2214,14 +2355,13 @@ impl AgentIndex {
             );
         }
         let checked = async {
-            dim_agent_capabilities::history::validate_context_boundary_in(
-                session,
-                ROOT_BRANCH_ID,
+            dim_agent_capabilities::history::validate_context_boundary_at(
+                self.line(source, ROOT_BRANCH_ID)?.timeline(),
                 at,
             )
             .await?
             .map_err(AgentError::InvalidInput)?;
-            fork::validate_rest_point(session, at).await
+            fork::validate_rest_point(&self.line(source, ROOT_BRANCH_ID)?, at).await
         }
         .await;
         if session.is_closing() {
@@ -2692,7 +2832,6 @@ impl DynPlugin for AgentsPlugin {
                 selects_models: self.config.protected_profile(),
                 stopping: CancellationToken::new(),
                 #[cfg(feature = "testing")]
-                idle_admitted: Arc::new(tokio::sync::Notify::new()),
                 #[cfg(feature = "testing")]
                 close_hold: Arc::new(Mutex::new(None)),
             };

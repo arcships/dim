@@ -571,11 +571,15 @@ async fn context_breakdown() -> std::result::Result<(), Box<dyn std::error::Erro
     let session = agent
         .restore_session(session_id.clone(), Default::default())
         .await?;
-    let through = session.sequence("main")?;
+    let line = agent
+        .routed_session(session.id())
+        .and_then(|routed| routed.line("main").ok())
+        .ok_or("the Session's main line is not selectable")?;
+    let through = line.timeline().sequence();
     let mut phases = Vec::new();
     let read_start = allocation::live();
     let context = dim_agent_capabilities::history::HistoryRenderer::default()
-        .context_in(&session, "main", through)
+        .context(line.timeline(), through)
         .await?;
     phases.push(json!({
         "phase": "read",
