@@ -351,9 +351,9 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
     server.join().await.unwrap();
 }
 
-/// A fork of a Session with a child branch copies `main` only, so opening the
-/// fork records no creation failure and the fork's directory lists no branch
-/// it does not have (S5c §6.3, #1978).
+/// A fork copies the directory of a line that ended by the cut and no line that
+/// is still open, so opening the fork records no creation failure and its
+/// directory lists exactly the lines it has (S5c §6.3, #1978).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fork_of_a_session_with_a_child_branch_reports_no_creation_failure() {
     let store = Store::new();
@@ -366,12 +366,32 @@ async fn a_fork_of_a_session_with_a_child_branch_reports_no_creation_failure() {
     let source = agent.get_session(&sid).unwrap();
     let head = source.sequence("main").unwrap();
     let child = branch(&mut client, &sid, head, "tool:wait {\"millis\":1}").await;
+    let ended = branch(&mut client, &sid, head, "tool:wait {\"millis\":1}").await;
+    for line in [&child, &ended] {
+        assert_ok(
+            &client
+                .rpc("session.idle", json!({"sessionId":sid,"branchId":line}))
+                .await,
+        );
+        assert!(!history(&source, line).await.is_empty(), "{line} ran");
+    }
     assert_ok(
         &client
-            .rpc("session.idle", json!({"sessionId":sid,"branchId":child}))
+            .rpc(
+                "session.branch_end",
+                json!({"sessionId":sid,"branchId":ended}),
+            )
             .await,
     );
-    assert!(!history(&source, &child).await.is_empty(), "the child ran");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !history(&source, "main").await.iter().any(
+            |event| matches!(&event.kind, EventKind::BranchEnded(data) if data.branch == ended),
+        ) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the tree records the ended line on main");
     let at = source.sequence("main").unwrap();
 
     let fid = forked(&fork(&mut client, &sid, at).await);
@@ -394,21 +414,42 @@ async fn a_fork_of_a_session_with_a_child_branch_reports_no_creation_failure() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(directories, ["main"], "a fork's directory is its root");
+    let mut expected = vec![ended.clone()];
+    expected.push("main".into());
+    expected.sort();
+    assert_eq!(
+        directories, expected,
+        "a fork's directory keeps the ended line"
+    );
     let listed = client
         .rpc("session.branches", json!({"sessionId":fid}))
         .await;
     assert_ok(&listed);
-    let ids: Vec<&str> = listed["result"]["branches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|branch| branch["branchId"].as_str().unwrap())
-        .collect();
-    assert_eq!(ids, ["main"], "a fork lists only the line it has");
+    let kind = |line: &str| -> String {
+        listed["result"]["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["branchId"] == line)
+            .unwrap_or_else(|| panic!("{line} is listed: {listed}"))["state"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(kind("main"), "open");
+    assert_eq!(kind(&ended), "ended", "the ended line keeps its outcome");
+    assert_eq!(
+        listed["result"]["branches"].as_array().unwrap().len(),
+        2,
+        "the open child is not listed: {listed}"
+    );
     assert!(
         fork.state(&child).is_err(),
-        "the source's child is not part of the fork"
+        "a line still open at the cut is not part of the fork"
+    );
+    assert!(
+        fork.state(&ended).is_err(),
+        "the ended line has no events in the fork"
     );
     assert!(source.state(&child).is_ok(), "the source keeps its child");
     server.shutdown();
