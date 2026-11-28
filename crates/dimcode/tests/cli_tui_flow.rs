@@ -2680,11 +2680,11 @@ fn tui_pasted_images_and_long_text_submit_as_user_content() {
         wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
+        let (source, imported) = import_image(wire, "image/png");
+        assert_eq!(imported, bytes);
         let put = wire.read("attachment.put");
         assert_eq!(put["params"], json!({"sessionId":"session","text":expected_long}));
         wire.reply(&put, json!({"attachmentId":"stored","path":"/files/paste.txt","bytes":16*1024+1}));
-        let (source, imported) = import_image(wire, "image/png");
-        assert_eq!(imported, bytes);
         let submit = wire.read("session.submit");
         assert!(submit["params"].get("text").is_none());
         assert_eq!(submit["params"]["user"]["content"], json!([
