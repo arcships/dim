@@ -1210,6 +1210,13 @@ impl Connection {
                     )));
                 }
                 params.limit = Some(limit);
+                if let Some(session_ids) = &params.session_ids
+                    && session_ids.count() > CATALOG_SESSION_IDS_MAX
+                {
+                    return Some(Err(RpcError::invalid(format!(
+                        "catalog sessionIds must name at most {CATALOG_SESSION_IDS_MAX} Sessions"
+                    ))));
+                }
                 let cancel = self.ids.lock().expect("request identities")[&id]
                     .clone()
                     .expect("catalog reads have cancellation");

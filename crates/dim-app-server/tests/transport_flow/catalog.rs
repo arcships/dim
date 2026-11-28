@@ -229,6 +229,14 @@ async fn catalog_is_not_advertised_without_native_storage() {
             .unwrap()
             .contains(&json!("session.catalog"))
     );
+    assert!(
+        !client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.catalog.sessionIds")),
+        "a daemon without a store advertises no id filter either"
+    );
     assert_ok(&client.rpc("session.summaries", json!({})).await);
     drop(client);
     server.shutdown();
@@ -1454,7 +1462,10 @@ async fn catalog_lists_named_session_ids_in_catalog_order() {
     };
 
     let page = client
-        .rpc("session.catalog", json!({"sessionIds":["s-01","s-00","s-58"]}))
+        .rpc(
+            "session.catalog",
+            json!({"sessionIds":["s-01","s-00","s-58"]}),
+        )
         .await;
     assert_ok(&page);
     assert_eq!(
@@ -1476,7 +1487,9 @@ async fn catalog_lists_named_session_ids_in_catalog_order() {
         "an id the store does not hold is absent: {missing}"
     );
 
-    let hidden = client.rpc("session.catalog", json!({"sessionIds":["s-00"]})).await;
+    let hidden = client
+        .rpc("session.catalog", json!({"sessionIds":["s-00"]}))
+        .await;
     assert_ok(&hidden);
     assert!(
         listed(&hidden).is_empty(),
@@ -1571,7 +1584,10 @@ async fn catalog_refuses_an_unbounded_or_malformed_session_id_set() {
         .await;
     assert_ok(&accepted);
     assert!(
-        accepted["result"]["sessions"].as_array().unwrap().is_empty(),
+        accepted["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
         "ids the store does not hold answer no rows: {accepted}"
     );
 
