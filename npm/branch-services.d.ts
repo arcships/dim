@@ -1166,36 +1166,6 @@ export interface BackgroundExec {
   stop(taskId: string): Promise<ExecEndedData>
 }
 
-export type AgentConfig2 = {
-  name: string
-  systemPrompt: string
-  model: ModelId
-}
-
-export interface AgentConfig {
-  /**
-   * The Agent's identity and default model as data, for parts in other
-   * languages.
-   */
-  get(): Promise<AgentConfig2>
-}
-
-export interface SessionConfig {
-  /**
-   * The creation-time configuration as data, for parts in other
-   * languages.
-   */
-  get(): Promise<import('./plugin.js').SessionConfig>
-}
-
-export interface SessionIdentity {
-  /**
-   * The identity as data, `{sessionId, restored}`, for parts in other
-   * languages.
-   */
-  get(): Promise<{ sessionId: string; restored: boolean }>
-}
-
 /**
  * Lifecycle of one branch: provided by its scope, advanced only by the
  * branch's [`crate::TimelineContext`]. Capabilities that spawn background
@@ -1391,6 +1361,12 @@ export interface PartRegistry {
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
 }
 
+export type AgentConfig = {
+  name: string
+  systemPrompt: string
+  model: ModelId
+}
+
 /**
  * One Session as its own scope describes it: its identity, whether it was
  * restored, the configuration it was created with, and the Agent that owns it.
@@ -1400,7 +1376,7 @@ export type SessionDescription = {
   /** True when this Session was loaded from storage rather than newly created. */
   restored: boolean
   config: import('./plugin.js').SessionConfig
-  agent: AgentConfig2
+  agent: AgentConfig
 }
 
 /** Why a routed call did not reach a reply. */
@@ -1970,9 +1946,6 @@ export interface Services {
   branchLine: BranchLine
   wait: Wait
   backgroundExec: BackgroundExec
-  agentConfig: AgentConfig
-  sessionConfig: SessionConfig
-  sessionIdentity: SessionIdentity
   branchLifecycle: BranchLifecycle
   sessionLifecycle: SessionLifecycle
   dispatcher: Dispatcher
@@ -2006,12 +1979,9 @@ export type LineFaces = {
 
 /** The data faces a Session reaches. */
 export type SessionFaces = {
-  agentConfig: AgentConfig
   collaborationConfig: CollaborationConfig
   initialPromptConfiguration: InitialPromptConfiguration
   mcpSession: McpSession
-  sessionConfig: SessionConfig
-  sessionIdentity: SessionIdentity
   sessionLanguage: SessionLanguage
   sessionLoader: SessionLoader
   skillsConfig: SkillsConfig

@@ -26,14 +26,6 @@ impl Default for AgentConfig {
         }
     }
 }
-#[service]
-impl AgentConfig {
-    /// The Agent's identity and default model as data, for parts in other
-    /// languages.
-    pub fn get(&self) -> AgentConfig {
-        self.clone()
-    }
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfig {
@@ -183,14 +175,6 @@ pub enum CollaborationRole {
     Leader,
     Member,
 }
-#[service]
-impl SessionConfig {
-    /// The creation-time configuration as data, for parts in other
-    /// languages.
-    pub fn get(&self) -> SessionConfig {
-        self.clone()
-    }
-}
 impl SessionConfig {
     /// Removes tools a connection below protocol 4 cannot project. The
     /// App Server calls this on every creation, fork and restore path; the
@@ -240,14 +224,6 @@ pub struct SessionIdentity {
     pub session_id: String,
     /// True when this Session was loaded from storage rather than newly created.
     pub restored: bool,
-}
-#[service]
-impl SessionIdentity {
-    /// The identity as data, `{sessionId, restored}`, for parts in other
-    /// languages.
-    pub fn get(&self) -> SessionIdentity {
-        self.clone()
-    }
 }
 
 /// One Session as its own scope describes it: its identity, whether it was

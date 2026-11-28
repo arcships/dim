@@ -491,11 +491,6 @@
       "item": "BranchLifecycle::watch"
     },
     {
-      "kind": "rust-only-method",
-      "file": "crates/dim-agent-runtime/src/config.rs",
-      "item": "SessionConfig::exclude_codemode_below"
-    },
-    {
       "kind": "rust-only-field",
       "file": "crates/dim-agent-runtime/src/config.rs",
       "item": "SessionLifecycle::faults"

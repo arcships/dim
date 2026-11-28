@@ -1218,19 +1218,6 @@ impl DynPlugin for SessionScopePlugin {
                     self.extension_groups.clone(),
                 )),
             )?;
-            ctx.provide_at(scope.key::<SessionConfig>(), Arc::new(owner.config.clone()))?;
-            ctx.provide_at(
-                scope.key::<AgentConfig>(),
-                Arc::new(owner.assembly.config.clone()),
-            )?;
-            ctx.provide_at(
-                scope.key::<SessionIdentity>(),
-                Arc::new(SessionIdentity {
-                    session_id: owner.id.clone(),
-                    restored: owner.restored,
-                    unloading: owner.unloading.clone(),
-                }),
-            )?;
             ctx.provide_at(
                 scope.key::<SessionLifecycle>(),
                 Arc::new(owner.lifecycle.clone()),

@@ -59,24 +59,6 @@ async fn the_skills_factory_configuration_answers_the_same_through_the_binding_a
 }
 
 #[tokio::test]
-async fn the_agents_configuration_answers_the_same_through_the_binding_and_the_face() {
-    let root = Ctx::root().unwrap();
-    let config = AgentConfig {
-        name: "agent".into(),
-        system_prompt: "be brief".into(),
-        model: dim_agent_runtime::ModelId {
-            provider_id: "mock".into(),
-            model_id: "deterministic".into(),
-        },
-    };
-    root.provide(config.clone()).unwrap();
-    let binding = root.get::<AgentConfig>().unwrap();
-    let face: AgentConfig = wire(&root, "agentConfig", "get", ()).await;
-    assert_eq!(binding.get(), face);
-    assert_eq!(face, config);
-}
-
-#[tokio::test]
 async fn the_worktree_association_answers_the_same_through_the_binding_and_the_face() {
     let root = Ctx::root().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
