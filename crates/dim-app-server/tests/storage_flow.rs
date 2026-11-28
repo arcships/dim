@@ -7592,8 +7592,8 @@ async fn native_continuation_survives_sqlite_checkpoint_request_and_child_restor
 
 /// S5c §6.3 at the store: a fork copies `main` through the cut as stored,
 /// only the content rows its events and before traces reference, only the
-/// snapshots anchored on copied events, and the branches `main` created by
-/// then as directories without events; a missing source is closed.
+/// snapshots anchored on copied events, and `main`'s directory without any
+/// branch `main` created by then; a missing source is closed.
 #[tokio::test]
 async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
     let database = Database::new();
@@ -7753,7 +7753,7 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
             "SELECT branch_id || ':' || sequence || ':' || info FROM timeline_branches WHERE session_id='fork' ORDER BY branch_id"
         ),
         column(
-            "SELECT branch_id || ':' || CASE branch_id WHEN 'main' THEN 5 ELSE 0 END || ':' || info FROM timeline_branches WHERE session_id='source' AND branch_id IN ('main', 'child') ORDER BY branch_id"
+            "SELECT branch_id || ':' || 5 || ':' || info FROM timeline_branches WHERE session_id='source' AND branch_id='main'"
         )
     );
     let content = column(
@@ -7811,7 +7811,8 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
             .iter()
             .map(|branch| (branch.info.id.as_str(), branch.sequence))
             .collect::<Vec<_>>(),
-        [("child", 0), ("main", 5)]
+        [("main", 5)],
+        "the fork's directory is its root"
     );
     assert_eq!(
         store

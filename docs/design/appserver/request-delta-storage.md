@@ -555,9 +555,9 @@ compaction: the requests that reference the same message in v16.
   byte for byte. The fork copies the content rows those rows reference, as today, and for each `list` every node on
   the way to the first one: one recursive query over `(session_id, hash)` in the fork transaction, whose
   `UNION` visits a prefix shared by many lists once. No node of a request after the cut is copied unless an earlier
-  request shares it. Copied child directories have head 0 and no events. The copy remains one transaction whose length
-  grows with `main`'s copied prefix, as S5c states. The `session/forked` row the fork then writes at `at + 1` carries
-  no request and references no content, so the closure copies nothing for it.
+  request shares it. The fork copies `main`'s directory row and the row of each line that ended by the cut. The copy remains
+  one transaction whose length grows with `main`'s copied prefix, as S5c states. The `session/forked` row the fork then
+  writes at `at + 1` carries no request and references no content, so the closure copies nothing for it.
 - **Delete and creation rollback** remove the Session's rows from every table, as today; the writer drops the
   Session's memo entries.
 

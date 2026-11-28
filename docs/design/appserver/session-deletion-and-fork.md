@@ -27,8 +27,9 @@ file steps.
   bounded transactions. An interruption leaves the Session invisible and at most unreachable rows of the id, which a
   retry removes; the next sweep finishes the files (§4).
 - **Fork.** A fork copies the source's `main` through a cut into a new Session in bounded transactions, byte for
-  byte, and shares the source's Session files. The cut is a rest point of `main`, and branches `main` created by then are
-  copied without their events, so the fork starts no work until a client sends it input (§6.5). The fork's `main`
+  byte, and shares the source's Session files. The cut is a rest point of `main`, and only lines that ended by then
+  come with their directory: a line still open at the cut is not part of the fork, so the fork starts no work until a
+  client sends it input (§6.5). The fork's `main`
   opens with `branch/resume`: the fork is the source's conversation restored at the cut under a new id. Right after
   the copied facts the fork writes one fact of its own, `session/forked`, so an owner that folds a branch's own
   history knows where the copy ends (§6.5); v3 connections deliver it and v2 keeps its list.
@@ -353,11 +354,10 @@ fork would then be a Session whose `main` is not its whole history, and every la
 numbering spaces.
 
 **A fork's default branch is its root.** Every `branch/default` the copy inherits was written on the source's `main`
-before the cut, so it names a line that is either absent from F or present only as a directory row without events
-(§6.3). F therefore records its default branch as `main`: its `session/forked` at `at + 1` is later than every
-copied `branch/default`, and the one lookup that decides a Session's default branch (timeline branches §5) reads the
-newest of the two kinds. A cut of `0` records no `session/forked`, and its default branch is `main` for the same
-reason: no copied fact names another.
+before the cut, so it names a line that is absent from F (§6.3). F therefore records its default branch as `main`: its
+`session/forked` at `at + 1` is later than every copied `branch/default`, and the one lookup that decides a Session's
+default branch (timeline branches §5) reads the newest of the two kinds. A cut of `0` records no `session/forked`, and
+its default branch is `main` for the same reason: no copied fact names another.
 
 ### 6.3 What a fork copies
 
@@ -365,9 +365,10 @@ reason: no copied fact names another.
  Source S                                                 Fork F (bounded transactions)
  main: 1 .. 7  8 branch/create(c1)  9 .. 12 | 13 ..       main: 1 .. 12, same ids     (at = 12, a rest point)
                       |                   cut                   then 13 session/forked; F's first load
- c1:   1 branch/start .. 30 (may still grow)                    writes 14 branch/resume, 15 branch/create-failed(c1)
- c2:   branch/create at main 15                          c1:   directory (stored info, head 0), no events
-                                                         -     c2 not copied (created after the cut)
+ c1:   1 branch/start .. 11 branch/end (ended)                 writes 14 branch/resume
+ c2:   1 branch/start .. 30 (may still grow)             c1:   directory (stored info, head 0), no events
+ c3:   branch/create at main 13                          -     c2, c3 not copied: c2 is open at the cut, c3
+                                                         -     is created after it
  timeline_content: rows the events reference             only the rows the copied events reference, with
                                                          the list nodes they reach
  timeline_snapshots: main, c1                            main's, anchored at or before 12
@@ -383,7 +384,7 @@ reason: no copied fact names another.
 | `agent_sessions` | A new id (UUID v4), `created_at_ms` at the fork, and the source's `config` text unchanged. That is the whole `SessionConfig`, including `interactive` ([session access A.3](../contracts/session-access.md#a3-sessionconfig-fields)), `permissionPolicy`, `collaborationRole`, `cwd`, `model`, `systemPrompt` and `tools`. Copying the text instead of re-serializing it keeps `interactive`'s omission rule as written |
 | `session_owners` | The source's Agent and protocol version |
 | `session_catalog` | One row for F, with the values a backfill over F's events writes: `updated_at_ms` the `create_at` of the newest activity event the fork transaction writes ([session catalog §3.2](session-catalog.md#32-order-cursor-and-paging)) — the `session/forked` row at `at + 1` for a nonzero cut, F's creation time at a cut of `0` — and `preview` the first user input among the copied events under the same batch-complete window, NULL at a cut of `0` ([#556's catalog projection](native-storage-format.md#556-v23-格式决定)) |
-| `timeline_branches` | `main` with head `at + 1` (its `session/forked`; `0` for a fork at `0`), and every branch whose `branch/create` is on `main` at or before `at`, with its stored `info` and head 0. Branches below those are not copied: their creations are in events F does not get |
+| `timeline_branches` | `main` with head `at + 1` (its `session/forked`; `0` for a fork at `0`) and its stored `info`, and each branch whose `branch/create` is on `main` at or before `at` **and** whose end is there too, with its stored `info` and head 0 (see below) |
 | `timeline_events` | `main`'s rows through `at` (the cut rule means no row spans it), with kinds, bodies, sequences, batch ends, event ids and before traces as stored, then one new `session/forked` row at `at + 1` (none for a fork at `0`). No row of a child branch |
 | `timeline_content` | The rows the copied events reference, by the references the codec writes for requests and their before traces, and every list node those references reach (format v17). The `session/forked` row references no content |
 | `timeline_snapshots` | The rows anchored on copied `main` events. They are derived from the same facts, so F's first load uses them instead of replaying from the start |
@@ -392,17 +393,26 @@ reason: no copied fact names another.
 | `session_grants` | None: a fork is a new Session and does not inherit grants ([ADR 012](../../adr/012-session-grants.md) D1) |
 | Title metadata (S5b) | None: a fork starts untitled ([SessionTitle](../plugins/SessionTitle.md) A7) |
 
-**Why child branches come without their events.** A child's events are not ordered against `main`'s cut, so no prefix
-of a child corresponds to `at`. Copied whole, a child holds what happened after the cut, and its pending work (an
-unstarted first input, a Queue or Steer input, a background task's wake) would start turns in F for work the source
-already ran or is running, in the same `cwd` (§6.5). Fork copies each child directory with head 0.
-Directory restore does not scan creation events; see [restore read boundary](restore-validation.md).
-TimelineTree treats a child without its `branch/start` and first
-Queue input as a creation that never started ([timeline_tree.rs](../../../crates/dim-agent-capabilities/src/timeline_tree.rs)
-`restore`): at F's first load it writes `branch/create-failed` (`error: "branch creation failed"`) on F's `main` and
-builds nothing, and later loads skip the child because of that fact. A crash between a creation's commit and the
-child's start already takes this path. In F the fact means the branch is not part of F; the branch and its work stay
-in S, where a client can continue them. The fact is not model context, so the prompt prefix at the cut is unchanged.
+**Which child directories are copied.** A child's events are not ordered against `main`'s cut, so no prefix of a child
+corresponds to `at`. Copied whole, a child holds what happened after the cut, and its pending work (an unstarted first
+input, a Queue or Steer input, a background task's wake) would start turns in F for work the source already ran or is
+running, in the same `cwd` (§6.5). A line that is over carries no such work, so F keeps it: when the copied prefix
+holds the child's conclusion on `main` — its `branch/ended` or `branch/create-failed` — the fork copies the child's
+directory with head 0. F then lists the line as ended or as a failed creation, exactly as S does, with the end S
+recorded ([timeline branches §10](../timeline-branches.md#10-ending-a-line)). The child keeps no event of its own.
+
+A child still open at the cut is not copied at all, because a directory without events is not a representable line:
+the store writes a child's `timeline_branches` row in the same transaction as the parent's `branch/create`, so a
+directory with no events means a creation still in flight. Directory restore does not scan creation events ([restore
+read boundary](restore-validation.md)); TimelineTree treats such a child as a creation that never started
+([timeline_tree.rs](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) `restore`) and writes
+`branch/create-failed` on its parent, which is the right conclusion for a crash between a creation's commit and the
+child's start and a false one for a copy no creation touched. A client shows that fact as a failed branch.
+
+The copied `main` keeps the `branch/create` facts of every branch S created by the cut, as stored: they are S's
+conversation, and F does not rewrite `main`. They name the lines F does not have too; such a line and its work stay in
+S, where a client can continue them. Nothing F opens starts work, and the copied facts are not model context, so the
+prompt prefix at the cut is unchanged.
 
 **Why only referenced content.** Content rows are per Session. Copying all of them would copy, for a fork from an
 early point of a long Session, the requests of everything after the cut, while the copy holds the store's write lock.
@@ -414,6 +424,8 @@ Rejected alternatives:
 | Copy each child whole, as committed when the fork transaction runs (this page's first draft) | It carries the child's work after the cut into F, and the reload rules run its pending inputs and wakes again in the shared `cwd` (§6.5) |
 | Copy a child only up to its creation | Its first Queue input becomes pending again, and F runs the delegated task a second time |
 | Copy a child through its last rest point | It still carries work after the cut. A child on its first task has no rest point after its creation, and the check would read every copied child's facts while the fork transaction holds the write lock |
+| Copy every child directory without its events, ended or not (this page's earlier draft) | A directory without events is what a creation in flight looks like, so the fork's own restore records each copied open child as `branch/create-failed` and clients report lines that did not fail (#1978). The directory carried nothing: a line without events has no content to continue |
+| Teach restore to skip a directory with no events | It cannot tell that copy from a creation a crash interrupted, and that creation must keep its conclusion (§6.3); a marker that distinguishes them is a format change for state nothing reads |
 | Copy every content row of the source | Disk and lock time for requests after the cut, which no copied event references |
 
 The copy runs in bounded transactions on its own connection: the session row is inserted only by the last one, so no
@@ -426,7 +438,7 @@ grows with `main`'s copied prefix, but no single transaction holds the writer fo
 | Not copied | Why |
 | --- | --- |
 | `main` events after `at`, branches created after `at` | After the cut |
-| Events of child branches, and the branches below them | Not ordered against the cut, and a reload would run their pending work again (§6.3). Their work stays in S |
+| Events of child branches, the branches below them, and every directory of a line still open at the cut | Not ordered against the cut, and a reload would run their pending work again (§6.3). A directory without events says a creation is in flight, which no copy is. Their work stays in S |
 | The loaded instance, leases, subscriptions, attached clients, in-flight requests | Runtime state, not stored; F builds its own |
 | An input still being submitted | Not committed, so not a fact |
 | The command output directory | The bytes are not copied; F's `session_output_owners` rows name the same files under `command-output/<S>/` or `.dim/exec/<S>/<branch>/` and keep them readable after S is deleted (ADR 013 D4, §6.6) |
@@ -455,8 +467,8 @@ every earlier event of F's `main` was copied. Owners that fold a branch's own hi
 after it, and v3 clients read it the same way; every other owner keeps treating the copied facts as F's
 history under its reload rule, and a v2 connection keeps its list and drops this fact. A fork at `0`
 copies nothing, writes no `session/forked` and opens with `branch/start` like a new Session. F is the source's conversation restored at the cut under a new
-id, and every owner applies its existing reload rule. The cut is a rest point (§6.2) and child branches come without
-events (§6.3), so no reload rule starts work: **F runs no turn, model call or tool until a client sends it input.**
+id, and every owner applies its existing reload rule. The cut is a rest point (§6.2) and only ended lines come as
+directories (§6.3), so no reload rule starts work: **F runs no turn, model call or tool until a client sends it input.**
 F and S share `cwd`, so this keeps a fork from repeating the source's side effects.
 
 | At the cut | In F |
@@ -465,7 +477,7 @@ F and S share `cwd`, so this keeps a fork from repeating the source's side effec
 | Permission preset (`permission/changed`) | Kept. Permission folds the copied facts (#26); the policy in `SessionConfig` is copied too |
 | An open turn, a Queue or Steer input not consumed, a running background task | None: the cut is a rest point (§6.2) |
 | An Append input not consumed | Stays pending, and joins the next request a client's input starts in F |
-| A branch `main` created | Its directory without events. TimelineTree writes `branch/create-failed` on F's `main` at the first load (§6.3) |
+| A branch `main` created | Its directory when it ended by the cut, listed as ended with the end S recorded, and no events. A line still open at the cut is absent; the copied `branch/create` facts stay as stored (§6.3) |
 | A Collaboration request delivered without a result | Collaboration writes its failed result (`capability reloading`). A result written by a reload posts no report input, so no turn starts. It does not stop the source's member: a reload stops only members whose relation names the reloading Session as their leader ([#127](https://github.com/arcships/dim/issues/127), §14) |
 | A Collaboration result whose report input comes after the cut | F keeps the result without its report: a reload posts no report, as for the source after a crash in that window. Nothing starts; the model can still read the result with the `agent` tool |
 | A live goal (Goal, P5) | Goal's A11 (§14) |
@@ -478,26 +490,26 @@ events from after the cut. F holds none of them:
  S main: .. 8 branch/create(c1) .. 10 step/tool-result "Branch created: c1" .. 12 turn/end | 13 ..
                                                                                          cut
  S c1:   1 branch/start  2 input/message (the task)  3 turn/start .. 25 turn/end   (after the cut)
- F main: .. 12 turn/end  13 session/forked  14 branch/resume  15 branch/create-failed(c1)
- F c1:   directory only
+ F main: .. 12 turn/end  13 session/forked  14 branch/resume
+ F c1:   nothing
 
  2. The child is running when the fork commits
  S main: .. 8 branch/create(c1) .. 12 turn/end | ..
  S c1:   1 .. 5 turn/start  6 step/tool-call (exec)   <- the fork transaction commits here
- F main: .. 12 turn/end  13 session/forked  14 branch/resume  15 branch/create-failed(c1)
- F c1:   directory only: no turn to fail, no input to apply, no task to wake
+ F main: .. 12 turn/end  13 session/forked  14 branch/resume
+ F c1:   nothing: no turn to fail, no input to apply, no task to wake
 
  3. The child gets input after the cut
  S main: .. 8 branch/create(c1) .. 12 turn/end | ..
  S c1:   1 .. 9 turn/end  10 input/message (steer, from a client)  11 turn/start ..
- F main: .. 12 turn/end  13 session/forked  14 branch/resume  15 branch/create-failed(c1)
- F c1:   directory only
+ F main: .. 12 turn/end  13 session/forked  14 branch/resume
+ F c1:   nothing
 ```
 
 | Case | In the source | In F |
 | --- | --- | --- |
-| 1. The child finishes after the cut | Nothing reaches `main`. TimelineTree has no hand-back: the `branch` tool returns `Branch created: <id>` once the child has started, and a child's turns end in its own Timeline. `wait` wakes on background-task notices and steers, not on a child | F's `main` holds the creation and, for a `branch` tool call, that result, both before the cut, then `branch/create-failed`. It is handed no result, waits for nothing and records no other failure. The child's result stays readable in S. The one hand-back Dim has is Collaboration's, from a member Session: the Collaboration row above |
-| 2. The child is running when the fork commits | Its turn, model call or tool batch is open | No child event is copied, so nothing is failed, applied, woken or run again in the shared `cwd`. F's `main` gets `branch/create-failed`, not a "delegation failed" input: no such input exists |
+| 1. The child finishes after the cut | Nothing reaches `main`. TimelineTree has no hand-back: the `branch` tool returns `Branch created: <id>` once the child has started, and a child's turns end in its own Timeline. `wait` wakes on background-task notices and steers, not on a child | F's `main` holds the creation and, for a `branch` tool call, that result, both before the cut. It has no such line, so it is handed no result, waits for nothing and records no failure. The child's result stays readable in S. The one hand-back Dim has is Collaboration's, from a member Session: the Collaboration row above |
+| 2. The child is running when the fork commits | Its turn, model call or tool batch is open | No child event is copied, so nothing is failed, applied, woken or run again in the shared `cwd`. F records no creation failure and no "delegation failed" input: neither happened |
 | 3. The child gets input after the cut | `main` cannot send input to a child. A child gets input from clients (`session.submit {branchId}`), from its own capabilities (exec wakes, Collaboration reports) and from TimelineTree's first input | F has none of the child's inputs, so it holds no input F never received |
 
 Rejected: `branch/start` after the copied facts. Prompt reads a root `branch/start` as a new Session and adopts the
@@ -558,7 +570,7 @@ delete against loading.
 | Delete of a Session still building: a `session.create`, a member's creation or a fork whose rows are committed and listed | The creation holds the new id's gate from before its rows commit until the Session is published and its protocol version recorded (D6). The delete waits, then closes the published Session and removes its rows. A creation that fails rolls its rows back, and the delete finds nothing |
 | Delete against attach, submit or a Session method | They wait for the gate, then fail `session_closed`; requests that already hold a use end with the close |
 | Delete against the Session's own appends | The close settles them; the row transaction follows every queued append on the Timeline writer |
-| Fork against appends to the source | Rows through `at` never change, and the fork copies no row after them: child directories come without events |
+| Fork against appends to the source | Rows through `at` never change, and the fork copies no row after them: it copies `main`'s directory and only the directories of lines that had already ended |
 | Delete of a Collaboration leader | Its close stops its member requests, and Agents then deletes the Team with it: the members it leads and the Agents it owns ([Collaboration §6](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)) |
 | Delete of a member | The leader's requests to it settle as member closed, as today |
 | Two forks of one source | Independent Sessions, each owning the shared files |
@@ -580,9 +592,8 @@ steps read and write those rows with the steps above.
 - A delete removes rows from existing tables and, since [#556's catalog projection](native-storage-format.md#556-v23-格式决定),
   the derived `session_catalog` row.
 - A fork inserts rows into existing tables and copies stored text byte for byte, then inserts one `session/forked` row
-  (empty data) at `at + 1`, and writes F's `session_catalog` row in the same transaction from the rows it writes. A
-  child directory with head 0 and no events is a state the store already accepts: a creation whose child never
-  started.
+  (empty data) at `at + 1`, and writes F's `session_catalog` row in the same transaction from the rows it writes. The
+  branch directory it writes is `main`'s row and the row of each line that ended by the cut (§6.3).
 - An event id is unique within its Session, and a fork repeats the source's ids in another Session. The store already
   checks and indexes ids per Session; S5c states this as an invariant, not as a change.
 - No provenance column and no tombstone, for the reasons in §4 and §6.6.
@@ -652,7 +663,7 @@ unlike in a shared database directory, can attribute its entries.
 
 | Rule | Answer |
 | --- | --- |
-| Principles §4 rule 1 (commands for others' state) | Delete and fork change only Agents' and SessionStore's own state: Session records and rows. A fork copies stored bytes and writes one fact of its own, `session/forked`, and none for another owner; the facts F writes when it opens come from their owners (TimelineTree's `branch/resume` and `branch/create-failed`, Collaboration's failed results). Goal decides on `session/forked` itself (A11). The preset is copied, not reset (#26) |
+| Principles §4 rule 1 (commands for others' state) | Delete and fork change only Agents' and SessionStore's own state: Session records and rows. A fork copies stored bytes and writes one fact of its own, `session/forked`, and none for another owner; the facts F writes when it opens come from their owners (TimelineTree's `branch/resume`, Collaboration's failed results). Goal decides on `session/forked` itself (A11). The preset is copied, not reset (#26) |
 | Principles §4 rule 2 (handover) | Not applicable: nothing is handed over |
 | Principles §4 rule 3 (before callbacks only) | No before callback. Rpc checks shape and the Session's version; the cut check is `session.branch_create`'s existing one plus the rest point, both reads of the fixed prefix |
 | Principles §4 rule 4 (no business meaning in core) | Timeline, Dispatcher, before and batches are untouched. TimelineTree's existing rules, that a root with events resumes and a child without its start is a failed creation, apply unchanged |
@@ -695,12 +706,14 @@ stop would deadlock that reload, and delaying release would let a later member i
    replies `{deleted: false}`.
 2. Delete an unloaded Session, and one whose rows fail validation: both reply `{deleted: true}` and leave no row.
 3. Fork at a rest point of `main`, with one child branch created before the cut and one after: F's `main` holds the
-   source's events through `at` with the same ids, then `session/forked`, `branch/resume` and one `branch/create-failed` for the first
-   child; F has the first child's directory without events and nothing of the second; F has only the content rows
-   and snapshots of its `main` events; after a restart it reloads without a second `session/forked` or `branch/create-failed`. A fork at `0` opens with `branch/start` and has no `session/forked`.
+   source's events through `at` with the same ids, then `session/forked` and `branch/resume`, and no
+   `branch/create-failed`; F has `main`'s directory and, of the children, only the directory of a line that ended
+   before the cut; F has only the content rows
+   and snapshots of its `main` events; after a restart it reloads without a second `session/forked` or
+   `branch/create-failed`. A fork at `0` opens with `branch/start` and has no `session/forked`.
 4. The cases of §6.5: fork while a child finishes after the cut, while a child has an open turn with a tool batch and
-   a background task, and while a client steers a child after the cut. In each, F's child has no events, F records
-   no `turn/start`, model call, tool execution or `exec/started` until a client submits input to F, and the source's
+   a background task, and while a client steers a child after the cut. In each, F has no such child and records no
+   `turn/start`, model call, tool execution or `exec/started` until a client submits input to F, and the source's
    child goes on unaffected.
 5. A fork's `SessionConfig` text equals the source's, including `"interactive": false`. A permission preset and a
    model set on the source before the cut are F's preset and model.

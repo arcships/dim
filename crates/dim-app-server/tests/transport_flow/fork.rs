@@ -87,10 +87,10 @@ fn error(reply: &Value) -> (String, String) {
 }
 
 /// Acceptance 3, 4 and 5: a fork at a rest point copies `main` through the
-/// cut byte for byte with the content rows its events reference, copies the
-/// branches `main` created by then as directories without events, and runs
-/// nothing until a client sends it input, while the source's children go
-/// on unaffected. A restart reloads it without a second failed creation.
+/// cut byte for byte with the content rows its events reference, copies no
+/// line still open at the cut, and runs nothing until a client sends it
+/// input, while the source's children go on unaffected. A restart reloads it
+/// without a second failed creation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
     let store = Store::new();
@@ -142,24 +142,16 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
             .unwrap(),
         "first"
     );
-    let mut children = vec![done.clone(), running.clone(), steered.clone()];
-    children.sort();
+    let children = vec![done.clone(), running.clone(), steered.clone()];
     let fork = agent.get_session(&fid).unwrap();
     let reply_sequence = reply["result"]["sequence"].as_u64().unwrap();
-    // The reply is read from the published fork after its build returns, so a copied child's
-    // branch/create-failed may already be published; branch/resume at at + 2 is the floor.
+    // The reply is read from the published fork after its build returns; branch/resume at at + 2
+    // is the floor, and nothing else follows it.
     assert!(
         (at + 2..=fork.sequence("main").unwrap()).contains(&reply_sequence),
         "the reply names the fork's main head when it is read: {reply_sequence}"
     );
-    let mut copied = vec![];
-    for _ in 0..500 {
-        copied = history(&fork, "main").await;
-        if failed_creations(&copied) == children {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let copied = history(&fork, "main").await;
     let prefix = chain_events(&source, "main", ..=at).await.unwrap();
     let encode = |events: &[Arc<AgentEvent>]| -> Vec<Value> {
         events
@@ -168,31 +160,6 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
             .collect()
     };
     assert_eq!(encode(&copied[..at as usize]), encode(&prefix));
-    let tail = &copied[at as usize..];
-    assert_eq!(tail[0].kind.key(), "session/forked");
-    assert_eq!(
-        tail.iter()
-            .filter(|event| matches!(event.kind, EventKind::BranchResume(_)))
-            .count(),
-        1
-    );
-    assert_eq!(failed_creations(tail), children, "{:?}", keys(tail));
-    assert_eq!(
-        tail.iter()
-            .filter(|event| {
-                !matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_none())
-                    && !matches!(event.kind, EventKind::InputApplied(_))
-                    && !matches!(
-                        event.kind.key(),
-                        "input-queue/node" | "input-queue/recovered" | "prompt-state/recovered"
-                    )
-            })
-            .count(),
-        2 + children.len(),
-        "the fork only initializes state: {:?}",
-        keys(tail)
-    );
-    assert_eq!(fork.branches().len(), 1, "only main is active in the fork");
 
     let rows = |sql: &str| count(&store, sql, [&fid, &sid]);
     assert_eq!(
@@ -208,19 +175,6 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
             rusqlite::params![sid, at as i64],
         )
     );
-    let directories: Vec<(String, i64)> = store
-        .connection()
-        .prepare("SELECT branch_id, sequence FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
-        .unwrap()
-        .query_map([&fid], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    let mut expected: Vec<(String, i64)> = children.iter().map(|id| (id.clone(), 0)).collect();
-    expected.push(("main".into(), fork.sequence("main").unwrap() as i64));
-    expected.sort();
-    assert_eq!(directories, expected);
-    assert!(!directories.iter().any(|(id, _)| *id == after));
     assert_eq!(
         rows(
             "SELECT COUNT(*) FROM timeline_events WHERE session_id=?1 AND branch_id<>'main' AND ?2<>''"
@@ -286,12 +240,68 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
                 [dim_agent_types::ContentBlock::Text { text }] if text == "steer after the cut")))
     }));
     assert!(source.state(&running).unwrap().running);
-    let tail = history(&fork, "main").await.split_off(at as usize);
-    assert!(
-        !keys(&tail).iter().any(|key| WORK.contains(key)),
-        "{:?}",
-        keys(&tail)
+    // A turn the fork accepts is ordered after everything its opening wrote, so
+    // reading once the turn ends settles the opening.
+    turn(&mut client, &fid, "in the fork").await;
+    let settled = history(&fork, "main").await;
+    let tail = &settled[at as usize..];
+    assert_eq!(tail[0].kind.key(), "session/forked");
+    let own = tail
+        .iter()
+        .position(
+            |event| matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_some()),
+        )
+        .expect("the fork's own input");
+    let opening = &tail[..own];
+    assert_eq!(
+        opening
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::BranchResume(_)))
+            .count(),
+        1
     );
+    assert_eq!(
+        failed_creations(opening),
+        Vec::<String>::new(),
+        "{:?}",
+        keys(opening)
+    );
+    assert_eq!(
+        opening
+            .iter()
+            .filter(|event| {
+                !matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_none())
+                    && !matches!(event.kind, EventKind::InputApplied(_))
+                    && !matches!(
+                        event.kind.key(),
+                        "input-queue/node" | "input-queue/recovered" | "prompt-state/recovered"
+                    )
+            })
+            .count(),
+        2,
+        "the fork only initializes state: {:?}",
+        keys(opening)
+    );
+    assert!(
+        !keys(opening).iter().any(|key| WORK.contains(key)),
+        "the fork starts nothing: {:?}",
+        keys(opening)
+    );
+    assert_eq!(fork.branches().len(), 1, "only main is active in the fork");
+    let directories: Vec<(String, i64)> = store
+        .connection()
+        .prepare("SELECT branch_id, sequence FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
+        .unwrap()
+        .query_map([&fid], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        directories,
+        [("main".to_string(), fork.sequence("main").unwrap() as i64)],
+        "a fork's directory is its root"
+    );
+    assert!(!directories.iter().any(|(id, _)| *id == after));
     for child in &children {
         assert!(
             fork.state(child).is_err(),
@@ -306,16 +316,142 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
     let mut client = Client::new_version(&server, false, 3).await;
     assert_ok(&client.rpc("session.attach", json!({"sessionId":fid})).await);
     let fork = agent.get_session(&fid).unwrap();
+    // As above, a turn accepted after the reload is ordered after everything the
+    // reload wrote.
+    turn(&mut client, &fid, "after the reload").await;
     let reloaded = history(&fork, "main").await;
-    assert_eq!(failed_creations(&reloaded), children);
-    assert!(
-        !keys(&reloaded[at as usize..])
-            .iter()
-            .any(|key| WORK.contains(key))
+    assert_eq!(
+        failed_creations(&reloaded),
+        Vec::<String>::new(),
+        "a reload records no creation failure"
     );
-    turn(&mut client, &fid, "in the fork").await;
-    assert!(keys(&history(&fork, "main").await).contains(&"turn/start"));
+    let resumed = reloaded
+        .iter()
+        .rposition(|event| matches!(event.kind, EventKind::BranchResume(_)))
+        .expect("the reload resumes the fork's main");
+    let input = reloaded
+        .iter()
+        .rposition(
+            |event| matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_some()),
+        )
+        .expect("the fork's own input");
+    assert!(
+        !keys(&reloaded[resumed..input])
+            .iter()
+            .any(|key| WORK.contains(key)),
+        "the reload starts nothing: {:?}",
+        keys(&reloaded[resumed..input])
+    );
+    assert!(
+        keys(&reloaded).contains(&"turn/start"),
+        "the fork runs the turn a client sends it"
+    );
     drop((client, fork, agent));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A fork copies the directory of a line that ended by the cut and no line that
+/// is still open, so opening the fork records no creation failure and its
+/// directory lists exactly the lines it has (S5c §6.3, #1978).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_of_a_session_with_a_child_branch_reports_no_creation_failure() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut params = create(json!(["wait", "branch"]));
+    params["interactive"] = json!(false);
+    let sid = forked(&client.rpc("session.create", params).await);
+    turn(&mut client, &sid, "first").await;
+    let source = agent.get_session(&sid).unwrap();
+    let head = source.sequence("main").unwrap();
+    let child = branch(&mut client, &sid, head, "tool:wait {\"millis\":1}").await;
+    let ended = branch(&mut client, &sid, head, "tool:wait {\"millis\":1}").await;
+    for line in [&child, &ended] {
+        assert_ok(
+            &client
+                .rpc("session.idle", json!({"sessionId":sid,"branchId":line}))
+                .await,
+        );
+        assert!(!history(&source, line).await.is_empty(), "{line} ran");
+    }
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_end",
+                json!({"sessionId":sid,"branchId":ended}),
+            )
+            .await,
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !history(&source, "main").await.iter().any(
+            |event| matches!(&event.kind, EventKind::BranchEnded(data) if data.branch == ended),
+        ) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the tree records the ended line on main");
+    let at = source.sequence("main").unwrap();
+
+    let fid = forked(&fork(&mut client, &sid, at).await);
+    let fork = agent.get_session(&fid).unwrap();
+    // The fork's opening writes its facts before it accepts input, so a turn
+    // that ends here settles everything the opening wrote.
+    turn(&mut client, &fid, "in the fork").await;
+    let copied = history(&fork, "main").await;
+    assert_eq!(
+        failed_creations(&copied),
+        Vec::<String>::new(),
+        "opening a fork records no creation failure: {:?}",
+        keys(&copied)
+    );
+    let directories: Vec<String> = store
+        .connection()
+        .prepare("SELECT branch_id FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
+        .unwrap()
+        .query_map([&fid], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let mut expected = vec![ended.clone()];
+    expected.push("main".into());
+    expected.sort();
+    assert_eq!(
+        directories, expected,
+        "a fork's directory keeps the ended line"
+    );
+    let listed = client
+        .rpc("session.branches", json!({"sessionId":fid}))
+        .await;
+    assert_ok(&listed);
+    let kind = |line: &str| -> String {
+        listed["result"]["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["branchId"] == line)
+            .unwrap_or_else(|| panic!("{line} is listed: {listed}"))["state"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(kind("main"), "open");
+    assert_eq!(kind(&ended), "ended", "the ended line keeps its outcome");
+    assert_eq!(
+        listed["result"]["branches"].as_array().unwrap().len(),
+        2,
+        "the open child is not listed: {listed}"
+    );
+    assert!(
+        fork.state(&child).is_err(),
+        "a line still open at the cut is not part of the fork"
+    );
+    assert!(
+        fork.state(&ended).is_err(),
+        "the ended line has no events in the fork"
+    );
+    assert!(source.state(&child).is_ok(), "the source keeps its child");
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -1211,23 +1347,32 @@ async fn a_fork_waits_for_background_work_and_keeps_preset_and_model() {
             .await["result"],
         policy["result"]
     );
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while failed_creations(&history(&fork, "main").await[at as usize..]).is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the fork records the child's creation as failed");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // A turn the fork accepts is ordered after everything its opening wrote, so
+    // the tail read once the turn ends settles the opening.
+    turn(&mut client, &fid, "in the fork").await;
     let tail = history(&fork, "main").await.split_off(at as usize);
-    assert!(
-        !keys(&tail).iter().any(|key| WORK.contains(key)),
-        "{:?}",
+    assert!(!store.output(&fid).exists(), "the fork ran no command");
+    assert_eq!(
+        failed_creations(&tail),
+        Vec::<String>::new(),
+        "the fork records no creation failure: {:?}",
         keys(&tail)
     );
-    assert!(!store.output(&fid).exists(), "the fork ran no command");
-    assert_eq!(failed_creations(&tail), std::slice::from_ref(&child));
-    assert!(fork.state(&child).is_err());
+    let opening = tail
+        .iter()
+        .position(
+            |event| matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_some()),
+        )
+        .map_or(&tail[..], |own| &tail[..own]);
+    assert!(
+        !keys(opening).iter().any(|key| WORK.contains(key)),
+        "the fork starts nothing: {:?}",
+        keys(opening)
+    );
+    assert!(
+        fork.state(&child).is_err(),
+        "the child is not part of the fork"
+    );
     assert_eq!(
         count(
             &store,
@@ -1240,7 +1385,6 @@ async fn a_fork_waits_for_background_work_and_keeps_preset_and_model() {
         !keys(&branch_events(&source, &child, ..).await.unwrap()).contains(&"exec/ended"),
         "the source's task still runs"
     );
-    turn(&mut client, &fid, "in the fork").await;
     let calls: Vec<String> = history(&fork, "main")
         .await
         .iter()
