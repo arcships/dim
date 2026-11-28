@@ -15,6 +15,13 @@ concurrency:
 env:
   # CI only needs pass/fail; skipping debug info shortens compiling and linking.
   CARGO_PROFILE_DEV_DEBUG: "0"
+# Self-hosted runners reuse their workspace. A cancelled checkout can leave
+# .git/config.lock from its temporary credential config and fail the next
+# checkout, so each self-hosted job clears that lock in its own checkout before
+# using it. The step verifies the checkout root and origin before removing the
+# lock and fails rather than touching another checkout. A runner instance runs
+# one job at a time in its own work directory; do not run Git maintenance in a
+# workspace that may accept a job.
 jobs:
   changes:
     # Pull requests run only the groups their paths need; scripts/ci-changes.mjs holds the rules.
@@ -40,6 +47,60 @@ jobs:
       dependencies: ${{ steps.groups.outputs.dependencies }}
       platforms: ${{ steps.groups.outputs.platforms }}
     steps:
+      - name: Clear stale git config lock
+        shell: bash
+        run: |
+          require_dir() {
+            if [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
+              echo "::error::Not a readable directory: $1" >&2
+              exit 1
+            fi
+          }
+          if [ ! -e "$GITHUB_WORKSPACE" ] && [ ! -L "$GITHUB_WORKSPACE" ]; then
+            parent=$(dirname "$GITHUB_WORKSPACE")
+            if [ -e "$parent" ] || [ -L "$parent" ]; then
+              require_dir "$parent"
+              exit 0
+            fi
+            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ] &&
+               [ -r "$RUNNER_WORKSPACE" ] && [ -x "$RUNNER_WORKSPACE" ]; then
+              exit 0
+            fi
+            echo "::error::Cannot confirm whether the workspace exists: $GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          require_dir "$GITHUB_WORKSPACE"
+          git_dir="$GITHUB_WORKSPACE/.git"
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          require_dir "$git_dir"
+          lock_file="$git_dir/config.lock"
+          if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+            exit 0
+          fi
+          prefix=$(git -C "$GITHUB_WORKSPACE" rev-parse --show-prefix 2>/dev/null) || {
+            echo "::error::Cannot resolve the checkout root for $git_dir" >&2
+            exit 1
+          }
+          if [ -n "$prefix" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir is not the checkout root" >&2
+            exit 1
+          fi
+          expected="https://github.com/$GITHUB_REPOSITORY"
+          actual_remote=$(git -C "$GITHUB_WORKSPACE" config --local --get remote.origin.url 2>/dev/null) || {
+            echo "::error::Cannot read the checkout origin for $git_dir" >&2
+            exit 1
+          }
+          if [ "$actual_remote" != "$expected" ] && [ "$actual_remote" != "$expected.git" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir has origin ${actual_remote:-<none>}, expected $expected" >&2
+            exit 1
+          fi
+          rm -f "$lock_file" || true
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            echo "::error::Stale git lock remains: $lock_file" >&2
+            exit 1
+          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # The merge commit and its base parent.
@@ -68,6 +129,79 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
+      - name: Clear stale git config lock
+        shell: powershell
+        run: |
+          function Get-CheckoutItem([string]$Path) {
+            try {
+              return Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            } catch [System.Management.Automation.ItemNotFoundException] {
+              return $null
+            } catch {
+              Write-Host "::error::Cannot inspect ${Path}: $($_.Exception.Message)"
+              exit 1
+            }
+          }
+          function Get-CheckoutDirectory([string]$Path) {
+            $item = Get-CheckoutItem $Path
+            if ($null -eq $item) { return $null }
+            if (-not $item.PSIsContainer) {
+              Write-Host "::error::Not a directory: $Path"
+              exit 1
+            }
+            try {
+              $null = Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop
+            } catch {
+              Write-Host "::error::Cannot read ${Path}: $($_.Exception.Message)"
+              exit 1
+            }
+            return $item
+          }
+          $workspace = Get-CheckoutDirectory $env:GITHUB_WORKSPACE
+          if ($null -eq $workspace) {
+            $parent = Get-CheckoutDirectory (Split-Path -Parent $env:GITHUB_WORKSPACE)
+            if ($null -eq $parent) {
+              if ($env:RUNNER_WORKSPACE -and (Test-Path -LiteralPath $env:RUNNER_WORKSPACE -PathType Container)) { exit 0 }
+              Write-Host "::error::Cannot confirm whether the workspace exists: $env:GITHUB_WORKSPACE"
+              exit 1
+            }
+            exit 0
+          }
+          $gitDir = Join-Path $workspace.FullName '.git'
+          if ($null -eq (Get-CheckoutDirectory $gitDir)) { exit 0 }
+          $lockFile = Join-Path $gitDir 'config.lock'
+          $lockItem = Get-CheckoutItem $lockFile
+          if ($null -eq $lockItem) { exit 0 }
+          if ($lockItem.PSIsContainer) {
+            Write-Host "::error::Not a file: $lockFile"
+            exit 1
+          }
+          $prefixOutput = & git -C $workspace.FullName rev-parse --show-prefix 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Cannot resolve the checkout root for $gitDir"
+            exit 1
+          }
+          $prefix = @($prefixOutput)[0]
+          if ($prefix) {
+            Write-Host "::error::Refusing to remove a lock from a different checkout: $gitDir is not the checkout root"
+            exit 1
+          }
+          $expectedRemote = "https://github.com/$env:GITHUB_REPOSITORY"
+          $remoteOutput = & git -C $workspace.FullName config --local --get remote.origin.url 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Cannot read the checkout origin for $gitDir"
+            exit 1
+          }
+          $actualRemote = @($remoteOutput)[0]
+          if ($actualRemote -ne $expectedRemote -and $actualRemote -ne "$expectedRemote.git") {
+            Write-Host "::error::Refusing to remove a lock from a different checkout: $gitDir has origin $actualRemote, expected $expectedRemote"
+            exit 1
+          }
+          Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $lockFile) {
+            Write-Host "::error::Stale git lock remains: $lockFile"
+            exit 1
+          }
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -89,6 +223,60 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
+      - name: Clear stale git config lock
+        shell: bash
+        run: |
+          require_dir() {
+            if [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
+              echo "::error::Not a readable directory: $1" >&2
+              exit 1
+            fi
+          }
+          if [ ! -e "$GITHUB_WORKSPACE" ] && [ ! -L "$GITHUB_WORKSPACE" ]; then
+            parent=$(dirname "$GITHUB_WORKSPACE")
+            if [ -e "$parent" ] || [ -L "$parent" ]; then
+              require_dir "$parent"
+              exit 0
+            fi
+            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ] &&
+               [ -r "$RUNNER_WORKSPACE" ] && [ -x "$RUNNER_WORKSPACE" ]; then
+              exit 0
+            fi
+            echo "::error::Cannot confirm whether the workspace exists: $GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          require_dir "$GITHUB_WORKSPACE"
+          git_dir="$GITHUB_WORKSPACE/.git"
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          require_dir "$git_dir"
+          lock_file="$git_dir/config.lock"
+          if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+            exit 0
+          fi
+          prefix=$(git -C "$GITHUB_WORKSPACE" rev-parse --show-prefix 2>/dev/null) || {
+            echo "::error::Cannot resolve the checkout root for $git_dir" >&2
+            exit 1
+          }
+          if [ -n "$prefix" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir is not the checkout root" >&2
+            exit 1
+          fi
+          expected="https://github.com/$GITHUB_REPOSITORY"
+          actual_remote=$(git -C "$GITHUB_WORKSPACE" config --local --get remote.origin.url 2>/dev/null) || {
+            echo "::error::Cannot read the checkout origin for $git_dir" >&2
+            exit 1
+          }
+          if [ "$actual_remote" != "$expected" ] && [ "$actual_remote" != "$expected.git" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir has origin ${actual_remote:-<none>}, expected $expected" >&2
+            exit 1
+          fi
+          rm -f "$lock_file" || true
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            echo "::error::Stale git lock remains: $lock_file" >&2
+            exit 1
+          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -112,6 +300,79 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../.dim-windows-cli-target
       RUSTC_WRAPPER: ""
     steps:
+      - name: Clear stale git config lock
+        shell: powershell
+        run: |
+          function Get-CheckoutItem([string]$Path) {
+            try {
+              return Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            } catch [System.Management.Automation.ItemNotFoundException] {
+              return $null
+            } catch {
+              Write-Host "::error::Cannot inspect ${Path}: $($_.Exception.Message)"
+              exit 1
+            }
+          }
+          function Get-CheckoutDirectory([string]$Path) {
+            $item = Get-CheckoutItem $Path
+            if ($null -eq $item) { return $null }
+            if (-not $item.PSIsContainer) {
+              Write-Host "::error::Not a directory: $Path"
+              exit 1
+            }
+            try {
+              $null = Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop
+            } catch {
+              Write-Host "::error::Cannot read ${Path}: $($_.Exception.Message)"
+              exit 1
+            }
+            return $item
+          }
+          $workspace = Get-CheckoutDirectory $env:GITHUB_WORKSPACE
+          if ($null -eq $workspace) {
+            $parent = Get-CheckoutDirectory (Split-Path -Parent $env:GITHUB_WORKSPACE)
+            if ($null -eq $parent) {
+              if ($env:RUNNER_WORKSPACE -and (Test-Path -LiteralPath $env:RUNNER_WORKSPACE -PathType Container)) { exit 0 }
+              Write-Host "::error::Cannot confirm whether the workspace exists: $env:GITHUB_WORKSPACE"
+              exit 1
+            }
+            exit 0
+          }
+          $gitDir = Join-Path $workspace.FullName '.git'
+          if ($null -eq (Get-CheckoutDirectory $gitDir)) { exit 0 }
+          $lockFile = Join-Path $gitDir 'config.lock'
+          $lockItem = Get-CheckoutItem $lockFile
+          if ($null -eq $lockItem) { exit 0 }
+          if ($lockItem.PSIsContainer) {
+            Write-Host "::error::Not a file: $lockFile"
+            exit 1
+          }
+          $prefixOutput = & git -C $workspace.FullName rev-parse --show-prefix 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Cannot resolve the checkout root for $gitDir"
+            exit 1
+          }
+          $prefix = @($prefixOutput)[0]
+          if ($prefix) {
+            Write-Host "::error::Refusing to remove a lock from a different checkout: $gitDir is not the checkout root"
+            exit 1
+          }
+          $expectedRemote = "https://github.com/$env:GITHUB_REPOSITORY"
+          $remoteOutput = & git -C $workspace.FullName config --local --get remote.origin.url 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Cannot read the checkout origin for $gitDir"
+            exit 1
+          }
+          $actualRemote = @($remoteOutput)[0]
+          if ($actualRemote -ne $expectedRemote -and $actualRemote -ne "$expectedRemote.git") {
+            Write-Host "::error::Refusing to remove a lock from a different checkout: $gitDir has origin $actualRemote, expected $expectedRemote"
+            exit 1
+          }
+          Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $lockFile) {
+            Write-Host "::error::Stale git lock remains: $lockFile"
+            exit 1
+          }
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -178,6 +439,79 @@ jobs:
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     steps:
+      - name: Clear stale git config lock
+        shell: powershell
+        run: |
+          function Get-CheckoutItem([string]$Path) {
+            try {
+              return Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            } catch [System.Management.Automation.ItemNotFoundException] {
+              return $null
+            } catch {
+              Write-Host "::error::Cannot inspect ${Path}: $($_.Exception.Message)"
+              exit 1
+            }
+          }
+          function Get-CheckoutDirectory([string]$Path) {
+            $item = Get-CheckoutItem $Path
+            if ($null -eq $item) { return $null }
+            if (-not $item.PSIsContainer) {
+              Write-Host "::error::Not a directory: $Path"
+              exit 1
+            }
+            try {
+              $null = Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop
+            } catch {
+              Write-Host "::error::Cannot read ${Path}: $($_.Exception.Message)"
+              exit 1
+            }
+            return $item
+          }
+          $workspace = Get-CheckoutDirectory $env:GITHUB_WORKSPACE
+          if ($null -eq $workspace) {
+            $parent = Get-CheckoutDirectory (Split-Path -Parent $env:GITHUB_WORKSPACE)
+            if ($null -eq $parent) {
+              if ($env:RUNNER_WORKSPACE -and (Test-Path -LiteralPath $env:RUNNER_WORKSPACE -PathType Container)) { exit 0 }
+              Write-Host "::error::Cannot confirm whether the workspace exists: $env:GITHUB_WORKSPACE"
+              exit 1
+            }
+            exit 0
+          }
+          $gitDir = Join-Path $workspace.FullName '.git'
+          if ($null -eq (Get-CheckoutDirectory $gitDir)) { exit 0 }
+          $lockFile = Join-Path $gitDir 'config.lock'
+          $lockItem = Get-CheckoutItem $lockFile
+          if ($null -eq $lockItem) { exit 0 }
+          if ($lockItem.PSIsContainer) {
+            Write-Host "::error::Not a file: $lockFile"
+            exit 1
+          }
+          $prefixOutput = & git -C $workspace.FullName rev-parse --show-prefix 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Cannot resolve the checkout root for $gitDir"
+            exit 1
+          }
+          $prefix = @($prefixOutput)[0]
+          if ($prefix) {
+            Write-Host "::error::Refusing to remove a lock from a different checkout: $gitDir is not the checkout root"
+            exit 1
+          }
+          $expectedRemote = "https://github.com/$env:GITHUB_REPOSITORY"
+          $remoteOutput = & git -C $workspace.FullName config --local --get remote.origin.url 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Cannot read the checkout origin for $gitDir"
+            exit 1
+          }
+          $actualRemote = @($remoteOutput)[0]
+          if ($actualRemote -ne $expectedRemote -and $actualRemote -ne "$expectedRemote.git") {
+            Write-Host "::error::Refusing to remove a lock from a different checkout: $gitDir has origin $actualRemote, expected $expectedRemote"
+            exit 1
+          }
+          Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath $lockFile) {
+            Write-Host "::error::Stale git lock remains: $lockFile"
+            exit 1
+          }
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -208,6 +542,60 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
+      - name: Clear stale git config lock
+        shell: bash
+        run: |
+          require_dir() {
+            if [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
+              echo "::error::Not a readable directory: $1" >&2
+              exit 1
+            fi
+          }
+          if [ ! -e "$GITHUB_WORKSPACE" ] && [ ! -L "$GITHUB_WORKSPACE" ]; then
+            parent=$(dirname "$GITHUB_WORKSPACE")
+            if [ -e "$parent" ] || [ -L "$parent" ]; then
+              require_dir "$parent"
+              exit 0
+            fi
+            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ] &&
+               [ -r "$RUNNER_WORKSPACE" ] && [ -x "$RUNNER_WORKSPACE" ]; then
+              exit 0
+            fi
+            echo "::error::Cannot confirm whether the workspace exists: $GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          require_dir "$GITHUB_WORKSPACE"
+          git_dir="$GITHUB_WORKSPACE/.git"
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          require_dir "$git_dir"
+          lock_file="$git_dir/config.lock"
+          if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+            exit 0
+          fi
+          prefix=$(git -C "$GITHUB_WORKSPACE" rev-parse --show-prefix 2>/dev/null) || {
+            echo "::error::Cannot resolve the checkout root for $git_dir" >&2
+            exit 1
+          }
+          if [ -n "$prefix" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir is not the checkout root" >&2
+            exit 1
+          fi
+          expected="https://github.com/$GITHUB_REPOSITORY"
+          actual_remote=$(git -C "$GITHUB_WORKSPACE" config --local --get remote.origin.url 2>/dev/null) || {
+            echo "::error::Cannot read the checkout origin for $git_dir" >&2
+            exit 1
+          }
+          if [ "$actual_remote" != "$expected" ] && [ "$actual_remote" != "$expected.git" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir has origin ${actual_remote:-<none>}, expected $expected" >&2
+            exit 1
+          fi
+          rm -f "$lock_file" || true
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            echo "::error::Stale git lock remains: $lock_file" >&2
+            exit 1
+          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -239,6 +627,60 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
+      - name: Clear stale git config lock
+        shell: bash
+        run: |
+          require_dir() {
+            if [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
+              echo "::error::Not a readable directory: $1" >&2
+              exit 1
+            fi
+          }
+          if [ ! -e "$GITHUB_WORKSPACE" ] && [ ! -L "$GITHUB_WORKSPACE" ]; then
+            parent=$(dirname "$GITHUB_WORKSPACE")
+            if [ -e "$parent" ] || [ -L "$parent" ]; then
+              require_dir "$parent"
+              exit 0
+            fi
+            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ] &&
+               [ -r "$RUNNER_WORKSPACE" ] && [ -x "$RUNNER_WORKSPACE" ]; then
+              exit 0
+            fi
+            echo "::error::Cannot confirm whether the workspace exists: $GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          require_dir "$GITHUB_WORKSPACE"
+          git_dir="$GITHUB_WORKSPACE/.git"
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          require_dir "$git_dir"
+          lock_file="$git_dir/config.lock"
+          if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+            exit 0
+          fi
+          prefix=$(git -C "$GITHUB_WORKSPACE" rev-parse --show-prefix 2>/dev/null) || {
+            echo "::error::Cannot resolve the checkout root for $git_dir" >&2
+            exit 1
+          }
+          if [ -n "$prefix" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir is not the checkout root" >&2
+            exit 1
+          fi
+          expected="https://github.com/$GITHUB_REPOSITORY"
+          actual_remote=$(git -C "$GITHUB_WORKSPACE" config --local --get remote.origin.url 2>/dev/null) || {
+            echo "::error::Cannot read the checkout origin for $git_dir" >&2
+            exit 1
+          }
+          if [ "$actual_remote" != "$expected" ] && [ "$actual_remote" != "$expected.git" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir has origin ${actual_remote:-<none>}, expected $expected" >&2
+            exit 1
+          fi
+          rm -f "$lock_file" || true
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            echo "::error::Stale git lock remains: $lock_file" >&2
+            exit 1
+          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -427,6 +869,60 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
+      - name: Clear stale git config lock
+        shell: bash
+        run: |
+          require_dir() {
+            if [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
+              echo "::error::Not a readable directory: $1" >&2
+              exit 1
+            fi
+          }
+          if [ ! -e "$GITHUB_WORKSPACE" ] && [ ! -L "$GITHUB_WORKSPACE" ]; then
+            parent=$(dirname "$GITHUB_WORKSPACE")
+            if [ -e "$parent" ] || [ -L "$parent" ]; then
+              require_dir "$parent"
+              exit 0
+            fi
+            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ] &&
+               [ -r "$RUNNER_WORKSPACE" ] && [ -x "$RUNNER_WORKSPACE" ]; then
+              exit 0
+            fi
+            echo "::error::Cannot confirm whether the workspace exists: $GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          require_dir "$GITHUB_WORKSPACE"
+          git_dir="$GITHUB_WORKSPACE/.git"
+          if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+            exit 0
+          fi
+          require_dir "$git_dir"
+          lock_file="$git_dir/config.lock"
+          if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+            exit 0
+          fi
+          prefix=$(git -C "$GITHUB_WORKSPACE" rev-parse --show-prefix 2>/dev/null) || {
+            echo "::error::Cannot resolve the checkout root for $git_dir" >&2
+            exit 1
+          }
+          if [ -n "$prefix" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir is not the checkout root" >&2
+            exit 1
+          fi
+          expected="https://github.com/$GITHUB_REPOSITORY"
+          actual_remote=$(git -C "$GITHUB_WORKSPACE" config --local --get remote.origin.url 2>/dev/null) || {
+            echo "::error::Cannot read the checkout origin for $git_dir" >&2
+            exit 1
+          }
+          if [ "$actual_remote" != "$expected" ] && [ "$actual_remote" != "$expected.git" ]; then
+            echo "::error::Refusing to remove a lock from a different checkout: $git_dir has origin ${actual_remote:-<none>}, expected $expected" >&2
+            exit 1
+          fi
+          rm -f "$lock_file" || true
+          if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+            echo "::error::Stale git lock remains: $lock_file" >&2
+            exit 1
+          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -452,6 +948,69 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
+      - name: Clear stale git config lock
+        shell: bash
+        run: |
+          require_dir() {
+            if [ ! -d "$1" ] || [ ! -r "$1" ] || [ ! -x "$1" ]; then
+              echo "::error::Not a readable directory: $1" >&2
+              exit 1
+            fi
+          }
+          if [ ! -e "$GITHUB_WORKSPACE" ] && [ ! -L "$GITHUB_WORKSPACE" ]; then
+            parent=$(dirname "$GITHUB_WORKSPACE")
+            if [ -e "$parent" ] || [ -L "$parent" ]; then
+              require_dir "$parent"
+              exit 0
+            fi
+            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ] &&
+               [ -r "$RUNNER_WORKSPACE" ] && [ -x "$RUNNER_WORKSPACE" ]; then
+              exit 0
+            fi
+            echo "::error::Cannot confirm whether the workspace exists: $GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          registry_remote="https://github.com/agentclientprotocol/registry"
+          for entry in \
+            "$GITHUB_WORKSPACE/.git|https://github.com/$GITHUB_REPOSITORY" \
+            "$GITHUB_WORKSPACE/.acp-registry/.git|$registry_remote"; do
+            git_dir="${entry%%|*}"
+            expected="${entry#*|}"
+            checkout_root="${git_dir%/.git}"
+            if [ ! -e "$checkout_root" ] && [ ! -L "$checkout_root" ]; then
+              continue
+            fi
+            require_dir "$checkout_root"
+            if [ ! -e "$git_dir" ] && [ ! -L "$git_dir" ]; then
+              continue
+            fi
+            require_dir "$git_dir"
+            lock_file="$git_dir/config.lock"
+            if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+              continue
+            fi
+            prefix=$(git -C "$checkout_root" rev-parse --show-prefix 2>/dev/null) || {
+              echo "::error::Cannot resolve the checkout root for $git_dir" >&2
+              exit 1
+            }
+            if [ -n "$prefix" ]; then
+              echo "::error::Refusing to remove a lock from a different checkout: $git_dir is not the checkout root" >&2
+              exit 1
+            fi
+            actual_remote=$(git -C "$checkout_root" config --local --get remote.origin.url 2>/dev/null) || {
+              echo "::error::Cannot read the checkout origin for $git_dir" >&2
+              exit 1
+            }
+            if [ "$actual_remote" != "$expected" ] && [ "$actual_remote" != "$expected.git" ]; then
+              echo "::error::Refusing to remove a lock from a different checkout: $git_dir has origin ${actual_remote:-<none>}, expected $expected" >&2
+              exit 1
+            fi
+            rm -f "$lock_file" || true
+            if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+              echo "::error::Stale git lock remains: $lock_file" >&2
+              exit 1
+            fi
+          done
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
