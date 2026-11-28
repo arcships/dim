@@ -30,6 +30,7 @@ use rutis::host::{CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis_bridge::session::{HostDispatch, host_key};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     ops::RangeInclusive,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -2425,14 +2426,15 @@ fn casefold_keys(stored: &str) -> [String; 2] {
 }
 
 /// The Unicode default-ignorable code points a casefold volume strips from a
-/// directory name before comparing it. Ranges per PropList.txt (Unicode
-/// 15.1): the soft hyphen, combining grapheme joiner, Arabic and Mongolian
-/// format characters, the zero-width and directional formatting characters,
-/// the Hangul fillers, variation selectors, tag characters and the musical
-/// format controls.
+/// directory name before comparing it. Ranges per the
+/// Default_Ignorable_Code_Point property in DerivedCoreProperties.txt
+/// (Unicode 15.1): the soft hyphen, combining grapheme joiner, Arabic and
+/// Mongolian format characters, the zero-width and directional formatting
+/// characters, the Hangul fillers, variation selectors, tag characters and
+/// the musical format controls.
 fn is_default_ignorable(c: char) -> bool {
     matches!(c as u32,
-        0x00AD | 0x034F | 0x061C | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180E
+        0x00AD | 0x034F | 0x061C | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180F
         | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x3164
         | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFF8
         | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0000..=0xE0FFF)
@@ -2470,13 +2472,18 @@ fn windows_name(stored: &str) -> String {
 /// classic form truncates the long name at the stem, and the hashed form
 /// keeps the long name's leading characters, replaces the middle with four
 /// hexadecimal checksum digits and appends the tail — so a candidate starting
-/// with what precedes those digits collides with it too. Only tails of one
-/// digit from 1 upward are generated.
+/// with what precedes those digits collides with it too. The tails generated
+/// are ASCII digits whose first digit runs from 1 upward, growing to two and
+/// more digits as the collisions of one stem accumulate; the outer length
+/// rule already caps the whole short name at eight characters.
 fn windows_8_3_collides(stem: &str, candidate: &str) -> bool {
     let Some((stem, tail)) = stem.rsplit_once('~') else {
         return false;
     };
-    if tail.len() != 1 || !matches!(tail.as_bytes()[0], b'1'..=b'9') {
+    if stem.is_empty()
+        || !matches!(tail.bytes().next(), Some(b'1'..=b'9'))
+        || !tail.bytes().all(|digit| digit.is_ascii_digit())
+    {
         return false;
     }
     if candidate.starts_with(stem) {
@@ -2525,19 +2532,7 @@ fn create_session(
     leader: Option<&str>,
     origin: SessionOrigin,
 ) -> Result<()> {
-    if case_conflicts(connection, session)?
-        .iter()
-        .any(|stored| stored != session)
-    {
-        return Err(AgentError::InvalidInput(format!(
-            "Session id {session} differs from a stored one only by case"
-        )));
-    }
-    if let Some(stored) = directory_conflict(connection, session)? {
-        return Err(AgentError::InvalidInput(format!(
-            "Session id {session} would share an output directory with stored Session {stored}"
-        )));
-    }
+    reject_conflicting_id(connection, session)?;
     let config = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
@@ -3292,9 +3287,12 @@ fn chunk<T>(connection: &mut Connection, step: impl FnOnce(&Connection) -> Resul
 /// A fork id that names a stored Session — byte-identical or only by case —
 /// is refused inside the first chunk transaction, before its first write
 /// (#2204): the refusal rolls that transaction back, so it writes nothing and
-/// runs no cleanup. The cleanup of a copy refused later drops the id's rows
-/// only while no Session of that exact id exists; one another connection
-/// committed during the copy keeps the cleanup from deleting its rows.
+/// no cleanup runs — a cleanup would only ever run against rows the copy
+/// itself committed, and that transaction is the copy's only failure point
+/// ahead of its first commit. The cleanup of a copy refused later drops the
+/// id's rows only while no Session of that exact id exists; one another
+/// connection committed during the copy keeps the cleanup from deleting its
+/// rows.
 fn copy_fork(
     connection: &mut Connection,
     source: &str,
@@ -3304,8 +3302,11 @@ fn copy_fork(
     arrays: &BTreeMap<String, u64>,
     config: &str,
 ) -> Result<()> {
-    let copied = copy_fork_rows(connection, source, fork, at, content, arrays, config);
-    if copied.is_err() {
+    let committed = Cell::new(false);
+    let copied = copy_fork_rows(
+        connection, source, fork, at, content, arrays, config, &committed,
+    );
+    if copied.is_err() && committed.get() {
         match drop_fork_rows(connection, fork) {
             Ok(true) => {}
             Ok(false) => {
@@ -3325,18 +3326,18 @@ fn copy_fork(
 /// Rejects `candidate` when a stored Session id collides with it: equals it
 /// under the case-insensitive collation or shares its output directory under
 /// a supported filesystem's identity rules. Byte-identical keeps the
-/// duplicate's Storage error; a case-only variant and a directory-shape
-/// collision are InvalidInput (#2204).
+/// duplicate's Storage error even when a case variant or a directory-shape
+/// collision is stored beside it (#2204); a case-only variant and a
+/// directory-shape collision are InvalidInput.
 fn reject_conflicting_id(connection: &Connection, candidate: &str) -> Result<()> {
     let conflicts = case_conflicts(connection, candidate)?;
+    if conflicts.iter().any(|stored| stored == candidate) {
+        return Err(error(format!("Session id {candidate} already exists")));
+    }
     if !conflicts.is_empty() {
-        return Err(if conflicts.iter().any(|stored| stored != candidate) {
-            AgentError::InvalidInput(format!(
-                "Session id {candidate} differs from a stored one only by case"
-            ))
-        } else {
-            error(format!("Session id {candidate} already exists"))
-        });
+        return Err(AgentError::InvalidInput(format!(
+            "Session id {candidate} differs from a stored one only by case"
+        )));
     }
     if let Some(stored) = directory_conflict(connection, candidate)? {
         return Err(AgentError::InvalidInput(format!(
@@ -3346,6 +3347,13 @@ fn reject_conflicting_id(connection: &Connection, candidate: &str) -> Result<()>
     Ok(())
 }
 
+/// Copies the rows; `committed` flips the moment the first chunk transaction
+/// commits, so the caller can tell rows it may clean up apart from a refusal
+/// that rolled back before the first write.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per piece of the copy plus its commit report"
+)]
 fn copy_fork_rows(
     connection: &mut Connection,
     source: &str,
@@ -3354,6 +3362,7 @@ fn copy_fork_rows(
     content: &[String],
     arrays: &BTreeMap<String, u64>,
     config: &str,
+    committed: &Cell<bool>,
 ) -> Result<()> {
     let cut = sql_sequence(at)?;
     // Intermediate chunks need no sync of their own: the final transaction
@@ -3398,6 +3407,7 @@ fn copy_fork_rows(
         }
         Ok(())
     })?;
+    committed.set(true);
     for (array, length) in arrays {
         let mut after = 0;
         while after < *length {
@@ -3616,7 +3626,7 @@ fn drop_visible_rows(tx: &Connection, session: &str) -> Result<usize> {
 fn drop_timeline_rows(
     connection: &mut Connection,
     session: &str,
-    owned: impl Fn(&Connection) -> bool,
+    owned: impl Fn(&Connection) -> Result<bool>,
 ) -> Result<Option<()>> {
     for table in [
         "timeline_output_ids",
@@ -3633,7 +3643,7 @@ fn drop_timeline_rows(
     ] {
         loop {
             let Some(deleted) = chunk(connection, |tx| {
-                if !owned(tx) {
+                if !owned(tx)? {
                     return Ok(None);
                 }
                 tx.execute(
@@ -3669,7 +3679,7 @@ fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(error)?;
-    drop_timeline_rows(connection, session, |_| true)?;
+    drop_timeline_rows(connection, session, |_| Ok(true))?;
     Ok(released)
 }
 
@@ -3706,7 +3716,7 @@ fn drop_fork_rows(connection: &mut Connection, fork: &str) -> Result<bool> {
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(error)?;
-    Ok(drop_timeline_rows(connection, fork, |tx| unclaimed(tx, fork).unwrap_or(false))?.is_some())
+    Ok(drop_timeline_rows(connection, fork, |tx| unclaimed(tx, fork))?.is_some())
 }
 
 /// The content rows the events of `source`'s `main` through `at` reference,

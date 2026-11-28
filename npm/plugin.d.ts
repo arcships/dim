@@ -694,7 +694,7 @@ export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "se
   storageReport(request: Record<string, never>): Promise<{ databaseBytes: number; walBytes: number; reclaimableBytes: number }>;
 }
 
-/** Process repository operations for trusted plugins; ids are not scoped to the caller. Create/fork/delete reject ids that are not one normal path component. */
+/** Process repository operations for trusted plugins; ids are not scoped to the caller. Create/fork admit only lowercase ASCII ids — one to sixty-four characters of `[a-z0-9_-]`, never a Windows reserved device name — and reject an id that differs from a stored one only by case or would share its output directory with a stored legacy id under a supported filesystem's identity rules; delete applies only the single normal path component check. */
 export interface Store {
   query(request: { scope: TimelineReadScope; query: import('./branch-services.js').QuerySpec; page?: import('./branch-services.js').QueryPage | null }): Promise<{ result: import('./branch-services.js').QueryOutput; next: import('./branch-services.js').QueryCursor | null }>;
   /** Stored page: database sequence and closed=false; the lifecycle owner supplies live enrichment. */

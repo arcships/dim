@@ -589,9 +589,17 @@ per-caller Session ownership or grant scoping. The lifecycle owner remains respo
   then initialize the fork under the source Agent/protocol. The repository copies the supplied
   text without applying live protocol exclusions or rebuilding the configuration.
 
-`createOwnedSession`, `fork` and `delete` reject Session ids that are not a single normal path
-component with `invalid`, before acquiring ownership or touching rows or output paths. These
-checks are shared with the native Session admission/deletion boundary.
+`createOwnedSession` and `fork` targets admit only lowercase ASCII Session ids — one to
+sixty-four characters of `[a-z0-9_-]`, never a Windows reserved device name — rejecting any
+other shape with `invalid` before acquiring ownership or touching rows or output paths. They
+also reject with `invalid` an id that differs from a stored one only by case, and an id that
+would share an output directory with a stored legacy id under a supported filesystem's
+identity rules — Unicode folding pairs, default-ignorable code points, and the Windows
+separators, trailing characters and 8.3 short names ([native storage
+format](appserver/native-storage-format.md), #2204); a byte-identical duplicate keeps its
+`storage` error. These creation checks are shared with the native Session admission boundary.
+`delete` applies only the single normal path component check, so ids stored before the
+admission rule stay deletable.
 
 Grant kind is `file` or `dir`, mode is `read` or `write`; adding read never downgrades
 an existing write grant. `language` is a ReplyLanguage code or null to clear it.

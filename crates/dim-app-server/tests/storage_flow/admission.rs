@@ -1150,3 +1150,242 @@ async fn a_fork_conflicting_by_case_is_refused_with_zero_writes_and_zero_cleanup
 async fn a_fork_conflicting_by_directory_shape_is_refused_with_zero_writes_and_zero_cleanup() {
     assert_refused_fork_never_writes("fork-shape\u{212A}", "fork-shapek", "invalid").await;
 }
+
+directory_shape!(
+    windows_8_3_two_digit_tail_aliasing,
+    "abcde~12",
+    "abcdefghij",
+    "an 8.3 volume may serve the long name abcdefghij as abcde~12 once the stem's collisions accumulate"
+);
+
+directory_shape!(
+    mongolian_free_variation_selector_four_is_stripped_before_folding,
+    "abc\u{180F}",
+    "abc",
+    "the Mongolian free variation selector four U+180F is a default-ignorable a casefold volume strips"
+);
+
+/// A stored id whose 8.3 stem is empty — the volume never generates such a
+/// short name — must not collide with any long candidate, including the
+/// ordinary UUID-shaped creation ids.
+#[tokio::test]
+async fn an_empty_8_3_stem_blocks_no_long_candidate() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    seed_stored_session(&connection, "~1");
+
+    sessions
+        .create_owned_session(
+            "abcdef123456",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("a long candidate must not collide with an empty 8.3 stem: {error:?}")
+        });
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    sessions
+        .fork_session("source", "0f83c2da-4b18-4c61-9d1e-2a7b3c4d5e6f", 1, &config)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("a UUID-shaped fork target must not collide with an empty 8.3 stem: {error:?}")
+        });
+    assert_eq!(
+        stored_rows(&connection, "~1"),
+        1,
+        "the stored row is untouched"
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// A store predating #2204 can hold a byte-identical duplicate and a
+/// conflicting variant of the candidate at once. The duplicate's error takes
+/// precedence on both write entries: it is the existing Session's protection,
+/// while the variant's InvalidInput is only the admission refusal.
+async fn assert_byte_identical_precedence(variant: &str, of: &str) {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    seed_owner(&connection);
+    seed_stored_session(&connection, "abc");
+    seed_stored_session(&connection, variant);
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(&store, key("source", "main"), vec![text(1, "source")])
+        .await
+        .unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let created = sessions
+        .create_owned_session(
+            "abc",
+            &SessionConfig::default(),
+            "owner",
+            2,
+            None,
+            SessionOrigin::Client,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(created, Err(AgentError::Storage(_))),
+        "creating abc while abc and {variant} ({of}) are stored must keep the duplicate's Storage error, got {created:?}"
+    );
+    let forked = sessions.fork_session("source", "abc", 1, &config).await;
+    assert!(
+        matches!(forked, Err(AgentError::Storage(_))),
+        "forking into abc while abc and {variant} ({of}) are stored must keep the duplicate's Storage error, got {forked:?}"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM agent_sessions", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        3,
+        "abc, {variant} and the fork source stay stored, nothing else is written"
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
+/// #2204 (decision Q2 c (2)): a legacy store holding `abc` beside its
+/// uppercase variant reports the byte-identical duplicate as Storage, not the
+/// variant's InvalidInput.
+#[tokio::test]
+async fn a_byte_identical_duplicate_beats_a_case_variant_on_both_write_entries() {
+    assert_byte_identical_precedence("ABC", "a case variant").await;
+}
+
+/// #2204 (decision Q2 c (2)): the precedence also covers a variant that
+/// collides only through the directory-shape rules, so creation must not
+/// report InvalidInput for a duplicate the fork entry already reports as
+/// Storage.
+#[tokio::test]
+async fn a_byte_identical_duplicate_beats_a_directory_shape_variant_on_both_write_entries() {
+    assert_byte_identical_precedence("abc.", "a directory-shape variant").await;
+}
+
+/// #2204: a fork refused inside the first chunk transaction — before its copy
+/// committed anything — runs no cleanup at all. Rows already present under
+/// the fork's id, written around every validation the way an external writer
+/// or a crashed earlier copy could leave them, must survive the refusal; the
+/// ledger records neither an insert nor a delete.
+#[tokio::test]
+async fn a_fork_refused_before_its_first_write_deletes_no_preexisting_rows() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("source", "main"),
+        vec![text(1, "first"), text(2, "second"), text(3, "third")],
+    )
+    .await
+    .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    seed_stored_session(&connection, "Fork-Keep");
+    // The row stands in for what an external writer or a crashed copy leaves
+    // under an id no Session owns: it cannot satisfy the branch foreign key,
+    // so it is written with the checks off, the way such rows exist.
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO timeline_branches (session_id, branch_id, info, sequence) \
+             VALUES ('fork-keep', 'main', '{\"id\":\"main\",\"parent\":null,\"branch_point\":null,\"create_anchor\":null}', 0);
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+    ledger_fork_writes(&connection, "fork-keep");
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result = sessions
+        .fork_session("source", "fork-keep", 3, &config)
+        .await;
+    assert!(
+        matches!(result, Err(AgentError::InvalidInput(_))),
+        "the case-variant fork must be refused with InvalidInput, got {result:?}"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_branches WHERE session_id='fork-keep'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1,
+        "the rows already present under the fork's id must survive a refusal that wrote nothing"
+    );
+    assert!(
+        ledger_entries(&connection).is_empty(),
+        "the refusal may not write or delete a single row, ledger: {:?}",
+        ledger_entries(&connection)
+    );
+
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
